@@ -5378,6 +5378,7 @@ export default {
     },
     list: {
       title: 'Замовлення',
+      subtitle: 'Що виготовити, для кого й до якого терміну — цифри рахуються з друків і складу',
       newOrder: 'Нове замовлення',
       tabAll: 'Усі',
       noCustomer: 'Без замовника',
@@ -5774,6 +5775,7 @@ export default {
   customers: {
     list: {
       title: 'Замовники',
+      subtitle: 'Контакти, домовленості та історія замовлень',
       newCustomer: 'Новий замовник',
       empty: 'Замовників ще немає',
       searchPlaceholder: 'Пошук замовників…',
@@ -5881,6 +5883,7 @@ export default {
   products: {
     list: {
       title: 'Вироби',
+      subtitle: 'Каталог того, що друкує ферма: деталі, плити й залишок на полиці',
       newProduct: 'Новий виріб',
       fromFile: 'З файлу…',
       import: 'Імпорт…',

@@ -5351,6 +5351,7 @@ export default {
     },
     list: {
       title: 'Orders',
+      subtitle: 'What to make, for whom and by when — the figures come from the prints and the shelf',
       newOrder: 'New order',
       tabAll: 'All',
       noCustomer: 'No customer',
@@ -5717,6 +5718,7 @@ export default {
   customers: {
     list: {
       title: 'Customers',
+      subtitle: 'Contacts, agreements and order history',
       newCustomer: 'New customer',
       empty: 'No customers yet',
       searchPlaceholder: 'Search customers…',
@@ -5816,6 +5818,7 @@ export default {
   products: {
     list: {
       title: 'Products',
+      subtitle: 'The catalog of what the farm makes — parts, plates and what is on the shelf',
       newProduct: 'New product',
       fromFile: 'From file…',
       import: 'Import…',

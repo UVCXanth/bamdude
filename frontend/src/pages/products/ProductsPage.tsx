@@ -11,10 +11,12 @@ import { ProjectsTabs } from '../../components/projects/ProjectsTabs';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
 import { ProductCard } from '../../components/products/ProductCard';
 import { ProductsTable } from '../../components/products/ProductsTable';
+import { ListPageHeader } from '../../components/ListPageHeader';
 import { ListViewToggle } from '../../components/ListViewToggle';
 import { ListSortControl } from '../../components/ListSortControl';
 import type { ListView } from '../../components/ListViewToggle';
 import { PaginationBar } from '../../components/PaginationBar';
+import { useCardsTableViews } from '../../hooks/useCardsTableViews';
 import { useListUrlState } from '../../hooks/useListUrlState';
 import { parseListView, parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
 import { useSearchBox } from '../../hooks/useSearchBox';
@@ -46,6 +48,7 @@ export function ProductsPage() {
   });
   const inCatalog = extra.catalog !== '0';
   const [view, setView] = usePersistedState<ListView>('bamdude-products-view', 'cards', parseListView);
+  const views = useCardsTableViews();
   const [perPage, setPerPage] = usePersistedState<number>('bamdude-products-perPage', 24, parsePageSize);
   const { typed, setTyped, forget } = useSearchBox(q, setQ);
   const [editing, setEditing] = useState<ProductListItem | null | 'new'>(null);
@@ -163,8 +166,8 @@ export function ProductsPage() {
     <div className="p-4">
       <ProjectsTabs />
 
-      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-        <h1 className="text-2xl font-semibold text-white">{t('products.list.title')}</h1>
+      <ListPageHeader title={t('products.list.title')} subtitle={t('products.list.subtitle')}>
+        <ListViewToggle value={view} options={views} onChange={setView} />
         {hasPermission('projects:create') && (
           <div className="flex items-center gap-2">
             <Button variant="secondary" onClick={() => setFromFile(true)}>
@@ -185,7 +188,7 @@ export function ProductsPage() {
             </Button>
           </div>
         )}
-      </div>
+      </ListPageHeader>
 
       <div className="flex items-center gap-4 mb-4 flex-wrap">
         <div className="relative">
@@ -224,7 +227,6 @@ export function ProductsPage() {
         <div className="ml-auto flex items-center gap-3">
           {/* A table sorts from its headers; the cards need a control of their own. */}
           {view === 'cards' && <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />}
-          <ListViewToggle value={view} onChange={setView} />
         </div>
       </div>
 

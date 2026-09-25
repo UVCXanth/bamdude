@@ -48,6 +48,13 @@ export function parsePageSize(raw: string): number | undefined {
   return n === -1 || (PAGE_SIZES as readonly number[]).includes(n) ? n : undefined;
 }
 
-export function parseListView(raw: string): ListView | undefined {
-  return raw === 'cards' || raw === 'table' ? raw : undefined;
+/**
+ * A parser that accepts only the page's modes (spec workshop-lists, rule 12):
+ * a stored value that is not one of them — an old mode, a future one, garbage —
+ * reads as absent, so the page's default applies.
+ */
+export function listViewParser<V extends string>(modes: readonly V[]): (raw: string) => V | undefined {
+  return (raw) => ((modes as readonly string[]).includes(raw) ? (raw as V) : undefined);
 }
+
+export const parseListView = listViewParser<ListView>(['cards', 'table']);

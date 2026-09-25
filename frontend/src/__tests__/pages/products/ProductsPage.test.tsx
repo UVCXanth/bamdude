@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { ProductListItem } from '../../../api/client';
@@ -34,6 +34,21 @@ describe('ProductsPage', () => {
     vi.restoreAllMocks();
     localStorage.clear();
     window.history.pushState({}, '', '/products');
+  });
+
+  it('puts the view switch in the page header, beside the title', async () => {
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
+    render(<ProductsPage />);
+    const header = await screen.findByTestId('list-page-header');
+    expect(within(header).getByRole('group', { name: 'View' })).toBeInTheDocument();
+    expect(within(header).getByRole('heading', { level: 1 })).toBeInTheDocument();
+  });
+
+  it('falls back to the default view when the stored one is not a mode', async () => {
+    localStorage.setItem('bamdude-products-view', 'kanban');
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
+    render(<ProductsPage />);
+    expect(await screen.findByRole('button', { name: 'Cards' })).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('asks for page 1 of 24 catalog products by name, and for everything when the toggle is off', async () => {

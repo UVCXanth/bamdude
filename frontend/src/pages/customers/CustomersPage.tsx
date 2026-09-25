@@ -12,10 +12,12 @@ import { CustomerCard } from '../../components/customers/CustomerCard';
 import { CustomerModal } from '../../components/customers/CustomerModal';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
+import { ListPageHeader } from '../../components/ListPageHeader';
 import { ListViewToggle } from '../../components/ListViewToggle';
 import { ListSortControl } from '../../components/ListSortControl';
 import type { ListView } from '../../components/ListViewToggle';
 import { PaginationBar } from '../../components/PaginationBar';
+import { useCardsTableViews } from '../../hooks/useCardsTableViews';
 import { useListUrlState } from '../../hooks/useListUrlState';
 import { parseListView, parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
 import { useSearchBox } from '../../hooks/useSearchBox';
@@ -38,6 +40,7 @@ export function CustomersPage() {
   });
   const { typed, setTyped, forget } = useSearchBox(q, setQ);
   const [view, setView] = usePersistedState<ListView>('bamdude-customers-view', 'table', parseListView);
+  const views = useCardsTableViews();
   const [perPage, setPerPage] = usePersistedState<number>('bamdude-customers-perPage', 24, parsePageSize);
   const [editing, setEditing] = useState<Customer | null | 'new'>(null);
   const [deleting, setDeleting] = useState<Customer | null>(null);
@@ -108,15 +111,15 @@ export function CustomersPage() {
     <div className="p-4">
       <ProjectsTabs />
 
-      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-        <h1 className="text-2xl font-semibold text-white">{t('customers.list.title')}</h1>
+      <ListPageHeader title={t('customers.list.title')} subtitle={t('customers.list.subtitle')}>
+        <ListViewToggle value={view} options={views} onChange={setView} />
         {hasPermission('projects:create') && (
           <Button onClick={() => setEditing('new')}>
             <Plus className="w-4 h-4" />
             {t('customers.list.newCustomer')}
           </Button>
         )}
-      </div>
+      </ListPageHeader>
 
       <div className="flex items-center gap-4 mb-4 flex-wrap">
         <div className="relative">
@@ -143,7 +146,6 @@ export function CustomersPage() {
         <div className="ml-auto flex items-center gap-3">
           {/* A table sorts from its headers; the cards need a control of their own. */}
           {view === 'cards' && <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />}
-          <ListViewToggle value={view} onChange={setView} />
         </div>
       </div>
 

@@ -39,6 +39,21 @@ describe('OrdersPage', () => {
     vi.spyOn(api, 'getCustomers').mockResolvedValue([{ id: 1, name: 'ACME', figures: {} }] as never);
     vi.spyOn(api, 'getOrdersFilament').mockResolvedValue(EMPTY_FARM);
   });
+  it('puts the view switch in the page header, beside the title', async () => {
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    window.history.pushState({}, '', '/projects');
+    render(<OrdersPage />);
+    const header = await screen.findByTestId('list-page-header');
+    expect(within(header).getByRole('group', { name: 'View' })).toBeInTheDocument();
+    expect(within(header).getByRole('heading', { level: 1 })).toBeInTheDocument();
+  });
+  it('falls back to the default view when the stored one is not a mode', async () => {
+    localStorage.setItem('projects.view', 'kanban');
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    window.history.pushState({}, '', '/projects');
+    render(<OrdersPage />);
+    expect(await screen.findByRole('button', { name: 'Cards' })).toHaveAttribute('aria-pressed', 'true');
+  });
   it('asks the server for one page of the active tab and counts every tab from totals', async () => {
     const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA], { totals: { active: 1, completed: 5, cancelled: 0, all: 6 } }));
     window.history.pushState({}, '', '/projects');

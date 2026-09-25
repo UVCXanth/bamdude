@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import { CustomersPage } from '../../../pages/customers/CustomersPage';
@@ -34,6 +34,23 @@ describe('CustomersPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     localStorage.clear();
+  });
+
+  it('puts the view switch in the page header, beside the title', async () => {
+    vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf(customers));
+    window.history.pushState({}, '', '/customers');
+    render(<CustomersPage />);
+    const header = await screen.findByTestId('list-page-header');
+    expect(within(header).getByRole('group', { name: 'View' })).toBeInTheDocument();
+    expect(within(header).getByRole('heading', { level: 1 })).toBeInTheDocument();
+  });
+
+  it('falls back to the default view when the stored one is not a mode', async () => {
+    localStorage.setItem('bamdude-customers-view', 'kanban');
+    vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf(customers));
+    window.history.pushState({}, '', '/customers');
+    render(<CustomersPage />);
+    expect(await screen.findByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('lists customers with their light figures, one page by name', async () => {

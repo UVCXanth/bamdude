@@ -1,13 +1,29 @@
+import type { LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 export type ListView = 'cards' | 'table';
 
+export interface ListViewOption<V extends string> {
+  value: V;
+  icon: LucideIcon;
+  label: string;
+}
+
 /**
- * The cards/table switch every list of the projects section shares — lifted
- * out of OrdersPage, same look (spec projects-lists-parity, rule 10). The
- * choice is a preference: the page keeps it with `usePersistedState`.
+ * The view switch every list of the Projects section shares (spec
+ * workshop-lists, rule 12): N modes the page names, each an icon and a label.
+ * Below `sm` the label hides; the button keeps its name through `aria-label`.
+ * The choice is a preference — the page keeps it with `usePersistedState`.
  */
-export function ListViewToggle({ value, onChange }: { value: ListView; onChange: (view: ListView) => void }) {
+export function ListViewToggle<V extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: V;
+  options: readonly ListViewOption<V>[];
+  onChange: (view: V) => void;
+}) {
   const { t } = useTranslation();
   return (
     <div
@@ -15,15 +31,18 @@ export function ListViewToggle({ value, onChange }: { value: ListView; onChange:
       aria-label={t('list.view.label')}
       className="flex rounded-lg border border-bambu-dark-tertiary overflow-hidden text-sm"
     >
-      {(['cards', 'table'] as const).map((v) => (
+      {options.map(({ value: mode, icon: Icon, label }) => (
         <button
-          key={v}
+          key={mode}
           type="button"
-          aria-pressed={value === v}
-          onClick={() => onChange(v)}
-          className={`px-3 py-1.5 ${value === v ? 'bg-bambu-dark-tertiary text-white' : 'text-bambu-gray hover:text-white'}`}
+          aria-pressed={value === mode}
+          aria-label={label}
+          title={label}
+          onClick={() => onChange(mode)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 ${value === mode ? 'bg-bambu-dark-tertiary text-white' : 'text-bambu-gray hover:text-white'}`}
         >
-          {t(v === 'cards' ? 'list.view.cards' : 'list.view.table')}
+          <Icon className="w-4 h-4" aria-hidden="true" />
+          <span className="hidden sm:inline">{label}</span>
         </button>
       ))}
     </div>
