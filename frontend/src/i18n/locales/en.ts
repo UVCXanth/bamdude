@@ -239,6 +239,7 @@ export default {
     maintenance: 'Maintenance',
     firmware: 'Firmware',
     projects: 'Projects',
+    badge: { activeOrders: 'Active orders' },
     inventory: 'Filament',
     files: 'File Manager',
     makerworld: 'MakerWorld',

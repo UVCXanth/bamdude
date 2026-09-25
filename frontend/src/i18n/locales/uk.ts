@@ -239,6 +239,7 @@ export default {
     maintenance: 'Обслуговування',
     firmware: 'Прошивка',
     projects: 'Проєкти',
+    badge: { activeOrders: 'Активні замовлення' },
     inventory: 'Філамент',
     files: 'Файли',
     makerworld: 'MakerWorld',

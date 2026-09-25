@@ -1963,6 +1963,10 @@ export interface OrdersSummary {
   remaining: number;
   all_covered: number;
 }
+/** `GET /projects/nav-badges` — the sidebar's counts for the Projects section. */
+export interface ProjectsNavBadges {
+  active_orders: number;
+}
 export interface ProductListPage {
   items: ProductListItem[];
   meta: PaginationMeta;
@@ -10916,6 +10920,7 @@ export const api = {
   },
   /** The orders page's tiles — the whole farm, whatever the list is filtered by. */
   getOrdersSummary: () => request<OrdersSummary>('/projects/summary'),
+  getProjectsNavBadges: () => request<ProjectsNavBadges>('/projects/nav-badges'),
   getOrder: (id: number) => request<Order>(`/projects/${id}`),
   createOrder: (data: OrderCreate) =>
     request<Order>('/projects/', { method: 'POST', body: JSON.stringify(data) }),
