@@ -1,4 +1,5 @@
-"""Paged envelopes of the projects section's three lists (spec: projects-lists-parity).
+"""Paged envelopes of the projects section's lists (spec: projects-lists-parity)
+and the farm summaries their tiles read (spec: workshop-lists).
 
 The element types are the SAME models the flat lists answer with — a list
 already carries only what its card draws, so a second, slimmer shape would be
@@ -11,6 +12,7 @@ from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.customer import CustomerResponse
 from backend.app.schemas.product import ProductListItem
 from backend.app.schemas.project import ProjectListResponse
+from backend.app.schemas.stock import StockListItem
 
 
 class OrderListTotals(BaseModel):
@@ -60,3 +62,20 @@ class CustomersSummary(BaseModel):
     with_active: int
     active_orders: int
     total_price: float
+
+
+class StockListPage(BaseModel):
+    items: list[StockListItem]
+    meta: PaginationMeta
+
+
+class StockFigures(BaseModel):
+    """``GET /stock/figures`` — the stock page's tiles over the free-parts ledger
+    (spec workshop-lists, rule 4). Read-only: the ledger's one writer is
+    ``services/part_stock.py``."""
+
+    kits: int
+    kit_products: int
+    parts: int
+    reserved_kits: int
+    incomplete: int

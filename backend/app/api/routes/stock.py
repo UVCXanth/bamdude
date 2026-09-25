@@ -17,8 +17,10 @@ from backend.app.models.product import Product, ProductPart
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
+from backend.app.schemas.listing import StockFigures, StockListPage
 from backend.app.schemas.product import StockBalanceOut
 from backend.app.schemas.stock import (
+    StockListItem,
     StockMovementRowOut,
     StockMovementsPageOut,
     StockProductOut,
@@ -27,25 +29,32 @@ from backend.app.schemas.stock import (
     StockSummaryOut,
 )
 from backend.app.services import part_stock
+from backend.app.services.list_paging import SortSpec, page_meta, resolve_sort, slice_page, sort_computed
 from backend.app.services.stock_views import movement_out, orders_of_lines
 
 router = APIRouter(prefix="/stock", tags=["stock"])
 
+# All three keys are computed: the ``with_stock`` filter needs the balances, so
+# the set is built in Python whole before it can be sorted or cut (spec
+# workshop-lists, rule 9). ``kits-desc`` is the flat answer's own order.
+_STOCK_SORT = SortSpec(sql={}, computed={"kits", "name", "reserved"}, default="kits-desc")
+_STOCK_KEYS = {
+    "kits": lambda r: r.kits_available,
+    "name": lambda r: r.name.lower(),
+    "reserved": lambda r: r.reserved_kits,
+}
 
-@router.get("", response_model=StockSummaryOut)
-async def stock_summary(
-    q: str | None = Query(None, max_length=200),
-    with_stock: bool = Query(True),
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
-):
+
+async def _stock_rows(db: AsyncSession, *, q: str | None, with_stock: bool) -> list[StockProductOut]:
     """Every product with a shelf: its kits, its counted parts' balances, and
-    the ACTIVE orders' lines holding its kits in reserve.
+    the ACTIVE orders' lines holding its kits in reserve — kits descending,
+    then name. The flat answer's rows, and the source of the paged list and
+    the tiles alike, so a tile and the table cannot disagree.
 
-    ``with_stock`` (default) keeps a product only while its shelf holds
-    anything — a counted part above zero, or a live reservation: kits out on
-    loan are still the shelf's business, and a product whose whole stock is
-    reserved reads as zero balances with a reservation, never as absent.
+    ``with_stock`` keeps a product only while its shelf holds anything — a
+    counted part above zero, or a live reservation: kits out on loan are still
+    the shelf's business, and a product whose whole stock is reserved reads as
+    zero balances with a reservation, never as absent.
 
     The product select is pre-filtered in SQL to those with at least one
     counted printed part — the EXISTS keeps part-less one-off products (adhoc
@@ -60,7 +69,7 @@ async def stock_summary(
         stmt = stmt.where(Product.name.ilike(f"%{q.strip()}%"))
     products = [p for p in (await db.execute(stmt)).scalars().all() if any(part_stock.is_counted(pt) for pt in p.parts)]
     if not products:
-        return StockSummaryOut(products=[])
+        return []
 
     ids = [p.id for p in products]
     balances = await part_stock.balances_for_products(db, ids)
@@ -108,7 +117,49 @@ async def stock_summary(
             )
         )
     out.sort(key=lambda row: (-row.kits_available, row.name.lower()))
-    return StockSummaryOut(products=out)
+    return out
+
+
+@router.get("", response_model=StockSummaryOut | StockListPage)
+async def stock_summary(
+    q: str | None = Query(None, max_length=200),
+    with_stock: bool = Query(True),
+    sort_by: str | None = Query(None, description="With page set: '<key>-<asc|desc>'; unknown → kits-desc"),
+    page: int | None = Query(None, ge=1, description="Omit entirely for the flat {products} answer"),
+    per_page: int = Query(24, ge=1, le=200),
+    all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """Every product with a shelf (see ``_stock_rows``). ``page`` is the compat
+    switch every list of the section has (spec projects-lists-parity rule 1,
+    workshop-lists rule 9): without it the flat ``{products}`` exactly as
+    before; with it the envelope, whose rows also carry ``reserved_kits``."""
+    rows = await _stock_rows(db, q=q, with_stock=with_stock)
+    if page is None:
+        return StockSummaryOut(products=rows)
+    key, direction, _computed = resolve_sort(_STOCK_SORT, sort_by)
+    items = [StockListItem(**row.model_dump(), reserved_kits=sum(r.kits for r in row.reservations)) for row in rows]
+    items = sort_computed(items, _STOCK_KEYS[key], direction, id_fn=lambda r: r.id)
+    return StockListPage(items=slice_page(items, page, per_page, all), meta=page_meta(len(items), page, per_page, all))
+
+
+@router.get("/figures", response_model=StockFigures)
+async def stock_figures(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """The stock page's tiles — the whole shelf, never the list's search or its
+    «only with stock» (spec workshop-lists, rules 1, 4). The same rows the list
+    reads, so a tile and the table cannot disagree."""
+    rows = await _stock_rows(db, q=None, with_stock=False)
+    return StockFigures(
+        kits=sum(r.kits_available for r in rows),
+        kit_products=sum(1 for r in rows if r.kits_available > 0),
+        parts=sum(b.balance for r in rows for b in r.parts),
+        reserved_kits=sum(res.kits for r in rows for res in r.reservations),
+        incomplete=sum(1 for r in rows if r.kits_available == 0 and any(b.balance > 0 for b in r.parts)),
+    )
 
 
 @router.get("/movements", response_model=StockMovementsPageOut)

@@ -46,6 +46,15 @@ class StockProductOut(BaseModel):
     reservations: list[StockReservationOut] = []
 
 
+class StockListItem(StockProductOut):
+    """A row of the PAGED list (spec workshop-lists, rules 9, 20): the flat row
+    plus what its reservations add up to, so the table can show and sort a
+    «Reserved» column without adding anything itself. The flat answer keeps the
+    plain ``StockProductOut``."""
+
+    reserved_kits: int = 0
+
+
 class StockSummaryOut(BaseModel):
     """``GET /stock`` — every product with a shelf, kits descending, then name."""
 

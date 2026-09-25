@@ -183,3 +183,76 @@ async def test_kits_are_the_scarcest_part_divided_by_its_per_unit(committing_cli
 
     lamp = next(p for p in (await committing_client.get("/api/v1/stock")).json()["products"] if p["id"] == pid)
     assert lamp["kits_available"] == 2
+
+
+# ---- WS-01: the paged list and the shelf tiles ----
+
+
+@pytest.mark.asyncio
+async def test_without_page_the_flat_answer_is_unchanged(committing_client, db_session):
+    await _lamp_with_stock(committing_client, db_session)
+    flat = (await committing_client.get("/api/v1/stock")).json()
+    assert set(flat) == {"products"}
+    assert "reserved_kits" not in flat["products"][0]
+    # The paged params mean nothing without `page`.
+    same = (await committing_client.get("/api/v1/stock?sort_by=name-asc&per_page=1")).json()
+    assert same == flat
+
+
+@pytest.mark.asyncio
+async def test_page_gives_the_envelope_with_reserved_kits(committing_client, db_session):
+    pid, _ = await _lamp_with_stock(committing_client, db_session, name="Lamp", lids=5, bases=5)
+    line = await _order_with_line(db_session, pid, name="Holds two")
+    await reserve_for_line(db_session, line, 2)
+    await db_session.commit()
+    await _lamp_with_stock(committing_client, db_session, name="Vase", lids=1, bases=1)
+
+    body = (await committing_client.get("/api/v1/stock?page=1&per_page=1")).json()
+    assert body["meta"] == {"total": 2, "current_page": 1, "per_page": 1, "last_page": 2}
+    assert [(p["name"], p["reserved_kits"]) for p in body["items"]] == [("Lamp", 2)]  # kits-desc: 3 before 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["kits", "name", "reserved"])
+async def test_every_stock_key_orders_both_ways_and_keeps_the_set(committing_client, db_session, key):
+    # Alpha 1/1 reserves 1 (kits 0), Bravo 3/3 reserves 2 (kits 1), Charlie 5/5
+    # reserves nothing (kits 5): three distinct values for every key.
+    names = []
+    for i, name in enumerate(("Alpha", "Bravo", "Charlie")):
+        pid, _ = await _lamp_with_stock(committing_client, db_session, name=name, lids=1 + i * 2, bases=1 + i * 2)
+        if i < 2:
+            line = await _order_with_line(db_session, pid, name=f"order-{name}")
+            await reserve_for_line(db_session, line, i + 1)
+            # Commit now: the next product is created through the client, whose
+            # request session shares the test connection and rolls back on close.
+            await db_session.commit()
+        names.append(name)
+    asc = [p["name"] for p in (await committing_client.get(f"/api/v1/stock?page=1&sort_by={key}-asc")).json()["items"]]
+    desc = [
+        p["name"] for p in (await committing_client.get(f"/api/v1/stock?page=1&sort_by={key}-desc")).json()["items"]
+    ]
+    assert sorted(asc) == sorted(names)
+    assert asc == list(reversed(desc))
+
+
+@pytest.mark.asyncio
+async def test_unknown_stock_sort_is_kits_desc_and_all_gives_everything(committing_client, db_session):
+    await _lamp_with_stock(committing_client, db_session, name="Small", lids=1, bases=1)
+    await _lamp_with_stock(committing_client, db_session, name="Big", lids=9, bases=9)
+    body = (await committing_client.get("/api/v1/stock?page=4&per_page=1&all=true&sort_by=bogus")).json()
+    assert [p["name"] for p in body["items"]] == ["Big", "Small"]
+    assert body["meta"] == {"total": 2, "current_page": 1, "per_page": 2, "last_page": 1}
+
+
+@pytest.mark.asyncio
+async def test_stock_figures_summarise_the_whole_shelf(committing_client, db_session):
+    lamp, _ = await _lamp_with_stock(committing_client, db_session, name="Lamp", lids=5, bases=3)  # 3 kits
+    line = await _order_with_line(db_session, lamp, name="Holds one")
+    await reserve_for_line(db_session, line, 1)  # shelf: 4 lids, 2 bases → 2 kits
+    await db_session.commit()
+    await _lamp_with_stock(committing_client, db_session, name="Half", lids=2, bases=0)  # parts, no kit
+    await _lamp_with_stock(committing_client, db_session, name="Empty", lids=0, bases=0)
+
+    r = await committing_client.get("/api/v1/stock/figures?q=Lamp&with_stock=true")
+    assert r.status_code == 200
+    assert r.json() == {"kits": 2, "kit_products": 1, "parts": 8, "reserved_kits": 1, "incomplete": 1}
