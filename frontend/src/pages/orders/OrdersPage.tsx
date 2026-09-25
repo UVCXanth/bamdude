@@ -12,6 +12,7 @@ import { OrderCard } from '../../components/projects/OrderCard';
 import { OrdersTable } from '../../components/projects/OrdersTable';
 import { OrderModal } from '../../components/projects/OrderModal';
 import { FilamentStrip } from '../../components/projects/FilamentStrip';
+import { OrdersTiles } from '../../components/projects/OrdersTiles';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
 import { Select } from '../../components/Select';
@@ -302,6 +303,14 @@ export function OrdersPage() {
         )}
       </ListPageHeader>
 
+      <OrdersTiles />
+
+      {filamentQuery.data && (
+        <div className="mb-4">
+          <FilamentStrip farm={filamentQuery.data} />
+        </div>
+      )}
+
       <div className="flex items-center gap-4 mb-4 flex-wrap">
         <div role="tablist" className="flex gap-1 border-b border-bambu-dark-tertiary">
           {tabs.map(({ key, label, count }) => (
@@ -346,7 +355,6 @@ export function OrdersPage() {
         {view === 'cards' && <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />}
       </div>
 
-      {filamentQuery.data && <FilamentStrip farm={filamentQuery.data} />}
 
       {!isLoading && total === 0 && (
         filtered ? (

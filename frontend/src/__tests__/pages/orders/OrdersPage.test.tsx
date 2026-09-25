@@ -38,6 +38,18 @@ describe('OrdersPage', () => {
     localStorage.clear();
     vi.spyOn(api, 'getCustomers').mockResolvedValue([{ id: 1, name: 'ACME', figures: {} }] as never);
     vi.spyOn(api, 'getOrdersFilament').mockResolvedValue(EMPTY_FARM);
+    vi.spyOn(api, 'getOrdersSummary').mockResolvedValue({ active: 4, overdue: 1, urgent: 2, printing: 3, queued: 7, remaining: 12, all_covered: 1 });
+  });
+  it('draws the farm tiles from the summary, whatever the filter', async () => {
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    window.history.pushState({}, '', '/projects?customer=1&q=lamp');
+    render(<OrdersPage />);
+    expect(await screen.findByTestId('orders-tile-active')).toHaveTextContent('4');
+    expect(screen.getByTestId('orders-tile-active')).toHaveTextContent('overdue: 1 · urgent: 2');
+    expect(screen.getByTestId('orders-tile-printing')).toHaveTextContent('3 / 7');
+    expect(screen.getByTestId('orders-tile-remaining')).toHaveTextContent('12');
+    expect(screen.getByTestId('orders-tile-covered')).toHaveTextContent('1');
+    expect(api.getOrdersSummary).toHaveBeenCalledWith();
   });
   it('puts the view switch in the page header, beside the title', async () => {
     vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));

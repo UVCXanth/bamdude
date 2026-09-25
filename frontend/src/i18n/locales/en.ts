@@ -5340,8 +5340,19 @@ export default {
     search: { clear: 'Clear search' },
     empty: { noMatch: 'Nothing matches your search or filters.', reset: 'Reset' },
     sort: { label: 'Sort by', asc: 'Ascending', desc: 'Descending', updated: 'Last updated', created: 'Created' },
+    tiles: { failed: 'Could not load' },
   },
   orders: {
+    tiles: {
+      active: 'Active',
+      activeSub: 'overdue: {{overdue}} · urgent: {{urgent}}',
+      printing: 'Printing / queued',
+      printingSub: 'prints now · jobs waiting',
+      remaining: 'Left to cover',
+      remainingSub: 'units across active orders',
+      allCovered: 'Fully covered',
+      allCoveredSub: 'check and close',
+    },
     status: {
       active: 'Active',
       completed: 'Completed',

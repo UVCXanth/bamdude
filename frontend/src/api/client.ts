@@ -1953,6 +1953,16 @@ export interface OrderListPage {
   /** Tab counts under every filter but status. */
   totals: OrderListTotals;
 }
+/** `GET /projects/summary` — the farm's active orders, never the list's filters. */
+export interface OrdersSummary {
+  active: number;
+  overdue: number;
+  urgent: number;
+  printing: number;
+  queued: number;
+  remaining: number;
+  all_covered: number;
+}
 export interface ProductListPage {
   items: ProductListItem[];
   meta: PaginationMeta;
@@ -10880,6 +10890,8 @@ export const api = {
     if (params.product_id != null) qs.set('product_id', String(params.product_id));
     return request<OrderListPage>(`/projects/?${pagedSearchParams(qs, params)}`);
   },
+  /** The orders page's tiles — the whole farm, whatever the list is filtered by. */
+  getOrdersSummary: () => request<OrdersSummary>('/projects/summary'),
   getOrder: (id: number) => request<Order>(`/projects/${id}`),
   createOrder: (data: OrderCreate) =>
     request<Order>('/projects/', { method: 'POST', body: JSON.stringify(data) }),

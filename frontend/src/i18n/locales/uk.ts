@@ -5367,8 +5367,19 @@ export default {
     search: { clear: 'Очистити пошук' },
     empty: { noMatch: 'Нічого не збігається з пошуком або фільтрами.', reset: 'Скинути' },
     sort: { label: 'Сортування', asc: 'За зростанням', desc: 'За спаданням', updated: 'Остання зміна', created: 'Дата створення' },
+    tiles: { failed: 'Не вдалося завантажити' },
   },
   orders: {
+    tiles: {
+      active: 'Активні',
+      activeSub: 'прострочено: {{overdue}} · термінових: {{urgent}}',
+      printing: 'Друкується / у черзі',
+      printingSub: 'друків зараз · завдань чекає',
+      remaining: 'Лишилось забезпечити',
+      remainingSub: 'одиниць по активних замовленнях',
+      allCovered: 'Усе забезпечено',
+      allCoveredSub: 'перевірити й закрити',
+    },
     status: {
       active: 'Активне',
       completed: 'Виконане',
