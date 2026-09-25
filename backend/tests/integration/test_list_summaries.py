@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from backend.app.models.customer import Customer
 from backend.app.models.project import Project
 
 pytestmark = pytest.mark.integration
@@ -85,3 +86,23 @@ async def test_orders_summary_of_an_empty_farm_is_zeros(async_client):
         "remaining": 0,
         "all_covered": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_customers_summary(async_client, db_session):
+    acme, beta, idle = Customer(name="ACME"), Customer(name="Beta"), Customer(name="Idle")
+    db_session.add_all([acme, beta, idle])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            Project(name="a1", customer_id=acme.id, status="active", price=50.0),
+            Project(name="a2", customer_id=acme.id, status="active", price=None),
+            Project(name="a3", customer_id=acme.id, status="cancelled", price=25.5),
+            Project(name="b1", customer_id=beta.id, status="completed", price=10.0),
+            Project(name="orphan", status="active", price=99.0),  # no customer: not the customers' tile
+        ]
+    )
+    await db_session.commit()
+    r = await async_client.get("/api/v1/customers/summary")
+    assert r.status_code == 200, r.text  # not swallowed by /{customer_id}
+    assert r.json() == {"customers": 3, "with_active": 1, "active_orders": 2, "total_price": 60.0}

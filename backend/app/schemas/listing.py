@@ -49,3 +49,14 @@ class OrdersSummary(BaseModel):
     queued: int
     remaining: int
     all_covered: int
+
+
+class CustomersSummary(BaseModel):
+    """``GET /customers/summary`` — the customers page's tiles (spec
+    workshop-lists, rule 3). ``total_price`` excludes cancelled orders (rule 6);
+    orders without a customer are not the customers' business."""
+
+    customers: int
+    with_active: int
+    active_orders: int
+    total_price: float

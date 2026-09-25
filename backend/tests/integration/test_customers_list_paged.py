@@ -138,3 +138,33 @@ async def test_search_folds_cyrillic_case_on_the_contact(async_client, db_sessio
     await _customer(db_session, "Ivan", contact="ivan@x.ua")
     items = (await async_client.get("/api/v1/customers/?page=1&q=КОВАЛЬ")).json()["items"]
     assert [c["name"] for c in items] == ["Olena"]
+
+
+@pytest.mark.asyncio
+async def test_with_active_keeps_only_customers_with_an_active_order(async_client, db_session):
+    await _customer(db_session, "busy", orders=1)  # the helper's orders are active
+    idle = await _customer(db_session, "idle")
+    db_session.add(Project(name="old", status="completed", customer_id=idle.id))
+    await db_session.commit()
+    by_name = (await async_client.get("/api/v1/customers/?page=1&with_active=true")).json()
+    assert [c["name"] for c in by_name["items"]] == ["busy"]
+    assert by_name["meta"]["total"] == 1
+    # A computed key sees the same set.
+    by_orders = (await async_client.get("/api/v1/customers/?page=1&with_active=true&sort_by=orders-desc")).json()
+    assert [c["name"] for c in by_orders["items"]] == ["busy"]
+
+
+@pytest.mark.asyncio
+async def test_total_price_sort_ignores_cancelled_orders(async_client, db_session):
+    a = await _customer(db_session, "a")
+    b = await _customer(db_session, "b")
+    db_session.add_all(
+        [
+            Project(name="a-live", status="active", customer_id=a.id, price=10.0),
+            Project(name="a-gone", status="cancelled", customer_id=a.id, price=100.0),
+            Project(name="b-live", status="active", customer_id=b.id, price=20.0),
+        ]
+    )
+    await db_session.commit()
+    body = (await async_client.get("/api/v1/customers/?page=1&sort_by=total_price-desc")).json()
+    assert [(c["name"], c["figures"]["total_price"]) for c in body["items"]] == [("b", 20.0), ("a", 10.0)]

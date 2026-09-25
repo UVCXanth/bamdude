@@ -82,14 +82,15 @@ async def test_list_figures_are_light_while_the_detail_stays_full(committing_cli
     await db_session.commit()
 
     by_name = {c["name"]: c["figures"] for c in (await committing_client.get("/api/v1/customers")).json()}
-    assert by_name["ACME"] == {"projects": 2, "active": 1, "completed": 0, "cancelled": 1, "total_price": 75.5}
+    # The cancelled order's 25.5 is not revenue (spec workshop-lists, rule 6).
+    assert by_name["ACME"] == {"projects": 2, "active": 1, "completed": 0, "cancelled": 1, "total_price": 50.0}
     assert by_name["Beta"] == {"projects": 1, "active": 0, "completed": 1, "cancelled": 0, "total_price": 10.0}
     assert by_name["Zed"] == {"projects": 0, "active": 0, "completed": 0, "cancelled": 0, "total_price": 0.0}
 
     # The archive-derived keys are the detail endpoint's job, and only its.
     assert "ordered" not in by_name["ACME"] and "printed" not in by_name["ACME"]
     detail = (await committing_client.get(f"/api/v1/customers/{acme}")).json()["figures"]
-    assert detail["projects"] == 2 and detail["total_price"] == 75.5
+    assert detail["projects"] == 2 and detail["total_price"] == 50.0
     assert {"ordered", "printed", "total_cost"} <= set(detail)
 
 
@@ -122,7 +123,8 @@ async def test_the_name_is_trimmed_on_create_and_on_update(committing_client):
 async def test_the_detail_figures_survive_the_grouped_query(committing_client, db_session):
     """The customer page stops loading an order context per order; the numbers
     it shows may not move. Written out by hand in ``build_parity_fixture``:
-    ordered 3+1, printed 4+0, cost 3.5+3.0, price 100+50."""
+    ordered 3 (the cancelled order's 1 is out), printed 4, covered 3, cost
+    3.5+3.0, price 100 (the cancelled 50 is out)."""
     ids = await build_parity_fixture(db_session)
 
     figures = (await committing_client.get(f"/api/v1/customers/{ids['customer']}")).json()["figures"]
@@ -131,10 +133,13 @@ async def test_the_detail_figures_survive_the_grouped_query(committing_client, d
         "active": 1,
         "completed": 0,
         "cancelled": 1,
-        "ordered": 4,
+        # Without the cancelled order (rule 6): ordered 3, printed 4, covered 2 + 1.
+        "ordered": 3,
         "printed": 4,
+        "covered_units": 3,
+        # Cost counts every order — the print was paid for either way.
         "total_cost": 6.5,
-        "total_price": 150.0,
+        "total_price": 100.0,
     }
 
 
@@ -147,8 +152,8 @@ async def test_figures_are_a_typed_model_on_both_endpoints(committing_client, db
     ids = await build_parity_fixture(db_session)
 
     detail = (await committing_client.get(f"/api/v1/customers/{ids['customer']}")).json()["figures"]
-    assert CustomerFigures.model_validate(detail).ordered == 4
+    assert CustomerFigures.model_validate(detail).ordered == 3
 
     row = next(c for c in (await committing_client.get("/api/v1/customers")).json() if c["id"] == ids["customer"])
     assert CustomerListFigures.model_validate(row["figures"]).projects == 2
-    assert not {"ordered", "printed", "total_cost"} & set(row["figures"])
+    assert not {"ordered", "printed", "covered_units", "total_cost"} & set(row["figures"])

@@ -18,7 +18,7 @@ from backend.app.schemas.customer import (
     CustomerResponse,
     CustomerUpdate,
 )
-from backend.app.schemas.listing import CustomerListPage
+from backend.app.schemas.listing import CustomerListPage, CustomersSummary
 from backend.app.services.list_paging import (
     SortSpec,
     apply_sql_sort,
@@ -82,7 +82,9 @@ async def _light_figures_by_customer(db: AsyncSession) -> dict[int, CustomerList
             figures = out[customer_id] = _empty_light_figures().model_dump()
         figures["projects"] += count
         figures[status] = figures.get(status, 0) + count
-        figures["total_price"] += float(price_sum or 0)
+        # A cancelled order is not revenue (spec workshop-lists, rule 6).
+        if status != "cancelled":
+            figures["total_price"] += float(price_sum or 0)
     for figures in out.values():
         figures["total_price"] = round(figures["total_price"], 2)
     return {customer_id: CustomerListFigures.model_validate(figures) for customer_id, figures in out.items()}
@@ -114,6 +116,7 @@ _CUSTOMER_COMPUTED = {
 @router.get("/", response_model=list[CustomerResponse] | CustomerListPage)
 async def list_customers(
     q: str | None = Query(None, description="With page set: ilike on the name or the contact"),
+    with_active: bool = Query(False, description="With page set: only customers with an active order"),
     sort_by: str | None = Query(None, description="With page set: '<key>-<asc|desc>'; unknown → name-asc"),
     page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
     per_page: int = Query(24, ge=1, le=200),
@@ -124,8 +127,9 @@ async def list_customers(
     """The customers list. ``page`` is the compat switch (the inventory's contract).
 
     Without it the flat array the customer picker and the orders page's filter
-    read — unchanged. With it ``{items, meta}``, ``q`` (name or contact) and
-    ``sort_by``. The light figures are one GROUP BY over the whole table either
+    read — unchanged. With it ``{items, meta}``, ``q`` (name or contact),
+    ``with_active`` (only customers with an active order) and ``sort_by``.
+    The light figures are one GROUP BY over the whole table either
     way; a computed key (an order count or the price sum) sorts the built rows
     here and slices, a SQL key (``name``, ``created``) pages in the database.
     """
@@ -139,6 +143,8 @@ async def list_customers(
         if q:
             needle = f"%{q.strip()}%"
             query = query.where(or_(Customer.name.ilike(needle), Customer.contact.ilike(needle)))
+        if with_active:
+            query = query.where(Customer.id.in_(select(Project.customer_id).where(Project.status == "active")))
         if not computed:
             total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
             query = apply_sql_sort(query, _CUSTOMER_SORT, key, direction, Customer.id)
@@ -182,6 +188,23 @@ async def create_customer(
     await db.flush()
     await db.refresh(customer)
     return await _response(db, customer)
+
+
+@router.get("/summary", response_model=CustomersSummary)
+async def customers_summary(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """The customers page's tiles — the whole farm, never the list's search
+    (spec workshop-lists, rules 1, 3). One grouped query, the list's own.
+    Declared above ``/{customer_id}``, or ``summary`` would be parsed as an id."""
+    figures = (await _light_figures_by_customer(db)).values()
+    return CustomersSummary(
+        customers=await db.scalar(select(func.count(Customer.id))) or 0,
+        with_active=sum(1 for f in figures if f.active > 0),
+        active_orders=sum(f.active for f in figures),
+        total_price=round(sum(f.total_price for f in figures), 2),
+    )
 
 
 @router.get("/{customer_id}", response_model=CustomerResponse)

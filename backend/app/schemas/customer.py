@@ -77,15 +77,19 @@ class CustomerListFigures(BaseModel):
 
 
 class CustomerFigures(CustomerListFigures):
-    """The DETAIL endpoint's superset — the three keys that cost archive work.
+    """The DETAIL endpoint's superset — the keys that cost archive work.
 
     ``CustomerPage`` tells the two apart with ``'ordered' in figures``, so the
     list model must never grow these fields "for symmetry": an absent key means
     "not asked", a zero would mean "measured, and it is nothing".
+
+    ``ordered`` / ``printed`` / ``covered_units`` leave cancelled orders out;
+    ``total_cost`` counts every order (spec workshop-lists, rule 6).
     """
 
     ordered: int
     printed: int
+    covered_units: int
     total_cost: float
 
 

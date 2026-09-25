@@ -1030,23 +1030,29 @@ async def customer_figures(db: AsyncSession, customer_id: int) -> dict:
         "cancelled": 0,
         "ordered": 0,
         "printed": 0,
+        "covered_units": 0,
         "total_cost": 0.0,
         "total_price": 0.0,
     }
-    for _project_id, status, price in rows:
+    live: set[int] = set()
+    for project_id, status, price in rows:
         # A status this build has never heard of is counted under its own key
         # rather than dropped — the same rule the list endpoint follows.
         out[status] = out.get(status, 0) + 1
-        # ⚠️ The price is summed UNCONDITIONALLY now. It used to be added after
-        # a per-project context load, past a ``continue`` that skipped an order
-        # which had vanished between the two reads — so such an order was
-        # counted under its status and then never priced. An ordering quirk of
-        # the old loop, unreachable now that both facts come off one snapshot.
-        out["total_price"] += float(price or 0)
+        # A cancelled order is not revenue, and «covered of ordered» must not be
+        # dragged down by an order the customer no longer wants (spec
+        # workshop-lists, rule 6). Status and price come off this one snapshot,
+        # so an order cannot be counted under its status and then go unpriced.
+        if status != "cancelled":
+            live.add(project_id)
+            out["total_price"] += float(price or 0)
     for order in await grouped_figures(db, project_ids=[project_id for project_id, _s, _p in rows]):
-        out["ordered"] += order.ordered
-        out["printed"] += order.printed
+        # The cost counts EVERY order: the print was paid for either way.
         out["total_cost"] += order.total_cost
+        if order.project_id in live:
+            out["ordered"] += order.ordered
+            out["printed"] += order.printed
+            out["covered_units"] += order.covered_units
     out["total_cost"] = round(out["total_cost"], 2)
     out["total_price"] = round(out["total_price"], 2)
     return out
