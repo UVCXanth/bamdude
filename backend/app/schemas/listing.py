@@ -79,3 +79,11 @@ class StockFigures(BaseModel):
     parts: int
     reserved_kits: int
     incomplete: int
+
+
+class ProjectsNavBadges(BaseModel):
+    """``GET /projects/nav-badges`` — the sidebar's counts for the Projects
+    section (spec workshop-nav, rule 9). One COUNT per field; WS-07 adds
+    ``draft_products``, WS-09 ``stock_below_min``."""
+
+    active_orders: int

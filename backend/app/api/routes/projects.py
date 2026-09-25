@@ -46,7 +46,7 @@ from backend.app.schemas.farm_forecast import (
     RowForecastOut,
 )
 from backend.app.schemas.filament_needs import FarmNeedsOut, FarmRowOut, NeedRowOut, OrderNeedsOut
-from backend.app.schemas.listing import OrderListPage, OrderListTotals, OrdersSummary
+from backend.app.schemas.listing import OrderListPage, OrderListTotals, OrdersSummary, ProjectsNavBadges
 from backend.app.schemas.order_from_files import OrderFromFilesRequest
 from backend.app.schemas.project import (
     PROJECT_PRIORITIES,
@@ -462,6 +462,19 @@ async def orders_summary(
         remaining=sum(f.remaining for f in figures),
         all_covered=sum(1 for f in figures if f.all_printed),
     )
+
+
+@router.get("/nav-badges", response_model=ProjectsNavBadges)
+async def projects_nav_badges(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """The sidebar badges of the Projects section (spec workshop-nav, rule 9):
+    asked from every page of the app, so one COUNT per badge and nothing that
+    loads an order — ``/summary`` computes every active order's figures and is
+    the tiles', not the menu's. Declared above ``/{project_id}``."""
+    active = await db.scalar(select(func.count(Project.id)).where(Project.status == "active")) or 0
+    return ProjectsNavBadges(active_orders=active)
 
 
 async def _check_customer(db: AsyncSession, customer_id: int | None) -> None:
