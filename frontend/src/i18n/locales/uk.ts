@@ -392,6 +392,7 @@ export default {
       navigation: 'Навігація',
       printers: 'Принтери',
       archives: 'Архіви',
+      projects: 'Проєкти',
       kProfiles: 'K-профілі',
       general: 'Загальне',
     },
@@ -406,6 +407,9 @@ export default {
       openUpload: 'Відкрити модалку завантаження',
       clearOrBlur: 'Скинути вибір / зняти фокус з input',
       contextMenu: 'Контекстне меню на картках',
+    },
+    projects: {
+      focusSearch: 'Фокус на пошук списку (замовлення, вироби, замовники, склад)',
     },
     kprofiles: {
       refresh: 'Оновити профілі',

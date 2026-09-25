@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Plus, Search, X } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Customer } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
@@ -13,6 +13,7 @@ import { CustomerModal } from '../../components/customers/CustomerModal';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
 import { ListPageHeader } from '../../components/ListPageHeader';
+import { ListSearchBox } from '../../components/ListSearchBox';
 import { ListViewToggle } from '../../components/ListViewToggle';
 import { ListSortControl } from '../../components/ListSortControl';
 import type { ListView } from '../../components/ListViewToggle';
@@ -122,27 +123,7 @@ export function CustomersPage() {
       </ListPageHeader>
 
       <div className="flex items-center gap-4 mb-4 flex-wrap">
-        <div className="relative">
-          <Search className="w-4 h-4 text-bambu-gray absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-          <input
-            type="search"
-            value={typed}
-            onChange={(e) => setTyped(e.target.value)}
-            placeholder={t('customers.list.searchPlaceholder')}
-            aria-label={t('customers.list.searchPlaceholder')}
-            className="pl-9 pr-8 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
-          />
-          {typed && (
-            <button
-              type="button"
-              onClick={() => setTyped('')}
-              aria-label={t('list.search.clear')}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          )}
-        </div>
+        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('customers.list.searchPlaceholder')} />
         <div className="ml-auto flex items-center gap-3">
           {/* A table sorts from its headers; the cards need a control of their own. */}
           {view === 'cards' && <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />}

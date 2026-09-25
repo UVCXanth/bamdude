@@ -392,6 +392,7 @@ export default {
       navigation: 'Navigation',
       printers: 'Printers',
       archives: 'Archives',
+      projects: 'Projects',
       kProfiles: 'K-Profiles',
       general: 'General',
     },
@@ -406,6 +407,9 @@ export default {
       openUpload: 'Open upload modal',
       clearOrBlur: 'Clear selection / blur input',
       contextMenu: 'Context menu on cards',
+    },
+    projects: {
+      focusSearch: 'Focus the list search (orders, products, customers, stock)',
     },
     kprofiles: {
       refresh: 'Refresh profiles',

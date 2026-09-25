@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { FileBox, Plus, Search, Upload, X } from 'lucide-react';
+import { FileBox, Plus, Upload } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Product, ProductListItem } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
@@ -12,6 +12,7 @@ import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryIn
 import { ProductCard } from '../../components/products/ProductCard';
 import { ProductsTable } from '../../components/products/ProductsTable';
 import { ListPageHeader } from '../../components/ListPageHeader';
+import { ListSearchBox } from '../../components/ListSearchBox';
 import { ListViewToggle } from '../../components/ListViewToggle';
 import { ListSortControl } from '../../components/ListSortControl';
 import type { ListView } from '../../components/ListViewToggle';
@@ -191,27 +192,7 @@ export function ProductsPage() {
       </ListPageHeader>
 
       <div className="flex items-center gap-4 mb-4 flex-wrap">
-        <div className="relative">
-          <Search className="w-4 h-4 text-bambu-gray absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-          <input
-            type="search"
-            value={typed}
-            onChange={(e) => setTyped(e.target.value)}
-            placeholder={t('products.list.search')}
-            aria-label={t('products.list.search')}
-            className="pl-9 pr-8 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
-          />
-          {typed && (
-            <button
-              type="button"
-              onClick={() => setTyped('')}
-              aria-label={t('list.search.clear')}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          )}
-        </div>
+        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('products.list.search')} />
 
         <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
           <input

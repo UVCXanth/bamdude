@@ -96,6 +96,10 @@ function getShortcuts(
       ],
     },
     {
+      category: t('shortcuts.section.projects'),
+      items: [{ keys: ['/'], description: t('shortcuts.projects.focusSearch') }],
+    },
+    {
       category: t('shortcuts.section.kProfiles'),
       items: [
         { keys: ['R'], description: t('shortcuts.kprofiles.refresh') },
