@@ -17,6 +17,13 @@
 
 ### Changed
 
+- **Projects opens into its sections in the sidebar.** Orders, Products,
+  Customers and Stock sit under Projects in the sidebar, and the tabs at the top
+  of those pages are gone. Projects folds and unfolds, and remembers which you
+  chose. On the collapsed icon bar its sections open beside the icon — on hover,
+  on a click, or with Enter from the keyboard. Orders shows how many orders are
+  active; with the sections folded away a dot on Projects says there is a count
+  to see.
 - **The Projects lists share one frame.** The cards/table switch of the orders,
   products and customers lists moved from the filter bar into the page header,
   beside the create button, and shows an icon — its label hides on a narrow
