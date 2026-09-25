@@ -4,13 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { Package } from 'lucide-react';
 import { api } from '../../api/client';
 import type { ProductListItem } from '../../api/client';
+import { SortableHeader } from '../SortableHeader';
 import { ProductActionMenu, type ProductActions } from './ProductActionMenu';
-
-/** Keys the server sorts by (spec projects-lists-parity, rule 5). */
-type ProductSortKey = 'name' | 'parts' | 'plates' | 'orders' | 'kits';
-
-/** Numbers read best largest-first; a name reads best A→Z — the OrdersTable convention. */
-const DESC_FIRST: ReadonlySet<ProductSortKey> = new Set(['parts', 'plates', 'orders', 'kits']);
 
 /**
  * The catalog as a table — the second view of the products page.
@@ -34,23 +29,6 @@ export function ProductsTable({
   footer?: ReactNode;
 }) {
   const { t } = useTranslation();
-  const [sortKey, sortDir] = sort.split(/-(?=asc$|desc$)/);
-
-  const header = (key: ProductSortKey, label: string, align: 'left' | 'right' = 'right') => {
-    const active = sortKey === key;
-    const next = active ? (sortDir === 'desc' ? 'asc' : 'desc') : DESC_FIRST.has(key) ? 'desc' : 'asc';
-    return (
-      <th
-        className={`font-normal p-2 ${align === 'left' ? 'text-left' : 'text-right'}`}
-        aria-sort={active ? (sortDir === 'desc' ? 'descending' : 'ascending') : undefined}
-      >
-        <button type="button" onClick={() => onSortChange(`${key}-${next}`)} className="hover:text-white">
-          {label}
-          {active && <span aria-hidden> {sortDir === 'desc' ? '▼' : '▲'}</span>}
-        </button>
-      </th>
-    );
-  };
 
   return (
     <div className="rounded-xl border border-bambu-dark-tertiary overflow-hidden">
@@ -58,11 +36,12 @@ export function ProductsTable({
         <table className="w-full text-sm">
           <thead className="text-xs text-bambu-gray bg-bambu-dark-secondary">
             <tr>
-              {header('name', t('products.table.name'), 'left')}
-              {header('parts', t('products.table.parts'))}
-              {header('plates', t('products.table.plates'))}
-              {header('orders', t('products.table.orders'))}
-              {header('kits', t('products.table.kits'))}
+              {/* Numbers read best largest-first; a name reads best A→Z. */}
+              <SortableHeader sortKey="name" label={t('products.table.name')} sort={sort} onSort={onSortChange} />
+              <SortableHeader sortKey="parts" label={t('products.table.parts')} sort={sort} onSort={onSortChange} descFirst align="right" />
+              <SortableHeader sortKey="plates" label={t('products.table.plates')} sort={sort} onSort={onSortChange} descFirst align="right" />
+              <SortableHeader sortKey="orders" label={t('products.table.orders')} sort={sort} onSort={onSortChange} descFirst align="right" />
+              <SortableHeader sortKey="kits" label={t('products.table.kits')} sort={sort} onSort={onSortChange} descFirst align="right" />
               <th className="font-normal p-2 text-left">{t('products.table.catalog')}</th>
               <th className="p-2" aria-label={t('common.actions')} />
             </tr>

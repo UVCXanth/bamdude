@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { ArrowDownWideNarrow, ArrowUpNarrowWide } from 'lucide-react';
+import { splitSortBy } from '../utils/listSort';
 import { Select } from './Select';
 
 export interface ListSortOption {
@@ -27,8 +28,7 @@ export function ListSortControl({
   onChange: (sortBy: string) => void;
 }) {
   const { t } = useTranslation();
-  const [key, dir] = sort.split(/-(?=asc$|desc$)/);
-  const descending = dir === 'desc';
+  const { key, desc: descending } = splitSortBy(sort);
 
   return (
     <div className="flex items-center gap-1">

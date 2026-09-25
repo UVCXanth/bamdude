@@ -6,21 +6,16 @@ import { api } from '../../api/client';
 import type { Customer } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatMoney } from '../../utils/currency';
+import { SortableHeader } from '../SortableHeader';
 import { CustomerActions } from './CustomerActions';
-
-/** Keys the server sorts customers by (spec projects-lists-parity, rule 5). */
-type CustomerSortKey = 'name' | 'orders' | 'active' | 'completed' | 'cancelled' | 'total_price';
-
-/** Numbers read best largest-first; a name reads best A→Z. */
-const DESC_FIRST: ReadonlySet<CustomerSortKey> = new Set(['orders', 'active', 'completed', 'cancelled', 'total_price']);
 
 interface CustomersTableProps {
   customers: Customer[];
   onEdit: (customer: Customer) => void;
   onDelete: (customer: Customer) => void;
-  /** The list's `sort_by`; with `onSortChange` the headers ask the SERVER to sort. */
-  sort?: string;
-  onSortChange?: (sortBy: string) => void;
+  /** The list's `sort_by`; the headers ask the SERVER to sort. */
+  sort: string;
+  onSortChange: (sortBy: string) => void;
   /** The page bar, drawn inside the same card under the rows. */
   footer?: ReactNode;
 }
@@ -29,7 +24,6 @@ interface CustomersTableProps {
 const CELL = 'p-2';
 const NUM_CELL = `${CELL} text-right tabular-nums`;
 const HEAD = 'font-normal p-2 text-left';
-const NUM_HEAD = 'font-normal p-2 text-right';
 
 /**
  * The customer list, as the server counted it.
@@ -42,28 +36,17 @@ const NUM_HEAD = 'font-normal p-2 text-right';
  * The rows are one page of many, so a header sorts on the server (`sort_by`),
  * never just what is on screen.
  */
-export function CustomersTable({ customers, onEdit, onDelete, sort = '', onSortChange, footer }: CustomersTableProps) {
+export function CustomersTable({ customers, onEdit, onDelete, sort, onSortChange, footer }: CustomersTableProps) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const hasActions = hasPermission('projects:update') || hasPermission('projects:delete');
   // The app-wide currency, fetched the way every other money-showing screen
   // fetches it; `formatMoney` covers the unresolved first paint.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
-  const [sortKey, sortDir] = sort.split(/-(?=asc$|desc$)/);
-
-  const header = (key: CustomerSortKey, label: string, className: string) => {
-    if (!onSortChange) return <th className={className}>{label}</th>;
-    const active = sortKey === key;
-    const next = active ? (sortDir === 'desc' ? 'asc' : 'desc') : DESC_FIRST.has(key) ? 'desc' : 'asc';
-    return (
-      <th className={className} aria-sort={active ? (sortDir === 'desc' ? 'descending' : 'ascending') : undefined}>
-        <button type="button" onClick={() => onSortChange(`${key}-${next}`)} className="hover:text-white">
-          {label}
-          {active && <span aria-hidden> {sortDir === 'desc' ? '▼' : '▲'}</span>}
-        </button>
-      </th>
-    );
-  };
+  // Numbers read best largest-first; a name reads best A→Z.
+  const numeric = (key: string, label: string) => (
+    <SortableHeader sortKey={key} label={label} sort={sort} onSort={onSortChange} descFirst align="right" />
+  );
 
   return (
     <div className="rounded-xl border border-bambu-dark-tertiary overflow-hidden">
@@ -71,13 +54,13 @@ export function CustomersTable({ customers, onEdit, onDelete, sort = '', onSortC
         <table className="w-full text-sm">
           <thead className="text-xs text-bambu-gray bg-bambu-dark-secondary">
             <tr>
-              {header('name', t('customers.table.name'), HEAD)}
+              <SortableHeader sortKey="name" label={t('customers.table.name')} sort={sort} onSort={onSortChange} />
               <th className={HEAD}>{t('customers.table.contact')}</th>
-              {header('orders', t('customers.table.orders'), NUM_HEAD)}
-              {header('active', t('customers.table.active'), NUM_HEAD)}
-              {header('completed', t('customers.table.completed'), NUM_HEAD)}
-              {header('cancelled', t('customers.table.cancelled'), NUM_HEAD)}
-              {header('total_price', t('customers.table.totalPrice'), NUM_HEAD)}
+              {numeric('orders', t('customers.table.orders'))}
+              {numeric('active', t('customers.table.active'))}
+              {numeric('completed', t('customers.table.completed'))}
+              {numeric('cancelled', t('customers.table.cancelled'))}
+              {numeric('total_price', t('customers.table.totalPrice'))}
               {hasActions && <th className="p-2" aria-label={t('common.actions')} />}
             </tr>
           </thead>
