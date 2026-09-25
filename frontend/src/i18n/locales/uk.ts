@@ -5836,9 +5836,15 @@ export default {
     page: {
       orders: 'Замовлення',
       newOrder: 'Нове замовлення для цього замовника',
-      printedOfOrdered: 'Надруковано з замовленого',
-      totalCost: 'Собівартість',
-      totalPrice: 'Сума',
+      tiles: {
+        orders: 'Замовлень',
+        ordersSub: 'активних: {{active}} · виконано: {{completed}} · скасовано: {{cancelled}}',
+        money: 'Сума / собівартість',
+        moneySub: 'собівартість друку {{cost}}',
+        covered: 'Забезпечено з замовленого',
+        coveredSub: 'надруковано: {{printed}}',
+        nothingOrdered: 'нічого не замовлено',
+      },
       notFound: 'Замовника не знайдено',
       loadFailed: 'Не вдалося завантажити замовника:',
     },

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -8,32 +8,35 @@ import type { OrderListItem, ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { ProgressBar } from '../../components/projects/ProgressBar';
-import { OrderCard } from '../../components/projects/OrderCard';
+import { OrderStatusTabs, OrdersListView } from '../../components/projects/OrdersListView';
+import { ORDER_TABS, ORDERS_DEFAULT_SORT } from '../../components/projects/orderList';
+import { useOrderSortOptions } from '../../hooks/useOrderSortOptions';
 import { OrderModal } from '../../components/projects/OrderModal';
 import { CustomerModal } from '../../components/customers/CustomerModal';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
+import { ListSortControl } from '../../components/ListSortControl';
+import { ListViewToggle } from '../../components/ListViewToggle';
+import type { ListView } from '../../components/ListViewToggle';
+import { StatTile, StatTiles } from '../../components/StatTile';
 import { formatMoney } from '../../utils/currency';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
+import { useCardsTableViews } from '../../hooks/useCardsTableViews';
 import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
-
-/** One figure, as the server counted it — this page never adds anything up. */
-function Tile({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="rounded-xl bg-bambu-dark-secondary border border-bambu-dark-tertiary p-3">
-      <p className="text-xs text-bambu-gray">{label}</p>
-      <p className="text-lg font-semibold text-white tabular-nums">{value}</p>
-    </div>
-  );
-}
+import { useListUrlState } from '../../hooks/useListUrlState';
+import { parseListView, parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
 
 /**
- * One customer: their figures and their orders.
+ * One customer: its figures (three tiles) and one server page of its orders —
+ * tab counts are the server's `totals`, never the rows on screen (spec
+ * workshop-lists, rules 16–17).
  *
  * The detail endpoint's `figures` is a superset of the list one — only it
- * carries `ordered`/`printed`/`total_cost`. The `'ordered' in figures` guard is
- * what keeps a list row (which has none of the three) from silently rendering
- * an empty progress bar if this component is ever handed one.
+ * carries `ordered`/`printed`/`covered_units`/`total_cost`. The
+ * `'ordered' in figures` guard is what keeps a list row (which has none of
+ * them) from silently rendering an empty progress bar if this component is
+ * ever handed one. The orders block is the orders page's own `OrdersListView`
+ * with the customer fixed; its tab, sort and page live in the URL.
  */
 export function CustomerPage() {
   const { t } = useTranslation();
@@ -45,7 +48,21 @@ export function CustomerPage() {
   const navigate = useNavigate();
   const forgetCustomer = useForgetOnUnmount(['customer', id]);
 
-  const [tab, setTab] = useState<ProjectStatus | 'all'>('active');
+  const [view, setViewPref] = usePersistedState<ListView>('bamdude-customer-orders-view', 'cards', parseListView);
+  const views = useCardsTableViews();
+  const sortOptions = useOrderSortOptions();
+  const { page, sort, extra, setPage, setSort, setExtra, clampToLastPage } = useListUrlState({
+    defaults: { sort: ORDERS_DEFAULT_SORT[view], extra: { tab: 'active' } },
+  });
+  // Another view is another default order, so the page it stood on means nothing there.
+  const setView = (next: ListView) => {
+    setViewPref(next);
+    setPage(1);
+  };
+  const [perPage, setPerPage] = usePersistedState<number>('bamdude-customer-orders-perPage', 24, parsePageSize);
+  const tab: ProjectStatus | 'all' = (ORDER_TABS as readonly string[]).includes(extra.tab)
+    ? (extra.tab as ProjectStatus | 'all')
+    : 'active';
   const [editingCustomer, setEditingCustomer] = useState(false);
   const [deletingCustomer, setDeletingCustomer] = useState(false);
   const [editingOrder, setEditingOrder] = useState<OrderListItem | null | 'new'>(null);
@@ -64,25 +81,30 @@ export function CustomerPage() {
     // it is the cache's job to say the figures are older than they look.
     meta: { refreshToast: true },
   });
-  const { data: orders = [] } = useQuery({
-    queryKey: ['projects', { customer_id: id }],
-    queryFn: () => api.getOrders({ customer_id: id }),
+  const orderParams = {
+    customer_id: id,
+    ...(tab !== 'all' ? { status: tab } : {}),
+    sort_by: sort,
+    page,
+    ...(perPage === -1 ? { all: true } : { per_page: perPage }),
+  };
+  const ordersQuery = useQuery({
+    queryKey: ['projects', orderParams],
+    queryFn: () => api.getOrdersPaged(orderParams),
     enabled: Number.isFinite(id),
+    // The previous page stays on screen while the next one loads — but only
+    // THIS customer's: another customer's orders, even dimmed, would be a lie.
+    placeholderData: (previous, previousQuery) =>
+      (previousQuery?.queryKey[1] as { customer_id?: number } | undefined)?.customer_id === id ? previous : undefined,
   });
+  // A delete can leave us past the last page. Only an answer for THIS view may
+  // clamp — the previous page's knows nothing about the new filter.
+  useEffect(() => {
+    if (ordersQuery.data && !ordersQuery.isPlaceholderData) clampToLastPage(ordersQuery.data.meta.last_page);
+  }, [ordersQuery.data, ordersQuery.isPlaceholderData, clampToLastPage]);
   // The app-wide currency, fetched the way every other money-showing screen
   // fetches it; `formatMoney` covers the unresolved first paint.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
-
-  const counts = useMemo(
-    () => ({
-      active: orders.filter((o) => o.status === 'active').length,
-      completed: orders.filter((o) => o.status === 'completed').length,
-      cancelled: orders.filter((o) => o.status === 'cancelled').length,
-      all: orders.length,
-    }),
-    [orders],
-  );
-  const visible = tab === 'all' ? orders : orders.filter((o) => o.status === tab);
 
   const removeCustomer = useMutation({
     mutationFn: () => api.deleteCustomer(id),
@@ -157,13 +179,7 @@ export function CustomerPage() {
 
   const figures = customer.figures;
   const detailed = 'ordered' in figures ? figures : null;
-
-  const tabs: { key: ProjectStatus | 'all'; label: string; count: number }[] = [
-    { key: 'active', label: t('orders.status.active'), count: counts.active },
-    { key: 'completed', label: t('orders.status.completed'), count: counts.completed },
-    { key: 'cancelled', label: t('orders.status.cancelled'), count: counts.cancelled },
-    { key: 'all', label: t('orders.list.tabAll'), count: counts.all },
-  ];
+  const ordersTotal = ordersQuery.data?.meta.total ?? 0;
 
   return (
     <div className="p-4 space-y-4">
@@ -197,69 +213,83 @@ export function CustomerPage() {
         </div>
       </header>
 
-      <section className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(140px,1fr))]">
-        <Tile label={t('customers.table.orders')} value={figures.projects} />
-        <Tile label={t('customers.table.active')} value={figures.active} />
-        <Tile label={t('customers.table.completed')} value={figures.completed} />
-        <Tile label={t('customers.table.cancelled')} value={figures.cancelled} />
-        <Tile label={t('customers.page.totalPrice')} value={formatMoney(figures.total_price, settings?.currency)} />
-        {detailed && (
-          <Tile label={t('customers.page.totalCost')} value={formatMoney(detailed.total_cost, settings?.currency)} />
-        )}
-      </section>
-
-      {detailed && (
-        <ProgressBar
-          value={detailed.printed}
-          max={detailed.ordered}
-          label={t('customers.page.printedOfOrdered')}
-          testId="customer-progress"
+      <StatTiles columns={3}>
+        <StatTile
+          testId="customer-tile-orders"
+          label={t('customers.page.tiles.orders')}
+          value={figures.projects}
+          sub={t('customers.page.tiles.ordersSub', {
+            active: figures.active,
+            completed: figures.completed,
+            cancelled: figures.cancelled,
+          })}
         />
-      )}
+        <StatTile
+          testId="customer-tile-money"
+          label={t('customers.page.tiles.money')}
+          value={formatMoney(figures.total_price, settings?.currency)}
+          sub={
+            detailed
+              ? t('customers.page.tiles.moneySub', { cost: formatMoney(detailed.total_cost, settings?.currency) })
+              : undefined
+          }
+        />
+        <StatTile
+          testId="customer-tile-covered"
+          label={t('customers.page.tiles.covered')}
+          sub={
+            detailed
+              ? detailed.ordered > 0
+                ? t('customers.page.tiles.coveredSub', { printed: detailed.printed })
+                : t('customers.page.tiles.nothingOrdered')
+              : undefined
+          }
+        >
+          {detailed && <ProgressBar value={detailed.covered_units} max={detailed.ordered} testId="customer-covered" />}
+        </StatTile>
+      </StatTiles>
 
       <section className="space-y-4">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h2 className="text-lg font-medium text-white">{t('customers.page.orders')}</h2>
-          {hasPermission('projects:create') && (
-            <Button onClick={() => setEditingOrder('new')}>
-              <Plus className="w-4 h-4" />
-              {t('customers.page.newOrder')}
-            </Button>
-          )}
+          <div className="flex items-center gap-2 flex-wrap">
+            <ListViewToggle value={view} options={views} onChange={setView} />
+            {hasPermission('projects:create') && (
+              <Button onClick={() => setEditingOrder('new')}>
+                <Plus className="w-4 h-4" />
+                {t('customers.page.newOrder')}
+              </Button>
+            )}
+          </div>
         </div>
 
-        <div role="tablist" className="flex gap-1 border-b border-bambu-dark-tertiary">
-          {tabs.map(({ key, label, count }) => (
-            <button
-              key={key}
-              type="button"
-              role="tab"
-              aria-selected={tab === key}
-              onClick={() => setTab(key)}
-              className={`px-4 py-2 text-sm border-b-2 -mb-px transition-colors ${
-                tab === key ? 'border-bambu-green text-white' : 'border-transparent text-bambu-gray hover:text-white'
-              }`}
-            >
-              {label} ({count})
-            </button>
-          ))}
+        <div className="flex items-center gap-4 flex-wrap">
+          <OrderStatusTabs tab={tab} totals={ordersQuery.data?.totals} onChange={(key) => setExtra('tab', key)} />
+          {/* A table sorts from its headers; the cards need a control of their own. */}
+          {view === 'cards' && <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />}
         </div>
 
-        {visible.length === 0 ? (
+        {!ordersQuery.isLoading && ordersTotal === 0 ? (
           <p className="text-bambu-gray text-sm">{t(`orders.list.empty.${tab}`)}</p>
         ) : (
-          <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
-            {visible.map((order) => (
-              <OrderCard
-                key={order.id}
-                order={order}
-                onEdit={setEditingOrder}
-                onDuplicate={(o) => duplicateOrder.mutate(o.id)}
-                onSetStatus={(o, status) => setOrderStatus.mutate({ orderId: o.id, status })}
-                onDelete={setDeletingOrder}
-              />
-            ))}
-          </div>
+          <OrdersListView
+            data={ordersQuery.data}
+            isLoading={ordersQuery.isLoading}
+            isPlaceholderData={ordersQuery.isPlaceholderData}
+            view={view}
+            sort={sort}
+            onSortChange={setSort}
+            perPage={perPage}
+            onPageChange={setPage}
+            onPerPageChange={(n) => {
+              setPerPage(n);
+              setPage(1);
+            }}
+            onEdit={setEditingOrder}
+            onDuplicate={(o) => duplicateOrder.mutate(o.id)}
+            onSetStatus={(o, status) => setOrderStatus.mutate({ orderId: o.id, status })}
+            onDelete={setDeletingOrder}
+          />
         )}
       </section>
 

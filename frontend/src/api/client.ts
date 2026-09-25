@@ -2231,8 +2231,10 @@ export interface CustomersSummary {
 /** The detail endpoint's superset. Reading a list row for `printed` is the
  *  mistake this split exists to make visible. */
 export interface CustomerFigures extends CustomerListFigures {
+  /** `ordered` / `printed` / `covered_units` leave cancelled orders out; `total_cost` counts every order. */
   ordered: number;
   printed: number;
+  covered_units: number;
   total_cost: number;
 }
 

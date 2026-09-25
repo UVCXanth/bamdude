@@ -3,19 +3,11 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import type { OrderListItem, OrderListPage, OrderListTotals, ProjectStatus } from '../../api/client';
-import type { ListSortOption } from '../ListSortControl';
 import type { ListView } from '../ListViewToggle';
 import { PaginationBar } from '../PaginationBar';
 import { OrderCard } from './OrderCard';
 import { OrdersTable } from './OrdersTable';
-
-/** The status tabs of an order list, in their order. */
-export const ORDER_TABS: readonly (ProjectStatus | 'all')[] = ['active', 'completed', 'cancelled', 'all'];
-
-/** Each view has its own default order (owner's ruling): the table is the
- *  deadline roll-up it always was, the cards are "what moved lately". An
- *  explicit `?sort=` applies to both. */
-export const ORDERS_DEFAULT_SORT = { table: 'due-asc', cards: 'updated-desc' } as const;
+import { ORDER_TABS } from './orderList';
 
 /** How many placeholder cards the first fetch draws. Enough to fill the top of
  *  a normal window without pretending to know how many orders there are. */
@@ -76,25 +68,6 @@ function groupBy<T>(items: T[], keyFn: (item: T) => string): Map<string, T[]> {
     else groups.set(key, [item]);
   }
   return groups;
-}
-
-/** Every server key of the orders list, for the cards' sort control (the table sorts from its headers). */
-export function useOrderSortOptions(): ListSortOption[] {
-  const { t } = useTranslation();
-  return [
-    { key: 'updated', label: t('list.sort.updated'), descFirst: true },
-    { key: 'created', label: t('list.sort.created'), descFirst: true },
-    { key: 'name', label: t('orders.table.name') },
-    { key: 'due', label: t('orders.table.due') },
-    { key: 'priority', label: t('orders.modal.priority'), descFirst: true },
-    { key: 'customer', label: t('orders.table.customer') },
-    { key: 'progress', label: t('orders.table.progress'), descFirst: true },
-    { key: 'remaining', label: t('orders.table.remaining'), descFirst: true },
-    { key: 'printing', label: t('orders.table.printing'), descFirst: true },
-    { key: 'queued', label: t('orders.table.queued'), descFirst: true },
-    { key: 'ready', label: t('orders.table.readyAt') },
-    { key: 'hours', label: t('orders.table.machineHours'), descFirst: true },
-  ];
 }
 
 /** The status tabs; the counts are the server's `totals`, never the rows on screen. */

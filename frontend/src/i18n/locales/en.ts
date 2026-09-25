@@ -5775,9 +5775,15 @@ export default {
     page: {
       orders: 'Orders',
       newOrder: 'New order for this customer',
-      printedOfOrdered: 'Printed of ordered',
-      totalCost: 'Total cost',
-      totalPrice: 'Total price',
+      tiles: {
+        orders: 'Orders',
+        ordersSub: 'active: {{active}} · completed: {{completed}} · cancelled: {{cancelled}}',
+        money: 'Total / cost',
+        moneySub: 'print cost {{cost}}',
+        covered: 'Covered of ordered',
+        coveredSub: 'printed: {{printed}}',
+        nothingOrdered: 'nothing ordered',
+      },
       notFound: 'Customer not found',
       loadFailed: 'Could not load this customer:',
     },

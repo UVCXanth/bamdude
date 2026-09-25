@@ -11,13 +11,9 @@ import { ProjectsTabs } from '../../components/projects/ProjectsTabs';
 import { OrderModal } from '../../components/projects/OrderModal';
 import { FilamentStrip } from '../../components/projects/FilamentStrip';
 import { OrdersTiles } from '../../components/projects/OrdersTiles';
-import {
-  ORDER_TABS,
-  ORDERS_DEFAULT_SORT,
-  OrderStatusTabs,
-  OrdersListView,
-  useOrderSortOptions,
-} from '../../components/projects/OrdersListView';
+import { OrderStatusTabs, OrdersListView } from '../../components/projects/OrdersListView';
+import { ORDER_TABS, ORDERS_DEFAULT_SORT } from '../../components/projects/orderList';
+import { useOrderSortOptions } from '../../hooks/useOrderSortOptions';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
 import { Select } from '../../components/Select';

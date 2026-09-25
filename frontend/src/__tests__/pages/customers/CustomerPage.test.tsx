@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
-import { Routes, Route } from 'react-router';
+import { Link, Routes, Route } from 'react-router';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
@@ -25,6 +25,7 @@ const customer = {
     cancelled: 0,
     ordered: 12,
     printed: 7,
+    covered_units: 9,
     total_cost: 30.5,
     total_price: 200,
   },
@@ -49,12 +50,27 @@ const orders = [
   },
 ];
 
+/** The paged envelope the page reads: tab counts are the server's `totals`. */
+const ordersPage = {
+  items: orders,
+  meta: { total: 1, current_page: 1, per_page: 24, last_page: 1 },
+  totals: { active: 1, completed: 3, cancelled: 0, all: 4 },
+};
+const emptyPage = {
+  items: [],
+  meta: { total: 0, current_page: 1, per_page: 24, last_page: 1 },
+  totals: { active: 0, completed: 0, cancelled: 0, all: 0 },
+};
+
 function mountAt() {
   window.history.pushState({}, '', '/customers/1');
   render(
-    <Routes>
-      <Route path="/customers/:id" element={<CustomerPage />} />
-    </Routes>,
+    <>
+      <Link to="/customers/2">next customer</Link>
+      <Routes>
+        <Route path="/customers/:id" element={<CustomerPage />} />
+      </Routes>
+    </>,
   );
 }
 
@@ -65,24 +81,68 @@ afterEach(() => {
 describe('CustomerPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    localStorage.clear();
   });
 
-  it("shows the full figures and the customer's orders", async () => {
+  it("shows three tiles and one server page of the customer's orders", async () => {
     vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
-    const getOrders = vi.spyOn(api, 'getOrders').mockResolvedValue(orders as never);
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
 
     mountAt();
 
     expect(await screen.findByText('Flasks')).toBeInTheDocument();
-    expect(getOrders).toHaveBeenCalledWith({ customer_id: 1 });
-    // printed / ordered from the detail figures, rendered by ProgressBar — never recomputed here
-    expect(screen.getByText('7 / 12')).toBeInTheDocument();
+    expect(get).toHaveBeenLastCalledWith({ customer_id: 1, status: 'active', sort_by: 'updated-desc', page: 1, per_page: 24 });
+    // Tab counts are the server's totals, not the rows on this page.
+    expect(screen.getByRole('tab', { name: /completed/i }).textContent).toContain('3');
+    expect(screen.getByTestId('customer-tile-orders')).toHaveTextContent('2');
+    // covered / ordered from the detail figures — drawn by ProgressBar, never recomputed.
+    expect(screen.getByText('9 / 12')).toBeInTheDocument();
+    expect(screen.getByTestId('customer-tile-covered')).toHaveTextContent('printed: 7');
     expect(screen.getByText('VIP')).toBeInTheDocument();
+  });
+
+  it('keeps tab and page in the URL', async () => {
+    vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
+    mountAt();
+    fireEvent.click(await screen.findByRole('tab', { name: /completed/i }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'completed', page: 1 })));
+    expect(window.location.search).toContain('tab=completed');
+  });
+
+  it('says «nothing ordered» instead of an empty covered tile', async () => {
+    vi.spyOn(api, 'getCustomer').mockResolvedValue({
+      ...customer,
+      figures: { ...customer.figures, ordered: 0, covered_units: 0 },
+    } as never);
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
+    mountAt();
+    expect(await screen.findByTestId('customer-tile-covered')).toHaveTextContent('nothing ordered');
+  });
+
+  it("never shows the previous customer's orders while the next customer's load", async () => {
+    vi.spyOn(api, 'getCustomer').mockImplementation(
+      async (id: number) => ({ ...customer, id, name: id === 1 ? 'ACME' : 'Beta' }) as never,
+    );
+    let release: (value: never) => void = () => {};
+    vi.spyOn(api, 'getOrdersPaged').mockImplementation((params) =>
+      params.customer_id === 1
+        ? Promise.resolve(ordersPage as never)
+        : new Promise<never>((resolve) => {
+            release = resolve;
+          }),
+    );
+    mountAt();
+    expect(await screen.findByText('Flasks')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('link', { name: 'next customer' }));
+    expect(await screen.findByRole('heading', { name: 'Beta' })).toBeInTheDocument();
+    expect(screen.queryByText('Flasks')).not.toBeInTheDocument();
+    release(emptyPage as never);
   });
 
   it('names the error when there is no customer to fall back on', async () => {
     vi.spyOn(api, 'getCustomer').mockRejectedValue(new Error('Gateway timeout'));
-    vi.spyOn(api, 'getOrders').mockResolvedValue([] as never);
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(emptyPage as never);
 
     mountAt();
 
@@ -100,7 +160,7 @@ describe('CustomerPage', () => {
       .spyOn(api, 'getCustomer')
       .mockResolvedValueOnce(customer as never)
       .mockRejectedValue(new Error('Gateway timeout'));
-    vi.spyOn(api, 'getOrders').mockResolvedValue(orders as never);
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
     vi.spyOn(api, 'updateOrder').mockResolvedValue({ ...orders[0], status: 'completed' } as never);
 
     mountAt();
@@ -108,7 +168,7 @@ describe('CustomerPage', () => {
     expect(await screen.findByRole('heading', { name: 'ACME' })).toBeInTheDocument();
 
     // Marking the order completed invalidates ['customer', id]; that refetch fails.
-    fireEvent.click(screen.getByRole('button', { name: /actions/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /actions/i }));
     fireEvent.click(await screen.findByText(/mark completed/i));
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
 
@@ -124,7 +184,7 @@ describe('CustomerPage', () => {
     vi.spyOn(api, 'getCustomer')
       .mockResolvedValueOnce(customer as never)
       .mockRejectedValue(new Error('Gateway timeout'));
-    vi.spyOn(api, 'getOrders').mockResolvedValue(orders as never);
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
     vi.spyOn(api, 'updateOrder').mockResolvedValue({ ...orders[0], status: 'completed' } as never);
 
     window.history.pushState({}, '', '/customers/1');
@@ -137,7 +197,7 @@ describe('CustomerPage', () => {
     );
 
     expect(await screen.findByRole('heading', { name: 'ACME' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /actions/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /actions/i }));
     fireEvent.click(await screen.findByText(/mark completed/i));
 
     expect(await screen.findByText(/could not refresh/i)).toBeInTheDocument();
@@ -148,7 +208,7 @@ describe('CustomerPage', () => {
   it('forgets the deleted customer, so a Back inside staleTime cannot render it', async () => {
     const client = createAppQueryClient();
     const get = vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
-    vi.spyOn(api, 'getOrders').mockResolvedValue(orders as never);
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
     vi.spyOn(api, 'deleteCustomer').mockResolvedValue(undefined as never);
 
     window.history.pushState({}, '', '/customers/1');
