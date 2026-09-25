@@ -57,4 +57,8 @@ export function listViewParser<V extends string>(modes: readonly V[]): (raw: str
   return (raw) => ((modes as readonly string[]).includes(raw) ? (raw as V) : undefined);
 }
 
-export const parseListView = listViewParser<ListView>(['cards', 'table']);
+/** The one list of the cards/table modes: the parser and `useCardsTableViews` both read it, so a
+ *  mode added to the switch can never be dropped by the stored-choice parser. */
+export const CARDS_TABLE_MODES: readonly ListView[] = ['cards', 'table'];
+
+export const parseListView = listViewParser<ListView>(CARDS_TABLE_MODES);

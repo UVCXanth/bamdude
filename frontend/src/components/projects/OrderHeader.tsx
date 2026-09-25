@@ -92,7 +92,7 @@ export function OrderHeader({
         <div className="min-w-0 space-y-2">
           <h1 className="text-2xl font-semibold text-white">{order.name}</h1>
           {/* The description was stored and edited but shown nowhere (spec workshop-lists, rule 17). */}
-          {order.description && (
+          {order.description?.trim() && (
             <p data-testid="order-description" className="text-sm text-bambu-gray whitespace-pre-line">
               {order.description}
             </p>

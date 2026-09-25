@@ -5372,7 +5372,7 @@ export default {
       noCustomer: 'No customer',
       customerFilterAll: 'All customers',
       groupByCustomer: 'Group by customer',
-      searchPlaceholder: 'Search orders or customers…',
+      searchPlaceholder: 'Search orders, customers or tags…',
       items_one: 'order',
       items_other: 'orders',
       empty: {

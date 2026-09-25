@@ -21,6 +21,7 @@ interface StatTileProps {
   /** A second server number, drawn smaller after a slash — «printing / queued». */
   suffix?: ReactNode;
   sub?: ReactNode;
+  /** `warn` — the theme's warning token (`text-status-warning`), readable in both themes. */
   tone?: 'warn';
   /** The request failed and there is nothing to show: a dash, never «…» forever. */
   failed?: boolean;
@@ -44,7 +45,7 @@ export function StatTile({ label, value, suffix, sub, tone, failed, children, te
           {failed ? '—' : '…'}
         </p>
       ) : value !== undefined ? (
-        <p className={`text-2xl font-semibold tabular-nums ${tone === 'warn' ? 'text-amber-300' : 'text-white'}`}>
+        <p className={`text-2xl font-semibold tabular-nums ${tone === 'warn' ? 'text-status-warning' : 'text-white'}`}>
           {value}
           {suffix != null && <span className="text-base font-normal text-bambu-gray"> / {suffix}</span>}
         </p>

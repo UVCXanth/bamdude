@@ -942,3 +942,13 @@ async def test_grouped_figures_carry_the_close_banners_verdict(db_session):
     orders = {o.project_id: o for o in await grouped_figures(db_session, project_ids=[ids["live"], ids["dead"]])}
     assert orders[ids["live"]].all_printed is True
     assert orders[ids["dead"]].all_printed is False
+
+
+async def test_an_order_without_lines_is_never_all_printed(db_session):
+    """«Fully covered» counts ``all_printed``; an active order with no lines has
+    nothing covered yet and must not count as done (``bool(line_figures) and …``)."""
+    order = Project(name="empty", status="active")
+    db_session.add(order)
+    await db_session.commit()
+    [figures] = await grouped_figures(db_session, project_ids=[order.id])
+    assert figures.all_printed is False

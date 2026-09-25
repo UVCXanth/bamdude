@@ -17,6 +17,10 @@ describe('StatTile', () => {
     expect(screen.getByTestId('t')).toHaveTextContent('3 / 7');
     expect(screen.getByText('prints now')).toBeInTheDocument();
   });
+  it('draws the warning tone with the theme token, readable in both themes', () => {
+    render(<StatTile testId="t" label="Incomplete kits" value={2} tone="warn" />);
+    expect(screen.getByText('2')).toHaveClass('text-status-warning');
+  });
   it('draws its children instead of a number', () => {
     render(
       <StatTile testId="t" label="Covered">

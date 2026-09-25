@@ -213,12 +213,20 @@ async def test_page_gives_the_envelope_with_reserved_kits(committing_client, db_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", ["kits", "name", "reserved"])
-async def test_every_stock_key_orders_both_ways_and_keeps_the_set(committing_client, db_session, key):
-    # Alpha 1/1 reserves 1 (kits 0), Bravo 3/3 reserves 2 (kits 1), Charlie 5/5
-    # reserves nothing (kits 5): three distinct values for every key.
+@pytest.mark.parametrize(
+    ("key", "ascending"),
+    [
+        ("kits", ["Charlie", "Alpha", "Bravo"]),
+        ("name", ["Alpha", "Bravo", "Charlie"]),
+        ("reserved", ["Bravo", "Charlie", "Alpha"]),
+    ],
+)
+async def test_every_stock_key_orders_both_ways_and_keeps_the_set(committing_client, db_session, key, ascending):
+    # Charlie 1/1 reserves 1 (kits 0), Alpha 3/3 reserves 2 (kits 1), Bravo 5/5
+    # reserves nothing (kits 5): each key orders the three differently, so a key
+    # wired to the wrong figure cannot pass.
     names = []
-    for i, name in enumerate(("Alpha", "Bravo", "Charlie")):
+    for i, name in enumerate(("Charlie", "Alpha", "Bravo")):
         pid, _ = await _lamp_with_stock(committing_client, db_session, name=name, lids=1 + i * 2, bases=1 + i * 2)
         if i < 2:
             line = await _order_with_line(db_session, pid, name=f"order-{name}")
@@ -232,7 +240,8 @@ async def test_every_stock_key_orders_both_ways_and_keeps_the_set(committing_cli
         p["name"] for p in (await committing_client.get(f"/api/v1/stock?page=1&sort_by={key}-desc")).json()["items"]
     ]
     assert sorted(asc) == sorted(names)
-    assert asc == list(reversed(desc))
+    assert asc == ascending
+    assert desc == list(reversed(ascending))
 
 
 @pytest.mark.asyncio

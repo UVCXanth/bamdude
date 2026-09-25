@@ -291,7 +291,7 @@ async def list_projects(
     status: str | None = None,
     customer_id: int | None = None,
     product_id: int | None = None,
-    q: str | None = Query(None, description="With page set: ilike on the order name or its customer's name"),
+    q: str | None = Query(None, description="With page set: ilike on the order name, its customer's name or its tags"),
     sort_by: str | None = Query(
         None, description="With page set: '<key>-<asc|desc>'; unknown → updated-desc; ready/hours run the forecast"
     ),

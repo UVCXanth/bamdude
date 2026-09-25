@@ -51,6 +51,12 @@ describe('OrdersPage', () => {
     expect(screen.getByTestId('orders-tile-covered')).toHaveTextContent('1');
     expect(api.getOrdersSummary).toHaveBeenCalledWith();
   });
+  it('says the search also looks in tags', async () => {
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    window.history.pushState({}, '', '/projects');
+    render(<OrdersPage />);
+    expect(await screen.findByRole('searchbox')).toHaveAttribute('placeholder', expect.stringMatching(/tag/i));
+  });
   it('puts the view switch in the page header, beside the title', async () => {
     vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
     window.history.pushState({}, '', '/projects');

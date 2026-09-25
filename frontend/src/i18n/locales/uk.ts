@@ -5399,7 +5399,7 @@ export default {
       noCustomer: 'Без замовника',
       customerFilterAll: 'Усі замовники',
       groupByCustomer: 'Групувати за замовником',
-      searchPlaceholder: 'Пошук замовлень або замовників…',
+      searchPlaceholder: 'Пошук замовлень, замовників або тегів…',
       items_one: 'замовлення',
       items_few: 'замовлення',
       items_many: 'замовлень',

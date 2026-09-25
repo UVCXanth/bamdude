@@ -143,4 +143,9 @@ describe('OrderHeader · description', () => {
     mount({ ...orderWith(0), description: null } as Order);
     expect(screen.queryByTestId('order-description')).not.toBeInTheDocument();
   });
+
+  it('draws nothing for a description of blanks', () => {
+    mount({ ...orderWith(0), description: '  \n ' } as Order);
+    expect(screen.queryByTestId('order-description')).not.toBeInTheDocument();
+  });
 });
