@@ -124,3 +124,23 @@ describe('OrderHeader · bank the surplus', () => {
     expect(screen.queryByTestId('order-bank-surplus')).not.toBeInTheDocument();
   });
 });
+
+describe('OrderHeader · description', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    auth.granted = null;
+    vi.spyOn(api, 'getSettings').mockResolvedValue({ currency: 'USD' } as never);
+  });
+
+  it('shows the description under the title, keeping its line breaks', () => {
+    mount({ ...orderWith(0), description: 'Line one\nLine two' } as Order);
+    const text = screen.getByTestId('order-description');
+    expect(text).toHaveTextContent('Line one Line two');
+    expect(text).toHaveClass('whitespace-pre-line');
+  });
+
+  it('draws nothing for an empty description', () => {
+    mount({ ...orderWith(0), description: null } as Order);
+    expect(screen.queryByTestId('order-description')).not.toBeInTheDocument();
+  });
+});

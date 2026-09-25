@@ -91,6 +91,12 @@ export function OrderHeader({
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0 space-y-2">
           <h1 className="text-2xl font-semibold text-white">{order.name}</h1>
+          {/* The description was stored and edited but shown nowhere (spec workshop-lists, rule 17). */}
+          {order.description && (
+            <p data-testid="order-description" className="text-sm text-bambu-gray whitespace-pre-line">
+              {order.description}
+            </p>
+          )}
 
           <div className="flex items-center gap-2 flex-wrap text-sm">
             {order.customer_id != null ? (
