@@ -2565,14 +2565,28 @@ export interface StockProduct {
   reservations: StockReservation[];
 }
 
-export interface StockSummary {
-  products: StockProduct[];
+/** A row of the paged shelf list: the flat row plus its reservations' sum, counted by the server. */
+export interface StockListItem extends StockProduct {
+  reserved_kits: number;
 }
 
-export interface StockSummaryParams {
-  q?: string;
+export interface StockListPage {
+  items: StockListItem[];
+  meta: PaginationMeta;
+}
+
+export interface StockListParams extends PagedListParams {
   /** Server default is true; send `false` to include empty shelves. */
   with_stock?: boolean;
+}
+
+/** `GET /stock/figures` — the whole shelf, never the list's filters. */
+export interface StockFigures {
+  kits: number;
+  kit_products: number;
+  parts: number;
+  reserved_kits: number;
+  incomplete: number;
 }
 
 /** A ledger row as the farm journal shows it — the product page's row plus
@@ -11037,15 +11051,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  /** The Stock tab's summary: every product with a shelf, its kits, balances
-   *  and the active orders holding its kits. */
-  getStockSummary: (params: StockSummaryParams = {}) => {
-    const search = new URLSearchParams();
-    if (params.q) search.set('q', params.q);
-    if (params.with_stock === false) search.set('with_stock', 'false');
-    const qs = search.toString();
-    return request<StockSummary>(`/stock${qs ? `?${qs}` : ''}`);
+  /** The Stock tab's list — one page of the products with a shelf, their kits,
+   *  balances and the active orders holding their kits, sorted and filtered on
+   *  the server. */
+  getStockPaged: (params: StockListParams) => {
+    const qs = new URLSearchParams();
+    if (params.with_stock === false) qs.set('with_stock', 'false');
+    return request<StockListPage>(`/stock?${pagedSearchParams(qs, params)}`);
   },
+  /** The Stock tab's tiles — the whole shelf, whatever the list is filtered by. */
+  getStockFigures: () => request<StockFigures>('/stock/figures'),
   /** One keyset page of the farm journal, newest first. */
   getStockMovements: (params: StockMovementsParams = {}) => {
     const search = new URLSearchParams();

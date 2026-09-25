@@ -1,15 +1,22 @@
 import { Fragment, useState } from 'react';
+import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import type { StockProduct } from '../../api/client';
+import type { StockListItem } from '../../api/client';
 import { Button } from '../Button';
+import { SortableHeader } from '../SortableHeader';
 
 interface StockProductsTableProps {
-  products: StockProduct[];
+  products: StockListItem[];
   /** `projects:update`, read once by the page. */
   canEdit: boolean;
-  onAdjust: (product: StockProduct) => void;
+  onAdjust: (product: StockListItem) => void;
+  /** The list's `sort_by`; the headers ask the SERVER to sort. */
+  sort: string;
+  onSortChange: (sortBy: string) => void;
+  /** The page bar, drawn inside the same card under the rows. */
+  footer?: ReactNode;
 }
 
 /**
@@ -18,10 +25,12 @@ interface StockProductsTableProps {
  *
  * Every number is the server's — `kits_available` is the ledger's `min` over
  * the counted parts, never recomputed from `parts` here (the two would drift
- * the first time a part stopped counting). Expansion is per row and local:
- * nothing about which rows are open is worth a URL or storage.
+ * the first time a part stopped counting), and `reserved_kits` is the server's
+ * sum of the reservations. The rows are one page of many, so the headers sort
+ * on the server (spec workshop-lists, rules 13, 20). Expansion is per row and
+ * local: nothing about which rows are open is worth a URL or storage.
  */
-export function StockProductsTable({ products, canEdit, onAdjust }: StockProductsTableProps) {
+export function StockProductsTable({ products, canEdit, onAdjust, sort, onSortChange, footer }: StockProductsTableProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState<Set<number>>(() => new Set());
 
@@ -39,8 +48,9 @@ export function StockProductsTable({ products, canEdit, onAdjust }: StockProduct
         <thead>
           <tr className="text-xs text-bambu-gray text-left">
             <th className="font-normal p-2 w-8" />
-            <th className="font-normal p-2">{t('stock.page.product')}</th>
-            <th className="font-normal p-2">{t('stock.page.kits')}</th>
+            <SortableHeader sortKey="name" label={t('stock.page.product')} sort={sort} onSort={onSortChange} />
+            <SortableHeader sortKey="kits" label={t('stock.page.kits')} sort={sort} onSort={onSortChange} descFirst />
+            <SortableHeader sortKey="reserved" label={t('stock.page.reserved')} sort={sort} onSort={onSortChange} descFirst />
             <th className="font-normal p-2">{t('stock.page.partsColumn')}</th>
             <th className="font-normal p-2" />
           </tr>
@@ -72,6 +82,9 @@ export function StockProductsTable({ products, canEdit, onAdjust }: StockProduct
                   <td className="p-2 tabular-nums font-medium" data-testid={`stock-kits-${p.id}`}>
                     {p.kits_available}
                   </td>
+                  <td className="p-2 tabular-nums" data-testid={`stock-reserved-${p.id}`}>
+                    {p.reserved_kits}
+                  </td>
                   <td className="p-2 text-bambu-gray">{t('stock.page.partsCount', { count: p.parts.length })}</td>
                   <td className="p-2 text-right">
                     {canEdit && (
@@ -84,7 +97,7 @@ export function StockProductsTable({ products, canEdit, onAdjust }: StockProduct
                 {expanded && (
                   <tr className="border-t border-bambu-dark-tertiary" data-testid={`stock-details-${p.id}`}>
                     <td />
-                    <td colSpan={4} className="p-2 pb-4">
+                    <td colSpan={5} className="p-2 pb-4">
                       <table className="w-full max-w-lg text-sm mb-3">
                         <thead>
                           <tr className="text-xs text-bambu-gray text-left">
@@ -126,6 +139,7 @@ export function StockProductsTable({ products, canEdit, onAdjust }: StockProduct
           })}
         </tbody>
       </table>
+      {footer}
     </div>
   );
 }

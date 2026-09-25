@@ -6085,6 +6085,16 @@ export default {
   // can exist. A note that is not one of the seven is the operator's own words
   // and is printed verbatim.
   stock: {
+    tiles: {
+      kits: 'Kits on the shelf',
+      kitsSub: 'products with kits: {{count}}',
+      parts: 'Parts on the shelf',
+      partsSub: 'free, outside reservations',
+      reserved: 'Reserved',
+      reservedSub: 'kits held by active orders',
+      incomplete: 'Incomplete kits',
+      incompleteSub: 'parts on the shelf, no whole kit',
+    },
     title: 'Free stock',
     kits_one: '{{count}} kit',
     kits_other: '{{count}} kits',
@@ -6169,6 +6179,9 @@ export default {
       product: 'Product',
       kits: 'Kits',
       partsColumn: 'Parts',
+      reserved: 'Reserved',
+      items_one: 'product',
+      items_other: 'products',
       partsCount_one: '{{count}} part',
       partsCount_other: '{{count}} parts',
       expand: 'Show parts',

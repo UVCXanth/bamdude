@@ -6161,6 +6161,16 @@ export default {
   // пише токени, а не речення, саме щоб ці підписи могли існувати. Примітка,
   // якої немає серед семи, — це слова оператора, і її показують як є.
   stock: {
+    tiles: {
+      kits: 'Комплектів на полиці',
+      kitsSub: 'виробів із комплектами: {{count}}',
+      parts: 'Деталей на полиці',
+      partsSub: 'вільних, поза резервом',
+      reserved: 'У резерві',
+      reservedSub: 'комплектів під активні замовлення',
+      incomplete: 'Неповні комплекти',
+      incompleteSub: 'деталі є, комплекту немає',
+    },
     title: 'Вільний залишок',
     kits_one: '{{count}} комплект',
     kits_few: '{{count}} комплекти',
@@ -6251,6 +6261,11 @@ export default {
       product: 'Виріб',
       kits: 'Комплекти',
       partsColumn: 'Деталі',
+      reserved: 'У резерві',
+      items_one: 'виріб',
+      items_few: 'вироби',
+      items_many: 'виробів',
+      items_other: 'виробу',
       partsCount_one: '{{count}} деталь',
       partsCount_few: '{{count}} деталі',
       partsCount_many: '{{count}} деталей',
