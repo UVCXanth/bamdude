@@ -8,7 +8,6 @@ import { Button } from '../../components/Button';
 import { ListPageHeader } from '../../components/ListPageHeader';
 import { ListSearchBox } from '../../components/ListSearchBox';
 import { PaginationBar } from '../../components/PaginationBar';
-import { ProjectsTabs } from '../../components/projects/ProjectsTabs';
 import { AdjustStockDialog } from '../../components/products/AdjustStockDialog';
 import { StockJournal } from '../../components/stock/StockJournal';
 import { StockProductsTable } from '../../components/stock/StockProductsTable';
@@ -64,8 +63,6 @@ export function StockPage() {
 
   return (
     <div className="p-4">
-      <ProjectsTabs />
-
       <ListPageHeader
         title={t('stock.page.title')}
         subtitle={t('stock.page.intro')}

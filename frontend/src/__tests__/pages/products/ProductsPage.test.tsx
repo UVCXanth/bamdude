@@ -44,6 +44,13 @@ describe('ProductsPage', () => {
     expect(within(header).getByRole('heading', { level: 1 })).toBeInTheDocument();
   });
 
+  it('draws no section tabs — the sidebar carries them', async () => {
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
+    render(<ProductsPage />);
+    await screen.findByTestId('list-page-header');
+    expect(screen.queryByRole('navigation', { name: 'Projects' })).not.toBeInTheDocument();
+  });
+
   it('falls back to the default view when the stored one is not a mode', async () => {
     localStorage.setItem('bamdude-products-view', 'kanban');
     vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));

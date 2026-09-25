@@ -7,7 +7,6 @@ import { api } from '../../api/client';
 import type { Product, ProductListItem } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
-import { ProjectsTabs } from '../../components/projects/ProjectsTabs';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
 import { ProductCard } from '../../components/products/ProductCard';
 import { ProductsTable } from '../../components/products/ProductsTable';
@@ -165,8 +164,6 @@ export function ProductsPage() {
 
   return (
     <div className="p-4">
-      <ProjectsTabs />
-
       <ListPageHeader title={t('products.list.title')} subtitle={t('products.list.subtitle')}>
         <ListViewToggle value={view} options={views} onChange={setView} />
         {hasPermission('projects:create') && (

@@ -7,7 +7,6 @@ import { api } from '../../api/client';
 import type { OrderListItem, ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
-import { ProjectsTabs } from '../../components/projects/ProjectsTabs';
 import { OrderModal } from '../../components/projects/OrderModal';
 import { FilamentStrip } from '../../components/projects/FilamentStrip';
 import { OrdersTiles } from '../../components/projects/OrdersTiles';
@@ -153,8 +152,6 @@ export function OrdersPage() {
 
   return (
     <div className="p-4">
-      <ProjectsTabs />
-
       <ListPageHeader title={t('orders.list.title')} subtitle={t('orders.list.subtitle')}>
         <ListViewToggle value={view} options={views} onChange={setView} />
         {hasPermission('projects:create') && (

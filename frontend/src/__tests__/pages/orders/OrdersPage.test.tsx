@@ -1,7 +1,7 @@
 /**
  * `render` from `__tests__/utils` wraps in a BrowserRouter with no route
- * option — route-aware tests set the URL with pushState first, the way
- * `ProjectsTabs.test.tsx` does.
+ * option — route-aware tests set the URL with pushState first, as the other
+ * page tests do.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -64,6 +64,14 @@ describe('OrdersPage', () => {
     const header = await screen.findByTestId('list-page-header');
     expect(within(header).getByRole('group', { name: 'View' })).toBeInTheDocument();
     expect(within(header).getByRole('heading', { level: 1 })).toBeInTheDocument();
+  });
+
+  it('draws no section tabs — the sidebar carries them', async () => {
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    window.history.pushState({}, '', '/projects');
+    render(<OrdersPage />);
+    await screen.findByTestId('list-page-header');
+    expect(screen.queryByRole('navigation', { name: 'Projects' })).not.toBeInTheDocument();
   });
   it('falls back to the default view when the stored one is not a mode', async () => {
     localStorage.setItem('projects.view', 'kanban');

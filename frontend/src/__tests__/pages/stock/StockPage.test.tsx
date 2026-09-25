@@ -73,6 +73,12 @@ describe('StockPage', () => {
     expect(getPage).toHaveBeenLastCalledWith({ sort_by: 'kits-desc', page: 1, per_page: 24 });
   });
 
+  it('draws no section tabs — the sidebar carries them', async () => {
+    render(<StockPage />);
+    await screen.findByTestId('list-page-header');
+    expect(screen.queryByRole('navigation', { name: 'Projects' })).not.toBeInTheDocument();
+  });
+
   it('re-queries when the toggle and the search change, keeping both in the URL', async () => {
     render(<StockPage />);
     await screen.findByTestId('stock-row-1');

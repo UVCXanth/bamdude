@@ -6,7 +6,6 @@ import { api } from '../../api/client';
 import type { Customer } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
-import { ProjectsTabs } from '../../components/projects/ProjectsTabs';
 import { CustomersTable } from '../../components/customers/CustomersTable';
 import { CustomerCard } from '../../components/customers/CustomerCard';
 import { CustomerModal } from '../../components/customers/CustomerModal';
@@ -114,8 +113,6 @@ export function CustomersPage() {
 
   return (
     <div className="p-4">
-      <ProjectsTabs />
-
       <ListPageHeader title={t('customers.list.title')} subtitle={t('customers.list.subtitle')}>
         <ListViewToggle value={view} options={views} onChange={setView} />
         {hasPermission('projects:create') && (
