@@ -17,6 +17,11 @@
 
 ### Changed
 
+- **The Projects lists share one frame.** The cards/table switch of the orders,
+  products and customers lists moved from the filter bar into the page header,
+  beside the create button, and shows an icon — its label hides on a narrow
+  screen. Every list page carries a one-line explanation under its title, and
+  the search box of every list is the same one.
 - **New API keys start with `bd_`.** The `bb_` they used to start with came
   from Bambuddy, the project BamDude grew out of. Keys you already have keep
   working exactly as before — through `X-API-Key` and through
@@ -25,6 +30,31 @@
 
 ### Added
 
+- **Summary tiles above the orders, customers and stock lists.** They sum up
+  the whole farm, whatever the list below is filtered by. For orders: active
+  orders with how many are overdue and urgent, prints running and jobs waiting,
+  units still to cover, and orders fully covered and waiting to be checked and
+  closed. For customers: how many there are, how many have work in progress,
+  the orders in work and the order total. For the stock: kits and parts on the
+  shelf, kits held by active orders, and products whose parts on the shelf do
+  not make a whole kit. The customer page opens with three tiles — orders,
+  total and print cost, and how much of what was ordered is covered.
+- **The orders table sorts the whole list by «Ready ≈» and by machine hours.**
+  Before, these two columns only reordered the page on screen; now the server
+  runs the farm forecast once for the active orders under the filter and pages
+  the result. Closed orders and orders without an estimate go last. The same
+  two keys are in the cards' sort control.
+- **The stock list works like the other lists.** It comes one page at a time,
+  sorts from its headers by product, kits or the new «Reserved» column, and
+  keeps its search, the «only with stock» switch, the sort and the page in the
+  address, so a reload or a shared link returns to the same place.
+- **The customer page shows its orders one page at a time** with the same
+  cards/table views, sorting and page bar as the orders list; the tab counts
+  come from the server instead of the orders loaded on screen.
+- **Smaller list conveniences.** Customers can be filtered to those with active
+  orders. Order search also finds an order by its tags. `/` focuses the search
+  of any Projects list, and the keyboard help lists it. An order's description
+  is shown under its title on the order page.
 - **Lighter farm monitoring in the browser.** The queue badge reads compact
   counts instead of every queued job, and shows `!` rather than a false zero when
   a count cannot be read. Queue and Printers cards share one set of active queue
@@ -132,6 +162,15 @@
 
 ### Fixed
 
+- **A customer's order total no longer counts cancelled orders** — in the
+  customers list and its «Total» sort, on the customer page and in the tiles. A
+  cancelled order is not revenue. On the customer page «covered of ordered»
+  leaves cancelled orders out as well; the print cost still counts every
+  order, because those prints were paid for.
+- **The orders table no longer marks an order overdue on the morning of its due
+  date.** It compared the deadline with the current minute; the cards compared
+  it with the start of today. Both now use the card's rule, and so does the
+  «overdue» count on the orders tile.
 - **With a Filament Track Switch, each AMS is badged with the switch inlet it
   feeds, not a made-up nozzle.** Behind the switch an AMS reaches both
   nozzles, so the printer reports no nozzle for it, and the card fell back to
