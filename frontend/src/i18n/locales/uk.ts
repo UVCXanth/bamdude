@@ -5409,7 +5409,6 @@ export default {
       due: 'Дедлайн',
       readyAt: 'Готово',
       machineHours: 'Маш.-год',
-      forecastSortHint: 'Сортує лише цю сторінку — прогноз довідковий і не є порядком списку',
     },
     card: {
       lines_one: '{{count}} позиція',

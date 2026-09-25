@@ -5380,7 +5380,6 @@ export default {
       due: 'Due',
       readyAt: 'Ready',
       machineHours: 'Machine h',
-      forecastSortHint: 'Sorted within this page — forecasts are advisory and not part of the list order',
     },
     card: {
       lines_one: '{{count}} line',

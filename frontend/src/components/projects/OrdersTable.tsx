@@ -1,55 +1,42 @@
-import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import type { OrderForecast, OrderListItem } from '../../api/client';
+import { SortableHeader } from '../SortableHeader';
 import { ProgressBar } from './ProgressBar';
 import { StatusBadge } from './StatusBadge';
 import { ForecastHint } from './ForecastHint';
 import { etaFull, etaShort, hoursMinutes } from '../../utils/forecast';
-
-type SortKey = 'name' | 'customer' | 'due' | 'progress' | 'remaining' | 'printing' | 'queued' | 'ready' | 'hours';
-
-/** A fresh click on one of these sorts most-first; `name` and `due` sort
- *  ascending instead — A→Z, soonest due first. `ready` joins them (soonest
- *  ETA first); only `hours` (machine time left) sorts most-first. */
-const DESC_FIRST: ReadonlySet<SortKey> = new Set(['printing', 'queued', 'remaining', 'progress', 'hours']);
-
-/** Columns the SERVER can order the whole list by (spec projects-lists-parity,
- *  rule 5) — the same names as its `sort_by` keys. The two forecast columns
- *  are not among them: the forecast is a separate advisory batch over the rows
- *  on screen, so those sort within the page only. */
-const SERVER_KEYS: ReadonlySet<SortKey> = new Set(['name', 'customer', 'due', 'progress', 'remaining', 'printing', 'queued']);
+import { isOverdue } from '../../utils/orderDates';
 
 /**
  * The orders list as a table — the farm's roll-up (spec 2026-09-06, Slice F).
  * Every number is the server's.  In particular, `remaining` is the sum of
  * per-line deficits, so production surplus for one product cannot mask a
- * shortage in another. Default order: due date, then name; a header click
- * sorts by that column and clicks again to flip.
+ * shortage in another.
  *
- * With `sort` + `onSortChange` the rows are ONE PAGE of a server-sorted list:
- * a click on a server column asks the server (`sort_by`) and the rows keep its
- * order; a click on a forecast column sorts this page only, and its header
- * says so in the tooltip. The customer column sorts only there — on the
- * server, whose order puts orders without a customer last. `footer` (the page
- * bar) is drawn inside the same card, under the rows.
+ * The rows are ONE PAGE of a server-sorted list, drawn in the order they came.
+ * Every sortable column asks the server (`sort_by`) — the two forecast columns
+ * included, which the server sorts by one simulation walk over the filtered
+ * active orders (spec workshop-lists, rule 14). A fresh click on a count sorts
+ * most-first; name, customer, due and «ready» start ascending. `footer` (the
+ * page bar) is drawn inside the same card, under the rows.
  */
 export function OrdersTable({
   orders,
   forecasts,
   forecastError,
-  sort: serverSort,
+  sort,
   onSortChange,
   footer,
 }: {
   orders: OrderListItem[];
   forecasts?: Record<number, OrderForecast>;
-  /** The list's `sort_by` (e.g. `updated-desc`) when the SERVER sorts it. */
-  sort?: string;
-  onSortChange?: (sortBy: string) => void;
+  /** The list's `sort_by`, e.g. `updated-desc`. */
+  sort: string;
+  onSortChange: (sortBy: string) => void;
   footer?: ReactNode;
   /** The batch fetch failed or was refused — three distinct states share these
    *  two cells, and only one of them is about the farm: «…» is still loading,
@@ -59,62 +46,9 @@ export function OrdersTable({
 }) {
   const { t } = useTranslation();
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
-  const paged = onSortChange != null;
-  // Paged: the rows arrive in the server's order, and only a forecast column
-  // re-sorts them locally. Unpaged: the table sorts everything itself, as before.
-  const [sort, setSort] = useState<{ key: SortKey; desc: boolean } | null>(paged ? null : { key: 'due', desc: false });
-  const [serverKey, serverDir] = (serverSort ?? '').split(/-(?=asc$|desc$)/);
-
-  const sorted = useMemo(() => {
-    if (!sort) return orders;
-    const value = (o: OrderListItem): string | number => {
-      switch (sort.key) {
-        case 'name': return o.name.toLowerCase();
-        // A server key — its header exists in paged mode only; listed for the switch.
-        case 'customer': return o.customer_name?.toLowerCase() ?? '';
-        case 'due': return o.due_date ? Date.parse(o.due_date) : Number.MAX_SAFE_INTEGER;
-        case 'progress': return o.progress;
-        case 'remaining': return o.remaining;
-        case 'printing': return o.prints_in_progress;
-        case 'queued': return o.prints_queued;
-        case 'ready': return forecasts?.[o.id]?.eta_complete && forecasts[o.id]?.now_eta ? Date.parse(forecasts[o.id].now_eta!) : Number.MAX_SAFE_INTEGER;
-        case 'hours': return forecasts?.[o.id]?.machine_seconds ?? -1;
-      }
-    };
-    return [...orders].sort((a, b) => {
-      const av = value(a), bv = value(b);
-      const cmp = av < bv ? -1 : av > bv ? 1 : 0;
-      return (sort.desc ? -cmp : cmp) || a.name.localeCompare(b.name);
-    });
-  }, [orders, sort, forecasts]);
-
-  const header = (key: SortKey, label: string) => {
-    const onServer = paged && SERVER_KEYS.has(key);
-    const active = onServer ? !sort && serverKey === key : sort?.key === key;
-    const desc = onServer ? serverDir === 'desc' : !!sort?.desc;
-    const click = () => {
-      if (onServer) {
-        const next = serverKey === key ? (serverDir === 'desc' ? 'asc' : 'desc') : DESC_FIRST.has(key) ? 'desc' : 'asc';
-        setSort(null);
-        onSortChange!(`${key}-${next}`);
-      } else {
-        setSort((s) => ({ key, desc: s?.key === key ? !s.desc : DESC_FIRST.has(key) }));
-      }
-    };
-    return (
-      <th className="font-normal p-2 text-left" aria-sort={active ? (desc ? 'descending' : 'ascending') : undefined}>
-        <button
-          type="button"
-          onClick={click}
-          title={paged && !onServer ? t('orders.table.forecastSortHint') : undefined}
-          className="hover:text-white"
-        >
-          {label}
-          {active && <span aria-hidden> {desc ? '▼' : '▲'}</span>}
-        </button>
-      </th>
-    );
-  };
+  const header = (key: string, label: string, descFirst = false) => (
+    <SortableHeader sortKey={key} label={label} sort={sort} onSort={onSortChange} descFirst={descFirst} />
+  );
 
   return (
     <div className="rounded-xl border border-bambu-dark-tertiary overflow-hidden">
@@ -123,24 +57,22 @@ export function OrdersTable({
           <thead className="text-xs text-bambu-gray bg-bambu-dark-secondary">
             <tr>
               {header('name', t('orders.table.name'))}
-              {paged ? header('customer', t('orders.table.customer')) : <th className="font-normal p-2 text-left">{t('orders.table.customer')}</th>}
+              {header('customer', t('orders.table.customer'))}
               <th className="font-normal p-2 text-left">{t('orders.table.status')}</th>
               <th className="font-normal p-2 text-right">{t('orders.table.ordered')}</th>
               <th className="font-normal p-2 text-right">{t('orders.table.printed')}</th>
               <th className="font-normal p-2 text-right">{t('orders.table.fromStock')}</th>
-              {header('printing', t('orders.table.printing'))}
-              {header('queued', t('orders.table.queued'))}
-              {header('remaining', t('orders.table.remaining'))}
-              {header('progress', t('orders.table.progress'))}
+              {header('printing', t('orders.table.printing'), true)}
+              {header('queued', t('orders.table.queued'), true)}
+              {header('remaining', t('orders.table.remaining'), true)}
+              {header('progress', t('orders.table.progress'), true)}
               {header('due', t('orders.table.due'))}
               {header('ready', t('orders.table.readyAt'))}
-              {header('hours', t('orders.table.machineHours'))}
+              {header('hours', t('orders.table.machineHours'), true)}
             </tr>
           </thead>
           <tbody>
-            {sorted.map((o) => {
-              const overdue = o.due_date != null && o.status === 'active' && Date.parse(o.due_date) < Date.now();
-              return (
+            {orders.map((o) => (
                 <tr key={o.id} className="border-t border-bambu-dark-tertiary text-white">
                   <td className="p-2"><Link to={`/projects/${o.id}`} className="hover:underline">{o.name}</Link></td>
                   <td className="p-2 text-bambu-gray">{o.customer_name ?? ''}</td>
@@ -152,7 +84,7 @@ export function OrdersTable({
                   <td className="p-2 text-right tabular-nums" data-testid={`order-${o.id}-queued`}>{o.prints_queued}</td>
                   <td className="p-2 text-right tabular-nums">{o.remaining}</td>
                   <td className="p-2 min-w-[8rem]"><ProgressBar value={o.covered_units} max={o.ordered} progress={o.progress} testId={`order-${o.id}-table-progress`} /></td>
-                  <td className={`p-2 text-xs ${overdue ? 'text-red-500' : 'text-bambu-gray'}`}>{o.due_date ? new Date(o.due_date).toLocaleDateString() : ''}</td>
+                  <td data-testid={`order-${o.id}-due`} className={`p-2 text-xs ${isOverdue(o) ? 'text-red-500' : 'text-bambu-gray'}`}>{o.due_date ? new Date(o.due_date).toLocaleDateString() : ''}</td>
                   <td className="p-2 text-xs whitespace-nowrap" data-testid={`order-${o.id}-ready`}>
                     {forecastError ? (
                       <span title={t('farmForecast.error')}>—</span>
@@ -191,8 +123,7 @@ export function OrdersTable({
                     )}
                   </td>
                 </tr>
-              );
-            })}
+            ))}
           </tbody>
         </table>
       </div>

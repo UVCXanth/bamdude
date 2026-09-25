@@ -4,6 +4,7 @@ import { Pencil, Copy, CheckCircle2, RotateCcw, Ban, Trash2, Package } from 'luc
 import { api } from '../../api/client';
 import type { OrderListItem, ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
+import { isOverdue } from '../../utils/orderDates';
 import { CardActionMenu, CardActionMenuItem } from '../CardActionMenu';
 import { StatusBadge } from './StatusBadge';
 import { PriorityBadge } from './PriorityBadge';
@@ -15,15 +16,6 @@ interface OrderCardProps {
   onDuplicate: (order: OrderListItem) => void;
   onSetStatus: (order: OrderListItem, status: ProjectStatus) => void;
   onDelete: (order: OrderListItem) => void;
-}
-
-/** `active` orders past their due date are the only ones flagged — a closed
- *  order's date is history, not a deadline it missed. */
-function isOverdue(order: OrderListItem): boolean {
-  if (order.status !== 'active' || !order.due_date) return false;
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
-  return new Date(order.due_date) < startOfToday;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../../utils';
@@ -16,73 +16,77 @@ const fc = (over: Partial<OrderForecast>): OrderForecast => ({
   unknown_prints: 0, unroutable_prints: 0, eta_complete: true, ahead_count: 0, assumptions: ['drying'], ...over,
 });
 
+const noSort = { sort: 'updated-desc', onSortChange: () => {} };
+const names = () => screen.getAllByRole('row').slice(1).map((r) => within(r).getAllByRole('cell')[0].textContent);
+
 describe('OrdersTable', () => {
-  it('renders the live counters, sorts most-first on a fresh numeric-column click, and flips on a second', async () => {
-    render(<OrdersTable orders={[row({ id: 1, name: 'A', prints_queued: 3 }), row({ id: 2, name: 'B', prints_queued: 9 })]} />);
-    const rows = () => screen.getAllByRole('row').slice(1).map((r) => within(r).getAllByRole('cell')[0].textContent);
-    expect(rows()).toEqual(['A', 'B']);
+  it('keeps the server order and asks the server to sort — a fresh numeric column most-first', async () => {
+    const onSort = vi.fn();
+    render(
+      <OrdersTable
+        orders={[row({ id: 1, name: 'A', prints_queued: 3 }), row({ id: 2, name: 'B', prints_queued: 9 })]}
+        sort="updated-desc"
+        onSortChange={onSort}
+      />,
+    );
     await userEvent.click(screen.getByRole('button', { name: 'Queued (jobs)' }));
-    expect(rows()).toEqual(['B', 'A']);
+    expect(onSort).toHaveBeenLastCalledWith('queued-desc');
+    // The table never reorders what the server sent.
+    expect(names()).toEqual(['A', 'B']);
     expect(screen.getByTestId('order-1-queued')).toHaveTextContent('3');
     expect(screen.getByTestId('order-1-printing')).toHaveTextContent('2');
-
-    // A second click on the same column flips it — back to ascending.
-    await userEvent.click(screen.getByRole('button', { name: 'Queued (jobs)' }));
-    expect(rows()).toEqual(['A', 'B']);
   });
 
-  it('a fresh click on the name header sorts ascending, overriding the due-based default', async () => {
-    render(
-      <OrdersTable
-        orders={[row({ id: 1, name: 'B', due_date: '2026-09-01' }), row({ id: 2, name: 'A', due_date: '2026-09-02' })]}
-      />,
-    );
-    const rows = () => screen.getAllByRole('row').slice(1).map((r) => within(r).getAllByRole('cell')[0].textContent);
-    // Default sort is due, ascending — the sooner date (B) leads.
-    expect(rows()).toEqual(['B', 'A']);
-
+  it('flips the active column, and name / due start ascending', async () => {
+    const onSort = vi.fn();
+    render(<OrdersTable orders={[row({ id: 1 })]} sort="queued-desc" onSortChange={onSort} />);
+    expect(screen.getByRole('columnheader', { name: /Queued/ })).toHaveAttribute('aria-sort', 'descending');
+    await userEvent.click(screen.getByRole('button', { name: /Queued/ }));
+    expect(onSort).toHaveBeenLastCalledWith('queued-asc');
     await userEvent.click(screen.getByRole('button', { name: 'Order' }));
-    expect(rows()).toEqual(['A', 'B']);
-  });
-
-  it('a fresh click on due sorts ascending — the soonest date leads', async () => {
-    render(
-      <OrdersTable
-        orders={[
-          row({ id: 1, name: 'A', due_date: '2026-09-10', prints_in_progress: 9 }),
-          row({ id: 2, name: 'B', due_date: '2026-09-05', prints_in_progress: 1 }),
-        ]}
-      />,
-    );
-    const rows = () => screen.getAllByRole('row').slice(1).map((r) => within(r).getAllByRole('cell')[0].textContent);
-
-    // Switch away from the due default first — a fresh numeric-column click sorts most-first.
-    await userEvent.click(screen.getByRole('button', { name: 'Printing (prints)' }));
-    expect(rows()).toEqual(['A', 'B']);
-
-    // A fresh click on Due sorts ascending — the soonest date leads.
+    expect(onSort).toHaveBeenLastCalledWith('name-asc');
     await userEvent.click(screen.getByRole('button', { name: 'Due' }));
-    expect(rows()).toEqual(['B', 'A']);
+    expect(onSort).toHaveBeenLastCalledWith('due-asc');
   });
 
-  it('shows ready-at and machine hours from the forecast and sorts by ready-at soonest first', async () => {
+  it('the forecast columns sort on the server too — soonest ready first, most machine time first', async () => {
+    const onSort = vi.fn();
+    render(<OrdersTable orders={[row({ id: 1 })]} sort="updated-desc" onSortChange={onSort} />);
+    const ready = screen.getByRole('button', { name: 'Ready' });
+    expect(ready).not.toHaveAttribute('title');
+    await userEvent.click(ready);
+    expect(onSort).toHaveBeenLastCalledWith('ready-asc');
+    await userEvent.click(screen.getByRole('button', { name: 'Machine h' }));
+    expect(onSort).toHaveBeenLastCalledWith('hours-desc');
+  });
+
+  it('reddens a past deadline but not today’s', () => {
+    const p = (n: number) => String(n).padStart(2, '0');
+    const day = (offset: number) => {
+      const d = new Date();
+      d.setDate(d.getDate() + offset);
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T00:00:00`;
+    };
+    render(<OrdersTable orders={[row({ id: 1, due_date: day(0) }), row({ id: 2, due_date: day(-1) })]} {...noSort} />);
+    expect(screen.getByTestId('order-1-due')).not.toHaveClass('text-red-500');
+    expect(screen.getByTestId('order-2-due')).toHaveClass('text-red-500');
+  });
+
+  it('shows ready-at and machine hours from the forecast', () => {
     const forecasts = {
       1: fc({ project_id: 1, now_eta: '2026-09-07T10:00:00Z', now_seconds: 7200, after_eta: '2026-09-08T10:00:00Z', after_seconds: 93600, machine_seconds: 5400, ahead_count: 1 }),
       2: fc({ project_id: 2, now_eta: '2026-09-06T14:00:00Z', now_seconds: 3600, after_eta: '2026-09-06T14:00:00Z', after_seconds: 3600, machine_seconds: 3600 }),
     };
-    render(<OrdersTable orders={[row({ id: 1, name: 'A' }), row({ id: 2, name: 'B' })]} forecasts={forecasts} />);
+    render(<OrdersTable orders={[row({ id: 1, name: 'A' }), row({ id: 2, name: 'B' })]} forecasts={forecasts} {...noSort} />);
     expect(screen.getByTestId('order-1-machine-hours')).toHaveTextContent('1:30');
     expect(screen.getByTestId('order-1-after')).toHaveTextContent(/after 1 more urgent order/);
     expect(screen.queryByTestId('order-2-after')).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Ready' }));
-    const names = screen.getAllByRole('row').slice(1).map((r) => within(r).getAllByRole('cell')[0].textContent);
-    expect(names).toEqual(['B', 'A']);
   });
 
   it('renders «…» while the forecast is missing and «No estimate» for a null ETA', () => {
-    render(<OrdersTable orders={[row({ id: 1, name: 'A' })]} forecasts={{ 1: fc({ unknown_prints: 3 }) }} />);
+    render(<OrdersTable orders={[row({ id: 1, name: 'A' })]} forecasts={{ 1: fc({ unknown_prints: 3 }) }} {...noSort} />);
     expect(screen.getByTestId('order-1-ready')).toHaveTextContent('No estimate');
-    render(<OrdersTable orders={[row({ id: 5, name: 'C' })]} />);
+    render(<OrdersTable orders={[row({ id: 5, name: 'C' })]} {...noSort} />);
     expect(screen.getByTestId('order-5-ready')).toHaveTextContent('…');
   });
 
@@ -91,6 +95,7 @@ describe('OrdersTable', () => {
       <OrdersTable
         orders={[row({ id: 1, name: 'A' })]}
         forecasts={{ 1: fc({ now_eta: '2026-09-07T10:00:00Z', eta_complete: false, unroutable_prints: 1 }) }}
+        {...noSort}
       />,
     );
     expect(screen.getByTestId('order-1-ready')).toHaveTextContent('Incomplete estimate');
@@ -102,7 +107,7 @@ describe('OrdersTable', () => {
     // Mapping a dead request onto «No estimate» — which means «the simulation
     // could place nothing» — sends the operator hunting a scheduling problem
     // that is really a broken request.
-    render(<OrdersTable orders={[row({ id: 1, name: 'A' })]} forecastError />);
+    render(<OrdersTable orders={[row({ id: 1, name: 'A' })]} forecastError {...noSort} />);
     const ready = screen.getByTestId('order-1-ready');
     expect(ready).toHaveTextContent('—');
     expect(ready).not.toHaveTextContent('No estimate');
@@ -118,6 +123,7 @@ describe('OrdersTable', () => {
       <OrdersTable
         orders={[row({ id: 1, name: 'A', status: 'completed' })]}
         forecasts={{ 2: fc({ project_id: 2 }) }}
+        {...noSort}
       />,
     );
     const ready = screen.getByTestId('order-1-ready');

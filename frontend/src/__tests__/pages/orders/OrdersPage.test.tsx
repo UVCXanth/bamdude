@@ -90,7 +90,7 @@ describe('OrdersPage', () => {
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ customer_id: 1, page: 1 })));
     expect(window.location.search).toContain('customer=1');
   });
-  it('the table sorts the list on the server, the forecast columns only within the page', async () => {
+  it('the table sorts the whole list on the server — the forecast columns too', async () => {
     const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
     vi.spyOn(api, 'getOrdersForecast').mockResolvedValue({ orders: [] } as never);
     window.history.pushState({}, '', '/projects');
@@ -98,12 +98,9 @@ describe('OrdersPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Table' }));
     fireEvent.click(await screen.findByRole('button', { name: /^Order/ }));
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'name-asc' })));
-    expect(window.location.search).toContain('sort=name-asc');
-    const calls = get.mock.calls.length;
-    const ready = screen.getByRole('button', { name: /^Ready/ });
-    expect(ready).toHaveAttribute('title', 'Sorted within this page — forecasts are advisory and not part of the list order');
-    fireEvent.click(ready);
-    expect(get.mock.calls.length).toBe(calls);
+    fireEvent.click(screen.getByRole('button', { name: /^Ready/ }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'ready-asc', page: 1 })));
+    expect(window.location.search).toContain('sort=ready-asc');
   });
   it('an empty search offers to reset it, and the reset keeps the tab', async () => {
     const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([], { totals: { active: 0, completed: 0, cancelled: 0, all: 0 } }));

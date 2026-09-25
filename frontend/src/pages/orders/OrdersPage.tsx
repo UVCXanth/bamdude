@@ -252,6 +252,8 @@ export function OrdersPage() {
     { key: 'remaining', label: t('orders.table.remaining'), descFirst: true },
     { key: 'printing', label: t('orders.table.printing'), descFirst: true },
     { key: 'queued', label: t('orders.table.queued'), descFirst: true },
+    { key: 'ready', label: t('orders.table.readyAt') },
+    { key: 'hours', label: t('orders.table.machineHours'), descFirst: true },
   ];
 
   const pageBar = (variant: 'card' | 'bare') =>
