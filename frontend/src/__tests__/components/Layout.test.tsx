@@ -428,13 +428,19 @@ describe('Layout', () => {
     });
 
     it('a failed count leaves the entry and no badge', async () => {
+      let asked = 0;
       server.use(
-        http.get('/api/v1/projects/nav-badges', () => HttpResponse.json({ detail: 'boom' }, { status: 500 })),
+        http.get('/api/v1/projects/nav-badges', () => {
+          asked += 1;
+          return HttpResponse.json({ detail: 'boom' }, { status: 500 });
+        }),
       );
       render(<Layout />);
       expect(await screen.findByRole('link', { name: 'Orders' })).toBeInTheDocument();
-      await new Promise((r) => setTimeout(r, 50));
+      await waitFor(() => expect(asked).toBeGreaterThan(0)); // the answer really was a 500
+      await new Promise((r) => setTimeout(r, 20));
       expect(screen.queryByTitle('Active orders')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Projects' })).toBeInTheDocument();
     });
 
     it('keeps a sidebar order saved before the menu had children', async () => {

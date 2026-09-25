@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ComponentType, LiHTMLAttributes, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useLocation } from 'react-router';
@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronUp, GripVertical } from 'lucide-react';
 import { useHoverIntent } from '../../hooks/useHoverIntent';
 import { useNavOpenState } from '../../hooks/useNavOpenState';
+import { useIsAnyModalOpen } from '../modalStack';
 import { activeChildId, type NavBadgeKind, type NavChild } from './navChildren';
 
 export interface NavParentItemProps {
@@ -17,6 +18,9 @@ export interface NavParentItemProps {
   /** Drag handlers and the drop-indicator class from Layout — the parent drags as one entry. */
   liProps: LiHTMLAttributes<HTMLLIElement>;
 }
+
+/** The flyout's distance from the window edge when it has to be pushed up. */
+const FLYOUT_EDGE_GAP = 8;
 
 function NavCount({ kind, count, onAccent }: { kind: NavBadgeKind; count: number; onAccent: boolean }) {
   const { t } = useTranslation();
@@ -73,10 +77,17 @@ export function NavChildLinks({
 
 /**
  * The parent on the collapsed icon rail (spec workshop-nav, rule 4): its
- * children open in a flyout beside the icon — on hover (closing a moment after
- * the pointer leaves, so it can cross the gap), on a click (touch), or with
- * Enter/Space, which also moves the focus to the first child. A plain Tab onto
- * the icon does not open it.
+ * children open in a flyout beside the icon.
+ * - Hover opens it, and leaving closes it a moment later, so the pointer can
+ *   cross the gap.
+ * - A click or Enter/Space HOLDS it open: leaving no longer closes it; the
+ *   next click does. The icon used to be a link, so people click it — a click
+ *   landing on the flyout their hover just opened must keep it, not toggle it
+ *   shut. A tap on a touch screen, whose emulated mouseenter lands first, holds
+ *   it the same way.
+ * - Enter/Space also puts the focus on the first child. A plain Tab onto the
+ *   icon does not open it.
+ * It is open only on the page it was opened on and never under a modal.
  */
 function RailParent({
   item,
@@ -94,24 +105,51 @@ function RailParent({
   dot: ReactNode;
 }) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const { pathname } = useLocation();
+  const modalOpen = useIsAnyModalOpen();
+  // The page the flyout was opened on. A route change or a modal closes it —
+  // adjusted during render, React's way of following an input without an effect.
+  const [openOn, setOpenOn] = useState<string | null>(null);
+  if (openOn !== null && (openOn !== pathname || modalOpen)) setOpenOn(null);
+  const open = openOn !== null && openOn === pathname && !modalOpen;
+
   const iconRef = useRef<HTMLButtonElement>(null);
   const flyoutRef = useRef<HTMLDivElement>(null);
+  // Held open by a click or a key rather than by the pointer, and "focus the
+  // first child once it is there". Both are written at every opening, so
+  // nothing left from an earlier opening reaches the next one.
+  const heldRef = useRef(false);
   const focusFirstRef = useRef(false);
   const Icon = item.icon;
   const inside = activeId !== null;
 
-  // Placed from the icon at the moment it opens; the rail does not move under
-  // an open flyout, and a resize closes it.
-  const setFlyoutOpen = useCallback((next: boolean) => {
-    if (next && iconRef.current) {
-      const r = iconRef.current.getBoundingClientRect();
-      setPos({ top: r.top - 6, left: r.right + 6 });
-    }
-    setOpen(next);
+  const close = useCallback(() => {
+    heldRef.current = false;
+    focusFirstRef.current = false;
+    setOpenOn(null);
   }, []);
-  const hover = useHoverIntent(setFlyoutOpen);
+  const openFlyout = (how: 'hover' | 'click' | 'key') => {
+    heldRef.current = how !== 'hover' || (open && heldRef.current);
+    focusFirstRef.current = how === 'key';
+    setOpenOn(pathname);
+  };
+  const firstLink = () => flyoutRef.current?.querySelector<HTMLElement>('a') ?? null;
+  const hover = useHoverIntent((next: boolean) => {
+    if (next) openFlyout('hover');
+    else if (!heldRef.current) close();
+  });
+
+  // Placed from the icon at the moment it opens, before paint, and pushed up
+  // when it would run past the bottom of the window.
+  useLayoutEffect(() => {
+    const flyout = flyoutRef.current;
+    const iconEl = iconRef.current;
+    if (!open || !flyout || !iconEl) return;
+    const r = iconEl.getBoundingClientRect();
+    const lowest = window.innerHeight - flyout.offsetHeight - FLYOUT_EDGE_GAP;
+    flyout.style.top = `${Math.max(FLYOUT_EDGE_GAP, Math.min(r.top - 6, lowest))}px`;
+    flyout.style.left = `${r.right + 6}px`;
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -121,46 +159,59 @@ function RailParent({
     }
     // An inner layer's Escape lives on `document` and stops there (modal-stack
     // rule); it is registered only while open, so a closed flyout never eats it.
+    // The focus goes back to the icon only if it was in the flyout — a flyout
+    // the hover opened must not pull the focus out of a field.
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       e.stopPropagation();
-      setOpen(false);
-      iconRef.current?.focus();
+      const hadFocus = !!flyoutRef.current?.contains(document.activeElement);
+      close();
+      if (hadFocus) iconRef.current?.focus();
     };
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node;
       if (flyoutRef.current?.contains(target) || iconRef.current?.contains(target)) return;
-      setOpen(false);
+      close();
     };
-    const onResize = () => setOpen(false);
+    // Placed once, at opening: a scroll anywhere but inside it would leave it
+    // hanging away from its icon, so it closes instead — as on a resize.
+    const onScroll = (e: Event) => {
+      if (flyoutRef.current?.contains(e.target as Node)) return;
+      close();
+    };
     document.addEventListener('keydown', onKey);
     document.addEventListener('mousedown', onDown);
-    window.addEventListener('resize', onResize);
+    document.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', close);
     return () => {
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('mousedown', onDown);
-      window.removeEventListener('resize', onResize);
+      document.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', close);
     };
-  }, [open]);
+  }, [open, close]);
 
   return (
     <li {...liProps}>
+      {/* No `title`: the flyout that opens on hover already names the section. */}
       <button
         ref={iconRef}
         type="button"
         aria-label={t(item.labelKey)}
-        title={t(item.labelKey)}
         aria-expanded={open}
         data-inside={inside}
         onMouseEnter={hover.enter}
         onMouseLeave={hover.leave}
-        onClick={() => setFlyoutOpen(!open)}
+        onClick={() => (open && heldRef.current ? close() : openFlyout('click'))}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            // preventDefault: the button's own activation would fire onClick and toggle it shut again.
-            e.preventDefault();
-            focusFirstRef.current = true;
-            setFlyoutOpen(true);
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          // preventDefault: the button's own activation would fire onClick and toggle it shut again.
+          e.preventDefault();
+          if (open) {
+            heldRef.current = true;
+            firstLink()?.focus();
+          } else {
+            openFlyout('key');
           }
         }}
         // Firefox activates a button on Space's keyup, not its keydown.
@@ -183,16 +234,28 @@ function RailParent({
           <div
             ref={flyoutRef}
             data-testid={`nav-flyout-${item.id}`}
-            style={{ position: 'fixed', top: pos.top, left: pos.left }}
+            style={{ position: 'fixed' }}
             className="z-[49] min-w-[220px] p-1.5 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-xl"
             onMouseEnter={hover.enter}
             onMouseLeave={hover.leave}
+            onKeyDown={(e) => {
+              // The flyout sits at the end of <body>: out of it means back into
+              // the rail, through the icon. Shift+Tab stops ON the icon; Tab lets
+              // the browser move on from it to the next entry.
+              if (e.key !== 'Tab') return;
+              const links = flyoutRef.current?.querySelectorAll<HTMLElement>('a');
+              if (!links?.length) return;
+              if (e.target !== (e.shiftKey ? links[0] : links[links.length - 1])) return;
+              if (e.shiftKey) e.preventDefault();
+              iconRef.current?.focus();
+              close();
+            }}
             onBlur={(e) => {
               // Only a focus that moved to a real element outside closes it: a click
               // on the non-focusable heading blurs a link with no relatedTarget.
               const next = e.relatedTarget as Node | null;
               if (!next || flyoutRef.current?.contains(next) || iconRef.current?.contains(next)) return;
-              setOpen(false);
+              close();
             }}
           >
             <nav aria-label={t(item.labelKey)}>
@@ -200,7 +263,7 @@ function RailParent({
                 {t(item.labelKey)}
               </div>
               <ul className="space-y-0.5">
-                <NavChildLinks entries={item.children} activeId={activeId} badges={badges} onNavigate={() => setOpen(false)} />
+                <NavChildLinks entries={item.children} activeId={activeId} badges={badges} onNavigate={close} />
               </ul>
             </nav>
           </div>,

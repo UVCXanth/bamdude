@@ -14,8 +14,11 @@
  * re-filed from one order to another leaves the order it LEFT wrong too, and
  * the call site that moved it usually knows only where it landed. The same
  * goes for `customer`: an order can move between customers. Invalidating a
- * prefix costs nothing off the pages that read it — TanStack refetches only
- * queries that are currently *active*, and these six are mounted nowhere else.
+ * prefix costs almost nothing off the pages that read it — TanStack refetches
+ * only queries that are currently *active*, and these six are mounted nowhere
+ * else, with ONE exception: the sidebar's `['projects', 'nav-badges']` sits
+ * under the `projects` prefix on every page, so each of these refreshes it too.
+ * That is one COUNT, and it is what keeps the badge current.
  *
  * ⚠️ **On an order page it is NOT free**, and one key needs care because of
  * it: `project-plan` carries the operator's unsaved counts, so `PlanBlock`
