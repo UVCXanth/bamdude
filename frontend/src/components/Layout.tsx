@@ -19,6 +19,9 @@ import { useAutoQueuePendingSummary, useQueueSummary } from '../hooks/useQueueIt
 import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
 import { useUnknownTagPrompt } from '../hooks/useUnknownTagPrompt';
 import { useInboxUnreadCount } from '../hooks/useInboxUnreadCount';
+import { useWorkshopBadges } from '../hooks/useWorkshopBadges';
+import { NavParentItem } from './sidebar/NavParentItem';
+import type { NavChild } from './sidebar/navChildren';
 import { UnknownSpoolModal } from './UnknownSpoolModal';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -49,6 +52,9 @@ interface NavItem {
   icon: LucideIcon | React.ComponentType<{ className?: string }>;
   labelKey: string; // Translation key
   group: NavGroup;
+  // Sub-entries under a toggle (expanded) or in a flyout (icon rail). The item
+  // keeps its own `to` and id — start page, number keys and the saved order read those.
+  children?: NavChild[];
 }
 
 // Default-order list defines both the order AND the group structure. Every
@@ -62,7 +68,12 @@ export const defaultNavItems: NavItem[] = [
   { id: 'archives', to: '/archives', icon: Archive, labelKey: 'nav.archives', group: 'operations' },
   { id: 'stats', to: '/stats', icon: BarChart3, labelKey: 'nav.stats', group: 'operations' },
   // Workshop — what to print
-  { id: 'projects', to: '/projects', icon: FolderKanban, labelKey: 'nav.projects', group: 'workshop' },
+  { id: 'projects', to: '/projects', icon: FolderKanban, labelKey: 'nav.projects', group: 'workshop', children: [
+    { id: 'orders', to: '/projects', labelKey: 'projects.tabs.orders', match: /^\/projects(\/|$)/, badge: 'activeOrders' },
+    { id: 'products', to: '/products', labelKey: 'projects.tabs.products', match: /^\/products(\/|$)/ },
+    { id: 'customers', to: '/customers', labelKey: 'projects.tabs.customers', match: /^\/customers(\/|$)/ },
+    { id: 'stock', to: '/stock', labelKey: 'projects.tabs.stock', match: /^\/stock(\/|$)/ },
+  ] },
   { id: 'files', to: '/files', icon: FolderOpen, labelKey: 'nav.files', group: 'workshop' },
   { id: 'makerworld', to: '/makerworld', icon: MakerWorldIcon, labelKey: 'nav.makerworld', group: 'workshop' },
   // Resources — consumables + slicer presets
@@ -328,6 +339,13 @@ export function Layout() {
   const inboxVisible = !authEnabled || hasPermission('notifications:inbox');
   const { data: unreadCount = 0 } = useInboxUnreadCount(inboxVisible);
 
+  // The Projects section's badges — asked only when its entry is shown (the
+  // same test `isHidden` applies, `navPermissions.projects`). A failed count
+  // reads as 0: a hint, not data, so the badge just stays away.
+  const canSeeProjects = !authEnabled || hasPermission('projects:read');
+  const { data: navBadges } = useWorkshopBadges(canSeeProjects);
+  const workshopBadges = { activeOrders: navBadges?.active_orders ?? 0 };
+
   // Check if any printer with pending queue items needs plate clearing
   const queuePrinterIds = useMemo(() => {
     const ids = new Set<number>();
@@ -587,6 +605,22 @@ export function Layout() {
     setDraggedId(null);
     setDragOverId(null);
   };
+
+  // One entry's drag wiring + drop indicator — shared by internal items,
+  // external links and a parent with children (which drags as ONE entry).
+  const dragPropsFor = (id: string) => ({
+    draggable: true,
+    onDragStart: (e: React.DragEvent) => handleDragStart(e, id),
+    onDragOver: (e: React.DragEvent) => handleDragOver(e, id),
+    onDragLeave: handleDragLeave,
+    onDrop: (e: React.DragEvent) => handleDrop(e, id),
+    onDragEnd: handleDragEnd,
+    className: `relative ${draggedId === id ? 'opacity-50' : ''} ${
+      dragOverId === id && draggedId !== id
+        ? 'before:absolute before:left-0 before:right-0 before:top-0 before:h-0.5 before:bg-bambu-green'
+        : ''
+    }`,
+  });
 
   // Show update banner if update available and not dismissed for this version.
   // HA-addon installs are suppressed — the HA Supervisor surfaces its own
@@ -915,6 +949,34 @@ export function Layout() {
                 ? t(`nav.group.${currentGroup}`)
                 : '';
               const showText = isSidebarCompact || sidebarExpanded;
+              const groupDragId = `${GROUP_DRAG_PREFIX}${currentGroup}`;
+              const groupHeader = !showGroupHeader ? null : showText ? (
+                <li
+                  draggable
+                  onDragStart={(e) => handleDragStart(e, groupDragId)}
+                  onDragOver={(e) => handleDragOver(e, groupDragId)}
+                  onDragLeave={handleDragLeave}
+                  onDrop={(e) => handleDrop(e, groupDragId)}
+                  onDragEnd={handleDragEnd}
+                  className={`relative select-none cursor-grab active:cursor-grabbing group/grp ${
+                    draggedId === groupDragId ? 'opacity-50' : ''
+                  } ${
+                    dragOverId === groupDragId && draggedId !== groupDragId
+                      ? 'before:absolute before:left-0 before:right-0 before:top-0 before:h-0.5 before:bg-bambu-green'
+                      : ''
+                  }`}
+                  title={t('nav.dragGroupHint')}
+                >
+                  <div className={`flex items-center gap-1 text-[10px] uppercase tracking-wider text-bambu-gray font-medium px-3 ${index === 0 ? 'pt-0' : 'pt-2'}`}>
+                    <GripVertical className="w-3 h-3 opacity-0 group-hover/grp:opacity-50 -ml-1" />
+                    <span>{groupLabel}</span>
+                  </div>
+                </li>
+              ) : (
+                <li className="pointer-events-none select-none">
+                  <div className={`border-t border-bambu-dark-tertiary mx-2 ${index === 0 ? '' : 'mt-1'}`} />
+                </li>
+              );
 
               if (isExternal) {
                 // Render external link
@@ -924,55 +986,8 @@ export function Layout() {
                 const LinkIcon = link.custom_icon ? null : getIconByName(link.icon);
                 return (
                   <Fragment key={id}>
-                  {showGroupHeader && (
-                    showText ? (
-                      (() => {
-                        const groupDragId = `${GROUP_DRAG_PREFIX}${currentGroup}`;
-                        return (
-                          <li
-                            draggable
-                            onDragStart={(e) => handleDragStart(e, groupDragId)}
-                            onDragOver={(e) => handleDragOver(e, groupDragId)}
-                            onDragLeave={handleDragLeave}
-                            onDrop={(e) => handleDrop(e, groupDragId)}
-                            onDragEnd={handleDragEnd}
-                            className={`relative select-none cursor-grab active:cursor-grabbing group/grp ${
-                              draggedId === groupDragId ? 'opacity-50' : ''
-                            } ${
-                              dragOverId === groupDragId && draggedId !== groupDragId
-                                ? 'before:absolute before:left-0 before:right-0 before:top-0 before:h-0.5 before:bg-bambu-green'
-                                : ''
-                            }`}
-                            title={t('nav.dragGroupHint')}
-                          >
-                            <div className={`flex items-center gap-1 text-[10px] uppercase tracking-wider text-bambu-gray font-medium px-3 ${index === 0 ? 'pt-0' : 'pt-2'}`}>
-                              <GripVertical className="w-3 h-3 opacity-0 group-hover/grp:opacity-50 -ml-1" />
-                              <span>{groupLabel}</span>
-                            </div>
-                          </li>
-                        );
-                      })()
-                    ) : (
-                      <li className="pointer-events-none select-none">
-                        <div className={`border-t border-bambu-dark-tertiary mx-2 ${index === 0 ? '' : 'mt-1'}`} />
-                      </li>
-                    )
-                  )}
-                  <li
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, id)}
-                    onDragOver={(e) => handleDragOver(e, id)}
-                    onDragLeave={handleDragLeave}
-                    onDrop={(e) => handleDrop(e, id)}
-                    onDragEnd={handleDragEnd}
-                    className={`relative ${
-                      draggedId === id ? 'opacity-50' : ''
-                    } ${
-                      dragOverId === id && draggedId !== id
-                        ? 'before:absolute before:left-0 before:right-0 before:top-0 before:h-0.5 before:bg-bambu-green'
-                        : ''
-                    }`}
-                  >
+                  {groupHeader}
+                  <li {...dragPropsFor(id)}>
                     {link.open_in_new_tab ? (
                       <a
                         href={link.url}
@@ -1030,6 +1045,21 @@ export function Layout() {
                 const navItem = navItemsMap.get(id);
                 if (!navItem) return null;
 
+                if (navItem.children) {
+                  return (
+                    <Fragment key={id}>
+                      {groupHeader}
+                      <NavParentItem
+                        item={{ id, icon: navItem.icon, labelKey: navItem.labelKey, children: navItem.children }}
+                        expanded={showText}
+                        showGrip={sidebarExpanded && !isSidebarCompact}
+                        badges={workshopBadges}
+                        liProps={dragPropsFor(id)}
+                      />
+                    </Fragment>
+                  );
+                }
+
                 const { to, icon: Icon, labelKey } = navItem;
                 const showQueueBadge = id === 'queue' && (queueBadgeUnavailable || (pendingQueueCount ?? 0) > 0);
                 const showInboxBadge = id === 'notifications' && unreadCount > 0;
@@ -1039,55 +1069,8 @@ export function Layout() {
 
                 return (
                   <Fragment key={id}>
-                  {showGroupHeader && (
-                    showText ? (
-                      (() => {
-                        const groupDragId = `${GROUP_DRAG_PREFIX}${currentGroup}`;
-                        return (
-                          <li
-                            draggable
-                            onDragStart={(e) => handleDragStart(e, groupDragId)}
-                            onDragOver={(e) => handleDragOver(e, groupDragId)}
-                            onDragLeave={handleDragLeave}
-                            onDrop={(e) => handleDrop(e, groupDragId)}
-                            onDragEnd={handleDragEnd}
-                            className={`relative select-none cursor-grab active:cursor-grabbing group/grp ${
-                              draggedId === groupDragId ? 'opacity-50' : ''
-                            } ${
-                              dragOverId === groupDragId && draggedId !== groupDragId
-                                ? 'before:absolute before:left-0 before:right-0 before:top-0 before:h-0.5 before:bg-bambu-green'
-                                : ''
-                            }`}
-                            title={t('nav.dragGroupHint')}
-                          >
-                            <div className={`flex items-center gap-1 text-[10px] uppercase tracking-wider text-bambu-gray font-medium px-3 ${index === 0 ? 'pt-0' : 'pt-2'}`}>
-                              <GripVertical className="w-3 h-3 opacity-0 group-hover/grp:opacity-50 -ml-1" />
-                              <span>{groupLabel}</span>
-                            </div>
-                          </li>
-                        );
-                      })()
-                    ) : (
-                      <li className="pointer-events-none select-none">
-                        <div className={`border-t border-bambu-dark-tertiary mx-2 ${index === 0 ? '' : 'mt-1'}`} />
-                      </li>
-                    )
-                  )}
-                  <li
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, id)}
-                    onDragOver={(e) => handleDragOver(e, id)}
-                    onDragLeave={handleDragLeave}
-                    onDrop={(e) => handleDrop(e, id)}
-                    onDragEnd={handleDragEnd}
-                    className={`relative ${
-                      draggedId === id ? 'opacity-50' : ''
-                    } ${
-                      dragOverId === id && draggedId !== id
-                        ? 'before:absolute before:left-0 before:right-0 before:top-0 before:h-0.5 before:bg-bambu-green'
-                        : ''
-                    }`}
-                  >
+                  {groupHeader}
+                  <li {...dragPropsFor(id)}>
                     <NavLink
                       to={to}
                       className={({ isActive }) =>

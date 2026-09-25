@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, fireEvent, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { render } from '../utils';
 import { Layout } from '../../components/Layout';
 import { register, unregister, _resetForTests } from '../../components/modalStack';
@@ -24,6 +24,9 @@ vi.mock('react-router', async () => {
 
 describe('Layout', () => {
   beforeEach(() => {
+    // Only the sidebar's own keys: utils.tsx seeds `auth_token`, which a clear() would drop.
+    localStorage.removeItem('sidebarOrder');
+    localStorage.removeItem('sidebarNavOpen');
     server.use(
       http.get('/api/v1/printers/', () => {
         return HttpResponse.json([
@@ -389,6 +392,77 @@ describe('Layout', () => {
       expect(sidebarLink('/files')).toBeNull();
       expect(sidebarLink('/archives')).toBeNull();
       expect(sidebarLink('/queue')).toBeNull();
+    });
+
+    it('hides Projects and asks no badge count without projects:read', async () => {
+      let asked = 0;
+      server.use(
+        http.get('/api/v1/projects/nav-badges', () => {
+          asked += 1;
+          return HttpResponse.json({ active_orders: 1 });
+        }),
+      );
+      enableAuthWithUser(['printers:read', 'queue:read_own']);
+      render(<Layout />);
+      await waitFor(() => expect(sidebarLink('/queue')).not.toBeNull());
+      expect(screen.queryByRole('button', { name: 'Projects' })).not.toBeInTheDocument();
+      expect(sidebarLink('/products')).toBeNull();
+      expect(asked).toBe(0);
+    });
+  });
+
+  describe('nested Projects entry', () => {
+    it('renders the parent with its four children', async () => {
+      render(<Layout />);
+      const toggle = await screen.findByRole('button', { name: 'Projects' });
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      for (const name of ['Orders', 'Products', 'Customers', 'Stock']) {
+        expect(screen.getByRole('link', { name })).toBeInTheDocument();
+      }
+    });
+
+    it('shows the active-orders count from the server', async () => {
+      server.use(http.get('/api/v1/projects/nav-badges', () => HttpResponse.json({ active_orders: 3 })));
+      render(<Layout />);
+      expect(await screen.findByTitle('Active orders')).toHaveTextContent('3');
+    });
+
+    it('a failed count leaves the entry and no badge', async () => {
+      server.use(
+        http.get('/api/v1/projects/nav-badges', () => HttpResponse.json({ detail: 'boom' }, { status: 500 })),
+      );
+      render(<Layout />);
+      expect(await screen.findByRole('link', { name: 'Orders' })).toBeInTheDocument();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.queryByTitle('Active orders')).not.toBeInTheDocument();
+    });
+
+    it('keeps a sidebar order saved before the menu had children', async () => {
+      localStorage.setItem(
+        'sidebarOrder',
+        JSON.stringify(['printers', 'queue', 'archives', 'stats', 'files', 'projects', 'makerworld']),
+      );
+      render(<Layout />);
+      expect(await screen.findByRole('link', { name: 'Stock' })).toBeInTheDocument();
+      const toggle = screen.getByRole('button', { name: 'Projects' });
+      const files = screen.getByRole('link', { name: 'File Manager' });
+      // files is saved before projects, and the order is honoured with the children inside the parent
+      expect(files.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('drags the parent as one entry', async () => {
+      render(<Layout />);
+      const parentLi = (await screen.findByRole('button', { name: 'Projects' })).closest('li')!;
+      const filesLi = screen.getByRole('link', { name: 'File Manager' }).closest('li')!;
+      // `types` too: Layout's app-wide guard against dropped files reads it on every dragover.
+      const dataTransfer = { setData: vi.fn(), types: [] as string[], effectAllowed: '', dropEffect: '' };
+      fireEvent.dragStart(parentLi, { dataTransfer });
+      fireEvent.dragOver(filesLi, { dataTransfer });
+      fireEvent.drop(filesLi, { dataTransfer });
+      const saved: string[] = JSON.parse(localStorage.getItem('sidebarOrder')!);
+      // Dropped on its neighbour below, the parent moves past it — as any single entry does.
+      expect(saved.indexOf('projects')).toBeGreaterThan(saved.indexOf('files'));
+      expect(saved).not.toContain('orders'); // children never enter the order
     });
   });
 
