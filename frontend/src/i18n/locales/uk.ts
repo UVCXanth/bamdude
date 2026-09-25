@@ -5798,6 +5798,16 @@ export default {
       items_few: 'замовники',
       items_many: 'замовників',
       items_other: 'замовника',
+      filter: { label: 'Показати', all: 'Усі', active: 'З активними' },
+    },
+    tiles: {
+      customers: 'Замовників',
+      withActive: 'З активними замовленнями',
+      withActiveSub: 'чекають виготовлення',
+      activeOrders: 'Замовлень у роботі',
+      activeOrdersSub: 'по всіх замовниках',
+      totalPrice: 'Сума замовлень',
+      totalPriceSub: 'без скасованих',
     },
     card: {
       orders_one: '{{count}} замовлення',

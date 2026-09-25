@@ -2220,6 +2220,14 @@ export interface CustomerListFigures {
   total_price: number;
 }
 
+/** `GET /customers/summary` — the customers page's tiles; cancelled orders are not in the total. */
+export interface CustomersSummary {
+  customers: number;
+  with_active: number;
+  active_orders: number;
+  total_price: number;
+}
+
 /** The detail endpoint's superset. Reading a list row for `printed` is the
  *  mistake this split exists to make visible. */
 export interface CustomerFigures extends CustomerListFigures {
@@ -10972,8 +10980,13 @@ export const api = {
   // Customers
   getCustomers: () => request<Customer[]>('/customers/'),
   /** The customers page's list — the only caller that sends `page`. */
-  getCustomersPaged: (params: PagedListParams) =>
-    request<CustomerListPage>(`/customers/?${pagedSearchParams(new URLSearchParams(), params)}`),
+  getCustomersPaged: (params: PagedListParams & { with_active?: boolean }) => {
+    const qs = new URLSearchParams();
+    if (params.with_active) qs.set('with_active', 'true');
+    return request<CustomerListPage>(`/customers/?${pagedSearchParams(qs, params)}`);
+  },
+  /** The customers page's tiles — the whole farm, whatever the list is searched for. */
+  getCustomersSummary: () => request<CustomersSummary>('/customers/summary'),
   getCustomer: (id: number) => request<Customer>(`/customers/${id}`),
   createCustomer: (data: CustomerCreate) =>
     request<Customer>('/customers/', { method: 'POST', body: JSON.stringify(data) }),

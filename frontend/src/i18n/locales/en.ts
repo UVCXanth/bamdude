@@ -5739,6 +5739,16 @@ export default {
       searchPlaceholder: 'Search customers…',
       items_one: 'customer',
       items_other: 'customers',
+      filter: { label: 'Show', all: 'All', active: 'With active orders' },
+    },
+    tiles: {
+      customers: 'Customers',
+      withActive: 'With active orders',
+      withActiveSub: 'waiting for production',
+      activeOrders: 'Orders in work',
+      activeOrdersSub: 'across all customers',
+      totalPrice: 'Order total',
+      totalPriceSub: 'cancelled orders excluded',
     },
     card: {
       orders_one: '{{count}} order',

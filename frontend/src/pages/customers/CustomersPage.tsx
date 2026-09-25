@@ -12,6 +12,7 @@ import { CustomerCard } from '../../components/customers/CustomerCard';
 import { CustomerModal } from '../../components/customers/CustomerModal';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
+import { CustomersTiles } from '../../components/customers/CustomersTiles';
 import { ListPageHeader } from '../../components/ListPageHeader';
 import { ListSearchBox } from '../../components/ListSearchBox';
 import { ListViewToggle } from '../../components/ListViewToggle';
@@ -36,9 +37,11 @@ export function CustomersPage() {
   const { showToast } = useToast();
   const queryClient = useQueryClient();
 
-  const { page, q, sort, setPage, setQ, setSort, resetFilters, clampToLastPage } = useListUrlState({
-    defaults: { sort: 'name-asc' },
+  const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
+    defaults: { sort: 'name-asc', extra: { active: '0' } },
   });
+  // «With active orders» — a server filter (spec workshop-lists, rule 22); «regular» comes with WS-03.
+  const onlyActive = extra.active === '1';
   const { typed, setTyped, forget } = useSearchBox(q, setQ);
   const [view, setView] = usePersistedState<ListView>('bamdude-customers-view', 'table', parseListView);
   const views = useCardsTableViews();
@@ -48,6 +51,7 @@ export function CustomersPage() {
 
   const params = {
     ...(q ? { q } : {}),
+    ...(onlyActive ? { with_active: true } : {}),
     sort_by: sort,
     page,
     ...(perPage === -1 ? { all: true } : { per_page: perPage }),
@@ -122,7 +126,31 @@ export function CustomersPage() {
         )}
       </ListPageHeader>
 
+      <CustomersTiles />
+
       <div className="flex items-center gap-4 mb-4 flex-wrap">
+        <div
+          role="group"
+          aria-label={t('customers.list.filter.label')}
+          className="flex rounded-lg border border-bambu-dark-tertiary overflow-hidden text-sm"
+        >
+          {(
+            [
+              ['0', 'all'],
+              ['1', 'active'],
+            ] as const
+          ).map(([value, key]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={extra.active === value}
+              onClick={() => setExtra('active', value)}
+              className={`px-3 py-1.5 ${extra.active === value ? 'bg-bambu-dark-tertiary text-white' : 'text-bambu-gray hover:text-white'}`}
+            >
+              {t(`customers.list.filter.${key}`)}
+            </button>
+          ))}
+        </div>
         <ListSearchBox value={typed} onChange={setTyped} placeholder={t('customers.list.searchPlaceholder')} />
         <div className="ml-auto flex items-center gap-3">
           {/* A table sorts from its headers; the cards need a control of their own. */}
@@ -131,7 +159,7 @@ export function CustomersPage() {
       </div>
 
       {!isLoading && total === 0 ? (
-        q ? (
+        q || onlyActive ? (
           <div className="flex items-center gap-3 text-bambu-gray text-sm">
             <span>{t('list.empty.noMatch')}</span>
             <Button

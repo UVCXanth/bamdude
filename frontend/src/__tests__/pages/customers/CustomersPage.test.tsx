@@ -34,6 +34,30 @@ describe('CustomersPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     localStorage.clear();
+    vi.spyOn(api, 'getCustomersSummary').mockResolvedValue({ customers: 9, with_active: 3, active_orders: 5, total_price: 1234.5 });
+  });
+
+  it('draws the farm tiles from the summary', async () => {
+    vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf([]));
+    window.history.pushState({}, '', '/customers');
+    render(<CustomersPage />);
+    expect(await screen.findByTestId('customers-tile-customers')).toHaveTextContent('9');
+    expect(screen.getByTestId('customers-tile-with-active')).toHaveTextContent('3');
+    expect(screen.getByTestId('customers-tile-active-orders')).toHaveTextContent('5');
+    // The shared money formatter: symbol in front, two decimals — the digits are the server's.
+    expect(screen.getByTestId('customers-tile-total')).toHaveTextContent('$1234.50');
+  });
+
+  it('«With active orders» asks the server and lands in the URL; «All» clears it', async () => {
+    const get = vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf([]));
+    window.history.pushState({}, '', '/customers');
+    render(<CustomersPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'With active orders' }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ with_active: true, page: 1 })));
+    expect(window.location.search).toContain('active=1');
+    fireEvent.click(screen.getByRole('button', { name: 'All' }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.not.objectContaining({ with_active: true })));
+    expect(window.location.search).not.toContain('active=');
   });
 
   it('puts the view switch in the page header, beside the title', async () => {
