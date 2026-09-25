@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
@@ -8,11 +8,16 @@ import type { OrderListItem, ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { ProjectsTabs } from '../../components/projects/ProjectsTabs';
-import { OrderCard } from '../../components/projects/OrderCard';
-import { OrdersTable } from '../../components/projects/OrdersTable';
 import { OrderModal } from '../../components/projects/OrderModal';
 import { FilamentStrip } from '../../components/projects/FilamentStrip';
 import { OrdersTiles } from '../../components/projects/OrdersTiles';
+import {
+  ORDER_TABS,
+  ORDERS_DEFAULT_SORT,
+  OrderStatusTabs,
+  OrdersListView,
+  useOrderSortOptions,
+} from '../../components/projects/OrdersListView';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
 import { Select } from '../../components/Select';
@@ -21,7 +26,6 @@ import { ListSearchBox } from '../../components/ListSearchBox';
 import { ListViewToggle } from '../../components/ListViewToggle';
 import { ListSortControl } from '../../components/ListSortControl';
 import type { ListView } from '../../components/ListViewToggle';
-import { PaginationBar } from '../../components/PaginationBar';
 import { useCardsTableViews } from '../../hooks/useCardsTableViews';
 import { useListUrlState } from '../../hooks/useListUrlState';
 import { parseListView, parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
@@ -31,72 +35,6 @@ import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryIn
 const GROUP_STORAGE_KEY = 'projects.groupByCustomer';
 const VIEW_STORAGE_KEY = 'projects.view';
 const PER_PAGE_STORAGE_KEY = 'projects.perPage';
-const TABS: readonly (ProjectStatus | 'all')[] = ['active', 'completed', 'cancelled', 'all'];
-/** Each view has its own default order (owner's ruling): the table is the
- *  deadline roll-up it always was, the cards are "what moved lately". An
- *  explicit `?sort=` applies to both. */
-const DEFAULT_SORT = { table: 'due-asc', cards: 'updated-desc' } as const;
-
-/** How many placeholder cards the first fetch draws. Enough to fill the top of
- *  a normal window without pretending to know how many orders there are. */
-const SKELETON_CARDS = 6;
-
-/**
- * The grid while the FIRST fetch is in flight.
- *
- * ⚠️ **`isLoading`, never `isFetching`.** A background refetch — every order
- * mutation invalidates `['projects']` — still has the orders on screen, and
- * replacing them with grey boxes for a moment is worse than showing figures
- * that are one request old. TanStack's `isLoading` is exactly "pending with no
- * data", which is the only state that has nothing to show.
- *
- * ⚠️ **The grey boxes are decoration; the STATUS is the sentence.** A grid of
- * `aria-hidden` placeholders is silence to a screen reader — the page reads as
- * having no orders, with nothing said about why. `role="status"` + `aria-busy`
- * on the wrapper, with one visually-hidden line inside, is what announces the
- * wait; the cards keep their `aria-hidden` so nobody hears six empty ones.
- */
-function OrdersSkeleton() {
-  const { t } = useTranslation();
-  return (
-    <div role="status" aria-busy="true" data-testid="orders-skeleton">
-      <span className="sr-only">{t('common.loading')}</span>
-      <div aria-hidden="true" className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
-        {Array.from({ length: SKELETON_CARDS }, (_, i) => (
-          <div
-            key={i}
-            className="animate-pulse rounded-xl bg-bambu-dark-secondary border border-bambu-dark-tertiary overflow-hidden"
-          >
-            <div className="h-1.5 bg-bambu-dark-tertiary" />
-            <div className="p-4 flex gap-3">
-              <div className="w-20 h-20 flex-shrink-0 rounded-lg bg-bambu-dark" />
-              <div className="flex-1 space-y-2 py-1">
-                <div className="h-4 w-2/3 rounded bg-bambu-dark" />
-                <div className="h-3 w-1/3 rounded bg-bambu-dark" />
-                <div className="h-2 w-full rounded bg-bambu-dark" />
-                <div className="h-3 w-1/4 rounded bg-bambu-dark" />
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/** `Map` (not a plain object) so the group order matches first appearance in
- *  the already-filtered list, rather than an object's own key-insertion
- *  quirks with numeric-looking names. */
-function groupBy<T>(items: T[], keyFn: (item: T) => string): Map<string, T[]> {
-  const groups = new Map<string, T[]>();
-  for (const item of items) {
-    const key = keyFn(item);
-    const existing = groups.get(key);
-    if (existing) existing.push(item);
-    else groups.set(key, [item]);
-  }
-  return groups;
-}
 
 /**
  * The order list: status tabs, a customer filter, a search and an optional
@@ -107,7 +45,8 @@ function groupBy<T>(items: T[], keyFn: (item: T) => string): Map<string, T[]> {
  * request per tab. The place in the list (tab, customer, search, sort, page)
  * lives in the URL; the view mode, the grouping and the page size are the
  * viewer's preferences. Grouping groups the PAGE — it is not a sort. The
- * default sort follows the view (`DEFAULT_SORT`).
+ * default sort follows the view (`ORDERS_DEFAULT_SORT`). The cards, the table
+ * and the page bar are `OrdersListView`, shared with the customer page.
  */
 export function OrdersPage() {
   const { t } = useTranslation();
@@ -118,15 +57,16 @@ export function OrdersPage() {
 
   const [view, setViewPref] = usePersistedState<ListView>(VIEW_STORAGE_KEY, 'cards', parseListView);
   const views = useCardsTableViews();
+  const sortOptions = useOrderSortOptions();
   const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
-    defaults: { sort: DEFAULT_SORT[view], extra: { tab: 'active', customer: '' } },
+    defaults: { sort: ORDERS_DEFAULT_SORT[view], extra: { tab: 'active', customer: '' } },
   });
   // Another view is another default order, so the page it stood on means nothing there.
   const setView = (next: ListView) => {
     setViewPref(next);
     setPage(1);
   };
-  const tab: ProjectStatus | 'all' = (TABS as readonly string[]).includes(extra.tab)
+  const tab: ProjectStatus | 'all' = (ORDER_TABS as readonly string[]).includes(extra.tab)
     ? (extra.tab as ProjectStatus | 'all')
     : 'active';
   const customerId = extra.customer && Number.isInteger(Number(extra.customer)) ? Number(extra.customer) : null;
@@ -164,35 +104,11 @@ export function OrdersPage() {
     if (data && !isPlaceholderData) clampToLastPage(data.meta.last_page);
   }, [data, isPlaceholderData, clampToLastPage]);
 
-  const counts = data?.totals ?? { active: 0, completed: 0, cancelled: 0, all: 0 };
-  const visible = useMemo(() => data?.items ?? [], [data]);
   const total = data?.meta.total ?? 0;
   const filtered = q !== '' || customerId != null;
-  const groups = groupByCustomer ? groupBy(visible, (o) => o.customer_name ?? t('orders.list.noCustomer')) : null;
 
-  // Only ACTIVE orders are forecast: «closed = nothing is planned» is the
-  // product rule everywhere else, and the endpoint answers a closed order with
-  // an empty forecast — asking for one buys a row of nulls (spec Decision 9).
-  const forecastIds = visible.filter((o) => o.status === 'active').map((o) => o.id);
-  // The forecast is only meaningful in table view — cards don't show it, and
-  // the farm-wide simulation isn't cheap enough to run on every tab.
-  const forecastQuery = useQuery({
-    queryKey: ['orders-forecast', forecastIds],
-    queryFn: () => api.getOrdersForecast(forecastIds),
-    enabled: view === 'table' && forecastIds.length > 0,
-    staleTime: 30_000,
-  });
   // The farm-wide filament strip over the list — every active order, not just the visible tab/filter.
   const filamentQuery = useQuery({ queryKey: ['orders-filament'], queryFn: api.getOrdersFilament, staleTime: 30_000 });
-  // `undefined` while loading — every cell reads «…». A FAILED fetch is its
-  // own state, passed down as `forecastError`: mapping it to `{}` here made
-  // every row read «No estimate», which means «the farm could not place this
-  // order», and sent the operator looking for a scheduling problem that was
-  // really a dead request.
-  const forecasts = useMemo(() => {
-    if (!forecastQuery.data) return undefined;
-    return Object.fromEntries(forecastQuery.data.orders.map((f) => [f.project_id, f]));
-  }, [forecastQuery.data]);
 
   // `CustomerListFigures` and `CustomerFigures` are computed from these very
   // orders, so every status change moves a customer tile — and this page
@@ -239,56 +155,6 @@ export function OrdersPage() {
     }
   };
 
-  const tabs: { key: ProjectStatus | 'all'; label: string; count: number }[] = [
-    { key: 'active', label: t('orders.status.active'), count: counts.active },
-    { key: 'completed', label: t('orders.status.completed'), count: counts.completed },
-    { key: 'cancelled', label: t('orders.status.cancelled'), count: counts.cancelled },
-    { key: 'all', label: t('orders.list.tabAll'), count: counts.all },
-  ];
-
-  const sortOptions = [
-    { key: 'updated', label: t('list.sort.updated'), descFirst: true },
-    { key: 'created', label: t('list.sort.created'), descFirst: true },
-    { key: 'name', label: t('orders.table.name') },
-    { key: 'due', label: t('orders.table.due') },
-    { key: 'priority', label: t('orders.modal.priority'), descFirst: true },
-    { key: 'customer', label: t('orders.table.customer') },
-    { key: 'progress', label: t('orders.table.progress'), descFirst: true },
-    { key: 'remaining', label: t('orders.table.remaining'), descFirst: true },
-    { key: 'printing', label: t('orders.table.printing'), descFirst: true },
-    { key: 'queued', label: t('orders.table.queued'), descFirst: true },
-    { key: 'ready', label: t('orders.table.readyAt') },
-    { key: 'hours', label: t('orders.table.machineHours'), descFirst: true },
-  ];
-
-  const pageBar = (variant: 'card' | 'bare') =>
-    data ? (
-      <PaginationBar
-        page={data.meta.current_page}
-        totalPages={data.meta.last_page}
-        perPage={perPage}
-        total={total}
-        onPageChange={setPage}
-        onPerPageChange={(n) => {
-          setPerPage(n);
-          setPage(1);
-        }}
-        items={t('orders.list.items', { count: total })}
-        variant={variant}
-      />
-    ) : null;
-
-  const renderCard = (order: OrderListItem) => (
-    <OrderCard
-      key={order.id}
-      order={order}
-      onEdit={setEditing}
-      onDuplicate={(o) => duplicate.mutate(o.id)}
-      onSetStatus={(o, status) => setStatus.mutate({ id: o.id, status })}
-      onDelete={setDeleting}
-    />
-  );
-
   return (
     <div className="p-4">
       <ProjectsTabs />
@@ -312,22 +178,7 @@ export function OrdersPage() {
       )}
 
       <div className="flex items-center gap-4 mb-4 flex-wrap">
-        <div role="tablist" className="flex gap-1 border-b border-bambu-dark-tertiary">
-          {tabs.map(({ key, label, count }) => (
-            <button
-              key={key}
-              type="button"
-              role="tab"
-              aria-selected={tab === key}
-              onClick={() => setExtra('tab', key)}
-              className={`px-4 py-2 text-sm border-b-2 -mb-px transition-colors ${
-                tab === key ? 'border-bambu-green text-white' : 'border-transparent text-bambu-gray hover:text-white'
-              }`}
-            >
-              {label} ({count})
-            </button>
-          ))}
-        </div>
+        <OrderStatusTabs tab={tab} totals={data?.totals} onChange={(key) => setExtra('tab', key)} />
 
         <ListSearchBox value={typed} onChange={setTyped} placeholder={t('orders.list.searchPlaceholder')} />
 
@@ -355,7 +206,6 @@ export function OrdersPage() {
         {view === 'cards' && <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />}
       </div>
 
-
       {!isLoading && total === 0 && (
         filtered ? (
           <div className="flex items-center gap-3 text-bambu-gray text-sm">
@@ -375,58 +225,25 @@ export function OrdersPage() {
         )
       )}
 
-      {isLoading ? (
-        <OrdersSkeleton />
-      ) : (
-        // The previous page stays on screen while the next one loads — dimmed
-        // and marked busy, so it is not read as the answer to the new question.
-        <div
-          data-testid="list-body"
-          aria-busy={isPlaceholderData}
-          className={`transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
-        >
-          {groups ? (
-            <>
-              <div className="space-y-4">
-                {[...groups.entries()].map(([customerName, group]) => (
-                  <section key={customerName}>
-                    <h2 className="text-lg font-medium text-white mb-2">{customerName}</h2>
-                    {view === 'table' ? (
-                      <OrdersTable
-                        orders={group}
-                        forecasts={forecasts}
-                        forecastError={forecastQuery.isError}
-                        sort={sort}
-                        onSortChange={setSort}
-                      />
-                    ) : (
-                      <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">{group.map(renderCard)}</div>
-                    )}
-                  </section>
-                ))}
-              </div>
-              {/* Several tables, one bar — it belongs to the page, not to a group. */}
-              {total > 0 && <div className="mt-4">{pageBar('bare')}</div>}
-            </>
-          ) : view === 'table' ? (
-            total > 0 && (
-              <OrdersTable
-                orders={visible}
-                forecasts={forecasts}
-                forecastError={forecastQuery.isError}
-                sort={sort}
-                onSortChange={setSort}
-                footer={pageBar('card')}
-              />
-            )
-          ) : (
-            <>
-              <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">{visible.map(renderCard)}</div>
-              {total > 0 && <div className="mt-4">{pageBar('bare')}</div>}
-            </>
-          )}
-        </div>
-      )}
+      <OrdersListView
+        data={data}
+        isLoading={isLoading}
+        isPlaceholderData={isPlaceholderData}
+        view={view}
+        sort={sort}
+        onSortChange={setSort}
+        perPage={perPage}
+        onPageChange={setPage}
+        onPerPageChange={(n) => {
+          setPerPage(n);
+          setPage(1);
+        }}
+        groupByCustomer={groupByCustomer}
+        onEdit={setEditing}
+        onDuplicate={(o) => duplicate.mutate(o.id)}
+        onSetStatus={(o, status) => setStatus.mutate({ id: o.id, status })}
+        onDelete={setDeleting}
+      />
 
       {editing && (
         <OrderModal order={editing === 'new' ? null : editing} defaultCustomerId={customerId} onClose={() => setEditing(null)} />
