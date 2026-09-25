@@ -239,7 +239,7 @@ _ORDER_SORT = SortSpec(
         "priority": (_PRIORITY_RANK, False),
         "customer": (func.lower(Customer.name), True),
     },
-    computed={"progress", "remaining", "printing", "queued"},
+    computed={"progress", "remaining", "printing", "queued", "ready", "hours"},
     default="updated-desc",
 )
 _ORDER_COMPUTED = {
@@ -248,12 +248,20 @@ _ORDER_COMPUTED = {
     "printing": lambda r: r.prints_in_progress,
     "queued": lambda r: r.prints_queued,
 }
+# Figures of the farm forecast (spec workshop-lists, rule 7): no row carries
+# them, so a request sorting by one runs ONE simulation walk over the active
+# orders of the filtered set. A value of None (closed order, incomplete or no
+# estimate) sorts last in both directions — ``sort_computed``'s rule.
+_ORDER_FORECAST = {
+    "ready": lambda f: f.now_eta if f.eta_complete else None,
+    "hours": lambda f: f.machine_seconds,
+}
 
 
 def _order_search(query, q: str):
-    """``q`` on the order name or its customer's name; the caller has joined Customer."""
+    """``q`` on the order name, its customer's name or its tags; the caller has joined Customer."""
     needle = f"%{q.strip()}%"
-    return query.where(or_(Project.name.ilike(needle), Customer.name.ilike(needle)))
+    return query.where(or_(Project.name.ilike(needle), Customer.name.ilike(needle), Project.tags.ilike(needle)))
 
 
 async def _order_totals(
@@ -284,7 +292,9 @@ async def list_projects(
     customer_id: int | None = None,
     product_id: int | None = None,
     q: str | None = Query(None, description="With page set: ilike on the order name or its customer's name"),
-    sort_by: str | None = Query(None, description="With page set: '<key>-<asc|desc>'; unknown → updated-desc"),
+    sort_by: str | None = Query(
+        None, description="With page set: '<key>-<asc|desc>'; unknown → updated-desc; ready/hours run the forecast"
+    ),
     page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
     per_page: int = Query(24, ge=1, le=200),
     all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
@@ -303,6 +313,8 @@ async def list_projects(
     ``printing``, ``queued``) is a figure no column carries: the filtered set
     is loaded whole, its figures computed as always, sorted here and sliced —
     exactly the cost of the unpaged list, which is what it replaces.
+    ``ready`` / ``hours`` sort by the farm forecast: one ``forecast_projects``
+    walk over the set's active orders per request.
     """
     paged = page is not None
     key, direction, computed = resolve_sort(_ORDER_SORT, sort_by)
@@ -402,7 +414,21 @@ async def list_projects(
     if not paged:
         return out
     if computed:
-        out = sort_computed(out, _ORDER_COMPUTED[key], direction, id_fn=lambda r: r.id)
+        if key in _ORDER_FORECAST:
+            # The cost is honest: one full walk of the simulation over the active
+            # orders under the filter, on every request that sorts by it — no
+            # cache (owner, 2026-09-25: «поки серверний прогін»). A closed order
+            # is never planned, so it has no value.
+            active_ids = [row.id for row in out if row.status == "active"]
+            forecasts = (await farm_forecast.forecast_projects(db, active_ids, _utc_now()))[1] if active_ids else {}
+            value_of = _ORDER_FORECAST[key]
+
+            def key_fn(row):
+                forecast = forecasts.get(row.id)
+                return value_of(forecast) if forecast is not None else None
+        else:
+            key_fn = _ORDER_COMPUTED[key]
+        out = sort_computed(out, key_fn, direction, id_fn=lambda r: r.id)
         total = len(out)
         out = slice_page(out, page, per_page, all)
     return OrderListPage(items=out, meta=page_meta(total, page, per_page, all), totals=totals)

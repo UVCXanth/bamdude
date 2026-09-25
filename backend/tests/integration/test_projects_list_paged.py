@@ -184,10 +184,11 @@ async def test_the_flat_answer_is_pinned_and_ignores_the_paged_params(async_clie
     assert same == flat
 
 
-def test_every_computed_key_has_its_figure():
-    from backend.app.api.routes.projects import _ORDER_COMPUTED, _ORDER_SORT
+def test_every_computed_key_has_exactly_one_source():
+    from backend.app.api.routes.projects import _ORDER_COMPUTED, _ORDER_FORECAST, _ORDER_SORT
 
-    assert set(_ORDER_COMPUTED) == _ORDER_SORT.computed
+    assert set(_ORDER_COMPUTED) | set(_ORDER_FORECAST) == _ORDER_SORT.computed
+    assert not set(_ORDER_COMPUTED) & set(_ORDER_FORECAST)
 
 
 @pytest.mark.asyncio
@@ -250,3 +251,98 @@ async def test_search_folds_cyrillic_case(async_client, db_session):
     by_name = (await async_client.get("/api/v1/projects/?page=1&q=ЛАМПА")).json()["items"]
     assert [o["name"] for o in by_customer] == ["Абажур"]
     assert [o["name"] for o in by_name] == ["лампа настільна"]
+
+
+# ---- WS-01: sort by the farm forecast, search the tags ----
+
+
+async def _forecast_fake(monkeypatch, values: dict[int, SimpleNamespace]):
+    """Replace the simulation; record every set of ids it is asked about."""
+    from backend.app.services import farm_forecast
+
+    asked: list[list[int]] = []
+
+    async def fake(db, project_ids, now):
+        asked.append(sorted(project_ids))
+        return None, {pid: values[pid] for pid in project_ids if pid in values}
+
+    monkeypatch.setattr(farm_forecast, "forecast_projects", fake)
+    return asked
+
+
+@pytest.mark.asyncio
+async def test_ready_sorts_the_whole_filtered_set_not_the_page(async_client, db_session, monkeypatch):
+    orders = [await _dated_order(db_session, f"o{i}", i=i) for i in range(4)]  # due: o0 soonest
+    closed = await _order(db_session, "closed", status="completed")
+    eta = {
+        orders[0].id: T0 + timedelta(days=9),
+        orders[1].id: None,  # the simulation could place nothing
+        orders[2].id: T0 + timedelta(days=1),
+        orders[3].id: T0 + timedelta(days=5),
+    }
+    asked = await _forecast_fake(
+        monkeypatch,
+        {pid: SimpleNamespace(now_eta=when, eta_complete=True, machine_seconds=None) for pid, when in eta.items()},
+    )
+    pages = [
+        [
+            o["id"]
+            for o in (await async_client.get(f"/api/v1/projects/?page={p}&per_page=2&sort_by=ready-asc")).json()[
+                "items"
+            ]
+        ]
+        for p in (1, 2, 3)
+    ]
+    # Soonest ETA first across pages; no value (None ETA, closed order) last, by id.
+    assert pages == [[orders[2].id, orders[3].id], [orders[0].id, orders[1].id], [closed.id]]
+    assert asked[0] == sorted(o.id for o in orders), "one walk, active orders only"
+
+    desc = [o["id"] for o in (await async_client.get("/api/v1/projects/?page=1&sort_by=ready-desc")).json()["items"]]
+    assert desc == [orders[0].id, orders[3].id, orders[2].id, orders[1].id, closed.id]  # no value last both ways
+
+
+@pytest.mark.asyncio
+async def test_an_incomplete_eta_has_no_value_and_hours_sorts_machine_time(async_client, db_session, monkeypatch):
+    a, b, c = [await _order(db_session, n) for n in "abc"]
+    await _forecast_fake(
+        monkeypatch,
+        {
+            a.id: SimpleNamespace(now_eta=T0, eta_complete=False, machine_seconds=50),
+            b.id: SimpleNamespace(now_eta=T0 + timedelta(days=1), eta_complete=True, machine_seconds=900),
+            c.id: SimpleNamespace(now_eta=T0 + timedelta(days=2), eta_complete=True, machine_seconds=None),
+        },
+    )
+    ready = [o["id"] for o in (await async_client.get("/api/v1/projects/?page=1&sort_by=ready-asc")).json()["items"]]
+    assert ready == [b.id, c.id, a.id]
+    hours = [o["id"] for o in (await async_client.get("/api/v1/projects/?page=1&sort_by=hours-desc")).json()["items"]]
+    assert hours == [b.id, a.id, c.id]
+
+
+@pytest.mark.asyncio
+async def test_no_active_order_means_no_simulation(async_client, db_session, monkeypatch):
+    done = [await _order(db_session, n, status="completed") for n in ("x", "y")]
+    asked = await _forecast_fake(monkeypatch, {})
+    r = await async_client.get("/api/v1/projects/?page=1&status=completed&sort_by=ready-asc")
+    assert r.status_code == 200
+    assert [o["id"] for o in r.json()["items"]] == [d.id for d in done]
+    assert asked == []
+
+
+@pytest.mark.asyncio
+async def test_other_keys_never_run_the_simulation(async_client, db_session, monkeypatch):
+    await _order(db_session, "a")
+    asked = await _forecast_fake(monkeypatch, {})
+    for key in ("name-asc", "progress-desc", "due-asc"):
+        assert (await async_client.get(f"/api/v1/projects/?page=1&sort_by={key}")).status_code == 200
+    assert asked == []
+
+
+@pytest.mark.asyncio
+async def test_q_matches_tags_too(async_client, db_session):
+    tagged = Project(name="Plain", status="active", tags="batch-7, Промо")
+    db_session.add(tagged)
+    await db_session.commit()
+    await _order(db_session, "Other")
+    body = (await async_client.get("/api/v1/projects/?page=1&q=ПРОМО")).json()
+    assert [o["name"] for o in body["items"]] == ["Plain"]
+    assert body["totals"]["all"] == 1  # the tabs follow the same search
