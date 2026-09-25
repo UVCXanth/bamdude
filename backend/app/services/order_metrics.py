@@ -794,6 +794,10 @@ class GroupedOrderFigures:
     bankable_surplus: int = 0
     prints_in_progress: int = 0
     prints_queued: int = 0
+    #: ``ProjectFigures.all_printed``, copied like ``from_stock_units``: the
+    #: close-the-order banner's verdict, which the orders tile «fully covered»
+    #: counts (spec workshop-lists, rule 2) — never re-derived by a reader.
+    all_printed: bool = False
     lines: list[GroupedLineFigures] = field(default_factory=list)
 
 
@@ -982,6 +986,7 @@ async def grouped_figures(
                 bankable_surplus=pf.bankable_surplus,
                 prints_in_progress=pf.prints_in_progress,
                 prints_queued=pf.prints_queued,
+                all_printed=pf.all_printed,
                 lines=[
                     GroupedLineFigures(
                         line_id=figs.line_id,

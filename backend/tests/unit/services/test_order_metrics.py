@@ -932,3 +932,13 @@ def test_a_running_print_counts_as_in_progress_on_its_line_and_its_order():
     assert figures[1].prints_in_progress == 1 and figures[1].prints_queued == 2
     pf = project_figures(ctx, figures, other)
     assert pf.prints_in_progress == 1 and pf.prints_queued == 3
+
+
+async def test_grouped_figures_carry_the_close_banners_verdict(db_session):
+    """``all_printed`` is what the close-the-order banner reads; the orders tile
+    «fully covered» counts the same verdict, so the grouped half must carry it.
+    Live order: 2 of 2 lamps and 1 of 1 hook covered. Cancelled: 0 of 1."""
+    ids = await build_parity_fixture(db_session)
+    orders = {o.project_id: o for o in await grouped_figures(db_session, project_ids=[ids["live"], ids["dead"]])}
+    assert orders[ids["live"]].all_printed is True
+    assert orders[ids["dead"]].all_printed is False

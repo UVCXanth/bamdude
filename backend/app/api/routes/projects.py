@@ -46,7 +46,7 @@ from backend.app.schemas.farm_forecast import (
     RowForecastOut,
 )
 from backend.app.schemas.filament_needs import FarmNeedsOut, FarmRowOut, NeedRowOut, OrderNeedsOut
-from backend.app.schemas.listing import OrderListPage, OrderListTotals
+from backend.app.schemas.listing import OrderListPage, OrderListTotals, OrdersSummary
 from backend.app.schemas.order_from_files import OrderFromFilesRequest
 from backend.app.schemas.project import (
     PROJECT_PRIORITIES,
@@ -406,6 +406,36 @@ async def list_projects(
         total = len(out)
         out = slice_page(out, page, per_page, all)
     return OrderListPage(items=out, meta=page_meta(total, page, per_page, all), totals=totals)
+
+
+@router.get("/summary", response_model=OrdersSummary)
+async def orders_summary(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """The orders page's tiles (spec workshop-lists, rules 1–2): the farm's
+    ACTIVE orders, whatever the list below them is filtered by. Declared above
+    ``/{project_id}``, or ``summary`` would be parsed as an id.
+
+    The figures are the list rows' own (``grouped_figures``), so «queued» counts
+    the auto-queue tier exactly as the cards do. «Overdue» is the card's rule on
+    the server's clock — the one the daily digest lives by: due before the start
+    of today (rule 11); a deadline of today is not overdue yet.
+    """
+    rows = (
+        await db.execute(select(Project.id, Project.due_date, Project.priority).where(Project.status == "active"))
+    ).all()
+    start_of_today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    figures = await grouped_figures(db, project_ids=[row.id for row in rows]) if rows else []
+    return OrdersSummary(
+        active=len(rows),
+        overdue=sum(1 for row in rows if row.due_date is not None and row.due_date < start_of_today),
+        urgent=sum(1 for row in rows if row.priority == "urgent"),
+        printing=sum(f.prints_in_progress for f in figures),
+        queued=sum(f.prints_queued for f in figures),
+        remaining=sum(f.remaining for f in figures),
+        all_covered=sum(1 for f in figures if f.all_printed),
+    )
 
 
 async def _check_customer(db: AsyncSession, customer_id: int | None) -> None:

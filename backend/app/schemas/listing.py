@@ -36,3 +36,16 @@ class ProductListPage(BaseModel):
 class CustomerListPage(BaseModel):
     items: list[CustomerResponse]
     meta: PaginationMeta
+
+
+class OrdersSummary(BaseModel):
+    """``GET /projects/summary`` — the orders page's tiles: the farm's ACTIVE
+    orders, never the list's filters (spec workshop-lists, rules 1–2)."""
+
+    active: int
+    overdue: int
+    urgent: int
+    printing: int
+    queued: int
+    remaining: int
+    all_covered: int
