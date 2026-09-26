@@ -48,6 +48,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate, product_files, product_folders
+from backend.app.services import product_facets
 from backend.app.services.product_composition import part_index, plate_key_counts
 
 
@@ -144,11 +145,15 @@ async def sync_product_for_file(db: AsyncSession, *, library_file_id: int, produ
         return
     file_type, meta = row
     desired = set(product_ids)
+    linked_before = await _linked_product_ids(db, library_file_id)
     await _reconcile_links(db, library_file_id, desired)
 
     existing = (
         (await db.execute(select(ProductPlate).where(ProductPlate.library_file_id == library_file_id))).scalars().all()
     )
+    # Every product whose plates this call may change — their stored facets
+    # follow (spec workshop-product-catalog, rule 6).
+    touched = linked_before | desired | {p.product_id for p in existing}
 
     stale_products = {p.product_id for p in existing} - desired
     if stale_products:
@@ -166,6 +171,8 @@ async def sync_product_for_file(db: AsyncSession, *, library_file_id: int, produ
                     ProductPlate.library_file_id == library_file_id, ProductPlate.product_id.in_(desired)
                 )
             )
+        await db.flush()
+        await product_facets.refresh(db, touched)
         return
 
     wanted = wanted_plate_indices(meta)
@@ -188,6 +195,7 @@ async def sync_product_for_file(db: AsyncSession, *, library_file_id: int, produ
             db, product_id=product_id, meta=meta, plate_indices=wanted, origin_plate_index=origins.get(product_id)
         )
     await db.flush()
+    await product_facets.refresh(db, touched)
 
 
 async def apply_folder_products(db: AsyncSession, *, folder_id: int, product_ids: list[int]) -> None:
@@ -279,11 +287,15 @@ async def purge_file_product_links(db: AsyncSession, library_file_ids: Sequence[
     ids = list(library_file_ids)
     if not ids:
         return
+    affected = set(
+        (await db.execute(select(ProductPlate.product_id).where(ProductPlate.library_file_id.in_(ids)))).scalars().all()
+    )
     await db.execute(
         update(Product).where(Product.origin_file_id.in_(list(library_file_ids))).values(origin_file_id=None)
     )
     await db.execute(delete(ProductPlate).where(ProductPlate.library_file_id.in_(ids)))
     await db.execute(delete(product_files).where(product_files.c.library_file_id.in_(ids)))
+    await product_facets.refresh(db, affected)
 
 
 async def purge_folder_product_links(db: AsyncSession, folder_ids: Sequence[int]) -> None:

@@ -135,3 +135,16 @@ async def upgrade(conn):
                 " AND EXISTS (SELECT 1 FROM product_parts pp WHERE pp.product_id = products.id)"
                 " AND EXISTS (SELECT 1 FROM product_plates pl WHERE pl.product_id = products.id)"
             )
+
+
+async def seed(session_factory):
+    """WS-07: the stored facets of every existing product, once (spec workshop-product-catalog, rule 4).
+
+    The writer reads plates and files by column and inserts named columns only,
+    so it holds on a database at this migration's level.
+    """
+    from backend.app.services import product_facets
+
+    async with session_factory() as db:
+        await product_facets.refresh_all(db)
+        await db.commit()

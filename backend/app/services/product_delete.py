@@ -22,7 +22,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.models.product import Product, ProductOrigin, ProductPart
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
-from backend.app.services import part_stock
+from backend.app.services import part_stock, product_facets
 
 
 async def delete_product(db: AsyncSession, product: Product) -> None:
@@ -42,6 +42,7 @@ async def delete_product(db: AsyncSession, product: Product) -> None:
     )
     part_ids = (await db.execute(select(ProductPart.id).where(ProductPart.product_id == product.id))).scalars().all()
     await part_stock.delete_for_parts(db, list(part_ids))
+    await product_facets.delete_for_product(db, product.id)
     await db.flush()
     await db.delete(product)
     await db.flush()
