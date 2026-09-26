@@ -172,6 +172,18 @@
 
 ### Fixed
 
+- **H2C: a plate is printed with the nozzles it was sliced for.** BamDude had the
+  H2C's two carriages the wrong way round: it treated the fixed hotend as the
+  rack carriage and the rack carriage as the fixed hotend. A plate using both
+  could be levelled with one nozzle and printed with the other, several
+  millimetres above the bed, and a plate using only the fixed hotend was sent
+  with a rack position for it. The carriages now follow Bambu Studio's numbering.
+  When a plate needs more than one nozzle from the rack, BamDude no longer tries
+  to choose the rack positions itself and leaves that to the printer, because the
+  file does not say which positions to use. The nozzle-size check before
+  dispatch on an H2C now compares each carriage with its own nozzles.
+  (upstream 45dc139c)
+
 - **A colour mismatch in the print dialog says which colours it compares.** When
   the requested colour and the slot's colour have the same name, for example a
   slicer's bright blue and Bambu's navy "Blue", the warning appeared between two

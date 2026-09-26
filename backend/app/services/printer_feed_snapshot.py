@@ -224,16 +224,13 @@ class FeedTelemetry:
                         continue
                     if nid < 16 and _hotend_states_empty(entry):
                         continue
-                    if is_nozzle_rack_model(model):
-                        from backend.app.utils.printer_models import (
-                            FIXED_CARRIAGE_PHYSICAL_ID,
-                            NOZZLE_RACK_EXTRUDER_INDEX,
-                        )
+                    # ids 0/1 are the hotends on MQTT extruders 0/1 on every H2,
+                    # the H2C included; only a dock needs placing — on the
+                    # carriage that fetches from it (upstream 45dc139c).
+                    if nid >= 16 and is_nozzle_rack_model(model):
+                        from backend.app.utils.printer_models import NOZZLE_RACK_EXTRUDER_INDEX
 
-                        if nid >= 16:
-                            nid = NOZZLE_RACK_EXTRUDER_INDEX
-                        elif nid == FIXED_CARRIAGE_PHYSICAL_ID:
-                            nid = 1 - NOZZLE_RACK_EXTRUDER_INDEX
+                        nid = NOZZLE_RACK_EXTRUDER_INDEX
                     self._diameter(nid, entry.get("diameter"))
         for key, nid in (
             ("nozzle_diameter", 0),

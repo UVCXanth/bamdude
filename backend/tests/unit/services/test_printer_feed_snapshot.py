@@ -75,7 +75,34 @@ def test_h2c_rack_nozzles_and_fts_use_physical_capabilities():
     )
     snap = snapshot_from_state(1, "H2C", state)
     assert snap.fts and snap.sources[0].nozzles == (0, 1)
-    assert snap.nozzle_diameters == {0: (0.4,), 1: (0.4, 0.6)}
+    # The fixed hotend reports as id 1 and IS extruder 1; the docks belong to the
+    # rack carriage, extruder 0 (BambuStudio's MAIN; upstream 45dc139c).
+    assert snap.nozzle_diameters == {1: (0.4,), 0: (0.4, 0.6)}
+
+
+def test_h2c_hotend_ids_are_extruder_ids():
+    # nozzle.info ids 0/1 are the hotends on MQTT extruders 0 (right, the rack
+    # carriage) and 1 (left, fixed) — the same numbering as every H2. Only the
+    # docks (16-21) need placing: on the carriage that fetches from them, 0.
+    state = PrinterState(connected=True)
+    state.feed_telemetry.observe(
+        {
+            "print": {
+                "device": {
+                    "nozzle": {
+                        "info": [
+                            {"id": 0, "diameter": "0.2"},
+                            {"id": 1, "diameter": "0.6"},
+                            {"id": 18, "diameter": "0.8"},
+                        ]
+                    }
+                }
+            }
+        },
+        "H2C",
+    )
+    snap = snapshot_from_state(1, "H2C", state)
+    assert snap.nozzle_diameters == {0: (0.2, 0.8), 1: (0.6,)}
 
 
 def test_disconnected_unit_and_invalid_slot_cannot_survive_partial_update():
@@ -236,7 +263,7 @@ def test_an_empty_hotend_does_not_count_its_last_nozzle():
             {"id": 16, "diameter": "0.2"},
         ]
     )
-    assert snap.nozzle_diameters == {0: (0.4,), 1: (0.2,)}
+    assert snap.nozzle_diameters == {1: (0.4,), 0: (0.2,)}
 
 
 def test_emptiness_has_to_be_stated():

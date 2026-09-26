@@ -421,10 +421,11 @@ def decode_filam_bak_groups(value: object) -> list[list[int]] | None:
 # physical ID, so a rack position is never mistakable for the nozzle on the
 # other carriage.
 #
-# ⚠️ Extruder indices are a DIFFERENT NAMESPACE that happens to overlap these
-# low numbers — index 1 means the rack, physical ID 1 means the fixed hotend.
-# Nothing below may pass a value from one namespace to the other untranslated;
-# doing exactly that is what the upstream bug was.
+# ⚠️ Extruder indices are a DIFFERENT NAMESPACE from these wire IDs. The fixed
+# hotend is extruder 1 and physical ID 1; the rack carriage is extruder 0, but
+# on the wire it is whichever dock (16-21) is live, never 0. Nothing below may
+# pass an extruder index to the wire untranslated; doing exactly that is what
+# the upstream #2800 bug was.
 # AMS ``dry_status`` phases in which a reported ``dry_time`` of 0 is NOT the end
 # of a cycle — shared with the AMS temperature alarm, so it lives in the leaf
 # ``utils/ams_drying`` (why it is not BS's ``AmsIsDrying()`` is written there).
@@ -436,19 +437,38 @@ _RACK_NOZZLE_IDS = frozenset(range(16, 22))
 # physical nozzle ID per filament slot, -1 for slots the plate does not print.
 _RACK_WIRE_SLOTS = 32
 
-# The two carriages, as extruder indices in the form the queue stores (already
-# translated through the file's physical_extruder_map). Settled on hardware:
-# the same sliced mixed-nozzle plate dispatched as [17, -1, -1, 1] printed the
-# rack nozzle several millimetres above the bed, and as [1, -1, -1, 17] printed
-# correctly on both nozzles start to finish.
-_FIXED_EXTRUDER_ID = 0
-_RACK_EXTRUDER_ID = 1
+# The two carriages, as MQTT extruder indices — the form the queue stores
+# (``extract_slot_extruders_from_3mf`` already translates the slicer's numbering
+# through the file's ``physical_extruder_map``, [1, 0] on every H2).
+#
+# The rack is extruder 0, the fixed hotend extruder 1. Three sources agree:
+#
+#   - BambuStudio (``DevNozzleSystem`` / ``DevMappingNozzle``): rack nozzles sit
+#     on the right extruder, MAIN = 0; rack control checks MAIN's nozzle; the
+#     nozzle being swapped in maps to MAIN; docks display as "R1".."R6". The H2C
+#     preset gives the slicer's right extruder six nozzles and its left one.
+#   - upstream's measurement on an H2C (``45dc139c``, 2026-08-14):
+#     ``ams_extruder_map {'0': 1, '1': 0, '2': 0}``, and BambuStudio's own
+#     dispatch sent extruder 1's filament to nozzle 1 and extruder 0's to rack
+#     positions 16 and 18 — a print that completed;
+#   - the fixed hotend's wire ID is 1, and physical nozzle id N sits on
+#     extruder N.
+#
+# ⚠️ These stood the other way round here until 2026-09-26, which dispatched a
+# two-nozzle plate to the carriage that had not been levelled — its first
+# layer in mid-air — and named a dock for a fixed-only plate. That value came
+# from the #2800 A/B ([17, -1, -1, 1] printed in mid-air, [1, -1, -1, 17]
+# printed correctly): the A/B measured which WIRE worked, and the indices were
+# only inferred from it by pairing it with what the then-buggy 3MF reader
+# produced. The wire result stands; the inference did not. An earlier audit
+# here mislabelled upstream's correction and never took it.
+_FIXED_EXTRUDER_ID = 1
+_RACK_EXTRUDER_ID = 0
 
-# The fixed hotend's physical ID, which is NOT its extruder index. The same
-# hardware A/B ruled the index out: [0, -1, -1, 17] was rejected by the printer
-# outright. Native BambuStudio captures of a mixed plate agree — [1, 17, ...],
-# and [17, 1, ...] once the filament slot order is swapped, so the fixed side
-# is 1 whichever slot it lands in.
+# The fixed hotend's wire ID. Native BambuStudio captures of a mixed plate:
+# [1, 17, ...], and [17, 1, ...] once the filament slot order is swapped, so the
+# fixed side is 1 whichever slot it lands in. The #2800 A/B's [0, -1, -1, 17]
+# was rejected by the printer outright.
 _FIXED_NOZZLE_ID = 1
 
 

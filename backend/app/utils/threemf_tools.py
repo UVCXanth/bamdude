@@ -525,6 +525,8 @@ def extract_slot_extruders_from_3mf(file_path: Path, plate_id: int | None = None
     try:
         with zipfile.ZipFile(file_path) as zf:
             by_slot = extract_nozzle_mapping_from_3mf(zf, plate_id=plate_id)
+            if by_slot and _plate_needs_several_rack_nozzles(zf, plate_id):
+                return None
     except (zipfile.BadZipFile, OSError) as exc:
         logger.warning("Failed to read nozzle mapping from %s: %s", file_path, exc)
         return None
@@ -541,6 +543,42 @@ def extract_slot_extruders_from_3mf(file_path: Path, plate_id: int | None = None
         )
         return None
     return [by_slot.get(slot, -1) for slot in range(1, highest_slot + 1)]
+
+
+def _plate_needs_several_rack_nozzles(zf: zipfile.ZipFile, plate_id: int | None) -> bool:
+    """Whether the plate's nozzle table puts two groups on one extruder (upstream 45dc139c).
+
+    Two groups on one extruder means that extruder is a nozzle rack and the
+    plate wants a *different* hotend from it per group. Which dock each group
+    takes is the slicer's choice against the rack's live contents and is stated
+    nowhere in the file — upstream's plate carried identical diameter and
+    volume type on both rack groups, and BambuStudio still dispatched them to
+    16 and 18. Nothing here can reproduce that choice, and answering anyway is
+    what printed in mid-air, so the dispatcher sends no ``nozzle_mapping`` and
+    the firmware picks.
+
+    ⚠️ Asked only on the dispatch path. Which CARRIAGE each slot prints from is
+    known either way — both rack slots are extruder 0 — and routing, the
+    archive and the library read that through ``extract_nozzle_mapping_from_3mf``;
+    upstream withholds the whole mapping there, which here would refuse the plate
+    in routing. A file without a table (every H2D slice) never answers True.
+    """
+    try:
+        if "Metadata/slice_info.config" not in zf.namelist():
+            return False
+        root = ET.fromstring(zf.read("Metadata/slice_info.config").decode())
+    except (KeyError, ET.ParseError, ValueError):  # ValueError covers decode and defusedxml refusals
+        return False
+    table = _group_extruder_indices(_plates_in_scope(root, plate_id))
+    if table and len(set(table.values())) < len(table):
+        logger.warning(
+            "Omitting nozzle_mapping: groups %s share extruders %s, so the plate needs more than "
+            "one nozzle from the rack and their dock positions are not derivable from the file",
+            sorted(table),
+            sorted(set(table.values())),
+        )
+        return True
+    return False
 
 
 def _plates_in_scope(si_root: XmlElement, plate_id: int | None) -> list[XmlElement]:

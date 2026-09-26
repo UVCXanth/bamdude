@@ -313,7 +313,10 @@ async def test_dual_topology_and_real_mqtt_wire(db_session, tmp_path, printer_fa
     mqtt = BambuMQTTClient("127.0.0.1", "DUAL_SYNTHETIC", "00000000", model=model)
     mqtt._client = MagicMock()
     mqtt.state.connected, mqtt.state.state = True, "IDLE"
-    nozzle_ids = (1, 16) if normalize_model_name(model) == "H2C" else (0, 1)
+    # Right carriage 0.6, left 0.4, as the file wants. On an H2C the right one is
+    # the rack carriage (a dock stands in for it) and the left is the fixed
+    # hotend, id 1 — BambuStudio's numbering, upstream 45dc139c.
+    nozzle_ids = (16, 1) if normalize_model_name(model) == "H2C" else (0, 1)
     mqtt._process_message(
         {
             "print": {
