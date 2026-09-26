@@ -172,6 +172,12 @@
 
 ### Fixed
 
+- **The print dialog names a slot after the spool assigned to it.** It described
+  slots from what the printer reports, and a printer cannot name a spool it did
+  not sell — a Devil Design PLA Basic Orange read "PLA (Sunflower Yellow)", the
+  Bambu colour with the same hex, while the printer card named it right. With a
+  spool assigned (BamDude or Spoolman), the slot pickers now show its name from
+  your spool-name template; matching itself is unchanged.
 - **An AMS that reports only a humidity index no longer shows it as a
   percentage.** Bambu sends relative humidity in percent and, separately, a 1–5
   index that runs the other way (a high index is dry). Where no percentage

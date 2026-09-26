@@ -21,6 +21,7 @@ import {
 import type { PrinterSelectorProps } from './types';
 import type { PrinterMappingResult, PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
 import type { FilamentRequirement } from '../../hooks/useFilamentMapping';
+import { useSlotSpoolNames } from '../../hooks/useSlotSpoolNames';
 
 interface PrinterSelectorWithMappingProps extends PrinterSelectorProps {
   /** Per-printer mapping results (only used when multiple printers selected) */
@@ -50,6 +51,8 @@ function InlineMappingEditor({
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  // Assigned slots are named after their spool (upstream d5c70477).
+  const slotNames = useSlotSpoolNames(printerResult.printerId);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const handleSlotChange = (slotId: number, value: string) => {
@@ -159,7 +162,7 @@ function InlineMappingEditor({
               : filterFilamentsByNozzle(printerResult.loadedFilaments, req.nozzle_id))
               .map((f) => (
               <option key={f.globalTrayId} value={f.globalTrayId} className="bg-bambu-dark text-white">
-                {f.label}: {f.traySubBrands || f.type} ({f.colorName})
+                {f.label}: {slotNames.get(f.globalTrayId) ?? `${f.traySubBrands || f.type} (${f.colorName})`}
               </option>
             ))}
           </select>

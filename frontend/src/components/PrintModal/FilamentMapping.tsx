@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Circle, Check, AlertTriangle, RefreshCw, ChevronDown, ChevronUp, Palette, Info } from 'lucide-react';
 import { api } from '../../api/client';
 import { useFilamentMapping } from '../../hooks/useFilamentMapping';
+import { useSlotSpoolNames } from '../../hooks/useSlotSpoolNames';
 import { filamentColorMatches, filamentRequirementMatches, filamentTypesCompatible, getGlobalTrayId } from '../../utils/amsHelpers';
 import { getColorName } from '../../utils/colors';
 import { arrangementAdvice, type Inlet } from '../../utils/ftsArrangement';
@@ -78,6 +79,9 @@ export function FilamentMapping({
   // bucket when the SKU is unknown or the by-material lookup hasn't resolved —
   // never blanks out the required row.
   const filamentLabels = useFilamentLabels(filamentReqs?.filaments);
+  // An assigned slot is named after its spool: telemetry cannot name a spool
+  // the printer did not sell (upstream d5c70477). Matching still reads telemetry.
+  const slotNames = useSlotSpoolNames(printerId);
 
   const trayCostMap = useMemo(() => {
     const map = new Map<number, number | null>();
@@ -360,7 +364,7 @@ export function FilamentMapping({
                           disabled={ftsInstalled && f.isExternal}
                           className="bg-bambu-dark text-white"
                         >
-                          {f.label}: {f.traySubBrands || f.type} ({f.colorName}){remainingLabel}{ftsBadge}
+                          {f.label}: {slotNames.get(f.globalTrayId) ?? `${f.traySubBrands || f.type} (${f.colorName})`}{remainingLabel}{ftsBadge}
                           {ftsInstalled && f.isExternal ? ` — ${t('filamentRouting.feasibility.reason.fts_external_unsupported')}` : ''}
                         </option>
                       );
