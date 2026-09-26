@@ -1085,6 +1085,8 @@ async def _update_archive_locked(
         and archive.project_id is not None
         and update_data.project_id is None
     )
+    # For the order journal below — which order held the print before this edit.
+    project_before = archive.project_id
 
     # An order line has to belong to the order the archive is filed under, or
     # the order's progress would count a print it never asked for. The target is
@@ -1112,6 +1114,17 @@ async def _update_archive_locked(
         exclude_unset=True, exclude={"parts_defective", "defective_count"}
     ).items():
         setattr(archive, field, value)
+
+    # The order journal (spec workshop-order-stage, rule 17): re-filing a print
+    # is an operator action on BOTH orders it touches.
+    if archive.project_id != project_before:
+        from backend.app.services import order_journal
+
+        moved = {"count": 1, "archive_ids": [archive.id]}
+        if project_before is not None:
+            await order_journal.record(db, project_before, "prints_unfiled", moved, actor=user)
+        if archive.project_id is not None:
+            await order_journal.record(db, archive.project_id, "prints_filed", moved, actor=user)
 
     if update_data.parts_defective or (
         "defective_count" in update_data.model_fields_set and update_data.defective_count is not None

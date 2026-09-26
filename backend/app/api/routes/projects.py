@@ -710,11 +710,13 @@ async def create_project(
             await _reserve(db, row, units, current_user)
     await order_journal.record(db, project.id, "order_created", {"source": "manual"}, actor=current_user)
     for row, units in wanted:
+        # What the LEDGER took — the shelf may hold fewer kits than were asked for.
+        from_stock = await part_stock.reserved_units_for_line(db, row) if units else 0
         await order_journal.record(
             db,
             project.id,
             "line_added",
-            {"line_id": row.id, "product": names[row.product_id], "quantity": row.quantity, "from_stock": units},
+            {"line_id": row.id, "product": names[row.product_id], "quantity": row.quantity, "from_stock": from_stock},
             actor=current_user,
         )
     return await _response(db, project.id)
@@ -1045,16 +1047,26 @@ async def add_line(
     current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     project = await _get_project(db, project_id)
-    await _check_product(db, data.product_id)
+    product = await _check_product(db, data.product_id)
     line = ProjectLine(
         sort_order=max((ln.sort_order for ln in project.lines), default=-1) + 1,
         **data.model_dump(exclude={"from_stock_units"}),
     )
     project.lines.append(line)
+    # Flushed first so the movements — and the journal — have a line id to name.
+    await db.flush()
+    from_stock = 0
     if data.from_stock_units:
-        # Flushed first so the movements have a line id to name.
-        await db.flush()
         await _reserve(db, line, data.from_stock_units, current_user)
+        # What the LEDGER took — the shelf may hold fewer kits than were asked for.
+        from_stock = await part_stock.reserved_units_for_line(db, line)
+    await order_journal.record(
+        db,
+        project.id,
+        "line_added",
+        {"line_id": line.id, "product": product.name, "quantity": line.quantity, "from_stock": from_stock},
+        actor=current_user,
+    )
     return await _response(db, project.id)
 
 
@@ -1074,6 +1086,10 @@ async def update_line(
     current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     line = await _get_line(db, project_id, line_id)
+    # Read before the write: the journal says what changed, not what was sent.
+    tracked = ("quantity", "material", "color", "note")
+    before = {field_name: getattr(line, field_name) for field_name in tracked}
+    stock_before = await part_stock.reserved_units_for_line(db, line)
     for field_name in data.model_fields_set - {"from_stock_units"}:
         setattr(line, field_name, getattr(data, field_name))
     if data.from_stock_units is not None:
@@ -1100,6 +1116,19 @@ async def update_line(
         # quantity going UP does not help itself to more of the shelf, because
         # nobody asked it to.
         await _reserve(db, line, line.quantity, current_user)
+    changes = {name: [before[name], getattr(line, name)] for name in tracked if getattr(line, name) != before[name]}
+    stock_after = await part_stock.reserved_units_for_line(db, line)
+    if stock_after != stock_before:
+        changes["from_stock"] = [stock_before, stock_after]
+    if changes:
+        product = await db.get(Product, line.product_id)
+        await order_journal.record(
+            db,
+            project_id,
+            "line_changed",
+            {"line_id": line.id, "product": product.name if product else None, "changes": changes},
+            actor=current_user,
+        )
     return await _response(db, project_id)
 
 
@@ -1108,7 +1137,7 @@ async def delete_line(
     project_id: int,
     line_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     line = await _get_line(db, project_id, line_id)
     project = await _get_project(db, project_id)
@@ -1129,6 +1158,14 @@ async def delete_line(
     for model in (PrintArchive, PrintQueueItem, AutoQueueItem):
         await db.execute(update(model).where(model.project_line_id == line_id).values(project_line_id=None))
     await part_stock.detach_line(db, line_id)
+    product = await db.get(Product, line.product_id)
+    await order_journal.record(
+        db,
+        project_id,
+        "line_removed",
+        {"product": product.name if product else None, "quantity": line.quantity},
+        actor=current_user,
+    )
     project.lines.remove(line)  # delete-orphan turns this into the DELETE
     await db.flush()
     await product_delete.delete_orphaned_adhoc_products(db, [line.product_id])
@@ -1214,6 +1251,14 @@ async def bank_surplus(
                 moved[pf.part_id] = StockMovedOut(part_id=pf.part_id, name=pf.name, delta=movement.delta)
             else:
                 entry.delta += movement.delta
+    if moved:
+        await order_journal.record(
+            db,
+            project_id,
+            "surplus_banked",
+            {"parts": sum(entry.delta for entry in moved.values())},
+            actor=current_user,
+        )
     # No commit here: ``get_db`` closes the transaction once, after the response
     # is built (finding M6). The response is built from the movement rows above,
     # before any commit could expire them.
@@ -1229,19 +1274,28 @@ async def update_procurement(
     part_id: int,
     data: ProcurementUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     project = await _get_project(db, project_id)
     part = await db.get(ProductPart, part_id)
     if part is None or part.kind != "purchased" or part.product_id not in {ln.product_id for ln in project.lines}:
         raise HTTPException(status_code=404, detail="Purchased part not found in this order")
     row = await db.get(ProjectProcurement, {"project_id": project_id, "product_part_id": part_id})
+    acquired_before = row.quantity_acquired if row is not None else 0
     if row is None:
         db.add(
             ProjectProcurement(project_id=project_id, product_part_id=part_id, quantity_acquired=data.quantity_acquired)
         )
     else:
         row.quantity_acquired = data.quantity_acquired
+    if data.quantity_acquired != acquired_before:
+        await order_journal.record(
+            db,
+            project_id,
+            "procurement_updated",
+            {"part": part.name, "from": acquired_before, "to": data.quantity_acquired},
+            actor=current_user,
+        )
     return await _response(db, project_id)
 
 
@@ -1302,13 +1356,17 @@ async def add_archives_to_project(
     project_id: int,
     data: BatchAddArchives,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     """File existing prints under this order, optionally under one of its lines."""
     await _get_project(db, project_id)  # 404s an order that is not there
     if data.project_line_id is not None:
         await _get_line(db, project_id, data.project_line_id)
     updated = 0
+    # The journal (spec workshop-order-stage, rule 17): filed here, and taken
+    # out of whichever order held them before.
+    filed: list[int] = []
+    left: dict[int, list[int]] = {}
     for archive_id in data.archive_ids:
         archive = await db.get(PrintArchive, archive_id)
         if archive:
@@ -1317,6 +1375,10 @@ async def add_archives_to_project(
             # the moment an order counts it. Read before the assignment, which
             # is where ``project_id`` stops being what it was.
             was_unfiled = archive.project_id is None
+            if archive.project_id != project_id:
+                filed.append(archive.id)
+                if archive.project_id is not None:
+                    left.setdefault(archive.project_id, []).append(archive.id)
             archive.project_id = project_id
             archive.project_line_id = data.project_line_id
             if was_unfiled:
@@ -1333,6 +1395,14 @@ async def add_archives_to_project(
                         e,
                     )
             updated += 1
+    for old_project, ids in left.items():
+        await order_journal.record(
+            db, old_project, "prints_unfiled", {"count": len(ids), "archive_ids": ids}, actor=current_user
+        )
+    if filed:
+        await order_journal.record(
+            db, project_id, "prints_filed", {"count": len(filed), "archive_ids": filed}, actor=current_user
+        )
     return {"message": f"Added {updated} archives to project"}
 
 
@@ -1345,6 +1415,7 @@ async def remove_archives_from_project(
 ):
     """Unfile prints from this order — the line goes with the order, never alone."""
     updated = 0
+    removed: list[int] = []
     for archive_id in data.archive_ids:
         archive = (
             await db.execute(
@@ -1365,7 +1436,12 @@ async def remove_archives_from_project(
                 created_by=current_user.id if current_user else None,
                 note=part_stock.NOTE_UNFILED_FROM_ORDER,
             )
+            removed.append(archive.id)
             updated += 1
+    if removed:
+        await order_journal.record(
+            db, project_id, "prints_unfiled", {"count": len(removed), "archive_ids": removed}, actor=current_user
+        )
     return {"message": f"Removed {updated} archives from project"}
 
 
@@ -1447,7 +1523,7 @@ async def add_queue_items_to_project(
     project_id: int,
     data: BatchAddQueueItems,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     """Batch add queue items to a project.
 
@@ -1474,6 +1550,8 @@ async def add_queue_items_to_project(
             item.project_id = project_id
             updated += 1
 
+    if updated:
+        await order_journal.record(db, project_id, "queue_items_filed", {"count": updated}, actor=current_user)
     return {"message": f"Added {updated} queue items to project"}
 
 
@@ -1490,7 +1568,7 @@ async def upload_attachment(
     project_id: int,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     """Upload an attachment to a project."""
     logger.info("=== UPLOAD START: %s for project %s ===", file.filename, project_id)
@@ -1543,6 +1621,8 @@ async def upload_attachment(
     # Simple ORM update
     project.attachments = attachments
     db.add(project)  # Explicitly add to session
+    # Before this route's own commit below, or the journal line would be lost with the session.
+    await order_journal.record(db, project_id, "attachment_added", {"filename": original_name}, actor=current_user)
 
     logger.info("=== BEFORE COMMIT: %s attachments ===", len(attachments))
 
@@ -1608,7 +1688,7 @@ async def delete_attachment(
     project_id: int,
     filename: str,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     """Delete an attachment from a project."""
     # Validate filename to prevent path traversal
@@ -1630,6 +1710,13 @@ async def delete_attachment(
     # Remove from list
     attachments = [a for a in attachments if a.get("filename") != filename]
     project.attachments = attachments if attachments else None
+    await order_journal.record(
+        db,
+        project_id,
+        "attachment_removed",
+        {"filename": attachment.get("original_name") or filename},
+        actor=current_user,
+    )
 
     # Delete file
     file_path = (
@@ -1659,7 +1746,7 @@ async def upload_project_cover_image(
     project_id: int,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     """Upload (or replace) the project's cover image (#1155).
 
@@ -1710,6 +1797,7 @@ async def upload_project_cover_image(
 
     project.cover_image_filename = unique_filename
     db.add(project)
+    await order_journal.record(db, project_id, "cover_changed", {"action": "set"}, actor=current_user)
     await db.flush()
 
     return {
@@ -1768,7 +1856,7 @@ async def get_project_cover_image(
 async def delete_project_cover_image(
     project_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     """Remove the project's cover image (#1155)."""
     result = await db.execute(select(Project).where(Project.id == project_id))
@@ -1785,6 +1873,7 @@ async def delete_project_cover_image(
                 logger.warning("Failed to delete cover image file %s: %s", file_path, e)
         project.cover_image_filename = None
         db.add(project)
+        await order_journal.record(db, project_id, "cover_changed", {"action": "removed"}, actor=current_user)
         await db.flush()
 
     return {"status": "success"}
@@ -2533,6 +2622,9 @@ async def enqueue_order_plan(
         created.append(
             PlanEnqueueCreated(line_id=plate.line_id, plate_id=plate.plate_id, queue_item_ids=[r.id for r in rows])
         )
+    prints = sum(len(entry.queue_item_ids) for entry in created)
+    if prints:
+        await order_journal.record(db, project_id, "plan_enqueued", {"prints": prints}, actor=current_user)
     return PlanEnqueueResponse(created=created)
 
 
@@ -2555,5 +2647,16 @@ async def rebalance_order_line(
     project = await _get_project(db, project_id)
     if line_id not in {line.id for line in project.lines}:
         raise HTTPException(status_code=404, detail="Order line not found in this project")
+    # Read before the writer, which commits per call and expires what is loaded.
+    line_product_id = next(ln.product_id for ln in project.lines if ln.id == line_id)
     result = await queue_rebalance.rebalance(db, line_ids=[line_id], force=True, current_user=current_user)
+    if result.converted or result.created:
+        product = await db.get(Product, line_product_id)
+        await order_journal.record(
+            db,
+            project_id,
+            "line_rebalanced",
+            {"line_id": line_id, "product": product.name if product else None},
+            actor=current_user,
+        )
     return result.as_response()

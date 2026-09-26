@@ -803,7 +803,9 @@ async def test_a_traversing_attachment_name_is_refused_before_the_path_join():
     for handler in (download_attachment, delete_attachment):
         for name in ("../../secret.txt", "sub/file.txt", "..\\win.txt", ""):
             with pytest.raises(HTTPException) as raised:
-                await handler(project_id=1, filename=name, db=None, _=None)
+                # The user argument keeps its default: the guard refuses before anything reads it,
+                # and the two handlers do not share its name.
+                await handler(project_id=1, filename=name, db=None)
             assert raised.value.status_code == 400, f"{handler.__name__} accepted {name!r}"
 
 

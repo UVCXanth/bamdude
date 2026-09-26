@@ -24,7 +24,11 @@ import pytest
 from sqlalchemy import insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.migrations import m158_products_and_orders as m158
+from backend.app.migrations import (
+    m158_products_and_orders as m158,
+    m187_customer_contacts as m187,
+    m188_order_stage_journal as m188,
+)
 from backend.app.migrations.helpers import get_table_columns, table_exists
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
@@ -196,6 +200,11 @@ async def _run_upgrade(engine):
     async with engine.begin() as conn:
         await conn.execute(text("PRAGMA foreign_keys = OFF"))
         await m158.upgrade(conn)
+        # The assertions read through the CURRENT ``Project`` model, so the
+        # columns later migrations add to the table m158 rebuilds must exist too:
+        # ``contact_id`` (m187), ``stage`` and ``responsible_id`` (m188).
+        await m187.upgrade(conn)
+        await m188.upgrade(conn)
 
 
 @pytest.mark.asyncio

@@ -59,6 +59,7 @@ async def record_defects(
     db: AsyncSession, archive: PrintArchive, write: DefectsWrite, *, actor_id: int | None = None
 ) -> DefectsResult:
     """Record scrap on ``archive`` and bring the shelf in line — see the module docstring."""
+    defective_before = int(archive.defective_count or 0)
     rows = await load_rows(db, archive.id)
     if rows:
         by_id = {row.id: row for row in rows}
@@ -70,6 +71,19 @@ async def record_defects(
     elif write.flat is not None:
         archive.defective_count = max(0, min(int(write.flat), int(archive.quantity or 0)))
     await db.flush()
+
+    # The order journal (spec workshop-order-stage, rule 17) — from here, the one
+    # writer of defects, so every door that records them is journaled alike.
+    if archive.project_id is not None and int(archive.defective_count or 0) != defective_before:
+        from backend.app.services import order_journal
+
+        await order_journal.record(
+            db,
+            archive.project_id,
+            "defects_recorded",
+            {"archive_id": archive.id, "defective": int(archive.defective_count or 0)},
+            actor_id=actor_id,
+        )
 
     result = DefectsResult(defective_count=int(archive.defective_count or 0), parts=rows)
     adjusted = await part_stock.adjust_unfiled_print(
