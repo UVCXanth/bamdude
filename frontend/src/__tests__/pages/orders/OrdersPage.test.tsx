@@ -34,7 +34,18 @@ const boardOf = (over: Partial<OrderBoard> = {}): OrderBoard => ({
   ...over,
 }) as OrderBoard;
 
-const EMPTY_FARM: FarmNeeds ={ rows: [], orders_count: 0, unknown_prints: 0, stock_unavailable: false, assumptions: ['slicer_estimate'] };
+/** The detail the workspace's right pane reads — only what its header needs to name the order. */
+const orderDetail = {
+  code: 'OR-0001', customer_id: 1, customer_name: 'ACME', description: null, color: null, status: 'active', stage: 'prep',
+  responsible_id: null, responsible_name: null, notes: null, attachments: null, tags: null, due_date: null,
+  priority: 'normal', price: null, url: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00Z',
+  updated_at: '2026-09-01T00:00:00Z', procurement: [], other_archive_ids: [], lines: [],
+  figures: { ordered: 0, printed: 0, covered_units: 0, complete: 0, remaining: 0, total_time_seconds: 0,
+    total_filament_grams: 0, total_cost: 0, defective: 0, margin: null, progress: 0, other_prints_count: 0,
+    all_printed: false, bankable_surplus: 0 },
+};
+
+const EMPTY_FARM: FarmNeeds = { rows: [], orders_count: 0, unknown_prints: 0, stock_unavailable: false, assumptions: ['slicer_estimate'] };
 
 afterEach(() => {
   window.history.pushState({}, '', '/');
@@ -223,6 +234,38 @@ describe('OrdersPage', () => {
     await waitFor(() => expect(board).toHaveBeenCalledWith({ customer_id: 1, q: 'lamp' }));
     expect(screen.getByRole('region', { name: 'Quality check' })).toBeInTheDocument();
     expect(get).not.toHaveBeenCalled();
+  });
+  describe('the workspace', () => {
+    const rowC = { ...rowA, id: 3, name: 'C', code: 'OR-0003' };
+    beforeEach(() => {
+      localStorage.setItem('projects.view', 'workspace');
+      // Tailwind's `lg`: the workspace has its right pane only from there.
+      vi.spyOn(window, 'matchMedia').mockImplementation(
+        (query: string) =>
+          ({ matches: query.includes('min-width: 1024px'), media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as never,
+      );
+      vi.spyOn(api, 'getOrder').mockImplementation(async (id: number) => ({ ...orderDetail, id, name: id === 3 ? 'C' : 'A' }) as never);
+      vi.spyOn(api, 'getOrderPlan').mockResolvedValue({ lines: [], totals: { prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null } });
+      vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([{ ...rowA, code: 'OR-0001' }, rowC]));
+    });
+    it('the order in the URL is the one shown; a click on another row moves it', async () => {
+      window.history.pushState({}, '', '/projects?order=3');
+      render(<OrdersPage />);
+      expect(await screen.findByRole('heading', { name: 'C' })).toBeInTheDocument();
+      fireEvent.click(within(screen.getByRole('list', { name: 'Orders' })).getByRole('button', { name: /^OR-0001/ }));
+      await waitFor(() => expect(window.location.search).toContain('order=1'));
+      expect(await screen.findByRole('heading', { name: 'A' })).toBeInTheDocument();
+    });
+    it('deleting the shown order drops it from the URL and stays on the list', async () => {
+      vi.spyOn(api, 'deleteOrder').mockResolvedValue(undefined as never);
+      window.history.pushState({}, '', '/projects?order=3');
+      render(<OrdersPage />);
+      await screen.findByRole('heading', { name: 'C' });
+      fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+      fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
+      await waitFor(() => expect(window.location.search).not.toContain('order='));
+      expect(window.location.pathname).toBe('/projects');
+    });
   });
   it('«…and N more» on the board opens the table with the column’s stage', async () => {
     localStorage.setItem('projects.view', 'kanban');

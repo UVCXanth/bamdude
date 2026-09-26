@@ -71,12 +71,14 @@ export function useListUrlState({ defaults: given }: { defaults: ListUrlDefaults
       }),
     [write, defaults],
   );
+  /** `keepPage` is for an extra that is a PLACE rather than a filter — the order
+   *  picked in the workspace: it narrows nothing, so the page stays. */
   const setExtra = useCallback(
-    (key: string, value: string) =>
+    (key: string, value: string, { keepPage = false }: { keepPage?: boolean } = {}) =>
       write((n) => {
         if (value && value !== defaults.extra?.[key]) n.set(key, value);
         else n.delete(key);
-        n.delete('page');
+        if (!keepPage) n.delete('page');
       }),
     [write, defaults],
   );

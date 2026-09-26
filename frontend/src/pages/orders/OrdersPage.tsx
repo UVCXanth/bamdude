@@ -12,6 +12,7 @@ import { FilamentStrip } from '../../components/projects/FilamentStrip';
 import { OrdersTiles } from '../../components/projects/OrdersTiles';
 import { OrderStatusTabs, OrdersListView } from '../../components/projects/OrdersListView';
 import { OrdersBoard } from '../../components/projects/board/OrdersBoard';
+import { OrdersWorkspace } from '../../components/projects/OrdersWorkspace';
 import { ORDER_TABS, ORDERS_DEFAULT_SORT } from '../../components/projects/orderList';
 import { useOrderSortOptions } from '../../hooks/useOrderSortOptions';
 import { ConfirmModal } from '../../components/ConfirmModal';
@@ -60,7 +61,7 @@ export function OrdersPage() {
   const views = useOrdersViews();
   const sortOptions = useOrderSortOptions();
   const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
-    defaults: { sort: ORDERS_DEFAULT_SORT[view], extra: { tab: 'active', customer: '', responsible: '', stage: '' } },
+    defaults: { sort: ORDERS_DEFAULT_SORT[view], extra: { tab: 'active', customer: '', responsible: '', stage: '', order: '' } },
   });
   // Another view is another default order, so the page it stood on means nothing there.
   const setView = (next: OrdersView) => {
@@ -305,6 +306,21 @@ export function OrdersPage() {
         />
       )}
       {view === 'kanban' && <OrdersBoard filters={viewFilters} onOpenList={() => setViewPref('table')} />}
+      {view === 'workspace' && (
+        <OrdersWorkspace
+          data={data}
+          isLoading={isLoading}
+          isPlaceholderData={isPlaceholderData}
+          perPage={perPage}
+          onPageChange={setPage}
+          onPerPageChange={(n) => {
+            setPerPage(n);
+            setPage(1);
+          }}
+          picked={Number(extra.order) || null}
+          onPick={(id) => setExtra('order', id ? String(id) : '', { keepPage: true })}
+        />
+      )}
 
       {editing && (
         <OrderModal order={editing === 'new' ? null : editing} defaultCustomerId={customerId} onClose={() => setEditing(null)} />

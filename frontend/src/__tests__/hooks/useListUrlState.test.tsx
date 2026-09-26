@@ -67,6 +67,20 @@ describe('useListUrlState', () => {
     expect(result.current.state.extra.catalog).toBe('1');
   });
 
+  it('an extra that is a place, not a filter, keeps the page', () => {
+    const { result } = renderHook(
+      () => ({
+        state: useListUrlState({ defaults: { extra: { order: '' } } }),
+        params: useSearchParams()[0],
+      }),
+      { wrapper: wrapper('/projects?page=3') },
+    );
+    act(() => result.current.state.setExtra('order', '7', { keepPage: true }));
+    expect(result.current.params.toString()).toBe('page=3&order=7');
+    act(() => result.current.state.setExtra('order', '', { keepPage: true }));
+    expect(result.current.params.toString()).toBe('page=3');
+  });
+
   it('clamps to the last page after the list shrank', () => {
     const { result } = renderHook(() => useListUrlState({ defaults: {} }), { wrapper: wrapper('/customers?page=9') });
     act(() => result.current.clampToLastPage(2));
