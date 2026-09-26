@@ -8,7 +8,7 @@ import type { TimelineEvent } from '../../api/client';
  */
 export const ORDER_JOURNAL_KINDS = [
   'order_created', 'status_changed', 'fields_changed', 'responsible_changed', 'stage_changed',
-  'line_added', 'line_changed', 'line_removed',
+  'line_added', 'line_changed', 'line_removed', 'line_configured',
   'prints_filed', 'prints_unfiled', 'defects_recorded',
   'queue_items_filed', 'plan_enqueued', 'line_rebalanced',
   'surplus_banked', 'procurement_updated',
@@ -16,6 +16,19 @@ export const ORDER_JOURNAL_KINDS = [
 ] as const;
 
 type JournalKind = (typeof ORDER_JOURNAL_KINDS)[number];
+
+/** A configuration snapshot of `line_configured` — `{choices: [[group, option]], changed: [[part, qty]]}`,
+ *  names only; the sentence is composed here, in the reader's language. */
+function configText(snapshot: unknown, t: TFunction): string {
+  const s = snapshot && typeof snapshot === 'object' ? (snapshot as { choices?: unknown; changed?: unknown }) : {};
+  const choices = Array.isArray(s.choices) ? s.choices : [];
+  const changed = Array.isArray(s.changed) ? s.changed : [];
+  const bits = choices
+    .filter((pair): pair is [string, string] => Array.isArray(pair) && pair.length === 2)
+    .map(([group, option]) => `${group}: ${option}`);
+  if (changed.length) bits.push(t('orders.lineConfig.changedParts', { count: changed.length }));
+  return bits.length ? bits.join(' · ') : t('orders.lineConfig.standard');
+}
 
 const isJournalKind = (kind: string): kind is JournalKind => (ORDER_JOURNAL_KINDS as readonly string[]).includes(kind);
 
@@ -67,6 +80,8 @@ export function journalText(event: TimelineEvent, t: TFunction): string | null {
       const changes = m.changes && typeof m.changes === 'object' ? Object.keys(m.changes) : [];
       return t('orders.timeline.events.line_changed', { product: named(m.product), fields: fieldList(changes, t) });
     }
+    case 'line_configured':
+      return t('orders.timeline.events.line_configured', { product: named(m.product), config: configText(m.to, t) });
     case 'cover_changed':
       return t(`orders.timeline.cover.${m.action === 'removed' ? 'removed' : 'set'}`);
     default:

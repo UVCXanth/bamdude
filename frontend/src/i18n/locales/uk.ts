@@ -5371,6 +5371,15 @@ export default {
     tiles: { failed: 'Не вдалося завантажити' },
   },
   orders: {
+    // spec workshop-product-variants: a line's configuration.
+    lineConfig: {
+      standard: 'стандартна',
+      partsOnly: 'лише деталі',
+      changedParts_one: 'змінено деталей: {{count}}',
+      changedParts_few: 'змінено деталей: {{count}}',
+      changedParts_many: 'змінено деталей: {{count}}',
+      changedParts_other: 'змінено деталей: {{count}}',
+    },
     tiles: {
       active: 'Активні',
       activeSub: 'прострочено: {{overdue}} · термінових: {{urgent}}',
@@ -5801,6 +5810,7 @@ export default {
         line_added: 'Додано позицію «{{product}}» × {{quantity}}',
         line_changed: 'Змінено позицію «{{product}}» ({{fields}})',
         line_removed: 'Видалено позицію «{{product}}» × {{quantity}}',
+        line_configured: 'Конфігурація «{{product}}»: {{config}}',
         prints_filed: 'Друки прив’язано до замовлення: {{count}}',
         prints_unfiled: 'Друки прибрано із замовлення: {{count}}',
         defects_recorded: 'Записано брак: {{defective}}',

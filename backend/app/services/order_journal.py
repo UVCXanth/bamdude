@@ -16,7 +16,7 @@ from backend.app.models.user import User
 
 EVENT_KINDS: tuple[str, ...] = (
     "order_created", "status_changed", "fields_changed", "responsible_changed", "stage_changed",
-    "line_added", "line_changed", "line_removed",
+    "line_added", "line_changed", "line_removed", "line_configured",
     "prints_filed", "prints_unfiled", "defects_recorded",
     "queue_items_filed", "plan_enqueued", "line_rebalanced",
     "surplus_banked", "procurement_updated",
@@ -33,6 +33,7 @@ TITLES: dict[str, str] = {
     "line_added": "Line added",
     "line_changed": "Line changed",
     "line_removed": "Line removed",
+    "line_configured": "Line configuration changed",
     "prints_filed": "Prints filed under the order",
     "prints_unfiled": "Prints taken out of the order",
     "defects_recorded": "Defects recorded",

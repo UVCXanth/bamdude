@@ -7,7 +7,7 @@ from backend.app.services import order_journal
 
 EXPECTED_KINDS = (
     "order_created", "status_changed", "fields_changed", "responsible_changed", "stage_changed",
-    "line_added", "line_changed", "line_removed",
+    "line_added", "line_changed", "line_removed", "line_configured",
     "prints_filed", "prints_unfiled", "defects_recorded",
     "queue_items_filed", "plan_enqueued", "line_rebalanced",
     "surplus_banked", "procurement_updated",

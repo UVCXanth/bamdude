@@ -5344,6 +5344,13 @@ export default {
     tiles: { failed: 'Could not load' },
   },
   orders: {
+    // spec workshop-product-variants: a line's configuration.
+    lineConfig: {
+      standard: 'standard',
+      partsOnly: 'parts only',
+      changedParts_one: '{{count}} part changed',
+      changedParts_other: '{{count}} parts changed',
+    },
     tiles: {
       active: 'Active',
       activeSub: 'overdue: {{overdue}} · urgent: {{urgent}}',
@@ -5744,6 +5751,7 @@ export default {
         line_added: 'Line added: {{product}} × {{quantity}}',
         line_changed: 'Line changed: {{product}} ({{fields}})',
         line_removed: 'Line removed: {{product}} × {{quantity}}',
+        line_configured: 'Configuration of {{product}}: {{config}}',
         prints_filed: 'Prints filed under the order: {{count}}',
         prints_unfiled: 'Prints taken out of the order: {{count}}',
         defects_recorded: 'Defects recorded: {{defective}}',

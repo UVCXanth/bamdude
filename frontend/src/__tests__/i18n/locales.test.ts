@@ -223,7 +223,7 @@ describe('the queue-source refusal codes are the backend’s closed list', () =>
 describe('every order journal kind has a sentence', () => {
   const EVENT_KINDS = [
     'order_created', 'status_changed', 'fields_changed', 'responsible_changed', 'stage_changed',
-    'line_added', 'line_changed', 'line_removed',
+    'line_added', 'line_changed', 'line_removed', 'line_configured',
     'prints_filed', 'prints_unfiled', 'defects_recorded',
     'queue_items_filed', 'plan_enqueued', 'line_rebalanced',
     'surplus_banked', 'procurement_updated',
