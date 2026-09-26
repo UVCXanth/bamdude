@@ -172,6 +172,13 @@ class ProductPlate(Base):
 
 
 PRODUCT_STATUSES = ("draft", "ready")
+
+
+def sku_key(sku: str) -> str:
+    """``Product.sku_key`` — Python's Unicode-aware fold, whatever the database folds."""
+    return sku.strip().casefold()
+
+
 FACET_KINDS = ("material", "color", "model")
 
 

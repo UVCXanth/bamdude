@@ -39,6 +39,13 @@ def _clean_name(value: Any) -> Any:
     return trimmed
 
 
+def _blank_to_none(value: Any) -> Any:
+    """A stripped text field, or None when nothing is left of it."""
+    if isinstance(value, str):
+        return value.strip() or None
+    return value
+
+
 def _never_null(value, field: str):
     """PATCH clears a field by sending ``null`` — but these columns are NOT NULL,
     so clearing one would surface as an IntegrityError from the flush, i.e. a 500
@@ -57,11 +64,22 @@ class ProductCreate(BaseModel):
     license: str | None = None
     source_url: str | None = None
     design_id: str | None = None
+    # spec workshop-product-catalog, rules 1 and 13–15. A blank SKU / version
+    # is no value; the SKU's uniqueness and the ready gate are the route's.
+    sku: str | None = Field(default=None, max_length=64)
+    version: str | None = Field(default=None, max_length=64)
+    category_id: int | None = None
+    status: Literal["draft", "ready"] = "draft"
 
     @field_validator("name", mode="before")
     @classmethod
     def _name_is_clean(cls, v: Any) -> Any:
         return _clean_name(v)
+
+    @field_validator("sku", "version", mode="before")
+    @classmethod
+    def _blank_is_none(cls, v: Any) -> Any:
+        return _blank_to_none(v)
 
     @field_validator("source_url")
     @classmethod
@@ -82,6 +100,12 @@ class ProductUpdate(BaseModel):
     # ``catalog``; an adhoc product never becomes adhoc again, and the
     # Literal is what makes 422 the answer to anything else.
     origin: Literal["catalog"] | None = None
+    # spec workshop-product-catalog, rules 1 and 13–15. A blank SKU / version
+    # is no value; the SKU's uniqueness and the ready gate are the route's.
+    sku: str | None = Field(default=None, max_length=64)
+    version: str | None = Field(default=None, max_length=64)
+    category_id: int | None = None
+    status: Literal["draft", "ready"] | None = None
 
     @field_validator("name", mode="before")
     @classmethod
@@ -97,6 +121,16 @@ class ProductUpdate(BaseModel):
     @classmethod
     def _origin_is_never_null(cls, v: str | None) -> str | None:
         return _never_null(v, "origin")
+
+    @field_validator("status")
+    @classmethod
+    def _status_is_never_null(cls, v: str | None) -> str | None:
+        return _never_null(v, "status")
+
+    @field_validator("sku", "version", mode="before")
+    @classmethod
+    def _blank_is_none(cls, v: Any) -> Any:
+        return _blank_to_none(v)
 
     @field_validator("source_url")
     @classmethod
@@ -211,6 +245,8 @@ class PlateRecipeResponse(BaseModel):
     unassigned: list[PlateUnassignedEntry] = []
     materials: list[str] = []
     colors: list[str] = []
+    # The model the plate was sliced for, normalised (``X1C``) — None when the file says nothing.
+    printer_model: str | None = None
     print_time_seconds: int | None = None
     filament_used_grams: float | None = None
 
@@ -274,11 +310,21 @@ class CoverPickRequest(BaseModel):
     filename: str = Field(min_length=1)
 
 
+class ProductCategoryRef(BaseModel):
+    id: int
+    name: str
+
+
 class ProductListItem(BaseModel):
     id: int
     code: str
     name: str
     is_active: bool
+    # spec workshop-product-catalog, rule 13.
+    sku: str | None = None
+    version: str | None = None
+    category: ProductCategoryRef | None = None
+    status: Literal["draft", "ready"] = "draft"
     cover_image_filename: str | None = None
     # The EFFECTIVE cover — the explicit column or the first picture. The card
     # renders ``GET /products/{id}/cover-image`` on this, never on the column.

@@ -36,7 +36,16 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.i18n.api_errors import json_error
 from backend.app.models.library import LibraryFile, LibraryFolder
-from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate, product_files, product_folders
+from backend.app.models.product import (
+    Product,
+    ProductOrigin,
+    ProductPart,
+    ProductPlate,
+    product_files,
+    product_folders,
+    sku_key,
+)
+from backend.app.models.product_category import ProductCategory
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
 from backend.app.schemas.listing import ProductListPage
@@ -49,6 +58,7 @@ from backend.app.schemas.product import (
     PlateUnassignedEntry,
     PlateYieldEntry,
     ProductAttachmentOut,
+    ProductCategoryRef,
     ProductCreate,
     ProductDuplicate,
     ProductImportResponse,
@@ -197,6 +207,54 @@ async def _part_out(db: AsyncSession, part: ProductPart) -> ProductPartResponse:
     return _with_balance(part, await part_stock.balances(db, part.product_id))
 
 
+# spec workshop-product-catalog, rules 13–15: the catalog fields travel apart
+# from the plain columns — each has a rule the route checks before it writes.
+CATALOG_FIELDS = ("sku", "version", "category_id", "status")
+
+
+def _catalog_out(product: Product) -> dict:
+    """The catalog fields of a list row or a product response."""
+    category = product.category
+    return {
+        "sku": product.sku,
+        "version": product.version,
+        "category": ProductCategoryRef(id=category.id, name=category.name) if category else None,
+        "status": product.status,
+    }
+
+
+async def _apply_catalog_fields(db: AsyncSession, product: Product, fields: dict) -> None:
+    """SKU, version, category and status with their rules (spec workshop-product-catalog, 14–15).
+
+    Every check runs before the first write, so a refusal leaves the row as it was.
+    """
+    sku = fields.get("sku")
+    key = sku_key(sku) if sku else None
+    if "sku" in fields and key:
+        clash = await db.scalar(select(Product.id).where(Product.sku_key == key, Product.id != product.id))
+        if clash is not None:
+            raise HTTPException(status_code=409, detail="Another product already has this SKU")
+    category_id = fields.get("category_id")
+    if "category_id" in fields and category_id is not None and await db.get(ProductCategory, category_id) is None:
+        raise HTTPException(status_code=422, detail="Category not found")
+    if fields.get("status") == "ready" and product.status != "ready":
+        parts = await db.scalar(select(func.count(ProductPart.id)).where(ProductPart.product_id == product.id))
+        plates = await db.scalar(select(func.count(ProductPlate.id)).where(ProductPlate.product_id == product.id))
+        if not parts or not plates:
+            raise HTTPException(status_code=409, detail="A product needs parts and a plate to be ready to print")
+
+    if "sku" in fields:
+        product.sku, product.sku_key = sku, key
+    if "version" in fields:
+        product.version = fields["version"]
+    if "category_id" in fields:
+        product.category_id = category_id
+        # The joined relationship was loaded with the old value.
+        product.category = await db.get(ProductCategory, category_id) if category_id is not None else None
+    if fields.get("status") is not None:
+        product.status = fields["status"]
+
+
 async def _response(db: AsyncSession, product: Product, *, reload_links: bool = False) -> ProductResponse:
     links = ["parts", "plates", "library_files", "library_folders"]
     # ``reload_links`` — a sync ran, and it wrote ``product_files`` /
@@ -217,6 +275,7 @@ async def _response(db: AsyncSession, product: Product, *, reload_links: bool = 
         code=code_for("product", product.id),
         name=product.name,
         is_active=product.is_active,
+        **_catalog_out(product),
         cover_image_filename=product.cover_image_filename,
         has_cover=effective_cover(product) is not None,
         parts_count=len(product.parts),
@@ -354,6 +413,7 @@ async def list_products(
             code=code_for("product", p.id),
             name=p.name,
             is_active=p.is_active,
+            **_catalog_out(p),
             cover_image_filename=p.cover_image_filename,
             has_cover=effective_cover(p) is not None,
             parts_count=len(p.parts),
@@ -382,8 +442,10 @@ async def create_product(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_CREATE),
 ):
-    product = Product(**data.model_dump())
+    product = Product(**data.model_dump(exclude=set(CATALOG_FIELDS)))
     db.add(product)
+    await db.flush()
+    await _apply_catalog_fields(db, product, data.model_dump(include=set(CATALOG_FIELDS)))
     await db.flush()
     return await _response(db, product)
 
@@ -526,7 +588,9 @@ async def update_product(
     _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     product = await _get(db, product_id)
-    for field_name in data.model_fields_set:  # explicit null clears; absent leaves alone
+    # The catalog fields first: their refusals must come before any write.
+    await _apply_catalog_fields(db, product, data.model_dump(include=data.model_fields_set & set(CATALOG_FIELDS)))
+    for field_name in data.model_fields_set - set(CATALOG_FIELDS):  # explicit null clears; absent leaves alone
         setattr(product, field_name, getattr(data, field_name))
     await db.flush()
     return await _response(db, product)
@@ -633,6 +697,10 @@ async def duplicate_product(
         license=source.license,
         source_url=source.source_url,
         design_id=source.design_id,
+        # The SKU names ONE product, so the copy starts without one; it is a
+        # draft until the operator says otherwise.
+        version=source.version,
+        category_id=source.category_id,
         is_active=True,
     )
     db.add(copy)
@@ -969,6 +1037,7 @@ async def list_plates(
                 unassigned=[PlateUnassignedEntry(name_key=k, count=n) for k, n in sorted(r.unassigned.items())],
                 materials=sorted(r.materials),
                 colors=sorted(r.colors),
+                printer_model=r.printer_model,
                 # ⚠️ `estimate_seconds`, not the raw column: a 0 is a file that
                 # carries no estimate, and the plan engine has always read it
                 # that way. Emitting the 0 here made the same plate say "0s" in
