@@ -137,4 +137,4 @@ class TestColorNameMapEndpoint:
     async def test_empty_catalog_returns_empty_map(self, async_client: AsyncClient):
         response = await async_client.get("/api/v1/inventory/colors/map")
         assert response.status_code == 200
-        assert response.json() == {"colors": {}}
+        assert response.json() == {"colors": {}, "by_material": {}}

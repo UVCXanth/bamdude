@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { Droplets, Copy, Check, Settings2, Package, Repeat, Unlink } from 'lucide-react';
-import { isLightColor } from '../utils/colors';
+import { isLightColor, resolveSpoolColorName } from '../utils/colors';
 import { Modal } from './Modal';
 
 type CardPlacement = { top: number; left: number; side: 'top' | 'bottom'; arrowLeft: number };
@@ -88,6 +88,10 @@ function useCardPlacement(
 interface FilamentData {
   vendor: 'Bambu Lab' | 'Generic';
   profile: string;
+  /** Catalogue name for the loaded colour. Callers that know the material
+   *  resolve it with ``getColorName(hex, tray_sub_brands)`` -- a white Matte
+   *  spool is Ivory White, not the Jade White that shares its hex (upstream
+   *  #2875). An assigned spool overrides this; see ``displayColorName``. */
   colorName: string;
   colorHex: string | null;
   kFactor: string;
@@ -240,6 +244,17 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
   };
 
   const colorHex = data.colorHex ? `#${data.colorHex.replace('#', '')}` : null;
+
+  // An assigned spool outranks any hex lookup: it is the roll the user put in
+  // this slot, named by whoever created it, and it is already shown two rows
+  // below under ASSIGNED. Passing a null rgba keeps the helper to its
+  // readable-name test -- a Bambu internal code like "A06-D0" is not a name
+  // (#857) and must not displace the catalogue answer, which the caller has
+  // already resolved with the slot's material (#2875).
+  // Trimmed, so a spool saved with a whitespace-only colour name leaves the
+  // swatch reading the catalogue answer instead of reading blank.
+  const assignedColorName = resolveSpoolColorName(inventory?.assignedSpool?.color_name ?? null, null)?.trim();
+  const displayColorName = assignedColorName || data.colorName;
   const assignedRemainingWeight = inventory?.assignedSpool?.remainingWeightGrams ?? null;
 
   return (
@@ -304,7 +319,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                 font-semibold text-sm tracking-wide
                 ${isLightColor(colorHex) ? 'text-black/80' : 'text-white/90'}
               `}>
-                {data.colorName}
+                {displayColorName}
               </div>
 
               {/* Vendor badge - solid background for visibility on any color */}

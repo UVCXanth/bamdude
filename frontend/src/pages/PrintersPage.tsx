@@ -5169,7 +5169,7 @@ function PrinterCard({
                                     || tray.tray_sub_brands
                                     || tray.tray_type,
                                   colorName: resolveMultiColorName(trayActual ? (trayActual.cols ?? null) : tray.cols)
-                                    ?? getColorName((trayActual?.tray_color ?? tray.tray_color) || ''),
+                                    ?? getColorName((trayActual?.tray_color ?? tray.tray_color) || '', tray.tray_sub_brands),
                                   colorHex: (trayActual?.tray_color ?? tray.tray_color) || null,
                                   kFactor: formatKValue(tray.k),
                                   fillLevel: effectiveFill,
@@ -5375,7 +5375,9 @@ function PrinterCard({
                                                 id: spoolmanSpool.id,
                                                 material: spoolmanSpool.material,
                                                 brand: spoolmanSpool.brand ?? null,
-                                                color_name: spoolmanSpool.color_name ?? null,
+                                                // A synthesized name is the spool's subtype, not a colour: it must
+                                                // not outrank the catalogue answer on the card.
+                                                color_name: spoolmanSpool.color_name_is_synthesized ? null : (spoolmanSpool.color_name ?? null),
                                                 remainingWeightGrams: spoolmanSpool.label_weight
                                                   ? Math.max(0, Math.round(spoolmanSpool.label_weight - spoolmanSpool.weight_used))
                                                   : undefined,
@@ -5543,7 +5545,7 @@ function PrinterCard({
                             || tray.tray_sub_brands
                             || tray.tray_type,
                           colorName: resolveMultiColorName(htTrayActual ? (htTrayActual.cols ?? null) : tray.cols)
-                            ?? getColorName((htTrayActual?.tray_color ?? tray.tray_color) || ''),
+                            ?? getColorName((htTrayActual?.tray_color ?? tray.tray_color) || '', tray.tray_sub_brands),
                           colorHex: (htTrayActual?.tray_color ?? tray.tray_color) || null,
                           kFactor: formatKValue(tray.k),
                           fillLevel: htEffectiveFill,
@@ -5785,7 +5787,9 @@ function PrinterCard({
                                             id: spoolmanSpool.id,
                                             material: spoolmanSpool.material,
                                             brand: spoolmanSpool.brand ?? null,
-                                            color_name: spoolmanSpool.color_name ?? null,
+                                                // A synthesized name is the spool's subtype, not a colour: it must
+                                                // not outrank the catalogue answer on the card.
+                                                color_name: spoolmanSpool.color_name_is_synthesized ? null : (spoolmanSpool.color_name ?? null),
                                             remainingWeightGrams: spoolmanSpool.label_weight
                                               ? Math.max(0, Math.round(spoolmanSpool.label_weight - spoolmanSpool.weight_used))
                                               : undefined,
@@ -5972,7 +5976,7 @@ function PrinterCard({
                                   || extTray.tray_sub_brands
                                   || extTray.tray_type
                                   || 'Unknown',
-                                colorName: resolveMultiColorName(extTray.cols) ?? getColorName(extTray.tray_color || ''),
+                                colorName: resolveMultiColorName(extTray.cols) ?? getColorName(extTray.tray_color || '', extTray.tray_sub_brands),
                                 colorHex: extTray.tray_color || null,
                                 kFactor: formatKValue(extTray.k),
                                 fillLevel: extEffectiveFill,
@@ -6107,7 +6111,9 @@ function PrinterCard({
                                               id: spoolmanSpool.id,
                                               material: spoolmanSpool.material,
                                               brand: spoolmanSpool.brand ?? null,
-                                              color_name: spoolmanSpool.color_name ?? null,
+                                                // A synthesized name is the spool's subtype, not a colour: it must
+                                                // not outrank the catalogue answer on the card.
+                                                color_name: spoolmanSpool.color_name_is_synthesized ? null : (spoolmanSpool.color_name ?? null),
                                               remainingWeightGrams: spoolmanSpool.label_weight
                                                 ? Math.max(0, Math.round(spoolmanSpool.label_weight - spoolmanSpool.weight_used))
                                                 : undefined,

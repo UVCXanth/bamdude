@@ -172,6 +172,12 @@
 
 ### Fixed
 
+- **An AMS slot names its colour for its own material.** One hex can be two
+  colours in Bambu's range — white is Jade White in PLA Basic and Ivory White in
+  PLA Matte — and the slot card named it from the hex alone, so an ivory Matte
+  spool read "Jade White". The slot now asks with its material first, and a slot
+  with an assigned spool shows that spool's colour name (a Spoolman subtype such
+  as "Silk+" is still not taken for a colour).
 - **A macOS native install could lose all access to the printer.** macOS grants
   Local Network permission to a code signature, and Homebrew's Python on Intel
   has none, so every connection to the printer was dropped silently — no error,
