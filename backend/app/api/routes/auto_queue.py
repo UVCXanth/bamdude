@@ -93,6 +93,19 @@ async def preview_printer_routing(
     return await printer_routing_preview(db, data, user)
 
 
+def auto_queue_item_load_options() -> tuple:
+    """What ``_to_response`` reads, loaded up front — the auto-queue list and the
+    order's queue section (``GET /projects/{id}/queue``) build their rows from the
+    same set."""
+    return (
+        selectinload(AutoQueueItem.archive),
+        selectinload(AutoQueueItem.queue_source),
+        selectinload(AutoQueueItem.library_file),
+        selectinload(AutoQueueItem.created_by),
+        selectinload(AutoQueueItem.assigned_to).selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
+    )
+
+
 def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
     """Build an AutoQueueItemResponse from an ORM row, expanding JSON columns.
 
@@ -271,13 +284,7 @@ async def list_auto_queue(
     _: User | None = RequirePermission(Permission.QUEUE_READ),
 ):
     """List auto-queue items, optionally filtered by status / batch_id."""
-    stmt = select(AutoQueueItem).options(
-        selectinload(AutoQueueItem.archive),
-        selectinload(AutoQueueItem.queue_source),
-        selectinload(AutoQueueItem.library_file),
-        selectinload(AutoQueueItem.created_by),
-        selectinload(AutoQueueItem.assigned_to).selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
-    )
+    stmt = select(AutoQueueItem).options(*auto_queue_item_load_options())
     if status_filter:
         stmt = stmt.where(AutoQueueItem.status.in_(status_filter.split(",")))
     if batch_id:

@@ -87,6 +87,22 @@ def _set_calibration_mode(item: PrintQueueItem, field: str, value) -> None:
     setattr(item, f"{field}_mode", mode)
 
 
+def queue_item_load_options() -> tuple:
+    """What ``_enrich_response`` reads, loaded up front — the queue list and the
+    order's queue section (``GET /projects/{id}/queue``) build their rows from the
+    same set."""
+    return (
+        selectinload(PrintQueueItem.archive),
+        selectinload(PrintQueueItem.queue_source),
+        selectinload(PrintQueueItem.queue)
+        .selectinload(PrinterQueue.printer)
+        .options(load_only(Printer.id, Printer.name), lazyload(Printer.tags), lazyload(Printer.location)),
+        selectinload(PrintQueueItem.library_file),
+        selectinload(PrintQueueItem.created_by),
+        selectinload(PrintQueueItem.project),
+    )
+
+
 def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
     """Add nested archive/printer/library_file info to response.
 
@@ -400,16 +416,7 @@ async def list_queue(
     user, can_read_all = auth_result
     query = (
         select(PrintQueueItem)
-        .options(
-            selectinload(PrintQueueItem.archive),
-            selectinload(PrintQueueItem.queue_source),
-            selectinload(PrintQueueItem.queue)
-            .selectinload(PrinterQueue.printer)
-            .options(load_only(Printer.id, Printer.name), lazyload(Printer.tags), lazyload(Printer.location)),
-            selectinload(PrintQueueItem.library_file),
-            selectinload(PrintQueueItem.created_by),
-            selectinload(PrintQueueItem.project),
-        )
+        .options(*queue_item_load_options())
         .order_by(PrintQueueItem.queue_id, PrintQueueItem.position)
     )
     if user is not None and not can_read_all:

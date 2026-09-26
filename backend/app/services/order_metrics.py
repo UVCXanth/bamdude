@@ -29,13 +29,20 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
+from backend.app.services.order_queue import (
+    RUNNING_STATUS,
+    awaiting_auto_row_conditions,
+    live_archive_conditions,
+    queued_printer_row_conditions,
+)
 from backend.app.services.product_composition import part_index
 
 if TYPE_CHECKING:  # the runtime import would close the circle part_stock already opens
     from backend.app.services.part_stock import LineStockReads
 
 _DONE = "completed"
-_RUNNING = "printing"
+# The queue section lists by the same status (``services/order_queue``).
+_RUNNING = RUNNING_STATUS
 
 #: How many ids go into one ``IN (...)`` list. The same 500 the library scanner
 #: batches in (m148) and the same ``selectin`` uses for its parent chunking, so
@@ -278,14 +285,16 @@ async def _load_queued(db: AsyncSession, project_ids: Sequence[int]) -> dict[int
     """``project_id → {line_id or None → pending rows}`` over both queue tiers,
     one statement per tier for every order asked about. The per-order loader
     and the batch loader both come through here, so a list row and the page it
-    opens cannot disagree about what is waiting."""
+    opens cannot disagree about what is waiting. The conditions are the order's
+    queue section's too (``services/order_queue``), so the tile counts exactly
+    the rows the section lists."""
     out: dict[int, dict[int | None, int]] = defaultdict(lambda: defaultdict(int))
     if not project_ids:
         return out
     for project_id, line_id, n in (
         await db.execute(
             select(PrintQueueItem.project_id, PrintQueueItem.project_line_id, func.count(PrintQueueItem.id))
-            .where(PrintQueueItem.project_id.in_(project_ids), PrintQueueItem.status == "pending")
+            .where(PrintQueueItem.project_id.in_(project_ids), *queued_printer_row_conditions())
             .group_by(PrintQueueItem.project_id, PrintQueueItem.project_line_id)
         )
     ).all():
@@ -293,11 +302,7 @@ async def _load_queued(db: AsyncSession, project_ids: Sequence[int]) -> dict[int
     for project_id, line_id, n in (
         await db.execute(
             select(AutoQueueItem.project_id, AutoQueueItem.project_line_id, func.count(AutoQueueItem.id))
-            .where(
-                AutoQueueItem.project_id.in_(project_ids),
-                AutoQueueItem.status == "pending",
-                AutoQueueItem.assigned_to_item_id.is_(None),
-            )
+            .where(AutoQueueItem.project_id.in_(project_ids), *awaiting_auto_row_conditions())
             .group_by(AutoQueueItem.project_id, AutoQueueItem.project_line_id)
         )
     ).all():
@@ -331,8 +336,7 @@ async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext 
         (
             await db.execute(
                 select(PrintArchive)
-                .where(func.coalesce(PrintArchive.extra_data["dispatch_aborted"].as_boolean(), False).is_(False))
-                .where(PrintArchive.project_id == project_id, PrintArchive.deleted_at.is_(None))
+                .where(PrintArchive.project_id == project_id, *live_archive_conditions())
                 .order_by(PrintArchive.created_at, PrintArchive.id)
             )
         )
@@ -856,8 +860,7 @@ async def batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[O
         (
             await db.execute(
                 select(PrintArchive)
-                .where(func.coalesce(PrintArchive.extra_data["dispatch_aborted"].as_boolean(), False).is_(False))
-                .where(PrintArchive.project_id.in_(project_ids), PrintArchive.deleted_at.is_(None))
+                .where(PrintArchive.project_id.in_(project_ids), *live_archive_conditions())
                 .order_by(PrintArchive.project_id, PrintArchive.created_at, PrintArchive.id)
             )
         )

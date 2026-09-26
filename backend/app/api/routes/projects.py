@@ -14,12 +14,15 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import NamedTuple
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.api.routes.auto_queue import _to_response, auto_queue_item_load_options
+from backend.app.api.routes.print_queue import _enrich_response, queue_item_load_options
+from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
@@ -61,6 +64,7 @@ from backend.app.schemas.listing import (
     ProjectsNavBadges,
 )
 from backend.app.schemas.order_from_files import OrderFromFilesRequest
+from backend.app.schemas.order_queue import OrderQueueOut, OrderQueuePrinting
 from backend.app.schemas.project import (
     PROJECT_PRIORITIES,
     PROJECT_STAGES,
@@ -130,6 +134,12 @@ from backend.app.services.order_metrics import (
     load_order_context,
     procurement_figures,
     project_figures,
+)
+from backend.app.services.order_queue import (
+    RUNNING_STATUS,
+    awaiting_auto_row_conditions,
+    live_archive_conditions,
+    queued_printer_row_conditions,
 )
 from backend.app.services.plan_engine import OrderPlan, plan_for_order
 from backend.app.services.print_option_defaults import preference_options
@@ -2482,6 +2492,60 @@ async def get_order_plan(
     if plan is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return _plan_response(plan, await _pending_auto_prints(db, [line.line_id for line in plan.lines]))
+
+
+@router.get("/{project_id}/queue", response_model=OrderQueueOut)
+async def get_order_queue(
+    project_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """The order's live work in both queue tiers (spec workshop-order-queue): the
+    archives printing now, the printer-queue rows waiting, and the auto-queue rows
+    the distributor has not handed out — through the SAME conditions the order's
+    tiles count (``services/order_queue``). Rows are built by the queue page's own
+    builders. A key limited to some printers sees its printers only and no
+    auto-queue, which is closed to it (as ``/auto-queue`` is)."""
+    if await db.get(Project, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    scope = key_printer_scope(request)
+    printing_q = (
+        select(PrintArchive, Printer.name)
+        .outerjoin(Printer, Printer.id == PrintArchive.printer_id)
+        .where(PrintArchive.project_id == project_id, PrintArchive.status == RUNNING_STATUS, *live_archive_conditions())
+        .order_by(PrintArchive.created_at, PrintArchive.id)
+    )
+    pending_q = (
+        select(PrintQueueItem)
+        .options(*queue_item_load_options())
+        .where(PrintQueueItem.project_id == project_id, *queued_printer_row_conditions())
+        .order_by(PrintQueueItem.queue_id, PrintQueueItem.position, PrintQueueItem.id)
+    )
+    if scope is not None:
+        printing_q = printing_q.where(PrintArchive.printer_id.in_(scope))
+        pending_q = pending_q.where(PrintQueueItem.queue_id.in_(scope))
+    printing = [
+        OrderQueuePrinting(
+            archive_id=archive.id,
+            printer_id=archive.printer_id,
+            printer_name=printer_name,
+            name=archive.print_name or archive.filename,
+            project_line_id=archive.project_line_id,
+        )
+        for archive, printer_name in (await db.execute(printing_q)).all()
+    ]
+    pending = [_enrich_response(item) for item in (await db.execute(pending_q)).scalars().all()]
+    awaiting = []
+    if scope is None:
+        awaiting_q = (
+            select(AutoQueueItem)
+            .options(*auto_queue_item_load_options())
+            .where(AutoQueueItem.project_id == project_id, *awaiting_auto_row_conditions())
+            .order_by(AutoQueueItem.position, AutoQueueItem.id)
+        )
+        awaiting = [_to_response(item) for item in (await db.execute(awaiting_q)).scalars().all()]
+    return OrderQueueOut(printing=printing, pending=pending, awaiting=awaiting)
 
 
 @router.get("/{project_id}/forecast", response_model=OrderForecastDetailOut)
