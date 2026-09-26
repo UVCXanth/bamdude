@@ -5384,6 +5384,23 @@ export default {
       workspace: 'Workspace',
       deadlines: 'Deadlines',
     },
+    // The kanban (spec workshop-order-views, rules 5–8).
+    board: {
+      more_one: 'and {{count}} more in the list',
+      more_other: 'and {{count}} more in the list',
+      empty: 'Drop a card here',
+      drag: 'Move {{code}}',
+      completeTitle: 'Mark the order completed?',
+      completeBody: '{{code}} «{{name}}» will be marked completed; it can be reopened from its menu.',
+      a11y: {
+        instructions: 'To pick up an order, press Space or Enter. The arrow keys move it to the next or the previous column; Space or Enter drops it, Escape cancels.',
+        picked: 'Picked up {{code}}.',
+        over: 'Over {{column}}.',
+        nowhere: 'Not over a column.',
+        dropped: 'Dropped {{code}} on {{column}}.',
+        cancelled: 'Moving {{code}} was cancelled.',
+      },
+    },
     list: {
       title: 'Orders',
       subtitle: 'What to make, for whom and by when — the figures come from the prints and the shelf',

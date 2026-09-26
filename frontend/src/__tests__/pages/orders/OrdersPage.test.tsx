@@ -9,7 +9,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
-import type { FarmNeeds } from '../../../api/client';
+import type { FarmNeeds, OrderBoard } from '../../../api/client';
 import { OrdersPage } from '../../../pages/orders/OrdersPage';
 import { SEARCH_DEBOUNCE_MS } from '../../../hooks/useSearchBox';
 
@@ -26,7 +26,15 @@ const pageOf = (
   totals: { active: 1, completed: 1, cancelled: 0, all: 2, ...over.totals },
 }) as never;
 
-const EMPTY_FARM: FarmNeeds = { rows: [], orders_count: 0, unknown_prints: 0, stock_unavailable: false, assumptions: ['slicer_estimate'] };
+const boardOf = (over: Partial<OrderBoard> = {}): OrderBoard => ({
+  prep: { items: [], total: 0 },
+  printing: { items: [], total: 0 },
+  qc: { items: [], total: 0 },
+  done: { items: [], total: 0 },
+  ...over,
+}) as OrderBoard;
+
+const EMPTY_FARM: FarmNeeds ={ rows: [], orders_count: 0, unknown_prints: 0, stock_unavailable: false, assumptions: ['slicer_estimate'] };
 
 afterEach(() => {
   window.history.pushState({}, '', '/');
@@ -40,6 +48,7 @@ describe('OrdersPage', () => {
     vi.spyOn(api, 'getOrdersFilament').mockResolvedValue(EMPTY_FARM);
     vi.spyOn(api, 'getOrdersSummary').mockResolvedValue({ active: 4, overdue: 1, urgent: 2, printing: 3, queued: 7, remaining: 12, all_covered: 1 });
     vi.spyOn(api, 'getOrderAssignees').mockResolvedValue([]);
+    vi.spyOn(api, 'getOrderBoard').mockResolvedValue(boardOf());
   });
   it('filters by responsible — «Mine» asks for the signed-in user, and the choice lands in the URL', async () => {
     const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
@@ -204,14 +213,29 @@ describe('OrdersPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Table' }));
     expect(await screen.findByText('Showing 1-24 of 30 orders')).toBeInTheDocument();
   });
-  it('a stored kanban is restored and never asks for the list page', async () => {
+  it('a stored kanban is restored, asks for the board with the shared filters and never for the list page', async () => {
     localStorage.setItem('projects.view', 'kanban');
     const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
-    window.history.pushState({}, '', '/projects');
+    const board = vi.spyOn(api, 'getOrderBoard').mockResolvedValue(boardOf());
+    window.history.pushState({}, '', '/projects?customer=1&q=lamp');
     render(<OrdersPage />);
     expect(await screen.findByRole('button', { name: 'Kanban' })).toHaveAttribute('aria-pressed', 'true');
-    await screen.findByTestId('orders-tile-active');
+    await waitFor(() => expect(board).toHaveBeenCalledWith({ customer_id: 1, q: 'lamp' }));
+    expect(screen.getByRole('region', { name: 'Quality check' })).toBeInTheDocument();
     expect(get).not.toHaveBeenCalled();
+  });
+  it('«…and N more» on the board opens the table with the column’s stage', async () => {
+    localStorage.setItem('projects.view', 'kanban');
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    vi.spyOn(api, 'getOrderBoard').mockResolvedValue(
+      boardOf({ printing: { items: [{ ...rowA, code: 'OR-0001', stage: 'printing', prints_in_progress: 0, prints_queued: 0 } as never], total: 3 } }),
+    );
+    window.history.pushState({}, '', '/projects');
+    render(<OrdersPage />);
+    fireEvent.click(await screen.findByRole('link', { name: 'and 2 more in the list' }));
+    expect(await screen.findByText('Stage: Printing')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'active', stage: 'printing' })));
   });
   it('a stage filter from the URL reaches the request and shows a chip that clears it', async () => {
     const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));

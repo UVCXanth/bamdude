@@ -11,6 +11,7 @@ import { OrderModal } from '../../components/projects/OrderModal';
 import { FilamentStrip } from '../../components/projects/FilamentStrip';
 import { OrdersTiles } from '../../components/projects/OrdersTiles';
 import { OrderStatusTabs, OrdersListView } from '../../components/projects/OrdersListView';
+import { OrdersBoard } from '../../components/projects/board/OrdersBoard';
 import { ORDER_TABS, ORDERS_DEFAULT_SORT } from '../../components/projects/orderList';
 import { useOrderSortOptions } from '../../hooks/useOrderSortOptions';
 import { ConfirmModal } from '../../components/ConfirmModal';
@@ -303,6 +304,7 @@ export function OrdersPage() {
           onDelete={setDeleting}
         />
       )}
+      {view === 'kanban' && <OrdersBoard filters={viewFilters} onOpenList={() => setViewPref('table')} />}
 
       {editing && (
         <OrderModal order={editing === 'new' ? null : editing} defaultCustomerId={customerId} onClose={() => setEditing(null)} />
