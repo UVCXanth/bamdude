@@ -93,7 +93,6 @@ import { PurgeOldFilesModal } from '../components/PurgeOldFilesModal';
 import { TrashSplitButton } from '../components/TrashSplitButton';
 import { MakerWorldIcon } from '../components/BrandIcons';
 import { useToast } from '../contexts/ToastContext';
-import { useIsMobile } from '../hooks/useIsMobile';
 import { useAnchoredPosition } from '../hooks/useAnchoredPosition';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateTime, formatDuration, type TimeFormat, type DateFormat } from '../utils/date';
@@ -559,7 +558,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
         {folder.file_count > 0 && (
           <span className="flex-shrink-0 text-xs text-bambu-gray">{folder.file_count}</span>
         )}
-        <div className={`flex-shrink-0 flex items-center gap-0.5 transition-opacity ${wrapNames ? '' : 'opacity-0 group-hover:opacity-100'}`} onClick={(e) => e.stopPropagation()}>
+        <div className={`flex-shrink-0 flex items-center gap-0.5 transition-opacity ${wrapNames ? '' : 'can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'}`} onClick={(e) => e.stopPropagation()}>
           <div className="relative">
             <button
               onClick={() => setShowActions(!showActions)}
@@ -665,7 +664,6 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
 interface FileCardProps {
   file: LibraryFileListItem;
   isSelected: boolean;
-  isMobile: boolean;
   onSelect: (id: number) => void;
   /** Open the archive (print history) filtered to this file's prints. */
   onOpenArchives: (file: LibraryFileListItem) => void;
@@ -967,7 +965,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onRename, onLink, onGenerateThumbnail, onPlateGallery, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onRename, onLink, onGenerateThumbnail, onPlateGallery, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   // ⚠️ The two modes need different permissions: slicing through the sidecar
   // writes a new library file, while opening in a desktop slicer is a download.
   const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
@@ -1058,7 +1056,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
               type="button"
               aria-label={t('fileManager.previousPlate')}
               onClick={(e) => { e.stopPropagation(); setCurrent((c) => step(c, slices.length, -1)); }}
-              className={`absolute left-1 top-1/2 -translate-y-1/2 z-20 p-1 rounded-full bg-black/60 hover:bg-black/80 text-white transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+              className={`absolute left-1 top-1/2 -translate-y-1/2 z-20 p-1 rounded-full bg-black/60 hover:bg-black/80 text-white transition-opacity can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100`}
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
@@ -1066,7 +1064,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
               type="button"
               aria-label={t('fileManager.nextPlate')}
               onClick={(e) => { e.stopPropagation(); setCurrent((c) => step(c, slices.length, 1)); }}
-              className={`absolute right-1 top-1/2 -translate-y-1/2 z-20 p-1 rounded-full bg-black/60 hover:bg-black/80 text-white transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+              className={`absolute right-1 top-1/2 -translate-y-1/2 z-20 p-1 rounded-full bg-black/60 hover:bg-black/80 text-white transition-opacity can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100`}
             >
               <ChevronRight className="w-4 h-4" />
             </button>
@@ -1139,7 +1137,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
             ) : canModify('library', 'update', file.created_by_id) ? (
               <button
                 onClick={() => onLink(file)}
-                className="rounded-md bg-bambu-dark/80 backdrop-blur text-bambu-gray hover:text-bambu-green hover:bg-bambu-dark transition-colors flex items-center p-1 opacity-0 group-hover:opacity-100"
+                className="rounded-md bg-bambu-dark/80 backdrop-blur text-bambu-gray hover:text-bambu-green hover:bg-bambu-dark transition-colors flex items-center p-1 can-hover:opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
                 title={t('fileManager.linkToProducts')}
               >
                 <Link2 className="w-5 h-5" />
@@ -1259,7 +1257,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
       </div>
 
       {/* Actions - always visible on mobile, hover on desktop */}
-      <div className={`absolute bottom-2 right-2 transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} onClick={(e) => e.stopPropagation()}>
+      <div className="absolute bottom-2 right-2 transition-opacity can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100" onClick={(e) => e.stopPropagation()}>
         <button
           ref={triggerRef}
           onClick={() => setShowActions(!showActions)}
@@ -1471,13 +1469,13 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
         className={`absolute top-2 left-2 w-5 h-5 rounded border-2 flex items-center justify-center transition-all cursor-pointer ${
           isSelected
             ? 'bg-bambu-green border-bambu-green'
-            : `border-white/30 bg-black/30 ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`
+            : 'border-white/30 bg-black/30 can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
         }`}
       >
         {isSelected && <Check className="w-3 h-3 text-black" strokeWidth={3} />}
       </button>
       {/* Sibling of the card body, NOT of the hover-revealed action cluster:
-          that wrapper is `opacity-0 group-hover:opacity-100`, so a modal nested
+          that wrapper is hidden until the card is hovered, so a modal nested
           inside it would vanish the moment the pointer left the card. */}
       {showPlateObjects && (
         <PlateObjectsPreviewModal
@@ -1683,9 +1681,6 @@ export function FileManagerPage() {
   useEffect(() => {
     localStorage.setItem('library-per-page', String(perPage));
   }, [perPage]);
-
-  // Mobile detection for touch-friendly UI
-  const isMobile = useIsMobile();
 
   // Update selectedFolderId when URL parameter changes (e.g., navigating from Project or Archive page)
   useEffect(() => {
@@ -2424,7 +2419,6 @@ export function FileManagerPage() {
       key={file.id}
       file={file}
       isSelected={selectedFiles.includes(file.id)}
-      isMobile={isMobile}
       t={t}
       onSelect={handleFileSelect}
       onOpenArchives={handleOpenArchives}

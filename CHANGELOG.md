@@ -172,6 +172,16 @@
 
 ### Fixed
 
+- **Buttons that appear on hover are usable on phones and tablets.** Several
+  controls appeared only when the mouse was over them. A touchscreen has no hover,
+  so they never appeared: the slot options menu (⋮) on printer cards, deleting a
+  plate reference or a print photo, renaming and deleting tags, duplicating a
+  preset, deleting a usage entry, linking a library file to products, and the
+  File Manager's folder actions. The archive and file cards already showed theirs
+  on narrow screens but not on a tablet in landscape. On a touch device these
+  controls are now always visible; with a mouse they still appear on hover, and
+  also when reached with the keyboard. (upstream #2865)
+
 - **A bug report's debug recording survives closing the panel.** Closing the
   bug-report panel while reproducing a problem used to lose the recording.
   Reopening it within five minutes showed an empty form while debug logging

@@ -137,7 +137,7 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
                 disabled={deleteRowMutation.isPending}
                 title={t('inventory.deleteUsageRecord')}
                 aria-label={t('inventory.deleteUsageRecord')}
-                className="text-bambu-gray/40 hover:text-red-600 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity disabled:opacity-30"
+                className="text-bambu-gray/40 hover:text-red-600 dark:hover:text-red-400 can-hover:opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity disabled:opacity-30"
               >
                 <X className="w-3.5 h-3.5" />
               </button>

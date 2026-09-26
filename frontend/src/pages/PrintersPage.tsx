@@ -5270,7 +5270,7 @@ function PrinterCard({
                                               : { amsId: ams.id, slotId: slotIdx }
                                           );
                                         }}
-                                        className="absolute -top-1 -right-1 w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10 hover:bg-bambu-dark-tertiary"
+                                        className="absolute -top-1 -right-1 w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-full flex items-center justify-center can-hover:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity z-10 hover:bg-bambu-dark-tertiary"
                                         title={t('printers.slotOptions')}
                                       >
                                         <MoreVertical className="w-[var(--pc-i25,0.625rem)] h-[var(--pc-i25,0.625rem)] text-bambu-gray" />
@@ -5736,7 +5736,7 @@ function PrinterCard({
                                           : { amsId: ams.id, slotId: htSlotId }
                                       );
                                     }}
-                                    className="absolute -top-1 -right-1 w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10 hover:bg-bambu-dark-tertiary"
+                                    className="absolute -top-1 -right-1 w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-full flex items-center justify-center can-hover:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity z-10 hover:bg-bambu-dark-tertiary"
                                     title={t('printers.slotOptions')}
                                   >
                                     <MoreVertical className="w-[var(--pc-i25,0.625rem)] h-[var(--pc-i25,0.625rem)] text-bambu-gray" />
@@ -6055,7 +6055,7 @@ function PrinterCard({
                                             : { amsId: 255, slotId: slotTrayId }
                                         );
                                       }}
-                                      className="absolute -top-1 -right-1 w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10 hover:bg-bambu-dark-tertiary"
+                                      className="absolute -top-1 -right-1 w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-full flex items-center justify-center can-hover:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity z-10 hover:bg-bambu-dark-tertiary"
                                       title={t('printers.slotOptions')}
                                     >
                                       <MoreVertical className="w-[var(--pc-i25,0.625rem)] h-[var(--pc-i25,0.625rem)] text-bambu-gray" />
@@ -6762,7 +6762,7 @@ function PrinterCard({
                       {/* Delete button */}
                       <button
                         onClick={() => handleDeleteRef(ref.index)}
-                        className="absolute top-1 right-1 p-0.5 bg-red-500/80 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                        className="absolute top-1 right-1 p-0.5 bg-red-500/80 rounded can-hover:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
                         title={t('printers.plateDetection.deleteReference')}
                       >
                         <X className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] text-white" />

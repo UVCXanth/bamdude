@@ -32,6 +32,14 @@
 /* Enable class-based dark mode for Tailwind v4 */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* Hover-capable pointer only (upstream #2865).  Tailwind v4 compiles `hover:`
+   AND `group-hover:` inside `@media (hover: hover)`, so on a touch-only device a
+   control written as `opacity-0 group-hover:opacity-100` stays invisible for
+   good.  The HIDING half hangs on this variant instead: with no hover-capable
+   pointer the control keeps its own opacity.  A viewport-width check missed an
+   iPad in landscape, which is touch-only at 1024px. */
+@custom-variant can-hover (@media (hover: hover) and (pointer: fine));
+
 /* Restore the pointer cursor on interactive controls.
 
    Tailwind v3's Preflight set `button { cursor: pointer }`; v4 dropped it to
