@@ -125,12 +125,14 @@ describe('CustomersPage', () => {
     expect(within(row).getByRole('link', { name: '+380 67 1' })).toHaveAttribute('href', 'tel:+380671');
     expect(within(row).getByRole('link', { name: 'olena@acme.ua' })).toHaveAttribute('href', 'mailto:olena@acme.ua');
     expect(within(row).getByText('Kyiv · Nova Poshta · branch 12')).toBeInTheDocument();
-    const toggle = within(row).getByRole('button', { name: 'All contacts' });
+    // Named by the customer: every row has one, and a screen reader must tell them apart.
+    const toggle = within(row).getByRole('button', { name: 'All contacts of ACME' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(toggle);
     const all = await screen.findByTestId('customer-1-contacts');
     expect(within(all).getByText('CT-0011')).toBeInTheDocument();
-    expect(within(all).getByText('mornings only')).toBeInTheDocument();
+    // A note may hold several lines (the old contact text moves there whole).
+    expect(within(all).getByText('mornings only')).toHaveClass('whitespace-pre-line');
     expect(within(all).getAllByText('main')).toHaveLength(1);
   });
 
@@ -141,7 +143,7 @@ describe('CustomersPage', () => {
     window.history.pushState({}, '', '/customers');
     render(<CustomersPage />);
     const row = await screen.findByTestId('customer-1-row');
-    expect(within(row).queryByRole('button', { name: 'All contacts' })).not.toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /All contacts/ })).not.toBeInTheDocument();
   });
 
   it('the card shows code, kind and «main contact +N · city»', async () => {

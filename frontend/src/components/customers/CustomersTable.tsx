@@ -97,7 +97,7 @@ export function CustomersTable({ customers, onEdit, onDelete, sort, onSortChange
                           type="button"
                           onClick={() => toggle(customer.id)}
                           aria-expanded={isOpen}
-                          aria-label={t('customers.contacts.all')}
+                          aria-label={t('customers.contacts.allOf', { name: customer.name })}
                           className="text-bambu-gray hover:text-white"
                         >
                           {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -151,7 +151,7 @@ export function CustomersTable({ customers, onEdit, onDelete, sort, onSortChange
                                       {t('customers.contacts.main')}
                                     </span>
                                   )}
-                                  {c.note && <div className="text-bambu-gray">{c.note}</div>}
+                                  {c.note && <div className="text-bambu-gray whitespace-pre-line">{c.note}</div>}
                                 </td>
                                 <td className="p-1.5 text-bambu-gray">{c.role ?? '—'}</td>
                                 <td className="p-1.5 text-bambu-gray">

@@ -47,9 +47,13 @@
   deleted. An order names its contact person. Customers, contacts, orders and
   products carry codes made from their number — `CU-0007`, `CT-0012`,
   `OR-0042`, `PR-0015` — shown on lists, cards, pages and pickers, and every
-  search finds them. The old single «Contact» text moved into each customer's
-  first contact: the email and phone into their fields, the rest into the name,
-  or the whole text into the contact's note when it did not fit.
+  search finds them. A removed contact's code is never given to another one.
+  The old single «Contact» text moved into each customer's first contact: the
+  email and phone into their fields, the line left into the name — and
+  whenever it could not be kept exactly as written, the whole text into the
+  contact's note as well, so nothing is lost. Emptying a contact that orders
+  still name holds the save until it is filled in or removed, the way removing
+  it warns first.
 - **Summary tiles above the orders, customers and stock lists.** They sum up
   the whole farm, whatever the list below is filtered by. For orders: active
   orders with how many are overdue and urgent, prints running and jobs waiting,

@@ -45,6 +45,9 @@ class DeliveryMethod(Base):
     """
 
     __tablename__ = "delivery_methods"
+    # AUTOINCREMENT: SQLite otherwise reuses max(id)+1 after the newest row is
+    # deleted (inv-workshop-codes-derived-from-id — a code is never reissued).
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
@@ -54,7 +57,12 @@ class DeliveryMethod(Base):
 
 class CustomerContact(Base):
     __tablename__ = "customer_contacts"
-    __table_args__ = (Index("ix_customer_contacts_customer_position", "customer_id", "position"),)
+    # AUTOINCREMENT: a removed contact's CT code must never be handed to the next
+    # one (SQLite reuses max(id)+1 otherwise; m187 creates the table the same way).
+    __table_args__ = (
+        Index("ix_customer_contacts_customer_position", "customer_id", "position"),
+        {"sqlite_autoincrement": True},
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id", ondelete="CASCADE"))

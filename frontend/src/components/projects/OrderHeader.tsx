@@ -18,6 +18,7 @@ import type { Order, ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatMoney } from '../../utils/currency';
 import { Button } from '../Button';
+import { contactTitle } from '../customers/contactFormat';
 import { StatusBadge } from './StatusBadge';
 import { PriorityBadge } from './PriorityBadge';
 
@@ -109,7 +110,7 @@ export function OrderHeader({
             )}
             {order.contact && (
               <span className="text-bambu-gray">
-                {t('orders.header.contact', { name: order.contact.name ?? order.contact.code })}
+                {t('orders.header.contact', { name: contactTitle(order.contact) })}
                 {order.contact.phone && (
                   <>
                     {' · '}

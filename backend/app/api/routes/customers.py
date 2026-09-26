@@ -42,13 +42,19 @@ def _customers_query():
     return select(Customer).options(selectinload(Customer.contacts).selectinload(CustomerContact.delivery_method))
 
 
-async def _contact_orders(db: AsyncSession) -> dict[int, int]:
-    """Orders naming each contact — one GROUP BY for the whole answer."""
-    rows = await db.execute(
-        select(Project.contact_id, func.count(Project.id))
-        .where(Project.contact_id.is_not(None))
-        .group_by(Project.contact_id)
-    )
+async def _contact_orders(db: AsyncSession, customer_id: int | None = None) -> dict[int, int]:
+    """Orders naming each contact — one GROUP BY for the whole answer.
+
+    For one customer the group is narrowed to its contacts through a subquery
+    (never a bound list of ids, which a big flat list would push past SQLite's
+    parameter limit); a list answer groups the table once, whatever its size.
+    """
+    query = select(Project.contact_id, func.count(Project.id)).where(Project.contact_id.is_not(None))
+    if customer_id is not None:
+        query = query.where(
+            Project.contact_id.in_(select(CustomerContact.id).where(CustomerContact.customer_id == customer_id))
+        )
+    rows = await db.execute(query.group_by(Project.contact_id))
     return dict(rows.all())
 
 
@@ -124,7 +130,7 @@ async def _sync_contacts(db: AsyncSession, customer_id: int, items: list[Custome
 async def _response(db: AsyncSession, customer_id: int) -> CustomerResponse:
     customer = await _get_or_404(db, customer_id)
     figures = CustomerFigures.model_validate(await customer_figures(db, customer.id))
-    return _customer_out(customer, figures, await _contact_orders(db))
+    return _customer_out(customer, figures, await _contact_orders(db, customer.id))
 
 
 def _empty_light_figures() -> CustomerListFigures:

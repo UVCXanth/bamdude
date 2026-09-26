@@ -1,11 +1,11 @@
-"""m185 — customer contacts, kind, order contact, delivery methods; the old contact moves and its column goes."""
+"""m187 — customer contacts, kind, order contact, delivery methods; the old contact moves and its column goes."""
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.migrations import m185_customer_contacts as m185
+from backend.app.migrations import m187_customer_contacts as m187
 
 
 @pytest_asyncio.fixture
@@ -40,8 +40,8 @@ async def engine():
 
 async def _run(engine):
     async with engine.begin() as conn:
-        await m185.upgrade(conn)
-    await m185.seed(async_sessionmaker(engine))
+        await m187.upgrade(conn)
+    await m187.seed(async_sessionmaker(engine))
 
 
 @pytest.mark.asyncio

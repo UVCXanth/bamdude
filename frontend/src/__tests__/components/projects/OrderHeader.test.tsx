@@ -171,6 +171,16 @@ describe('OrderHeader · code and contact person', () => {
     expect(screen.getByRole('link', { name: '+380 1' })).toHaveAttribute('href', 'tel:+3801');
   });
 
+  it('names a nameless contact by its role, as the customer pages do', () => {
+    mount({
+      ...orderWith(0),
+      code: 'OR-0001',
+      contact_id: 11,
+      contact: { id: 11, code: 'CT-0011', name: null, role: 'Warehouse', phone: null, email: null },
+    } as Order);
+    expect(screen.getByText(/contact: Warehouse/)).toBeInTheDocument();
+  });
+
   it('says nothing about a contact when the order has none', () => {
     mount({ ...orderWith(0), code: 'OR-0001', contact_id: null, contact: null } as Order);
     expect(screen.queryByText(/contact:/)).not.toBeInTheDocument();

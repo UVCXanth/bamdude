@@ -114,6 +114,7 @@ async def delete_delivery_method(
         select(func.count(CustomerContact.id)).where(CustomerContact.delivery_method_id == method.id)
     )
     if used:
-        raise HTTPException(status_code=409, detail=f"This delivery method is used by {used} contacts")
+        # Count-first wording: it reads right for one contact and for many.
+        raise HTTPException(status_code=409, detail=f"Contacts using this delivery method: {used}")
     await db.delete(method)
     return {"message": "Delivery method deleted"}

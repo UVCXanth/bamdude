@@ -51,9 +51,25 @@ export function draftFromContact(c: CustomerContact): ContactDraft {
 
 const clean = (value: string) => (value.trim() === '' ? null : value.trim());
 
-/** The rows as the server takes them, in order; a row with nothing in it is left out (the server drops it too). */
+/**
+ * A row with nothing in it. It is not sent, and the server drops it too — so a
+ * blank row that orders name would take their contact away without the warning
+ * «Remove» gives; the form refuses to save one (see `ContactRowsEditor`).
+ */
+export function isBlankDraft(d: ContactDraft): boolean {
+  return (
+    d.deliveryMethodId == null &&
+    [d.name, d.role, d.phone, d.email, d.city, d.deliveryDetails, d.note].every((v) => v.trim() === '')
+  );
+}
+
+/** A blank row that orders still name — it must be filled in or removed before the save. */
+export const isBlankLinked = (d: ContactDraft) => d.ordersCount > 0 && isBlankDraft(d);
+
+/** The rows as the server takes them, in order; a blank row is left out. */
 export function draftsToInput(drafts: ContactDraft[]): CustomerContactInput[] {
   return drafts
+    .filter((d) => !isBlankDraft(d))
     .map((d) => ({
       ...(d.id != null ? { id: d.id } : {}),
       name: clean(d.name),
@@ -64,6 +80,5 @@ export function draftsToInput(drafts: ContactDraft[]): CustomerContactInput[] {
       delivery_method_id: d.deliveryMethodId,
       delivery_details: clean(d.deliveryDetails),
       note: clean(d.note),
-    }))
-    .filter((c) => Object.entries(c).some(([k, v]) => k !== 'id' && v != null));
+    }));
 }

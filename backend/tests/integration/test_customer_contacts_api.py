@@ -169,3 +169,27 @@ async def test_kind_filters_the_list(async_client, db_session):
     items = (await async_client.get("/api/v1/customers/?page=1&kind=regular")).json()["items"]
     assert [c["name"] for c in items] == ["Reg"]
     assert (await async_client.get("/api/v1/customers/?page=1&kind=nope")).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_a_removed_contacts_code_is_never_handed_out_again(committing_client):
+    # SQLite without AUTOINCREMENT reuses max(id)+1: removing the NEWEST contact
+    # and adding one would give the new one the removed contact's CT code.
+    r = await committing_client.post(
+        "/api/v1/customers", json={"name": "Codes", "contacts": [{"name": "A"}, {"name": "B"}]}
+    )
+    cid = r.json()["id"]
+    first, newest = (c["id"] for c in r.json()["contacts"])
+    await committing_client.patch(f"/api/v1/customers/{cid}", json={"contacts": [{"id": first, "name": "A"}]})
+    again = await committing_client.patch(
+        f"/api/v1/customers/{cid}", json={"contacts": [{"id": first, "name": "A"}, {"name": "C"}]}
+    )
+    assert again.json()["contacts"][1]["id"] != newest
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_methods_id_is_never_handed_out_again(committing_client):
+    newest = (await committing_client.post("/api/v1/delivery-methods", json={"name": "Reuse probe"})).json()["id"]
+    await committing_client.delete(f"/api/v1/delivery-methods/{newest}")
+    fresh = (await committing_client.post("/api/v1/delivery-methods", json={"name": "Reuse probe 2"})).json()["id"]
+    assert fresh != newest

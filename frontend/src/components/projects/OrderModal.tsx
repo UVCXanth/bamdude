@@ -7,6 +7,7 @@ import type { Order, OrderCreate, OrderListItem, OrderUpdate, ProjectPriority, P
 import { Button } from '../Button';
 import { Modal } from '../Modal';
 import { CustomerPicker } from '../pickers/CustomerPicker';
+import { contactOption } from '../customers/contactFormat';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 import { useToast } from '../../contexts/ToastContext';
 import { Select } from '../Select';
@@ -241,7 +242,7 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
                 <option value="">{t('orders.modal.noContact')}</option>
                 {contactsOf.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {`${c.name ?? c.code}${c.role ? ` — ${c.role}` : ''}`}
+                    {contactOption(c)}
                   </option>
                 ))}
               </Select>

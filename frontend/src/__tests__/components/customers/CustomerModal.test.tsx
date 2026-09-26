@@ -98,9 +98,65 @@ describe('CustomerModal', () => {
     await waitFor(() => expect(update.mock.calls[0][1].contacts).toEqual([]));
   });
 
+  it('each contact row is a group named by its place, so its buttons are told apart', () => {
+    render(<CustomerModal customer={acme} onClose={() => {}} />);
+    const second = screen.getByRole('group', { name: 'Contact 2' });
+    expect(within(second).getByRole('button', { name: 'Make main' })).toBeInTheDocument();
+    const first = screen.getByRole('group', { name: 'Contact 1' });
+    expect(within(first).queryByRole('button', { name: 'Make main' })).not.toBeInTheDocument();
+  });
+
+  it('warns in the singular about one linked order', () => {
+    const one = { ...acme, contacts: [{ ...acme.contacts[1], orders_count: 1 }] };
+    render(<CustomerModal customer={one} onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove contact' }));
+    expect(screen.getByText('Linked to 1 order — it will lose its contact')).toBeInTheDocument();
+  });
+
+  it('a contact note keeps its line breaks', async () => {
+    const update = vi.spyOn(api, 'updateCustomer').mockResolvedValue(acme);
+    render(<CustomerModal customer={acme} onClose={() => {}} />);
+    const note = within(screen.getAllByTestId('contact-row')[0]).getByLabelText('Note');
+    expect(note.tagName).toBe('TEXTAREA');
+    fireEvent.change(note, { target: { value: 'line one\nline two' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    expect(update.mock.calls[0][1].contacts![0].note).toBe('line one\nline two');
+  });
+
+  it('a linked contact emptied of every field must be filled in or removed before the save', () => {
+    const update = vi.spyOn(api, 'updateCustomer').mockResolvedValue(acme);
+    render(<CustomerModal customer={acme} onClose={() => {}} />);
+    const linked = screen.getAllByTestId('contact-row')[1];
+    // Serhii has only a name: clearing it would drop the row — and, silently, the contact of his 2 orders.
+    fireEvent.change(within(linked).getByLabelText('Contact name'), { target: { value: '' } });
+    expect(within(linked).getByText('Linked to 2 orders — fill it in or remove it')).toBeInTheDocument();
+    const save = screen.getByRole('button', { name: 'Save' });
+    expect(save).toBeDisabled();
+    fireEvent.submit(save.closest('form')!);
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it('opens the delivery reference from a contact row', async () => {
     render(<CustomerModal customer={acme} onClose={() => {}} />);
     fireEvent.click(within(screen.getAllByTestId('contact-row')[0]).getByRole('button', { name: 'Manage methods…' }));
     expect(await screen.findByRole('dialog', { name: 'Delivery methods' })).toBeInTheDocument();
+  });
+
+  it('adding a method in the reference never submits the customer form around it', async () => {
+    const create = vi
+      .spyOn(api, 'createDeliveryMethod')
+      .mockResolvedValue({ id: 8, name: 'Meest', position: 1, contacts_count: 0 });
+    const update = vi.spyOn(api, 'updateCustomer').mockResolvedValue(acme);
+    const onClose = vi.fn();
+    render(<CustomerModal customer={acme} onClose={onClose} />);
+    fireEvent.click(within(screen.getAllByTestId('contact-row')[0]).getByRole('button', { name: 'Manage methods…' }));
+    const reference = await screen.findByRole('dialog', { name: 'Delivery methods' });
+    fireEvent.change(within(reference).getByLabelText('New delivery method'), { target: { value: 'Meest' } });
+    fireEvent.click(within(reference).getByRole('button', { name: 'Add' }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith('Meest'));
+    expect(update).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog', { name: /Edit customer/ })).toBeInTheDocument();
   });
 });

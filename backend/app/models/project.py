@@ -22,7 +22,7 @@ class Project(Base):
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id", ondelete="SET NULL"), nullable=True)
     # Who receives this order — a contact of ITS customer (checked in the route).
     contact_id: Mapped[int | None] = mapped_column(
-        ForeignKey("customer_contacts.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("customer_contacts.id", ondelete="SET NULL"), nullable=True, index=True
     )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     color: Mapped[str | None] = mapped_column(String(20), nullable=True)  # Hex colour for UI badges

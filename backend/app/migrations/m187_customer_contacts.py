@@ -6,15 +6,22 @@ delivery-method reference (spec workshop-customers, part B).
 - ``customer_contacts`` — several per customer; the lowest ``position`` is the main one.
 - ``customers.kind`` (company | regular | private, default company) and ``projects.contact_id``.
 - The old free-text ``customers.contact`` moves into each customer's first contact —
-  the first e-mail and the first phone into their fields, the rest into the name
-  when it is one line of at most 255 characters, otherwise the WHOLE original
-  text into that contact's note (nothing is lost; the customer's own notes stay
-  untouched) — and then the column is dropped.
+  the first e-mail and the first phone into their fields, the one line left into
+  the name with its separators as written; whenever the text cannot be kept as
+  it stood (more lines left, a field over 255 characters, a name that is no
+  longer a verbatim slice of the original) the WHOLE original also goes into
+  that contact's note. Nothing is lost; the customer's own notes stay untouched.
+  Then the column is dropped.
+
+Numbered 187, not 185: ``feature/v0.6.1-fixes`` took 185 and 186 while this was
+being built (``test_migration_versions_are_unique`` makes such a clash a red build).
 
 The move runs in ``upgrade`` because the drop does: a seed would read a column
-already gone. It is guarded on the column still existing, so a re-run
-(``DEBUG=true`` re-runs the newest migration) moves nothing twice. A fresh
-install gets the tables from ``create_all`` and has no ``contact`` column to move.
+already gone. It is guarded on the column still existing and on the customer
+having no contacts yet, so a re-run (``DEBUG=true`` re-runs the newest
+migration) moves nothing twice — even on an SQLite too old to drop the column.
+A fresh install gets the tables from ``create_all`` and has no ``contact``
+column to move.
 """
 
 import logging
@@ -26,13 +33,15 @@ from backend.app.migrations.helpers import add_column, column_exists, drop_colum
 
 logger = logging.getLogger(__name__)
 
-version = 185
+version = 187
 name = "customer_contacts"
 
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
-_PHONE = re.compile(r"\+?\d[\d\s().-]{5,}\d")
+# Digits, spaces, brackets and hyphens only: no dot (a date is not a phone) and
+# no line break (a phone must never swallow the next line).
+_PHONE = re.compile(r"\+?\d[\d ()\-]{5,}\d")
 _EDGE = " \t,;·|/:–—-"
-_MAX_NAME = 255
+_MAX_FIELD = 255
 _SEED = {
     "uk": ("Самовивіз", "Нова пошта", "Укрпошта", "Meest", "Кур'єр"),
     "en": ("Pickup", "Courier", "Post"),
@@ -40,7 +49,15 @@ _SEED = {
 
 
 def split_legacy_contact(raw: str | None) -> dict[str, str | None] | None:
-    """The old free-text contact as a first contact's fields, or None when it was empty."""
+    """The old free-text contact as a first contact's fields, or None when it was empty.
+
+    The first e-mail and the first phone come out into their fields; the one
+    line left becomes the name, its separators exactly as they were. Nothing is
+    lost: whenever the text cannot be kept as it stood — more than one line left,
+    a field over 255 characters, or a name that is no longer a verbatim slice of
+    the original (pieced together around a phone) — the WHOLE original goes into
+    the note as well.
+    """
     if raw is None or not raw.strip():
         return None
     original = raw.strip()
@@ -57,17 +74,21 @@ def split_legacy_contact(raw: str | None) -> dict[str, str | None] | None:
             rest = rest[: candidate.start()] + " " + rest[candidate.end() :]
             break
     lines = [line.strip(_EDGE) for line in rest.splitlines() if line.strip(_EDGE)]
-    name = note = None
-    if len(lines) > 1:
-        note = original
-    elif lines:
-        one = re.sub(r"\s+", " ", lines[0])
-        one = re.sub(r"(?:\s*[,;·|/])+\s*", ", ", one).strip(_EDGE)
-        if len(one) > _MAX_NAME:
-            note = original
-        else:
-            name = one or None
-    return {"name": name, "phone": phone, "email": email, "note": note}
+    keep_whole = len(lines) > 1
+    name = None
+    if len(lines) == 1:
+        # Only runs of blanks and of repeated commas/semicolons (the holes the
+        # extraction left) are tidied; a single separator stays as written.
+        name = re.sub(r"(?:\s*[,;]){2,}\s*", ", ", re.sub(r"[ \t]+", " ", lines[0]))
+        if len(name) > _MAX_FIELD or name not in original:
+            keep_whole = True
+        if len(name) > _MAX_FIELD:
+            name = None
+    if email is not None and len(email) > _MAX_FIELD:
+        email, keep_whole = None, True
+    if phone is not None and len(phone) > _MAX_FIELD:
+        phone, keep_whole = None, True
+    return {"name": name, "phone": phone, "email": email, "note": original if keep_whole else None}
 
 
 async def upgrade(conn):
@@ -108,9 +129,20 @@ async def upgrade(conn):
     )
     await add_column(conn, "customers", "kind VARCHAR(16) NOT NULL DEFAULT 'company'")
     await add_column(conn, "projects", "contact_id INTEGER REFERENCES customer_contacts(id) ON DELETE SET NULL")
+    # The contacts' order counts group on it, and PostgreSQL's SET NULL check scans it.
+    await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_projects_contact_id ON projects (contact_id)")
 
     if await column_exists(conn, "customers", "contact"):
-        rows = (await conn.execute(text("SELECT id, contact FROM customers WHERE contact IS NOT NULL"))).all()
+        # ``NOT EXISTS``: on an SQLite too old to drop the column, ``DEBUG=true``
+        # re-runs this every start — a customer that has contacts moved nothing twice.
+        rows = (
+            await conn.execute(
+                text(
+                    "SELECT id, contact FROM customers WHERE contact IS NOT NULL AND NOT EXISTS "
+                    "(SELECT 1 FROM customer_contacts WHERE customer_contacts.customer_id = customers.id)"
+                )
+            )
+        ).all()
         moved = 0
         for customer_id, raw in rows:
             fields = split_legacy_contact(raw)
@@ -124,7 +156,7 @@ async def upgrade(conn):
                 {"customer_id": customer_id, **fields},
             )
             moved += 1
-        logger.info("m185: moved %d old customer contact(s) into customer_contacts", moved)
+        logger.info("m187: moved %d old customer contact(s) into customer_contacts", moved)
         await drop_column(conn, "customers", "contact")
 
 

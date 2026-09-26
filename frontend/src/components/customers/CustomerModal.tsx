@@ -10,7 +10,7 @@ import { Select } from '../Select';
 import { useToast } from '../../contexts/ToastContext';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 import { ContactRowsEditor } from './ContactRowsEditor';
-import { draftFromContact, draftsToInput, emptyDraft, type ContactDraft } from './contactDrafts';
+import { draftFromContact, draftsToInput, emptyDraft, isBlankLinked, type ContactDraft } from './contactDrafts';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
@@ -71,7 +71,7 @@ export function CustomerModal({ customer, onClose }: CustomerModalProps) {
     onError: (e: Error) => showToast(e.message, 'error'),
   });
 
-  const canSubmit = name.trim() !== '' && !mutation.isPending;
+  const canSubmit = name.trim() !== '' && !drafts.some(isBlankLinked) && !mutation.isPending;
 
   return (
     <Modal

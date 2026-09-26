@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
@@ -23,11 +23,25 @@ export function DeliveryMethodsModal({ onClose }: { onClose: () => void }) {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { data: methods = [] } = useDeliveryMethods();
+  const base = useId();
   const [draft, setDraft] = useState('');
-  const refresh = () => {
-    queryClient.invalidateQueries({ queryKey: ['delivery-methods'] });
-    queryClient.invalidateQueries({ queryKey: ['customers'] });
-  };
+  // A name being typed, by method id. A field with no entry shows the name the
+  // server holds — so a blanked or refused rename falls back to it by itself.
+  const [names, setNames] = useState<Record<number, string>>({});
+  const forget = (id: number) =>
+    setNames((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  // Contacts read a method's name through the join: the lists AND an open
+  // customer page (`['customer', id]`) show it.
+  const refresh = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['delivery-methods'] }),
+      queryClient.invalidateQueries({ queryKey: ['customers'] }),
+      queryClient.invalidateQueries({ queryKey: ['customer'] }),
+    ]);
   const onError = (e: Error) => showToast(e.message, 'error');
   const create = useMutation({
     mutationFn: (name: string) => api.createDeliveryMethod(name),
@@ -39,8 +53,15 @@ export function DeliveryMethodsModal({ onClose }: { onClose: () => void }) {
   });
   const rename = useMutation({
     mutationFn: ({ id, name }: { id: number; name: string }) => api.renameDeliveryMethod(id, name),
-    onSuccess: refresh,
-    onError,
+    // Held until the list has the new name, or the field would flash the old one.
+    onSuccess: async (_saved, { id }) => {
+      await refresh();
+      forget(id);
+    },
+    onError: (e: Error, { id }) => {
+      forget(id);
+      onError(e);
+    },
   });
   const reorder = useMutation({ mutationFn: (ids: number[]) => api.reorderDeliveryMethods(ids), onSuccess: refresh, onError });
   const remove = useMutation({ mutationFn: (id: number) => api.deleteDeliveryMethod(id), onSuccess: refresh, onError });
@@ -51,63 +72,85 @@ export function DeliveryMethodsModal({ onClose }: { onClose: () => void }) {
     [ids[index], ids[target]] = [ids[target], ids[index]];
     reorder.mutate(ids);
   };
-  const commitName = (method: DeliveryMethod, value: string) => {
-    const name = value.trim();
-    if (name && name !== method.name) rename.mutate({ id: method.id, name });
+  const commitName = (method: DeliveryMethod) => {
+    const typed = names[method.id];
+    if (typed === undefined) return;
+    const name = typed.trim();
+    if (!name || name === method.name) forget(method.id);
+    else rename.mutate({ id: method.id, name });
   };
 
   return (
     <Modal onClose={onClose} title={t('customers.delivery.manageTitle')} size="md">
       <div className="p-4 space-y-3">
         <ul className="space-y-2">
-          {methods.map((method, index) => (
-            <li key={method.id} className="flex items-center gap-2">
-              <input
-                defaultValue={method.name}
-                aria-label={t('customers.delivery.name')}
-                className={FIELD_CLASS}
-                onBlur={(e) => commitName(method, e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') e.currentTarget.blur();
-                }}
-              />
-              <button
-                type="button"
-                aria-label={t('customers.delivery.moveUp')}
-                disabled={index === 0}
-                onClick={() => move(index, -1)}
-                className={ICON_BUTTON}
-              >
-                <ArrowUp className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                aria-label={t('customers.delivery.moveDown')}
-                disabled={index === methods.length - 1}
-                onClick={() => move(index, 1)}
-                className={ICON_BUTTON}
-              >
-                <ArrowDown className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                aria-label={t('common.delete')}
-                disabled={method.contacts_count > 0}
-                title={
-                  method.contacts_count > 0 ? t('customers.delivery.inUse', { count: method.contacts_count }) : undefined
-                }
-                onClick={() => remove.mutate(method.id)}
-                className="p-1 text-bambu-gray hover:text-red-400 disabled:opacity-30"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </li>
-          ))}
+          {methods.map((method, index) => {
+            const reasonId = `${base}-in-use-${method.id}`;
+            const inUse = method.contacts_count > 0;
+            const reason = inUse ? t('customers.delivery.inUse', { count: method.contacts_count }) : undefined;
+            return (
+              <li key={method.id} className="flex items-center gap-2">
+                <input
+                  value={names[method.id] ?? method.name}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setNames((prev) => ({ ...prev, [method.id]: value }));
+                  }}
+                  aria-label={t('customers.delivery.name')}
+                  className={FIELD_CLASS}
+                  onBlur={() => commitName(method)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') e.currentTarget.blur();
+                  }}
+                />
+                <button
+                  type="button"
+                  aria-label={t('customers.delivery.moveUp', { name: method.name })}
+                  disabled={index === 0}
+                  onClick={() => move(index, -1)}
+                  className={ICON_BUTTON}
+                >
+                  <ArrowUp className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={t('customers.delivery.moveDown', { name: method.name })}
+                  disabled={index === methods.length - 1}
+                  onClick={() => move(index, 1)}
+                  className={ICON_BUTTON}
+                >
+                  <ArrowDown className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={t('customers.delivery.delete', { name: method.name })}
+                  aria-describedby={inUse ? reasonId : undefined}
+                  disabled={inUse}
+                  title={reason}
+                  onClick={() => remove.mutate(method.id)}
+                  className="p-1 text-bambu-gray hover:text-red-400 disabled:opacity-30"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+                {/* The hover title reaches neither the keyboard nor a screen reader. */}
+                {inUse && (
+                  <span id={reasonId} className="sr-only">
+                    {reason}
+                  </span>
+                )}
+              </li>
+            );
+          })}
         </ul>
         <form
           className="flex items-center gap-2"
           onSubmit={(e) => {
             e.preventDefault();
+            // ⚠️ This dialog opens from a contact row INSIDE the customer form. The
+            // portal moves it in the DOM, but React delivers synthetic events along
+            // the component tree — without this, «Add» also submitted (and closed)
+            // the customer form.
+            e.stopPropagation();
             if (draft.trim()) create.mutate(draft.trim());
           }}
         >

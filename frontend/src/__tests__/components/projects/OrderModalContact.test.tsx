@@ -62,4 +62,36 @@ describe('OrderModal · contact person', () => {
       expect(create).toHaveBeenCalledWith(expect.objectContaining({ customer_id: 1, contact_id: 10 })),
     );
   });
+
+  it('names a nameless contact by its role — once — as the customer pages do', async () => {
+    vi.spyOn(api, 'getCustomers').mockResolvedValue([
+      customer(4, 'Delta', [
+        { ...blank, id: 40, code: 'CT-0040', name: null, role: 'Warehouse' },
+        { ...blank, id: 41, code: 'CT-0041', name: 'Ira', role: 'Buyer' },
+      ]),
+    ] as never);
+    render(<OrderModal defaultCustomerId={4} onClose={() => {}} />);
+    expect(await screen.findByRole('option', { name: 'Warehouse' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Ira — Buyer' })).toBeInTheDocument();
+  });
+
+  it('an order opened from a list row, which carries no contact, shows no contact field', async () => {
+    const row = {
+      id: 5,
+      code: 'OR-0005',
+      name: 'Lamps',
+      customer_id: 1,
+      customer_name: 'ACME',
+      color: null,
+      status: 'active',
+      tags: null,
+      due_date: null,
+      priority: 'normal',
+      price: null,
+      figures: {},
+    } as never;
+    render(<OrderModal order={row} onClose={() => {}} />);
+    await screen.findByRole('option', { name: 'CU-0001 · ACME' });
+    expect(screen.queryByLabelText('Contact person')).not.toBeInTheDocument();
+  });
 });
