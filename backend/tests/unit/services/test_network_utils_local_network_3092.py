@@ -4,6 +4,8 @@ subnet check assumed /24 for both sides — splitting a /22 LAN and merging a /2
 """
 
 from collections import namedtuple
+from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from backend.app.services import network_utils
@@ -19,10 +21,20 @@ _IP_ADDR_JSON = """[
 ]"""
 
 
+@contextmanager
 def _fake_ip_addr():
-    """Patch `ip -j addr show` with a fixed multi-homed Linux host."""
+    """Patch `ip -j addr show` with a fixed multi-homed Linux host.
+
+    The platform is pinned too: only Linux asks iproute2 — every other host
+    enumerates through psutil (upstream #3121) — and these tests also run on a
+    developer's Windows machine.
+    """
     result = namedtuple("CompletedProcess", ["returncode", "stdout", "stderr"])(0, _IP_ADDR_JSON, "")
-    return patch.object(network_utils, "subprocess", **{"run.return_value": result})
+    with (
+        patch.object(network_utils, "subprocess", **{"run.return_value": result}),
+        patch.object(network_utils, "sys", SimpleNamespace(platform="linux")),
+    ):
+        yield
 
 
 class TestFindLocalIPv4Network:

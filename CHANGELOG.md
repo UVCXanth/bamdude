@@ -172,6 +172,12 @@
 
 ### Fixed
 
+- **On Windows and macOS every IP address of a network adapter can be a virtual
+  printer's bind address.** Only the first address of each adapter was offered,
+  so a Windows host with extra addresses added for more virtual printers still
+  listed one, and a second virtual printer could not start ("Bind IP ... is
+  already in use"). All addresses are now listed, as on Linux. (upstream #3121)
+
 - **A virtual printer in Docker bridge mode can be told which address slicers
   should upload to.** A virtual printer bound to a real printer passes the slicer
   its own address as the upload destination; in bridge mode that was the
