@@ -843,7 +843,12 @@ class BambuFTPClient:
                 # #1417 / commit 1fac0276 + #1417-followup / commit 9c934c90.
                 verdict, server_size = self._uploaded_size_verdict(remote_path, file_size)
                 if verdict == "ok":
-                    logger.warning(
+                    # INFO, not WARNING: a 426 whose bytes verify is the normal
+                    # way Bambu FTPS ends a transfer, not a fault. Upstream #2987
+                    # counted 54 in one support bundle, each followed by a
+                    # completed upload, burying the handshake failures that
+                    # actually cost prints. The unverified branch stays an error.
+                    logger.info(
                         "FTP STOR returned %s for %s but SIZE confirms %d bytes "
                         "on disk — treating as transient %s (file intact)",
                         e,
@@ -998,7 +1003,8 @@ class BambuFTPClient:
                 server_size = self.get_file_size(remote_path)
                 expected = len(data)
                 if server_size is not None and server_size == expected:
-                    logger.warning(
+                    # INFO for the same reason as upload_file (upstream #2987).
+                    logger.info(
                         "FTP STOR returned %s for %s but SIZE confirms %d bytes "
                         "on disk — treating as transient %s (file intact)",
                         e,

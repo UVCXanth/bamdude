@@ -225,13 +225,9 @@ async def apply_spool_to_slot_via_mqtt(
     state = printer_manager.get_status(printer_id)
 
     tray_type = spool.material
-    tray_sub_brands = (
-        f"{spool.brand} {spool.material} {spool.subtype}".strip()
-        if spool.brand
-        else f"{spool.material} {spool.subtype}"
-        if spool.subtype
-        else spool.material
-    )
+    # Join only the parts that exist: the branded branch used to interpolate
+    # a missing subtype as the string "None" (upstream #2987).
+    tray_sub_brands = " ".join(p for p in (spool.brand, spool.material, spool.subtype) if p) or spool.material
 
     # The nozzle THIS slot feeds: its diameter picks the preset below and, with
     # the flow type, the calibration — not "the printer's" first nozzle.

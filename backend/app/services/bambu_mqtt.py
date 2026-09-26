@@ -304,6 +304,33 @@ def normalize_am_unit_id(ams_id: int) -> int:
     return A2L_LITE_NORMALIZED_AMS_ID if ams_id == A2L_LITE_PHYSICAL_AMS_ID else ams_id
 
 
+def wire_tray_color(tray_color: str | None) -> str:
+    """Normalise a colour to the form AMS firmware actually parses: UPPERCASE hex.
+
+    P1S firmware 01.10.00.00 parses every lowercase hex letter in ``tray_color``
+    as a zero, and does it silently: the command response echoes the value that
+    was sent and reports ``result: "success"``, so only the next AMS push shows
+    what was really stored (upstream #2987, a spool's lowercase ``rgba`` sent
+    verbatim):
+
+        sent 09ff00ff  ->  AMS reports 09000000
+        sent ff5100ff  ->  AMS reports 00510000
+        sent 090000FF  ->  AMS reports 090000FF
+
+    Not cosmetic: the auto-unlink sweep compares the tray against its assigned
+    spool, so the slot we just wrote no longer matched and the assignment was
+    deleted seconds after it was made — and Configure Slot, which seeds itself
+    from the tray, wrote the mangled colour back. BambuStudio formats the colour
+    with ``%02X``.
+
+    Applied at the one place the command is built, not in each caller: a caller
+    that forgets is exactly how this arrived. A leading ``#`` is stripped (the
+    wire carries bare hex) and a blank stays blank — nothing is padded, widened
+    or given an invented alpha.
+    """
+    return (tray_color or "").strip().lstrip("#").upper()
+
+
 def _fts_global_slot(value: object) -> int:
     """Decode a FilaSwitch ``in`` item into our canonical global tray id.
 
@@ -10721,7 +10748,9 @@ class BambuMQTTClient:
                 "slot_id": slot_id,
                 "tray_info_idx": tray_info_idx,
                 "tray_type": tray_type,
-                "tray_color": tray_color,
+                # UPPERCASE, always: lowercase hex is silently read as zeros by
+                # P1S firmware and acknowledged as a success (upstream #2987).
+                "tray_color": wire_tray_color(tray_color),
                 "nozzle_temp_min": nozzle_temp_min,
                 "nozzle_temp_max": nozzle_temp_max,
                 "sequence_id": "0",
@@ -10733,8 +10762,9 @@ class BambuMQTTClient:
             command["print"]["setting_id"] = setting_id
 
         # Multi-colour spools: BS sends every stop plus the colour type.
+        # Every stop is a colour on the same firmware, so it gets the same case.
         if cols:
-            command["print"]["cols"] = cols
+            command["print"]["cols"] = [wire_tray_color(c) for c in cols]
             command["print"]["ctype"] = ctype
 
         command_json = json.dumps(command)

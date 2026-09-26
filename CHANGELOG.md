@@ -172,6 +172,17 @@
 
 ### Fixed
 
+- **An assigned spool no longer unassigns itself seconds later on P1S.** P1S
+  firmware reads a lowercase hex letter in a slot's colour as zero while still
+  acknowledging the command as a success, and a spool's colour could go out in
+  lowercase. The slot then showed a different colour, no longer matched its spool
+  and the assignment was removed, and Configure Slot wrote the wrong colour back
+  the next time. Slot colours, including every stop of a multi-colour spool, are
+  now always sent in uppercase, as Bambu Studio sends them. Also, an FTP upload
+  the printer closed with a 426 after the file was verified intact is now logged
+  as information rather than a warning, so the connection failures that do cost a
+  print stand out in the log. (upstream #2987)
+
 - **A spool the AMS cannot read keeps its assignment, and Assign Spool configures
   its slot.** After swapping a Bambu spool for one without a tag, the slot could
   read as empty although the AMS reported a spool in it: Assign Spool then sent
