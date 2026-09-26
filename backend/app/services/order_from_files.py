@@ -23,6 +23,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate, product_files
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
+from backend.app.services import line_config
 from backend.app.services.product_composition import estimate_seconds, plate_key_counts, recipe_for
 from backend.app.services.product_sync import is_plan_eligible, sync_product_for_file, wanted_plate_indices
 
@@ -212,10 +213,16 @@ async def _new_order(db: AsyncSession, *, name: str, lines: list[tuple[int, int]
     BEFORE the flush, like ``routes/projects.py::create_project`` does — the
     cascade fills ``project_id`` and no lazy load is ever touched."""
     project = Project(name=name, status="active", priority="normal")
-    for i, (product_id, quantity) in enumerate(lines):
-        project.lines.append(ProjectLine(product_id=product_id, quantity=quantity, sort_order=i))
+    rows = [
+        ProjectLine(product_id=product_id, quantity=quantity, sort_order=i)
+        for i, (product_id, quantity) in enumerate(lines)
+    ]
+    project.lines.extend(rows)
     db.add(project)
     await db.flush()
+    # Every line records its product's standard choices (spec workshop-product-variants, rule 5).
+    for row in rows:
+        await line_config.seed_line(db, row, choices=None, counts=None)
     return project
 
 

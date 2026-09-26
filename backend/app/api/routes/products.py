@@ -38,6 +38,7 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.i18n.api_errors import json_error
 from backend.app.models.library import LibraryFile, LibraryFolder
+from backend.app.models.line_config import ProjectLineChoice
 from backend.app.models.product import (
     FACET_KINDS,
     Product,
@@ -50,6 +51,7 @@ from backend.app.models.product import (
     sku_key,
 )
 from backend.app.models.product_category import ProductCategory
+from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption, variant_key
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
 from backend.app.schemas.listing import CategoryCount, ProductFacetsOut, ProductListPage
@@ -79,6 +81,12 @@ from backend.app.schemas.product import (
     StockAdjustIn,
     StockBalanceOut,
     StockMovementOut,
+    VariantGroupCreate,
+    VariantGroupOut,
+    VariantGroupUpdate,
+    VariantOptionCreate,
+    VariantOptionOut,
+    VariantOptionUpdate,
 )
 from backend.app.services import line_config, part_stock, product_delete, product_facets
 from backend.app.services.entity_codes import code_for, id_from_query
@@ -284,6 +292,70 @@ async def _standard_kits(db: AsyncSession, product: Product, part_balances: dict
     return part_stock.kits_of(part_balances, standard_composition(list(product.parts), set(defaults.values())))
 
 
+async def _variant_groups(db: AsyncSession, product_id: int) -> list[ProductVariantGroup]:
+    """The product's groups with their options, fresh — a route may have just
+    written them with the collections already loaded."""
+    return list(
+        (
+            await db.execute(
+                select(ProductVariantGroup)
+                .options(selectinload(ProductVariantGroup.options))
+                .where(ProductVariantGroup.product_id == product_id)
+                .order_by(ProductVariantGroup.position, ProductVariantGroup.id)
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def _variant_groups_out(db: AsyncSession, product_id: int) -> list[VariantGroupOut]:
+    """Groups on the wire, each option with what would refuse its delete — two grouped reads."""
+    groups = await _variant_groups(db, product_id)
+    option_ids = [o.id for g in groups for o in g.options]
+    lines: dict[int, int] = {}
+    parts: dict[int, int] = {}
+    if option_ids:
+        lines = dict(
+            (
+                await db.execute(
+                    select(ProjectLineChoice.option_id, func.count())
+                    .where(ProjectLineChoice.option_id.in_(option_ids))
+                    .group_by(ProjectLineChoice.option_id)
+                )
+            ).all()
+        )
+        parts = dict(
+            (
+                await db.execute(
+                    select(ProductPart.variant_option_id, func.count())
+                    .where(ProductPart.variant_option_id.in_(option_ids))
+                    .group_by(ProductPart.variant_option_id)
+                )
+            ).all()
+        )
+    return [
+        VariantGroupOut(
+            id=g.id,
+            name=g.name,
+            position=g.position,
+            default_option_id=g.default_option_id,
+            options=[
+                VariantOptionOut(
+                    id=o.id,
+                    name=o.name,
+                    position=o.position,
+                    lines_count=lines.get(o.id, 0),
+                    parts_count=parts.get(o.id, 0),
+                )
+                for o in g.options
+            ],
+        )
+        for g in groups
+    ]
+
+
 async def _response(db: AsyncSession, product: Product, *, reload_links: bool = False) -> ProductResponse:
     # ``category`` too: a row built in this request (a copy, a new product) has
     # it unloaded, and reading it would be a lazy load the async session refuses.
@@ -321,6 +393,7 @@ async def _response(db: AsyncSession, product: Product, *, reload_links: bool = 
         attachments=sorted_attachments(product),
         kits_available=await _standard_kits(db, product, part_balances),
         parts=[_with_balance(p, part_balances) for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))],
+        variant_groups=await _variant_groups_out(db, product.id),
         library_file_ids=sorted(f.id for f in product.library_files),
         library_folder_ids=sorted(f.id for f in product.library_folders),
         units_printed_total=await units_printed_total(db, product.id),
@@ -900,6 +973,19 @@ async def duplicate_product(
     )
     db.add(copy)
     await db.flush()
+    # Groups first: the parts' bindings go through the old → new option map.
+    option_map: dict[int, int] = {}
+    for group in await _variant_groups(db, source.id):
+        new_group = ProductVariantGroup(product_id=copy.id, name=group.name, position=group.position)
+        db.add(new_group)
+        await db.flush()
+        new_options = [
+            ProductVariantOption(group_id=new_group.id, name=o.name, position=o.position) for o in group.options
+        ]
+        db.add_all(new_options)
+        await db.flush()
+        option_map.update({o.id: n.id for o, n in zip(group.options, new_options, strict=True)})
+        new_group.default_option_id = option_map.get(group.default_option_id) if group.default_option_id else None
     for part in source.parts:
         db.add(
             ProductPart(
@@ -916,6 +1002,7 @@ async def duplicate_product(
                 sourcing_url=part.sourcing_url,
                 remarks=part.remarks,
                 sort_order=part.sort_order,
+                variant_option_id=option_map.get(part.variant_option_id) if part.variant_option_id else None,
             )
         )
     # ⚠️ No hand-copied ``ProductPlate`` rows. The syncs below plant the plates
@@ -995,6 +1082,14 @@ async def update_part(
 ):
     product = await _get(db, product_id)
     part = await _part(db, product, part_id)
+    if "variant_option_id" in data.model_fields_set and data.variant_option_id is not None:
+        owner = await db.scalar(
+            select(ProductVariantGroup.product_id)
+            .join(ProductVariantOption, ProductVariantOption.group_id == ProductVariantGroup.id)
+            .where(ProductVariantOption.id == data.variant_option_id)
+        )
+        if owner != product.id:
+            raise HTTPException(status_code=422, detail="That option does not belong to this product")
     # A PURCHASED part IS its name — ``name_key`` is derived from it (there is no
     # 3MF object to key off), so a rename that left the key behind made the two
     # disagree for good and let a second "M4 screw" be created beside the first.
@@ -1124,6 +1219,195 @@ async def remove_part_alias(
 
 
 # ---------- free stock (pass 8, Decision 6) ----------
+
+
+# ---------- variants (spec workshop-product-variants, rules 1–3, 18) ----------
+
+_GROUP_TAKEN = "A group with this name already exists"
+_OPTION_TAKEN = "An option with this name already exists"
+
+
+async def _group(db: AsyncSession, product_id: int, group_id: int) -> ProductVariantGroup:
+    group = next((g for g in await _variant_groups(db, product_id) if g.id == group_id), None)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Variant group not found")
+    return group
+
+
+def _option(group: ProductVariantGroup, option_id: int) -> ProductVariantOption:
+    option = next((o for o in group.options if o.id == option_id), None)
+    if option is None:
+        raise HTTPException(status_code=404, detail="Variant option not found")
+    return option
+
+
+async def _bound_parts(db: AsyncSession, option_ids: list[int]) -> int:
+    if not option_ids:
+        return 0
+    return await db.scalar(select(func.count(ProductPart.id)).where(ProductPart.variant_option_id.in_(option_ids))) or 0
+
+
+@router.post("/{product_id}/variant-groups", response_model=ProductResponse)
+async def create_variant_group(
+    product_id: int,
+    data: VariantGroupCreate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """A group with its options, the first one standard. A product already on
+    orders gets the standard recorded on each of its lines (rule 5)."""
+    product = await _get(db, product_id)
+    groups = await _variant_groups(db, product.id)
+    if not data.options:
+        raise HTTPException(status_code=422, detail="A group needs at least one option")
+    if any(variant_key(g.name) == variant_key(data.name) for g in groups):
+        raise HTTPException(status_code=409, detail=_GROUP_TAKEN)
+    keys = [variant_key(name) for name in data.options]
+    if len(set(keys)) != len(keys):
+        raise HTTPException(status_code=409, detail=_OPTION_TAKEN)
+    group = ProductVariantGroup(
+        product_id=product.id, name=data.name, position=max((g.position for g in groups), default=-1) + 1
+    )
+    db.add(group)
+    await db.flush()
+    options = [ProductVariantOption(group_id=group.id, name=name, position=i) for i, name in enumerate(data.options)]
+    db.add_all(options)
+    await db.flush()
+    group.default_option_id = options[0].id
+    await db.flush()
+    await line_config.add_group_to_lines(db, group)
+    return await _response(db, product)
+
+
+@router.patch("/{product_id}/variant-groups/{group_id}", response_model=ProductResponse)
+async def update_variant_group(
+    product_id: int,
+    group_id: int,
+    data: VariantGroupUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Rename, reorder, or pick another standard. A new standard changes no
+    saved line — every line recorded its choice (rule 5)."""
+    product = await _get(db, product_id)
+    group = await _group(db, product.id, group_id)
+    fields = data.model_fields_set
+    if "name" in fields and variant_key(data.name) != variant_key(group.name):
+        if any(
+            g.id != group.id and variant_key(g.name) == variant_key(data.name)
+            for g in await _variant_groups(db, product.id)
+        ):
+            raise HTTPException(status_code=409, detail=_GROUP_TAKEN)
+    if "default_option_id" in fields and data.default_option_id not in {o.id for o in group.options}:
+        raise HTTPException(status_code=422, detail="That option does not belong to this group")
+    if "name" in fields:
+        group.name = data.name
+    if "default_option_id" in fields:
+        group.default_option_id = data.default_option_id
+    if "position" in fields:
+        group.position = data.position
+    await db.flush()
+    return await _response(db, product)
+
+
+@router.delete("/{product_id}/variant-groups/{group_id}", response_model=ProductResponse)
+async def delete_variant_group(
+    product_id: int,
+    group_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Refused while an order line has a choice in it or a part is bound to one
+    of its options — either would change a kit somebody already relies on."""
+    product = await _get(db, product_id)
+    group = await _group(db, product.id, group_id)
+    lines = await db.scalar(
+        select(func.count(func.distinct(ProjectLineChoice.line_id))).where(ProjectLineChoice.group_id == group.id)
+    )
+    if lines:
+        raise HTTPException(status_code=409, detail=f"Group chosen in {lines} order lines")
+    bound = await _bound_parts(db, [o.id for o in group.options])
+    if bound:
+        raise HTTPException(status_code=409, detail=f"{bound} parts are bound to this group's options")
+    # The group points at one of its options: clear that first, so the options
+    # can go before the group on a backend that enforces the key.
+    group.default_option_id = None
+    await db.flush()
+    await db.delete(group)
+    await db.flush()
+    return await _response(db, product)
+
+
+@router.post("/{product_id}/variant-groups/{group_id}/options", response_model=ProductResponse)
+async def create_variant_option(
+    product_id: int,
+    group_id: int,
+    data: VariantOptionCreate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    product = await _get(db, product_id)
+    group = await _group(db, product.id, group_id)
+    if any(variant_key(o.name) == variant_key(data.name) for o in group.options):
+        raise HTTPException(status_code=409, detail=_OPTION_TAKEN)
+    group.options.append(
+        ProductVariantOption(name=data.name, position=max((o.position for o in group.options), default=-1) + 1)
+    )
+    await db.flush()
+    return await _response(db, product)
+
+
+@router.patch("/{product_id}/variant-groups/{group_id}/options/{option_id}", response_model=ProductResponse)
+async def update_variant_option(
+    product_id: int,
+    group_id: int,
+    option_id: int,
+    data: VariantOptionUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    product = await _get(db, product_id)
+    group = await _group(db, product.id, group_id)
+    option = _option(group, option_id)
+    fields = data.model_fields_set
+    if "name" in fields and any(
+        o.id != option.id and variant_key(o.name) == variant_key(data.name) for o in group.options
+    ):
+        raise HTTPException(status_code=409, detail=_OPTION_TAKEN)
+    if "name" in fields:
+        option.name = data.name
+    if "position" in fields:
+        option.position = data.position
+    await db.flush()
+    return await _response(db, product)
+
+
+@router.delete("/{product_id}/variant-groups/{group_id}/options/{option_id}", response_model=ProductResponse)
+async def delete_variant_option(
+    product_id: int,
+    group_id: int,
+    option_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Refused for the standard option, for one an order line chose, and for one
+    parts are bound to (spec workshop-product-variants, owner's call: 409)."""
+    product = await _get(db, product_id)
+    group = await _group(db, product.id, group_id)
+    option = _option(group, option_id)
+    if option.id == group.default_option_id:
+        raise HTTPException(
+            status_code=409, detail="The standard option cannot be deleted; choose another standard first"
+        )
+    lines = await db.scalar(select(func.count()).where(ProjectLineChoice.option_id == option.id))
+    if lines:
+        raise HTTPException(status_code=409, detail=f"Option chosen in {lines} order lines")
+    bound = await _bound_parts(db, [option.id])
+    if bound:
+        raise HTTPException(status_code=409, detail=f"{bound} parts are bound to this option")
+    group.options.remove(option)
+    await db.flush()
+    return await _response(db, product)
 
 
 @router.get("/{product_id}/stock", response_model=ProductStockOut)

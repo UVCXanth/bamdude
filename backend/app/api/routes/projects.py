@@ -38,6 +38,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate
+from backend.app.models.product_variant import ProductVariantGroup
 from backend.app.models.project import Project, ProjectEvent
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
@@ -68,12 +69,19 @@ from backend.app.schemas.listing import (
 from backend.app.schemas.order_from_files import OrderFromFilesRequest
 from backend.app.schemas.order_queue import OrderQueueOut, OrderQueuePrinting
 from backend.app.schemas.project import (
+    LINE_CREATE_NOT_COLUMNS,
     PROJECT_PRIORITIES,
     PROJECT_STAGES,
     PROJECT_STATUSES,
     BankSurplusResponse,
     BatchAddArchives,
     BatchAddQueueItems,
+    DroppedPartOut,
+    LineChangedPartOut,
+    LineChoiceOut,
+    LineConfigurationImpact,
+    LineConfigurationIn,
+    LineConfigurationOut,
     LinePlanOut,
     LineProductOut,
     OrderAssigneeOut,
@@ -122,6 +130,7 @@ from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.filament_intake import require_source_requirements
 from backend.app.services.filament_requirements import PrintRequirementsCache
+from backend.app.services.line_composition import LineConfig, composition, standard_per
 from backend.app.services.list_paging import (
     SortSpec,
     apply_sql_sort,
@@ -201,6 +210,63 @@ async def _responsible_ref(db: AsyncSession, user_id: int | None) -> dict | None
     return {"id": user.id, "name": user.username} if user else None
 
 
+async def _configurations(db: AsyncSession, ctx) -> dict[int, LineConfigurationOut]:
+    """Each line's configuration with names (spec workshop-product-variants, rule 20).
+
+    One read of the order's groups; choices, standards and parts come off the
+    context the figures were computed from, so the caption and the kit agree.
+    """
+    product_ids = sorted({line.product_id for line in ctx.lines})
+    groups_by_product: dict[int, list[ProductVariantGroup]] = {}
+    if product_ids:
+        for group in (
+            await db.execute(
+                select(ProductVariantGroup)
+                .options(selectinload(ProductVariantGroup.options))
+                .where(ProductVariantGroup.product_id.in_(product_ids))
+                .order_by(ProductVariantGroup.position, ProductVariantGroup.id)
+            )
+        ).scalars():
+            groups_by_product.setdefault(group.product_id, []).append(group)
+    out: dict[int, LineConfigurationOut] = {}
+    for line in ctx.lines:
+        cfg = ctx.config_by_line.get(line.id, LineConfig())
+        parts = sorted(ctx.parts_by_product.get(line.product_id, []), key=lambda p: (p.sort_order or 0, p.id))
+        if line.mode == "parts":
+            out[line.id] = LineConfigurationOut(
+                changed_parts=[
+                    LineChangedPartOut(part_id=p.id, name=p.name, qty=cfg.counts[p.id], standard_qty=standard_per(p))
+                    for p in parts
+                    if p.id in cfg.counts
+                ]
+            )
+            continue
+        chosen = {**ctx.defaults_by_product.get(line.product_id, {}), **cfg.choices}
+        choices: list[LineChoiceOut] = []
+        for group in groups_by_product.get(line.product_id, []):
+            option = next((o for o in group.options if o.id == chosen.get(group.id)), None)
+            if option is not None:
+                choices.append(
+                    LineChoiceOut(
+                        group_id=group.id,
+                        group_name=group.name,
+                        option_id=option.id,
+                        option_name=option.name,
+                        is_default=option.id == group.default_option_id,
+                    )
+                )
+        base = {p.id: per for p, per in composition(parts, "product", set(chosen.values()), {})}
+        out[line.id] = LineConfigurationOut(
+            choices=choices,
+            changed_parts=[
+                LineChangedPartOut(part_id=p.id, name=p.name, qty=cfg.counts[p.id], standard_qty=base.get(p.id, 0))
+                for p in parts
+                if p.id in cfg.counts
+            ],
+        )
+    return out
+
+
 async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
     """The one response builder — every mutating handler returns through it.
 
@@ -214,6 +280,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
     if ctx is None:
         raise HTTPException(status_code=404, detail="Project not found")
     figs, other = attribute(ctx)
+    configurations = await _configurations(db, ctx)
     project = ctx.project
     customer = await db.get(Customer, project.customer_id) if project.customer_id else None
     contact = await db.get(CustomerContact, project.contact_id) if project.contact_id else None
@@ -249,6 +316,9 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
             archive_ids=list(figs[line.id].archive_ids),
             prints_in_progress=figs[line.id].prints_in_progress,
             prints_queued=figs[line.id].prints_queued,
+            mode=line.mode,
+            config_key=line.config_key,
+            configuration=configurations[line.id],
         )
         for line in ctx.lines
     ]
@@ -816,6 +886,31 @@ async def _reserve(db: AsyncSession, line: ProjectLine, units: int, user: User |
         raise HTTPException(status_code=409, detail=str(e)) from e
 
 
+_PARTS_LINE_NO_STOCK = "A parts line takes nothing from the shelf"
+
+
+def _check_line_create(data: ProjectLineCreate) -> None:
+    """A parts line has no kits, so nothing to take off the shelf (rule 16)."""
+    if data.mode == "parts" and data.from_stock_units:
+        raise HTTPException(status_code=422, detail=_PARTS_LINE_NO_STOCK)
+
+
+def _line_row(data: ProjectLineCreate, sort_order: int) -> ProjectLine:
+    row = ProjectLine(sort_order=sort_order, **data.model_dump(exclude=LINE_CREATE_NOT_COLUMNS))
+    if row.mode == "parts":
+        # A parts line is one set of parts for good (rule 15).
+        row.quantity = 1
+    return row
+
+
+async def _seed(db: AsyncSession, line: ProjectLine, data: ProjectLineCreate) -> None:
+    """The new line's configuration, through the one writer."""
+    try:
+        await line_config.seed_line(db, line, choices=data.choices, counts=data.part_counts)
+    except line_config.LineConfigError as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
+
+
 async def _release(db: AsyncSession, line: ProjectLine, note: str) -> None:
     """Put a line's reservation back (line deleted, order cancelled)."""
     try:
@@ -850,6 +945,8 @@ async def create_project(
     await _check_contact(db, data.contact_id, data.customer_id)
     # The names go into the journal's «line added» snapshots below.
     names = {line.product_id: (await _check_product(db, line.product_id)).name for line in data.lines}
+    for line in data.lines:
+        _check_line_create(line)
     if "responsible_id" in data.model_fields_set:
         await _check_responsible(db, data.responsible_id)
         responsible_id = data.responsible_id
@@ -866,11 +963,14 @@ async def create_project(
     # have ids to name.
     wanted: list[tuple[ProjectLine, int]] = []
     for i, line in enumerate(data.lines):
-        row = ProjectLine(sort_order=i, **line.model_dump(exclude={"from_stock_units"}))
+        row = _line_row(line, i)
         project.lines.append(row)
         wanted.append((row, line.from_stock_units))
     db.add(project)
     await db.flush()
+    # The configuration before the reservation: the kit it reserves is the line's own.
+    for (row, _units), line in zip(wanted, data.lines, strict=True):
+        await _seed(db, row, line)
     # An order created WITH its lines reserves exactly as a line added later
     # does — otherwise the same dialog would silently mean nothing on the one
     # path that creates most lines.
@@ -1218,13 +1318,12 @@ async def add_line(
 ):
     project = await _get_project(db, project_id)
     product = await _check_product(db, data.product_id)
-    line = ProjectLine(
-        sort_order=max((ln.sort_order for ln in project.lines), default=-1) + 1,
-        **data.model_dump(exclude={"from_stock_units"}),
-    )
+    _check_line_create(data)
+    line = _line_row(data, max((ln.sort_order for ln in project.lines), default=-1) + 1)
     project.lines.append(line)
     # Flushed first so the movements — and the journal — have a line id to name.
     await db.flush()
+    await _seed(db, line, data)
     from_stock = 0
     if data.from_stock_units:
         await _reserve(db, line, data.from_stock_units, current_user)
@@ -1256,6 +1355,12 @@ async def update_line(
     current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     line = await _get_line(db, project_id, line_id)
+    if line.mode == "parts":
+        # Rules 15–16: one set of parts, never kits.
+        if "quantity" in data.model_fields_set and data.quantity != 1:
+            raise HTTPException(status_code=422, detail="A parts line always has quantity 1")
+        if data.from_stock_units:
+            raise HTTPException(status_code=422, detail=_PARTS_LINE_NO_STOCK)
     # Read before the write: the journal says what changed, not what was sent.
     tracked = ("quantity", "material", "color", "note")
     before = {field_name: getattr(line, field_name) for field_name in tracked}
@@ -1298,6 +1403,52 @@ async def update_line(
             "line_changed",
             {"line_id": line.id, "product": product.name if product else None, "changes": changes},
             actor=current_user,
+        )
+    return await _response(db, project_id)
+
+
+@router.put(
+    "/{project_id}/lines/{line_id}/configuration",
+    response_model=ProjectResponse | LineConfigurationImpact,
+)
+async def configure_line(
+    project_id: int,
+    line_id: int,
+    data: LineConfigurationIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Change a line's options and counts (spec workshop-product-variants, rules 11–14).
+
+    The reservation follows the new kit in this transaction and the change is
+    journaled; with ``dry_run`` nothing is written and the answer is what the
+    change would do — the parts that drop out and what of them is already
+    printed or queued, and the reservation before and after.
+    """
+    line = await _get_line(db, project_id, line_id)
+    try:
+        outcome = await line_config.set_configuration(
+            db, line, choices=data.choices, counts=data.part_counts, actor=current_user, dry_run=data.dry_run
+        )
+    except line_config.LineConfigError as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
+    except part_stock.PartStockError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    if data.dry_run:
+        return LineConfigurationImpact(
+            reserved_before=outcome.reserved_before,
+            reserved_after=outcome.reserved_after,
+            dropping=[
+                DroppedPartOut(
+                    part_id=d.part_id,
+                    name=d.name,
+                    per_before=d.per_before,
+                    per_after=d.per_after,
+                    printed=d.printed,
+                    queued=d.queued,
+                )
+                for d in outcome.dropping
+            ],
         )
     return await _response(db, project_id)
 
@@ -2355,19 +2506,24 @@ async def duplicate_project(
         # A reorder keeps who runs it; the stage starts over (column default).
         responsible_id=source.responsible_id,
     )
+    pairs: list[tuple[ProjectLine, ProjectLine]] = []
     for line in source.lines:
-        copy.lines.append(
-            ProjectLine(
-                product_id=line.product_id,
-                quantity=line.quantity,
-                material=line.material,
-                color=line.color,
-                note=line.note,
-                sort_order=line.sort_order,
-            )
+        new_line = ProjectLine(
+            product_id=line.product_id,
+            quantity=line.quantity,
+            material=line.material,
+            color=line.color,
+            note=line.note,
+            sort_order=line.sort_order,
+            mode=line.mode,
         )
+        copy.lines.append(new_line)
+        pairs.append((line, new_line))
     db.add(copy)
     await db.flush()
+    # Mode, choices and counts travel with each line, through the one writer.
+    for line, new_line in pairs:
+        await line_config.copy_configuration(db, line, new_line)
     # The copy's journal starts with where it came from; the source's own history stays with the source.
     await order_journal.record(
         db, copy.id, "order_created", {"source": "copy", "from_code": code_for("order", source.id)}, actor=current_user

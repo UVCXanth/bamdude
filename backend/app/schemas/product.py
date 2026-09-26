@@ -168,6 +168,10 @@ class ProductPartUpdate(BaseModel):
     sourcing_url: str | None = None
     remarks: str | None = None
     sort_order: int | None = None
+    #: The option this part belongs to, or ``null`` for a part in every
+    #: configuration (spec workshop-product-variants, rule 19). The route
+    #: refuses an option of another product.
+    variant_option_id: int | None = None
 
     @field_validator("name", mode="before")
     @classmethod
@@ -205,6 +209,7 @@ class ProductPartResponse(BaseModel):
     sourcing_url: str | None = None
     remarks: str | None = None
     sort_order: int = 0
+    variant_option_id: int | None = None
     # How many of this part are on the shelf (pass 8, Decision 6). A SUM over
     # the ledger, never a column — ``models/part_stock`` says why — so every
     # route answering with a part reads it, and ``0`` here means "no stock",
@@ -315,6 +320,97 @@ class ProductCategoryRef(BaseModel):
     name: str
 
 
+# ---------- variants (spec workshop-product-variants, rules 1–3, 18) ----------
+
+
+class VariantOptionOut(BaseModel):
+    id: int
+    name: str
+    position: int = 0
+    #: Order lines that chose this option, and parts bound to it — what a delete
+    #: would be refused over, so the card can grey the button out beforehand.
+    lines_count: int = 0
+    parts_count: int = 0
+
+
+class VariantGroupOut(BaseModel):
+    id: int
+    name: str
+    position: int = 0
+    default_option_id: int | None = None
+    options: list[VariantOptionOut] = []
+
+
+def _clean_variant_names(value: Any) -> Any:
+    if not isinstance(value, list):
+        return value
+    return [_clean_name(v) for v in value]
+
+
+class VariantGroupCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    #: The first one is the standard. At least one — checked by the route, so
+    #: the refusal is a sentence rather than a validation list.
+    options: list[str] = []
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _name(cls, v: Any) -> Any:
+        return _clean_name(v)
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def _options(cls, v: Any) -> Any:
+        return _clean_variant_names(v)
+
+    @field_validator("options")
+    @classmethod
+    def _option_length(cls, v: list[str]) -> list[str]:
+        if any(len(name) > 128 for name in v):
+            raise ValueError("option name is too long")
+        return v
+
+
+class VariantGroupUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    default_option_id: int | None = None
+    position: int | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _name(cls, v: Any) -> Any:
+        return _clean_name(_never_null(v, "name"))
+
+    @field_validator("default_option_id", "position")
+    @classmethod
+    def _not_null(cls, v: int | None) -> int | None:
+        return _never_null(v, "value")
+
+
+class VariantOptionCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _name(cls, v: Any) -> Any:
+        return _clean_name(v)
+
+
+class VariantOptionUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    position: int | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _name(cls, v: Any) -> Any:
+        return _clean_name(_never_null(v, "name"))
+
+    @field_validator("position")
+    @classmethod
+    def _not_null(cls, v: int | None) -> int | None:
+        return _never_null(v, "position")
+
+
 class ProductListItem(BaseModel):
     id: int
     code: str
@@ -352,6 +448,7 @@ class ProductResponse(ProductListItem):
     design_id: str | None = None
     attachments: list[ProductAttachmentOut] = []
     parts: list[ProductPartResponse] = []
+    variant_groups: list[VariantGroupOut] = []
     library_file_ids: list[int] = []
     library_folder_ids: list[int] = []
     # All-time units printed across EVERY order of this product (spec §Decisions

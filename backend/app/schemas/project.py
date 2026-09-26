@@ -69,11 +69,76 @@ class ProjectLineCreate(BaseModel):
     #: :class:`ProjectLineResponse` is what was actually reserved, which is
     #: less when the shelf emptied between rendering the dialog and pressing OK.
     from_stock_units: int = Field(default=0, ge=0)
+    #: spec workshop-product-variants, rules 15–17 and 20: set at creation and
+    #: never changed. ``choices`` is ``{group_id: option_id}`` (a group left
+    #: out takes its standard option); ``part_counts`` is ``{part_id: qty}`` —
+    #: the changed counts of a ``product`` line, the wanted counts of a
+    #: ``parts`` one. Neither is a column: the route hands both to
+    #: ``services/line_config``, and excludes them from the row's dump.
+    mode: Literal["product", "parts"] = "product"
+    choices: dict[int, int] = Field(default_factory=dict)
+    part_counts: dict[int, int] = Field(default_factory=dict)
 
     @field_validator("material")
     @classmethod
     def _mat(cls, v: str | None) -> str | None:
         return _normalize_material(v)
+
+
+#: The fields of :class:`ProjectLineCreate` that are not ``project_lines`` columns.
+LINE_CREATE_NOT_COLUMNS = {"from_stock_units", "choices", "part_counts"}
+
+
+class LineConfigurationIn(BaseModel):
+    """``PUT /projects/{id}/lines/{line_id}/configuration`` (rule 20).
+
+    ``choices`` names only the groups to change; ``part_counts`` is the whole
+    set of changed (or, for a parts line, wanted) counts. ``dry_run`` answers
+    :class:`LineConfigurationImpact` and writes nothing (rule 14).
+    """
+
+    choices: dict[int, int] = Field(default_factory=dict)
+    part_counts: dict[int, int] = Field(default_factory=dict)
+    dry_run: bool = False
+
+
+class DroppedPartOut(BaseModel):
+    part_id: int
+    name: str
+    per_before: int
+    per_after: int
+    printed: int
+    queued: int
+
+
+class LineConfigurationImpact(BaseModel):
+    reserved_before: int = 0
+    reserved_after: int = 0
+    dropping: list[DroppedPartOut] = []
+
+
+class LineChoiceOut(BaseModel):
+    group_id: int
+    group_name: str
+    option_id: int
+    option_name: str
+    is_default: bool
+
+
+class LineChangedPartOut(BaseModel):
+    part_id: int
+    name: str
+    qty: int
+    #: What the line's chosen configuration gives without the change — for a
+    #: parts line, the product's own count per unit.
+    standard_qty: int
+
+
+class LineConfigurationOut(BaseModel):
+    """Codes and names only; the frontend composes the caption in the reader's language."""
+
+    choices: list[LineChoiceOut] = []
+    changed_parts: list[LineChangedPartOut] = []
 
 
 class ProjectLineUpdate(BaseModel):
@@ -240,6 +305,10 @@ class ProjectLineResponse(BaseModel):
     #: (both tiers) stamped with this line's id.
     prints_in_progress: int = 0
     prints_queued: int = 0
+    # spec workshop-product-variants, rule 20.
+    mode: Literal["product", "parts"] = "product"
+    config_key: str = ""
+    configuration: LineConfigurationOut = Field(default_factory=LineConfigurationOut)
 
 
 class ProcurementOut(BaseModel):

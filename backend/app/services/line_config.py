@@ -52,7 +52,7 @@ MAX_COUNT = 9999
 class LineConfigError(ValueError):
     """A configuration the product cannot have; ``status`` is the HTTP answer."""
 
-    def __init__(self, status: int, detail: str) -> None:
+    def __init__(self, detail: str, status: int = 422) -> None:
         super().__init__(detail)
         self.status = status
 
@@ -102,19 +102,19 @@ def _validate(
     parts = {p.id: p for p in product.parts}
     for pid, qty in counts.items():
         if pid not in parts:
-            raise LineConfigError(422, "That part does not belong to this product")
+            raise LineConfigError("That part does not belong to this product")
         if not 0 <= qty <= MAX_COUNT:
-            raise LineConfigError(422, "A part count must be between 0 and 9999")
+            raise LineConfigError("A part count must be between 0 and 9999")
     if mode == "parts":
         wanted = {pid: qty for pid, qty in counts.items() if qty > 0}
         if not wanted:
-            raise LineConfigError(422, "A parts line needs at least one part")
+            raise LineConfigError("A parts line needs at least one part")
         return {}, wanted
     group_of = {o.id: g.id for g in product.variant_groups for o in g.options}
     new_choices = _defaults(product)
     for gid, oid in choices.items():
         if group_of.get(oid) != gid:
-            raise LineConfigError(422, "That option does not belong to this product")
+            raise LineConfigError("That option does not belong to this product")
         new_choices[gid] = oid
     # A count equal to what the configuration gives anyway is not a change.
     by_id = {p.id: per for p, per in composition(list(parts.values()), "product", set(new_choices.values()), {})}

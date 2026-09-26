@@ -60,6 +60,7 @@ FORWARDED_EXCEPTIONS = frozenset(
         "OrcaCloudError",
         "OrcaCloudAuthError",
         "PartStockError",
+        "LineConfigError",
         "InvalidFilenameError",
         "DispatchEnqueueRejected",
         "SlicerTimeoutError",

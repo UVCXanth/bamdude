@@ -66,29 +66,17 @@ async def pipe(db_session):
 
 async def _order(client, db, pipe, *, angled_flask=None):
     """Two lines of 4: line 1 standard (straight), line 2 angled (flask ×2 when asked)."""
+    gid = str(pipe["group"].id)
+    angled = {"product_id": pipe["product"].id, "quantity": 4, "choices": {gid: pipe["angled"].id}}
+    if angled_flask is not None:
+        angled["part_counts"] = {str(pipe["parts"]["flask"].id): angled_flask}
     body = (
         await client.post(
             "/api/v1/projects/",
-            json={
-                "name": "O",
-                "lines": [
-                    {"product_id": pipe["product"].id, "quantity": 4},
-                    {"product_id": pipe["product"].id, "quantity": 4},
-                ],
-            },
+            json={"name": "O", "lines": [{"product_id": pipe["product"].id, "quantity": 4}, angled]},
         )
     ).json()
     first, second = (line["id"] for line in body["lines"])
-    gid = pipe["group"].id
-    db.add_all(
-        [
-            ProjectLineChoice(line_id=first, group_id=gid, option_id=pipe["straight"].id),
-            ProjectLineChoice(line_id=second, group_id=gid, option_id=pipe["angled"].id),
-        ]
-    )
-    if angled_flask is not None:
-        db.add(ProjectLinePartCount(line_id=second, part_id=pipe["parts"]["flask"].id, qty=angled_flask))
-    await db.commit()
     return body["id"], first, second
 
 
@@ -208,6 +196,8 @@ async def test_a_line_with_no_choice_row_reads_the_standard_option(committing_cl
             "/api/v1/projects/", json={"name": "O", "lines": [{"product_id": pipe["product"].id, "quantity": 2}]}
         )
     ).json()
+    # The API records the standard choice; take it away to stand in that moment.
+    await db_session.execute(ProjectLineChoice.__table__.delete())
+    await db_session.commit()
     line = (await committing_client.get(f"/api/v1/projects/{body['id']}")).json()["lines"][0]
     assert set(_parts(line)) == {"flask", "straight"}
-    assert (await db_session.execute(select(ProjectLineChoice))).scalars().all() == []

@@ -72,6 +72,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.product import Product, ProductPart, ProductPlate, product_files
+from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption, variant_key
 from backend.app.schemas.product import CardNote
 from backend.app.services.library_ingest import external_hash_is_stale, find_reusable_row
 from backend.app.services.order_metrics import grouped_figures, units_delivered
@@ -582,7 +583,36 @@ async def _files_to_export(db: AsyncSession, product: Any) -> list[LibraryFile]:
     return sorted(rows, key=lambda r: r.id)
 
 
-def _part_manifest(part: Any) -> dict:
+async def _variant_groups(db: AsyncSession, product_id: int) -> list[ProductVariantGroup]:
+    return list(
+        (
+            await db.execute(
+                select(ProductVariantGroup)
+                .options(selectinload(ProductVariantGroup.options))
+                .where(ProductVariantGroup.product_id == product_id)
+                .order_by(ProductVariantGroup.position, ProductVariantGroup.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _variant_manifest(groups: list[ProductVariantGroup]) -> tuple[list[dict], dict[int, list[str]]]:
+    """The groups by NAME — ids mean nothing on another farm — and each
+    option's ``[group, option]`` pair for the parts that bind to it
+    (spec workshop-product-variants, rule 21)."""
+    out: list[dict] = []
+    pair_of: dict[int, list[str]] = {}
+    for group in groups:
+        default = next((o.name for o in group.options if o.id == group.default_option_id), None)
+        out.append({"name": group.name, "options": [o.name for o in group.options], "default": default})
+        for option in group.options:
+            pair_of[option.id] = [group.name, option.name]
+    return out, pair_of
+
+
+def _part_manifest(part: Any, variant: list[str] | None = None) -> dict:
     return {
         "kind": part.kind,
         "name": part.name,
@@ -594,6 +624,7 @@ def _part_manifest(part: Any) -> dict:
         "sourcing_url": part.sourcing_url,
         "remarks": part.remarks,
         "sort_order": part.sort_order,
+        "variant": variant,
     }
 
 
@@ -604,6 +635,7 @@ def _write_export(
     cover_source: tuple[str, Path] | None,
     card: dict,
     parts: list[dict],
+    variant_groups: list[dict],
 ) -> tuple[str, dict]:
     """Build the archive on disk and return ``(temp path, manifest)``.
 
@@ -678,6 +710,7 @@ def _write_export(
             "exported_at": datetime.now(timezone.utc).isoformat(),
             "card": card,
             "parts": parts,
+            "variant_groups": variant_groups,
             "files": files,
             "plates": [
                 {
@@ -754,6 +787,7 @@ async def export_zip(db: AsyncSession, product: Any) -> ExportArchive:
         if source.is_file():
             cover_source = (explicit, source)
 
+    variant_groups, pair_of = _variant_manifest(await _variant_groups(db, product.id))
     path, _manifest_written = await asyncio.to_thread(
         _write_export,
         specs,
@@ -772,7 +806,11 @@ async def export_zip(db: AsyncSession, product: Any) -> ExportArchive:
             "source_url": product.source_url,
             "design_id": product.design_id,
         },
-        [_part_manifest(p) for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))],
+        [
+            _part_manifest(p, pair_of.get(p.variant_option_id))
+            for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))
+        ],
+        variant_groups,
     )
     date = datetime.now(timezone.utc).date().isoformat()
     return ExportArchive(
@@ -849,7 +887,7 @@ def _validated_manifest(zf: zipfile.ZipFile) -> dict:
     card = manifest.get("card")
     if not isinstance(card, dict) or not str(card.get("name") or "").strip():
         raise HTTPException(status_code=400, detail=f"{_MANIFEST} carries no product name")
-    for key in ("parts", "files", "plates", "attachments"):
+    for key in ("parts", "files", "plates", "attachments", "variant_groups"):
         if not isinstance(manifest.get(key, []), list):
             raise HTTPException(status_code=400, detail=f"{_MANIFEST}: '{key}' must be a list")
     return manifest
@@ -1078,6 +1116,9 @@ async def import_zip(
         db.add(product)
         await db.flush()
 
+        # ---- variant groups, before the parts that bind to them ----
+        option_by_pair = await _import_variant_groups(db, product.id, manifest.get("variant_groups") or [])
+
         # ---- parts, BEFORE the sync ----
         # ``seed_parts_for_product`` creates a part for every object key no
         # existing part covers. Planting the manifest's parts first is what makes
@@ -1118,6 +1159,7 @@ async def import_zip(
                     sourcing_url=_text(raw.get("sourcing_url"), 512),
                     remarks=_text(raw.get("remarks")),
                     sort_order=_whole(raw.get("sort_order"), position),
+                    variant_option_id=_variant_of(raw.get("variant"), option_by_pair),
                 )
             )
         await db.flush()
@@ -1181,6 +1223,53 @@ async def import_zip(
             raise
 
     return product, notes
+
+
+async def _import_variant_groups(db: AsyncSession, product_id: int, raw_groups: list) -> dict[tuple[str, str], int]:
+    """The manifest's groups on the new product; ``(group key, option key) → option id``.
+
+    A group without a usable option, or named like one already planted, is
+    skipped — the same leniency the parts get: an import keeps what it can.
+    """
+    option_by_pair: dict[tuple[str, str], int] = {}
+    seen: set[str] = set()
+    position = 0
+    for raw in raw_groups:
+        if not isinstance(raw, dict):
+            continue
+        name = _text(raw.get("name"), 128)
+        if not name or variant_key(name) in seen:
+            continue
+        names: list[str] = []
+        for option_name in raw.get("options") or []:
+            clean = _text(option_name, 128)
+            if clean and variant_key(clean) not in {variant_key(n) for n in names}:
+                names.append(clean)
+        if not names:
+            continue
+        seen.add(variant_key(name))
+        group = ProductVariantGroup(product_id=product_id, name=name, position=position)
+        position += 1
+        db.add(group)
+        await db.flush()
+        options = [ProductVariantOption(group_id=group.id, name=n, position=i) for i, n in enumerate(names)]
+        db.add_all(options)
+        await db.flush()
+        default = _text(raw.get("default"), 128)
+        group.default_option_id = next(
+            (o.id for o in options if default and variant_key(o.name) == variant_key(default)), options[0].id
+        )
+        for option in options:
+            option_by_pair[(variant_key(name), variant_key(option.name))] = option.id
+    await db.flush()
+    return option_by_pair
+
+
+def _variant_of(raw: Any, option_by_pair: dict[tuple[str, str], int]) -> int | None:
+    """A part's ``[group, option]`` pair, as an option of the new product — or none."""
+    if not isinstance(raw, list) or len(raw) != 2 or not all(isinstance(v, str) for v in raw):
+        return None
+    return option_by_pair.get((variant_key(raw[0]), variant_key(raw[1])))
 
 
 async def _ingest_into_library(db: AsyncSession, *, filename: str, content: bytes, target_folder: Any, user: Any):
