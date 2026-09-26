@@ -2279,6 +2279,15 @@ export interface CustomerContactInput {
   note?: string | null;
 }
 
+/** `GET /delivery-methods` — the reference a contact's delivery picks from. */
+export interface DeliveryMethod {
+  id: number;
+  name: string;
+  position: number;
+  /** Contacts that pick it — such a method cannot be deleted. */
+  contacts_count: number;
+}
+
 export interface Customer {
   id: number;
   code: string;
@@ -11058,6 +11067,17 @@ export const api = {
     request<Customer>(`/customers/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteCustomer: (id: number) =>
     request<{ message: string }>(`/customers/${id}`, { method: 'DELETE' }),
+
+  // Delivery methods — the reference a customer's contacts pick from
+  getDeliveryMethods: () => request<DeliveryMethod[]>('/delivery-methods/'),
+  createDeliveryMethod: (name: string) =>
+    request<DeliveryMethod>('/delivery-methods/', { method: 'POST', body: JSON.stringify({ name }) }),
+  renameDeliveryMethod: (id: number, name: string) =>
+    request<DeliveryMethod>(`/delivery-methods/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  reorderDeliveryMethods: (ids: number[]) =>
+    request<DeliveryMethod[]>('/delivery-methods/order', { method: 'PUT', body: JSON.stringify({ ids }) }),
+  deleteDeliveryMethod: (id: number) =>
+    request<{ message: string }>(`/delivery-methods/${id}`, { method: 'DELETE' }),
 
   // Products
   getProducts: (params: ProductListParams = {}) => {
