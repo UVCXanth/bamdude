@@ -4,16 +4,18 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from backend.app.models.customer import Customer
+from backend.app.models.customer import Customer, CustomerContact
 from backend.app.models.project import Project
 
 pytestmark = pytest.mark.integration
 
 
-async def _customer(db_session, name, contact=None, *, orders=0):
-    c = Customer(name=name, contact=contact)
+async def _customer(db_session, name, contact: dict | None = None, *, orders=0):
+    c = Customer(name=name)
     db_session.add(c)
     await db_session.flush()
+    if contact is not None:
+        db_session.add(CustomerContact(customer_id=c.id, position=0, **contact))
     for i in range(orders):
         db_session.add(Project(name=f"{name}-{i}", status="active", customer_id=c.id))
     await db_session.commit()
@@ -27,7 +29,7 @@ async def test_without_page_the_flat_shape_is_unchanged(async_client, db_session
     flat = await async_client.get("/api/v1/customers/")
     assert flat.status_code == 200
     assert isinstance(flat.json(), list)
-    assert set(flat.json()[0]) >= {"id", "name", "contact", "figures"}
+    assert set(flat.json()[0]) >= {"id", "code", "name", "kind", "contacts", "figures"}
 
 
 @pytest.mark.asyncio
@@ -42,8 +44,8 @@ async def test_page_gives_the_envelope(async_client, db_session):
 
 @pytest.mark.asyncio
 async def test_q_matches_name_or_contact(async_client, db_session):
-    await _customer(db_session, "Ivan", contact="ivan@x.ua")
-    await _customer(db_session, "Olena", contact="+380 50 000")
+    await _customer(db_session, "Ivan", contact={"email": "ivan@x.ua"})
+    await _customer(db_session, "Olena", contact={"phone": "+380 50 000"})
     by_contact = (await async_client.get("/api/v1/customers/?page=1&q=x.ua")).json()
     by_name = (await async_client.get("/api/v1/customers/?page=1&q=OLE")).json()
     assert [c["name"] for c in by_contact["items"]] == ["Ivan"]
@@ -134,8 +136,8 @@ async def test_names_sort_without_regard_to_case(async_client, db_session):
 
 @pytest.mark.asyncio
 async def test_search_folds_cyrillic_case_on_the_contact(async_client, db_session):
-    await _customer(db_session, "Olena", contact="Олена Коваль, склад")
-    await _customer(db_session, "Ivan", contact="ivan@x.ua")
+    await _customer(db_session, "Olena", contact={"name": "Олена Коваль", "note": "склад"})
+    await _customer(db_session, "Ivan", contact={"email": "ivan@x.ua"})
     items = (await async_client.get("/api/v1/customers/?page=1&q=КОВАЛЬ")).json()["items"]
     assert [c["name"] for c in items] == ["Olena"]
 

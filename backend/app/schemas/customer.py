@@ -1,7 +1,9 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+CustomerKind = Literal["company", "regular", "private"]
 
 
 def _clean_name(value: Any) -> Any:
@@ -29,7 +31,7 @@ def _clean_name(value: Any) -> Any:
 
 class CustomerCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    contact: str | None = None
+    kind: CustomerKind = "company"
     notes: str | None = None
 
     @field_validator("name", mode="before")
@@ -40,8 +42,16 @@ class CustomerCreate(BaseModel):
 
 class CustomerUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
-    contact: str | None = None
+    kind: CustomerKind | None = None
     notes: str | None = None
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _kind_is_never_null(cls, value: Any) -> Any:
+        """``customers.kind`` is NOT NULL: an explicit null is a 422, not a 500 from the flush."""
+        if value is None:
+            raise ValueError("kind cannot be null")
+        return value
 
     @field_validator("name", mode="before")
     @classmethod
@@ -93,13 +103,34 @@ class CustomerFigures(CustomerListFigures):
     total_cost: float
 
 
+class CustomerContactOut(BaseModel):
+    """One contact; ``contacts[0]`` of a customer is its main contact (spec rule 12)."""
+
+    id: int
+    code: str
+    name: str | None
+    role: str | None
+    phone: str | None
+    email: str | None
+    city: str | None
+    delivery_method_id: int | None
+    # Read through the join, never copied: renaming a method renames it everywhere.
+    delivery_method_name: str | None
+    delivery_details: str | None
+    note: str | None
+    # Orders that name this contact — what the form warns about before removing it.
+    orders_count: int
+
+
 class CustomerResponse(BaseModel):
     id: int
+    code: str
     name: str
-    contact: str | None
+    kind: CustomerKind
     notes: str | None
     created_at: datetime
     updated_at: datetime
+    contacts: list[CustomerContactOut]
     # The detail model first because SERIALISATION is what the order decides:
     # pydantic checks ``isinstance`` against the members in declaration order,
     # and ``CustomerFigures`` is a subclass of ``CustomerListFigures``, so the

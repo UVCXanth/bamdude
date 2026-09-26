@@ -2,16 +2,18 @@
 one domain, no new Permission (spec §API)."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
-from backend.app.models.customer import Customer
+from backend.app.models.customer import Customer, CustomerContact
 from backend.app.models.project import Project
 from backend.app.models.user import User
 from backend.app.schemas.customer import (
+    CustomerContactOut,
     CustomerCreate,
     CustomerFigures,
     CustomerListFigures,
@@ -19,6 +21,7 @@ from backend.app.schemas.customer import (
     CustomerUpdate,
 )
 from backend.app.schemas.listing import CustomerListPage, CustomersSummary
+from backend.app.services.entity_codes import code_for
 from backend.app.services.list_paging import (
     SortSpec,
     apply_sql_sort,
@@ -32,16 +35,56 @@ from backend.app.services.order_metrics import customer_figures
 router = APIRouter(prefix="/customers", tags=["customers"])
 
 
-async def _response(db: AsyncSession, customer: Customer) -> CustomerResponse:
+def _customers_query():
+    """Customers with their contacts and each contact's method name — two IN queries, never one per customer."""
+    return select(Customer).options(selectinload(Customer.contacts).selectinload(CustomerContact.delivery_method))
+
+
+async def _contact_orders(db: AsyncSession) -> dict[int, int]:
+    """Orders naming each contact — one GROUP BY for the whole answer."""
+    rows = await db.execute(
+        select(Project.contact_id, func.count(Project.id))
+        .where(Project.contact_id.is_not(None))
+        .group_by(Project.contact_id)
+    )
+    return dict(rows.all())
+
+
+def _contact_out(contact: CustomerContact, orders: dict[int, int]) -> CustomerContactOut:
+    return CustomerContactOut(
+        id=contact.id,
+        code=code_for("contact", contact.id),
+        name=contact.name,
+        role=contact.role,
+        phone=contact.phone,
+        email=contact.email,
+        city=contact.city,
+        delivery_method_id=contact.delivery_method_id,
+        delivery_method_name=contact.delivery_method.name if contact.delivery_method else None,
+        delivery_details=contact.delivery_details,
+        note=contact.note,
+        orders_count=orders.get(contact.id, 0),
+    )
+
+
+def _customer_out(customer: Customer, figures, orders: dict[int, int]) -> CustomerResponse:
     return CustomerResponse(
         id=customer.id,
+        code=code_for("customer", customer.id),
         name=customer.name,
-        contact=customer.contact,
+        kind=customer.kind,
         notes=customer.notes,
         created_at=customer.created_at,
         updated_at=customer.updated_at,
-        figures=CustomerFigures.model_validate(await customer_figures(db, customer.id)),
+        contacts=[_contact_out(c, orders) for c in customer.contacts],
+        figures=figures,
     )
+
+
+async def _response(db: AsyncSession, customer_id: int) -> CustomerResponse:
+    customer = await _get_or_404(db, customer_id)
+    figures = CustomerFigures.model_validate(await customer_figures(db, customer.id))
+    return _customer_out(customer, figures, await _contact_orders(db))
 
 
 def _empty_light_figures() -> CustomerListFigures:
@@ -91,7 +134,11 @@ async def _light_figures_by_customer(db: AsyncSession) -> dict[int, CustomerList
 
 
 async def _get_or_404(db: AsyncSession, customer_id: int) -> Customer:
-    customer = await db.get(Customer, customer_id)
+    # ``populate_existing``: after a write this re-reads the contacts instead of
+    # handing back the collection the session loaded before it.
+    customer = (
+        await db.execute(_customers_query().where(Customer.id == customer_id).execution_options(populate_existing=True))
+    ).scalar_one_or_none()
     if customer is None:
         raise HTTPException(status_code=404, detail="Customer not found")
     return customer
@@ -115,7 +162,7 @@ _CUSTOMER_COMPUTED = {
 @router.get("", response_model=list[CustomerResponse] | CustomerListPage)
 @router.get("/", response_model=list[CustomerResponse] | CustomerListPage)
 async def list_customers(
-    q: str | None = Query(None, description="With page set: ilike on the name or the contact"),
+    q: str | None = Query(None, description="With page set: ilike on the name or any contact field"),
     with_active: bool = Query(False, description="With page set: only customers with an active order"),
     sort_by: str | None = Query(None, description="With page set: '<key>-<asc|desc>'; unknown → name-asc"),
     page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
@@ -127,7 +174,7 @@ async def list_customers(
     """The customers list. ``page`` is the compat switch (the inventory's contract).
 
     Without it the flat array the customer picker and the orders page's filter
-    read — unchanged. With it ``{items, meta}``, ``q`` (name or contact),
+    read — unchanged. With it ``{items, meta}``, ``q`` (name or any contact field),
     ``with_active`` (only customers with an active order) and ``sort_by``.
     The light figures are one GROUP BY over the whole table either
     way; a computed key (an order count or the price sum) sorts the built rows
@@ -135,14 +182,28 @@ async def list_customers(
     """
     paged = page is not None
     key, direction, computed = resolve_sort(_CUSTOMER_SORT, sort_by)
-    query = select(Customer)
+    query = _customers_query()
     if not paged:
         query = query.order_by(Customer.name)
     total = 0
     if paged:
         if q:
             needle = f"%{q.strip()}%"
-            query = query.where(or_(Customer.name.ilike(needle), Customer.contact.ilike(needle)))
+            contact_matches = exists(
+                select(CustomerContact.id).where(
+                    CustomerContact.customer_id == Customer.id,
+                    or_(
+                        CustomerContact.name.ilike(needle),
+                        CustomerContact.role.ilike(needle),
+                        CustomerContact.phone.ilike(needle),
+                        CustomerContact.email.ilike(needle),
+                        CustomerContact.city.ilike(needle),
+                        CustomerContact.delivery_details.ilike(needle),
+                        CustomerContact.note.ilike(needle),
+                    ),
+                )
+            )
+            query = query.where(or_(Customer.name.ilike(needle), contact_matches))
         if with_active:
             query = query.where(Customer.id.in_(select(Project.customer_id).where(Project.status == "active")))
         if not computed:
@@ -152,21 +213,11 @@ async def list_customers(
                 query = query.limit(per_page).offset((page - 1) * per_page)
     rows = (await db.execute(query)).scalars().all()
     figures = await _light_figures_by_customer(db)
-    items = [
-        CustomerResponse(
-            id=c.id,
-            name=c.name,
-            contact=c.contact,
-            notes=c.notes,
-            created_at=c.created_at,
-            updated_at=c.updated_at,
-            # ``.get(default)``, never ``or``: the question is whether the
-            # customer HAS a row in the grouped result, not whether the model it
-            # holds is truthy — two different questions that happen to agree.
-            figures=figures.get(c.id, _empty_light_figures()),
-        )
-        for c in rows
-    ]
+    orders = await _contact_orders(db)
+    # ``.get(default)``, never ``or``: the question is whether the customer HAS
+    # a row in the grouped result, not whether the model it holds is truthy —
+    # two different questions that happen to agree.
+    items = [_customer_out(c, figures.get(c.id, _empty_light_figures()), orders) for c in rows]
     if not paged:
         return items
     if computed:
@@ -183,11 +234,10 @@ async def create_customer(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_CREATE),
 ):
-    customer = Customer(name=data.name, contact=data.contact, notes=data.notes)
+    customer = Customer(name=data.name, kind=data.kind, notes=data.notes)
     db.add(customer)
     await db.flush()
-    await db.refresh(customer)
-    return await _response(db, customer)
+    return await _response(db, customer.id)
 
 
 @router.get("/summary", response_model=CustomersSummary)
@@ -211,7 +261,7 @@ async def customers_summary(
 async def get_customer(
     customer_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
 ):
-    return await _response(db, await _get_or_404(db, customer_id))
+    return await _response(db, customer_id)
 
 
 @router.patch("/{customer_id}", response_model=CustomerResponse)
@@ -222,12 +272,11 @@ async def update_customer(
     _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     customer = await _get_or_404(db, customer_id)
-    for field_name in ("name", "contact", "notes"):
+    for field_name in ("name", "kind", "notes"):
         if field_name in data.model_fields_set:  # explicit null clears; absent leaves alone
             setattr(customer, field_name, getattr(data, field_name))
     await db.flush()
-    await db.refresh(customer)
-    return await _response(db, customer)
+    return await _response(db, customer.id)
 
 
 @router.delete("/{customer_id}")

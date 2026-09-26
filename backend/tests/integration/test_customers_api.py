@@ -14,7 +14,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.mark.asyncio
 async def test_customer_crud_and_figures(committing_client, db_session):
-    r = await committing_client.post("/api/v1/customers", json={"name": "ACME", "contact": "acme@example.com"})
+    r = await committing_client.post("/api/v1/customers", json={"name": "ACME"})
     assert r.status_code == 200, r.text
     cid = r.json()["id"]
     assert r.json()["figures"]["projects"] == 0
@@ -32,7 +32,7 @@ async def test_customer_crud_and_figures(committing_client, db_session):
     assert figs["projects"] == 2 and figs["active"] == 1 and figs["completed"] == 1 and figs["total_price"] == 50.0
 
     r = await committing_client.patch(f"/api/v1/customers/{cid}", json={"notes": "pays late"})
-    assert r.json()["notes"] == "pays late" and r.json()["contact"] == "acme@example.com"
+    assert r.json()["notes"] == "pays late" and r.json()["code"] == f"CU-{cid:04d}"
 
     r = await committing_client.get("/api/v1/customers")
     assert [c["name"] for c in r.json()] == ["ACME"]
@@ -47,14 +47,14 @@ async def test_customer_crud_and_figures(committing_client, db_session):
 @pytest.mark.asyncio
 async def test_patch_null_clears_an_optional_field_but_never_the_name(committing_client):
     cid = (
-        await committing_client.post("/api/v1/customers", json={"name": "ACME", "contact": "c", "notes": "n"})
+        await committing_client.post("/api/v1/customers", json={"name": "ACME", "kind": "regular", "notes": "n"})
     ).json()["id"]
 
     # Absent field: left alone. Explicit null on an optional field: cleared.
-    r = await committing_client.patch(f"/api/v1/customers/{cid}", json={"notes": "x"})
-    assert r.status_code == 200 and r.json()["notes"] == "x" and r.json()["contact"] == "c"
-    r = await committing_client.patch(f"/api/v1/customers/{cid}", json={"contact": None})
-    assert r.status_code == 200 and r.json()["contact"] is None and r.json()["notes"] == "x"
+    r = await committing_client.patch(f"/api/v1/customers/{cid}", json={"name": "ACME"})
+    assert r.status_code == 200 and r.json()["notes"] == "n" and r.json()["kind"] == "regular"
+    r = await committing_client.patch(f"/api/v1/customers/{cid}", json={"notes": None})
+    assert r.status_code == 200 and r.json()["notes"] is None and r.json()["kind"] == "regular"
 
     # ``name`` is NOT NULL — 422 from the schema, never an IntegrityError.
     assert (await committing_client.patch(f"/api/v1/customers/{cid}", json={"name": None})).status_code == 422

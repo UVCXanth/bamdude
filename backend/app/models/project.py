@@ -20,6 +20,10 @@ class Project(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id", ondelete="SET NULL"), nullable=True)
+    # Who receives this order — a contact of ITS customer (checked in the route).
+    contact_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customer_contacts.id", ondelete="SET NULL"), nullable=True
+    )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     color: Mapped[str | None] = mapped_column(String(20), nullable=True)  # Hex colour for UI badges
     status: Mapped[str] = mapped_column(String(20), default="active")  # active | completed | cancelled
@@ -37,6 +41,7 @@ class Project(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     customer: Mapped["Customer | None"] = relationship(back_populates="projects")
+    contact: Mapped["CustomerContact | None"] = relationship()
     lines: Mapped[list["ProjectLine"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="ProjectLine.sort_order"
     )
@@ -46,6 +51,6 @@ class Project(Base):
 
 
 from backend.app.models.archive import PrintArchive  # noqa: E402
-from backend.app.models.customer import Customer  # noqa: E402
+from backend.app.models.customer import Customer, CustomerContact  # noqa: E402
 from backend.app.models.print_queue import PrintQueueItem  # noqa: E402
 from backend.app.models.project_line import ProjectLine, ProjectProcurement  # noqa: E402

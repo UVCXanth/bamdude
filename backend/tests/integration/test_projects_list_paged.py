@@ -15,8 +15,8 @@ from backend.app.models.project import Project
 pytestmark = pytest.mark.integration
 
 
-async def _customer(db_session, name, contact=None):
-    c = Customer(name=name, contact=contact)
+async def _customer(db_session, name):
+    c = Customer(name=name)
     db_session.add(c)
     await db_session.commit()
     await db_session.refresh(c)
