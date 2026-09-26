@@ -412,7 +412,10 @@ async def _restore_model_indexes(conn, models_metadata) -> None:
     def _do(sync_conn):
         inspector = sqla_inspect(sync_conn)
         existing_tables = set(inspector.get_table_names())
-        for table in models_metadata.sorted_tables:
+        # Per table, so no order: ``sorted_tables`` cannot order the models' FK
+        # cycle and warns that it "may raise an error in a future release"
+        # (upstream 58ea7a36).
+        for table in models_metadata.tables.values():
             if table.name not in existing_tables:
                 continue
             # ⚠️ The columns that exist in PostgreSQL right now, not the
@@ -795,7 +798,12 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
         # IN: it is what lets the chain resume at the right place instead of
         # replaying from m001 against data that has already been through it.
         reflected = _reflect_sqlite_schema(sqlite_path, metadata)
-        sorted_tables = [t.name for t in reflected.sorted_tables]
+        # Any order will do — every foreign key is stripped before the load and
+        # put back after (Phase 1 / Phase 3). ``sorted_tables`` is deliberately
+        # not asked: the schema holds a FK cycle it cannot sort, it warns that
+        # this "may raise an error in a future release", and an order it made up
+        # once put library_files ahead of library_folders (upstream 58ea7a36).
+        table_names = sorted(reflected.tables)
 
         # Phase 1: Drop and recreate the schema, then strip foreign keys IN THE
         # DATABASE before loading data.
@@ -879,7 +887,7 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
 
             # Phase 2: Import data
             imported = 0
-            for table_name in sorted_tables:
+            for table_name in table_names:
                 cursor = src.execute(f"SELECT * FROM {_quote(table_name)}")  # noqa: S608
                 rows = cursor.fetchmany(500)
                 if not rows:
@@ -957,7 +965,7 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
             # New tables have new sequences: reset only the ones that actually
             # exist, and fail the transaction if one cannot be restored.
             if is_postgres():
-                for table_name in sorted_tables:
+                for table_name in table_names:
                     if "id" not in reflected.tables[table_name].c:
                         continue
                     sequence = (

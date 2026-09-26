@@ -172,6 +172,12 @@
 
 ### Fixed
 
+- **Restoring a backup no longer relies on an order the database schema cannot
+  give.** Restoring asked for the tables in dependency order, which a set of
+  tables that refer to each other in a loop does not have. Every restore logged
+  a warning that this would become an error in a future release. Restore does
+  not need that order and no longer asks for it. (upstream 58ea7a36)
+
 - **Times recorded by an external PostgreSQL server are in UTC regardless of the
   server's time zone.** Timestamps that the database fills itself (sensor history,
   new archives and more) followed the PostgreSQL server's time zone, so on a server
