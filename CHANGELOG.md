@@ -172,6 +172,16 @@
 
 ### Fixed
 
+- **Timelapse and video failures log ffmpeg's actual error, and deleting an
+  archive without a 3MF no longer raises a false security alarm.** When a
+  timelapse stitch, a video conversion or a last-frame extraction failed, the log
+  kept the start of ffmpeg's output, which is its version banner, and dropped the
+  error at the end. It now keeps the error, with camera passwords masked, like the
+  camera captures already did. Deleting an archive that never had a 3MF logged an
+  error under a "SECURITY" heading every time; its files are removed as before, and
+  the heading is gone. An archive whose recorded file path is missing a folder can
+  no longer take its printer's whole archive folder with it. (upstream #2968)
+
 - **An external RTSP camera that passes the connection test no longer shows a
   black live view.** The live view gave ffmpeg only a moment to recognise the
   stream, which is too short for a camera that describes its video a little

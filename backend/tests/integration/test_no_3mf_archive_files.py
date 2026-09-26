@@ -118,3 +118,47 @@ async def test_a_hard_delete_takes_the_archives_own_folders_and_nothing_else(
     assert not own.parent.exists()
     assert not old_photos.parent.exists()
     assert neighbour.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_deleting_an_archive_without_a_3mf_raises_no_security_alarm(
+    db_session, printer_factory, archive_factory, data_dir, caplog
+):
+    """An empty ``file_path`` is a normal archive (created at print start, or a
+    job that never yields a 3MF), not an attack: its folders go through
+    ``_remove_id_owned_folders``. It used to log an ERROR under a SECURITY
+    banner on every such delete (upstream #2968)."""
+    import logging
+
+    from backend.app.services.archive import ArchiveService
+
+    printer = await printer_factory()
+    archive = await archive_factory(printer.id, file_path="")
+
+    with caplog.at_level(logging.INFO, logger="backend.app.services.archive"):
+        assert await ArchiveService(db_session).delete_archive(archive.id) is True
+
+    assert not [r for r in caplog.records if "SECURITY" in r.getMessage()]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_file_path_one_level_deep_never_takes_a_printer_folder(
+    db_session, printer_factory, archive_factory, data_dir
+):
+    """Every archive folder is two levels deep (``<printer>/<dated folder>/``,
+    ``no_source/<id>/``). A row whose ``file_path`` lost a component points at
+    ``archive/<printer id>/`` — deleting that folder would take every print the
+    printer made (upstream #2968: the depth guard was ``< 1``)."""
+    from backend.app.services.archive import ArchiveService
+
+    printer = await printer_factory()
+    stray = _write(data_dir / "archive" / str(printer.id) / "lost.gcode.3mf")
+    neighbour = _write(data_dir / "archive" / str(printer.id) / "20260924_120000_other" / "other.gcode.3mf")
+    archive = await archive_factory(printer.id, file_path=f"archive/{printer.id}/lost.gcode.3mf")
+
+    assert await ArchiveService(db_session).delete_archive(archive.id) is True
+
+    assert neighbour.exists()
+    assert stray.exists()

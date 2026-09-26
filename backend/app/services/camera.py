@@ -895,7 +895,7 @@ async def extract_video_last_frame(video_path: Path, output_path: Path) -> bool:
             logger.warning(
                 "ffmpeg failed extracting last frame from %s: %s",
                 video_path,
-                stderr.decode(errors="replace")[:500],
+                summarize_ffmpeg_stderr(stderr) or NO_FFMPEG_OUTPUT,
             )
             return False
         if not output_path.exists() or output_path.stat().st_size == 0:

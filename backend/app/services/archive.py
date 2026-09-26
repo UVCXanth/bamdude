@@ -23,6 +23,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 from backend.app.services.archive_parts import seed_archive_parts
 from backend.app.services.library_helpers import skip_objects_supported_from_metadata
+from backend.app.utils.ffmpeg_output import NO_FFMPEG_OUTPUT, summarize_ffmpeg_stderr
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
 
@@ -3643,10 +3644,14 @@ class ArchiveService:
                     await self.db.commit()
                     return True
 
-                # Safety check 2: archive_dir must be at least 1 level deep inside archive_dir
+                # Safety check 2: archive_dir must be at least 2 levels deep. Every
+                # archive folder is (``<printer>/<dated folder>/``, ``no_source/<id>/``);
+                # one level up is a PRINTER's folder, holding every print it made, and
+                # a file_path that lost a component points there (upstream #2968 —
+                # the guard used to be ``< 1``, which let that through).
                 try:
                     relative_path = archive_dir.resolve().relative_to(settings.archive_dir.resolve())
-                    if len(relative_path.parts) < 1:
+                    if len(relative_path.parts) < 2:
                         logger.error(
                             f"SECURITY: Refusing to delete archive {archive_id} - "
                             f"path {archive_dir} is not deep enough inside archive directory"
@@ -3658,11 +3663,11 @@ class ArchiveService:
                     pass  # Already handled above
 
                 dir_to_delete = archive_dir
-        else:
-            logger.error(
-                f"SECURITY: Refusing to delete files for archive {archive_id} - "
-                f"file_path is empty or invalid: '{archive.file_path}'"
-            )
+        # An empty file_path is a normal archive — created at print start, or a
+        # job that never yields a 3MF — not an attack: the folders it owns by id
+        # go through ``_remove_id_owned_folders`` once the row is gone. It used
+        # to log an ERROR under a SECURITY banner on every such delete
+        # (upstream #2968).
 
         from backend.app.services.archive_write_scope import archive_file_reference_scope
 
@@ -3847,7 +3852,7 @@ async def _convert_timelapse_to_mp4(archive_id: int, source_path: Path) -> None:
             logger.warning(
                 "Timelapse conversion failed for archive %s: %s",
                 archive_id,
-                stderr.decode()[-500:],
+                summarize_ffmpeg_stderr(stderr) or NO_FFMPEG_OUTPUT,
             )
             if mp4_path.exists():
                 mp4_path.unlink()

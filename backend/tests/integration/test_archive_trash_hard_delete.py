@@ -53,8 +53,13 @@ from backend.app.services.archive_purge import TRASH_RETENTION_KEY, archive_purg
 
 
 def _folder(name: str) -> tuple[Path, Path]:
-    """An archive folder with a file in it, under the real archive root."""
-    directory = settings.archive_dir / name
+    """An archive folder with a file in it, under the real archive root.
+
+    Laid out as the archiver lays it out — ``<printer folder>/<dated folder>/``,
+    two levels deep. The delete refuses anything shallower: one level up is a
+    printer's folder with every print it made (upstream #2968).
+    """
+    directory = settings.archive_dir / "unassigned" / name
     directory.mkdir(parents=True, exist_ok=True)
     threemf = directory / "job.gcode.3mf"
     threemf.write_bytes(b"bytes that should stop existing")
