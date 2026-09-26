@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import type { PartFigures } from '../../api/client';
+import type { LineMode, PartFigures } from '../../api/client';
 
 /**
  * What one order line still needs, part by part.
@@ -15,8 +15,12 @@ import type { PartFigures } from '../../api/client';
  * carry parts whose per-unit count came from an old target, so a "× 0" row is
  * data, not a bug — it means the part is not counted against this line.
  */
-export function LinePartsTable({ parts }: { parts: PartFigures[] }) {
+export function LinePartsTable({ parts, mode }: { parts: PartFigures[]; mode?: LineMode }) {
   const { t } = useTranslation();
+  // A parts line wants each part as a count, not per unit: its "per unit" IS
+  // the need (quantity 1 — spec workshop-product-variants, rule 15), so the
+  // column would only repeat the next one.
+  const perUnit = mode !== 'parts';
 
   if (parts.length === 0) {
     return <p className="text-sm text-bambu-gray py-2">{t('orders.parts.none')}</p>;
@@ -27,7 +31,7 @@ export function LinePartsTable({ parts }: { parts: PartFigures[] }) {
       <thead>
         <tr className="text-xs text-bambu-gray text-left">
           <th className="font-normal py-1 pr-3">{t('orders.parts.name')}</th>
-          <th className="font-normal py-1 pr-3">{t('orders.parts.perUnit')}</th>
+          {perUnit && <th className="font-normal py-1 pr-3">{t('orders.parts.perUnit')}</th>}
           <th className="font-normal py-1 pr-3 text-right">{t('orders.parts.need')}</th>
           <th className="font-normal py-1 pr-3 text-right">{t('orders.parts.usable')}</th>
           <th className="font-normal py-1 pr-3 text-right">{t('orders.parts.inProgress')}</th>
@@ -39,7 +43,7 @@ export function LinePartsTable({ parts }: { parts: PartFigures[] }) {
         {parts.map((part) => (
           <tr key={part.part_id} className="text-white">
             <td className="py-1 pr-3">{part.name}</td>
-            <td className="py-1 pr-3 text-bambu-gray tabular-nums">{`× ${part.qty_per_unit}`}</td>
+            {perUnit && <td className="py-1 pr-3 text-bambu-gray tabular-nums">{`× ${part.qty_per_unit}`}</td>}
             <td className="py-1 pr-3 text-right tabular-nums">{part.need}</td>
             <td className="py-1 pr-3 text-right tabular-nums">{part.usable}</td>
             <td className="py-1 pr-3 text-right tabular-nums">{part.in_progress}</td>

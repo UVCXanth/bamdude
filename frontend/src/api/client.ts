@@ -1742,6 +1742,57 @@ export interface PartFigures {
   surplus: number;
 }
 
+/** `product` — kits of the product; `parts` — a set of its parts, quantity 1 for
+ *  good (spec workshop-product-variants, rules 15–17). */
+export type LineMode = 'product' | 'parts';
+
+export interface LineChoice {
+  group_id: number;
+  group_name: string;
+  option_id: number;
+  option_name: string;
+  is_default: boolean;
+}
+
+export interface LineChangedPart {
+  part_id: number;
+  name: string;
+  qty: number;
+  /** What the chosen configuration gives without the change; for a parts line,
+   *  the product's own count per unit. */
+  standard_qty: number;
+}
+
+/** Names and codes only — the caption is composed here, in the reader's language. */
+export interface LineConfiguration {
+  choices: LineChoice[];
+  changed_parts: LineChangedPart[];
+}
+
+/** `PUT …/configuration`: `choices` `{group_id: option_id}`, `part_counts`
+ *  `{part_id: qty}` — the whole set of changed (or, for a parts line, wanted) counts. */
+export interface LineConfigurationBody {
+  choices: Record<number, number>;
+  part_counts: Record<number, number>;
+}
+
+export interface DroppedPart {
+  part_id: number;
+  name: string;
+  per_before: number;
+  per_after: number;
+  /** Already printed under this line / waiting in a queue for it. */
+  printed: number;
+  queued: number;
+}
+
+/** What a configuration change would do — the server's dry run (rule 14). */
+export interface LineConfigurationImpact {
+  reserved_before: number;
+  reserved_after: number;
+  dropping: DroppedPart[];
+}
+
 export interface ProjectLine {
   id: number;
   product_id: number;
@@ -1767,6 +1818,10 @@ export interface ProjectLine {
   archive_ids: number[];
   prints_in_progress: number;
   prints_queued: number;
+  mode: LineMode;
+  /** Stable identity of the configuration (the finished-goods key of WS-09). */
+  config_key: string;
+  configuration: LineConfiguration;
 }
 
 export interface ProjectLineCreate {
@@ -1778,6 +1833,11 @@ export interface ProjectLineCreate {
   /** Kits to reserve off the product's free stock. Omitted means zero, and the
    *  dialog omits it rather than sending a 0 nobody typed. */
   from_stock_units?: number;
+  /** Omitted means `product`. A parts line has quantity 1 and no stock. */
+  mode?: LineMode;
+  /** `{group_id: option_id}`; a group left out takes its standard option. */
+  choices?: Record<number, number>;
+  part_counts?: Record<number, number>;
 }
 
 export interface ProjectLineUpdate {
@@ -11207,6 +11267,18 @@ export const api = {
     request<Order>(`/projects/${id}/duplicate`, {
       method: 'POST',
       body: JSON.stringify({ name: name ?? null }),
+    }),
+  /** Change a line's options and counts; the reservation follows the new kit. */
+  setLineConfiguration: (orderId: number, lineId: number, data: LineConfigurationBody) =>
+    request<Order>(`/projects/${orderId}/lines/${lineId}/configuration`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  /** The same change as a dry run: what it would do, nothing written. */
+  previewLineConfiguration: (orderId: number, lineId: number, data: LineConfigurationBody) =>
+    request<LineConfigurationImpact>(`/projects/${orderId}/lines/${lineId}/configuration`, {
+      method: 'PUT',
+      body: JSON.stringify({ ...data, dry_run: true }),
     }),
   addOrderLine: (orderId: number, data: ProjectLineCreate) =>
     request<Order>(`/projects/${orderId}/lines`, { method: 'POST', body: JSON.stringify(data) }),

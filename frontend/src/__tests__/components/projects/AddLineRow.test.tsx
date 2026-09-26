@@ -37,14 +37,14 @@ function savedOrder(fromStock: number): Order {
 }
 
 /** A stand-in for a product page's own `['product', 3]` query: an invalidation
- *  is only observable as a REFETCH, and only while something watches the key. */
-function ProductProbe({ onFetch }: { onFetch: () => void }) {
+ *  is only observable as a REFETCH, and only while something watches the key.
+ *  ⚠️ It fetches through `api.getProduct`, like the row itself does since it
+ *  reads the product's variants (spec workshop-product-variants): one key, one
+ *  query — whichever observer's options fetch, the same spy counts it. */
+function ProductProbe() {
   useQuery({
     queryKey: ['product', 3],
-    queryFn: async () => {
-      onFetch();
-      return null;
-    },
+    queryFn: () => api.getProduct(3),
   });
   return null;
 }
@@ -154,18 +154,23 @@ describe('AddLineRow · from stock', () => {
     // which call asked for it.
     const get = vi.spyOn(api, 'getProductStock').mockResolvedValue(stock);
     vi.spyOn(api, 'addOrderLine').mockResolvedValue(savedOrder(3));
-    const product = vi.fn();
-    mount(<ProductProbe onFetch={product} />);
+    const product = vi
+      .spyOn(api, 'getProduct')
+      .mockResolvedValue({ id: 3, name: 'Cap', parts: [], variant_groups: [] } as never);
+    mount(<ProductProbe />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'PR-0003 · Cap' }));
     await screen.findByTestId('add-line-from-stock');
     await waitFor(() => expect(get).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(product).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(product).toHaveBeenCalled());
+    // The row's own observer may refetch once on mount; count from where it settled.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const before = product.mock.calls.length;
 
     fireEvent.click(screen.getByRole('button', { name: /add line/i }));
 
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(product).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(product.mock.calls.length).toBeGreaterThan(before));
   });
 
   it('says so when the shelf emptied and less was reserved than asked', async () => {

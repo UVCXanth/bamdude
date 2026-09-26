@@ -3,11 +3,13 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Plus } from 'lucide-react';
 import { api } from '../../api/client';
-import type { Order, ProjectLine } from '../../api/client';
+import type { LineMode, Order, ProjectLine, ProjectLineCreate } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { useProductStock } from '../../hooks/useProductStock';
+import { useProductDetail } from '../../hooks/useProductDetail';
 import { ProductPicker } from '../pickers/ProductPicker';
 import { Button } from '../Button';
+import { Select } from '../Select';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 const FIELD_CLASS =
@@ -46,6 +48,20 @@ export function AddLineRow({ orderId }: { orderId: number }) {
   /** `null` is "the operator has not touched the box", which is what makes the
    *  default follow the quantity as it is typed. A typed 0 is not null. */
   const [fromStock, setFromStock] = useState<number | null>(null);
+  // spec workshop-product-variants, rule 27: a line is kits of the product, or
+  // a set of its parts. `choices` holds only the groups the operator touched —
+  // the server gives every other group its standard option.
+  const [mode, setMode] = useState<LineMode>('product');
+  const [choices, setChoices] = useState<Record<number, number>>({});
+  const [partCounts, setPartCounts] = useState<Record<number, number>>({});
+  const { data: product } = useProductDetail(productId);
+  const groups = product?.variant_groups ?? [];
+  const wanted = Object.fromEntries(Object.entries(partCounts).filter(([, qty]) => qty > 0));
+  const pickProduct = (id: number | null) => {
+    setProductId(id);
+    setChoices({});
+    setPartCounts({});
+  };
 
   // Only once a product is picked — a disabled query in TanStack v5 is pending
   // and NOT fetching, so nothing is asked for until there is something to ask
@@ -58,8 +74,18 @@ export function AddLineRow({ orderId }: { orderId: number }) {
   const reserve = Math.min(fromStock ?? quantity, kits, quantity);
 
   const add = useMutation({
-    mutationFn: (units: number) =>
-      api.addOrderLine(orderId, {
+    mutationFn: (units: number) => {
+      const said = {
+        material: material.trim().toUpperCase() || null,
+        color: color.trim() || null,
+        note: note.trim() || null,
+      };
+      if (mode === 'parts') {
+        // A set of parts: quantity 1 and no stock, both fixed by the server.
+        const data: ProjectLineCreate = { product_id: productId!, mode: 'parts', part_counts: wanted, ...said };
+        return api.addOrderLine(orderId, data);
+      }
+      return api.addOrderLine(orderId, {
         product_id: productId!,
         quantity,
         // Folded here as well as on blur: blur is what the operator SEES, this
@@ -78,7 +104,9 @@ export function AddLineRow({ orderId }: { orderId: number }) {
         // nobody typed riding on every request — and the reservation path would
         // run for products that hold no stock at all.
         ...(units > 0 ? { from_stock_units: units } : {}),
-      }),
+        ...(Object.keys(choices).length ? { choices } : {}),
+      });
+    },
     onSuccess: (saved: Order, units: number) => {
       // ⚠️ The whole set, not the order alone: a new line is new work, so the
       // plan block has a part to plan that it does not know about yet. The
@@ -102,7 +130,8 @@ export function AddLineRow({ orderId }: { orderId: number }) {
           showToast(t('stock.line.clamped', { n: created.from_stock_units }), 'warning');
         }
       }
-      setProductId(null);
+      pickProduct(null);
+      setMode('product');
       setQuantity(1);
       setMaterial('');
       setColor('');
@@ -116,7 +145,67 @@ export function AddLineRow({ orderId }: { orderId: number }) {
     <tr className="border-t border-bambu-dark-tertiary align-top">
       <td className="p-2 min-w-[14rem]">
         <p className="text-xs text-bambu-gray mb-1">{t('orders.lines.add')}</p>
-        <ProductPicker value={productId} onChange={setProductId} disabled={add.isPending} allowCreate />
+        <ProductPicker value={productId} onChange={pickProduct} disabled={add.isPending} allowCreate />
+        {productId != null && (
+          <div className="mt-2 space-y-2" role="radiogroup" aria-label={t('orders.lineConfig.mode')}>
+            <div className="flex items-center gap-3 text-xs text-bambu-gray">
+              {(['product', 'parts'] as const).map((value) => (
+                <label key={value} className="inline-flex items-center gap-1">
+                  <input
+                    type="radio"
+                    name="add-line-mode"
+                    checked={mode === value}
+                    onChange={() => setMode(value)}
+                    disabled={add.isPending}
+                    className="accent-bambu-green"
+                  />
+                  {t(value === 'parts' ? 'orders.lineConfig.modeParts' : 'orders.lineConfig.modeProduct')}
+                </label>
+              ))}
+            </div>
+            {mode === 'product' &&
+              groups.map((group) => (
+                <label key={group.id} className="flex items-center gap-2 text-xs text-bambu-gray">
+                  <span className="min-w-[5rem]">{group.name}</span>
+                  <Select
+                    size="sm"
+                    aria-label={group.name}
+                    value={String(choices[group.id] ?? group.default_option_id ?? '')}
+                    onChange={(e) => {
+                      const optionId = Number(e.target.value);
+                      setChoices((prev) => ({ ...prev, [group.id]: optionId }));
+                    }}
+                    disabled={add.isPending}
+                  >
+                    {group.options.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        {o.name}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+              ))}
+            {mode === 'parts' &&
+              (product?.parts ?? []).map((part) => (
+                <label key={part.id} className="flex items-center gap-2 text-xs text-bambu-gray">
+                  <input
+                    type="number"
+                    min={0}
+                    value={partCounts[part.id] ?? ''}
+                    placeholder="0"
+                    aria-label={t('orders.lineConfig.needFor', { name: part.name })}
+                    onChange={(e) => {
+                      const qty = Math.max(0, Math.floor(Number(e.target.value) || 0));
+                      setPartCounts((prev) => ({ ...prev, [part.id]: qty }));
+                    }}
+                    disabled={add.isPending}
+                    className={`${FIELD_CLASS} w-16`}
+                  />
+                  <span className="text-white">{part.name}</span>
+                </label>
+              ))}
+          </div>
+        )}
       </td>
       <td className="p-2">
         <label className="sr-only" htmlFor="add-line-quantity">
@@ -126,14 +215,14 @@ export function AddLineRow({ orderId }: { orderId: number }) {
           id="add-line-quantity"
           type="number"
           min={1}
-          value={quantity}
+          value={mode === 'parts' ? 1 : quantity}
           onChange={(e) => setQuantity(Math.max(1, Number(e.target.value) || 1))}
-          disabled={add.isPending}
+          disabled={add.isPending || mode === 'parts'}
           className={`${FIELD_CLASS} w-20`}
         />
         {/* Only when the shelf has something. `> 0`, never a bare `&&` on the
-            number itself — `{0 && …}` renders the 0. */}
-        {kits > 0 && (
+            number itself — `{0 && …}` renders the 0. A parts line has no kits. */}
+        {kits > 0 && mode === 'product' && (
           <div className="mt-1">
             <label className="block text-xs text-bambu-gray" htmlFor="add-line-from-stock">
               {t('stock.line.label')}
@@ -195,7 +284,11 @@ export function AddLineRow({ orderId }: { orderId: number }) {
       </td>
       <td className="p-2" />
       <td className="p-2 text-right">
-        <Button size="sm" onClick={() => add.mutate(reserve)} disabled={productId == null || add.isPending}>
+        <Button
+          size="sm"
+          onClick={() => add.mutate(mode === 'parts' ? 0 : reserve)}
+          disabled={productId == null || add.isPending || (mode === 'parts' && Object.keys(wanted).length === 0)}
+        >
           <Plus className="w-4 h-4" />
           {t('orders.lines.addLine')}
         </Button>

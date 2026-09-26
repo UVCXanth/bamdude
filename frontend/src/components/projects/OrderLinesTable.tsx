@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, ChevronRight, ChevronUp, Check, Pencil, Trash2, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, ChevronUp, Check, Pencil, SlidersHorizontal, Trash2, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Order, ProjectLine, ProjectLineUpdate } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
@@ -11,6 +11,8 @@ import { ConfirmModal } from '../ConfirmModal';
 import { ProgressBar } from './ProgressBar';
 import { LinePartsTable } from './LinePartsTable';
 import { AddLineRow } from './AddLineRow';
+import { LineConfigDialog } from './LineConfigDialog';
+import { lineConfigLabel } from './lineConfigLabel';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 const FIELD_CLASS =
@@ -108,6 +110,7 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [draft, setDraft] = useState<Draft | null>(null);
   const [deleting, setDeleting] = useState<ProjectLine | null>(null);
+  const [configuring, setConfiguring] = useState<ProjectLine | null>(null);
 
   // `sort_order` is the authority and `id` only breaks its ties, so two lines
   // that share a position still come out in a stable order rather than
@@ -240,9 +243,21 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                     <Link to={`/products/${line.product_id}`} className="hover:text-bambu-green transition-colors">
                       {line.product_name}
                     </Link>
+                    {(() => {
+                      const label = lineConfigLabel(line.configuration, line.mode, t);
+                      return (
+                        label && (
+                          <p className="text-xs text-bambu-gray" data-testid={`line-${line.id}-config`}>
+                            {label}
+                          </p>
+                        )
+                      );
+                    })()}
                   </td>
                   <td className="p-2 tabular-nums">
-                    {editing ? (
+                    {/* A parts line is one set of parts: its quantity is fixed at 1
+                        and it takes nothing off the shelf (rules 15–16). */}
+                    {editing && line.mode !== 'parts' ? (
                       <input
                         type="number"
                         min={1}
@@ -273,6 +288,7 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                         in the pool by the time the server clamps. */}
                     {editing
                       ? (() => {
+                          if (line.mode === 'parts') return null;
                           const pool = (editStock?.kits_available ?? 0) + line.from_stock_units;
                           if (pool <= 0) return null;
                           return (
@@ -417,6 +433,16 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                           </button>
                           <button
                             type="button"
+                            data-testid={`line-${line.id}-configure`}
+                            onClick={() => setConfiguring(line)}
+                            title={t('orders.lineConfig.configure')}
+                            aria-label={t('orders.lineConfig.configure')}
+                            className={ICON_BUTTON_CLASS}
+                          >
+                            <SlidersHorizontal className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
                             data-testid={`line-${line.id}-up`}
                             onClick={() => swap.mutate({ a: line, b: lines[index - 1] })}
                             disabled={index === 0 || busy}
@@ -455,7 +481,7 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                 open ? (
                   <tr key={`${line.id}-parts`} className="bg-bambu-dark/40">
                     <td colSpan={7} className="px-4 pb-3">
-                      <LinePartsTable parts={line.parts} />
+                      <LinePartsTable parts={line.parts} mode={line.mode} />
                     </td>
                   </tr>
                 ) : null,
@@ -466,6 +492,10 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
           </tbody>
         </table>
       </div>
+
+      {configuring && (
+        <LineConfigDialog orderId={order.id} line={configuring} onClose={() => setConfiguring(null)} />
+      )}
 
       {deleting && (
         <ConfirmModal
