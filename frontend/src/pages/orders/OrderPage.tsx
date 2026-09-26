@@ -8,6 +8,7 @@ import type { ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { OrderHeader } from '../../components/projects/OrderHeader';
+import { OrderStageStepper } from '../../components/projects/OrderStageStepper';
 import { CloseSuggestionBanner } from '../../components/projects/CloseSuggestionBanner';
 import { OrderFigures } from '../../components/projects/OrderFigures';
 import { OrderLinesTable } from '../../components/projects/OrderLinesTable';
@@ -179,6 +180,8 @@ export function OrderPage() {
         </div>
         <OrderCover order={order} canEdit={canEdit} />
       </div>
+
+      <OrderStageStepper order={order} canEdit={canEdit} />
 
       {canEdit && <CloseSuggestionBanner order={order} onComplete={() => setStatus.mutate('completed')} />}
 

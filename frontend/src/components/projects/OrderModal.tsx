@@ -9,6 +9,7 @@ import { Modal } from '../Modal';
 import { CustomerPicker } from '../pickers/CustomerPicker';
 import { contactOption } from '../customers/contactFormat';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
+import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { Select } from '../Select';
 
@@ -114,6 +115,22 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
   // The customers the picker already reads — same key, one cache — carry their contacts.
   const { data: customers = [] } = useQuery({ queryKey: ['customers'], queryFn: api.getCustomers });
 
+  // Who is responsible (spec workshop-order-stage, rules 9–10). A new order is
+  // the signed-in user's unless another is chosen; `undefined` means «not chosen
+  // yet» and resolves to that user, so the field never flashes «Not assigned»
+  // before `/auth/me` answers. An edit starts from the order's own value.
+  const { user } = useAuth();
+  const { data: assignees = [] } = useQuery({ queryKey: ['order-assignees'], queryFn: api.getOrderAssignees });
+  const responsibleFieldId = useId();
+  const initialResponsibleId = order ? (order.responsible_id ?? null) : null;
+  const [responsibleChoice, setResponsibleChoice] = useState<number | null | undefined>(
+    order ? initialResponsibleId : undefined,
+  );
+  const responsibleId = responsibleChoice === undefined ? (user?.id ?? null) : responsibleChoice;
+  // A responsible user deactivated since stays a choice, under the name the order carries.
+  const keepsGoneResponsible =
+    order?.responsible_id != null && !assignees.some((u) => u.id === order.responsible_id);
+
   const [name, setName] = useState(order?.name ?? '');
   const [customerId, setCustomerId] = useState<number | null>(initialCustomerId);
   // `undefined` = «the main contact of whichever customer is chosen»; a number or
@@ -137,6 +154,7 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
         if (name.trim() !== order.name) data.name = name.trim();
         if (customerId !== initialCustomerId) data.customer_id = customerId;
         if (hasContact && contactId !== initialContactId) data.contact_id = contactId;
+        if (responsibleId !== initialResponsibleId) data.responsible_id = responsibleId;
         const normDescription = description.trim() === '' ? null : description.trim();
         if (normDescription !== (initialDescription === '' ? null : initialDescription)) data.description = normDescription;
         if (color !== initialColor) data.color = color;
@@ -159,6 +177,7 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
         name: name.trim(),
         customer_id: customerId,
         contact_id: contactId,
+        responsible_id: responsibleId,
         description: description.trim() === '' ? null : description.trim(),
         color,
         tags: tags.trim() === '' ? null : tags.trim(),
@@ -248,6 +267,29 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
               </Select>
             </div>
           )}
+
+          <div>
+            <label className={LABEL_CLASS} htmlFor={responsibleFieldId}>
+              {t('orders.modal.responsible')}
+            </label>
+            <Select
+              id={responsibleFieldId}
+              className="w-full"
+              value={responsibleId ?? ''}
+              disabled={mutation.isPending}
+              onChange={(e) => setResponsibleChoice(e.target.value ? Number(e.target.value) : null)}
+            >
+              <option value="">{t('orders.modal.noResponsible')}</option>
+              {assignees.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.username}
+                </option>
+              ))}
+              {keepsGoneResponsible && order?.responsible_id != null && (
+                <option value={order.responsible_id}>{order.responsible_name ?? `#${order.responsible_id}`}</option>
+              )}
+            </Select>
+          </div>
 
           {hasDescription && (
             <div>

@@ -181,6 +181,12 @@ describe('OrderHeader · code and contact person', () => {
     expect(screen.getByText(/contact: Warehouse/)).toBeInTheDocument();
   });
 
+  it('names who is responsible for the order', () => {
+    mount({ ...orderWith(0), code: 'OR-0001', responsible_id: 2, responsible_name: 'ira' } as Order);
+    expect(screen.getByText(/Responsible:/)).toBeInTheDocument();
+    expect(screen.getByText('ira')).toBeInTheDocument();
+  });
+
   it('says nothing about a contact when the order has none', () => {
     mount({ ...orderWith(0), code: 'OR-0001', contact_id: null, contact: null } as Order);
     expect(screen.queryByText(/contact:/)).not.toBeInTheDocument();

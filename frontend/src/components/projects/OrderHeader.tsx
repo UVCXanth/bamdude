@@ -19,8 +19,9 @@ import { useAuth } from '../../contexts/AuthContext';
 import { formatMoney } from '../../utils/currency';
 import { Button } from '../Button';
 import { contactTitle } from '../customers/contactFormat';
-import { StatusBadge } from './StatusBadge';
+import { StageBadge } from './StageBadge';
 import { PriorityBadge } from './PriorityBadge';
+import { ResponsibleName } from './ResponsibleName';
 
 interface OrderHeaderProps {
   order: Order;
@@ -121,8 +122,13 @@ export function OrderHeader({
                 )}
               </span>
             )}
-            <StatusBadge status={order.status} />
+            <StageBadge stage={order.stage} status={order.status} />
             <PriorityBadge priority={order.priority} />
+            {order.responsible_name && (
+              <span className="text-bambu-gray inline-flex items-center gap-1">
+                {t('orders.header.responsible')} <ResponsibleName name={order.responsible_name} />
+              </span>
+            )}
             {order.due_date && (
               <span className="text-bambu-gray">{new Date(order.due_date).toLocaleDateString()}</span>
             )}
