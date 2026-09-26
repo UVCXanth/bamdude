@@ -108,6 +108,7 @@ from backend.app.services.printer_manager import (
 )
 from backend.app.services.printer_status_context import current_archive_ids, printers_with_waiting_rows
 from backend.app.services.printer_tag_service import delete_links_for_printer, replace_links
+from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.fila_switch import extruder_slots_payload, inlet_bindings, switch_ready
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.kprofile_lookup import build_slot_k_resolver
@@ -1237,22 +1238,11 @@ async def _build_printer_status(
                         exists=tray_data.get("exists"),
                     )
                 )
-            # Prefer humidity_raw (percentage) over humidity (index 1-5)
-            # humidity_raw is the actual percentage value from the sensor
-            humidity_raw = ams_data.get("humidity_raw")
-            humidity_idx = ams_data.get("humidity")
-            humidity_value = None
-
-            if humidity_raw is not None:
-                try:
-                    humidity_value = int(humidity_raw)
-                except (ValueError, TypeError):
-                    pass  # Skip unparseable humidity; will try index fallback
-            if humidity_value is None and humidity_idx is not None:
-                try:
-                    humidity_value = int(humidity_idx)
-                except (ValueError, TypeError):
-                    pass  # Skip unparseable humidity index; humidity remains None
+            # Percentage only. The 1-5 ``humidity`` index is never substituted
+            # for one -- it is inverted, so it would read as the opposite of
+            # what it means (#3140). See utils/ams_humidity.
+            humidity_pct = ams_humidity_percent(ams_data)
+            humidity_value = int(round(humidity_pct)) if humidity_pct is not None else None
             # AMS-HT has 1 tray, regular AMS has 4 trays
             is_ams_ht = len(trays) == 1
 

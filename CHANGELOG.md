@@ -172,6 +172,14 @@
 
 ### Fixed
 
+- **An AMS that reports only a humidity index no longer shows it as a
+  percentage.** Bambu sends relative humidity in percent and, separately, a 1–5
+  index that runs the other way (a high index is dry). Where no percentage
+  arrived the index was used instead, so a fairly wet unit read "2%", charted as
+  a percentage, and never crossed a humidity threshold — the alarm and
+  auto-drying could not fire for it. Such a unit now shows no humidity rather
+  than a number meaning the opposite. A reading of exactly 0% is stored and
+  averaged as 0 rather than as missing.
 - **The AMS slot hover card paints a multi-colour spool as it is.** A printer
   reports one colour per slot, so a tri-colour or silk roll showed as a flat band
   of that one colour. With a spool assigned, the card's colour header now paints

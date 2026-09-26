@@ -151,6 +151,7 @@ from backend.app.services.timelapse_files import (
     read_timelapse_video,
     remove_recording_after_attach,
 )
+from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.failure_reasons import USER_CANCELLED
 from backend.app.utils.filament_remaining import grams_used
 from backend.app.utils.print_jobs import is_internal_printer_job
@@ -9110,6 +9111,10 @@ AMS_HISTORY_INTERVAL = 300  # Record every 5 minutes
 AMS_HISTORY_RETENTION_DAYS = 30  # Keep data for 30 days
 INBOX_RETENTION_DAYS = 30  # in-app inbox rows; spec: notification-center §4.4
 _ams_cleanup_counter = 0  # Track recordings to trigger periodic cleanup
+# (printer_id, ams_id) already reported as sending the drop index and no
+# percentage. Logged once each so a printer that does this shows up in a
+# support bundle rather than as a missing humidity reading (upstream #3140).
+_ams_index_only_logged: set[tuple[int, int]] = set()
 # Track alarm cooldowns (printer_id:ams_id:type -> last_alarm_time)
 _ams_alarm_cooldown: dict[str, datetime] = {}
 AMS_ALARM_COOLDOWN_MINUTES = 60  # Don't send same alarm more than once per hour
@@ -9367,20 +9372,30 @@ async def record_ams_history():
                     for ams_data in raw_data["ams"]:
                         ams_id = int(ams_data.get("id", 0))
 
-                        # Get humidity (prefer humidity_raw)
-                        humidity_raw = ams_data.get("humidity_raw")
-                        humidity_idx = ams_data.get("humidity")
-                        humidity = None
-                        if humidity_raw is not None:
-                            try:
-                                humidity = float(humidity_raw)
-                            except (ValueError, TypeError):
-                                pass  # Skip unparseable humidity; will try fallback
-                        if humidity is None and humidity_idx is not None:
-                            try:
-                                humidity = float(humidity_idx)
-                            except (ValueError, TypeError):
-                                pass  # Skip unparseable humidity index value
+                        # Percentage only. The 1-5 index is inverted, so
+                        # charting it as a percentage drew the wettest units as
+                        # the driest (#3140); a unit that reports no percentage
+                        # leaves a gap in the chart instead. See
+                        # utils/ams_humidity.
+                        humidity = ams_humidity_percent(ams_data)
+
+                        # No supported printer is known to send the index
+                        # alone -- the report came from unsupported firmware,
+                        # and no install has been seen using the old fallback.
+                        # "Known" is doing work there, so say so once per unit:
+                        # the alternative is a silent blank card.
+                        if humidity is None and ams_data.get("humidity") is not None:
+                            unit_key = (printer.id, ams_id)
+                            if unit_key not in _ams_index_only_logged:
+                                _ams_index_only_logged.add(unit_key)
+                                logger.info(
+                                    "[%s] AMS %d reports the 1-5 humidity index but no usable humidity_raw "
+                                    "percentage. The index is inverted and is not shown as a percentage "
+                                    "(#3140), so this unit has no humidity reading, chart or alarm. "
+                                    "Please report this with the printer and AMS firmware versions.",
+                                    printer.name,
+                                    ams_id,
+                                )
 
                         # Get temperature
                         temperature = None
@@ -9400,7 +9415,12 @@ async def record_ams_history():
                             printer_id=printer.id,
                             ams_id=ams_id,
                             humidity=humidity,
-                            humidity_raw=float(humidity_raw) if humidity_raw else None,
+                            # Both columns hold the same reading now that the
+                            # index can no longer reach ``humidity``. Writing it
+                            # through the same value also stops a genuine 0%
+                            # from being stored as NULL, which the old truthiness
+                            # test did.
+                            humidity_raw=humidity,
                             temperature=temperature,
                         )
                         db.add(history)

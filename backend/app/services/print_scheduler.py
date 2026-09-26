@@ -53,6 +53,7 @@ from backend.app.services.queue_wait_reason import set_wait_reason
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable, require_source_file
 from backend.app.services.stagger_groups import GroupKey, StaggerGroupResolver, StaggerSplit
+from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.filament_types import canonical_filament_type
 from backend.app.utils.material_keys import resolve_material_key
 
@@ -1801,21 +1802,12 @@ class PrintScheduler:
 
                 dry_time = int(ams_data.get("dry_time") or 0)
 
-                # Read humidity - prefer humidity_raw (actual %) over humidity (index 1-5)
-                humidity = None
-                h_raw = ams_data.get("humidity_raw")
-                if h_raw is not None:
-                    try:
-                        humidity = int(h_raw)
-                    except (ValueError, TypeError):
-                        pass
-                if humidity is None:
-                    h_idx = ams_data.get("humidity")
-                    if h_idx is not None:
-                        try:
-                            humidity = int(h_idx)
-                        except (ValueError, TypeError):
-                            pass
+                # Read humidity as a percentage. The 1-5 index is never
+                # substituted: it runs the other way, and being unable to exceed
+                # any threshold it would read as "dry" forever (upstream #3140).
+                # ``None`` already means "skip this unit" everywhere below.
+                humidity_pct = ams_humidity_percent(ams_data)
+                humidity = int(round(humidity_pct)) if humidity_pct is not None else None
 
                 # Resolve per-filament humidity threshold for this AMS unit (#1605).
                 # Most-restrictive of all loaded tray types; falls back to the
