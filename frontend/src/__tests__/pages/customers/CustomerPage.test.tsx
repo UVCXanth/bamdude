@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { Link, Routes, Route } from 'react-router';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
@@ -13,11 +13,40 @@ import { api } from '../../../api/client';
 import { CustomerPage } from '../../../pages/customers/CustomerPage';
 import { createAppQueryClient } from '../../../utils/appQueryClient';
 
+const blankContact = {
+  role: null,
+  phone: null,
+  email: null,
+  city: null,
+  delivery_method_id: null,
+  delivery_method_name: null,
+  delivery_details: null,
+  note: null,
+  orders_count: 0,
+};
 const customer = {
   id: 1,
+  code: 'CU-0001',
   name: 'ACME',
-  contact: null,
+  kind: 'company',
   notes: 'VIP',
+  contacts: [
+    {
+      ...blankContact,
+      id: 5,
+      code: 'CT-0005',
+      name: 'Olena',
+      role: 'Accounting',
+      phone: '+380 1',
+      email: 'o@acme.ua',
+      city: 'Kyiv',
+      delivery_method_id: 1,
+      delivery_method_name: 'Nova Poshta',
+      delivery_details: 'branch 12',
+      note: 'call first',
+    },
+    { ...blankContact, id: 6, code: 'CT-0006', name: 'Serhii' },
+  ],
   figures: {
     projects: 2,
     active: 1,
@@ -99,6 +128,27 @@ describe('CustomerPage', () => {
     expect(screen.getByText('9 / 12')).toBeInTheDocument();
     expect(screen.getByTestId('customer-tile-covered')).toHaveTextContent('printed: 7');
     expect(screen.getByText('VIP')).toBeInTheDocument();
+  });
+
+  it('shows the code and kind under the name, and every contact', async () => {
+    vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
+    mountAt();
+    expect(await screen.findByText('CU-0001 · Company')).toBeInTheDocument();
+    const section = screen.getByRole('region', { name: 'Contacts' });
+    expect(within(section).getByText('CT-0005')).toBeInTheDocument();
+    expect(within(section).getAllByText('main')).toHaveLength(1);
+    expect(within(section).getByText('Accounting')).toBeInTheDocument();
+    expect(within(section).getByRole('link', { name: 'o@acme.ua' })).toHaveAttribute('href', 'mailto:o@acme.ua');
+    expect(within(section).getByText('Kyiv · Nova Poshta · branch 12')).toBeInTheDocument();
+    expect(within(section).getByText('call first')).toBeInTheDocument();
+  });
+
+  it('says so when there are no contacts', async () => {
+    vi.spyOn(api, 'getCustomer').mockResolvedValue({ ...customer, contacts: [] } as never);
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
+    mountAt();
+    expect(await screen.findByText('No contacts')).toBeInTheDocument();
   });
 
   it('keeps tab and page in the URL', async () => {

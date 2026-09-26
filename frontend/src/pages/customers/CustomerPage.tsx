@@ -21,6 +21,7 @@ import type { ListView } from '../../components/ListViewToggle';
 import { StatTile, StatTiles } from '../../components/StatTile';
 import { formatMoney } from '../../utils/currency';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
+import { CustomerContactsSection } from '../../components/customers/CustomerContactsSection';
 import { useCardsTableViews } from '../../hooks/useCardsTableViews';
 import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 import { useListUrlState } from '../../hooks/useListUrlState';
@@ -194,6 +195,7 @@ export function CustomerPage() {
       <header className="flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0 space-y-1">
           <h1 className="text-2xl font-semibold text-white">{customer.name}</h1>
+          <p className="text-sm text-bambu-gray">{`${customer.code} · ${t(`customers.kind.${customer.kind}`)}`}</p>
           {customer.notes && <p className="text-sm text-bambu-gray whitespace-pre-line">{customer.notes}</p>}
         </div>
         <div className="flex items-center gap-2">
@@ -211,6 +213,8 @@ export function CustomerPage() {
           )}
         </div>
       </header>
+
+      <CustomerContactsSection contacts={customer.contacts} />
 
       <StatTiles columns={3}>
         <StatTile
