@@ -72,6 +72,7 @@ from backend.app.api.routes import (
     printer_settings as printer_settings_routes,
     printer_tags,
     printers,
+    product_categories,
     products,
     projects,
     scheduled_drying as scheduled_drying_routes,
@@ -11681,6 +11682,7 @@ app.include_router(projects.router, prefix=app_settings.api_prefix)
 app.include_router(customers.router, prefix=app_settings.api_prefix)
 app.include_router(delivery_methods.router, prefix=app_settings.api_prefix)
 app.include_router(products.router, prefix=app_settings.api_prefix)
+app.include_router(product_categories.router, prefix=app_settings.api_prefix)
 app.include_router(stock.router, prefix=app_settings.api_prefix)
 app.include_router(library.router, prefix=app_settings.api_prefix)
 app.include_router(library_notes.router, prefix=app_settings.api_prefix)
