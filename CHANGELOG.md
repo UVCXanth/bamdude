@@ -37,6 +37,19 @@
 
 ### Added
 
+- **Orders have a stage, a responsible person and an activity log of who did
+  what.** Every active order stands at a stage — Preparation, Printing or
+  Quality check — which whoever is on the farm sets by hand from the order
+  page; «Done» is simply a completed order. The table shows a Stage column in
+  place of Status and sorts by it, and each card carries the stage badge.
+  Every order also names who is responsible for it — the person who created it
+  unless someone else is chosen — shown with their initials on the table, the
+  card and the order page, and the list filters by it, including «Mine». The
+  order's Activity feed now records every operator action beside its prints:
+  status and stage changes, edits to the order and its lines, prints filed or
+  taken out, defects, jobs sent to the queue, stock and purchased parts,
+  attachments and the cover — each with who did it. Existing orders start in
+  Preparation with nobody responsible, and their feed begins from now.
 - **Customers have several contacts, a type and a code; everything in Projects
   has a code.** A customer is a Company, a Regular or a Private person — the
   list filters by «Regular» — and holds any number of contacts, each with its
