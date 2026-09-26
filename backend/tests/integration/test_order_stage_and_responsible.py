@@ -115,9 +115,17 @@ async def test_deleting_a_user_leaves_no_id_behind(committing_client, db_session
     from backend.app.services import order_journal
 
     await order_journal.record(db_session, oid, "stage_changed", {"from": "prep", "to": "qc"}, actor_id=ira)
+    # A day long past, so a bump by the delete cannot hide inside the same second.
+    from datetime import datetime
+
+    updated_before = datetime(2020, 1, 1)
+    (await db_session.get(Project, oid)).updated_at = updated_before
     await db_session.commit()
     assert (await committing_client.delete(f"/api/v1/users/{ira}")).status_code in (200, 204)
     db_session.expire_all()
-    assert (await db_session.get(Project, oid)).responsible_id is None
+    order = await db_session.get(Project, oid)
+    assert order.responsible_id is None
+    # Deleting a user is not an edit of their orders: «recently updated» must not reshuffle.
+    assert order.updated_at == updated_before
     row = (await db_session.execute(select(ProjectEvent).where(ProjectEvent.user_name == "ira4"))).scalar_one()
     assert row.user_id is None

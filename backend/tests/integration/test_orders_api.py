@@ -2,6 +2,7 @@
 
 import json
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,7 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate
-from backend.app.models.project import Project
+from backend.app.models.project import Project, ProjectEvent
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
 from backend.app.schemas.print_options_preference import PrintOptionsPreferenceData
@@ -735,7 +736,11 @@ async def test_a_line_of_another_order_is_not_a_line_of_this_one(committing_clie
 @pytest.mark.asyncio
 async def test_timeline_still_reads_the_archive(committing_client, db_session, catalog):
     pid = (await committing_client.post("/api/v1/projects/", json={"name": "O"})).json()["id"]
-    await _completed_print(db_session, pid, catalog["file"].id)
+    archive = await _completed_print(db_session, pid, catalog["file"].id)
+    # Stamped as production stamps a finished print — Python UTC — so it sorts
+    # against the journal on the same clock (the fixture alone leaves it NULL).
+    archive.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    await db_session.commit()
     events = (await committing_client.get(f"/api/v1/projects/{pid}/timeline")).json()
     # «Created» comes from the order journal now (spec workshop-order-stage, rule 20).
     assert [e["event_type"] for e in events] == ["print_completed", "order_created"]
@@ -1247,6 +1252,18 @@ async def test_plan_enqueue_splits_one_line_across_two_files(committing_client, 
     rows = (await db_session.execute(select(AutoQueueItem).where(AutoQueueItem.id.in_(ids)))).scalars().all()
     assert len(rows) == 5
     assert {row.project_line_id for row in rows} == {line_id}
+    # The order journal says the plan went to the queue — once, for all five prints
+    # (spec workshop-order-stage, rule 17; this door commits mid-request).
+    plan_lines = (
+        (
+            await db_session.execute(
+                select(ProjectEvent).where(ProjectEvent.project_id == pid, ProjectEvent.kind == "plan_enqueued")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [e.payload for e in plan_lines] == [{"prints": 5}]
     by_file = Counter(row.library_file_id for row in rows)
     assert by_file == Counter({catalog["file"].id: 3, twin_file.id: 2})
 

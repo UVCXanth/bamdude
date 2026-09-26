@@ -110,7 +110,9 @@ export function OrdersPage() {
   }, [data, isPlaceholderData, clampToLastPage]);
 
   const total = data?.meta.total ?? 0;
-  const filtered = q !== '' || customerId != null;
+  // Every filter Reset clears — «Mine» with nothing of mine is a filter that
+  // matched nothing, never «no orders yet» on a farm full of them.
+  const filtered = q !== '' || customerId != null || extra.responsible !== '';
 
   // The farm-wide filament strip over the list — every active order, not just the visible tab/filter.
   const filamentQuery = useQuery({ queryKey: ['orders-filament'], queryFn: api.getOrdersFilament, staleTime: 30_000 });
@@ -206,6 +208,13 @@ export function OrdersPage() {
               {u.username}
             </option>
           ))}
+          {/* A filter from the URL naming someone no longer offered (deactivated)
+              still shows as the live filter, never as «All responsible». */}
+          {responsibleId != null &&
+            extra.responsible !== 'me' &&
+            !assignees.some((u) => u.id === responsibleId) && (
+              <option value={responsibleId}>{`#${responsibleId}`}</option>
+            )}
         </Select>
 
         <label className="flex items-center gap-2 text-sm text-white cursor-pointer">

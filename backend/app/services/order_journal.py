@@ -6,6 +6,8 @@ and name snapshots; the sentence is the frontend's (``orders.timeline.events``).
 A ``kind`` outside ``EVENT_KINDS`` is a programming error, not a user's.
 """
 
+from datetime import datetime, timezone
+
 from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,10 +58,10 @@ async def record(
 ) -> ProjectEvent:
     """Add one journal row for ``project_id``; the caller's transaction owns it.
 
-    ``created_at`` is left to the database (``server_default``), the clock and
-    resolution every other timeline source uses — a Python timestamp would carry
-    microseconds the archive rows do not, and a line written in the same second
-    as a print would sort ahead of it for no reason but precision.
+    ``created_at`` is stamped HERE, in UTC (spec rule 14) — the clock print
+    events use (``started_at``/``completed_at`` are Python UTC). A database
+    default would be the server's clock, which on a PostgreSQL whose timezone is
+    not UTC stores local time and shifts the journal against the prints.
     """
     if kind not in EVENT_KINDS:
         raise ValueError(f"unknown order journal kind: {kind}")
@@ -72,6 +74,7 @@ async def record(
             user_id, user_name = user.id, user.username
     event = ProjectEvent(
         project_id=project_id,
+        created_at=datetime.now(timezone.utc).replace(tzinfo=None),
         user_id=user_id,
         user_name=user_name,
         kind=kind,

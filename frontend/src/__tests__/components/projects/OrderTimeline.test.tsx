@@ -32,4 +32,10 @@ describe('OrderTimeline · the order journal', () => {
     expect(screen.getByText('Responsible: Not assigned → ira')).toBeInTheDocument();
     expect(screen.getByText('Mystery')).toBeInTheDocument(); // an unknown type keeps the server's title
   });
+
+  it('a line whose product is gone still reads as a sentence', async () => {
+    vi.spyOn(api, 'getProjectTimeline').mockResolvedValue([ev('line_removed', { product: null, quantity: 5 })]);
+    render(<OrderTimeline orderId={5} />);
+    expect(await screen.findByText('Line removed: — × 5')).toBeInTheDocument();
+  });
 });

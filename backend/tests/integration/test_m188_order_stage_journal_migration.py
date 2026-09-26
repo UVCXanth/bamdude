@@ -54,6 +54,17 @@ async def test_the_journal_table_never_hands_out_an_id_twice(engine):
 
 
 @pytest.mark.asyncio
+async def test_the_journal_columns_match_the_model(engine):
+    # A migrated database and a fresh install (create_all) must agree: the model
+    # declares created_at and payload NOT NULL, and a JSON column is TEXT on SQLite.
+    await _run(engine)
+    async with engine.connect() as conn:
+        cols = {r[1]: r for r in (await conn.execute(text("PRAGMA table_info(project_events)"))).all()}
+        assert cols["created_at"][3] == 1 and cols["payload"][3] == 1  # notnull
+        assert cols["payload"][2].upper() == "TEXT"
+
+
+@pytest.mark.asyncio
 async def test_a_second_run_changes_nothing(engine):
     await _run(engine)
     await _run(engine)

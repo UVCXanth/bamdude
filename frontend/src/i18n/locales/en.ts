@@ -5367,6 +5367,8 @@ export default {
       qc: 'Quality check',
       done: 'Done',
       changed: 'Stage: {{stage}}',
+      passed: 'passed',
+      steps: 'Stages',
     },
     priority: {
       low: 'Low',

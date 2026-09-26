@@ -5394,6 +5394,8 @@ export default {
       qc: 'Контроль якості',
       done: 'Готово',
       changed: 'Етап: {{stage}}',
+      passed: 'пройдено',
+      steps: 'Етапи',
     },
     priority: {
       low: 'Низький',

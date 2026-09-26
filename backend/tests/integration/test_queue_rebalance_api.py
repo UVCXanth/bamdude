@@ -50,6 +50,8 @@ async def test_line_button_moves_with_the_setting_off_and_reports_the_counts(
     committing_client, db_session, printer_factory, tmp_path
 ):
     farm = await rebalance_farm(db_session, printer_factory, tmp_path)
+    # Read now: after expire_all() below, touching farm.* would lazy-load outside the greenlet.
+    project_id, line_id = farm.project.id, farm.line.id
     await _the_dialogs_saved_preference(db_session, printer_model="A1MINI")
     p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
     with p_elig, p_sched:
@@ -70,6 +72,22 @@ async def test_line_button_moves_with_the_setting_off_and_reports_the_counts(
     converted = next(row for row in rows if row.id == farm.item.id)
     assert converted.timelapse is False and converted.position == 1
     assert {row.batch_id for row in rows} == {converted.batch_id} and converted.batch_id
+    # The order journal names the rebalanced line (spec workshop-order-stage, rule 17);
+    # the writer commits mid-request, so the line's product was read before it.
+    from backend.app.models.project import ProjectEvent
+
+    journal = (
+        (
+            await db_session.execute(
+                select(ProjectEvent).where(
+                    ProjectEvent.project_id == project_id, ProjectEvent.kind == "line_rebalanced"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [e.payload["line_id"] for e in journal] == [line_id] and journal[0].payload["product"]
 
 
 @pytest.mark.asyncio

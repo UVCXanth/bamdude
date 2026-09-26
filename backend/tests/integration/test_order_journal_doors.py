@@ -114,6 +114,7 @@ async def test_queue_items_filed(committing_client, db_session):
     db_session.add(item)
     await db_session.commit()
     await committing_client.post(f"/api/v1/projects/{oid}/add-queue", json={"queue_item_ids": [item.id]})
+    await committing_client.post(f"/api/v1/projects/{oid}/add-queue", json={"queue_item_ids": [item.id]})  # again
     assert await _only(db_session, oid, "queue_items_filed") == [{"count": 1}]
 
 

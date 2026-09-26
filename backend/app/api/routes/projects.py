@@ -1539,6 +1539,7 @@ async def add_queue_items_to_project(
 
     # Update queue items
     updated = 0
+    filed = 0
     for item_id in data.queue_item_ids:
         result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))
         item = result.scalar_one_or_none()
@@ -1547,11 +1548,14 @@ async def add_queue_items_to_project(
                 stale = await db.get(ProjectLine, item.project_line_id)
                 if stale is None or stale.project_id != project_id:
                     item.project_line_id = None
+            # Journaled only when it actually moves here — as ``add-archives`` does.
+            if item.project_id != project_id:
+                filed += 1
             item.project_id = project_id
             updated += 1
 
-    if updated:
-        await order_journal.record(db, project_id, "queue_items_filed", {"count": updated}, actor=current_user)
+    if filed:
+        await order_journal.record(db, project_id, "queue_items_filed", {"count": filed}, actor=current_user)
     return {"message": f"Added {updated} queue items to project"}
 
 

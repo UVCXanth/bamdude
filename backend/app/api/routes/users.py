@@ -518,7 +518,14 @@ async def delete_user(
     await db.execute(delete(UserNotification).where(UserNotification.user_id == user_id))
     # Spec workshop-order-stage, rule 12: nothing keeps naming a deleted user by
     # id — SQLite runs no SET NULL, and a later user could inherit the id.
-    await db.execute(update(Project).where(Project.responsible_id == user_id).values(responsible_id=None))
+    # ``updated_at`` kept as it was: losing a responsible is not an edit of the
+    # order, and a Core UPDATE would otherwise fire its onupdate and reshuffle
+    # «recently updated» for every order the user held.
+    await db.execute(
+        update(Project)
+        .where(Project.responsible_id == user_id)
+        .values(responsible_id=None, updated_at=Project.updated_at)
+    )
     await order_journal.detach_user(db, user_id)
 
     await db.delete(user)

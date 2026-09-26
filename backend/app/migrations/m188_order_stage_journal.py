@@ -21,6 +21,9 @@ async def upgrade(conn):
     sqlite = conn.dialect.name == "sqlite"
     pk = "INTEGER PRIMARY KEY AUTOINCREMENT" if sqlite else "SERIAL PRIMARY KEY"
     ts = "DATETIME" if sqlite else "TIMESTAMP"
+    # What ``helpers.json_column_type`` answers, read off THIS connection: SQLite
+    # has no JSON storage class (TEXT, as create_all makes it), PostgreSQL does.
+    json_type = "TEXT" if sqlite else "JSON"
 
     await add_column(conn, "projects", "stage VARCHAR(16) NOT NULL DEFAULT 'prep'")
     await add_column(conn, "projects", "responsible_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
@@ -32,11 +35,11 @@ async def upgrade(conn):
             CREATE TABLE project_events (
                 id {pk},
                 project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                created_at {ts} DEFAULT CURRENT_TIMESTAMP,
+                created_at {ts} NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
                 user_name VARCHAR(100),
                 kind VARCHAR(40) NOT NULL,
-                payload JSON
+                payload {json_type} NOT NULL
             )
             """
         )

@@ -167,6 +167,25 @@ describe('OrdersPage', () => {
     await waitFor(() => expect(get).toHaveBeenLastCalledWith({ status: 'completed', sort_by: 'updated-desc', page: 1, per_page: 24 }));
     expect(window.location.search).toBe('?tab=completed');
   });
+  it('«Mine» with nothing of mine is a filter that matched nothing, with Reset — not an empty farm', async () => {
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([], { totals: { active: 0, completed: 0, cancelled: 0, all: 0 } }));
+    window.history.pushState({}, '', '/projects?tab=all&responsible=me');
+    render(<OrdersPage />);
+    expect(await screen.findByText('Nothing matches your search or filters.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.not.objectContaining({ responsible_id: expect.anything() })));
+    expect(window.location.search).not.toContain('responsible');
+  });
+  it('a responsible user no longer offered still shows as the live filter', async () => {
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    vi.spyOn(api, 'getOrderAssignees').mockResolvedValue([{ id: 7, username: 'ira' }]);
+    window.history.pushState({}, '', '/projects?responsible=9');
+    render(<OrdersPage />);
+    await screen.findByRole('option', { name: 'ira' });
+    expect(screen.getByLabelText('Responsible')).toHaveValue('9');
+    expect(screen.getByRole('option', { name: '#9' })).toBeInTheDocument();
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ responsible_id: 9 })));
+  });
   it('draws the pagination bar from meta', async () => {
     vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA], { meta: { total: 30, last_page: 2 } }));
     window.history.pushState({}, '', '/projects');

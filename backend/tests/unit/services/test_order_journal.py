@@ -39,6 +39,22 @@ async def test_record_names_the_actor_by_id_and_by_a_name_snapshot(db_session):
 
 
 @pytest.mark.asyncio
+async def test_a_line_is_stamped_in_utc_when_it_is_written_not_by_the_database(db_session):
+    # Spec rule 14: UTC. A database default is the SERVER's clock — local time on
+    # a PostgreSQL whose timezone is not UTC — while print events are stamped in
+    # Python UTC; the journal must sit on the same clock as the prints.
+    from datetime import datetime, timedelta, timezone
+
+    project = Project(name="A")
+    db_session.add(project)
+    await db_session.flush()
+    event = await order_journal.record(db_session, project.id, "plan_enqueued", {"prints": 1})
+    assert event.created_at is not None  # set at once, before any flush
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    assert abs(now - event.created_at) < timedelta(seconds=5)
+
+
+@pytest.mark.asyncio
 async def test_an_unknown_kind_is_a_programming_error(db_session):
     with pytest.raises(ValueError):
         await order_journal.record(db_session, 1, "stage_moved", {})

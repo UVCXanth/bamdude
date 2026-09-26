@@ -21,6 +21,9 @@ const isJournalKind = (kind: string): kind is JournalKind => (ORDER_JOURNAL_KIND
 
 const text = (value: unknown): string => (value == null ? '' : String(value));
 
+/** A name snapshot for a sentence — «—» when the thing named is gone (e.g. a deleted product). */
+const named = (value: unknown): string => text(value) || '—';
+
 /** Field codes («name», «due_date») in the reader's language, joined. */
 function fieldList(fields: unknown, t: TFunction): string {
   if (!Array.isArray(fields)) return '';
@@ -62,11 +65,17 @@ export function journalText(event: TimelineEvent, t: TFunction): string | null {
       return t('orders.timeline.events.responsible_changed', { from: person(m.from, t), to: person(m.to, t) });
     case 'line_changed': {
       const changes = m.changes && typeof m.changes === 'object' ? Object.keys(m.changes) : [];
-      return t('orders.timeline.events.line_changed', { product: text(m.product), fields: fieldList(changes, t) });
+      return t('orders.timeline.events.line_changed', { product: named(m.product), fields: fieldList(changes, t) });
     }
     case 'cover_changed':
       return t(`orders.timeline.cover.${m.action === 'removed' ? 'removed' : 'set'}`);
     default:
-      return t(`orders.timeline.events.${event.event_type}`, m);
+      // Name snapshots may be null (the product was gone when the line was written).
+      return t(`orders.timeline.events.${event.event_type}`, {
+        ...m,
+        product: named(m.product),
+        part: named(m.part),
+        filename: named(m.filename),
+      });
   }
 }
