@@ -116,6 +116,11 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
     onError: fail,
   });
 
+  // spec workshop-product-variants, rule 25: a part is in every configuration
+  // («Always») or belongs to one option. No groups, no column.
+  const groups = product.variant_groups ?? [];
+  const optionLabel = new Map(groups.flatMap((g) => g.options.map((o) => [o.id, `${g.name}: ${o.name}`] as const)));
+
   const printed = product.parts.filter((p) => p.kind === 'printed').sort(byOrder);
   const purchased = product.parts.filter((p) => p.kind === 'purchased').sort(byOrder);
 
@@ -216,6 +221,40 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
     </td>
   );
 
+  const variantHead = groups.length > 0 && <th className={HEAD_CLASS}>{t('products.composition.variant')}</th>;
+  const variantCell = (part: ProductPart) =>
+    groups.length > 0 && (
+      <td className="px-3 py-2">
+        {canEdit ? (
+          <Select
+            size="sm"
+            value={part.variant_option_id != null ? String(part.variant_option_id) : ''}
+            aria-label={t('products.composition.variant')}
+            onChange={(e) =>
+              save.mutate({
+                partId: part.id,
+                data: { variant_option_id: e.target.value ? Number(e.target.value) : null },
+              })
+            }
+          >
+            <option value="">{t('products.composition.variantAlways')}</option>
+            {groups.map((g) =>
+              g.options.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {optionLabel.get(o.id)}
+                </option>
+              )),
+            )}
+          </Select>
+        ) : (
+          <span className="text-bambu-gray">
+            {(part.variant_option_id != null && optionLabel.get(part.variant_option_id)) ||
+              t('products.composition.variantAlways')}
+          </span>
+        )}
+      </td>
+    );
+
   const deleteButton = (part: ProductPart) =>
     canEdit && (
       <button
@@ -242,6 +281,7 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
                 <tr className="text-bambu-gray border-b border-bambu-dark-tertiary">
                   <th className={HEAD_CLASS}>{t('products.composition.name')}</th>
                   <th className={HEAD_CLASS}>{t('products.composition.perUnit')}</th>
+                  {variantHead}
                   <th className={HEAD_CLASS}>{t('products.composition.aliases')}</th>
                   <th className={HEAD_CLASS} />
                 </tr>
@@ -255,6 +295,7 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
                   >
                     {nameCell(part)}
                     {qtyCell(part)}
+                    {variantCell(part)}
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-1 flex-wrap">
                         {part.aliases.map((alias) => (
@@ -354,6 +395,7 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
                 <tr className="text-bambu-gray border-b border-bambu-dark-tertiary">
                   <th className={HEAD_CLASS}>{t('products.composition.name')}</th>
                   <th className={HEAD_CLASS}>{t('products.composition.perUnit')}</th>
+                  {variantHead}
                   <th className={HEAD_CLASS}>{t('products.composition.unitPrice')}</th>
                   <th className={HEAD_CLASS}>{t('products.composition.sourcingUrl')}</th>
                   <th className={HEAD_CLASS}>{t('products.composition.remarks')}</th>
@@ -369,6 +411,7 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
                   >
                     {nameCell(part)}
                     {qtyCell(part)}
+                    {variantCell(part)}
                     {/* ⚠️ Editable, not read-only. The only way to correct a
                         supplier price used to be delete + re-add, and
                         `delete_part` takes every order's `quantity_acquired`

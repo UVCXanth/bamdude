@@ -2481,6 +2481,46 @@ export interface ProductPart {
    *  Rendering a product's shelf out of these would be a second reading of the
    *  same ledger, one part at a time. */
   stock_balance: number;
+  /** The option this part belongs to, or `null` for a part in every
+   *  configuration (spec workshop-product-variants, rule 3). */
+  variant_option_id: number | null;
+}
+
+/** One option of a variant group, with what would refuse its delete. */
+export interface VariantOption {
+  id: number;
+  name: string;
+  position: number;
+  /** Order lines that chose it. */
+  lines_count: number;
+  /** Parts bound to it. */
+  parts_count: number;
+}
+
+/** A choice an order makes once per unit — «Хвіст: прямий / кутовий». */
+export interface VariantGroup {
+  id: number;
+  name: string;
+  position: number;
+  default_option_id: number | null;
+  options: VariantOption[];
+}
+
+export interface VariantGroupCreate {
+  name: string;
+  /** The first one is the standard. */
+  options: string[];
+}
+
+export interface VariantGroupUpdate {
+  name?: string;
+  default_option_id?: number;
+  position?: number;
+}
+
+export interface VariantOptionUpdate {
+  name?: string;
+  position?: number;
 }
 
 export interface ProductPartCreate {
@@ -2499,6 +2539,7 @@ export interface ProductPartUpdate {
   sourcing_url?: string | null;
   remarks?: string | null;
   sort_order?: number;
+  variant_option_id?: number | null;
 }
 
 export interface PlateYieldEntry {
@@ -2612,6 +2653,7 @@ export interface Product extends ProductListItem {
   design_id: string | null;
   attachments: ProductAttachment[];
   parts: ProductPart[];
+  variant_groups: VariantGroup[];
   library_file_ids: number[];
   library_folder_ids: number[];
   /** Units made for orders — every order status, the usable units attributed
@@ -11352,6 +11394,30 @@ export const api = {
     }),
   deleteProductPart: (productId: number, partId: number) =>
     request<{ message: string }>(`/products/${productId}/parts/${partId}`, { method: 'DELETE' }),
+  // Variants (spec workshop-product-variants, rule 18) — every call answers the product.
+  createVariantGroup: (productId: number, data: VariantGroupCreate) =>
+    request<Product>(`/products/${productId}/variant-groups`, { method: 'POST', body: JSON.stringify(data) }),
+  updateVariantGroup: (productId: number, groupId: number, data: VariantGroupUpdate) =>
+    request<Product>(`/products/${productId}/variant-groups/${groupId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteVariantGroup: (productId: number, groupId: number) =>
+    request<Product>(`/products/${productId}/variant-groups/${groupId}`, { method: 'DELETE' }),
+  createVariantOption: (productId: number, groupId: number, name: string) =>
+    request<Product>(`/products/${productId}/variant-groups/${groupId}/options`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  updateVariantOption: (productId: number, groupId: number, optionId: number, data: VariantOptionUpdate) =>
+    request<Product>(`/products/${productId}/variant-groups/${groupId}/options/${optionId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteVariantOption: (productId: number, groupId: number, optionId: number) =>
+    request<Product>(`/products/${productId}/variant-groups/${groupId}/options/${optionId}`, {
+      method: 'DELETE',
+    }),
   mergeProductPart: (productId: number, targetPartId: number, sourcePartId: number) =>
     request<ProductPart>(`/products/${productId}/parts/${targetPartId}/merge`, {
       method: 'POST',

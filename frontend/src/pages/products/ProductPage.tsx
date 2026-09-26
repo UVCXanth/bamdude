@@ -10,6 +10,7 @@ import { Button } from '../../components/Button';
 import { ProductGallery } from '../../components/products/ProductGallery';
 import { ProductHeader } from '../../components/products/ProductHeader';
 import { CompositionTable } from '../../components/products/CompositionTable';
+import { ProductVariants } from '../../components/products/ProductVariants';
 import { ProductStock } from '../../components/products/ProductStock';
 import { PlatesByFile } from '../../components/products/PlatesByFile';
 import { ProductAttachments } from '../../components/products/ProductAttachments';
@@ -199,6 +200,7 @@ export function ProductPage() {
       </div>
 
       <CompositionTable product={product} canEdit={canEdit} />
+      <ProductVariants product={product} canEdit={canEdit} />
 
       {/* Directly under the composition, because it is the same list of parts
           seen from the shelf rather than from the design. Reading the shelf is
