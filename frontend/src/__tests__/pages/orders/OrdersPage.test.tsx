@@ -235,6 +235,37 @@ describe('OrdersPage', () => {
     expect(screen.getByRole('region', { name: 'Quality check' })).toBeInTheDocument();
     expect(get).not.toHaveBeenCalled();
   });
+  describe('the deadlines', () => {
+    beforeEach(() => {
+      localStorage.setItem('projects.view', 'deadlines');
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(2026, 9, 7, 12)); // a Wednesday
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+    it('reads the week from the URL, asks with the shared filters and writes a step back to the URL', async () => {
+      const get = vi
+        .spyOn(api, 'getOrderDeadlines')
+        .mockResolvedValue({ start: '2026-10-12', days: 14, due: [], eta_marks: [], attention: [] });
+      const paged = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+      window.history.pushState({}, '', '/projects?week=1&customer=1');
+      render(<OrdersPage />);
+      await waitFor(() => expect(get).toHaveBeenCalledWith({ start: '2026-10-12', days: 14, customer_id: 1 }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Previous' }));
+      await waitFor(() => expect(get).toHaveBeenLastCalledWith({ start: '2026-10-05', days: 14, customer_id: 1 }));
+      expect(window.location.search).not.toContain('week');
+      expect(paged).not.toHaveBeenCalled();
+    });
+    it('a week that is not a whole number is this week', async () => {
+      const get = vi
+        .spyOn(api, 'getOrderDeadlines')
+        .mockResolvedValue({ start: '2026-10-05', days: 14, due: [], eta_marks: [], attention: [] });
+      window.history.pushState({}, '', '/projects?week=1.5');
+      render(<OrdersPage />);
+      await waitFor(() => expect(get).toHaveBeenCalledWith({ start: '2026-10-05', days: 14 }));
+    });
+  });
   describe('the workspace', () => {
     const rowC = { ...rowA, id: 3, name: 'C', code: 'OR-0003' };
     beforeEach(() => {

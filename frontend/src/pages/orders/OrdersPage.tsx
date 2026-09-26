@@ -13,6 +13,7 @@ import { OrdersTiles } from '../../components/projects/OrdersTiles';
 import { OrderStatusTabs, OrdersListView } from '../../components/projects/OrdersListView';
 import { OrdersBoard } from '../../components/projects/board/OrdersBoard';
 import { OrdersWorkspace } from '../../components/projects/OrdersWorkspace';
+import { OrdersDeadlines } from '../../components/projects/OrdersDeadlines';
 import { ORDER_TABS, ORDERS_DEFAULT_SORT } from '../../components/projects/orderList';
 import { useOrderSortOptions } from '../../hooks/useOrderSortOptions';
 import { ConfirmModal } from '../../components/ConfirmModal';
@@ -61,7 +62,7 @@ export function OrdersPage() {
   const views = useOrdersViews();
   const sortOptions = useOrderSortOptions();
   const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
-    defaults: { sort: ORDERS_DEFAULT_SORT[view], extra: { tab: 'active', customer: '', responsible: '', stage: '', order: '' } },
+    defaults: { sort: ORDERS_DEFAULT_SORT[view], extra: { tab: 'active', customer: '', responsible: '', stage: '', order: '', week: '0' } },
   });
   // Another view is another default order, so the page it stood on means nothing there.
   const setView = (next: OrdersView) => {
@@ -75,6 +76,8 @@ export function OrdersPage() {
   const stage: OrderStage | '' = (ORDER_STAGES as readonly string[]).includes(extra.stage)
     ? (extra.stage as OrderStage)
     : '';
+  // The deadlines' place: whole weeks from this one. Anything else is this week.
+  const week = Number.isInteger(Number(extra.week)) ? Number(extra.week) : 0;
   const tab: ProjectStatus | 'all' = (ORDER_TABS as readonly string[]).includes(extra.tab)
     ? (extra.tab as ProjectStatus | 'all')
     : 'active';
@@ -320,6 +323,9 @@ export function OrdersPage() {
           picked={Number(extra.order) || null}
           onPick={(id) => setExtra('order', id ? String(id) : '', { keepPage: true })}
         />
+      )}
+      {view === 'deadlines' && (
+        <OrdersDeadlines filters={viewFilters} week={week} onWeek={(n) => setExtra('week', String(n), { keepPage: true })} />
       )}
 
       {editing && (

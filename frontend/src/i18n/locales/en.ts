@@ -5401,6 +5401,25 @@ export default {
         cancelled: 'Moving {{code}} was cancelled.',
       },
     },
+    // The deadlines board (spec workshop-order-views, rules 14–17).
+    deadlines: {
+      previous: 'Previous',
+      next: 'Next',
+      today: 'Today',
+      range: '{{from}} — {{to}}',
+      dueLabel: 'deadline',
+      readyAt: 'ready ≈ {{when}}',
+      late: 'late',
+      etaMark: '{{code}} ready ≈ {{when}}',
+      attention: 'Needs attention',
+      attentionHint: 'overdue, no deadline, or forecast after the deadline',
+      reason: {
+        overdue: 'Overdue',
+        late_eta: 'Ready after the deadline',
+        no_due: 'No deadline',
+      },
+      empty: 'Nothing needs attention',
+    },
     list: {
       title: 'Orders',
       subtitle: 'What to make, for whom and by when — the figures come from the prints and the shelf',
