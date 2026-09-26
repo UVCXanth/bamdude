@@ -41,6 +41,7 @@ export class ApiError extends Error {
 }
 
 import type { AppliedEntry } from '../utils/reportingStatus';
+import { byLocationName } from '../utils/locationOrder';
 
 const API_BASE = '/api/v1';
 
@@ -10574,8 +10575,13 @@ export const api = {
     request<{ deleted: number }>('/inventory/catalog/bulk-delete', { method: 'POST', body: JSON.stringify({ ids }) }),
   resetSpoolCatalog: () =>
     request<{ status: string }>('/inventory/catalog/reset', { method: 'POST' }),
+  // Ordered here, once, for every consumer: the server's ORDER BY name puts
+  // "Drybox 10" before "Drybox 2" and Ґ/Є/І/Ї outside the alphabet (upstream
+  // 54af3146, adapted to our one place-order rule).
   getLocations: () =>
-    request<StorageLocation[]>('/inventory/locations'),
+    request<StorageLocation[]>('/inventory/locations').then((locations) =>
+      [...locations].sort(byLocationName((location) => location.name)),
+    ),
   createLocation: (data: { name: string; identifier?: string | null }) =>
     request<StorageLocation>('/inventory/locations', { method: 'POST', body: JSON.stringify(data) }),
   updateLocation: (id: number, data: { name?: string; identifier?: string | null }) =>

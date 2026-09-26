@@ -172,6 +172,12 @@
 
 ### Fixed
 
+- **Storage locations are listed in natural order.** "Drybox 2" now comes before
+  "Drybox 10", and names starting with Ґ, Є, І or Ї sort inside the alphabet
+  instead of before А — in the locations list, the location filter and the spool
+  form alike, by the same rule the printer locations already follow. (upstream
+  54af3146)
+
 - **The per-event ntfy priority is actually sent.** The priorities chosen in an
   ntfy provider's **Event priority** section never reached ntfy: they were saved
   under one spelling of the event name and looked up under another, so every
