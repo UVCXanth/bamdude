@@ -903,3 +903,274 @@ class TestAssignSaysWhatItReplaced:
         assert response.status_code == 200
         assert response.json()["replaced_spool_id"] is None
         assert await self._slot_spool_ids(db_session, printer.id) == [spool.id]
+
+
+class TestAssignSpoolPresenceBit:
+    """#3084: the slot the firmware says is full, and the cache says is empty.
+
+    ``apply_tray_exist_bits`` stamps ``state = 9`` on every slot whose
+    ``tray_exist_bits`` bit is 0 and annotates ``exists`` on every slot it
+    looks at — but when the bit comes back it only refreshes ``exists`` and
+    leaves the 9 where it was. Swap a Bambu spool for a non-RFID one and the
+    slot sits at ``exists=True, state=9`` until something configures it.
+
+    Reported on an H2D/H2C AMS-HT: remove the Bambu spool (bits ``f``), insert
+    a third-party one 9 seconds later (bits ``1000f``), then Assign Spool 28
+    seconds after that — and no ``ams_filament_setting`` was published at all.
+    Configure worked, because it publishes unconditionally.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_bit_overrules_a_stale_empty_state(
+        self, async_client: AsyncClient, printer_factory, spool_factory
+    ):
+        """exists=True with a leftover state=9 — MQTT must fire."""
+        printer = await printer_factory(name="H2D")
+        spool = await spool_factory(slicer_filament="GFL05", material="PLA")
+
+        mock_client = MagicMock()
+        mock_client.ams_set_filament_setting.return_value = True
+        mock_client.extrusion_cali_sel.return_value = True
+
+        tray_data = {"id": 0, "state": 9, "exists": True, "tray_type": "", "tray_color": "", "tray_info_idx": ""}
+        status = _make_mock_status(ams_data=[{"id": 128, "tray": [tray_data]}])
+
+        with patch("backend.app.services.printer_manager.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            mock_pm.get_status.return_value = status
+
+            response = await async_client.post(
+                "/api/v1/inventory/assignments",
+                json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 128, "tray_id": 0},
+            )
+
+        assert response.status_code == 200
+        mock_client.ams_set_filament_setting.assert_called_once()
+        body = response.json()
+        assert body["configured"] is True
+        assert body["pending_config"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_an_empty_bit_does_not_start_suppressing_pushes(
+        self, async_client: AsyncClient, printer_factory, spool_factory
+    ):
+        """The bit overrules the 9 and nothing else.
+
+        Reading it the other way too would be tidier — skip the push firmware
+        is going to drop — but it also means a slot that silently stops
+        configuring on whichever AMS variant we compute the bit position
+        wrong for. The saving is one MQTT message; the failure is the bug
+        this commit is fixing, inverted. So a state that does not say "empty"
+        still publishes, exactly as it did before.
+        """
+        printer = await printer_factory(name="H2D")
+        spool = await spool_factory(slicer_filament="GFL05", material="PLA")
+
+        mock_client = MagicMock()
+        mock_client.ams_set_filament_setting.return_value = True
+        mock_client.extrusion_cali_sel.return_value = True
+
+        tray_data = {"id": 3, "state": 11, "exists": False, "tray_type": "", "tray_color": ""}
+        status = _make_mock_status(ams_data=[{"id": 2, "tray": [tray_data]}])
+
+        with patch("backend.app.services.printer_manager.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            mock_pm.get_status.return_value = status
+
+            response = await async_client.post(
+                "/api/v1/inventory/assignments",
+                json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 2, "tray_id": 3},
+            )
+
+        assert response.status_code == 200
+        mock_client.ams_set_filament_setting.assert_called_once()
+        assert response.json()["pending_config"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_pre_assign_workflow_still_skips_a_genuinely_empty_slot(
+        self, async_client: AsyncClient, printer_factory, spool_factory
+    ):
+        """SpoolBuddy weighs a spool and assigns it before it goes in. Bit
+        clear and state 9 agree that the slot is empty, so the push is still
+        deferred to the replay — unchanged."""
+        printer = await printer_factory(name="H2D")
+        spool = await spool_factory(slicer_filament="GFL05", material="PLA")
+
+        mock_client = MagicMock()
+        mock_client.ams_set_filament_setting.return_value = True
+
+        tray_data = {"id": 3, "state": 9, "exists": False, "tray_type": "", "tray_color": ""}
+        status = _make_mock_status(ams_data=[{"id": 2, "tray": [tray_data]}])
+
+        with patch("backend.app.services.printer_manager.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            mock_pm.get_status.return_value = status
+
+            response = await async_client.post(
+                "/api/v1/inventory/assignments",
+                json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 2, "tray_id": 3},
+            )
+
+        assert response.status_code == 200
+        mock_client.ams_set_filament_setting.assert_not_called()
+        body = response.json()
+        assert body["configured"] is False
+        assert body["pending_config"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_an_unannotated_tray_still_reads_the_state(
+        self, async_client: AsyncClient, printer_factory, spool_factory
+    ):
+        """No presence bit in the payload → the 9/10 heuristic still decides.
+
+        The external spool's ``vt_tray`` has no bit in the mask, and neither do
+        the hand-built payloads every other test in this file uses.
+        """
+        printer = await printer_factory(name="H2D")
+        spool = await spool_factory(slicer_filament="GFL05", material="PLA")
+
+        mock_client = MagicMock()
+        mock_client.ams_set_filament_setting.return_value = True
+
+        status = _make_mock_status(ams_data=[{"id": 2, "tray": [{"id": 3, "state": 9, "tray_type": ""}]}])
+
+        with patch("backend.app.services.printer_manager.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            mock_pm.get_status.return_value = status
+
+            response = await async_client.post(
+                "/api/v1/inventory/assignments",
+                json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 2, "tray_id": 3},
+            )
+
+        assert response.status_code == 200
+        mock_client.ams_set_filament_setting.assert_not_called()
+        assert response.json()["pending_config"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_deferred_config_fires_for_a_spool_the_ams_cannot_name(
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
+    ):
+        """The pre-assign workflow's half of the same bug.
+
+        A non-RFID spool inserted into a pre-assigned slot brings no
+        ``tray_type`` with it, and the stale 9 kept the replay's "loaded" test
+        false, so the deferred configuration never fired for it either. The
+        presence bit is the only thing in the payload that changed.
+        """
+        from unittest.mock import AsyncMock
+
+        from backend.app.main import on_ams_change
+        from backend.app.models.spool_assignment import SpoolAssignment
+
+        printer = await printer_factory(name="H2D")
+        spool = await spool_factory(slicer_filament="GFL05", material="PLA")
+
+        pre_assignment = SpoolAssignment(
+            spool_id=spool.id,
+            printer_id=printer.id,
+            ams_id=2,
+            tray_id=3,
+            fingerprint_color=None,
+            fingerprint_type=None,
+        )
+        db_session.add(pre_assignment)
+        await db_session.commit()
+
+        ams_data = [{"id": 2, "tray": [{"id": 3, "state": 9, "exists": True, "tray_type": "", "tray_color": ""}]}]
+
+        mock_client = MagicMock()
+        mock_client.ams_set_filament_setting.return_value = True
+        mock_client.extrusion_cali_sel.return_value = True
+
+        status = _make_mock_status(ams_data=ams_data)
+
+        with (
+            patch("backend.app.main.printer_manager") as mock_pm_main,
+            patch("backend.app.services.printer_manager.printer_manager") as mock_pm_inv,
+            patch("backend.app.main.mqtt_relay") as mock_relay,
+            patch("backend.app.main.ws_manager") as mock_ws,
+        ):
+            mock_pm_main.get_printer.return_value = MagicMock(name="H2D", serial_number="0948BB540200427")
+            mock_pm_main.get_status.return_value = status
+            mock_pm_main.get_client.return_value = mock_client
+            mock_pm_main.get_model.return_value = "H2D"
+            mock_pm_inv.get_client.return_value = mock_client
+            mock_pm_inv.get_status.return_value = status
+            mock_relay.on_ams_change = AsyncMock()
+            mock_ws.send_printer_status = AsyncMock()
+            mock_ws.broadcast = AsyncMock()
+
+            await on_ams_change(printer.id, ams_data)
+
+        mock_client.ams_set_filament_setting.assert_called_once()
+        call_kwargs = mock_client.ams_set_filament_setting.call_args.kwargs
+        assert call_kwargs["ams_id"] == 2
+        assert call_kwargs["tray_id"] == 3
+        assert call_kwargs["tray_info_idx"] == "GFL05"
+
+        # The assignment is still there — the pass that fires the config is the
+        # same pass that deletes stale ones (#3100).
+        db_session.expunge_all()
+        assert await db_session.get(SpoolAssignment, pre_assignment.id) is not None
+
+
+class TestAutoUnlinkOccupiedSlot(TestARunoutIsNotASpoolRemoval):
+    """upstream 905bda4f (#3100): a blank report from a slot the presence bit
+    calls occupied describes a spool the AMS cannot identify — a non-RFID one,
+    or a reset slot — not a spool that was taken out. Our ``apply_tray_exist_bits``
+    stamps ``state=9`` on an empty bit and leaves it there when the bit returns,
+    so such a slot reads ``exists=True, state=9`` with no type."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_blank_report_from_an_occupied_slot_keeps_the_assignment(
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
+    ):
+        printer = await self._assigned_printer(printer_factory, spool_factory, db_session)
+        ams_data = [{"id": 0, "tray": [{"id": 0, "exists": True, "tray_type": "", "tray_color": "", "state": 9}]}]
+        await self._push(printer.id, ams_data, "IDLE")
+        assert len(await self._assignment_for(db_session, printer.id)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_blank_report_from_an_empty_slot_still_unlinks(
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
+    ):
+        printer = await self._assigned_printer(printer_factory, spool_factory, db_session)
+        ams_data = [{"id": 0, "tray": [{"id": 0, "exists": False, "tray_type": "", "tray_color": "", "state": 9}]}]
+        await self._push(printer.id, ams_data, "IDLE")
+        assert await self._assignment_for(db_session, printer.id) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_different_filament_in_an_occupied_slot_still_unlinks(
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
+    ):
+        printer = await self._assigned_printer(printer_factory, spool_factory, db_session)
+        ams_data = [
+            {"id": 0, "tray": [{"id": 0, "exists": True, "tray_type": "PETG", "tray_color": "00FF00FF", "state": 11}]}
+        ]
+        await self._push(printer.id, ams_data, "IDLE")
+        assert await self._assignment_for(db_session, printer.id) == []
+
+
+class TestSpoolmanManualSyncKeepsAnOccupiedSlot:
+    """upstream 905bda4f: ``parse_ams_tray`` calls a tray with no type empty, and
+    a tag-less spool has none until configured — so the manual Spoolman sync
+    deleted the slot row of a spool that was still in the slot. Both sync routes
+    ask the presence bit before calling a slot empty."""
+
+    def test_both_sync_routes_ask_the_presence_bit(self):
+        import inspect
+        import re
+
+        from backend.app.api.routes import spoolman as spoolman_routes
+
+        source = re.sub(r"\s+", " ", inspect.getsource(spoolman_routes))
+        assert source.count("spool_present(tray_data) is not True") == 2

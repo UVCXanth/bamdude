@@ -103,6 +103,7 @@ from backend.app.core.tasks import spawn_background_task
 from backend.app.core.websocket import ws_manager
 from backend.app.i18n.api_errors import install as install_api_error_translation
 from backend.app.models.smart_plug import SmartPlug
+from backend.app.services.ams_slot_presence import spool_present
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.archive_parts import refresh_archive_parts
 from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
@@ -2527,6 +2528,22 @@ async def on_ams_change(printer_id: int, ams_data: list):
                         if printing_now:
                             logger.info(
                                 "Auto-unlink skipped: spool %d AMS%d-T%d - slot empty during a running print (runout?)",
+                                assignment.spool_id,
+                                assignment.ams_id,
+                                assignment.tray_id,
+                            )
+                            continue
+                        # Off a print too, on firmware's own say-so: a blank report
+                        # from a slot whose presence bit is set describes a spool the
+                        # AMS cannot identify (non-RFID, or a reset slot), not one
+                        # that was taken out — the 9 is our own stale stamp. Deleting
+                        # the row threw away the identity the user had supplied
+                        # (upstream #3100). A slot the bit calls empty, or one with no
+                        # bit, still unlinks.
+                        if spool_present(current_tray) is True:
+                            logger.info(
+                                "Auto-unlink skipped: spool %d AMS%d-T%d - slot still occupied, "
+                                "tray reports no filament data yet",
                                 assignment.spool_id,
                                 assignment.ams_id,
                                 assignment.tray_id,

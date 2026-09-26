@@ -172,6 +172,12 @@
 
 ### Fixed
 
+- **A spool the AMS cannot read keeps its assignment, and Assign Spool configures
+  its slot.** After swapping a Bambu spool for one without a tag, the slot could
+  read as empty although the AMS reported a spool in it: Assign Spool then sent
+  nothing to the printer (it kept showing "?"), and an idle update deleted the
+  assignment — in the built-in inventory and in the manual Spoolman sync alike.
+  The AMS's own presence bit now decides whether a spool is there.
 - **The print dialog names a slot after the spool assigned to it.** It described
   slots from what the printer reports, and a printer cannot name a spool it did
   not sell — a Devil Design PLA Basic Orange read "PLA (Sunflower Yellow)", the

@@ -67,6 +67,7 @@ from backend.app.schemas.spool_usage import (
     SpoolUsageTotals,
 )
 from backend.app.services import forecast_engine, inventory_service, spool_usage_service
+from backend.app.services.ams_slot_presence import spool_present
 from backend.app.services.filament_needs import Needs
 from backend.app.services.location_service import (
     DUPLICATE_LOCATION_NAME,
@@ -2535,6 +2536,9 @@ async def assign_spool(
     fingerprint_type = None
     current_tray_info_idx = ""
     tray_state: int | None = None
+    # Firmware's tray_exist_bits answer for the slot, when the push carries
+    # one — it outranks tray_state below (services/ams_slot_presence).
+    tray_has_spool: bool | None = None
     state = printer_manager.get_status(data.printer_id)
     if state and state.raw_data:
         if data.ams_id == 255:
@@ -2571,6 +2575,7 @@ async def assign_spool(
                 raw_state = tray.get("state")
                 if isinstance(raw_state, int):
                     tray_state = raw_state
+                tray_has_spool = spool_present(tray)
 
     # Deliberate mid-pause replacement (the user answered the "replacement or
     # correction?" prompt with "replacement"): journal the manual runout NOW,
@@ -2670,7 +2675,16 @@ async def assign_spool(
     # config when a spool eventually appears — the weigh-then-assign
     # SpoolBuddy workflow keeps working, just without the optimisation of
     # skipping a no-op MQTT call.
-    slot_is_definitely_empty = tray_state == 9 or tray_state == 10
+    #
+    # ...except that ``state`` cannot carry that meaning on its own: an
+    # AMS-HT reports its LOADED tray as 9, and ``apply_tray_exist_bits``
+    # stamps 9 on a slot whose presence bit went to 0 and never takes it
+    # back when the bit returns — so a slot holding a freshly inserted
+    # non-RFID spool read "empty", nothing was published and the printer
+    # kept showing "?" (upstream #3084). The presence bit overrules the 9;
+    # a bit reading EMPTY deliberately does not start suppressing pushes
+    # (a wrong bit position would silently stop a slot configuring).
+    slot_is_definitely_empty = tray_has_spool is not True and (tray_state == 9 or tray_state == 10)
     configured = False
     pending_config = slot_is_definitely_empty
 

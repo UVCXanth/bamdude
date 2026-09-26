@@ -20,6 +20,7 @@ from backend.app.models.settings import Settings
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
+from backend.app.services.ams_slot_presence import spool_present
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.spoolman import (
     ArchivedTagIndex,
@@ -341,7 +342,10 @@ async def sync_printer_ams(
             tray_id_raw = int(tray_data.get("id", 0))
             tray = client.parse_ams_tray(ams_id, tray_data)
             if not tray:
-                if not printing_now:
+                # A tray with no type is "empty" to parse_ams_tray, and a tag-less
+                # spool has none until configured: the presence bit decides
+                # (upstream #3100), as it does for the built-in inventory.
+                if not printing_now and spool_present(tray_data) is not True:
                     empty_slots.append((ams_id, tray_id_raw))
                 continue
 
@@ -572,7 +576,8 @@ async def sync_all_printers(
                 tray_id_raw = int(tray_data.get("id", 0))
                 tray = client.parse_ams_tray(ams_id, tray_data)
                 if not tray:
-                    if not printing_now:
+                    # Presence bit first — see sync_printer (upstream #3100).
+                    if not printing_now and spool_present(tray_data) is not True:
                         all_empty_slots.append((printer.id, ams_id, tray_id_raw))
                     continue
 
