@@ -80,7 +80,7 @@ from backend.app.schemas.product import (
     StockBalanceOut,
     StockMovementOut,
 )
-from backend.app.services import part_stock, product_delete, product_facets
+from backend.app.services import line_config, part_stock, product_delete, product_facets
 from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.line_composition import default_options, standard_composition
 from backend.app.services.list_paging import (
@@ -1039,6 +1039,8 @@ async def delete_part(
     # Same story for the stock ledger, whose FK is the same kind of cascade —
     # and ``part_stock`` is its only writer, so the deletion goes through it.
     await part_stock.delete_for_part(db, part_id)
+    # Lines that changed this part's count lose that row (spec workshop-product-variants).
+    await line_config.forget_part(db, part_id)
     await db.delete(part)
     return {"message": "Part deleted"}
 
@@ -1065,6 +1067,8 @@ async def merge_part(
         await part_stock.repoint(db, from_part_id=source.id, to_part_id=target.id)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+    # A line's changed count of the source now names the target.
+    await line_config.repoint_part(db, source.id, target.id)
     # The source row goes away, so its procurement rows go with it — the same
     # FK-cascade reason as ``delete_part``, and deliberately NOT a transfer of
     # the acquired counts onto the target: PostgreSQL's cascade would drop them

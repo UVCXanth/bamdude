@@ -109,6 +109,7 @@ from backend.app.services import (
     archive_parts,
     farm_forecast,
     filament_needs,
+    line_config,
     order_from_files,
     order_journal,
     part_stock,
@@ -1158,6 +1159,7 @@ async def delete_project(
         if still_owns_its_stock:
             await _release(db, line, part_stock.NOTE_PROJECT_DELETED)
         await part_stock.detach_line(db, line.id)
+        await line_config.forget_line(db, line.id)
     # Read before the un-filing: after the UPDATE below, no archive names this
     # order any more and there is nothing left to look them up by.
     unfiled = (await db.execute(select(PrintArchive).where(PrintArchive.project_id == project_id))).scalars().all()
@@ -1326,6 +1328,7 @@ async def delete_line(
     for model in (PrintArchive, PrintQueueItem, AutoQueueItem):
         await db.execute(update(model).where(model.project_line_id == line_id).values(project_line_id=None))
     await part_stock.detach_line(db, line_id)
+    await line_config.forget_line(db, line_id)
     product = await db.get(Product, line.product_id)
     await order_journal.record(
         db,
