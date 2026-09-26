@@ -884,7 +884,9 @@ async def test_the_reservation_reads_back_as_kits_for_many_lines_in_one_query(db
     qty = {parts["shade"].id: 1, parts["arm"].id: 2}
 
     with counting_statements(test_engine, match="product_part_stock_movements") as seen:
-        read = await reserved_units_by_line(db_session, [first.id, second.id, empty.id], qty)
+        read = await reserved_units_by_line(
+            db_session, [first.id, second.id, empty.id], dict.fromkeys([first.id, second.id, empty.id], qty)
+        )
 
     assert read == {first.id: 3, second.id: 2}, "a line holding nothing is absent, not zero"
     assert len(seen) == 1, "one query for every line of the page"
@@ -899,7 +901,7 @@ async def test_the_reading_is_the_net_of_reserve_and_release(db_session, kit):
     await reserve_for_line(db_session, line, 1)
 
     qty = {part.id: part.qty_per_unit for part in parts.values()}
-    assert await reserved_units_by_line(db_session, [line.id], qty) == {line.id: 1}
+    assert await reserved_units_by_line(db_session, [line.id], dict.fromkeys([line.id], qty)) == {line.id: 1}
 
 
 async def test_the_scarcest_part_decides_what_a_line_holds(db_session, kit):
@@ -911,7 +913,7 @@ async def test_the_scarcest_part_decides_what_a_line_holds(db_session, kit):
     await move(db_session, part_id=parts["base"].id, delta=1, reason="reservation_released", project_line_id=line.id)
 
     qty = {parts["lid"].id: 1, parts["base"].id: 1}
-    assert await reserved_units_by_line(db_session, [line.id], qty) == {line.id: 1}
+    assert await reserved_units_by_line(db_session, [line.id], dict.fromkeys([line.id], qty)) == {line.id: 1}
 
 
 async def test_asking_about_no_lines_asks_the_database_nothing(db_session):
@@ -978,7 +980,7 @@ async def test_reserved_units_for_line_is_the_one_derivation_of_kits_held(db_ses
     assert await reserved_units_for_line(db_session, line) == 0
     # …and it agrees with the batch reader it is a wrapper over.
     qty = {part.id: part.qty_per_unit for part in parts.values()}
-    assert await reserved_units_by_line(db_session, [line.id], qty) == {}
+    assert await reserved_units_by_line(db_session, [line.id], dict.fromkeys([line.id], qty)) == {}
 
 
 async def test_a_product_with_no_counted_part_holds_no_kits(db_session):
@@ -1132,7 +1134,7 @@ async def test_one_grouped_read_answers_both_the_reservation_and_the_banking(db_
     qty = {part.id: part.qty_per_unit for part in parts.values()}
 
     with counting_statements(test_engine, match="product_part_stock_movements") as statements:
-        reads = await line_ledger_reads(db_session, [line.id], qty)
+        reads = await line_ledger_reads(db_session, [line.id], dict.fromkeys([line.id], qty))
 
     assert reads.reserved_units == {line.id: 2}
     assert reads.banked_by_part == {(line.id, parts["lid"].id): 4}
@@ -1154,7 +1156,7 @@ async def test_a_part_banked_but_never_reserved_does_not_zero_the_line(db_sessio
     await move(db_session, part_id=late.id, delta=3, reason="surplus_banked", project_line_id=line.id)
     qty = {part.id: part.qty_per_unit for part in list(parts.values()) + [late]}
 
-    reads = await line_ledger_reads(db_session, [line.id], qty)
+    reads = await line_ledger_reads(db_session, [line.id], dict.fromkeys([line.id], qty))
 
     assert reads.reserved_units == {line.id: 2}
     assert reads.banked_by_part == {(line.id, late.id): 3}

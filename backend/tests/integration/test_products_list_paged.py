@@ -130,7 +130,7 @@ async def test_every_sort_key_really_orders_both_ways(async_client, db_session, 
         return {pid: rank[pid] * 2 for pid in product_ids}
 
     monkeypatch.setattr(route_module, "_plates_count", plates)
-    monkeypatch.setattr(part_stock, "kits_available", lambda balances, parts: 7 - len(parts))
+    monkeypatch.setattr(part_stock, "kits_of", lambda balances, comp: 7 - len(comp))
 
     asc = [p["id"] for p in (await async_client.get(f"/api/v1/products/?page=1&sort_by={key}-asc")).json()["items"]]
     desc = [p["id"] for p in (await async_client.get(f"/api/v1/products/?page=1&sort_by={key}-desc")).json()["items"]]

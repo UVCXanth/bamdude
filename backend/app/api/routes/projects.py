@@ -222,7 +222,8 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
             id=line.id,
             product_id=line.product_id,
             product_name=ctx.products_by_id[line.product_id].name if line.product_id in ctx.products_by_id else "?",
-            quantity=line.quantity,
+            # A parts line reads in parts (spec workshop-product-variants, rule 16).
+            quantity=figs[line.id].quantity,
             material=line.material,
             color=line.color,
             note=line.note,
@@ -235,7 +236,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
                 PartFiguresOut(
                     part_id=p.part_id,
                     name=p.name,
-                    qty_per_unit=p.qty_per_unit,
+                    qty_per_unit=p.per,
                     need=p.need,
                     usable=p.usable,
                     in_progress=p.in_progress,

@@ -29,6 +29,15 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
+from backend.app.services.line_composition import (
+    Composition,
+    LineConfig,
+    counted,
+    default_options,
+    line_composition,
+    load_line_configs,
+    per_by_line,
+)
 from backend.app.services.order_queue import (
     RUNNING_STATUS,
     awaiting_auto_row_conditions,
@@ -119,7 +128,10 @@ class PartFigures:
     part_id: int
     name: str
     kind: str
-    qty_per_unit: int
+    #: This LINE's count per unit (spec workshop-product-variants) — the
+    #: product's standard unless the line's configuration changed it; for a
+    #: ``parts`` line, the number of this part the line wants.
+    per: int
     need: int = 0
     usable: int = 0
     in_progress: int = 0
@@ -146,6 +158,9 @@ class LineFigures:
     product_id: int
     quantity: int
     material: str | None
+    #: ``product`` or ``parts`` (spec workshop-product-variants, rule 16): a
+    #: parts line counts PARTS — ``quantity`` is the parts it wants.
+    mode: str = "product"
     units_printed: int = 0
     from_stock_units: int = 0
     #: Units this line has covered with printed kits and its allocated stock.
@@ -243,25 +258,47 @@ class OrderContext:
     # with no line, both tiers summed (an auto row already handed to a printer
     # item is counted through that item — ``queued_yield_by_line``'s rule).
     queued_by_line: dict[int, int] = field(default_factory=dict)
+    # spec workshop-product-variants: each line's configuration and each
+    # product's standard options — what :meth:`composition_of` reads. Empty is
+    # "every line standard", which is what a hand-built context means.
+    config_by_line: dict[int, LineConfig] = field(default_factory=dict)
+    defaults_by_product: dict[int, dict[int, int]] = field(default_factory=dict)
     queued_unfiled: int = 0
 
 
-def _counted_qty_per_unit(products: Iterable[Product]) -> dict[int, int]:
-    """``part_id → qty_per_unit`` over the counted parts of these products.
+def composition_of(ctx: OrderContext, line: ProjectLine) -> Composition:
+    """The line's composition — through the one reader (spec workshop-product-variants, rule 8)."""
+    return line_composition(
+        ctx.parts_by_product.get(line.product_id, []),
+        line.mode,
+        ctx.config_by_line.get(line.id, LineConfig()),
+        ctx.defaults_by_product.get(line.product_id, {}),
+    )
 
-    The divisor the stock ledger's reservation is read back through, taken from
-    the parts the loader has already got rather than re-queried. Same predicate
-    as :func:`_new_line_figures` and ``part_stock.is_counted``.
-    """
-    return {
-        part.id: part.qty_per_unit
-        for product in products
-        for part in product.parts
-        if part.kind == "printed" and part.qty_per_unit > 0
+
+async def _load_configs(
+    db: AsyncSession, lines: Sequence[ProjectLine], products: Iterable[Product]
+) -> tuple[dict[int, LineConfig], dict[int, dict[int, int]], dict[int, Composition]]:
+    """Every line's configuration, every product's standard options and the
+    resulting compositions — three statements for the whole batch."""
+    configs = await load_line_configs(db, [line.id for line in lines])
+    parts_by_product = {p.id: list(p.parts) for p in products}
+    defaults = await default_options(db, list(parts_by_product))
+    compositions = {
+        line.id: line_composition(
+            parts_by_product.get(line.product_id, []),
+            line.mode,
+            configs.get(line.id, LineConfig()),
+            defaults.get(line.product_id, {}),
+        )
+        for line in lines
     }
+    return configs, defaults, compositions
 
 
-async def _load_reserved(db: AsyncSession, line_ids: Sequence[int], qty_per_unit: dict[int, int]) -> LineStockReads:
+async def _load_reserved(
+    db: AsyncSession, line_ids: Sequence[int], per_by_line_part: Mapping[int, Mapping[int, int]]
+) -> LineStockReads:
     """:attr:`OrderContext.reserved_by_line` AND :attr:`OrderContext.banked_by_line_part`,
     in one query for every line given.
 
@@ -278,7 +315,7 @@ async def _load_reserved(db: AsyncSession, line_ids: Sequence[int], qty_per_unit
     """
     from backend.app.services.part_stock import line_ledger_reads
 
-    return await line_ledger_reads(db, line_ids, qty_per_unit)
+    return await line_ledger_reads(db, line_ids, per_by_line_part)
 
 
 async def _load_queued(db: AsyncSession, project_ids: Sequence[int]) -> dict[int, dict[int | None, int]]:
@@ -371,7 +408,8 @@ async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext 
             await db.execute(select(ProjectProcurement).where(ProjectProcurement.project_id == project_id))
         ).scalars()
     }
-    reads = await _load_reserved(db, [line.id for line in lines], _counted_qty_per_unit(products))
+    configs, defaults, compositions = await _load_configs(db, lines, products)
+    reads = await _load_reserved(db, [line.id for line in lines], per_by_line(compositions))
     queued = (await _load_queued(db, [project_id])).get(project_id, {})
     return OrderContext(
         project=project,
@@ -387,12 +425,14 @@ async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext 
         banked_by_line_part=reads.banked_by_part,
         queued_by_line={lid: n for lid, n in queued.items() if lid is not None},
         queued_unfiled=queued.get(None, 0),
+        config_by_line=configs,
+        defaults_by_product=defaults,
     )
 
 
 def _new_line_figures(
     line: ProjectLine,
-    parts: list[ProductPart],
+    comp: Composition,
     from_stock_units: int = 0,
     banked: Mapping[tuple[int, int], int] | None = None,
 ) -> LineFigures:
@@ -412,24 +452,26 @@ def _new_line_figures(
     below what it has already reserved is an ordinary state, and a negative
     need would make ``remaining`` lie.
     """
+    printed = counted(comp)
     figs = LineFigures(
         line_id=line.id,
         product_id=line.product_id,
-        quantity=line.quantity,
+        # A parts line (quantity fixed at 1) orders the parts it lists — the
+        # unit its figures are read in (spec workshop-product-variants, rule 16).
+        quantity=sum(per for _part, per in printed) if line.mode == "parts" else line.quantity,
         material=line.material,
+        mode=line.mode,
         from_stock_units=from_stock_units,
     )
     to_print = max(0, line.quantity - from_stock_units)
-    for part in parts:
-        if part.kind != "printed" or part.qty_per_unit <= 0:
-            continue
+    for part, per in printed:
         figs.parts.append(
             PartFigures(
                 part_id=part.id,
                 name=part.name,
                 kind=part.kind,
-                qty_per_unit=part.qty_per_unit,
-                need=part.qty_per_unit * to_print,
+                per=per,
+                need=per * to_print,
                 already_banked=(banked or {}).get((line.id, part.id), 0),
             )
         )
@@ -439,7 +481,9 @@ def _new_line_figures(
 def _units_printed(figs: LineFigures) -> int:
     if not figs.parts:
         return 0
-    return min(p.usable // p.qty_per_unit for p in figs.parts)
+    if figs.mode == "parts":
+        return sum(min(p.usable, p.per) for p in figs.parts)
+    return min(p.usable // p.per for p in figs.parts)
 
 
 def _finish(figs: LineFigures) -> None:
@@ -453,7 +497,7 @@ def _finish(figs: LineFigures) -> None:
     # 16 with 5 shipped.
     for p in figs.parts:
         p.remaining = max(0, p.need - p.usable)
-        p.surplus = max(0, p.usable - p.qty_per_unit * figs.quantity)
+        p.surplus = max(0, p.usable - p.per * (1 if figs.mode == "parts" else figs.quantity))
         p.bankable = max(0, p.surplus - p.already_banked)
     figs.units_printed = _units_printed(figs)
     # Capped on the wire: ``progress`` is what a bar fills from, and a bar
@@ -526,7 +570,7 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
     figures = {
         line.id: _new_line_figures(
             line,
-            ctx.parts_by_product.get(line.product_id, []),
+            composition_of(ctx, line),
             ctx.reserved_by_line.get(line.id, 0),
             ctx.banked_by_line_part,
         )
@@ -659,13 +703,17 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
 def procurement_figures(ctx: OrderContext) -> list[ProcurementFigures]:
     """Need per purchased part is Σ over the ORDER's lines — printed progress
     never enters it, which is why no line figures are taken here."""
+    need_by_part: dict[int, int] = defaultdict(int)
+    for line in ctx.lines:
+        for part, per in composition_of(ctx, line):
+            if part.kind == "purchased" and per > 0:
+                need_by_part[part.id] += per * line.quantity
     out: list[ProcurementFigures] = []
-    for product_id, parts in ctx.parts_by_product.items():
-        ordered = sum(line.quantity for line in ctx.lines if line.product_id == product_id)
+    for _product_id, parts in ctx.parts_by_product.items():
         for part in parts:
-            if part.kind != "purchased" or part.qty_per_unit <= 0:
+            if part.id not in need_by_part:
                 continue
-            need = part.qty_per_unit * ordered
+            need = need_by_part[part.id]
             acquired = ctx.procurement_by_part.get(part.id, 0)
             out.append(
                 ProcurementFigures(
@@ -675,19 +723,34 @@ def procurement_figures(ctx: OrderContext) -> list[ProcurementFigures]:
     return out
 
 
-def _units_complete(ctx: OrderContext, product_id: int, printed: int) -> int:
-    kits = printed
-    for part in ctx.parts_by_product.get(product_id, []):
-        if part.kind == "purchased" and part.qty_per_unit > 0:
-            kits = min(kits, ctx.procurement_by_part.get(part.id, 0) // part.qty_per_unit)
-    return kits
+def _units_complete(ctx: OrderContext, line_figures: Mapping[int, LineFigures]) -> int:
+    """Units the order can hand over: printed (or off the shelf) AND with their
+    purchased parts acquired. Each line is gated by its OWN configuration's
+    purchased parts (spec workshop-product-variants), handed the acquired stock
+    in line order; a parts line hands over what it covered."""
+    left = dict(ctx.procurement_by_part)
+    total = 0
+    for line in ctx.lines:
+        figs = line_figures.get(line.id)
+        if figs is None:
+            continue
+        if figs.mode == "parts":
+            total += figs.covered_units
+            continue
+        units = figs.units_printed + min(figs.from_stock_units, figs.quantity)
+        purchased = [(p, per) for p, per in composition_of(ctx, line) if p.kind == "purchased" and per > 0]
+        for part, per in purchased:
+            units = min(units, left.get(part.id, 0) // per)
+        for part, per in purchased:
+            left[part.id] = left.get(part.id, 0) - units * per
+        total += units
+    return total
 
 
 def project_figures(
     ctx: OrderContext, line_figures: dict[int, LineFigures], other: list[PrintArchive]
 ) -> ProjectFigures:
     pf = ProjectFigures()
-    printed_by_product: dict[int, int] = defaultdict(int)
     for figs in line_figures.values():
         pf.ordered += figs.quantity
         pf.printed += figs.units_printed
@@ -707,13 +770,12 @@ def project_figures(
         # line can use does.
         from_stock = min(figs.from_stock_units, figs.quantity)
         pf.from_stock_units += from_stock
-        printed_by_product[figs.product_id] += figs.units_printed + from_stock
         # NOT capped, and nothing like ``from_stock_units``: this is a count of
         # PARTS the button would move, summed exactly as ``bank_surplus`` writes
         # them (Ruling 30). The two must be the same arithmetic or the button
         # lights over an order it then reports "nothing to bank" for.
         pf.bankable_surplus += sum(p.bankable for p in figs.parts)
-    pf.complete = sum(_units_complete(ctx, pid, printed) for pid, printed in printed_by_product.items())
+    pf.complete = _units_complete(ctx, line_figures)
     pf.remaining = pf.ordered - pf.covered_units
     for a in ctx.archives:
         pf.total_time_seconds += int(a.actual_time_seconds or a.print_time_seconds or 0)
@@ -768,6 +830,8 @@ class GroupedLineFigures:
     #: Beside ``usable_units``, never inside it: one is prints, the other is
     #: the shelf, and the caller that wants "done" adds them.
     from_stock_units: int = 0
+    #: ``product`` or ``parts`` — a parts line's numbers are parts, not units.
+    mode: str = "product"
 
 
 @dataclass(slots=True)
@@ -905,11 +969,9 @@ async def batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[O
     # One ledger read for every line of every order asked about — the same
     # helper the per-order loader uses, so the two cannot drift about what a
     # line has taken off the shelf or already banked onto it.
-    reads = await _load_reserved(
-        db,
-        [line.id for lines in lines_by_project.values() for line in lines],
-        _counted_qty_per_unit(products),
-    )
+    all_lines = [line for lines in lines_by_project.values() for line in lines]
+    configs, defaults, compositions = await _load_configs(db, all_lines, products)
+    reads = await _load_reserved(db, [line.id for line in all_lines], per_by_line(compositions))
     reserved = reads.reserved_units
     # Same helper the per-order loader uses, so a list row and the page it opens
     # cannot disagree about what is waiting in either queue tier.
@@ -944,6 +1006,8 @@ async def batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[O
                 banked_by_line_part={key: net for key, net in reads.banked_by_part.items() if key[0] in line_ids},
                 queued_by_line={lid: n for lid, n in queued.items() if lid is not None},
                 queued_unfiled=queued.get(None, 0),
+                config_by_line={line.id: configs[line.id] for line in lines},
+                defaults_by_product={p.id: defaults.get(p.id, {}) for p in own_products},
             )
         )
     return out
@@ -997,6 +1061,7 @@ async def grouped_figures(
                         need=figs.quantity,
                         usable_units=figs.units_printed,
                         from_stock_units=figs.from_stock_units,
+                        mode=figs.mode,
                     )
                     for figs in (line_figures[line.id] for line in ctx.lines)
                 ],
@@ -1019,7 +1084,13 @@ def units_delivered(figures: Iterable[GroupedOrderFigures], product_id: int) -> 
     inside" the number — which is what a reader would have believed while
     watching a product page under-report every overprinted order.)
     """
-    return sum(line.usable_units for order in figures for line in order.lines if line.product_id == product_id)
+    # A parts line counts parts, not units of the product.
+    return sum(
+        line.usable_units
+        for order in figures
+        for line in order.lines
+        if line.product_id == product_id and line.mode == "product"
+    )
 
 
 async def customer_figures(db: AsyncSession, customer_id: int) -> dict:

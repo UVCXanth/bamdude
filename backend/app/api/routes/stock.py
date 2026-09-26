@@ -6,14 +6,14 @@ discipline — and nothing here writes (``inv-stock-ledger-single-writer``).
 """
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import and_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
-from backend.app.models.product import Product, ProductPart
+from backend.app.models.product import Product
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
@@ -29,6 +29,14 @@ from backend.app.schemas.stock import (
     StockSummaryOut,
 )
 from backend.app.services import part_stock
+from backend.app.services.line_composition import (
+    default_options,
+    line_composition,
+    load_line_configs,
+    per_by_line,
+    standard_composition,
+    standard_per,
+)
 from backend.app.services.list_paging import SortSpec, page_meta, resolve_sort, slice_page, sort_computed
 from backend.app.services.stock_views import movement_out, orders_of_lines
 
@@ -61,9 +69,7 @@ async def _stock_rows(db: AsyncSession, *, q: str | None, with_stock: bool) -> l
     plate products are created with no parts) out of the load.
     """
     stmt = (
-        select(Product)
-        .options(selectinload(Product.parts))
-        .where(Product.parts.any(and_(ProductPart.kind == "printed", ProductPart.qty_per_unit > 0)))
+        select(Product).options(selectinload(Product.parts)).where(Product.parts.any(part_stock.counted_part_clause()))
     )
     if q and q.strip():
         stmt = stmt.where(Product.name.ilike(f"%{q.strip()}%"))
@@ -83,8 +89,23 @@ async def _stock_rows(db: AsyncSession, *, q: str | None, with_stock: bool) -> l
             .where(ProjectLine.product_id.in_(ids), Project.status == "active")
         )
     ).all()
-    qty_per_unit = {pt.id: pt.qty_per_unit for p in products for pt in p.parts if part_stock.is_counted(pt)}
-    reads = await part_stock.line_ledger_reads(db, [row[0] for row in line_rows], qty_per_unit)
+    # Each line's reservation is read through ITS composition (spec
+    # workshop-product-variants): a line holding angled tails holds no straight.
+    defaults = await default_options(db, ids)
+    parts_of = {p.id: list(p.parts) for p in products}
+    line_objs = (
+        (await db.execute(select(ProjectLine).where(ProjectLine.id.in_([row[0] for row in line_rows])))).scalars().all()
+        if line_rows
+        else []
+    )
+    configs = await load_line_configs(db, [line.id for line in line_objs])
+    compositions = {
+        line.id: line_composition(
+            parts_of.get(line.product_id, []), line.mode, configs[line.id], defaults.get(line.product_id, {})
+        )
+        for line in line_objs
+    }
+    reads = await part_stock.line_ledger_reads(db, [row[0] for row in line_rows], per_by_line(compositions))
     reservations: dict[int, list[StockReservationOut]] = {}
     for line_id, product_id, order_id, order_name in line_rows:
         kits = reads.reserved_units.get(line_id, 0)
@@ -105,10 +126,12 @@ async def _stock_rows(db: AsyncSession, *, q: str | None, with_stock: bool) -> l
                 name=p.name,
                 is_active=p.is_active,
                 origin=p.origin,
-                kits_available=part_stock.kits_available(part_balances, list(p.parts)),
+                kits_available=part_stock.kits_of(
+                    part_balances, standard_composition(list(p.parts), set(defaults.get(p.id, {}).values()))
+                ),
                 parts=[
                     StockBalanceOut(
-                        part_id=pt.id, name=pt.name, qty_per_unit=pt.qty_per_unit, balance=part_balances[pt.id]
+                        part_id=pt.id, name=pt.name, qty_per_unit=standard_per(pt), balance=part_balances[pt.id]
                     )
                     for pt in sorted(p.parts, key=lambda pt: (pt.sort_order, pt.id))
                     if pt.id in part_balances

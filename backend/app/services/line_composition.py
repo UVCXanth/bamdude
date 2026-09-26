@@ -55,9 +55,18 @@ def composition(parts: Sequence[ProductPart], mode: str, chosen: set[int], count
     return out
 
 
-def line_composition(parts: Sequence[ProductPart], mode: str, config: LineConfig) -> Composition:
-    """:func:`composition` for a loaded :class:`LineConfig`."""
-    return composition(parts, mode, set(config.choices.values()), config.counts)
+def line_composition(
+    parts: Sequence[ProductPart], mode: str, config: LineConfig, defaults: Mapping[int, int] | None = None
+) -> Composition:
+    """:func:`composition` for a loaded :class:`LineConfig`.
+
+    ``defaults`` is the product's ``group_id → standard option``: a group the
+    line has no choice for reads its standard option. The writer records a
+    choice for every group, so this only covers the moment between a group's
+    creation and its backfill — and a hand-built context in a test.
+    """
+    chosen = {**(defaults or {}), **config.choices}
+    return composition(parts, mode, set(chosen.values()), config.counts)
 
 
 def standard_composition(parts: Sequence[ProductPart], default_option_ids: set[int]) -> Composition:
@@ -108,18 +117,49 @@ async def load_line_configs(db: AsyncSession, line_ids: Sequence[int]) -> dict[i
     return out
 
 
-async def default_option_ids(db: AsyncSession, product_ids: Iterable[int]) -> dict[int, set[int]]:
-    """``product_id → {standard option id of each group}`` — one statement per chunk."""
+async def default_options(db: AsyncSession, product_ids: Iterable[int]) -> dict[int, dict[int, int]]:
+    """``product_id → {group_id → standard option id}`` — one statement per chunk."""
     ids = list(dict.fromkeys(product_ids))
-    out: dict[int, set[int]] = {pid: set() for pid in ids}
+    out: dict[int, dict[int, int]] = {pid: {} for pid in ids}
     for start in range(0, len(ids), _CHUNK):
-        for product_id, option_id in (
+        for product_id, group_id, option_id in (
             await db.execute(
-                select(ProductVariantGroup.product_id, ProductVariantGroup.default_option_id).where(
+                select(
+                    ProductVariantGroup.product_id, ProductVariantGroup.id, ProductVariantGroup.default_option_id
+                ).where(
                     ProductVariantGroup.product_id.in_(ids[start : start + _CHUNK]),
                     ProductVariantGroup.default_option_id.is_not(None),
                 )
             )
         ).all():
-            out[product_id].add(option_id)
+            out[product_id][group_id] = option_id
     return out
+
+
+async def compositions_for_lines(
+    db: AsyncSession, lines: Sequence, parts_by_product: Mapping[int, Sequence[ProductPart]]
+) -> dict[int, Composition]:
+    """``line_id → composition`` for many lines — three statements, whatever the count."""
+    configs = await load_line_configs(db, [line.id for line in lines])
+    defaults = await default_options(db, {line.product_id for line in lines})
+    return {
+        line.id: line_composition(
+            parts_by_product.get(line.product_id, []),
+            line.mode,
+            configs.get(line.id, LineConfig()),
+            defaults.get(line.product_id, {}),
+        )
+        for line in lines
+    }
+
+
+def per_by_line(compositions: Mapping[int, Composition]) -> dict[int, dict[int, int]]:
+    """``line_id → {part_id → per}`` over the counted parts — the divisor the
+    stock ledger reads a line's reservation back through."""
+    return {line_id: {p.id: per for p, per in counted(comp)} for line_id, comp in compositions.items()}
+
+
+def standard_per(part: ProductPart) -> int:
+    """A part's per-unit count in the product's own kit — the named door for a
+    reader that shows the product's standard (the stock shelf's row)."""
+    return part.qty_per_unit

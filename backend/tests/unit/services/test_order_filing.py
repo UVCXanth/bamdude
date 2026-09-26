@@ -121,3 +121,14 @@ def test_an_empty_narrowing_keeps_todays_answer():
     parts = {10: [_part(10, "x", 0)], 20: [_part(20, "x", 0)]}
     assert lines_counting_plate([a, b], parts, {"x"}) == [a, b]
     assert lines_counting_plate([a, b], parts, set()) == [a, b]
+
+
+def test_two_lines_of_one_product_narrow_by_their_own_configuration():
+    """spec workshop-product-variants, rule 9: the angled-tail line counts an
+    angled tail, the straight-tail line of the same product does not."""
+    straight_line, angled_line = _line(1, 10), _line(2, 10, sort=1)
+    flask, straight, angled = _part(10, "flask", 1), _part(10, "straight", 1), _part(10, "angled", 1)
+    compositions = {1: [(flask, 1), (straight, 1)], 2: [(flask, 1), (angled, 1)]}
+    parts = {10: [flask, straight, angled]}
+    assert lines_counting_plate([straight_line, angled_line], parts, {"angled"}, compositions) == [angled_line]
+    assert lines_counting_plate([straight_line, angled_line], parts, {"straight"}, compositions) == [straight_line]

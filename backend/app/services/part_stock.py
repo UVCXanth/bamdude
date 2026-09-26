@@ -57,7 +57,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.archive import PrintArchive
@@ -65,6 +65,14 @@ from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project_line import ProjectLine
 from backend.app.services.archive_parts import load_rows
+from backend.app.services.line_composition import (
+    Composition,
+    LineConfig,
+    counted,
+    default_options,
+    line_composition,
+    load_line_configs,
+)
 from backend.app.services.order_metrics import IN_CHUNK, index_plates, products_for_print, row_quantity
 from backend.app.services.product_composition import part_index
 
@@ -142,6 +150,11 @@ class PartStockError(Exception):
     """A movement the ledger refuses. The route maps it to 409."""
 
 
+def counted_part_clause():
+    """SQL twin of :func:`is_counted` — for a query that filters products by it."""
+    return and_(ProductPart.kind == "printed", ProductPart.qty_per_unit > 0)
+
+
 def is_counted(part: ProductPart) -> bool:
     """Does this part have a stock balance at all.
 
@@ -208,6 +221,39 @@ async def balances_for_products(db: AsyncSession, product_ids: Sequence[int]) ->
         for product_id, part_id, total in rows.all():
             per_product.setdefault(product_id, {})[part_id] = int(total or 0)
     return per_product
+
+
+def kits_of(part_balances: Mapping[int, int], comp: Composition) -> int:
+    """Whole kits of THIS composition the free stock can make (spec
+    workshop-product-variants, rules 8–9): ``min`` over its counted parts of
+    ``floor(balance / per)``. A composition with no counted part makes none."""
+    kit = counted(comp)
+    if not kit:
+        return 0
+    return max(0, min(part_balances.get(p.id, 0) // per for p, per in kit))
+
+
+async def line_composition_of(db: AsyncSession, line: ProjectLine) -> Composition:
+    """One line's composition, read fresh — the single-line door to the one reader.
+
+    ``populate_existing`` for the same reason :func:`counted_parts_of` has it: a
+    route that edited a part earlier in this transaction must not be answered
+    from the identity map's pre-edit copy.
+    """
+    parts = (
+        (
+            await db.execute(
+                select(ProductPart)
+                .where(ProductPart.product_id == line.product_id)
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    config = (await load_line_configs(db, [line.id])).get(line.id, LineConfig())
+    defaults = (await default_options(db, [line.product_id])).get(line.product_id, {})
+    return line_composition(list(parts), line.mode, config, defaults)
 
 
 def kits_available(part_balances: dict[int, int], parts: list[ProductPart]) -> int:
@@ -559,7 +605,14 @@ async def release_for_line(db: AsyncSession, line: ProjectLine, *, note: str) ->
         )
 
 
-async def reserve_for_line(db: AsyncSession, line: ProjectLine, units: int, *, created_by: int | None = None) -> int:
+async def reserve_for_line(
+    db: AsyncSession,
+    line: ProjectLine,
+    units: int,
+    *,
+    comp: Composition | None = None,
+    created_by: int | None = None,
+) -> int:
     """Take ``units`` whole kits off the product's shelf for this line (Decision 4).
 
     **Release first, then decide.** The product's balance already has THIS
@@ -595,7 +648,12 @@ async def reserve_for_line(db: AsyncSession, line: ProjectLine, units: int, *, c
     if units < 0:
         raise ValueError(f"cannot reserve {units} units for line {line.id}; a reservation is never negative")
     await release_for_line(db, line, note=NOTE_RESERVATION_REWRITTEN)
-    parts = await _counted_parts(db, line.product_id)
+    # The LINE's kit (spec workshop-product-variants, rule 13): its chosen
+    # options and changed counts. A parts line takes nothing off the shelf.
+    if line.mode == "parts":
+        return 0
+    kit = sorted(counted(comp if comp is not None else await line_composition_of(db, line)), key=lambda e: e[0].id)
+    parts = [part for part, _per in kit]
     if not parts or units == 0:
         return 0
     # ⚠️ Lock every counted part BEFORE the balances are read (finding I1).
@@ -607,15 +665,15 @@ async def reserve_for_line(db: AsyncSession, line: ProjectLine, units: int, *, c
     # commit and then reads the true balances.
     await lock_parts(db, parts)
     # After the release, so the shelf includes what this line was holding.
-    take = min(units, line.quantity, kits_available(await balances(db, line.product_id), parts))
+    take = min(units, line.quantity, kits_of(await balances(db, line.product_id), kit))
     if take <= 0:
         return 0
     reserved = take
-    for part in parts:
+    for part, per in kit:
         movement = await move(
             db,
             part_id=part.id,
-            delta=-take * part.qty_per_unit,
+            delta=-take * per,
             reason="reserved_for_order",
             project_line_id=line.id,
             created_by=created_by,
@@ -623,7 +681,7 @@ async def reserve_for_line(db: AsyncSession, line: ProjectLine, units: int, *, c
         # ⚠️ No ``archive_id`` on a reservation, ever: ``reverse_unfiled_print``
         # negates EVERY row carrying an archive id, and a reservation caught in
         # that sum would be handed back as stock the print never made.
-        reserved = min(reserved, 0 if movement is None else -movement.delta // part.qty_per_unit)
+        reserved = min(reserved, 0 if movement is None else -movement.delta // per)
     return reserved
 
 
@@ -648,7 +706,7 @@ class LineStockReads:
 
 
 async def line_ledger_reads(
-    db: AsyncSession, line_ids: Sequence[int], qty_per_unit: Mapping[int, int]
+    db: AsyncSession, line_ids: Sequence[int], per_by_line: Mapping[int, Mapping[int, int]]
 ) -> LineStockReads:
     """The reservation AND the banked surplus of many lines, in ONE query.
 
@@ -670,9 +728,11 @@ async def line_ledger_reads(
     first must be kept out of the ``min`` below.
 
     Only lines that actually hold something appear in ``reserved_units`` — a
-    caller reads ``.get(line_id, 0)``. ``qty_per_unit`` is the caller's own map
-    of the parts it has already loaded; a part missing from it is skipped rather
-    than guessed at, and a line left with no readable part reads 0.
+    caller reads ``.get(line_id, 0)``. ``per_by_line`` is ``line_id → {part_id → per}``
+    over each line's OWN composition (spec workshop-product-variants — two lines
+    of one product may count different parts, or the same part differently); a
+    part missing from a line's map is skipped rather than guessed at, and a line
+    left with no readable part reads 0.
     """
     if not line_ids:
         return LineStockReads(reserved_units={}, banked_by_part={})
@@ -705,7 +765,7 @@ async def line_ledger_reads(
                 reserved_net[(line_id, part_id)] += int(net or 0)
     per_line: dict[int, list[int]] = defaultdict(list)
     for (line_id, part_id), net in reserved_net.items():
-        qty = qty_per_unit.get(part_id)
+        qty = per_by_line.get(line_id, {}).get(part_id)
         if not qty:
             continue
         per_line[line_id].append(max(0, -net) // qty)
@@ -716,11 +776,11 @@ async def line_ledger_reads(
 
 
 async def reserved_units_by_line(
-    db: AsyncSession, line_ids: Sequence[int], qty_per_unit: Mapping[int, int]
+    db: AsyncSession, line_ids: Sequence[int], per_by_line: Mapping[int, Mapping[int, int]]
 ) -> dict[int, int]:
     """The reservation half of :func:`line_ledger_reads`, for callers that ask
     nothing about banking."""
-    return (await line_ledger_reads(db, line_ids, qty_per_unit)).reserved_units
+    return (await line_ledger_reads(db, line_ids, per_by_line)).reserved_units
 
 
 async def reserved_units_for_line(db: AsyncSession, line: ProjectLine) -> int:
@@ -732,10 +792,10 @@ async def reserved_units_for_line(db: AsyncSession, line: ProjectLine) -> int:
     a second answer to it — which would disagree the first time a part was
     merged or a release was half-written.
     """
-    parts = await _counted_parts(db, line.product_id)
-    if not parts:
+    kit = counted(await line_composition_of(db, line))
+    if not kit:
         return 0
-    held = await reserved_units_by_line(db, [line.id], {part.id: part.qty_per_unit for part in parts})
+    held = await reserved_units_by_line(db, [line.id], {line.id: {part.id: per for part, per in kit}})
     return held.get(line.id, 0)
 
 

@@ -82,6 +82,7 @@ from backend.app.schemas.product import (
 )
 from backend.app.services import part_stock, product_delete, product_facets
 from backend.app.services.entity_codes import code_for, id_from_query
+from backend.app.services.line_composition import default_options, standard_composition
 from backend.app.services.list_paging import (
     SortSpec,
     apply_sql_sort,
@@ -277,6 +278,12 @@ async def _apply_catalog_fields(db: AsyncSession, product: Product, fields: dict
         product.status = fields["status"]
 
 
+async def _standard_kits(db: AsyncSession, product: Product, part_balances: dict[int, int]) -> int:
+    """Kits of the product's STANDARD configuration (spec workshop-product-variants, rule 22)."""
+    defaults = (await default_options(db, [product.id])).get(product.id, {})
+    return part_stock.kits_of(part_balances, standard_composition(list(product.parts), set(defaults.values())))
+
+
 async def _response(db: AsyncSession, product: Product, *, reload_links: bool = False) -> ProductResponse:
     # ``category`` too: a row built in this request (a copy, a new product) has
     # it unloaded, and reading it would be a lazy load the async session refuses.
@@ -312,7 +319,7 @@ async def _response(db: AsyncSession, product: Product, *, reload_links: bool = 
         source_url=product.source_url,
         design_id=product.design_id,
         attachments=sorted_attachments(product),
-        kits_available=part_stock.kits_available(part_balances, list(product.parts)),
+        kits_available=await _standard_kits(db, product, part_balances),
         parts=[_with_balance(p, part_balances) for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))],
         library_file_ids=sorted(f.id for f in product.library_files),
         library_folder_ids=sorted(f.id for f in product.library_folders),
@@ -445,7 +452,15 @@ async def _in_stock_ids(db: AsyncSession, conditions: list) -> list[int]:
         for part in (await db.execute(select(ProductPart).where(ProductPart.product_id.in_(chunk)))).scalars():
             parts.setdefault(part.product_id, []).append(part)
         stock = await part_stock.balances_for_products(db, chunk)
-        kept += [pid for pid in chunk if part_stock.kits_available(stock.get(pid, {}), parts.get(pid, [])) > 0]
+        defaults = await default_options(db, chunk)
+        kept += [
+            pid
+            for pid in chunk
+            if part_stock.kits_of(
+                stock.get(pid, {}), standard_composition(parts.get(pid, []), set(defaults.get(pid, {}).values()))
+            )
+            > 0
+        ]
     return kept
 
 
@@ -554,6 +569,7 @@ async def list_products(
     # counts above it — ``kits_available`` per product is a per-row number and a
     # per-row query for it would be an N+1 nobody notices until the catalog grows.
     stock = await part_stock.balances_for_products(db, [p.id for p in products])
+    defaults = await default_options(db, [p.id for p in products])
     items = [
         ProductListItem(
             id=p.id,
@@ -566,7 +582,9 @@ async def list_products(
             parts_count=len(p.parts),
             plates_count=plates.get(p.id, 0),
             lines_count=counts.get(p.id, 0),
-            kits_available=part_stock.kits_available(stock.get(p.id, {}), list(p.parts)),
+            kits_available=part_stock.kits_of(
+                stock.get(p.id, {}), standard_composition(list(p.parts), set(defaults.get(p.id, {}).values()))
+            ),
             origin=p.origin,
             origin_file_id=p.origin_file_id,
             origin_plate_index=p.origin_plate_index,
@@ -1131,7 +1149,7 @@ async def get_product_stock(
             for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))
             if p.id in part_balances
         ],
-        kits_available=part_stock.kits_available(part_balances, list(product.parts)),
+        kits_available=await _standard_kits(db, product, part_balances),
         movements=[movement_out(row, names, orders) for row in rows],
     )
 

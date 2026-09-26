@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from sqlalchemy import select
@@ -43,6 +43,7 @@ from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.schemas.project import PROJECT_PRIORITIES
+from backend.app.services.line_composition import Composition, composition, compositions_for_lines
 from backend.app.services.order_metrics import line_accepts_materials
 from backend.app.services.product_composition import (
     PlateRecipe,
@@ -140,7 +141,10 @@ def line_for_plate(lines: list[ProjectLine], product_id: int, materials: set[str
 
 
 def lines_counting_plate(
-    lines: list[ProjectLine], parts_by_product: Mapping[int, Iterable[ProductPart]], plate_keys: Iterable[str]
+    lines: list[ProjectLine],
+    parts_by_product: Mapping[int, Iterable[ProductPart]],
+    plate_keys: Iterable[str],
+    compositions: Mapping[int, Composition] | None = None,
 ) -> list[ProjectLine]:
     """The lines whose product COUNTS at least one part of this plate (spec
     2026-09-06, Decision 7) — or every line, when none does.
@@ -155,13 +159,18 @@ def lines_counting_plate(
     keys = set(plate_keys)
     if not keys:
         return list(lines)
-    indexes = {pid: part_index(parts) for pid, parts in parts_by_product.items()}
 
-    def counts(product_id: int) -> bool:
-        idx = indexes.get(product_id, {})
-        return any((part := idx.get(key)) is not None and part.qty_per_unit > 0 for key in keys)
+    def counts(line: ProjectLine) -> bool:
+        # The LINE's composition (spec workshop-product-variants, rule 9): two
+        # lines of one product with different options count different parts.
+        # A caller without compositions gets the product's unconfigured kit.
+        comp = (compositions or {}).get(line.id)
+        if comp is None:
+            comp = composition(list(parts_by_product.get(line.product_id, [])), "product", set(), {})
+        idx = part_index([part for part, _per in comp])
+        return any(key in idx for key in keys)
 
-    narrowed = [line for line in lines if counts(line.product_id)]
+    narrowed = [line for line in lines if counts(line)]
     return narrowed or list(lines)
 
 
@@ -320,10 +329,12 @@ async def order_candidates(db: AsyncSession, file: LibraryFile, plate_index: int
     # Decision 7, the same narrowing the writers apply: a line whose product
     # zeroes every part of this plate is not offered, unless no line counts it.
     keys = plate_key_counts(file.file_metadata, index)[0].keys()
+    candidate_lines = [line for _project, line, _pid in matched]
+    parts_of = {pid: list(p.parts or []) for pid, p in products.items()}
     kept = {
         line.id
         for line in lines_counting_plate(
-            [line for _project, line, _pid in matched], {pid: list(p.parts or []) for pid, p in products.items()}, keys
+            candidate_lines, parts_of, keys, await compositions_for_lines(db, candidate_lines, parts_of)
         )
     }
     matched = [m for m in matched if m[1].id in kept]
@@ -383,6 +394,7 @@ class LineFiler:
     file: LibraryFile | None
     plates: list[ProductPlate]
     parts_by_product: dict[int, list[ProductPart]]
+    compositions: dict[int, Composition] = field(default_factory=dict)
 
     def for_plate(self, plate_index: int | None) -> int | None:
         """The unambiguous line for this plate index, or ``None``.
@@ -410,7 +422,10 @@ class LineFiler:
             # which of them counts this plate's parts (Decision 7).
             keys = plate_key_counts(self.file.file_metadata, index)[0].keys()
             resolved = {
-                line.id: line for line in lines_counting_plate(list(resolved.values()), self.parts_by_product, keys)
+                line.id: line
+                for line in lines_counting_plate(
+                    list(resolved.values()), self.parts_by_product, keys, self.compositions
+                )
             }
         return next(iter(resolved)) if len(resolved) == 1 else None
 
@@ -456,7 +471,13 @@ async def line_filer(
         await db.execute(select(ProductPart).where(ProductPart.product_id.in_({line.product_id for line in lines})))
     ).scalars():
         parts_by_product.setdefault(part.product_id, []).append(part)
-    return LineFiler(lines=lines, file=file, plates=plates, parts_by_product=parts_by_product)
+    return LineFiler(
+        lines=lines,
+        file=file,
+        plates=plates,
+        parts_by_product=parts_by_product,
+        compositions=await compositions_for_lines(db, lines, parts_by_product),
+    )
 
 
 async def resolve_line_id(
