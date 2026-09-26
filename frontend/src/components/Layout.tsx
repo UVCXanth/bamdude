@@ -70,7 +70,7 @@ export const defaultNavItems: NavItem[] = [
   // Workshop — what to print
   { id: 'projects', to: '/projects', icon: FolderKanban, labelKey: 'nav.projects', group: 'workshop', children: [
     { id: 'orders', to: '/projects', labelKey: 'projects.tabs.orders', match: /^\/projects(\/|$)/, badge: 'activeOrders' },
-    { id: 'products', to: '/products', labelKey: 'projects.tabs.products', match: /^\/products(\/|$)/ },
+    { id: 'products', to: '/products', labelKey: 'projects.tabs.products', match: /^\/products(\/|$)/, badge: 'draftProducts' },
     { id: 'customers', to: '/customers', labelKey: 'projects.tabs.customers', match: /^\/customers(\/|$)/ },
     { id: 'stock', to: '/stock', labelKey: 'projects.tabs.stock', match: /^\/stock(\/|$)/ },
   ] },
@@ -344,7 +344,10 @@ export function Layout() {
   // reads as 0: a hint, not data, so the badge just stays away.
   const canSeeProjects = !authEnabled || hasPermission('projects:read');
   const { data: navBadges } = useWorkshopBadges(canSeeProjects);
-  const workshopBadges = { activeOrders: navBadges?.active_orders ?? 0 };
+  const workshopBadges = {
+    activeOrders: navBadges?.active_orders ?? 0,
+    draftProducts: navBadges?.draft_products ?? 0,
+  };
 
   // Check if any printer with pending queue items needs plate clearing
   const queuePrinterIds = useMemo(() => {

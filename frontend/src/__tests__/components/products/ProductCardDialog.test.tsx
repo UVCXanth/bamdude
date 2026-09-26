@@ -75,6 +75,65 @@ function Openable() {
 describe('ProductCardDialog', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.spyOn(api, 'getProductCategories').mockResolvedValue([
+      { id: 3, name: 'Hooks', products_count: 1 },
+      { id: 4, name: 'Vases', products_count: 0 },
+    ]);
+  });
+
+  describe('catalog fields (spec workshop-product-catalog, rule 23)', () => {
+    const catalogProduct = {
+      ...product,
+      sku: 'LMP-1',
+      version: null,
+      category: { id: 3, name: 'Hooks' },
+      status: 'draft',
+      parts_count: 2,
+      plates_count: 1,
+    } as unknown as Product;
+
+    it('edits SKU, version, category and status, sending only what changed', async () => {
+      const update = vi.spyOn(api, 'updateProduct').mockResolvedValue(catalogProduct as never);
+      render(<ProductCardDialog product={catalogProduct} onClose={noop} />);
+      await screen.findByRole('option', { name: 'Vases' });
+      expect(screen.getByLabelText('SKU')).toHaveValue('LMP-1');
+      fireEvent.change(screen.getByLabelText('SKU'), { target: { value: 'LMP-2' } });
+      fireEvent.change(screen.getByLabelText('Category'), { target: { value: '4' } });
+      fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'ready' } });
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+      await waitFor(() => expect(update).toHaveBeenCalledWith(7, { sku: 'LMP-2', category_id: 4, status: 'ready' }));
+    });
+
+    it('clears the category and a blank SKU goes as none', async () => {
+      const update = vi.spyOn(api, 'updateProduct').mockResolvedValue(catalogProduct as never);
+      render(<ProductCardDialog product={catalogProduct} onClose={noop} />);
+      await screen.findByRole('option', { name: 'Vases' });
+      fireEvent.change(screen.getByLabelText('SKU'), { target: { value: '  ' } });
+      fireEvent.change(screen.getByLabelText('Category'), { target: { value: '' } });
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+      await waitFor(() => expect(update).toHaveBeenCalledWith(7, { sku: null, category_id: null }));
+    });
+
+    it('offers «Ready to print» only with parts and a plate, and says why', async () => {
+      render(<ProductCardDialog product={{ ...catalogProduct, plates_count: 0 } as Product} onClose={noop} />);
+      expect(await screen.findByRole('option', { name: 'Ready to print' })).toBeDisabled();
+      expect(screen.getByText('Needs parts and a plate')).toBeInTheDocument();
+    });
+
+    it('a new product takes SKU, version and category, and stays a draft', async () => {
+      const create = vi.spyOn(api, 'createProduct').mockResolvedValue(product as never);
+      render(<ProductCardDialog product={null} onClose={noop} />);
+      await screen.findByRole('option', { name: 'Hooks' });
+      expect(screen.queryByLabelText('Status')).not.toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: 'Lid' } });
+      fireEvent.change(screen.getByLabelText('SKU'), { target: { value: 'LID-1' } });
+      fireEvent.change(screen.getByLabelText('Version'), { target: { value: 'v2' } });
+      fireEvent.change(screen.getByLabelText('Category'), { target: { value: '3' } });
+      fireEvent.click(screen.getByRole('button', { name: /^create$/i }));
+      await waitFor(() =>
+        expect(create).toHaveBeenCalledWith(expect.objectContaining({ sku: 'LID-1', version: 'v2', category_id: 3 })),
+      );
+    });
   });
 
   it('creates a product from the fields section', async () => {

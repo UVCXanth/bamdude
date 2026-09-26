@@ -427,6 +427,14 @@ describe('Layout', () => {
       expect(await screen.findByTitle('Active orders')).toHaveTextContent('3');
     });
 
+    it('shows the draft-products count on Products', async () => {
+      server.use(
+        http.get('/api/v1/projects/nav-badges', () => HttpResponse.json({ active_orders: 0, draft_products: 4 })),
+      );
+      render(<Layout />);
+      expect(await screen.findByTitle('Draft products')).toHaveTextContent('4');
+    });
+
     it('a failed count leaves the entry and no badge', async () => {
       let asked = 0;
       server.use(

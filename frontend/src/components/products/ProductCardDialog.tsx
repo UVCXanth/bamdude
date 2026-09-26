@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
-import type { Product, ProductCreate, ProductListItem, ProductUpdate } from '../../api/client';
+import type { Product, ProductCreate, ProductListItem, ProductStatus, ProductUpdate } from '../../api/client';
 import { Button } from '../Button';
+import { Select } from '../Select';
 import { Modal } from '../Modal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
@@ -111,7 +112,19 @@ function ProductForm({ product, onClose }: ProductFormProps) {
     sourceUrl: product?.source_url ?? '',
     designId: product?.design_id ?? '',
     notes: product?.notes ?? '',
+    sku: product?.sku ?? '',
+    version: product?.version ?? '',
+    categoryId: product?.category ? String(product.category.id) : '',
+    status: (product?.status ?? 'draft') as ProductStatus,
   };
+  // spec workshop-product-catalog, rule 14: the server refuses «ready» without
+  // parts and a plate (409); the option says so before anybody tries.
+  const canBeReady = !!product && product.parts_count > 0 && product.plates_count > 0;
+  const { data: categories = [] } = useQuery({
+    queryKey: ['product-categories'],
+    queryFn: () => api.getProductCategories(),
+    staleTime: 60_000,
+  });
 
   const [name, setName] = useState(initial.name);
   const [description, setDescription] = useState(initial.description);
@@ -120,6 +133,10 @@ function ProductForm({ product, onClose }: ProductFormProps) {
   const [sourceUrl, setSourceUrl] = useState(initial.sourceUrl);
   const [designId, setDesignId] = useState(initial.designId);
   const [notes, setNotes] = useState(initial.notes);
+  const [sku, setSku] = useState(initial.sku);
+  const [version, setVersion] = useState(initial.version);
+  const [categoryId, setCategoryId] = useState(initial.categoryId);
+  const [status, setStatus] = useState<ProductStatus>(initial.status);
 
   const mutation = useMutation({
     mutationFn: () => {
@@ -131,7 +148,10 @@ function ProductForm({ product, onClose }: ProductFormProps) {
         source_url: sourceUrl.trim(),
         design_id: designId.trim(),
         notes: notes.trim(),
+        sku: sku.trim(),
+        version: version.trim(),
       };
+      const category_id = categoryId ? Number(categoryId) : null;
       if (product) {
         const data: ProductUpdate = {};
         if (trimmed.name !== initial.name) data.name = trimmed.name;
@@ -141,6 +161,10 @@ function ProductForm({ product, onClose }: ProductFormProps) {
         if (trimmed.source_url !== initial.sourceUrl) data.source_url = trimmed.source_url || null;
         if (trimmed.design_id !== initial.designId) data.design_id = trimmed.design_id || null;
         if (trimmed.notes !== initial.notes) data.notes = trimmed.notes || null;
+        if (trimmed.sku !== initial.sku) data.sku = trimmed.sku || null;
+        if (trimmed.version !== initial.version) data.version = trimmed.version || null;
+        if (categoryId !== initial.categoryId) data.category_id = category_id;
+        if (status !== initial.status) data.status = status;
         return api.updateProduct(product.id, data);
       }
       const data: ProductCreate = {
@@ -151,6 +175,11 @@ function ProductForm({ product, onClose }: ProductFormProps) {
         source_url: trimmed.source_url || null,
         design_id: trimmed.design_id || null,
         notes: trimmed.notes || null,
+        // A new product has no plates yet, so it starts as a draft; the
+        // catalog fields go only when given.
+        ...(trimmed.sku ? { sku: trimmed.sku } : {}),
+        ...(trimmed.version ? { version: trimmed.version } : {}),
+        ...(category_id !== null ? { category_id } : {}),
       };
       return api.createProduct(data);
     },
@@ -216,6 +245,60 @@ function ProductForm({ product, onClose }: ProductFormProps) {
               className={`${FIELD_CLASS} min-h-[72px]`}
               disabled={mutation.isPending}
             />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            {textField('product-sku', t('products.modal.sku'), sku, setSku)}
+            {textField('product-version', t('products.modal.version'), version, setVersion)}
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className={LABEL_CLASS} htmlFor="product-category">
+                {t('products.modal.category')}
+              </label>
+              <Select
+                id="product-category"
+                value={categoryId}
+                onChange={(e) => setCategoryId(e.target.value)}
+                disabled={mutation.isPending}
+                className="w-full"
+              >
+                <option value="">{t('products.modal.noCategory')}</option>
+                {categories.map((category) => (
+                  <option key={category.id} value={String(category.id)}>
+                    {category.name}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            {isEdit && (
+              <div>
+                <label className={LABEL_CLASS} htmlFor="product-status">
+                  {t('products.modal.status')}
+                </label>
+                <Select
+                  id="product-status"
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value as ProductStatus)}
+                  disabled={mutation.isPending}
+                  aria-describedby={!canBeReady ? 'product-status-hint' : undefined}
+                  className="w-full"
+                >
+                  <option value="draft">{t('products.status.draft')}</option>
+                  {/* Kept selectable when it is already the value — a product
+                      marked ready that lost its plates is shown as it is. */}
+                  <option value="ready" disabled={!canBeReady && initial.status !== 'ready'}>
+                    {t('products.status.ready')}
+                  </option>
+                </Select>
+                {!canBeReady && (
+                  <p id="product-status-hint" className="mt-1 text-xs text-bambu-gray">
+                    {t('products.modal.readyNeedsParts')}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-4">

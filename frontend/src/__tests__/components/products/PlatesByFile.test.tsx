@@ -39,6 +39,7 @@ describe('PlatesByFile', () => {
         unassigned: [{ name_key: 'lid b', count: 4 }],
         materials: ['PETG'],
         colors: ['#FF0000'],
+        printer_model: 'X1C',
         print_time_seconds: 5400,
         filament_used_grams: 33.3,
       },
@@ -80,5 +81,7 @@ describe('PlatesByFile', () => {
     expect(screen.getByText('lid b × 4')).toHaveAttribute('title', expect.stringMatching(/not in composition/i));
     expect(screen.getByText(/not sliced/i)).toBeInTheDocument();
     expect(screen.getByText('1:30')).toBeInTheDocument();
+    // The model the plate was sliced for (spec workshop-product-catalog, rule 24).
+    expect(screen.getByTitle('Printer model')).toHaveTextContent('X1C');
   });
 });

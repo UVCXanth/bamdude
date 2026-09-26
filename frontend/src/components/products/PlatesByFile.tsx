@@ -121,6 +121,12 @@ export function PlatesByFile({ productId }: { productId: number }) {
                   </span>
                 )}
 
+                {plate.printer_model && (
+                  <span title={t('products.plates.model')} className={`${CHIP_CLASS} bg-bambu-dark-tertiary text-white`}>
+                    {plate.printer_model}
+                  </span>
+                )}
+
                 {plate.colors.length > 0 && (
                   <span className="flex items-center gap-1" aria-label={t('products.plates.colors')}>
                     {plate.colors.map((color) => (
