@@ -1018,10 +1018,23 @@ async def _stream_rtsp(
                 "1024000",
                 "-max_delay",
                 "500000",
-                "-probesize",
-                str(profile.probesize if profile is not None else 32),
-                "-analyzeduration",
-                str(profile.analyzeduration if profile is not None else 0),
+                # Probe tuning only for a KNOWN camera: a Bambu RTSPS source
+                # passes its model profile. A real external camera has no model
+                # to tune against and runs on ffmpeg's defaults (a ceiling, not a
+                # wait) — the 32-byte fast-start probe expired before a source
+                # that sends SPS/PPS in-band had sent them, and the live view
+                # stayed black while the test button, on defaults, passed
+                # (upstream #3082).
+                *(
+                    (
+                        "-probesize",
+                        str(profile.probesize),
+                        "-analyzeduration",
+                        str(profile.analyzeduration),
+                    )
+                    if profile is not None
+                    else ()
+                ),
                 "-fflags",
                 "nobuffer",
                 "-flags",

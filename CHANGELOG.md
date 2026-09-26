@@ -172,6 +172,14 @@
 
 ### Fixed
 
+- **An external RTSP camera that passes the connection test no longer shows a
+  black live view.** The live view gave ffmpeg only a moment to recognise the
+  stream, which is too short for a camera that describes its video a little
+  after connecting (for example a WebRTC camera republished through go2rtc), so
+  no picture ever started. External cameras now get ffmpeg's normal detection,
+  as the connection test already did; Bambu printer cameras keep their per-model
+  tuning. (upstream #3082)
+
 - **Storage locations are listed in natural order.** "Drybox 2" now comes before
   "Drybox 10", and names starting with Ґ, Є, І or Ї sort inside the alphabet
   instead of before А — in the locations list, the location filter and the spool
