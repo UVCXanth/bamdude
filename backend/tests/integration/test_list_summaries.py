@@ -90,7 +90,7 @@ async def test_orders_summary_of_an_empty_farm_is_zeros(async_client):
 
 @pytest.mark.asyncio
 async def test_customers_summary(async_client, db_session):
-    acme, beta, idle = Customer(name="ACME"), Customer(name="Beta"), Customer(name="Idle")
+    acme, beta, idle = Customer(name="ACME"), Customer(name="Beta", kind="regular"), Customer(name="Idle")
     db_session.add_all([acme, beta, idle])
     await db_session.flush()
     db_session.add_all(
@@ -105,7 +105,7 @@ async def test_customers_summary(async_client, db_session):
     await db_session.commit()
     r = await async_client.get("/api/v1/customers/summary")
     assert r.status_code == 200, r.text  # not swallowed by /{customer_id}
-    assert r.json() == {"customers": 3, "with_active": 1, "active_orders": 2, "total_price": 60.0}
+    assert r.json() == {"customers": 3, "regular": 1, "with_active": 1, "active_orders": 2, "total_price": 60.0}
 
 
 @pytest.mark.asyncio

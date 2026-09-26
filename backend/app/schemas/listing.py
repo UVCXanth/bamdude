@@ -59,6 +59,8 @@ class CustomersSummary(BaseModel):
     orders without a customer are not the customers' business."""
 
     customers: int
+    # customers of kind "regular" — the tile's «N regular» line (spec workshop-customers, rule 15)
+    regular: int
     with_active: int
     active_orders: int
     total_price: float

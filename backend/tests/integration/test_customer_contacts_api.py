@@ -143,3 +143,29 @@ async def test_create_takes_contacts_and_delete_takes_them_away(committing_clien
     order = (await db_session.execute(select(Project).where(Project.name == "G"))).scalar_one()
     assert order.customer_id is None and order.contact_id is None
     assert await db_session.get(CustomerContact, contact_id) is None
+
+
+@pytest.mark.asyncio
+async def test_search_reads_the_customer_and_contact_codes_and_the_method_name(async_client, db_session):
+    acme, first, _ = await _acme(db_session)
+    db_session.add(Customer(name="Beta"))
+    await db_session.commit()
+
+    async def names(q):
+        body = (await async_client.get("/api/v1/customers/", params={"page": 1, "q": q})).json()
+        return [c["name"] for c in body["items"]]
+
+    assert await names(f"CU-{acme.id:04d}") == ["ACME"]
+    assert await names(f"cu{acme.id}") == ["ACME"]
+    assert await names(f"CT-{first.id}") == ["ACME"]
+    assert await names("nova") == ["ACME"]  # the contact's delivery method, by name
+    assert await names("99999999999999999999") == []  # never a 500 from the binder
+
+
+@pytest.mark.asyncio
+async def test_kind_filters_the_list(async_client, db_session):
+    db_session.add_all([Customer(name="Reg", kind="regular"), Customer(name="Co")])
+    await db_session.commit()
+    items = (await async_client.get("/api/v1/customers/?page=1&kind=regular")).json()["items"]
+    assert [c["name"] for c in items] == ["Reg"]
+    assert (await async_client.get("/api/v1/customers/?page=1&kind=nope")).status_code == 422

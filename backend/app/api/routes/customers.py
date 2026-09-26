@@ -17,12 +17,13 @@ from backend.app.schemas.customer import (
     CustomerContactOut,
     CustomerCreate,
     CustomerFigures,
+    CustomerKind,
     CustomerListFigures,
     CustomerResponse,
     CustomerUpdate,
 )
 from backend.app.schemas.listing import CustomerListPage, CustomersSummary
-from backend.app.services.entity_codes import code_for
+from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.list_paging import (
     SortSpec,
     apply_sql_sort,
@@ -201,8 +202,9 @@ _CUSTOMER_COMPUTED = {
 @router.get("", response_model=list[CustomerResponse] | CustomerListPage)
 @router.get("/", response_model=list[CustomerResponse] | CustomerListPage)
 async def list_customers(
-    q: str | None = Query(None, description="With page set: ilike on the name or any contact field"),
+    q: str | None = Query(None, description="With page set: ilike on the name or any contact field, or a CU/CT code"),
     with_active: bool = Query(False, description="With page set: only customers with an active order"),
+    kind: CustomerKind | None = Query(None, description="With page set: only customers of this kind"),
     sort_by: str | None = Query(None, description="With page set: '<key>-<asc|desc>'; unknown → name-asc"),
     page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
     per_page: int = Query(24, ge=1, le=200),
@@ -213,8 +215,10 @@ async def list_customers(
     """The customers list. ``page`` is the compat switch (the inventory's contract).
 
     Without it the flat array the customer picker and the orders page's filter
-    read — unchanged. With it ``{items, meta}``, ``q`` (name or any contact field),
-    ``with_active`` (only customers with an active order) and ``sort_by``.
+    read — unchanged. With it ``{items, meta}``, ``q`` (name, any contact field,
+    a contact's delivery method, the customer's ``CU`` code or a contact's ``CT``
+    code), ``with_active`` (only customers with an active order), ``kind`` and
+    ``sort_by``.
     The light figures are one GROUP BY over the whole table either
     way; a computed key (an order count or the price sum) sorts the built rows
     here and slices, a SQL key (``name``, ``created``) pages in the database.
@@ -239,12 +243,29 @@ async def list_customers(
                         CustomerContact.city.ilike(needle),
                         CustomerContact.delivery_details.ilike(needle),
                         CustomerContact.note.ilike(needle),
+                        CustomerContact.delivery_method_id.in_(
+                            select(DeliveryMethod.id).where(DeliveryMethod.name.ilike(needle))
+                        ),
                     ),
                 )
             )
-            query = query.where(or_(Customer.name.ilike(needle), contact_matches))
+            conditions = [Customer.name.ilike(needle), contact_matches]
+            if (customer_id := id_from_query("customer", q)) is not None:
+                conditions.append(Customer.id == customer_id)
+            # A contact's code needs its prefix: a bare number is the customer's (spec rule 3).
+            if (contact_id := id_from_query("contact", q, require_prefix=True)) is not None:
+                conditions.append(
+                    exists(
+                        select(CustomerContact.id).where(
+                            CustomerContact.customer_id == Customer.id, CustomerContact.id == contact_id
+                        )
+                    )
+                )
+            query = query.where(or_(*conditions))
         if with_active:
             query = query.where(Customer.id.in_(select(Project.customer_id).where(Project.status == "active")))
+        if kind:
+            query = query.where(Customer.kind == kind)
         if not computed:
             total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
             query = apply_sql_sort(query, _CUSTOMER_SORT, key, direction, Customer.id)
@@ -291,6 +312,7 @@ async def customers_summary(
     figures = (await _light_figures_by_customer(db)).values()
     return CustomersSummary(
         customers=await db.scalar(select(func.count(Customer.id))) or 0,
+        regular=await db.scalar(select(func.count(Customer.id)).where(Customer.kind == "regular")) or 0,
         with_active=sum(1 for f in figures if f.active > 0),
         active_orders=sum(f.active for f in figures),
         total_price=round(sum(f.total_price for f in figures), 2),
