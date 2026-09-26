@@ -2034,6 +2034,20 @@ export interface OrderViewFilters {
   responsible_id?: number;
   q?: string;
 }
+/** An order's archive printing now — what the «Printing» tile counts (spec workshop-order-queue). */
+export interface OrderQueuePrinting {
+  archive_id: number;
+  printer_id: number | null;
+  printer_name: string | null;
+  name: string;
+  project_line_id: number | null;
+}
+/** `GET /projects/{id}/queue` — both queue tiers of one order, the rows the tiles count. */
+export interface OrderQueueTiers {
+  printing: OrderQueuePrinting[];
+  pending: PrintQueueItem[];
+  awaiting: AutoQueueItem[];
+}
 /** One kanban column: the cards shown and how many the column holds. */
 export interface OrderBoardColumn {
   items: OrderListItem[];
@@ -11074,6 +11088,8 @@ export const api = {
   },
   /** The kanban (spec workshop-order-views, rule 5) — the list's filters but status, stage and page. */
   getOrderBoard: (filters: OrderViewFilters) => request<OrderBoard>(`/projects/board?${orderViewQuery(filters)}`),
+  /** One order's live work in both queue tiers — the rows its tiles count (spec workshop-order-queue). */
+  getOrderQueue: (id: number) => request<OrderQueueTiers>(`/projects/${id}/queue`),
   /** The deadlines board — one forecast walk per request (rule 15). */
   getOrderDeadlines: ({ start, days, ...filters }: OrderViewFilters & { start: string; days?: number }) =>
     request<OrderDeadlines>(`/projects/deadlines?${orderViewQuery(filters, { start, days: String(days ?? 14) })}`),

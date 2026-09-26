@@ -606,7 +606,7 @@ export function useWebSocket() {
           debouncedInvalidate(['printerStatus', message.printer_id]);
           // Update queue data (status, current print)
           debouncedInvalidate('queues');
-          debouncedInvalidate(['queue', message.printer_id], ['queue', 'all'], ['queue', 'summary'], 'queue-forecast');
+          debouncedInvalidate(['queue', message.printer_id], ['queue', 'all'], ['queue', 'summary'], 'queue-forecast', 'project-queue');
         }
         break;
 
@@ -618,7 +618,7 @@ export function useWebSocket() {
         if (message.printer_id !== undefined) {
           debouncedInvalidate(['queue', message.printer_id]);
         }
-        debouncedInvalidate(['queue', 'all'], ['queue', 'summary'], 'queues', 'queue-forecast', 'auto-queue');
+        debouncedInvalidate(['queue', 'all'], ['queue', 'summary'], 'queues', 'queue-forecast', 'auto-queue', 'project-queue');
         break;
 
       case 'stagger_changed':

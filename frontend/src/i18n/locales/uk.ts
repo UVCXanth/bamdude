@@ -5773,6 +5773,11 @@ export default {
       empty: 'У черзі нічого немає для цього замовлення.',
       line: 'Позиція: {{name}}',
       eta: 'Готово о',
+      // спека workshop-order-queue: два яруси під тим, що друкується.
+      onPrinter: 'У черзі принтера',
+      awaiting: 'Чекає розподілу',
+      target: 'Для: {{target}}',
+      anyPrinter: 'будь-який принтер',
     },
     timeline: {
       title: 'Активність',

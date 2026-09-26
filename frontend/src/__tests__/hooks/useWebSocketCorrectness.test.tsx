@@ -553,4 +553,18 @@ describe('WebSocket cache and lifecycle contract', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
     expect(invalidate).not.toHaveBeenCalled();
   });
+
+  it('a queue change and a print start re-read the order\'s queue section', async () => {
+    // spec workshop-order-queue, rule 14: the auto-queue distributor hands work
+    // to a printer in its own transaction — nothing on this page mutated.
+    const { socket } = await mounted();
+    client.setQueryData(['project-queue', 1], 'old');
+    act(() => socket.emit({ type: 'queue_changed' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+    expect(client.getQueryState(['project-queue', 1])?.isInvalidated).toBe(true);
+    client.setQueryData(['project-queue', 1], 'old again');
+    act(() => socket.emit({ type: 'print_start', printer_id: 3 }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+    expect(client.getQueryState(['project-queue', 1])?.isInvalidated).toBe(true);
+  });
 });

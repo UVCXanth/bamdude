@@ -1,31 +1,29 @@
 /**
- * The order's queue panel reads the SHARED farm-wide queue.
- *
- * It used to ask the same two questions under keys of its own — `['queue',
- * 'printing']` and `['queue', 'pending']` — which no other screen used, so
- * TanStack could not tell they were the queue page's `['queue', 'all', …]`
- * question. The same rows were fetched twice, on two timers this component
- * owned, and the two screens could disagree about what was on a printer.
+ * The order's queue section reads its OWN endpoint — both queue tiers, the same
+ * rows the order's tiles count (spec workshop-order-queue). It used to filter the
+ * farm-wide queue lists on the client, which missed the auto-queue and pulled
+ * the whole farm's queue onto one order's page.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import { OrderQueue } from '../../../components/projects/OrderQueue';
 import { strayZeroTextNodes } from '../../domHelpers';
 
-const order = {
-  id: 1,
-  name: 'Ten flasks',
-  status: 'active',
-  lines: [{ id: 10, product_name: 'Flask' }],
+const order = { id: 1, name: 'Ten flasks', status: 'active', lines: [{ id: 10, product_name: 'Flask' }] };
+const row = { project_id: 1, project_line_id: 10, archive_id: null, archive_thumbnail: null, archive_name: null, library_file_id: null, library_file_thumbnail: null, library_file_name: null, source_thumbnail: false };
+const tiers = {
+  printing: [{ archive_id: 5, printer_id: 3, printer_name: 'X1C', name: 'Lid', project_line_id: 10 }],
+  pending: [{ ...row, id: 7, archive_name: 'Body', printer_id: 4, printer_name: 'P1S' }],
+  awaiting: [
+    { ...row, id: 9, library_file_name: 'Base', target_model: 'P1S', target_location: { id: 2, name: 'Shelf A' }, target_location_id: 2, waiting_reason: 'No idle P1S', position: 1 },
+    { ...row, id: 11, library_file_name: 'Foot', target_model: null, target_location: null, target_location_id: null, waiting_reason: null, position: 2 },
+  ],
 };
-
-const pending = [
-  { id: 7, project_id: 1, project_line_id: 10, archive_id: null, archive_thumbnail: null, archive_name: 'Body', library_file_id: null, library_file_thumbnail: null, library_file_name: null, printer_id: 3, printer_name: 'P1S' },
-];
+const EMPTY = { printing: [], pending: [], awaiting: [] };
 
 function mountWithClient(client: QueryClient) {
   return render(
@@ -34,72 +32,63 @@ function mountWithClient(client: QueryClient) {
     </QueryClientProvider>,
   );
 }
+const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
 
 describe('OrderQueue', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.spyOn(api, 'getOrder').mockResolvedValue(order as never);
     vi.spyOn(api, 'getSettings').mockResolvedValue({ time_format: 'system' } as never);
+    vi.spyOn(api, 'getPrinterStatus').mockResolvedValue({} as never);
   });
 
-  it('asks the queue page\'s own two questions, under the queue page\'s own keys', async () => {
-    const getQueue = vi.spyOn(api, 'getQueue').mockResolvedValue([] as never);
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
-
+  it('reads the order\'s own queue, never the farm-wide lists', async () => {
+    const get = vi.spyOn(api, 'getOrderQueue').mockResolvedValue(tiers as never);
+    const farm = vi.spyOn(api, 'getQueue').mockResolvedValue([] as never);
+    const client = newClient();
     mountWithClient(client);
-
-    await waitFor(() => expect(getQueue).toHaveBeenCalledTimes(2));
-    // The exact call shape the queue page uses — no printer, one status each.
-    expect(getQueue).toHaveBeenCalledWith(undefined, 'pending', expect.objectContaining({ signal: expect.any(AbortSignal) }));
-    expect(getQueue).toHaveBeenCalledWith(undefined, 'printing', expect.objectContaining({ signal: expect.any(AbortSignal) }));
-
-    const keys = client
-      .getQueryCache()
-      .findAll({ queryKey: ['queue'] })
-      .map((q) => q.queryKey);
-    expect(keys).toEqual(
-      expect.arrayContaining([
-        ['queue', 'all', 'pending'],
-        ['queue', 'all', 'printing'],
-      ]),
-    );
-    expect(keys).toHaveLength(2);
+    await screen.findByText('Body');
+    expect(get).toHaveBeenCalledWith(1);
+    expect(farm).not.toHaveBeenCalled();
+    expect(client.getQueryCache().find({ queryKey: ['project-queue', 1] })).toBeDefined();
   });
 
-  it('renders the shared data already in the cache without fetching its own copy', async () => {
-    // The panel has no poll of its own: whatever filled `['queue', 'all', …]`
-    // — the queue page, a websocket invalidation, the shared interval — is
-    // what it draws. A private key could not have been served from here at all.
-    const getQueue = vi.spyOn(api, 'getQueue').mockResolvedValue([] as never);
-    const client = new QueryClient({
-      defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: 60_000 } },
-    });
-    client.setQueryData(['queue', 'all', 'pending'], pending);
-    client.setQueryData(['queue', 'all', 'printing'], []);
-
-    mountWithClient(client);
-
-    expect(await screen.findByText('Body')).toBeInTheDocument();
-    expect(getQueue).not.toHaveBeenCalled();
-    // ⚠️ No bare `0` in the rendered list. `count && <X/>` renders the NUMBER
-    // when the count is zero, and a queue is exactly where an empty count is
-    // normal — the digit then sits in the layout looking like a figure.
-    // `queryAllByText` cannot see it: the zero is a text node among an
-    // element's other children (`__tests__/domHelpers`).
+  it('draws what is printing, what waits on a printer and what waits for distribution', async () => {
+    vi.spyOn(api, 'getOrderQueue').mockResolvedValue(tiers as never);
+    mountWithClient(newClient());
+    expect(await screen.findByText('Lid')).toBeInTheDocument();
+    const onPrinter = screen.getByRole('list', { name: 'In a printer queue' });
+    expect(within(onPrinter).getByText('Body')).toBeInTheDocument();
+    expect(within(onPrinter).getByText('P1S')).toBeInTheDocument();
+    const awaiting = screen.getByRole('list', { name: 'Waiting for distribution' });
+    expect(within(awaiting).getByText('Base')).toBeInTheDocument();
+    expect(within(awaiting).getByText('For: P1S · Shelf A')).toBeInTheDocument();
+    expect(within(awaiting).getByText('No idle P1S')).toBeInTheDocument();
+    expect(within(awaiting).getByText('For: any printer')).toBeInTheDocument();
+    expect(within(awaiting).getAllByText('Line: Flask')).toHaveLength(2);
     expect(strayZeroTextNodes()).toHaveLength(0);
   });
+
+  it('a closed order with nothing queued draws nothing; a leftover row keeps the section', async () => {
+    vi.spyOn(api, 'getOrder').mockResolvedValue({ ...order, status: 'completed' } as never);
+    const get = vi.spyOn(api, 'getOrderQueue').mockResolvedValue(EMPTY as never);
+    const { unmount } = mountWithClient(newClient());
+    await waitFor(() => expect(get).toHaveBeenCalled());
+    expect(screen.queryByText('Queue')).not.toBeInTheDocument();
+    unmount();
+    get.mockResolvedValue({ ...EMPTY, awaiting: [tiers.awaiting[1]] } as never);
+    mountWithClient(newClient());
+    expect(await screen.findByText('Foot')).toBeInTheDocument();
+  });
+
   it('asks for the order through the same options the page does, meta included', async () => {
     // ⚠️ A query has ONE `meta`, set by whichever observer mounted last. This
     // panel watches `['project', id]` too; when it declared its own options
-    // without `meta` it wiped the page's `refreshToast` flag, and a failed
-    // background refetch went unreported on exactly the page the flag was
-    // added for. Measured, not assumed — hence `useOrderDetail`, which both
-    // read through.
-    vi.spyOn(api, 'getQueue').mockResolvedValue([] as never);
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
-
+    // without `meta` it wiped the page's `refreshToast` flag — hence
+    // `useOrderDetail`, which both read through.
+    vi.spyOn(api, 'getOrderQueue').mockResolvedValue(EMPTY as never);
+    const client = newClient();
     mountWithClient(client);
-
     await waitFor(() =>
       expect(client.getQueryCache().find({ queryKey: ['project', 1] })?.meta).toEqual({ refreshToast: true }),
     );

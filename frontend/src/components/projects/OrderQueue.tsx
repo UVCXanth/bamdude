@@ -3,10 +3,9 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import { Clock, Layers, ListTodo, Package } from 'lucide-react';
 import { api, withStreamToken } from '../../api/client';
-import type { PrintQueueItem } from '../../api/client';
-import { farmStatusPollInterval } from '../../api/farmReadBudget';
+import type { AutoQueueItem, OrderQueuePrinting, PrintQueueItem } from '../../api/client';
+import { farmPollInterval, farmStatusPollInterval } from '../../api/farmReadBudget';
 import { useOrderDetail } from '../../hooks/useOrderDetail';
-import { usePendingQueueItems, usePrintingQueueItems } from '../../hooks/useQueueItems';
 import { useQueueRowPicture } from '../../hooks/useQueueRowPicture';
 import { formatDuration, formatETA, type TimeFormat } from '../../utils/date';
 
@@ -15,12 +14,15 @@ interface OrderQueueProps {
 }
 
 /**
- * What this order has on a printer right now, and what is waiting.
+ * What this order has on a printer right now, what waits in a printer's queue,
+ * and what waits for the auto-queue's distributor.
  *
- * The queue is global; this panel is the order's slice of it, filtered client
- * side exactly as the old project page did — there is no per-order queue
- * endpoint, and adding one to answer a panel would be a second source of truth
- * for the queue's contents.
+ * ⚠️ **One endpoint, both tiers** (spec workshop-order-queue). The panel used to
+ * filter the farm-wide queue lists on the client: it missed the auto-queue — so
+ * work the plan had just queued showed in the «In queue» tile but not here —
+ * and pulled the whole farm's queue onto one order's page. `GET
+ * /projects/{id}/queue` lists exactly the rows the tiles count, through the
+ * same server conditions.
  *
  * Informational only, by design: no pause / cancel / reorder here. Those live
  * on the queue page, where the whole picture is, and a farm decision taken
@@ -35,26 +37,24 @@ export function OrderQueue({ orderId }: OrderQueueProps) {
 
   const { data: order } = useOrderDetail(orderId);
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
-  // ⚠️ The SHARED farm-wide queue, not a private copy. This panel used to ask
-  // for the same two lists under keys of its own (`['queue', 'printing']` /
-  // `['queue', 'pending']`), which TanStack could not tell were the queue
-  // page's question — so the same rows were fetched twice, on two timers, and
-  // the two screens could disagree. `useQueueItems` owns the key and the
-  // interval for both.
-  const { data: printingAll } = usePrintingQueueItems();
-  const { data: pendingAll } = usePendingQueueItems();
+  const { data: tiers } = useQuery({
+    queryKey: ['project-queue', orderId],
+    queryFn: () => api.getOrderQueue(orderId),
+    // Order mutations and queue socket events re-read it; this is the safety net
+    // for a dropped socket — the queue lists' own interval.
+    refetchInterval: (query) => farmPollInterval(10_000, query),
+  });
+  const printing = tiers?.printing ?? [];
+  const pending = tiers?.pending ?? [];
+  const awaiting = tiers?.awaiting ?? [];
+  const nothing = printing.length === 0 && pending.length === 0 && awaiting.length === 0;
 
-  const mine = (items: PrintQueueItem[] | undefined) =>
-    (items ?? []).filter((item) => item.project_id === orderId);
-  const printing = mine(printingAll);
-  const pending = mine(pendingAll);
+  // A finished order with nothing left has nothing to say here; an active one
+  // answers "is anything moving?" even when the answer is no.
+  if (nothing && order?.status !== 'active') return null;
 
-  // A finished order with nothing running has nothing to say here; an active
-  // one answers "is anything moving?" even when the answer is no.
-  if (printing.length === 0 && pending.length === 0 && order?.status !== 'active') return null;
-
-  const lineName = (item: PrintQueueItem) =>
-    order?.lines.find((line) => line.id === item.project_line_id)?.product_name;
+  const lineName = (lineId: number | null | undefined) =>
+    order?.lines.find((line) => line.id === lineId)?.product_name;
 
   const timeFormat: TimeFormat = settings?.time_format || 'system';
 
@@ -72,7 +72,7 @@ export function OrderQueue({ orderId }: OrderQueueProps) {
         </Link>
       </div>
 
-      {printing.length === 0 && pending.length === 0 ? (
+      {nothing ? (
         <p className="text-sm text-bambu-gray/70 italic">{t('orders.queue.empty')}</p>
       ) : (
         <>
@@ -83,23 +83,41 @@ export function OrderQueue({ orderId }: OrderQueueProps) {
             // a 1024px window with the sidebar open leaves the view ~736px; @sm / @lg
             // (384 / 512px) would fit three cards into 512px.
             <div className="grid grid-cols-1 @xl:grid-cols-2 @2xl:grid-cols-3 gap-3">
-              {printing.map((item) => (
+              {printing.map((print) => (
                 <CurrentPrintInfoCard
-                  key={item.id}
-                  item={item}
+                  key={print.archive_id}
+                  print={print}
                   timeFormat={timeFormat}
-                  lineName={lineName(item)}
+                  lineName={lineName(print.project_line_id)}
                 />
               ))}
             </div>
           )}
 
           {pending.length > 0 && (
-            <ul className="space-y-2">
-              {pending.map((item) => (
-                <PendingRow key={item.id} item={item} lineName={lineName(item)} />
-              ))}
-            </ul>
+            <div className="space-y-2">
+              <h3 id={`order-${orderId}-queue-pending`} className="text-sm text-bambu-gray">
+                {t('orders.queue.onPrinter')}
+              </h3>
+              <ul aria-labelledby={`order-${orderId}-queue-pending`} className="space-y-2">
+                {pending.map((item) => (
+                  <PendingRow key={item.id} item={item} lineName={lineName(item.project_line_id)} />
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {awaiting.length > 0 && (
+            <div className="space-y-2">
+              <h3 id={`order-${orderId}-queue-awaiting`} className="text-sm text-bambu-gray">
+                {t('orders.queue.awaiting')}
+              </h3>
+              <ul aria-labelledby={`order-${orderId}-queue-awaiting`} className="space-y-2">
+                {awaiting.map((item) => (
+                  <AwaitingRow key={item.id} item={item} lineName={lineName(item.project_line_id)} />
+                ))}
+              </ul>
+            </div>
           )}
         </>
       )}
@@ -159,8 +177,47 @@ function PendingRow({ item, lineName }: { item: PrintQueueItem; lineName: string
   );
 }
 
+/**
+ * A job the auto-queue's distributor has not handed to a printer yet: what it
+ * is, which printers it may go to, and — as the queue page shows it — why it is
+ * still waiting. The original's picture only: an auto-queue row has no
+ * `source-thumbnail` route of its own.
+ */
+function AwaitingRow({ item, lineName }: { item: AutoQueueItem; lineName: string | undefined }) {
+  const { t } = useTranslation();
+  const thumbnail =
+    item.archive_id != null && item.archive_thumbnail
+      ? api.getArchiveThumbnail(item.archive_id)
+      : item.library_file_id != null && item.library_file_thumbnail
+        ? api.getLibraryFileThumbnailUrl(item.library_file_id)
+        : null;
+  const name = item.archive_name || item.library_file_name || `#${item.id}`;
+  const target =
+    [item.target_model, item.target_location?.name].filter(Boolean).join(' · ') || t('orders.queue.anyPrinter');
+
+  return (
+    <li className="flex items-center gap-3 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary p-2">
+      {thumbnail ? (
+        <img src={thumbnail} alt="" className="w-10 h-10 rounded object-contain bg-bambu-dark flex-shrink-0" />
+      ) : (
+        <div className="w-10 h-10 rounded bg-bambu-dark flex items-center justify-center flex-shrink-0">
+          <Package className="w-4 h-4 text-bambu-gray" />
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="text-sm text-white truncate">{name}</p>
+        <LineLabel name={lineName} />
+        <p className="text-xs text-bambu-gray truncate">{t('orders.queue.target', { target })}</p>
+        {item.waiting_reason && (
+          <p className="text-xs text-yellow-700 dark:text-yellow-400 truncate">{item.waiting_reason}</p>
+        )}
+      </div>
+    </li>
+  );
+}
+
 interface CurrentPrintInfoCardProps {
-  item: PrintQueueItem;
+  print: OrderQueuePrinting;
   timeFormat: TimeFormat;
   lineName: string | undefined;
 }
@@ -173,21 +230,19 @@ interface CurrentPrintInfoCardProps {
  * bar uses the same green / amber (paused) fill as the printers and queue
  * pages.
  */
-function CurrentPrintInfoCard({ item, timeFormat, lineName }: CurrentPrintInfoCardProps) {
+function CurrentPrintInfoCard({ print, timeFormat, lineName }: CurrentPrintInfoCardProps) {
   const { t } = useTranslation();
   const { data: status } = useQuery({
-    queryKey: ['printerStatus', item.printer_id],
-    queryFn: ({ signal }) => api.getPrinterStatus(item.printer_id as number, signal),
-    enabled: item.printer_id != null,
+    queryKey: ['printerStatus', print.printer_id],
+    queryFn: ({ signal }) => api.getPrinterStatus(print.printer_id as number, signal),
+    enabled: print.printer_id != null,
     refetchInterval: query => farmStatusPollInterval(5000, query),
   });
 
   const name =
     status?.subtask_name
     || status?.current_print
-    || item.archive_name
-    || item.library_file_name
-    || `#${item.id}`;
+    || print.name;
   const thumbnail = status?.cover_url;
   const isLive = status?.state === 'RUNNING' || status?.state === 'PAUSE';
   const progress = status?.progress ?? 0;
@@ -207,13 +262,13 @@ function CurrentPrintInfoCard({ item, timeFormat, lineName }: CurrentPrintInfoCa
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 mb-1">
             <p className="text-sm text-bambu-gray">{t('queueCard.currentPrint')}</p>
-            {item.printer_name && item.printer_id != null && (
+            {print.printer_name && print.printer_id != null && (
               <Link
-                to={`/#printer-${item.printer_id}`}
+                to={`/#printer-${print.printer_id}`}
                 className="text-xs text-bambu-gray/70 hover:text-bambu-green transition-colors"
                 title={t('queueCard.goToPrinter')}
               >
-                · {item.printer_name}
+                · {print.printer_name}
               </Link>
             )}
           </div>

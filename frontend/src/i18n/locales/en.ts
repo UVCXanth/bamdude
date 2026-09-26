@@ -5715,6 +5715,11 @@ export default {
       viewAll: 'Open the queue',
       empty: 'Nothing queued for this order.',
       line: 'Line: {{name}}',
+      // spec workshop-order-queue: the two tiers below what is printing.
+      onPrinter: 'In a printer queue',
+      awaiting: 'Waiting for distribution',
+      target: 'For: {{target}}',
+      anyPrinter: 'any printer',
       eta: 'ETA',
     },
     timeline: {
