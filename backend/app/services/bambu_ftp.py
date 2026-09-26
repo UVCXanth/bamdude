@@ -640,6 +640,21 @@ class BambuFTPClient:
                 if local_path.exists():
                     local_path.unlink()
                 return False
+            # A short read is a failed download, not a file (upstream 55cc64c8):
+            # a truncated 3MF attached to an archive fails far from the cause.
+            # Asked AFTER the transfer, in the same session — one command, and
+            # the multi-path walk pays nothing for the candidates that 550. No
+            # answer (firmware without SIZE) is no evidence and changes nothing.
+            server_size = self.get_file_size(remote_path)
+            if server_size is not None and server_size >= 0 and file_size != server_size:
+                logger.warning(
+                    "FTP download of %s is short: got %s bytes, the printer reports %s — treating as failed",
+                    remote_path,
+                    file_size,
+                    server_size,
+                )
+                local_path.unlink(missing_ok=True)
+                return False
             logger.info("Successfully downloaded %s to %s (%s bytes)", remote_path, local_path, file_size)
             return True
         except (OSError, ftplib.Error) as e:

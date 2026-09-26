@@ -280,6 +280,33 @@ class TestDownload:
         assert local.exists()
         client.disconnect()
 
+    def test_a_short_download_is_refused(self, ftp_client_factory, ftp_server, tmp_path):
+        """Fewer bytes than the printer says the file holds is a failed download,
+        not a file: a truncated 3MF attached to an archive fails later, far from
+        the cause (upstream 55cc64c8). The partial copy is removed."""
+        ftp_server.add_file("cache/short.3mf", b"only part of it")
+        local = tmp_path / "short.3mf"
+        client = ftp_client_factory()
+        client.connect()
+        client._ftp.size = lambda path: 4096
+        assert client.download_to_file("/cache/short.3mf", local) is False
+        assert not local.exists()
+        client.disconnect()
+
+    def test_a_download_the_printer_cannot_size_is_kept(self, ftp_client_factory, ftp_server, tmp_path):
+        """No SIZE answer is no evidence either way — the download stands as before."""
+        import ftplib
+
+        content = b"whole file"
+        ftp_server.add_file("cache/nosize.3mf", content)
+        local = tmp_path / "nosize.3mf"
+        client = ftp_client_factory()
+        client.connect()
+        client._ftp.size = lambda path: (_ for _ in ()).throw(ftplib.error_perm("502 SIZE not implemented."))
+        assert client.download_to_file("/cache/nosize.3mf", local) is True
+        assert local.read_bytes() == content
+        client.disconnect()
+
     def test_zero_byte_download_returns_false(self, ftp_client_factory, ftp_server, tmp_path):
         """0-byte download returns False and cleans up (regression test)."""
         ftp_server.add_file("cache/empty.bin", b"")

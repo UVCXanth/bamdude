@@ -172,6 +172,13 @@
 
 ### Fixed
 
+- **A file only partly downloaded from the printer is no longer kept as
+  complete.** A download that stopped early was accepted as long as it was not
+  empty, so a truncated 3MF could be attached to an archive and fail later. The
+  download is now checked against the size the printer reports and retried like
+  any other failed download; a printer that does not report sizes is unaffected.
+  (upstream 55cc64c8)
+
 - **Timelapse and video failures log ffmpeg's actual error, and deleting an
   archive without a 3MF no longer raises a false security alarm.** When a
   timelapse stitch, a video conversion or a last-frame extraction failed, the log
