@@ -114,6 +114,8 @@ describe('invalidateOrderViews', () => {
       'project',
       'project-archives',
       'project-plan',
+      // spec workshop-order-stage: every order mutation writes the journal the feed shows.
+      'project-timeline',
       // spec 2026-09-06: the ETA is read off the plan, so it moves with it.
       'order-forecast',
       'orders-forecast',

@@ -561,13 +561,12 @@ export function useWebSocket() {
    * ⚠️ **The keys come from `ORDER_VIEW_KEYS`, the calls do not.** Every
    * other order mutation calls `invalidateOrderViews`; this one uses bounded
    * dirty deadlines and a paced active-read lane instead. It walks that same
-   * list — one list, no second
-   * copy to drift. `project-timeline` is NOT an order view (nothing but this
-   * page reads it) and is asked for separately.
+   * list — one list, no second copy to drift. `project-timeline` is in it
+   * since the order journal (spec workshop-order-stage): every order mutation
+   * writes a timeline line now, and a print is a timeline event as before.
    */
   const invalidateProjectViews = useCallback(() => {
     for (const key of ORDER_VIEW_KEYS) debouncedInvalidate(key);
-    debouncedInvalidate('project-timeline');  // a print is a timeline event
   }, [debouncedInvalidate]);
 
   const handleMessage = useCallback((message: WebSocketMessage) => {

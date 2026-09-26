@@ -5386,6 +5386,15 @@ export default {
       completed: 'Виконане',
       cancelled: 'Скасоване',
     },
+    // Ставиться вручну (спека workshop-order-stage); «Готово» — це виконане замовлення.
+    stage: {
+      label: 'Етап',
+      prep: 'Підготовка',
+      printing: 'Друкується',
+      qc: 'Контроль якості',
+      done: 'Готово',
+      changed: 'Етап: {{stage}}',
+    },
     priority: {
       low: 'Низький',
       normal: 'Звичайний',

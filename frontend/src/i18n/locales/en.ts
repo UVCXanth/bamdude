@@ -5359,6 +5359,15 @@ export default {
       completed: 'Completed',
       cancelled: 'Cancelled',
     },
+    // Set by hand (spec workshop-order-stage); «done» is a completed order.
+    stage: {
+      label: 'Stage',
+      prep: 'Preparation',
+      printing: 'Printing',
+      qc: 'Quality check',
+      done: 'Done',
+      changed: 'Stage: {{stage}}',
+    },
     priority: {
       low: 'Low',
       normal: 'Normal',

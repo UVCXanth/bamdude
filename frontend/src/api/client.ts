@@ -1714,6 +1714,16 @@ export interface TimelineEvent {
 
 /** `active` is the only OPEN status. The other two are closed ledgers. */
 export type ProjectStatus = 'active' | 'completed' | 'cancelled';
+/** An active order's stage — set by hand only (spec workshop-order-stage, rule 4). */
+export type OrderStage = 'prep' | 'printing' | 'qc';
+/** What the wire says: the column while active, `done` once completed (rule 2). */
+export type OrderStageShown = OrderStage | 'done';
+export const ORDER_STAGES: readonly OrderStage[] = ['prep', 'printing', 'qc'];
+/** Someone who may be made responsible for an order — an active user. */
+export interface OrderAssignee {
+  id: number;
+  username: string;
+}
 export type ProjectPriority = 'low' | 'normal' | 'high' | 'urgent';
 
 /**
@@ -1848,6 +1858,10 @@ export interface Order {
   description: string | null;
   color: string | null;
   status: ProjectStatus;
+  /** `null` for a cancelled order, which has no stage. */
+  stage: OrderStageShown | null;
+  responsible_id: number | null;
+  responsible_name: string | null;
   notes: string | null;
   attachments: ProjectAttachment[] | null;
   tags: string | null;
@@ -1873,6 +1887,10 @@ export interface OrderListItem {
   customer_name: string | null;
   color: string | null;
   status: ProjectStatus;
+  /** `null` for a cancelled order, which has no stage. */
+  stage: OrderStageShown | null;
+  responsible_id: number | null;
+  responsible_name: string | null;
   due_date: string | null;
   priority: ProjectPriority;
   price: number | null;
@@ -1920,6 +1938,8 @@ export interface OrderCreate {
   priority?: ProjectPriority;
   price?: number | null;
   url?: string | null;
+  /** Absent → the server makes the author responsible; null → nobody. */
+  responsible_id?: number | null;
 }
 
 export interface OrderUpdate {
@@ -1935,14 +1955,17 @@ export interface OrderUpdate {
   due_date?: string | null;
   priority?: ProjectPriority;
   price?: number | null;
+  responsible_id?: number | null;
 }
 
-/** The three filters compose server-side; `product_id` selects orders that
- *  have a line of that product. */
+/** The filters compose server-side; `product_id` selects orders that have a
+ *  line of that product, `stage` = `done` selects completed orders. */
 export interface OrderListParams {
   status?: ProjectStatus;
   customer_id?: number;
   product_id?: number;
+  stage?: OrderStageShown;
+  responsible_id?: number;
 }
 
 /**
@@ -1962,6 +1985,8 @@ export interface OrderListTotals {
   completed: number;
   cancelled: number;
   all: number;
+  /** Active orders per stage under every filter but status and stage. */
+  stages: Record<OrderStage, number>;
 }
 export interface OrderListPage {
   items: OrderListItem[];
@@ -10977,6 +11002,8 @@ export const api = {
     if (params.status) qs.set('status', params.status);
     if (params.customer_id != null) qs.set('customer_id', String(params.customer_id));
     if (params.product_id != null) qs.set('product_id', String(params.product_id));
+    if (params.stage) qs.set('stage', params.stage);
+    if (params.responsible_id != null) qs.set('responsible_id', String(params.responsible_id));
     return request<OrderListItem[]>(`/projects/?${qs}`);
   },
   /** The orders page's list — the only caller that sends `page` (spec projects-lists-parity). */
@@ -10985,8 +11012,15 @@ export const api = {
     if (params.status) qs.set('status', params.status);
     if (params.customer_id != null) qs.set('customer_id', String(params.customer_id));
     if (params.product_id != null) qs.set('product_id', String(params.product_id));
+    if (params.stage) qs.set('stage', params.stage);
+    if (params.responsible_id != null) qs.set('responsible_id', String(params.responsible_id));
     return request<OrderListPage>(`/projects/?${pagedSearchParams(qs, params)}`);
   },
+  /** Set an active order's stage by hand (spec workshop-order-stage, rule 4). */
+  setOrderStage: (id: number, stage: OrderStage) =>
+    request<Order>(`/projects/${id}/stage`, { method: 'PUT', body: JSON.stringify({ stage }) }),
+  /** Every active user — who may be made responsible for an order. */
+  getOrderAssignees: () => request<OrderAssignee[]>('/projects/assignees'),
   /** The orders page's tiles — the whole farm, whatever the list is filtered by. */
   getOrdersSummary: () => request<OrdersSummary>('/projects/summary'),
   getProjectsNavBadges: () => request<ProjectsNavBadges>('/projects/nav-badges'),

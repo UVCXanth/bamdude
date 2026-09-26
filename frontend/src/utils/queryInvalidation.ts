@@ -51,6 +51,9 @@ export const ORDER_VIEW_KEYS = [
   'project', // an order page's own figures — the prefix, see above
   'project-archives', // the Prints grid
   'project-plan', // pass 3: what is still to print
+  // spec workshop-order-stage: every order mutation writes the order journal,
+  // so the activity feed is an order view like the rest.
+  'project-timeline',
   'order-forecast', 'orders-forecast', // spec 2026-09-06: the ETA moves with the plan
   'order-filament', 'orders-filament', // spec 2026-09-07: the need moves with the plan
   'customers', // the customer tiles are computed from these orders

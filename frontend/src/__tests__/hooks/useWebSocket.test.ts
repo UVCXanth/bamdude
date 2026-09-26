@@ -535,7 +535,7 @@ describe('useWebSocket hook', () => {
 
       // Stale marks occur together at the dirty deadline; active reads are
       // paced. Keep the window derived from the shared key list.
-      const keyCount = ORDER_VIEW_KEYS.length + 1; // + 'project-timeline'
+      const keyCount = ORDER_VIEW_KEYS.length; // 'project-timeline' is one of them now
       await act(async () => {
         vi.advanceTimersByTime(
           INVALIDATION_DEBOUNCE_MS + keyCount * INVALIDATION_STAGGER_MS + INVALIDATION_STAGGER_MS,

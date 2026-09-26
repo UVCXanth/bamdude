@@ -6,7 +6,8 @@ import { OrdersTable } from '../../../components/projects/OrdersTable';
 import type { OrderForecast, OrderListItem } from '../../../api/client';
 
 const row = (over: Partial<OrderListItem>): OrderListItem => ({
-  id: 1, code: 'OR-0001', name: 'A', customer_id: null, customer_name: null, color: null, status: 'active', due_date: null, priority: 'normal',
+  id: 1, code: 'OR-0001', name: 'A', customer_id: null, customer_name: null, color: null, status: 'active',
+  stage: 'prep', responsible_id: null, responsible_name: null, due_date: null, priority: 'normal',
   price: null, tags: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00', lines_count: 1, ordered: 10, printed: 4,
   progress: 0.4, covered_units: 4, remaining: 6, from_stock_units: 0, line_products: [], prints_in_progress: 2, prints_queued: 3, ...over,
 });
