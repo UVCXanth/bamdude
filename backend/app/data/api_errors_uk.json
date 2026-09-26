@@ -162,6 +162,7 @@
   "Cloud preset selected for {}, but no Bambu Cloud session is stored. Sign in to Bambu Cloud and retry.": "Для {} вибрано хмарний пресет, але сесію Bambu Cloud не збережено. Увійдіть у Bambu Cloud і повторіть спробу.",
   "Cloud presets require the cloud:auth permission ({})": "Хмарні пресети потребують дозволу cloud:auth ({})",
   "Contact {} does not belong to this customer": "Контакт {} не належить цьому замовнику",
+  "Contact {} does not belong to this order's customer": "Контакт {} не належить замовнику цього замовлення",
   "Contact {} is listed twice": "Контакт {} указано двічі",
   "Could not connect to Spoolman at {}": "Не вдалося підключитися до Spoolman за адресою {}",
   "Could not connect to the printer over FTP": "Не вдалося підключитися до принтера через FTP",

@@ -25,7 +25,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import delete, func, inspect as sqla_inspect, select
+from sqlalchemy import delete, func, inspect as sqla_inspect, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from starlette.background import BackgroundTask
@@ -67,6 +67,7 @@ from backend.app.schemas.product import (
     StockMovementOut,
 )
 from backend.app.services import part_stock, product_delete
+from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.list_paging import (
     SortSpec,
     apply_sql_sort,
@@ -213,6 +214,7 @@ async def _response(db: AsyncSession, product: Product, *, reload_links: bool = 
     part_balances = await part_stock.balances(db, product.id)
     return ProductResponse(
         id=product.id,
+        code=code_for("product", product.id),
         name=product.name,
         is_active=product.is_active,
         cover_image_filename=product.cover_image_filename,
@@ -323,7 +325,10 @@ async def list_products(
     if active is not None:
         query = query.where(Product.is_active.is_(active))
     if q:
-        query = query.where(Product.name.ilike(f"%{q.strip()}%"))
+        conditions = [Product.name.ilike(f"%{q.strip()}%")]
+        if (product_id := id_from_query("product", q)) is not None:
+            conditions.append(Product.id == product_id)
+        query = query.where(or_(*conditions))
     total = 0
     if paged and not computed:
         total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
@@ -346,6 +351,7 @@ async def list_products(
     items = [
         ProductListItem(
             id=p.id,
+            code=code_for("product", p.id),
             name=p.name,
             is_active=p.is_active,
             cover_image_filename=p.cover_image_filename,

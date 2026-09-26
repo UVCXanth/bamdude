@@ -276,6 +276,7 @@ class CoverPickRequest(BaseModel):
 
 class ProductListItem(BaseModel):
     id: int
+    code: str
     name: str
     is_active: bool
     cover_image_filename: str | None = None

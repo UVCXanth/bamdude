@@ -89,6 +89,7 @@ from backend.app.services.design_settings import (
     extract_design_process_overrides,
     overrides_from_config,
 )
+from backend.app.services.entity_codes import code_for
 from backend.app.services.library_helpers import (
     SLICED_GCODE_META_KEY,
     detect_file_type,
@@ -4453,6 +4454,7 @@ async def get_library_file_order_candidates(
     return [
         OrderCandidateOut(
             project_id=c.project_id,
+            project_code=code_for("order", c.project_id),
             project_name=c.project_name,
             project_line_id=c.project_line_id,
             product_id=c.product_id,

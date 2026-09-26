@@ -105,6 +105,8 @@ class ProcurementUpdate(BaseModel):
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     customer_id: int | None = None
+    # A contact of ``customer_id`` (checked in the route), who receives the order.
+    contact_id: int | None = None
     description: str | None = None
     color: str | None = None
     notes: str | None = None
@@ -131,6 +133,7 @@ class ProjectCreate(BaseModel):
 class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     customer_id: int | None = None
+    contact_id: int | None = None
     description: str | None = None
     color: str | None = None
     status: str | None = None
@@ -262,11 +265,25 @@ class ProjectFiguresOut(BaseModel):
     prints_queued: int = 0
 
 
+class OrderContactOut(BaseModel):
+    """Who receives the order — a contact of its customer (spec workshop-customers, rule 17)."""
+
+    id: int
+    code: str
+    name: str | None
+    role: str | None
+    phone: str | None
+    email: str | None
+
+
 class ProjectResponse(BaseModel):
     id: int
+    code: str
     name: str
     customer_id: int | None
     customer_name: str | None
+    contact_id: int | None = None
+    contact: OrderContactOut | None = None
     description: str | None
     color: str | None
     status: str
@@ -290,6 +307,7 @@ class ProjectResponse(BaseModel):
 
 class ProjectListResponse(BaseModel):
     id: int
+    code: str
     name: str
     customer_id: int | None
     customer_name: str | None

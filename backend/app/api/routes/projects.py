@@ -27,7 +27,7 @@ from backend.app.i18n.api_errors import json_error
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.auto_queue import AutoQueueItem
-from backend.app.models.customer import Customer
+from backend.app.models.customer import Customer, CustomerContact
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
@@ -56,6 +56,7 @@ from backend.app.schemas.project import (
     BatchAddQueueItems,
     LinePlanOut,
     LineProductOut,
+    OrderContactOut,
     OrderPlanResponse,
     OrderPrintDefectsIn,
     OrderPrintDefectsOut,
@@ -94,6 +95,7 @@ from backend.app.services import (
 from backend.app.services.archive_defects import DefectsWrite, record_defects
 from backend.app.services.archive_write_scope import archive_write_scope
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
+from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.filament_intake import require_source_requirements
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.list_paging import (
@@ -158,6 +160,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
     figs, other = attribute(ctx)
     project = ctx.project
     customer = await db.get(Customer, project.customer_id) if project.customer_id else None
+    contact = await db.get(CustomerContact, project.contact_id) if project.contact_id else None
     lines = [
         ProjectLineResponse(
             id=line.id,
@@ -194,9 +197,21 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
     pf = project_figures(ctx, figs, other)
     return ProjectResponse(
         id=project.id,
+        code=code_for("order", project.id),
         name=project.name,
         customer_id=project.customer_id,
         customer_name=customer.name if customer else None,
+        contact_id=project.contact_id,
+        contact=OrderContactOut(
+            id=contact.id,
+            code=code_for("contact", contact.id),
+            name=contact.name,
+            role=contact.role,
+            phone=contact.phone,
+            email=contact.email,
+        )
+        if contact
+        else None,
         description=project.description,
         color=project.color,
         status=project.status,
@@ -259,9 +274,12 @@ _ORDER_FORECAST = {
 
 
 def _order_search(query, q: str):
-    """``q`` on the order name, its customer's name or its tags; the caller has joined Customer."""
+    """``q`` on the order name, its customer's name, its tags or its code; the caller has joined Customer."""
     needle = f"%{q.strip()}%"
-    return query.where(or_(Project.name.ilike(needle), Customer.name.ilike(needle), Project.tags.ilike(needle)))
+    conditions = [Project.name.ilike(needle), Customer.name.ilike(needle), Project.tags.ilike(needle)]
+    if (order_id := id_from_query("order", q)) is not None:
+        conditions.append(Project.id == order_id)
+    return query.where(or_(*conditions))
 
 
 async def _order_totals(
@@ -291,7 +309,9 @@ async def list_projects(
     status: str | None = None,
     customer_id: int | None = None,
     product_id: int | None = None,
-    q: str | None = Query(None, description="With page set: ilike on the order name, its customer's name or its tags"),
+    q: str | None = Query(
+        None, description="With page set: ilike on the order name, its customer's name or its tags, or an OR code"
+    ),
     sort_by: str | None = Query(
         None, description="With page set: '<key>-<asc|desc>'; unknown → updated-desc; ready/hours run the forecast"
     ),
@@ -378,6 +398,7 @@ async def list_projects(
         out.append(
             ProjectListResponse(
                 id=project.id,
+                code=code_for("order", project.id),
                 name=project.name,
                 customer_id=project.customer_id,
                 customer_name=project.customer.name if project.customer else None,
@@ -482,6 +503,16 @@ async def _check_customer(db: AsyncSession, customer_id: int | None) -> None:
         raise HTTPException(status_code=404, detail="Customer not found")
 
 
+async def _check_contact(db: AsyncSession, contact_id: int | None, customer_id: int | None) -> None:
+    """The order's contact must be a contact of the customer the order has after
+    this request (spec workshop-customers, rule 17) — no customer, no contact."""
+    if contact_id is None:
+        return
+    contact = await db.get(CustomerContact, contact_id)
+    if contact is None or customer_id is None or contact.customer_id != customer_id:
+        raise HTTPException(status_code=422, detail=f"Contact {contact_id} does not belong to this order's customer")
+
+
 async def _check_product(db: AsyncSession, product_id: int) -> Product:
     product = await db.get(Product, product_id)
     if product is None:
@@ -539,6 +570,7 @@ async def create_project(
     current_user: User | None = RequirePermission(Permission.PROJECTS_CREATE),
 ):
     await _check_customer(db, data.customer_id)
+    await _check_contact(db, data.contact_id, data.customer_id)
     for line in data.lines:
         await _check_product(db, line.product_id)
     project = Project(**data.model_dump(exclude={"lines"}))
@@ -718,10 +750,17 @@ async def update_project(
         raise HTTPException(status_code=400, detail="Invalid priority")
     if "customer_id" in data.model_fields_set:
         await _check_customer(db, data.customer_id)
+    moves_customer = "customer_id" in data.model_fields_set and data.customer_id != project.customer_id
+    if "contact_id" in data.model_fields_set:
+        target = data.customer_id if "customer_id" in data.model_fields_set else project.customer_id
+        await _check_contact(db, data.contact_id, target)
     # Every field keys off model_fields_set: an explicit null CLEARS, an absent
     # field leaves the column alone (the tags/due_date/#2536 lesson, applied to all).
     for field_name in data.model_fields_set:
         setattr(project, field_name, getattr(data, field_name))
+    if moves_customer and "contact_id" not in data.model_fields_set:
+        # The contact belonged to the customer the order just left (spec workshop-customers, rule 17).
+        project.contact_id = None
     if data.status == "cancelled" and not was_completed:
         # Cancelling gives the shelf its kits back (pass 8, Decision 4) — the
         # order will never consume them. COMPLETING deliberately does not: the
@@ -1826,6 +1865,7 @@ async def duplicate_project(
     copy = Project(
         name=data.name or _duplicate_name(source.name, taken),
         customer_id=source.customer_id,
+        contact_id=source.contact_id,
         description=source.description,
         color=source.color,
         status="active",

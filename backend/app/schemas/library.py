@@ -624,6 +624,7 @@ class OrderCandidateOut(BaseModel):
     """
 
     project_id: int
+    project_code: str
     project_name: str
     project_line_id: int
     product_id: int

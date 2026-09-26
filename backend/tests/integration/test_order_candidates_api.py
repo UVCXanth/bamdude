@@ -198,6 +198,7 @@ async def test_candidates_are_ranked_by_every_key_in_turn(committing_client, db_
     rows = await _candidates(committing_client, file_id)
     assert [r["project_name"] for r in rows] == ["D", "E", "F", "A", "B"]
     assert [r["project_id"] for r in rows] == [d_id, e_id, f_id, a_id, b_id]
+    assert [r["project_code"] for r in rows] == [f"OR-{i:04d}" for i in (d_id, e_id, f_id, a_id, b_id)]
     assert [r["project_line_id"] for r in rows] == [d_line, e_line, f_line, a_line, b_line]
     assert [r["outstanding_prints"] for r in rows] == [2, 4, 4, 5, 0]
     # A closed order takes no more work and is not offered at all.
