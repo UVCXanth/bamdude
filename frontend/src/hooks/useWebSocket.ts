@@ -535,6 +535,16 @@ export function useWebSocket() {
     invalidationTimeoutRef.current = window.setTimeout(flushDueInvalidations, Math.max(0, firstDue - now));
   }, [flushDueInvalidations]);
 
+  // A slot's own rows skip the cascade debounce above (upstream 7363d5fd). The
+  // debounce exists for print completion, where one event fans out across half
+  // the app; a spool swap touches one slot and the user is standing at the
+  // printer looking at the card, and every further event restarted the wait.
+  // Both inventory backends' keys: TanStack refetches only the active ones.
+  const invalidateSlotQueries = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
+    queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments'] });
+  }, [queryClient]);
+
   /**
    * Everything a project page reads that a print moves.
    *
@@ -816,9 +826,9 @@ export function useWebSocket() {
         // Spoolman queries the printer card reads (its own assign/unassign
         // mutations invalidate exactly these two). With only the internal key
         // here, the Spoolman assign route's broadcast (spec 2026-09-13 §3.3)
-        // arrived in the browser and refreshed nothing.
-        debouncedInvalidate('spool-assignments');
-        debouncedInvalidate('spoolman-slot-assignments');
+        // arrived in the browser and refreshed nothing. The slot rows go at
+        // once; the Spoolman spool list is not on the card's path and waits.
+        invalidateSlotQueries();
         debouncedInvalidate('spoolman-inventory-spools');
         break;
 
@@ -847,9 +857,10 @@ export function useWebSocket() {
       }
 
       case 'spool_auto_assigned':
-        // RFID tag matched - refresh inventory and assignment data
+        // RFID tag matched - refresh inventory and assignment data. The slot
+        // row was just rewritten, so it goes at once; the spool list waits.
         debouncedInvalidate('inventory-spools');
-        debouncedInvalidate('spool-assignments');
+        invalidateSlotQueries();
         break;
 
       case 'spool_usage_logged':
@@ -977,7 +988,7 @@ export function useWebSocket() {
         break;
 
     }
-  }, [queryClient, debouncedInvalidate, invalidateProjectViews, throttledPrinterStatusUpdate, showToast, t]);
+  }, [queryClient, debouncedInvalidate, invalidateSlotQueries, invalidateProjectViews, throttledPrinterStatusUpdate, showToast, t]);
 
   // Keep the ref updated with latest handleMessage
   useEffect(() => {

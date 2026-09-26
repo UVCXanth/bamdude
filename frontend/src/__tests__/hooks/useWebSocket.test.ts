@@ -685,7 +685,11 @@ describe('useWebSocket hook', () => {
     // (spec 2026-09-13 §3.3) the message arrived and refreshed nothing on a
     // Spoolman install. The two Spoolman keys are exactly the ones the printer
     // page's own assign/unassign mutations invalidate.
-    it('a slot assignment change refreshes BOTH inventories', async () => {
+    //
+    // The slot's own rows skip the cascade debounce (upstream 7363d5fd): a swap
+    // touches one slot and the user is standing at the printer looking at the
+    // card. The Spoolman spool LIST is not on that path and stays debounced.
+    it('a slot assignment change refreshes BOTH inventories, the slot rows at once', async () => {
       vi.useFakeTimers();
       const { useWebSocket, INVALIDATION_DEBOUNCE_MS, INVALIDATION_STAGGER_MS } = await import(
         '../../hooks/useWebSocket'
@@ -712,14 +716,63 @@ describe('useWebSocket hook', () => {
         });
       });
 
+      // No timer advance: the slot rows are invalidated as the message lands.
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spool-assignments'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-slot-assignments'] });
+      const touched = (key: string) => invalidateSpy.mock.calls.some(([filters]) => filters?.queryKey?.[0] === key);
+      expect(touched('spoolman-inventory-spools')).toBe(false);
+
       // Allow the deadline and a paced-read window.
       await act(async () => {
         vi.advanceTimersByTime(INVALIDATION_DEBOUNCE_MS + 4 * INVALIDATION_STAGGER_MS);
       });
 
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spool-assignments'], refetchType: 'none' });
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-slot-assignments'], refetchType: 'none' });
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-inventory-spools'], refetchType: 'none' });
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    // The RFID auto-assign rewrites the slot's assignment row too; it used to
+    // wait out the same debounce, which any further event restarted (upstream
+    // 7363d5fd). The spool list stays debounced.
+    it('an RFID auto-assign refreshes the slot rows at once and the spool list later', async () => {
+      vi.useFakeTimers();
+      const { useWebSocket, INVALIDATION_DEBOUNCE_MS, INVALIDATION_STAGGER_MS } = await import(
+        '../../hooks/useWebSocket'
+      );
+
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+
+      act(() => {
+        ws.open();
+      });
+
+      act(() => {
+        ws.simulateMessage({
+          type: 'spool_auto_assigned',
+          printer_id: 7,
+          ams_id: 0,
+          tray_id: 0,
+          spool_id: 110,
+        });
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spool-assignments'] });
+      const touched = (key: string) => invalidateSpy.mock.calls.some(([filters]) => filters?.queryKey?.[0] === key);
+      expect(touched('inventory-spools')).toBe(false);
+
+      await act(async () => {
+        vi.advanceTimersByTime(INVALIDATION_DEBOUNCE_MS + 4 * INVALIDATION_STAGGER_MS);
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['inventory-spools'], refetchType: 'none' });
 
       vi.useRealTimers();
       vi.unstubAllGlobals();

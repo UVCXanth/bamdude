@@ -172,6 +172,15 @@
 
 ### Fixed
 
+- **Swapping a spool updates the slot card right away, and a Spoolman sync
+  updates it in every open tab.** After a spool change the slot card could keep
+  showing the previous spool's name for up to five seconds, because refreshing
+  the slot waited for the same pause as the refresh after a print finished. The slot now refreshes as soon as the
+  change arrives. A manual Spoolman AMS sync (per printer or for all printers)
+  also told no other browser which slots it changed or cleared, so other tabs
+  kept the old spool until the next reload. It now reports each slot it
+  actually changed. (upstream 7363d5fd)
+
 - **An assigned spool no longer unassigns itself seconds later on P1S.** P1S
   firmware reads a lowercase hex letter in a slot's colour as zero while still
   acknowledging the command as a success, and a spool's colour could go out in

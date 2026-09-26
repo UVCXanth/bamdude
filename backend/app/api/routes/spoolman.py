@@ -15,6 +15,7 @@ from backend.app.api.routes.spoolman_inventory import _clear_stale_tag_links
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.websocket import ws_manager
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.spool_assignment import SpoolAssignment
@@ -192,6 +193,36 @@ async def disconnect_spoolman(
     """Disconnect from Spoolman server."""
     await close_spoolman_client()
     return {"success": True, "message": "Disconnected from Spoolman"}
+
+
+async def _announce_slot_changes(
+    before: dict[tuple[int, int, int], int],
+    changes: list[tuple[int, int, int, int]],
+    empties: list[tuple[int, int, int]],
+) -> None:
+    """Tell open browsers which slots a sync just re-pointed or cleared.
+
+    The sync endpoints are what maintains ``spoolman_slot_assignments``, and the
+    printer card reads those rows — without an event every other tab kept the
+    previous spool (upstream 7363d5fd, whose AMS callback maintains the same
+    ledger and "announced nothing at all"). Called only after the commit, so a
+    failed write stays silent. Only rows that actually moved are named, as the
+    unassign route does: re-reading the spool already on file changes nothing.
+
+    ``before`` is the ledger as loaded, keyed ``(printer_id, ams_id, tray_id)``;
+    ``changes`` carry the spool each slot now holds.
+    """
+    moved = [(p, a, t) for p, a, t, spool_id in changes if before.get((p, a, t)) != spool_id]
+    moved += [slot for slot in empties if slot in before]
+    for printer_id, ams_id, tray_id in dict.fromkeys(moved):
+        await ws_manager.broadcast(
+            {
+                "type": "spool_assignment_changed",
+                "printer_id": printer_id,
+                "ams_id": ams_id,
+                "tray_id": tray_id,
+            }
+        )
 
 
 @router.post("/sync/{printer_id}", response_model=SyncResult)
@@ -436,6 +467,12 @@ async def sync_printer_ams(
             await db.rollback()
             logger.error("Error persisting Spoolman slot assignments for printer %s: %s", printer_id, e)
             errors.append(f"Failed to persist slot assignments: {type(e).__name__}")
+        else:
+            await _announce_slot_changes(
+                {(printer_id, a, t): s for (a, t), s in spoolman_slot_map.items()},
+                [(printer_id, a, t, s) for a, t, s in slot_changes],
+                [(printer_id, a, t) for a, t in empty_slots],
+            )
 
     return SyncResult(
         success=len(errors) == 0,
@@ -663,6 +700,8 @@ async def sync_all_printers(
             await db.rollback()
             logger.error("Error persisting Spoolman slot assignments: %s", e)
             all_errors.append(f"Failed to persist slot assignments: {type(e).__name__}")
+        else:
+            await _announce_slot_changes(all_slot_map, all_slot_changes, all_empty_slots)
 
     return SyncResult(
         success=len(all_errors) == 0,
