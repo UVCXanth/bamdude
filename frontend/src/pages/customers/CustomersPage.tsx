@@ -25,10 +25,11 @@ import { useSearchBox } from '../../hooks/useSearchBox';
 import { invalidateAfterDelete } from '../../utils/queryInvalidation';
 
 /**
- * Who the orders are for. Customers have no status of their own, so the only
- * filter is a search (name or contact) — one page at a time from the server
- * (spec projects-lists-parity). Search, sort and page live in the URL; the
- * view mode (table by default here) and the page size are preferences.
+ * Who the orders are for. Customers have no status of their own: the list is a
+ * search (name, code or any contact field) and one exclusive filter — all, with
+ * active orders, or regular — one page at a time from the server (specs
+ * projects-lists-parity, workshop-customers). Search, filter, sort and page live
+ * in the URL; the view mode (table by default here) and the page size are preferences.
  */
 export function CustomersPage() {
   const { t } = useTranslation();
@@ -37,10 +38,12 @@ export function CustomersPage() {
   const queryClient = useQueryClient();
 
   const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
-    defaults: { sort: 'name-asc', extra: { active: '0' } },
+    defaults: { sort: 'name-asc', extra: { show: 'all' } },
   });
-  // «With active orders» — a server filter (spec workshop-lists, rule 22); «regular» comes with WS-03.
-  const onlyActive = extra.active === '1';
+  // «All / With active orders / Regular» — one exclusive server filter, `?show=`
+  // (spec workshop-lists rule 22, workshop-customers rule 21).
+  const show = extra.show;
+  const filtered = show !== 'all';
   const { typed, setTyped, forget } = useSearchBox(q, setQ);
   const [view, setView] = usePersistedState<ListView>('bamdude-customers-view', 'table', parseListView);
   const views = useCardsTableViews();
@@ -50,7 +53,8 @@ export function CustomersPage() {
 
   const params = {
     ...(q ? { q } : {}),
-    ...(onlyActive ? { with_active: true } : {}),
+    ...(show === 'active' ? { with_active: true } : {}),
+    ...(show === 'regular' ? { kind: 'regular' as const } : {}),
     sort_by: sort,
     page,
     ...(perPage === -1 ? { all: true } : { per_page: perPage }),
@@ -131,18 +135,13 @@ export function CustomersPage() {
           aria-label={t('customers.list.filter.label')}
           className="flex rounded-lg border border-bambu-dark-tertiary overflow-hidden text-sm"
         >
-          {(
-            [
-              ['0', 'all'],
-              ['1', 'active'],
-            ] as const
-          ).map(([value, key]) => (
+          {(['all', 'active', 'regular'] as const).map((key) => (
             <button
-              key={value}
+              key={key}
               type="button"
-              aria-pressed={extra.active === value}
-              onClick={() => setExtra('active', value)}
-              className={`px-3 py-1.5 ${extra.active === value ? 'bg-bambu-dark-tertiary text-white' : 'text-bambu-gray hover:text-white'}`}
+              aria-pressed={show === key}
+              onClick={() => setExtra('show', key)}
+              className={`px-3 py-1.5 ${show === key ? 'bg-bambu-dark-tertiary text-white' : 'text-bambu-gray hover:text-white'}`}
             >
               {t(`customers.list.filter.${key}`)}
             </button>
@@ -156,7 +155,7 @@ export function CustomersPage() {
       </div>
 
       {!isLoading && total === 0 ? (
-        q || onlyActive ? (
+        q || filtered ? (
           <div className="flex items-center gap-3 text-bambu-gray text-sm">
             <span>{t('list.empty.noMatch')}</span>
             <Button

@@ -194,7 +194,6 @@ export function CustomerPage() {
       <header className="flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0 space-y-1">
           <h1 className="text-2xl font-semibold text-white">{customer.name}</h1>
-          {customer.contact && <p className="text-sm text-bambu-gray">{customer.contact}</p>}
           {customer.notes && <p className="text-sm text-bambu-gray whitespace-pre-line">{customer.notes}</p>}
         </div>
         <div className="flex items-center gap-2">

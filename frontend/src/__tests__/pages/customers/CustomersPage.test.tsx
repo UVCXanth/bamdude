@@ -13,12 +13,41 @@ import { render } from '../../utils';
 import { api } from '../../../api/client';
 import { CustomersPage } from '../../../pages/customers/CustomersPage';
 
+const contact = (over: Record<string, unknown>) => ({
+  id: 10,
+  code: 'CT-0010',
+  name: null,
+  role: null,
+  phone: null,
+  email: null,
+  city: null,
+  delivery_method_id: null,
+  delivery_method_name: null,
+  delivery_details: null,
+  note: null,
+  orders_count: 0,
+  ...over,
+});
 const customers = [
   {
     id: 1,
+    code: 'CU-0001',
     name: 'ACME',
-    contact: 'acme@example.com',
+    kind: 'regular',
     notes: null,
+    contacts: [
+      contact({
+        id: 10,
+        code: 'CT-0010',
+        name: 'Olena',
+        phone: '+380 67 1',
+        email: 'olena@acme.ua',
+        city: 'Kyiv',
+        delivery_method_name: 'Nova Poshta',
+        delivery_details: 'branch 12',
+      }),
+      contact({ id: 11, code: 'CT-0011', name: 'Serhii', role: 'Warehouse', note: 'mornings only' }),
+    ],
     figures: { projects: 3, active: 1, completed: 2, cancelled: 0, total_price: 450 },
   },
 ];
@@ -34,7 +63,13 @@ describe('CustomersPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     localStorage.clear();
-    vi.spyOn(api, 'getCustomersSummary').mockResolvedValue({ customers: 9, with_active: 3, active_orders: 5, total_price: 1234.5 });
+    vi.spyOn(api, 'getCustomersSummary').mockResolvedValue({
+      customers: 9,
+      regular: 2,
+      with_active: 3,
+      active_orders: 5,
+      total_price: 1234.5,
+    });
   });
 
   it('draws the farm tiles from the summary', async () => {
@@ -54,10 +89,70 @@ describe('CustomersPage', () => {
     render(<CustomersPage />);
     fireEvent.click(await screen.findByRole('button', { name: 'With active orders' }));
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ with_active: true, page: 1 })));
-    expect(window.location.search).toContain('active=1');
+    expect(window.location.search).toContain('show=active');
     fireEvent.click(screen.getByRole('button', { name: 'All' }));
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.not.objectContaining({ with_active: true })));
-    expect(window.location.search).not.toContain('active=');
+    expect(window.location.search).not.toContain('show=');
+  });
+
+  it('«Regular» asks the server for that kind and lands in the URL, exclusive with «With active orders»', async () => {
+    const get = vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf([]));
+    window.history.pushState({}, '', '/customers');
+    render(<CustomersPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Regular' }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'regular', page: 1 })));
+    expect(window.location.search).toContain('show=regular');
+    fireEvent.click(screen.getByRole('button', { name: 'With active orders' }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ with_active: true })));
+    expect(get).toHaveBeenLastCalledWith(expect.not.objectContaining({ kind: 'regular' }));
+    expect(window.location.search).toContain('show=active');
+  });
+
+  it('the customers tile says how many are regular', async () => {
+    vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf([]));
+    window.history.pushState({}, '', '/customers');
+    render(<CustomersPage />);
+    expect(await screen.findByTestId('customers-tile-customers')).toHaveTextContent('regular: 2');
+  });
+
+  it('the table shows code, kind, the main contact and a row that opens to every contact', async () => {
+    vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf(customers));
+    window.history.pushState({}, '', '/customers');
+    render(<CustomersPage />);
+    const row = await screen.findByTestId('customer-1-row');
+    expect(within(row).getByText('Regular · CU-0001')).toBeInTheDocument();
+    expect(within(row).getByText('Olena')).toBeInTheDocument();
+    expect(within(row).getByRole('link', { name: '+380 67 1' })).toHaveAttribute('href', 'tel:+380671');
+    expect(within(row).getByRole('link', { name: 'olena@acme.ua' })).toHaveAttribute('href', 'mailto:olena@acme.ua');
+    expect(within(row).getByText('Kyiv · Nova Poshta · branch 12')).toBeInTheDocument();
+    const toggle = within(row).getByRole('button', { name: 'All contacts' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    const all = await screen.findByTestId('customer-1-contacts');
+    expect(within(all).getByText('CT-0011')).toBeInTheDocument();
+    expect(within(all).getByText('mornings only')).toBeInTheDocument();
+    expect(within(all).getAllByText('main')).toHaveLength(1);
+  });
+
+  it('a customer with one contact has no expand button', async () => {
+    vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(
+      pageOf([{ ...customers[0], contacts: [customers[0].contacts[0]] }]),
+    );
+    window.history.pushState({}, '', '/customers');
+    render(<CustomersPage />);
+    const row = await screen.findByTestId('customer-1-row');
+    expect(within(row).queryByRole('button', { name: 'All contacts' })).not.toBeInTheDocument();
+  });
+
+  it('the card shows code, kind and «main contact +N · city»', async () => {
+    localStorage.setItem('bamdude-customers-view', 'cards');
+    vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf(customers));
+    window.history.pushState({}, '', '/customers');
+    render(<CustomersPage />);
+    const card = await screen.findByTestId('customer-1-card');
+    expect(within(card).getByText('CU-0001')).toBeInTheDocument();
+    expect(within(card).getByText('Regular')).toBeInTheDocument();
+    expect(within(card).getByText('Olena +1 · Kyiv')).toBeInTheDocument();
   });
 
   it('puts the view switch in the page header, beside the title', async () => {
@@ -113,7 +208,7 @@ describe('CustomersPage', () => {
     render(<CustomersPage />);
     fireEvent.click(await screen.findByRole('button', { name: 'Cards' }));
     const card = await screen.findByTestId('customer-1-card');
-    expect(card).toHaveTextContent('acme@example.com');
+    expect(card).toHaveTextContent('Olena +1 · Kyiv');
     expect(card).toHaveTextContent('3 orders');
     expect(card).toHaveTextContent('$450.00');
     expect(localStorage.getItem('bamdude-customers-view')).toBe('cards');
@@ -142,13 +237,13 @@ describe('CustomersPage', () => {
     vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf([]));
     const create = vi
       .spyOn(api, 'createCustomer')
-      .mockResolvedValue({ id: 2, name: 'Bob', contact: null, notes: null, figures: {} } as never);
+      .mockResolvedValue({ id: 2, code: 'CU-0002', name: 'Bob', kind: 'company', notes: null, contacts: [], figures: {} } as never);
     window.history.pushState({}, '', '/customers');
     render(<CustomersPage />);
     fireEvent.click(await screen.findByRole('button', { name: /new customer/i }));
-    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'Bob' } });
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Bob' } });
     fireEvent.click(screen.getByRole('button', { name: /^create$/i }));
-    await waitFor(() => expect(create).toHaveBeenCalledWith({ name: 'Bob', contact: null, notes: null }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith({ name: 'Bob', notes: null }));
   });
   it('in cards, sorts from the toolbar — the key and both directions', async () => {
     localStorage.setItem('bamdude-customers-view', 'cards');

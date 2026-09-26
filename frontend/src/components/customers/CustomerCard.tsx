@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { Customer } from '../../api/client';
 import { formatMoney } from '../../utils/currency';
 import { CustomerActions } from './CustomerActions';
+import { contactTitle } from './contactFormat';
 
 /**
  * One customer as a card — the second view of the customers page (spec
@@ -22,6 +23,8 @@ export function CustomerCard({
 }) {
   const { t } = useTranslation();
   const { figures } = customer;
+  // The server orders the contacts; the first is the main one (spec workshop-customers, rule 21).
+  const main = customer.contacts[0];
   const chip = 'inline-block px-2 py-0.5 rounded-full text-xs bg-bambu-dark text-bambu-gray';
   return (
     <div
@@ -34,7 +37,23 @@ export function CustomerCard({
         </Link>
         <CustomerActions customer={customer} onEdit={onEdit} onDelete={onDelete} />
       </div>
-      <p className="text-xs text-bambu-gray truncate">{customer.contact ?? '—'}</p>
+      <div className="flex items-center gap-2 text-xs">
+        <span className="text-bambu-gray">{customer.code}</span>
+        <span
+          className={`px-1.5 py-0.5 rounded ${
+            customer.kind === 'regular' ? 'bg-bambu-green/15 text-bambu-green' : 'bg-bambu-dark text-bambu-gray'
+          }`}
+        >
+          {t(`customers.kind.${customer.kind}`)}
+        </span>
+      </div>
+      <p className="text-xs text-bambu-gray truncate">
+        {main
+          ? [`${contactTitle(main)}${customer.contacts.length > 1 ? ` +${customer.contacts.length - 1}` : ''}`, main.city]
+              .filter(Boolean)
+              .join(' · ')
+          : '—'}
+      </p>
       <div className="flex flex-wrap gap-1.5">
         <span className="inline-block px-2 py-0.5 rounded-full text-xs bg-bambu-green/15 text-bambu-green">
           {t('customers.card.orders', { count: figures.projects })}

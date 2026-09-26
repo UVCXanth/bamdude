@@ -39,14 +39,12 @@ export function CustomerModal({ customer, onClose }: CustomerModalProps) {
   const isEdit = !!customer;
 
   const [name, setName] = useState(customer?.name ?? '');
-  const [contact, setContact] = useState(customer?.contact ?? '');
   const [notes, setNotes] = useState(customer?.notes ?? '');
 
   const mutation = useMutation({
     mutationFn: () => {
       const data: CustomerCreate & CustomerUpdate = {
         name: name.trim(),
-        contact: contact.trim() === '' ? null : contact.trim(),
         notes: notes.trim() === '' ? null : notes.trim(),
       };
       return customer ? api.updateCustomer(customer.id, data) : api.createCustomer(data);
@@ -90,20 +88,6 @@ export function CustomerModal({ customer, onClose }: CustomerModalProps) {
               className={FIELD_CLASS}
               disabled={mutation.isPending}
               required
-            />
-          </div>
-
-          <div>
-            <label className={LABEL_CLASS} htmlFor="customer-contact">
-              {t('customers.modal.contact')}
-            </label>
-            <input
-              id="customer-contact"
-              type="text"
-              value={contact}
-              onChange={(e) => setContact(e.target.value)}
-              className={FIELD_CLASS}
-              disabled={mutation.isPending}
             />
           </div>
 

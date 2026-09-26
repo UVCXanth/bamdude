@@ -6,7 +6,7 @@ import { CustomerPicker } from '../../../components/pickers/CustomerPicker';
 
 const figures = { projects: 0, active: 0, completed: 0, cancelled: 0, total_price: 0 };
 const customers = [
-  { id: 1, name: 'Acme', contact: null, notes: null, created_at: '', updated_at: '', figures },
+  { id: 1, code: 'CU-0001', name: 'Acme', kind: 'company' as const, notes: null, created_at: '', updated_at: '', contacts: [], figures },
 ];
 
 describe('CustomerPicker', () => {

@@ -18,7 +18,13 @@ export function CustomersTiles() {
   const failed = isError && !data;
   return (
     <StatTiles>
-      <StatTile testId="customers-tile-customers" label={t('customers.tiles.customers')} value={data?.customers} failed={failed} />
+      <StatTile
+        testId="customers-tile-customers"
+        label={t('customers.tiles.customers')}
+        value={data?.customers}
+        failed={failed}
+        sub={data ? t('customers.tiles.customersSub', { count: data.regular }) : undefined}
+      />
       <StatTile
         testId="customers-tile-with-active"
         label={t('customers.tiles.withActive')}

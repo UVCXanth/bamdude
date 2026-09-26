@@ -2227,6 +2227,8 @@ export interface CustomerListFigures {
 /** `GET /customers/summary` — the customers page's tiles; cancelled orders are not in the total. */
 export interface CustomersSummary {
   customers: number;
+  /** Customers of kind `regular`. */
+  regular: number;
   with_active: number;
   active_orders: number;
   total_price: number;
@@ -2242,26 +2244,66 @@ export interface CustomerFigures extends CustomerListFigures {
   total_cost: number;
 }
 
+export type CustomerKind = 'company' | 'regular' | 'private';
+/** Every kind, in the order the form and the filter offer them. */
+export const CUSTOMER_KINDS: CustomerKind[] = ['company', 'regular', 'private'];
+
+/** One contact; a customer's `contacts[0]` is its main contact (spec workshop-customers, rule 12). */
+export interface CustomerContact {
+  id: number;
+  code: string;
+  name: string | null;
+  role: string | null;
+  phone: string | null;
+  email: string | null;
+  city: string | null;
+  delivery_method_id: number | null;
+  /** Read through the join — a renamed method is renamed everywhere. */
+  delivery_method_name: string | null;
+  delivery_details: string | null;
+  note: string | null;
+  /** Orders naming this contact — the form warns before removing it. */
+  orders_count: number;
+}
+
+/** A row of the customer form: `id` updates that contact, no `id` creates one. */
+export interface CustomerContactInput {
+  id?: number;
+  name?: string | null;
+  role?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  city?: string | null;
+  delivery_method_id?: number | null;
+  delivery_details?: string | null;
+  note?: string | null;
+}
+
 export interface Customer {
   id: number;
+  code: string;
   name: string;
-  contact: string | null;
+  kind: CustomerKind;
   notes: string | null;
   created_at: string;
   updated_at: string;
+  contacts: CustomerContact[];
   figures: CustomerListFigures | CustomerFigures;
 }
 
 export interface CustomerCreate {
   name: string;
-  contact?: string | null;
+  kind?: CustomerKind;
   notes?: string | null;
+  contacts?: CustomerContactInput[];
 }
 
 export interface CustomerUpdate {
   name?: string;
-  contact?: string | null;
+  kind?: CustomerKind;
   notes?: string | null;
+  /** Sent whole; a contact missing from the list is removed. */
+  contacts?: CustomerContactInput[];
 }
 
 // ---- products ----
@@ -11001,9 +11043,10 @@ export const api = {
   // Customers
   getCustomers: () => request<Customer[]>('/customers/'),
   /** The customers page's list — the only caller that sends `page`. */
-  getCustomersPaged: (params: PagedListParams & { with_active?: boolean }) => {
+  getCustomersPaged: (params: PagedListParams & { with_active?: boolean; kind?: CustomerKind }) => {
     const qs = new URLSearchParams();
     if (params.with_active) qs.set('with_active', 'true');
+    if (params.kind) qs.set('kind', params.kind);
     return request<CustomerListPage>(`/customers/?${pagedSearchParams(qs, params)}`);
   },
   /** The customers page's tiles — the whole farm, whatever the list is searched for. */
