@@ -212,3 +212,33 @@ describe('the queue-source refusal codes are the backend’s closed list', () =>
     expect([...asked].sort()).toEqual([...QUEUE_SOURCE_REASONS].sort());
   });
 });
+
+/**
+ * The order journal's codes are a CLOSED list, defined once in
+ * `backend/app/services/order_journal.py::EVENT_KINDS` (spec
+ * workshop-order-stage, rule 17) and mirrored in `orderJournal.ts`. The feed
+ * builds each sentence's key by interpolation, so `keysResolve` cannot see a
+ * missing one — it would render the server's English title instead.
+ */
+describe('every order journal kind has a sentence', () => {
+  const EVENT_KINDS = [
+    'order_created', 'status_changed', 'fields_changed', 'responsible_changed', 'stage_changed',
+    'line_added', 'line_changed', 'line_removed',
+    'prints_filed', 'prints_unfiled', 'defects_recorded',
+    'queue_items_filed', 'plan_enqueued', 'line_rebalanced',
+    'surplus_banked', 'procurement_updated',
+    'attachment_added', 'attachment_removed', 'cover_changed',
+  ];
+
+  it('the frontend asks with the backend’s closed list', async () => {
+    const { ORDER_JOURNAL_KINDS } = await import('../../components/projects/orderJournal');
+    expect([...ORDER_JOURNAL_KINDS]).toEqual(EVENT_KINDS);
+  });
+
+  it.each([
+    ['en', en],
+    ['uk', uk],
+  ])('%s has a sentence for each', (_name, locale) => {
+    for (const kind of EVENT_KINDS) expect(locale.orders.timeline.events).toHaveProperty(kind);
+  });
+});

@@ -1,10 +1,57 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Ban, CheckCircle, History, ListTodo, Plus, Printer, Shuffle, XCircle } from 'lucide-react';
+import {
+  Ban,
+  CheckCircle,
+  CircleDot,
+  Flag,
+  History,
+  Image,
+  Link,
+  ListMinus,
+  ListPlus,
+  ListTodo,
+  PackagePlus,
+  Paperclip,
+  Pencil,
+  Plus,
+  Printer,
+  ShoppingCart,
+  Shuffle,
+  TriangleAlert,
+  Unlink,
+  UserRound,
+  XCircle,
+  type LucideIcon,
+} from 'lucide-react';
 import { api } from '../../api/client';
 import { formatDateTime, type DateFormat, type TimeFormat } from '../../utils/date';
 import { LoadingBlock } from '../LoadingBlock';
+import { journalText } from './orderJournal';
+
+/** One icon per order journal code (spec workshop-order-stage, rule 35). */
+const JOURNAL_ICONS: Record<string, LucideIcon> = {
+  order_created: Plus,
+  status_changed: CircleDot,
+  fields_changed: Pencil,
+  responsible_changed: UserRound,
+  stage_changed: Flag,
+  line_added: ListPlus,
+  line_changed: Pencil,
+  line_removed: ListMinus,
+  prints_filed: Link,
+  prints_unfiled: Unlink,
+  defects_recorded: TriangleAlert,
+  queue_items_filed: ListTodo,
+  plan_enqueued: ListTodo,
+  line_rebalanced: Shuffle,
+  surplus_banked: PackagePlus,
+  procurement_updated: ShoppingCart,
+  attachment_added: Paperclip,
+  attachment_removed: Paperclip,
+  cover_changed: Image,
+};
 
 /** The whole feed arrives at once; the card shows a readable slice until asked. */
 const TIMELINE_COLLAPSED = 10;
@@ -75,15 +122,24 @@ export function OrderTimeline({ orderId }: OrderTimelineProps) {
                 {event.event_type === 'queued' && <ListTodo className="w-4 h-4" />}
                 {event.event_type === 'auto_queued' && <Shuffle className="w-4 h-4" />}
                 {event.event_type === 'project_created' && <Plus className="w-4 h-4" />}
+                {(() => {
+                  const Icon = JOURNAL_ICONS[event.event_type];
+                  return Icon ? <Icon className="w-4 h-4" /> : null;
+                })()}
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm text-white">
-                  {i18n.exists(`orders.timeline.events.${event.event_type}`)
-                    ? t(`orders.timeline.events.${event.event_type}`)
-                    : event.title}
+                  {journalText(event, t) ??
+                    (i18n.exists(`orders.timeline.events.${event.event_type}`)
+                      ? t(`orders.timeline.events.${event.event_type}`)
+                      : event.title)}
                 </p>
                 {event.description && <p className="text-xs text-bambu-gray truncate">{event.description}</p>}
-                <p className="text-xs text-bambu-gray/70">{when(event.timestamp)}</p>
+                <p className="text-xs text-bambu-gray/70">
+                  {when(event.timestamp)}
+                  {/* Who did it — the journal's name snapshot (spec workshop-order-stage, rule 35). */}
+                  {typeof event.metadata?.user_name === 'string' && <span> · {event.metadata.user_name}</span>}
+                </p>
               </div>
             </div>
           ))}
