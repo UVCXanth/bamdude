@@ -279,6 +279,41 @@ export function getColorName(hexColor: string, material?: string | null): string
 }
 
 /**
+ * Label two colours so a reader can tell which is which (upstream #2941).
+ *
+ * `getColorName` falls back to a coarse family bucket for a hex the catalogue
+ * does not hold, so a slicer profile's near-pure `#0028FF` and Bambu's navy
+ * `#0A2989` are both "Blue", and a mismatch warning between them reads as a
+ * contradiction of the two identical names either side of it. When the names
+ * collide the hex — what actually differs — is appended to both. Distinct names
+ * come back untouched; a side with no name falls back to its hex; a pair with no
+ * usable hex keeps the bare names rather than growing an empty "()".
+ */
+export function disambiguateColorNames(
+  first: { name?: string | null; hex?: string | null },
+  second: { name?: string | null; hex?: string | null },
+): [string, string] {
+  const hexLabel = (hex?: string | null): string => {
+    const clean = (hex ?? '').replace('#', '').trim().slice(0, 6).toUpperCase();
+    return /^[0-9A-F]{6}$/.test(clean) ? `#${clean}` : '';
+  };
+
+  const firstName = (first.name ?? '').trim();
+  const secondName = (second.name ?? '').trim();
+  const firstHex = hexLabel(first.hex);
+  const secondHex = hexLabel(second.hex);
+
+  if (!firstName || !secondName) return [firstName || firstHex, secondName || secondHex];
+  if (firstName.toLowerCase() !== secondName.toLowerCase()) return [firstName, secondName];
+  if (!firstHex && !secondHex) return [firstName, secondName];
+
+  return [
+    firstHex ? `${firstName} (${firstHex})` : firstName,
+    secondHex ? `${secondName} (${secondHex})` : secondName,
+  ];
+}
+
+/**
  * Resolve a spool's display color name.
  * Tries: stored color_name (if it's a readable name) → runtime catalog via rgba → null.
  * Detects Bambu internal codes (e.g. "A06-D0") and ignores them in favor of hex lookup

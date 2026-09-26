@@ -172,6 +172,13 @@
 
 ### Fixed
 
+- **A colour mismatch in the print dialog says which colours it compares.** When
+  the requested colour and the slot's colour have the same name, for example a
+  slicer's bright blue and Bambu's navy "Blue", the warning appeared between two
+  identical labels and looked wrong. Both colours now show their hex codes in that
+  case: "needs Blue (#0028FF), slot has Blue (#0A2989)". The comparison itself is
+  unchanged. (upstream #2941)
+
 - **The File Manager card menu no longer loses its top entry.** On a card near
   the top of the screen the "…" menu opened upward and ran past the top edge, so
   its first entry (Slice, on an STL) could not be reached. All "…" menus now open

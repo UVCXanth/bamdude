@@ -6,7 +6,7 @@ import { api } from '../../api/client';
 import { useFilamentMapping } from '../../hooks/useFilamentMapping';
 import { useSlotSpoolNames } from '../../hooks/useSlotSpoolNames';
 import { filamentColorMatches, filamentRequirementMatches, filamentTypesCompatible, getGlobalTrayId } from '../../utils/amsHelpers';
-import { getColorName } from '../../utils/colors';
+import { disambiguateColorNames, getColorName } from '../../utils/colors';
 import { arrangementAdvice, type Inlet } from '../../utils/ftsArrangement';
 import { useFilamentLabels } from './useFilamentLabels';
 import type { FilamentMappingProps } from './types';
@@ -279,6 +279,14 @@ export function FilamentMapping({
             // array shape; defensive fallback covers the empty-reqs render path
             // that shouldn't reach here anyway.
             const { resolvedName, colorLabel } = filamentLabels[idx] ?? { resolvedName: item.type, colorLabel: getColorName(item.color) };
+            // Both sides of a colour mismatch routinely resolve to the same name
+            // — a slicer's pure blue and a spool's navy are both "Blue" — and the
+            // warning then contradicts itself (upstream #2941). Qualify them with
+            // their hex when the names collide.
+            const [requiredColorLabel, loadedColorLabel] = disambiguateColorNames(
+              { name: colorLabel, hex: item.color },
+              { name: item.loaded?.colorName, hex: item.loaded?.color },
+            );
             return (
             <div key={idx} className="space-y-1">
               <div
@@ -286,7 +294,7 @@ export function FilamentMapping({
                 style={{ gridTemplateColumns: '16px minmax(70px, 1fr) auto 2fr 16px' }}
               >
                 {/* Required color */}
-                <span title={t('printModal.requiredFilament', { type: resolvedName, color: colorLabel })}>
+                <span title={t('printModal.requiredFilament', { type: resolvedName, color: requiredColorLabel })}>
                   <Circle className="w-3 h-3" fill={item.color} stroke={item.color} />
                 </span>
                 {/* Required type + grams + nozzle badge. Only the name truncates:
@@ -374,7 +382,16 @@ export function FilamentMapping({
                 {item.status === 'match' ? (
                   <Check className="w-3 h-3 text-bambu-green" />
                 ) : item.status === 'type_only' ? (
-                  <span title={t('printModal.sameTypeDifferentColor')}>
+                  <span
+                    title={
+                      requiredColorLabel && loadedColorLabel
+                        ? t('printModal.sameTypeDifferentColorDetail', {
+                            required: requiredColorLabel,
+                            loaded: loadedColorLabel,
+                          })
+                        : t('printModal.sameTypeDifferentColor')
+                    }
+                  >
                     <AlertTriangle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
                   </span>
                 ) : (

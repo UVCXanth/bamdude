@@ -7513,6 +7513,7 @@ export default {
     timelapse: 'Таймлапс',
     cancel: 'Скасувати',
     sameTypeDifferentColor: 'Той самий тип, інший колір',
+    sameTypeDifferentColorDetail: 'Той самий тип, інший колір: потрібно {{required}}, у слоті {{loaded}}',
     filamentTypeNotLoaded: 'Тип філаменту не завантажено',
     openCalendar: 'Відкрити календар',
     leftNozzle: 'Л',

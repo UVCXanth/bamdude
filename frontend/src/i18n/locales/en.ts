@@ -7432,6 +7432,7 @@ export default {
     timelapse: 'Timelapse',
     cancel: 'Cancel',
     sameTypeDifferentColor: 'Same type, different color',
+    sameTypeDifferentColorDetail: 'Same type, different color: needs {{required}}, slot has {{loaded}}',
     filamentTypeNotLoaded: 'Filament type not loaded',
     openCalendar: 'Open calendar',
     leftNozzle: 'L',
