@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from fastapi import HTTPException
 
+from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services.filament_intake import (
     enrich_family_filament_types,
@@ -19,6 +20,7 @@ from backend.app.services.filament_policy import CHOICE_FIELDS, choices_policy, 
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_source_capture import staged_requirements
+from backend.app.utils.model_compatibility import model_compatibility
 
 
 async def prepare_routing(
@@ -105,6 +107,7 @@ async def routing_update(db, item, changes, cache=None):
     relevant = CHOICE_FIELDS | {"ams_mapping", "use_ams", "queue_id", "plate_id"}
     if not relevant.intersection(changes):
         return changes
+    cache = cache or PrintRequirementsCache()
     previous = queue_policy(item)
     scope_changed = any(k in changes and changes[k] != getattr(item, k) for k in ("queue_id", "plate_id"))
     remapped = changes.get("remap_filament", False) or (
@@ -131,6 +134,7 @@ async def routing_update(db, item, changes, cache=None):
     if changes.get("use_ams") is not None and "feed_policy" not in changes and previous.mode == "auto":
         choices["feed_policy"] = "auto" if changes["use_ams"] else "external_only"
     queue = await db.get(PrinterQueue, changes.get("queue_id") or item.queue_id)
+    descriptor = await item_descriptor(db, item)
     routing, plate = await prepare_routing(
         db,
         printer_id=queue.printer_id,
@@ -142,13 +146,31 @@ async def routing_update(db, item, changes, cache=None):
         # is the captured copy — never the original, which is the whole point of
         # having captured it: moving such a job to another plate or printer used
         # to be impossible once its library row had been trashed.
-        descriptor=await item_descriptor(db, item),
+        descriptor=descriptor,
     )
     if routing:
         stored = json.loads(routing)
-        previous_snapshot = decode(item.filament_routing, {})
-        if isinstance(previous_snapshot, dict):
-            stored["exact_model"] = previous_snapshot.get("exact_model", item.source_auto_item_id is not None)
+        if scope_changed:
+            if descriptor is not None:
+                archive, library = None, None
+            else:
+                archive, library = await item_source(db, item)
+            requirements = await require_source_requirements(
+                cache, archive, library, plate, allow_raw_gcode=True, descriptor=descriptor
+            )
+            target = await db.get(Printer, queue.printer_id) if queue.printer_id is not None else None
+            effective = printer_manager.effective_model_for(queue.printer_id, target.model) if target else None
+            verdict = model_compatibility(requirements.model if requirements else None, effective)
+            if verdict == "incompatible":
+                raise HTTPException(
+                    400,
+                    f"File was sliced for {requirements.model} and cannot be dispatched to a {target.model} printer",
+                )
+            stored["exact_model"] = verdict == "exact"
+        else:
+            previous_snapshot = decode(item.filament_routing, {})
+            if isinstance(previous_snapshot, dict):
+                stored["exact_model"] = previous_snapshot.get("exact_model", item.source_auto_item_id is not None)
         routing = json.dumps(stored)
     # Pins are evidence captured when the operator chose, so an edit that says
     # nothing about the mapping keeps THAT record rather than re-reading today's

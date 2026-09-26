@@ -740,6 +740,21 @@ describe('SettingsPage', () => {
     });
   });
 
+  it('saves the compatible Auto Queue fallback switch', async () => {
+    let receivedBody: Record<string, unknown> | null = null;
+    server.use(http.put('/api/v1/settings/', async ({ request }) => {
+      receivedBody = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ ...mockSettings, ...receivedBody });
+    }));
+    const user = userEvent.setup();
+    render(<SettingsPage />);
+    await user.click(await screen.findByText('Printing'));
+    const toggle = toggleFor('Use compatible printers in Auto Queue');
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    await waitFor(() => expect(receivedBody).toMatchObject({ auto_queue_compatible_models: true }));
+  });
+
   describe('Usage accuracy — runout_archive_spool_enabled', () => {
     const LABEL = 'Archive the spool it closed';
 

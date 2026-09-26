@@ -1030,6 +1030,7 @@ export type TimelapseStorage = 'internal' | 'external';
 export interface PrinterStatus {
   id: number;
   name: string;
+  effective_model: string | null;
   connected: boolean;
   state: string | null;
   current_print: string | null;
@@ -3001,6 +3002,7 @@ export interface AppSettings {
   // Auto-queue routing
   queue_shortest_first: boolean;  // SJF + been_jumped guard for the auto-queue scheduler
   auto_queue_rebalance_models: boolean;  // Move an order line's pending prints to idle printers of another model when that finishes sooner (spec 2026-09-10)
+  auto_queue_compatible_models: boolean;
   auto_order_for_batches: boolean;  // A multi-print batch from the print dialog proposes a new order when nothing open needs the plate
   prefer_lowest_filament: boolean;  // Drain the emptiest compatible spool first — honoured by AutoQueue AND by the Print dialog's auto-match
   // Preheat & heat-soak before queued prints (#1468)
@@ -7825,6 +7827,7 @@ export const api = {
 
   // Printers
   getPrinters: () => request<Printer[]>('/printers/'),
+  getModelCompatibility: () => request<{ models: Record<string, string[]> }>('/printers/model-compatibility'),
   getUsageProjection: (id: number, signal?: AbortSignal) => request<UsageProjection>(`/printers/${id}/usage-projection`, { signal }),
   // Includes archived (soft-retired) printers — used by the Settings restore
   // section and the Archives history filter. A separate method (not a param on

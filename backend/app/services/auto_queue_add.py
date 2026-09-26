@@ -51,6 +51,7 @@ from backend.app.services.queue_source_capture import (
     publish_staged,
     staged_requirements,
 )
+from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.printer_models import normalize_model_name
 
 
@@ -133,6 +134,13 @@ async def add_items_to_auto_queue(
         resolved = [
             (plate, await staged_requirements(staged, cache, archive, library_file, plate)) for plate in plate_ids
         ]
+        if data.target_model:
+            target_model = normalize_model_name(data.target_model)
+            for _, req in resolved:
+                if model_compatibility(req.model, target_model) == "incompatible":
+                    raise HTTPException(
+                        400, f"File was sliced for {req.model} and cannot target a {target_model} printer"
+                    )
         used_slots = {f["slot_id"] for _, req in resolved for f in req.used_filaments}
         if any(o.slot_id not in used_slots for o in data.filament_overrides or []):
             raise HTTPException(422, routing_detail("override_slot_not_used"))

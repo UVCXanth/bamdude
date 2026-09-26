@@ -11,10 +11,68 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.services.printer_manager import printer_manager
 from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 from backend.tests.integration.test_filament_routing_dispatch import setup_source
 
 pytestmark = pytest.mark.integration
+
+
+async def test_vp_rejects_captured_incompatible_model_despite_stale_library_metadata(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch
+):
+    source, printer, queue, _ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    source.file_metadata = {"sliced_for_model": "P1P", "plates": [{"index": 15}]}
+    await db_session.commit()
+    write_routing_3mf(
+        Path(source.file_path),
+        {15: [{"id": 3, "type": "PLA", "color": "#FF0000", "used_g": "1"}]},
+        model="A1",
+    )
+    vp = VirtualPrinterInstance(
+        vp_id=1,
+        name="Synthetic",
+        mode="print_queue",
+        model="C11",
+        access_code="00000000",
+        serial_suffix="000000001",
+        target_printer_id=printer.id,
+        base_dir=tmp_path,
+        session_factory=async_sessionmaker(test_engine, expire_on_commit=False),
+    )
+    monkeypatch.setattr(vp, "_save_to_library", AsyncMock(return_value=source))
+    monkeypatch.setattr(vp, "_find_best_queue", AsyncMock(return_value=queue))
+
+    await vp._add_to_print_queue(Path(source.file_path), "127.0.0.1")
+    assert (await db_session.execute(select(PrintQueueItem))).scalar_one_or_none() is None
+
+
+async def test_vp_stamps_compatible_captured_file_as_non_exact(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch
+):
+    source, printer, queue, _ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    source.file_metadata = {"sliced_for_model": "P1P", "plates": [{"index": 15}]}
+    printer.model = "P1S"
+    monkeypatch.setitem(printer_manager._models, printer.id, "P1S")
+    await db_session.commit()
+    vp = VirtualPrinterInstance(
+        vp_id=1,
+        name="Synthetic",
+        mode="print_queue",
+        model="C11",
+        access_code="00000000",
+        serial_suffix="000000001",
+        target_printer_id=printer.id,
+        base_dir=tmp_path,
+        session_factory=async_sessionmaker(test_engine, expire_on_commit=False),
+    )
+    monkeypatch.setattr(vp, "_save_to_library", AsyncMock(return_value=source))
+    monkeypatch.setattr(vp, "_find_best_queue", AsyncMock(return_value=queue))
+    await vp._add_to_print_queue(Path(source.file_path), "127.0.0.1")
+
+    row = (await db_session.execute(select(PrintQueueItem))).scalar_one()
+    assert json.loads(row.filament_routing)["exact_model"] is False
 
 
 @pytest.mark.parametrize(

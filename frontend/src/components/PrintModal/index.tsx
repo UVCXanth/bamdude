@@ -31,7 +31,7 @@ import { getCurrencySymbol } from '../../utils/currency';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
 import { getBedTypeInfo } from '../../utils/bedType';
 import { filamentColorMatches, filamentTypesCompatible, getGlobalTrayId, isPlaceholderDate } from '../../utils/amsHelpers';
-import { isGcodeCompatible } from '../../utils/printer';
+import { modelCompatibility } from '../../utils/modelCompatibility';
 import { splitRoundRobin } from '../../lib/quantitySplit';
 import { AutoModeOptions } from './AutoModeOptions';
 import {
@@ -450,6 +450,11 @@ export function PrintModal({
   const { data: printers, isLoading: loadingPrinters, isFetched: printersFetched } = useQuery({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
+  });
+  const { data: modelMatrix } = useQuery({
+    queryKey: ['modelCompatibility'],
+    queryFn: api.getModelCompatibility,
+    staleTime: 60 * 60 * 1000,
   });
 
   // The ONLY thing that fills an empty printer selection by itself. Named here
@@ -2373,8 +2378,19 @@ export function PrintModal({
 
   const isPending = isSubmitting || updateQueueMutation.isPending || addNextQueueBlockMutation.isPending;
 
+  const incompatibleModelSelection = !!slicedForModel && (
+    isAutoMode
+      ? !!autoModeOptions.target_model && modelCompatibility(slicedForModel, autoModeOptions.target_model, modelMatrix?.models) === 'incompatible'
+      : selectedPrinters.some((id, index) => {
+          const printer = printers?.find((candidate) => candidate.id === id);
+          const target = timelapseStatuses[index]?.data?.effective_model || printer?.model;
+          return modelCompatibility(slicedForModel, target, modelMatrix?.models) === 'incompatible';
+        })
+  );
+
   const canSubmit = useMemo(() => {
     if (isPending) return false;
+    if (incompatibleModelSelection) return false;
     // The payload names only this queue row. Until its source profile has
     // arrived, or after it has refused, there is no safe substitute source.
     if (isSnapshotSource && (!queueSourceProfile || queueSourceProfileError)) return false;
@@ -2412,6 +2428,7 @@ export function PrintModal({
     queueSourceProfileError,
     perPlateReqsPending,
     perPlateReqsFailed,
+    incompatibleModelSelection,
   ]);
 
   // --- Self-submit for a grouped run ------------------------------------
@@ -2891,6 +2908,7 @@ export function PrintModal({
                 onChange={setAutoModeOptions}
                 printers={printers}
                 slicedForModel={slicedForModel}
+                modelMatrix={modelMatrix?.models}
                 locked={lockAutoTarget}
               />
             )}
@@ -2926,23 +2944,22 @@ export function PrintModal({
                 onAutoConfigurePrinter={multiPrinterMapping.autoConfigurePrinter}
                 onUpdatePrinterConfig={multiPrinterMapping.updatePrinterConfig}
                 slicedForModel={slicedForModel}
+                modelMatrix={modelMatrix?.models}
                 swapCompatible={swapCompatible}
               />
             )}
 
-            {/* Compatibility warning when sliced model doesn't match selected printer.
-                ⚠️ `isGcodeCompatible`, never a raw `!==`: the feasibility block above
-                answers with the family mirror (an X1C plate runs on a P1S), and a
-                stricter question here would paint a yellow warning over a print the
-                machine accepts — while the block beside it says nothing at all. */}
+            {/* Compatibility is directed and comes from the backend mirror. */}
             {!isAutoMode && slicedForModel && selectedPrinters.length === 1 && (() => {
               const selectedPrinter = printers?.find(p => p.id === selectedPrinters[0]);
-              if (selectedPrinter && selectedPrinter.model && !isGcodeCompatible(slicedForModel, selectedPrinter.model)) {
+              const targetModel = selectedPrinter && (printerStatus?.effective_model || selectedPrinter.model);
+              const verdict = modelCompatibility(slicedForModel, targetModel, modelMatrix?.models);
+              if (selectedPrinter && verdict !== 'exact') {
                 return (
                   <div className="p-3 mb-2 bg-yellow-50 dark:bg-yellow-500/10 border border-yellow-300 dark:border-yellow-500/30 rounded-lg flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
                     <span className="text-sm text-yellow-700 dark:text-yellow-400">
-                      {t('printModal.slicedForWarning', { slicedModel: slicedForModel, printerModel: selectedPrinter.model })}
+                      {t(verdict === 'compatible' ? 'printModal.compatibleModelWarning' : verdict === 'unknown' ? 'printModal.unknownModelWarning' : 'printModal.slicedForWarning', { slicedModel: slicedForModel, printerModel: targetModel })}
                     </span>
                   </div>
                 );

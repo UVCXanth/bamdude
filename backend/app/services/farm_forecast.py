@@ -29,11 +29,14 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project import Project
+from backend.app.models.settings import Settings
 from backend.app.services.filament_intake import loaded_descriptor
 from backend.app.services.order_filing import priority_rank
 from backend.app.services.plan_engine import FleetCapacity, FleetMachine, OrderPlan, plan_for_orders
+from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_times import print_time_for_row
 from backend.app.services.stagger_groups import StaggerGroupResolver
+from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.printer_models import normalize_model_name
 
 
@@ -120,6 +123,7 @@ class FarmSnapshot:
     #: What THIS snapshot cannot model — ``("drying",)`` while drying may block
     #: the queue, else empty (spec §0). Every ETA the walk produces carries it.
     assumptions: tuple[str, ...] = ()
+    allow_compatible: bool = False
 
 
 @dataclass
@@ -247,6 +251,7 @@ class _State:
     prep_seconds: float = 0.0  # what a staged or planned print pays before it starts
     stagger: StaggerPolicy | None = None
     assumptions: tuple[str, ...] = ()
+    allow_compatible: bool = False
     order_finish: dict[int, float] = field(default_factory=dict)  # order → finish of its work, stamped by the walk
     unknown: Counter = field(default_factory=Counter)  # order_id → prints without an estimate
     unroutable: Counter = field(default_factory=Counter)  # order_id → prints with no printer for their model
@@ -268,13 +273,28 @@ def _bump(finish: dict[int, float], order_id: int | None, at: float) -> None:
         finish[order_id] = max(finish.get(order_id, 0.0), at)
 
 
-def _earliest(machines: list[_Machine], key: str | None) -> _Machine | None:
+def _earliest(machines: list[_Machine], key: str | None, *, allow_compatible: bool = False) -> _Machine | None:
     """The soonest-free machine of ``key`` that may take new work — a parked
     printer owes what it holds but is never given more (Decision 7)."""
     if key is None:
         return None
-    candidates = [m for m in machines if m.key == key and m.accepts_new_work]
-    return min(candidates, key=lambda m: (m.free_at, m.printer_id)) if candidates else None
+    candidates = [
+        m
+        for m in machines
+        if m.accepts_new_work
+        and (m.key == key or (allow_compatible and model_compatibility(key, m.key) == "compatible"))
+    ]
+    if not candidates:
+        return None
+
+    def rank(m: _Machine) -> tuple[float, float, int]:
+        exact = m.key == key
+        # An available exact lane wins; a compatible lane is a fallback while
+        # exact lanes owe work. Each physical machine remains one mutable lane.
+        tier = 0 if exact and m.free_at <= 0 else 1 if not exact and m.free_at <= 0 else 2
+        return tier, m.free_at, m.printer_id
+
+    return min(candidates, key=rank)
 
 
 def _admit(t: float, machine: _Machine, windows: dict[int, float], stagger: StaggerPolicy) -> float:
@@ -368,6 +388,7 @@ def _initial_state(snapshot: FarmSnapshot) -> _State:
         prep_seconds=float(snapshot.prep_seconds),
         stagger=stagger,
         assumptions=tuple(snapshot.assumptions),
+        allow_compatible=snapshot.allow_compatible,
     )
     for machine in snapshot.printers:
         m = _Machine(
@@ -404,7 +425,7 @@ def _initial_state(snapshot: FarmSnapshot) -> _State:
             if job.order_id is not None:
                 state.unknown[job.order_id] += 1
             continue
-        target = _earliest(state.machines, model_key(job.target_model))
+        target = _earliest(state.machines, model_key(job.target_model), allow_compatible=state.allow_compatible)
         if target is None:
             if job.order_id is not None:
                 state.unroutable[job.order_id] += 1
@@ -438,7 +459,8 @@ def capacity_from_snapshot(snapshot: FarmSnapshot) -> FleetCapacity:
             )
             for machine in state.machines
             if machine.accepts_new_work
-        ]
+        ],
+        allow_compatible=snapshot.allow_compatible,
     )
 
 
@@ -460,7 +482,7 @@ def _place(state: _State, jobs: list[PrintJob]) -> dict[int, list[_Print]]:
             continue
         best: tuple[float, int, _Machine, PlateOption] | None = None
         for option in timed:
-            machine = _earliest(state.machines, model_key(option.model))
+            machine = _earliest(state.machines, model_key(option.model), allow_compatible=state.allow_compatible)
             if machine is None:
                 continue
             candidate = (machine.free_at + option.seconds, option.seconds, machine, option)
@@ -724,6 +746,8 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
 
     gates = await _load_gates(db)
     stagger = await _load_stagger(db)
+    compatible_setting = await db.scalar(select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
+    allow_compatible = isinstance(compatible_setting, str) and compatible_setting.lower() == "true"
     # Columns, not the ``Printer`` entity: hydrating the mapped object would
     # fire its ``lazy="selectin"`` relationships (``location``, ``tags``) as a
     # second, unwanted "FROM printers" round trip on every call.
@@ -765,7 +789,7 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
             waiting = max(waiting, scheduler.drying_remaining_seconds(printer_id))
         machines[printer_id] = MachineState(
             printer_id=printer_id,
-            model=model,
+            model=printer_manager.effective_model_for(printer_id, model),
             accepts_new_work=(
                 bool(is_active)
                 # A legacy/imported printer can temporarily have no queue row;
@@ -788,6 +812,7 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
             prep_seconds=gates.prep_for("inherit"),
             stagger=stagger,
             assumptions=caveats,
+            allow_compatible=allow_compatible,
         )
     running = (
         await db.execute(
@@ -852,6 +877,7 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
         prep_seconds=gates.prep_for("inherit"),
         stagger=stagger,
         assumptions=caveats,
+        allow_compatible=allow_compatible,
     )
 
 

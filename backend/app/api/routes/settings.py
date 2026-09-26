@@ -107,6 +107,7 @@ async def get_settings(
                 "prefer_lowest_filament",
                 "queue_shortest_first",
                 "auto_queue_rebalance_models",
+                "auto_queue_compatible_models",
                 "auto_order_for_batches",
                 "queue_drying_enabled",
                 "queue_drying_block",

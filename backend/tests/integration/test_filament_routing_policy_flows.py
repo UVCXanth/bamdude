@@ -170,6 +170,83 @@ async def test_auto_rule_survives_deleted_origin_without_relaxing_model(
     assert copying.json()["targets"][0]["status"] == "compatible"
 
 
+async def test_moving_auto_origin_to_compatible_printer_updates_model_intent(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch
+):
+    from backend.app.models.auto_queue import AutoQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
+
+    source, printer, _, _ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    created = await committing_client.post("/api/v1/auto-queue/", json={"library_file_id": source.id})
+    assert created.status_code == 200, created.text
+    auto = await db_session.get(AutoQueueItem, created.json()["id"])
+    queued = await AutoQueueScheduler()._assign(db_session, auto, printer)
+    await db_session.commit()
+    assert json.loads(queued.filament_routing)["exact_model"] is True
+
+    second = await printer_factory(model="P1S")
+    destination = PrinterQueue(id=second.id, printer_id=second.id)
+    db_session.add(destination)
+    await db_session.commit()
+    moved = await committing_client.patch(f"/api/v1/queue/{queued.id}", json={"queue_id": destination.id})
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["filament_routing"]["exact_model"] is False
+    schedule = await committing_client.patch(f"/api/v1/queue/{queued.id}", json={"manual_start": True})
+    assert schedule.status_code == 200, schedule.text
+    assert schedule.json()["filament_routing"]["exact_model"] is False
+
+
+async def test_queue_add_uses_captured_file_model_over_stale_library_metadata(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch
+):
+    source, _, queue, _ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    source.file_metadata = {"sliced_for_model": "A1"}
+    await db_session.commit()
+    result = await committing_client.post("/api/v1/queue/", json={"queue_id": queue.id, "library_file_id": source.id})
+    assert result.status_code == 200, result.text
+    assert result.json()["sliced_for_model"] == "P1P"
+    assert result.json()["filament_routing"]["file_model"] == "P1P"
+
+
+async def test_bulk_move_refuses_incompatible_file_without_moving_compatible_peer(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch
+):
+    from backend.app.models.library import LibraryFile
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
+
+    p1p_file, _, p1p_queue, _ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    a1 = await printer_factory(model="A1")
+    p1s = await printer_factory(model="P1S")
+    db_session.add_all(
+        [
+            PrinterQueue(id=a1.id, printer_id=a1.id),
+            PrinterQueue(id=p1s.id, printer_id=p1s.id),
+        ]
+    )
+    path = write_routing_3mf(
+        tmp_path / "a1.gcode.3mf",
+        {1: [{"id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": "1"}]},
+        model="N2S",
+    )
+    a1_file = LibraryFile(filename=path.name, file_path=str(path), file_size=path.stat().st_size, file_type="gcode")
+    db_session.add(a1_file)
+    await db_session.commit()
+    exact = await committing_client.post(
+        "/api/v1/queue/", json={"queue_id": p1p_queue.id, "library_file_id": p1p_file.id}
+    )
+    other = await committing_client.post("/api/v1/queue/", json={"queue_id": a1.id, "library_file_id": a1_file.id})
+    assert exact.status_code == other.status_code == 200, (exact.text, other.text)
+    response = await committing_client.patch(
+        "/api/v1/queue/bulk",
+        json={"item_ids": [exact.json()["id"], other.json()["id"]], "queue_id": p1s.id},
+    )
+    assert response.status_code == 400, response.text
+    assert (await db_session.get(PrintQueueItem, exact.json()["id"])).queue_id == p1p_queue.id
+    assert (await db_session.get(PrintQueueItem, other.json()["id"])).queue_id == a1.id
+
+
 async def test_pinned_queue_intake_refuses_file_local_rules_for_an_unused_slot(
     committing_client,
     db_session,

@@ -1276,6 +1276,7 @@ export function SettingsPage() {
       (baseline.queue_drying_enabled ?? false) !== (localSettings.queue_drying_enabled ?? false) ||
       (baseline.queue_shortest_first ?? false) !== (localSettings.queue_shortest_first ?? false) ||
       (baseline.auto_queue_rebalance_models ?? false) !== (localSettings.auto_queue_rebalance_models ?? false) ||
+      (baseline.auto_queue_compatible_models ?? false) !== (localSettings.auto_queue_compatible_models ?? false) ||
       (baseline.auto_order_for_batches ?? false) !== (localSettings.auto_order_for_batches ?? false) ||
       (baseline.queue_drying_block ?? false) !== (localSettings.queue_drying_block ?? false) ||
       (baseline.ambient_drying_enabled ?? false) !== (localSettings.ambient_drying_enabled ?? false) ||
@@ -1392,6 +1393,7 @@ export function SettingsPage() {
         queue_drying_enabled: localSettings.queue_drying_enabled,
         queue_shortest_first: localSettings.queue_shortest_first,
         auto_queue_rebalance_models: localSettings.auto_queue_rebalance_models,
+        auto_queue_compatible_models: localSettings.auto_queue_compatible_models,
         auto_order_for_batches: localSettings.auto_order_for_batches,
         queue_drying_block: localSettings.queue_drying_block,
         ambient_drying_enabled: localSettings.ambient_drying_enabled,
@@ -3912,6 +3914,21 @@ export function SettingsPage() {
                       type="checkbox"
                       checked={localSettings.auto_queue_rebalance_models ?? false}
                       onChange={(e) => updateSetting('auto_queue_rebalance_models', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block text-sm text-white">{t('settings.autoQueueCompatibleModels')}</label>
+                    <p className="text-xs text-bambu-gray mt-0.5">{t('settings.autoQueueCompatibleModelsDescription')}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.auto_queue_compatible_models ?? false}
+                      onChange={(e) => updateSetting('auto_queue_compatible_models', e.target.checked)}
                       className="sr-only peer"
                     />
                     <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>

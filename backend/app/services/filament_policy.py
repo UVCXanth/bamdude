@@ -153,6 +153,7 @@ def serialize_policy(
             "resolved_plate_id": plate_id,
             "printer_id": printer_id,
             "exact_model": exact_model,
+            "file_model": requirements.model if requirements is not None else None,
         },
         separators=(",", ":"),
     )

@@ -1,6 +1,7 @@
 import type { LibraryFileListItem } from '../api/client';
 import { isPrintable } from './fileTags';
 import { mapModelCode } from '../utils/printer';
+import { modelCompatibility, type ModelCompatibilityMatrix } from '../utils/modelCompatibility';
 
 /**
  * Files a queue can actually be loaded with, out of a library listing.
@@ -31,11 +32,12 @@ import { mapModelCode } from '../utils/printer';
 export function offerableFiles(
   files: LibraryFileListItem[] | undefined | null,
   printerModel?: string | null,
+  matrix?: ModelCompatibilityMatrix,
 ): LibraryFileListItem[] {
-  const wanted = (printerModel ? mapModelCode(printerModel) : '').toLowerCase() || null;
+  const wanted = printerModel ? mapModelCode(printerModel) : '';
   return (files ?? []).filter((file) => {
     if (!isPrintable(file)) return false;
     if (!file.sliced_for_model) return false;
-    return !wanted || file.sliced_for_model.toLowerCase() === wanted;
+    return !wanted || ['exact', 'compatible'].includes(modelCompatibility(file.sliced_for_model, wanted, matrix));
   });
 }

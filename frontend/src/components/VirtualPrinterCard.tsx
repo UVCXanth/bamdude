@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
+import { useMutation, useQueries, useQueryClient, useQuery } from '@tanstack/react-query';
 import {
   Loader2, Check, AlertTriangle, Eye, EyeOff, Info,
   ChevronDown, ChevronRight, ArrowRightLeft, Trash2, X, Copy, Stethoscope,
@@ -14,6 +14,7 @@ import { VirtualPrinterDiagnosticModal } from './VirtualPrinterDiagnosticModal';
 import { useToast } from '../contexts/ToastContext';
 import { FolderTreeSelect } from './FolderTreeSelect';
 import { Select } from './Select';
+import { modelCompatibility } from '../utils/modelCompatibility';
 
 type LocalMode = 'print_queue' | 'auto_queue' | 'file_manager' | 'proxy';
 type DisplayMode = 'print_queue' | 'file_manager' | 'proxy';
@@ -89,6 +90,18 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
     queryKey: ['printers'],
     queryFn: api.getPrinters,
   });
+  const { data: modelMatrix } = useQuery({
+    queryKey: ['modelCompatibility'], queryFn: api.getModelCompatibility, staleTime: 60 * 60 * 1000,
+  });
+  const statusQueries = useQueries({
+    queries: (printers ?? []).map((physical) => ({
+      queryKey: ['printerStatus', physical.id],
+      queryFn: ({ signal }: { signal: AbortSignal }) => api.getPrinterStatus(physical.id, signal),
+      staleTime: 5000,
+    })),
+  });
+  const effectiveModel = (id: number, physical: string | null) =>
+    statusQueries[(printers ?? []).findIndex((candidate) => candidate.id === id)]?.data?.effective_model || physical;
 
   // Fetch network interfaces
   const { data: networkInterfaces } = useQuery({
@@ -225,7 +238,8 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
       && currentTarget
       && expectedDisplay
       && currentTarget.model
-      && currentTarget.model !== expectedDisplay
+      && modelCompatibility(expectedDisplay, effectiveModel(currentTarget.id, currentTarget.model), modelMatrix?.models) !== 'exact'
+      && modelCompatibility(expectedDisplay, effectiveModel(currentTarget.id, currentTarget.model), modelMatrix?.models) !== 'compatible'
     ) {
       setLocalTargetPrinterId(null);
       updateMutation.mutate({ model, clear_target_printer: true });
@@ -252,7 +266,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
     setPendingAction('targetPrinter');
     // Inherit VP model from the picked printer when it differs (so the
     // Printer Model dropdown can stay in sync without a second click).
-    if (picked?.model) {
+    if (picked?.model && modelCompatibility(models[localModel], effectiveModel(picked.id, picked.model), modelMatrix?.models) !== 'compatible') {
       const matchingCode = Object.entries(models).find(([, displayName]) => displayName === picked.model)?.[0];
       if (matchingCode && matchingCode !== localModel) {
         setLocalModel(matchingCode);
@@ -772,7 +786,9 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               // hardware is selectable. Empty model = show everything.
               const expectedDisplay = models[localModel];
               const filteredPrinters = (printers ?? []).filter(
-                (p) => !expectedDisplay || !p.model || p.model === expectedDisplay,
+                (p) => !expectedDisplay || !p.model || ['exact', 'compatible'].includes(
+                  modelCompatibility(expectedDisplay, effectiveModel(p.id, p.model), modelMatrix?.models),
+                ),
               );
               const noMatchingPrinters =
                 expectedDisplay !== undefined && (printers?.length ?? 0) > 0 && filteredPrinters.length === 0;

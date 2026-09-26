@@ -142,49 +142,16 @@ const MODEL_LONG_NAME_MAP: Record<string, string> = {
  * seen is not a reason to lose the operator's answer.
  */
 export function normalizeModelName(model: string | null | undefined): string {
-  const byCode = mapModelCode(model);
+  if (!model?.trim()) return '';
+  const compare = (value: string) => value.toUpperCase().replace(/[\s-]/g, '');
+  const raw = model.trim();
+  const code = Object.entries(MODEL_DISPLAY_MAP).find(([spelling]) => compare(spelling) === compare(raw));
+  const byCode = code?.[1] || mapModelCode(raw);
   if (!byCode) return '';
-  const byName = MODEL_LONG_NAME_MAP[byCode];
+  const byName = Object.entries(MODEL_LONG_NAME_MAP)
+    .find(([spelling]) => compare(spelling) === compare(byCode))?.[1];
   if (byName) return byName;
-  return byCode.replace(/^Bambu Lab\s+/, '').trim() || byCode;
-}
-
-/**
- * Models that run each other's G-code. The frontend mirror of the backend's
- * `GCODE_COMPAT_FAMILIES` (`backend/app/utils/printer_models.py`) — one row,
- * and it stays one row until Bambu says otherwise.
- */
-const GCODE_COMPAT_FAMILIES: readonly ReadonlySet<string>[] = [
-  new Set(['X1', 'X1C', 'X1E', 'P1P', 'P1S']),
-];
-
-/**
- * May a file sliced for one model be sent to a printer of another?
- *
- * The mirror of the backend's `is_gcode_compatible`, and it has to be the
- * mirror rather than a plain `!==`: a job queued to a chosen printer is
- * resolved with `exact_model=False`, so the machine accepts an X1C plate on a
- * P1S. A stricter answer here would refuse, in the dialog, a print the printer
- * would have taken — and a refusal about the TARGET carries no override.
- *
- * ⚠️ Unknown metadata on either side answers YES. Only what the 3MF declares
- * can be validated, and a file without `sliced_for_model` predates the field.
- *
- * Both sides are normalised the same way, and by `normalizeModelName` rather
- * than by the backend's narrower code-map-only `_norm`: it also resolves the
- * long marketing spelling a `Printer.model` column carries, which the backend
- * has already applied by the time it compares.
- */
-export function isGcodeCompatible(
-  slicedForModel: string | null | undefined,
-  targetModel: string | null | undefined,
-): boolean {
-  if (!slicedForModel || !targetModel) return true;
-  const key = (model: string) => normalizeModelName(model).toUpperCase().replace(/[\s-]/g, '');
-  const a = key(slicedForModel);
-  const b = key(targetModel);
-  if (a === b) return true;
-  return GCODE_COMPAT_FAMILIES.some((family) => family.has(a) && family.has(b));
+  return byCode.replace(/^Bambu Lab\s+/i, '').trim() || byCode;
 }
 
 export function getWifiStrength(rssi: number): { labelKey: string; color: string; bars: number } {

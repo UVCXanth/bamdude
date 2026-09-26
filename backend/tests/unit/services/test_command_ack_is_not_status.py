@@ -26,6 +26,7 @@ import json
 import pytest
 
 from backend.app.services.bambu_mqtt import BambuMQTTClient, is_printer_status_frame
+from backend.app.services.printer_feed_snapshot import snapshot_from_state
 
 
 class _Msg:
@@ -121,6 +122,25 @@ def test_a_status_frame_without_a_command_is_still_read(client):
     _feed(client, {"print": {"cfg": "40000"}})
 
     assert client.state.ams_auto_switch_filament is True
+
+
+def test_upgrade_kit_requires_both_reported_flags_and_survives_sparse_push(client):
+    _feed(client, {"print": {"command": "push_status", "home_flag": (1 << 27) | (1 << 26)}})
+    assert client.state.upgrade_kit_supported is True
+    assert client.state.upgrade_kit_installed is True
+    assert snapshot_from_state(1, "P1P", client.state).model == "P1S"
+
+    _feed(client, {"print": {"command": "push_status", "bed_temper": 30}})
+    assert (client.state.upgrade_kit_supported, client.state.upgrade_kit_installed) == (True, True)
+    _feed(client, {"print": {"command": "push_status", "cfg": "0"}})
+    assert client.state.upgrade_kit_installed is False
+
+
+def test_upgrade_kit_modern_flags_override_legacy_and_ack_cannot_clear(client):
+    _feed(client, {"print": {"command": "push_status", "home_flag": 0, "cfg": "2000000", "fun": "4000"}})
+    assert (client.state.upgrade_kit_supported, client.state.upgrade_kit_installed) == (True, True)
+    _feed(client, _ack(cfg="0", fun="0", home_flag=0))
+    assert (client.state.upgrade_kit_supported, client.state.upgrade_kit_installed) == (True, True)
 
 
 @pytest.mark.parametrize(

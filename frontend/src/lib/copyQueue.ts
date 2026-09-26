@@ -1,6 +1,7 @@
 import { api } from '../api/client';
 import type { PrinterQueue, PrinterStatus, PrintQueueItem } from '../api/client';
 import type { SequencedFile } from '../components/QueueSequencer';
+import { modelCompatibility, type ModelCompatibilityMatrix } from '../utils/modelCompatibility';
 
 /** One row of the copy dialog: what it is, and what a copy of it would queue. */
 export interface CopyableItem {
@@ -22,6 +23,7 @@ export interface CopyableItem {
   name: string;
   /** The plate the row was queued with. */
   plateId: number | null;
+  slicedForModel?: string | null;
   /** This is the print running right now — worth saying, and it sorts first. */
   printing: boolean;
   /** The order the copy will be filed under, shown in the row so the operator
@@ -103,6 +105,7 @@ export function copyableItems(items: readonly PrintQueueItem[]): CopyableItem[] 
       unavailableReason: snapshotBroken ? 'sourceUnavailable' : id === null ? 'originalGone' : undefined,
       name,
       plateId: item.plate_id ?? null,
+      slicedForModel: item.sliced_for_model,
       orderName: item.project_name,
       printing: item.status === 'printing',
       printTimeSeconds: item.print_time_seconds ?? null,
@@ -200,8 +203,19 @@ export function withCurrentPrint(
 export function copyTargets(
   queues: readonly PrinterQueue[] | undefined | null,
   source: PrinterQueue,
+  fileModels?: readonly (string | null | undefined)[],
+  matrix?: ModelCompatibilityMatrix,
+  effectiveModels?: ReadonlyMap<number, string | null>,
 ): PrinterQueue[] {
   return (queues ?? []).filter(
-    (queue) => queue.printer_id !== source.printer_id && queue.printer_model === source.printer_model,
+    (queue) => queue.printer_id !== source.printer_id && (
+      fileModels === undefined
+        ? queue.printer_model === source.printer_model
+        : fileModels.every((fileModel) => fileModel
+          ? ['exact', 'compatible'].includes(modelCompatibility(
+              fileModel, effectiveModels?.get(queue.printer_id) || queue.printer_model, matrix,
+            ))
+          : queue.printer_model === source.printer_model)
+    ),
   );
 }

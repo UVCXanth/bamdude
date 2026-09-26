@@ -67,6 +67,7 @@ from backend.app.services.queue_counters import update_queue_counters
 from backend.app.services.queue_ops import queue_claim_scope
 from backend.app.services.queue_rebalance import REBALANCE_SETTING_KEY
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable
+from backend.app.utils.model_compatibility import model_compatibility
 
 logger = logging.getLogger(__name__)
 
@@ -545,9 +546,27 @@ class AutoQueueScheduler:
             requirements = requirements or await read_item_requirements(db, item)
             if requirements.reason in SOURCE_FAILURES:
                 raise SourceUnavailable(requirements.reason)
+            verdict = model_compatibility(
+                requirements.model, printer_manager.effective_model_for(printer.id, printer.model)
+            )
+            if verdict not in ("exact", "compatible"):
+                raise AutoPlacementConflict("incompatible_model")
+            target_verdict = model_compatibility(
+                item.target_model, printer_manager.effective_model_for(printer.id, printer.model)
+            )
+            if target_verdict == "incompatible":
+                raise AutoPlacementConflict("incompatible_target")
+            if target_verdict == "compatible" and not await _get_bool_setting(db, "auto_queue_compatible_models"):
+                raise AutoPlacementConflict("compatible_fallback_disabled")
             if plan is None:
                 snapshot = printer_manager.get_feed_snapshot(printer.id)
-                plan = resolve_filament_routing(requirements, policy, snapshot, prefer_lowest=prefer_lowest).plan
+                plan = resolve_filament_routing(
+                    requirements,
+                    policy,
+                    snapshot,
+                    exact_model=verdict == "exact",
+                    prefer_lowest=prefer_lowest,
+                ).plan
                 snapshot_signature = feed_signature(policy, snapshot)
             if plan is None:
                 raise AutoPlacementConflict("routing_unavailable")
@@ -654,7 +673,7 @@ class AutoQueueScheduler:
                         library_file_id=item.library_file_id,
                         requirements=requirements,
                         printer_id=printer.id,
-                        exact_model=True,
+                        exact_model=verdict == "exact",
                         # The promoted row's intent names the blob it was written about,
                         # and the revision it stamps is that blob's HASH (the
                         # requirements above were read through the descriptor). Before

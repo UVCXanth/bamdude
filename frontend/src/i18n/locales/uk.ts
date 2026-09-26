@@ -1,4 +1,9 @@
 export default {
+  modelCompatibility: {
+    compatible: 'Файл для {{fileModel}} сумісний із {{targetModel}}',
+    incompatible: 'Файл для {{fileModel}} несумісний із {{targetModel}}',
+    unknown: 'Сумісність {{fileModel}} і {{targetModel}} не перевірена',
+  },
   monitor: {
     "jobEtaShort": "Друк",
     "queueEtaShort": "Черга",
@@ -3109,6 +3114,8 @@ export default {
     queueShortestFirstDescription: 'Віддавати перевагу коротшим друкам; завдання, які пропустили кілька разів, повертаються наперед, щоб нічого не застрявало.',
     autoQueueRebalance: 'Перебалансування між моделями принтерів',
     autoQueueRebalanceDescription: 'Вільні принтери іншої моделі забирають незакриті друки рядка замовлення, коли так рядок завершиться раніше — плити й кількості перераховуються під стіл тієї моделі.',
+    autoQueueCompatibleModels: 'Сумісні принтери в Auto Queue',
+    autoQueueCompatibleModelsDescription: 'Коли принтер відповідної моделі не готовий, Auto Queue може вибрати сумісний із файлом принтер за даними Bambu Studio.',
     autoOrderForBatches: 'Тираж із діалогу друку стає замовленням',
     autoOrderForBatchesDescription: 'Коли відправка робить два і більше друків і жодне відкрите замовлення не потребує плити, поле «Замовлення» пропонує нове замовлення на цей тираж. «Без замовлення» доступне завжди.',
     queueDrying: 'Автосушіння черги',
@@ -7652,6 +7659,8 @@ export default {
     selectAtLeastOne: 'Виберіть принаймні один принтер',
     selectAtLeastOnePrinter: 'Будь ласка, виберіть принаймні один принтер',
     slicedForWarning: 'Файл нарізано для {{slicedModel}}, але друкується на {{printerModel}}',
+    compatibleModelWarning: 'Файл нарізано для {{slicedModel}}. Bambu Studio позначає {{printerModel}} сумісним; перевірте конфігурацію перед друком.',
+    unknownModelWarning: 'Сумісність {{slicedModel}} і {{printerModel}} не вдалося перевірити.',
     archiveDataUnavailable: 'Дані архіву недоступні. Вихідний файл міг бути видалений. Призначення філаменту вимкнено.',
     clickToChangeSlot: 'Натисніть для зміни призначення слоту',
     filamentTypeMismatch: 'Потрібний тип філаменту не знайдено у принтері.',

@@ -303,6 +303,34 @@ async def test_the_bots_queue_confirm_captures_once_and_routes_off_the_copy(
     assert staging_litter() == []
 
 
+@pytest.mark.parametrize("scene", ["library", "queue"])
+async def test_telegram_queue_writers_reject_incompatible_captured_file(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions, scene
+):
+    """A stale library model cannot place A1 G-code on the selected P1P."""
+    source, printer, _queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    source.file_metadata = {"sliced_for_model": "P1P"}
+    await db_session.commit()
+    write_routing_3mf(Path(source.file_path), {15: PLATE_FILAMENTS}, model="A1")
+    callback = a_callback()
+    state = a_state({"file_id": source.id, "printer_id": printer.id})
+
+    if scene == "library":
+        from backend.app.services.telegram_handlers.library_scene import cb_library_add_queue
+
+        with patch("backend.app.services.telegram_handlers.start.cmd_start", new=AsyncMock()):
+            await cb_library_add_queue(callback, state, tg_chat=None)
+    else:
+        from backend.app.services.telegram_handlers.queue_scene import cb_qadd_confirm
+
+        with patch("backend.app.services.telegram_handlers.queue.render_queue", new=AsyncMock()):
+            await cb_qadd_confirm(callback, state, tg_chat=None)
+
+    assert await count_of(db_session, PrintQueueItem) == 0
+    assert await blobs(db_session) == []
+    assert callback.answer.await_args.kwargs.get("show_alert") is True
+
+
 async def test_the_bots_auto_queue_target_reports_the_real_refusal(
     db_session, tmp_path, printer_factory, monkeypatch, sessions
 ):

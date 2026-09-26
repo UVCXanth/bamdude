@@ -1535,6 +1535,9 @@ class PrinterState:
     # (home_flag / xcam / cfg / fun / fun2 / named support bools). Populated as
     # messages arrive; compute_printer_supports gates each row on it.
     print_option_support: dict = field(default_factory=dict)
+    # P1P enclosure upgrade: unknown until the corresponding MQTT bit arrives.
+    upgrade_kit_supported: bool | None = None
+    upgrade_kit_installed: bool | None = None
     # What the machine says its heaters will accept. Each is optional because
     # "did not report" is a real answer with its own fallback — see
     # ``utils.temperature_limits``, which owns the precedence.
@@ -3621,6 +3624,17 @@ class BambuMQTTClient:
             if not cali_query_reply:
                 self._update_state(print_data)
 
+        # Modern upgrade-kit support can arrive at the top level. Apply it after
+        # the nested legacy home_flag so the newer fun bit wins in one frame.
+        if "fun" in payload and ("print" not in payload or is_printer_status_frame(payload["print"])):
+            fun = parse_hex_bitfield(payload["fun"])
+            if fun is not None:
+                supported = bool((fun >> 14) & 1)
+                if self.state.upgrade_kit_supported != supported:
+                    self.state.upgrade_kit_supported = supported
+                    if self.on_state_change:
+                        self.on_state_change(self.state)
+
     def _handle_system_response(self, data: dict):
         """Handle system responses including accessories info.
 
@@ -3851,6 +3865,9 @@ class BambuMQTTClient:
             sup["filament_tangle"] = bool((u >> 19) & 1)
             sup["nozzle_blob"] = bool((u >> 25) & 1)
             sup["air_print_nonvisual"] = bool((u >> 29) & 1)  # BS is_support_air_print_detection
+            if is_printer_status_frame(data):
+                self.state.upgrade_kit_supported = bool((u >> 27) & 1)
+                self.state.upgrade_kit_installed = bool((u >> 26) & 1)
 
         xcam = data.get("xcam")
         if isinstance(xcam, dict):
@@ -3861,6 +3878,7 @@ class BambuMQTTClient:
         # and A1 families, which send no cfg of their own (#3040).
         cfg = _hx(data.get("cfg")) if is_printer_status_frame(data) else None
         if cfg is not None:
+            self.state.upgrade_kit_installed = bool((cfg >> 25) & 1)
             sup["snapshot"] = ((cfg >> 38) & 0x3) in (1, 2)
             # Store-sent-files support: X2D-class printers carry the value at cfg
             # bit 19 but don't send the named support_save_remote_print_file_to_storage
@@ -3871,6 +3889,8 @@ class BambuMQTTClient:
 
         fun = _hx(data.get("fun"))
         if fun is not None:
+            if is_printer_status_frame(data):
+                self.state.upgrade_kit_supported = bool((fun >> 14) & 1)
             sup["filament_tangle"] = bool((fun >> 9) & 1)
             sup["spaghetti_detector"] = bool((fun >> 42) & 1)
             sup["pileup_detector"] = bool((fun >> 43) & 1)

@@ -1219,6 +1219,25 @@ class VirtualPrinterInstance:
                         )
                         for plate in plate_ids
                     ]
+                    # The captured bytes, not the library metadata used for the
+                    # initial queue search, decide whether each plate may print.
+                    from backend.app.services.printer_manager import printer_manager
+                    from backend.app.utils.model_compatibility import model_compatibility
+
+                    target_model = printer_manager.effective_model_for(printer_id)
+                    validated_plates = []
+                    for routing, plate_id in routed_plates:
+                        if routing:
+                            intent = json.loads(routing)
+                            verdict = model_compatibility(intent.get("file_model"), target_model)
+                            if verdict == "incompatible":
+                                raise ValueError(
+                                    f"File was sliced for {intent['file_model']} and cannot target a {target_model} printer"
+                                )
+                            intent["exact_model"] = verdict == "exact"
+                            routing = json.dumps(intent)
+                        validated_plates.append((routing, plate_id))
+                    routed_plates = validated_plates
                 queue_item_ids: list[int] = []
 
                 async def attach(db, source) -> None:
@@ -1639,8 +1658,9 @@ class VirtualPrinterInstance:
     async def _find_best_queue(self, db, sliced_model: str | None):
         """Find the best printer queue for this job.
 
-        If target_printer_id is set and online → use it.
-        Otherwise, find the least busy online printer matching ``sliced_model``.
+        If target_printer_id is set, online, and model-compatible → use it.
+        Otherwise, find the least busy online exact printer, then a compatible
+        one when the AutoQueue fallback setting is enabled.
         Returns None if no matching printer is available (file should go
         to library only).
 
@@ -1658,39 +1678,62 @@ class VirtualPrinterInstance:
         from backend.app.models.print_queue import PrintQueueItem
         from backend.app.models.printer import Printer
         from backend.app.models.printer_queue import PrinterQueue
+        from backend.app.models.settings import Settings
         from backend.app.services.printer_manager import printer_manager
+        from backend.app.utils.model_compatibility import model_compatibility
 
         # If explicit target is set and printer is online, use it directly
         if self.target_printer_id:
             state = printer_manager.get_status(self.target_printer_id)
             if state and state.connected:
                 result = await db.execute(
-                    sa_select(PrinterQueue).where(PrinterQueue.printer_id == self.target_printer_id)
+                    sa_select(PrinterQueue, Printer.model)
+                    .join(Printer, Printer.id == PrinterQueue.printer_id)
+                    .where(PrinterQueue.printer_id == self.target_printer_id)
                 )
-                queue = result.scalar_one_or_none()
-                if queue:
+                row = result.one_or_none()
+                if (
+                    row
+                    and model_compatibility(
+                        sliced_model,
+                        printer_manager.effective_model_for(self.target_printer_id, row[1]),
+                    )
+                    != "incompatible"
+                ):
+                    queue = row[0]
                     return queue
             logger.info(
-                "[VP %s] Target printer %s not available, searching alternatives", self.name, self.target_printer_id
+                "[VP %s] Target printer %s unavailable or model-incompatible, searching alternatives",
+                self.name,
+                self.target_printer_id,
             )
 
         if not sliced_model:
             logger.info("[VP %s] No sliced_for_model on library file, cannot auto-assign to queue", self.name)
             return None
 
-        # Get online printers matching the model
+        setting = await db.scalar(sa_select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
+        allow_compatible = isinstance(setting, str) and setting.lower() == "true"
+
+        # Normalize model aliases and evaluate the target's directed BS row.
         result = await db.execute(
             sa_select(PrinterQueue, Printer.model)
             .join(Printer, Printer.id == PrinterQueue.printer_id)
-            .where(Printer.is_active.is_(True), Printer.archived.is_(False), Printer.model == sliced_model)
+            .where(Printer.is_active.is_(True), Printer.archived.is_(False))
         )
         matching_queues = result.all()
 
         # Filter to online and calculate total queue time
-        candidates: list[tuple[PrinterQueue, int]] = []
-        for queue, _model in matching_queues:
+        candidates: list[tuple[int, int, PrinterQueue]] = []
+        for queue, physical_model in matching_queues:
             state = printer_manager.get_status(queue.printer_id)
             if not state or not state.connected:
+                continue
+            verdict = model_compatibility(
+                sliced_model,
+                printer_manager.effective_model_for(queue.printer_id, physical_model),
+            )
+            if verdict != "exact" and not (allow_compatible and verdict == "compatible"):
                 continue
 
             # Current print remaining (minutes → seconds)
@@ -1721,14 +1764,14 @@ class VirtualPrinterInstance:
                     secs = lib_meta.get("print_time_seconds")
                     if isinstance(secs, int) and secs > 0:
                         pending_time += secs
-            candidates.append((queue, current_remaining + pending_time))
+            candidates.append((0 if verdict == "exact" else 1, current_remaining + pending_time, queue))
 
         if not candidates:
             return None
 
-        # Least busy first, then by printer_id for determinism
-        candidates.sort(key=lambda c: (c[1], c[0].printer_id))
-        return candidates[0][0]
+        # Exact first, then least busy and printer ID for determinism.
+        candidates.sort(key=lambda c: (c[0], c[1], c[2].printer_id))
+        return candidates[0][2]
 
     # -- Cert + advertise (#1070 post-rip-out) --
 

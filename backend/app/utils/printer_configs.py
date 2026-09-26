@@ -155,6 +155,11 @@ def _model_index() -> dict[str, str]:
     return index
 
 
+def printer_config_codes() -> frozenset[str]:
+    """Internal model codes for every mirrored printer config."""
+    return frozenset(_model_index().values())
+
+
 @lru_cache(maxsize=128)
 def load_printer_config(model: str | None, firmware_version: str | None = None) -> dict | None:
     """Return the config block for a model, or ``None`` if no mirrored JSON

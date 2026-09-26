@@ -20,7 +20,6 @@ from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
-from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
@@ -47,6 +46,7 @@ from backend.app.schemas.print_queue import (
 from backend.app.services import farm_forecast, queue_sources
 from backend.app.services.filament_intake import (
     item_descriptor,
+    item_source,
     loaded_descriptor,
     require_source_requirements,
     routing_detail,
@@ -56,6 +56,7 @@ from backend.app.services.filament_policy import decode
 from backend.app.services.filament_policy_write import routing_update
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.notification_service import notification_service
+from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_add import add_items_to_printer_queue, add_next_block_to_printer_queue
 from backend.app.services.queue_ops import queue_scope_lock
 from backend.app.services.queue_source_capture import refusal, reusing_sources
@@ -64,7 +65,7 @@ from backend.app.services.queue_sources import QueueSourceError
 from backend.app.services.queue_times import plate_metadata_cached, plate_metadata_for_row, plate_picture_for_row
 from backend.app.services.source_io import SourceUnavailable
 from backend.app.utils.failure_reasons import USER_CANCELLED
-from backend.app.utils.printer_models import is_gcode_compatible
+from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.threemf_tools import plate_picture_entry
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,45 @@ router = APIRouter(prefix="/queue", tags=["queue"])
 # (authoritative for off/on — read by the dispatcher + secondary sites) and a
 # nullable ``*_mode`` column that carries the extra 'auto' state.
 _CALI_MODE_FIELDS = ("bed_levelling", "flow_cali", "nozzle_offset_cali")
+
+
+async def _item_file_model(
+    db: AsyncSession, item: PrintQueueItem, plate_id: int | None, cache: PrintRequirementsCache
+) -> str | None:
+    """Read the model from this row's own bytes, including a changed plate."""
+    descriptor = await item_descriptor(db, item)
+    if descriptor is not None:
+        try:
+            source_display_filename(descriptor)
+        except SourceUnavailable as exc:
+            raise HTTPException(422, routing_detail("source_unreadable")) from exc
+        if descriptor.format == FORMAT_GCODE:
+            return None
+        req = await require_source_requirements(cache, plate_id=plate_id, descriptor=descriptor)
+    else:
+        archive, library = await item_source(db, item)
+        req = await require_source_requirements(
+            cache, archive=archive, library_file=library, plate_id=plate_id, allow_raw_gcode=True
+        )
+    return req.model if req else None
+
+
+async def _check_item_model_for_queue(
+    db: AsyncSession,
+    item: PrintQueueItem,
+    queue: PrinterQueue,
+    plate_id: int | None,
+    cache: PrintRequirementsCache,
+    printer_model: str | None,
+) -> None:
+    if queue.printer_id is None:
+        return
+    sliced_for = await _item_file_model(db, item, plate_id, cache)
+    target = printer_manager.effective_model_for(queue.printer_id, printer_model)
+    if model_compatibility(sliced_for, target) == "incompatible":
+        raise HTTPException(
+            400, f"File was sliced for {sliced_for} and cannot be dispatched to a {printer_model} printer"
+        )
 
 
 def _set_calibration_mode(item: PrintQueueItem, field: str, value) -> None:
@@ -279,6 +319,10 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
                 if plate_bed:
                     response.bed_type = plate_bed
     if descriptor is not None:
+        intent = decode(item.filament_routing, {})
+        # Captured bytes outrank original metadata even when the latter was
+        # edited or the source row has since disappeared.
+        response.sliced_for_model = intent.get("file_model") if isinstance(intent, dict) else None
         # LAST, so the frozen copy outranks both rows. Each value is applied only
         # when the snapshot actually has it: a plate with no ``prediction`` leaves
         # the row's own recorded COLUMN standing, which came out of these same
@@ -602,14 +646,30 @@ async def bulk_update_queue_items(
         raise HTTPException(400, "No fields to update")
 
     # Validate queue_id if being changed
+    new_queue = None
     if "queue_id" in update_data and update_data["queue_id"] is not None:
         result = await db.execute(select(PrinterQueue).where(PrinterQueue.id == update_data["queue_id"]))
-        if not result.scalar_one_or_none():
+        new_queue = result.scalar_one_or_none()
+        if not new_queue:
             raise HTTPException(400, "Queue not found")
 
     # Fetch all items
     result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id.in_(data.item_ids)))
     items = result.scalars().all()
+
+    # Check every row that will really move before the first mutation. A row
+    # skipped for status/ownership cannot veto the entire operator action.
+    if new_queue and new_queue.printer_id is not None:
+        printer_model = (
+            await db.execute(select(Printer.model).where(Printer.id == new_queue.printer_id))
+        ).scalar_one_or_none()
+        cache = PrintRequirementsCache()
+        for item in items:
+            if item.status != "pending" or item.queue_id == new_queue.id:
+                continue
+            if not can_modify_all and item.created_by_id != user.id:
+                continue
+            await _check_item_model_for_queue(db, item, new_queue, item.plate_id, cache, printer_model)
 
     updated_count = 0
     skipped_count = 0
@@ -976,38 +1036,29 @@ async def update_queue_item(
 
     update_data = data.model_dump(exclude_unset=True)
 
-    # Validate new queue_id if being changed
+    # Validate the destination and any newly selected plate before routing_update
+    # rewrites the row. The source of a captured job is its snapshot.
+    new_queue = None
     if "queue_id" in update_data and update_data["queue_id"] is not None:
         new_queue = (
             await db.execute(select(PrinterQueue).where(PrinterQueue.id == update_data["queue_id"]))
         ).scalar_one_or_none()
         if not new_queue:
             raise HTTPException(400, "Queue not found")
-
-        # Cross-model safety gate (#2578) — moving an item to another printer's
-        # queue can't drop a G-code 3MF onto a model it wasn't sliced for.
-        sliced_for = None
-        if item.archive_id:
-            sliced_for = (
-                await db.execute(select(PrintArchive.sliced_for_model).where(PrintArchive.id == item.archive_id))
-            ).scalar_one_or_none()
-        elif item.library_file_id:
-            lib = (
-                await db.execute(select(LibraryFile).where(LibraryFile.id == item.library_file_id))
-            ).scalar_one_or_none()
-            if lib and lib.file_metadata:
-                sliced_for = lib.file_metadata.get("sliced_for_model")
-        if sliced_for and new_queue.printer_id is not None:
-            from backend.app.models.printer import Printer
-
+    if "plate_id" in update_data or (new_queue and new_queue.id != item.queue_id):
+        target_queue = new_queue or await db.get(PrinterQueue, item.queue_id)
+        if target_queue and target_queue.printer_id is not None:
             printer_model = (
-                await db.execute(select(Printer.model).where(Printer.id == new_queue.printer_id))
+                await db.execute(select(Printer.model).where(Printer.id == target_queue.printer_id))
             ).scalar_one_or_none()
-            if not is_gcode_compatible(sliced_for, printer_model):
-                raise HTTPException(
-                    400,
-                    f"File was sliced for {sliced_for} and cannot be dispatched to a {printer_model} printer",
-                )
+            await _check_item_model_for_queue(
+                db,
+                item,
+                target_queue,
+                update_data.get("plate_id", item.plate_id),
+                PrintRequirementsCache(),
+                printer_model,
+            )
 
     update_data = await routing_update(db, item, update_data)
 

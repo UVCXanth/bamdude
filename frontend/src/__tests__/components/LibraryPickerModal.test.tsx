@@ -91,6 +91,13 @@ describe('what it is allowed to offer', () => {
     expect(offerableFiles([file({ sliced_for_model: 'p1s' })], 'P1S')).toHaveLength(1);
   });
 
+  it('offers compatible files only when the backend matrix is available', () => {
+    const sliced = file({ sliced_for_model: 'P1P' });
+    expect(offerableFiles([sliced], 'P1S')).toHaveLength(0);
+    expect(offerableFiles([sliced], 'P1S', { P1S: ['P1P'] })).toHaveLength(1);
+    expect(offerableFiles([file({ sliced_for_model: 'P1S' })], 'P1P', { P1S: ['P1P'] })).toHaveLength(0);
+  });
+
   it('filters nothing when the model cannot be mapped, exactly as a drop does', () => {
     // `mapModelCode` answers '' only for a missing model. Refusing everything
     // on that basis would make an unrecognised machine unloadable.

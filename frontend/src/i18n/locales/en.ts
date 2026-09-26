@@ -1,4 +1,9 @@
 export default {
+  modelCompatibility: {
+    compatible: 'File for {{fileModel}} is compatible with {{targetModel}}',
+    incompatible: 'File for {{fileModel}} is incompatible with {{targetModel}}',
+    unknown: 'Compatibility between {{fileModel}} and {{targetModel}} is unverified',
+  },
   monitor: {
     "jobEtaShort": "Print",
     "queueEtaShort": "Queue",
@@ -3103,6 +3108,8 @@ export default {
     queueShortestFirstDescription: 'Prefer shorter prints; jobs that get skipped multiple times are pushed back to the front so nothing starves.',
     autoQueueRebalance: 'Rebalance across printer models',
     autoQueueRebalanceDescription: 'Idle printers of another model take an order line’s pending prints when that finishes the line sooner — plates and counts are recalculated for that model’s bed.',
+    autoQueueCompatibleModels: 'Use compatible printers in Auto Queue',
+    autoQueueCompatibleModelsDescription: 'When no matching model is ready, Auto Queue may use printers that Bambu Studio marks compatible with the file.',
     autoOrderForBatches: 'A batch from the print dialog becomes an order',
     autoOrderForBatchesDescription: 'When a submission makes two or more prints and no open order needs the plate, the Order field proposes a new order for the batch. You can always pick “Without an order”.',
     queueDrying: 'Queue Auto-Drying',
@@ -7569,6 +7576,8 @@ export default {
     selectAtLeastOne: 'Select at least one printer',
     selectAtLeastOnePrinter: 'Please select at least one printer',
     slicedForWarning: 'File was sliced for {{slicedModel}}, but printing on {{printerModel}}',
+    compatibleModelWarning: 'File was sliced for {{slicedModel}}. Bambu Studio lists {{printerModel}} as compatible; check the setup before printing.',
+    unknownModelWarning: 'Compatibility between {{slicedModel}} and {{printerModel}} could not be verified.',
     archiveDataUnavailable: 'Archive data unavailable. The source file may have been deleted. Filament mapping is disabled.',
     clickToChangeSlot: 'Click to change slot assignment',
     filamentTypeMismatch: 'Required filament type not found in printer.',

@@ -3296,3 +3296,90 @@ class TestVirtualPrinterSlicerIntake:
         params = executed[1].compile().params
         assert params["nozzle_mapping"] == "[3, 1]"
         assert params["bed_levelling"] is False
+
+
+class TestVirtualPrinterModelSelection:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("setting", "models", "expected_id"),
+        [
+            (None, ["P1S"], None),
+            ("true", ["P1S"], 1),
+            ("true", ["P1S", "P1P"], 2),
+        ],
+    )
+    async def test_compatible_fallback_and_exact_priority(self, tmp_path, setting, models, expected_id):
+        from backend.app.services.printer_manager import printer_manager
+        from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+
+        instance = VirtualPrinterInstance(
+            vp_id=1,
+            name="Model VP",
+            mode="print_queue",
+            model="C11",
+            access_code="12345678",
+            serial_suffix="391800002",
+            base_dir=tmp_path,
+        )
+        queues = [(SimpleNamespace(id=i, printer_id=i), model) for i, model in enumerate(models, 1)]
+        db = MagicMock()
+        db.scalar = AsyncMock(return_value=setting)
+        queue_result = MagicMock()
+        queue_result.all.return_value = queues
+        pending_result = MagicMock()
+        pending_result.all.return_value = []
+        db.execute = AsyncMock(side_effect=[queue_result, *[pending_result for _ in queues]])
+
+        with (
+            patch.object(
+                printer_manager,
+                "get_status",
+                side_effect=lambda printer_id: SimpleNamespace(
+                    connected=True,
+                    remaining_time=0 if printer_id == 1 else 120,
+                ),
+            ),
+            patch.object(printer_manager, "effective_model_for", side_effect=lambda _id, model: model),
+        ):
+            queue = await instance._find_best_queue(db, "P1P")
+
+        assert (queue.printer_id if queue else None) == expected_id
+
+    @pytest.mark.asyncio
+    async def test_incompatible_explicit_target_falls_back(self, tmp_path):
+        from backend.app.services.printer_manager import printer_manager
+        from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+
+        instance = VirtualPrinterInstance(
+            vp_id=1,
+            name="Model VP",
+            mode="print_queue",
+            model="C11",
+            access_code="12345678",
+            serial_suffix="391800002",
+            base_dir=tmp_path,
+            target_printer_id=1,
+        )
+        explicit_result = MagicMock()
+        explicit_result.one_or_none.return_value = (SimpleNamespace(id=1, printer_id=1), "A1")
+        fallback_result = MagicMock()
+        fallback_result.all.return_value = [(SimpleNamespace(id=2, printer_id=2), "P1P")]
+        pending_result = MagicMock()
+        pending_result.all.return_value = []
+        db = MagicMock()
+        db.scalar = AsyncMock(return_value=None)
+        db.execute = AsyncMock(side_effect=[explicit_result, fallback_result, pending_result])
+        with (
+            patch.object(
+                printer_manager,
+                "get_status",
+                return_value=SimpleNamespace(
+                    connected=True,
+                    remaining_time=0,
+                ),
+            ),
+            patch.object(printer_manager, "effective_model_for", side_effect=lambda _id, model: model),
+        ):
+            queue = await instance._find_best_queue(db, "P1P")
+
+        assert queue.printer_id == 2

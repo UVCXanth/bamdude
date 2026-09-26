@@ -280,6 +280,7 @@
   "File type '{}' not supported. Allowed: images, PDFs, documents, STL, 3MF, archives.": "Тип файлу «{}» не підтримується. Дозволено: зображення, PDF, документи, STL, 3MF, архіви.",
   "File type not allowed. Allowed: {}": "Тип файлу не дозволено. Дозволено: {}",
   "File was sliced for {} and cannot be dispatched to a {} printer": "Файл нарізано для {} і його не можна надіслати на принтер {}",
+  "File was sliced for {} and cannot target a {} printer": "Файл нарізано для {} і його не можна призначити принтеру {}",
   "Filename cannot be '.' or '..'": "Імʼя файлу не може бути «.» або «..»",
   "Filename cannot be empty": "Імʼя файлу не може бути порожнім",
   "Filename cannot end with a space or dot": "Імʼя файлу не може закінчуватися пробілом або крапкою",

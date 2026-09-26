@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from sqlalchemy import select
 
 from backend.app.i18n import escape_md, get_language, t
 from backend.app.services.telegram_handlers.common import (
@@ -21,6 +23,7 @@ from backend.app.services.telegram_handlers.common import (
     scene_expired,
 )
 from backend.app.services.telegram_handlers.pagination import build_page_nav
+from backend.app.utils.model_compatibility import model_compatibility
 
 if TYPE_CHECKING:
     from backend.app.models.telegram_chat import TelegramChat
@@ -151,16 +154,31 @@ async def cb_qadd_select_file(callback: CallbackQuery, state: FSMContext, tg_cha
 
     # Filter by compatible model if known
     if sliced_for_model:
-        compatible = [p for p in active_printers if p["model"] and p["model"].upper() == sliced_for_model.upper()]
-        if compatible:
-            active_printers = compatible
+        active_printers = [
+            p
+            for p in active_printers
+            if model_compatibility(sliced_for_model, p.get("effective_model") or p["model"]) in ("exact", "compatible")
+        ]
+        active_printers.sort(
+            key=lambda p: model_compatibility(sliced_for_model, p.get("effective_model") or p["model"]) != "exact"
+        )
 
     # Get distinct models from filtered list
-    models = sorted({p["model"] for p in active_printers if p["model"]})
+    models = sorted(
+        {p.get("effective_model") or p["model"] for p in active_printers if p.get("effective_model") or p["model"]}
+    )
 
     lines = [
         f"\U0001f4c4 *{escape_md(lib_file.filename)}*\n",
-        escape_md(t(lang, NS, "queue_add.select_target")),
+        escape_md(
+            t(
+                lang,
+                NS,
+                "queue_add.no_compatible_printers"
+                if sliced_for_model and not active_printers
+                else "queue_add.select_target",
+            )
+        ),
     ]
 
     btns = []
@@ -182,7 +200,7 @@ async def cb_qadd_select_file(callback: CallbackQuery, state: FSMContext, tg_cha
         btns.append(
             [
                 InlineKeyboardButton(
-                    text=f"\U0001f5a8 {p['name']}",
+                    text=f"\U0001f5a8 {p['name']}{' ≈' if sliced_for_model and model_compatibility(sliced_for_model, p.get('effective_model') or p['model']) == 'compatible' else ''}",
                     callback_data=f"qadd:printer:{p['id']}",
                 )
             ]
@@ -219,7 +237,12 @@ async def cb_qadd_select_printer(
     printer_name = printer["name"] if printer else f"#{printer_id}"
 
     await state.set_state(QueueAddState.confirming)
-    await state.update_data(printer_id=printer_id, target_model=None, target_label=printer_name)
+    await state.update_data(
+        printer_id=printer_id,
+        target_model=None,
+        target_label=printer_name,
+        target_effective_model=(printer.get("effective_model") or printer["model"]) if printer else None,
+    )
     await _show_confirm(callback, state, lang)
 
 
@@ -243,28 +266,32 @@ async def _locations_for_model(model: str) -> list[tuple[int, str]]:
     weaker filter than ``printers_for_item`` uses at routing time — the question
     here is "is this place ever right", not "can it run right now".
     """
-    from sqlalchemy import func as sa_func, select
+    from sqlalchemy import select
 
     from backend.app.core.database import async_session
     from backend.app.models.printer import Printer
+    from backend.app.models.settings import Settings
     from backend.app.services.printer_location_service import load_tree, path_of, subtree_ids
+    from backend.app.services.printer_manager import printer_manager
 
     async with async_session() as db:
         tree = await load_tree(db)
         if not tree:
             return []
-        occupied = set(
-            (
-                await db.execute(
-                    select(Printer.location_id)
-                    .where(sa_func.lower(Printer.model) == model.lower())
-                    .where(Printer.archived.is_(False))
-                    .where(Printer.location_id.is_not(None))
-                )
-            )
+        setting = await db.scalar(select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
+        allow_compatible = isinstance(setting, str) and setting.lower() == "true"
+        printers = (
+            (await db.execute(select(Printer).where(Printer.archived.is_(False), Printer.location_id.is_not(None))))
             .scalars()
             .all()
         )
+        occupied = {
+            printer.location_id
+            for printer in printers
+            if (verdict := model_compatibility(model, printer_manager.effective_model_for(printer.id, printer.model)))
+            == "exact"
+            or (allow_compatible and verdict == "compatible")
+        }
 
     if not occupied:
         return []
@@ -282,6 +309,7 @@ async def cb_qadd_select_model(callback: CallbackQuery, state: FSMContext, tg_ch
     await state.update_data(
         printer_id=None,
         target_model=model,
+        target_effective_model=model,
         target_label=f"Any {model}",
         target_location_id=None,
         target_location_label=None,
@@ -368,6 +396,16 @@ async def _show_confirm(callback: CallbackQuery, state: FSMContext, lang: str) -
     )
     if location_label:
         text += f"\n\U0001f4cd {escape_md(t(lang, NS, 'queue_add.location'))}: {escape_md(location_label)}"
+    if model_compatibility(data.get("sliced_for_model"), data.get("target_effective_model")) == "compatible":
+        text += "\n\n" + escape_md(
+            t(
+                lang,
+                NS,
+                "model_compatible_warning",
+                file_model=data["sliced_for_model"],
+                printer_model=data["target_effective_model"],
+            )
+        )
 
     await callback.message.edit_text(
         text,
@@ -496,6 +534,8 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
     from backend.app.services import queue_sources
     from backend.app.services.filament_policy import record_queue_source
     from backend.app.services.filament_policy_write import prepare_routing
+    from backend.app.services.printer_manager import printer_manager
+    from backend.app.services.queue_add import _check_captured_model
     from backend.app.services.queue_source_capture import (
         capture_staged,
         discard_staged,
@@ -526,6 +566,18 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
             routing, plate_id = await prepare_routing(
                 db, printer_id=printer_id, library_file_id=file_id, library_file=library_file, staged=staged
             )
+            if routing:
+                from backend.app.models.printer import Printer
+
+                intent = json.loads(routing)
+                file_model = intent.get("file_model")
+                await _check_captured_model(db, printer_id, file_model)
+                physical_model = await db.scalar(select(Printer.model).where(Printer.id == printer_id))
+                verdict = model_compatibility(
+                    file_model, printer_manager.effective_model_for(printer_id, physical_model)
+                )
+                intent["exact_model"] = verdict == "exact"
+                routing = json.dumps(intent)
 
         async def attach(session, source) -> None:
             item = PrintQueueItem(

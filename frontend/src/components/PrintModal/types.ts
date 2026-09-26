@@ -427,6 +427,7 @@ export interface PrinterSelectorProps {
   locked?: boolean;
   /** Suggested model from sliced file (for pre-selection) */
   slicedForModel?: string | null;
+  modelMatrix?: Record<string, string[]>;
   /** File is swap mode compatible - filter to swap-enabled printers only */
   swapCompatible?: boolean;
   /** Printers whose queue the operator has paused. They stay selectable — the

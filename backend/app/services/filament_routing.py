@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING, Literal
 
 from backend.app.services.printer_feed_snapshot import FeedSource, PrinterFeedSnapshot
 from backend.app.utils.filament_types import canonical_filament_type, filament_types_compatible
+from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.printer_configs import requires_left_tpu_firmware_check
-from backend.app.utils.printer_models import is_gcode_compatible, normalize_model_name
+from backend.app.utils.printer_models import normalize_model_name
 
 if TYPE_CHECKING:
     from backend.app.services.filament_requirements import PrintRequirements
@@ -199,9 +200,8 @@ def resolve_filament_routing(
     model = normalize_model_name(requirements.model)
     if not model or not snapshot.model:
         return RoutingResult("unknown", "model_unavailable")
-    if (exact_model and model != snapshot.model) or (
-        not exact_model and not is_gcode_compatible(model, snapshot.model)
-    ):
+    verdict = model_compatibility(model, snapshot.model)
+    if (exact_model and verdict != "exact") or (not exact_model and verdict == "incompatible"):
         return RoutingResult("incompatible", "model_mismatch")
     if not snapshot.ams_known:
         # In particular, an external tray report does not prove AMS absence.

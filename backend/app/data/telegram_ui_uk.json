@@ -13,6 +13,7 @@
     "stats": "📊 Статистика",
     "help": "ℹ️ Допомога"
   },
+  "model_compatible_warning": "Нарізано під {file_model}; {printer_model} сумісний, але охолодження може відрізнятися. Bambu радить друкувати на тій самій моделі.",
   "start": {
     "welcome": "Керування 3D-принтерами Bambu Lab.\n\nОберіть дію:",
     "btn_printers": "Принтери",
@@ -203,6 +204,7 @@
     "title": "Додати в чергу",
     "select_file": "Оберіть файл:",
     "select_target": "Оберіть ціль:",
+    "no_compatible_printers": "Для цього файла немає доступних сумісних принтерів.",
     "btn_any_model": "Будь-який",
     "select_location": "Де друкувати?",
     "btn_anywhere": "Будь-де",
@@ -220,6 +222,7 @@
     "select_printer": "Оберіть принтер:",
     "no_files": "Немає файлів для друку в бібліотеці",
     "no_printers": "Немає вільних принтерів",
+    "no_compatible_printers": "Для цього файла немає вільних сумісних принтерів.",
     "confirm_title": "Підтвердження друку",
     "confirm_file": "Файл",
     "confirm_printer": "Принтер",

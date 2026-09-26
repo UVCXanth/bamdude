@@ -133,6 +133,7 @@ async def get_printers_data(tg_chat=None) -> list[dict]:
                 "id": p.id,
                 "name": p.name,
                 "model": p.model,
+                "effective_model": printer_manager.effective_model_for(p.id, p.model),
                 "connected": status.connected if status else False,
                 "state": status.state if status else None,
                 "progress": status.progress if status else 0,

@@ -452,10 +452,15 @@ class PrintOptionsResponse(BaseModel):
     filament_tangle_detect: bool = False
 
 
+class ModelCompatibilityResponse(BaseModel):
+    models: dict[str, list[str]]
+
+
 class PrinterStatus(BaseModel):
     id: int
     name: str
     connected: bool
+    effective_model: str | None = None
     state: str | None = None
     current_print: str | None = None
     subtask_name: str | None = None

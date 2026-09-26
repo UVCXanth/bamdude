@@ -1900,6 +1900,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         # that changes constantly is harmless, and triggers nothing.
         f"{state.speed_level}:{state.door_open}:{state.sdcard}:{state.sdcard_state}:"
         f"{state.store_to_sdcard}:{state.timelapse}:{state.ipcam}:"
+        f"{state.upgrade_kit_supported}:{state.upgrade_kit_installed}:"
         f"{state.firmware_version}:{state.mc_print_sub_stage}:"
         f"{state.firmware_consistency_request}:{state.firmware_force_upgrade}:"
         f"{ams_dry_key}:{ams_tray_key}:{state.ams_auto_switch_filament}:{ams_backup_key}:"

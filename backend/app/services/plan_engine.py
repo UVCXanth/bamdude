@@ -48,6 +48,7 @@ from backend.app.services.order_metrics import (
     line_accepts_materials,
 )
 from backend.app.services.product_composition import PlateRecipe, estimate_seconds, recipes_for_products
+from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.printer_models import normalize_model_name
 
 # A defence, not a feature: a plate whose yield somehow never shrinks the
@@ -95,10 +96,12 @@ class FleetCapacity:
     """
 
     machines: list[FleetMachine] = field(default_factory=list)
+    allow_compatible: bool = False
 
     def copy(self) -> FleetCapacity:
         return FleetCapacity(
-            [FleetMachine(m.printer_id, m.model, m.free_at, m.prep_seconds, m.gap_seconds) for m in self.machines]
+            [FleetMachine(m.printer_id, m.model, m.free_at, m.prep_seconds, m.gap_seconds) for m in self.machines],
+            allow_compatible=self.allow_compatible,
         )
 
     def preview(self, recipe: PlateRecipe) -> tuple[float, FleetMachine] | None:
@@ -106,10 +109,21 @@ class FleetCapacity:
         key = _model_key(recipe.printer_model)
         if key is None or seconds is None or seconds <= 0:
             return None
-        choices = [m for m in self.machines if m.key == key]
+        choices = [
+            m
+            for m in self.machines
+            if m.key == key or (self.allow_compatible and model_compatibility(key, m.key) == "compatible")
+        ]
         if not choices:
             return None
-        machine = min(choices, key=lambda m: (m.free_at + m.prep_seconds + seconds, m.printer_id))
+        machine = min(
+            choices,
+            key=lambda m: (
+                0 if m.key == key and m.free_at <= 0 else 1 if m.key != key and m.free_at <= 0 else 2,
+                m.free_at + m.prep_seconds + seconds,
+                m.printer_id,
+            ),
+        )
         return machine.free_at + machine.prep_seconds + seconds, machine
 
     def reserve(self, recipe: PlateRecipe) -> float | None:

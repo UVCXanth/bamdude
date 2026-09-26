@@ -62,12 +62,13 @@ async def _library_file(db, tmp_path, *, path: str | None = "library/cube.3mf") 
 async def test_a_model_target_creates_an_auto_queue_item(db_session, session_factory, tmp_path):
     lib = await _library_file(db_session, tmp_path)
 
+    callback = _callback()
     with patch("backend.app.services.telegram_handlers.queue.render_queue", new=AsyncMock()):
-        await _add_to_auto_queue(_callback(), "en", lib.id, "X2D", None)
+        await _add_to_auto_queue(callback, "en", lib.id, "P1S", None)
 
     items = (await db_session.execute(select(AutoQueueItem))).scalars().all()
-    assert len(items) == 1
-    assert items[0].target_model == "X2D"
+    assert len(items) == 1, callback.answer.call_args
+    assert items[0].target_model == "P1S"
     assert items[0].library_file_id == lib.id
     assert items[0].status == "pending"
 
@@ -84,7 +85,7 @@ async def test_the_routing_requirements_come_out_of_the_3mf(db_session, session_
         patch("backend.app.services.auto_queue_threemf.extract_auto_queue_requirements", return_value=reqs),
         patch("backend.app.services.telegram_handlers.queue.render_queue", new=AsyncMock()),
     ):
-        await _add_to_auto_queue(_callback(), "en", lib.id, "X2D", None)
+        await _add_to_auto_queue(_callback(), "en", lib.id, "P1S", None)
 
     item = (await db_session.execute(select(AutoQueueItem))).scalar_one()
     assert json.loads(item.required_filament_types) == ["PLA", "PETG"]
@@ -95,7 +96,7 @@ async def test_an_unreadable_slice_is_refused_without_a_queue_row(db_session, se
     lib = await _library_file(db_session, tmp_path, path=None)
     callback = _callback()
     with patch("backend.app.services.telegram_handlers.queue.render_queue", new=AsyncMock()):
-        await _add_to_auto_queue(callback, "en", lib.id, "X2D", None)
+        await _add_to_auto_queue(callback, "en", lib.id, "P1S", None)
     assert (await db_session.execute(select(AutoQueueItem))).scalars().all() == []
     assert callback.answer.await_args.kwargs.get("show_alert") is True
 
@@ -109,7 +110,7 @@ async def test_the_auto_queue_keeps_one_global_ordering(db_session, session_fact
     await db_session.commit()
 
     with patch("backend.app.services.telegram_handlers.queue.render_queue", new=AsyncMock()):
-        await _add_to_auto_queue(_callback(), "en", lib.id, "X2D", None)
+        await _add_to_auto_queue(_callback(), "en", lib.id, "P1S", None)
 
     positions = sorted((await db_session.execute(select(AutoQueueItem.position))).scalars().all())
     assert positions == [7, 8]
@@ -120,7 +121,7 @@ async def test_a_missing_file_is_refused_rather_than_queued_empty(db_session, se
     callback = _callback()
 
     with patch("backend.app.services.telegram_handlers.queue.render_queue", new=AsyncMock()):
-        await _add_to_auto_queue(callback, "en", 999_999, "X2D", None)
+        await _add_to_auto_queue(callback, "en", 999_999, "P1S", None)
 
     assert (await db_session.execute(select(AutoQueueItem))).scalars().all() == []
     assert callback.answer.await_args.kwargs.get("show_alert") is True

@@ -65,6 +65,8 @@ import { useToast } from '../contexts/ToastContext';
 import { formatETA, formatDuration } from '../utils/date';
 import { getBedTypeInfo } from '../utils/bedType';
 import { mapModelCode } from '../utils/printer';
+import { modelCompatibility } from '../utils/modelCompatibility';
+import { ModelCompatChip } from './ModelCompatChip';
 import { queueResumePayload } from '../utils/queueStatus';
 import { invalidateQueueViews } from '../utils/queryInvalidation';
 import { usePlateDefects } from '../hooks/usePlateDefects';
@@ -177,6 +179,9 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
     queryKey: ['printerStatus', queue.printer_id],
     queryFn: ({ signal }) => api.getPrinterStatus(queue.printer_id, signal),
     refetchInterval: query => farmStatusPollInterval(5000, query),
+  });
+  const { data: modelMatrix } = useQuery({
+    queryKey: ['modelCompatibility'], queryFn: api.getModelCompatibility, staleTime: 60 * 60 * 1000,
   });
 
   // Pause/Resume queue mutation
@@ -467,7 +472,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
             showToast(t('printers.dropNoSlicedForModel', { filename: candidate.name }), 'error');
             continue;
           }
-          if (mapModelCode(queue.printer_model) && slicedFor.toLowerCase() !== mapModelCode(queue.printer_model).toLowerCase()) {
+          if (modelCompatibility(slicedFor, status?.effective_model || queue.printer_model, modelMatrix?.models) === 'incompatible') {
             if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
             showToast(t('printers.incompatibleFile', { slicedFor, printerModel: mapModelCode(queue.printer_model) }), 'error');
             continue;
@@ -538,7 +543,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
 
   const libraryPicker = pickerOpen ? (
     <LibraryPickerModal
-      printerModel={queue.printer_model}
+      printerModel={status?.effective_model || queue.printer_model}
       targetName={queue.printer_name ?? `Printer #${queue.printer_id}`}
       onCancel={() => setPickerOpen(false)}
       onConfirm={(files) => {
@@ -979,6 +984,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
                 <PendingItemRow
                   key={item.id}
                   item={item}
+                  targetModel={status?.effective_model || queue.printer_model}
                   onStart={() => startItemMutation.mutate(item.id)}
                   onCancel={() => cancelItemMutation.mutate(item.id)}
                   onMove={(direction) => reorderMutation.mutate({ id: item.id, direction })}
@@ -1091,6 +1097,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
 
 interface PendingItemRowProps {
   item: PrintQueueItem;
+  targetModel?: string | null;
   onStart: () => void;
   onCancel: () => void;
   onMove: (direction: 'up' | 'down') => void;
@@ -1123,6 +1130,7 @@ interface PendingItemRowProps {
 
 function PendingItemRow({
   item,
+  targetModel,
   onStart,
   onCancel,
   onMove,
@@ -1272,6 +1280,7 @@ function PendingItemRow({
               className="w-3 h-3"
             />
             <p className="text-xs text-white truncate flex-1">{name}</p>
+            <ModelCompatChip fileModel={item.sliced_for_model} targetModel={targetModel} />
             {isInBatch && batchAccent && (
               <span className={`text-[9px] px-1 rounded ${batchAccent.badge} font-medium`}>
                 {t('queueCard.batch.label', { count: batchSize })}

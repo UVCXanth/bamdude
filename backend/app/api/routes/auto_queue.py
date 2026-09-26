@@ -24,6 +24,7 @@ import json
 import logging
 from contextlib import suppress
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
@@ -65,6 +66,7 @@ from backend.app.services.filament_intake import (
 from backend.app.services.filament_preview import printer_routing_preview, routing_preview
 from backend.app.services.queue_source_descriptor import source_storage_state
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable
+from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.printer_models import normalize_model_name
 
 logger = logging.getLogger(__name__)
@@ -394,7 +396,9 @@ async def update_auto_queue_item(
     if item.status != "pending":
         raise HTTPException(400, f"Cannot edit item in status '{item.status}'")
 
-    _apply_item_update(item, data.model_dump(exclude_unset=True))
+    update_data = data.model_dump(exclude_unset=True)
+    await _validate_model_update(db, item, update_data)
+    _apply_item_update(item, update_data)
 
     await db.commit()
     return _to_response((await db.execute(stmt)).scalar_one())
@@ -423,6 +427,28 @@ def _apply_item_update(item: AutoQueueItem, update_data: dict) -> None:
         setattr(item, key, value)
 
 
+async def _validate_model_update(db: AsyncSession, item: AutoQueueItem, update_data: dict) -> None:
+    """A changed target or plate must still accept the captured file bytes."""
+    if "target_model" not in update_data and "plate_id" not in update_data:
+        return
+    if "plate_id" in update_data and update_data["plate_id"] != item.plate_id:
+        source_item = SimpleNamespace(
+            queue_source_id=item.queue_source_id,
+            source_snapshot=item.source_snapshot,
+            archive_id=item.archive_id,
+            library_file_id=item.library_file_id,
+            plate_id=update_data["plate_id"],
+        )
+    else:
+        source_item = item
+    req = await read_item_requirements(db, source_item)
+    if req.status != "ok":
+        raise HTTPException(422, routing_detail(req.reason))
+    target = normalize_model_name(update_data.get("target_model", item.target_model)) or req.model
+    if model_compatibility(req.model, target) == "incompatible":
+        raise HTTPException(400, f"File was sliced for {req.model} and cannot target a {target} printer")
+
+
 @router.put("/batch/{batch_id}", response_model=AutoQueueBatchActionResponse)
 async def update_auto_queue_batch(
     batch_id: str,
@@ -447,6 +473,8 @@ async def update_auto_queue_batch(
 
     update_data = data.model_dump(exclude_unset=True)
     update_data.pop("position", None)
+    for item in items:
+        await _validate_model_update(db, item, update_data)
     for item in items:
         _apply_item_update(item, update_data)
     await db.commit()

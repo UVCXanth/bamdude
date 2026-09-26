@@ -22,6 +22,18 @@ def test_partial_update_retains_fields_but_new_generation_does_not():
     assert third.sources == ()
 
 
+def test_upgrade_kit_changes_model_and_revision_without_changing_physical_feed():
+    state = PrinterState(connected=True)
+    before = snapshot_from_state(1, "P1P", state)
+    state.upgrade_kit_supported = True
+    still_p1p = snapshot_from_state(1, "P1P", state)
+    assert still_p1p.model == "P1P" and still_p1p.revision == before.revision
+    state.upgrade_kit_installed = True
+    upgraded = snapshot_from_state(1, "P1P", state)
+    assert upgraded.model == "P1S" and upgraded.revision != before.revision
+    assert upgraded.nozzle_diameters == before.nozzle_diameters
+
+
 def test_explicit_empty_external_and_ams_units_clear_sources():
     state = PrinterState(connected=True)
     state.feed_telemetry.observe(

@@ -243,7 +243,7 @@ class TestTheWaitingReasonSaysWhy:
 
         from backend.app.services import auto_queue_eligibility as elig
 
-        printers = [SimpleNamespace(id=pid, name=f"P{pid}") for pid in feeds.feeds]
+        printers = [SimpleNamespace(id=pid, name=f"P{pid}", model="P1S") for pid in feeds.feeds]
         with (
             patch.object(elig, "printers_for_item", AsyncMock(return_value=(printers, "P1S", ""))),
             patch.object(elig, "read_item_requirements", AsyncMock(return_value=req)),

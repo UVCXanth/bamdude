@@ -59,18 +59,27 @@ export function CopyQueueModal({ source, items, onCancel, onConfirm }: CopyQueue
   const [pickedPrinters, setPickedPrinters] = useState<Set<number>>(new Set());
 
   const { data: queues } = useQuery({ ...farmQueryResumeOptions, queryKey: ['queues'], queryFn: ({ signal }) => api.getQueues({ signal }) });
-  const targets = useMemo(() => copyTargets(queues, source), [queues, source]);
+  const { data: modelMatrix } = useQuery({
+    queryKey: ['modelCompatibility'], queryFn: api.getModelCompatibility, staleTime: 60 * 60 * 1000,
+  });
+  const potentialTargets = useMemo(() => (queues ?? []).filter((queue) => queue.printer_id !== source.printer_id), [queues, source]);
 
   // Shares its keys with the cards on the page behind, so this costs no extra
   // polling — it reads the same cache and re-renders when it moves. Asked for
   // the unsorted targets: the order below is computed FROM these statuses.
   const statuses = useQueries({
-    queries: targets.map((queue) => ({
+    queries: potentialTargets.map((queue) => ({
       queryKey: ['printerStatus', queue.printer_id],
       queryFn: ({ signal }: { signal: AbortSignal }) => api.getPrinterStatus(queue.printer_id, signal),
     })),
   });
-  const statusOf = (printerId: number) => statuses[targets.findIndex((queue) => queue.printer_id === printerId)]?.data;
+  const statusOf = (printerId: number) => statuses[potentialTargets.findIndex((queue) => queue.printer_id === printerId)]?.data;
+  const targets = useMemo(() => {
+    const effective = new Map(potentialTargets.map((queue) => [queue.printer_id, statusOf(queue.printer_id)?.effective_model ?? null]));
+    const models = [...pickedItems].map((index) => items[index]?.slicedForModel);
+    return copyTargets(queues, source, models, modelMatrix?.models, effective);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- statuses supplies the live effective models
+  }, [queues, source, items, pickedItems, modelMatrix, statuses]);
 
   // The order the Queues screen is in — the cards behind this dialog. The two
   // ETA orders need what the screen reads too: the live statuses above and,
@@ -134,7 +143,8 @@ export function CopyQueueModal({ source, items, onCancel, onConfirm }: CopyQueue
     </span>
   );
 
-  const canCopy = pickedItems.size > 0 && pickedPrinters.size > 0;
+  const validTargetIds = [...pickedPrinters].filter((id) => targets.some((target) => target.printer_id === id));
+  const canCopy = pickedItems.size > 0 && validTargetIds.length > 0;
 
   return (
     <Modal
@@ -282,7 +292,7 @@ export function CopyQueueModal({ source, items, onCancel, onConfirm }: CopyQueue
                 // never be ticked, and this is where that would stop being true
                 // silently if it ever were.
                 items.flatMap((entry, index) => (pickedItems.has(index) && entry.file ? [entry.file] : [])),
-                [...pickedPrinters],
+                validTargetIds,
               )
             }
           >

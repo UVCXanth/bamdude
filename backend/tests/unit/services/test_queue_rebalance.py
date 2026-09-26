@@ -97,6 +97,15 @@ def test_an_item_whose_home_model_has_an_idle_printer_is_never_moved():
     assert plan.moves == [] and plan.skipped == [(1, "home_model_idle")]
 
 
+def test_compatible_idle_printer_prevents_unnecessary_file_rebalance_only_when_enabled():
+    item = _item(1, 10, "p1p", 6)
+    options = {10: [_opt(200, "x1c", 6)]}
+    farm = FarmView(idle_by_model={"p1s": 1, "x1c": 1}, free_at_by_model={"p1s": 0, "x1c": 0})
+    assert plan_moves([item], options, farm).moves
+    farm.allow_compatible = True
+    assert plan_moves([item], options, farm).skipped == [(1, "home_model_idle")]
+
+
 def test_no_candidate_plate_for_the_idle_model_means_no_move():
     plan = plan_moves(
         [_item(1, 10, "p1s", 6)], {10: [_opt(100, "p1s", 6)]}, _farm({"p1s": 0, "x1c": 1}, {"p1s": 2 * H})

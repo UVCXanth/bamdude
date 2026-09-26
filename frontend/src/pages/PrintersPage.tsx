@@ -175,6 +175,7 @@ import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/Co
 import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, getEmptySlotKind, resolveSlotNozzleDiameter, resolveSlotNozzleFlow, amsSideBadge, formatSlotLabel } from '../utils/amsHelpers';
 import { FeedDirectionModal } from '../components/FeedDirectionModal';
 import { getPrinterImage, getWifiStrength, hasDoorSensor, isPrinterCurrentlyDispatchable, mapModelCode } from '../utils/printer';
+import { modelCompatibility } from '../utils/modelCompatibility';
 import { OpenMonitorButton } from '../features/monitor/OpenMonitorButton';
 import { useMonitorTarget } from '../features/monitor/useMonitorTarget';
 import { useProgressiveListLength } from '../hooks/useProgressiveListLength';
@@ -2165,6 +2166,11 @@ function PrinterCard({
     queryFn: ({ signal }) => api.getPrinterStatus(printer.id, signal),
     refetchInterval: query => farmStatusPollInterval(30_000, query), // Fallback polling, WebSocket handles real-time
   });
+  const { data: modelMatrix } = useQuery({
+    queryKey: ['modelCompatibility'],
+    queryFn: api.getModelCompatibility,
+    staleTime: 60 * 60 * 1000,
+  });
 
   // Opens this printer's camera the way asked — the icon passes the browser's
   // remembered mode, the caret the mode just picked.
@@ -3327,7 +3333,7 @@ function PrinterCard({
             showToast(t('printers.dropNoSlicedForModel', { filename: candidate.name }), 'error');
             continue;
           }
-          if (mapModelCode(printer.model) && slicedFor.toLowerCase() !== mapModelCode(printer.model).toLowerCase()) {
+          if (modelCompatibility(slicedFor, status?.effective_model || printer.model, modelMatrix?.models) === 'incompatible') {
             if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
             showToast(t('printers.incompatibleFile', { slicedFor, printerModel: mapModelCode(printer.model) }), 'error');
             continue;
@@ -4460,7 +4466,7 @@ function PrinterCard({
                 </div>
 
                 {/* Queue Widget - always visible when there are pending items */}
-                <PrinterQueueWidget printerId={printer.id} printerModel={printer.model} printerState={status.state} awaitingPlateClear={status.awaiting_plate_clear} repeatAvailable={repeatAvailable} requirePlateClear={printer.require_plate_clear} />
+                <PrinterQueueWidget printerId={printer.id} printerModel={status.effective_model || printer.model} printerState={status.state} awaitingPlateClear={status.awaiting_plate_clear} repeatAvailable={repeatAvailable} requirePlateClear={printer.require_plate_clear} />
               </>
             )}
 
@@ -6599,8 +6605,8 @@ function PrinterCard({
             }
             // Check printer compatibility if sliced_for_model is available in metadata
             const slicedFor = (uploadedFile.metadata as Record<string, unknown>)?.sliced_for_model as string | undefined;
-            const printerModel = mapModelCode(printer.model);
-            if (slicedFor && printerModel && slicedFor.toLowerCase() !== printerModel.toLowerCase()) {
+            const printerModel = status?.effective_model || mapModelCode(printer.model);
+            if (slicedFor && modelCompatibility(slicedFor, printerModel, modelMatrix?.models) === 'incompatible') {
               if (uploadedFile.outcome === 'created') api.deleteLibraryFile(uploadedFile.id).catch(() => {});
               return t('printers.incompatibleFile', 'This file was sliced for {{slicedFor}}, but this printer is a {{printerModel}}', { slicedFor, printerModel });
             }

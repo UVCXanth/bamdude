@@ -252,6 +252,10 @@ class AppSettings(BaseModel):
         default=False,
         description="Auto-queue: move an order line's pending prints to idle printers of another model when that finishes sooner",
     )
+    auto_queue_compatible_models: bool = Field(
+        default=False,
+        description="Auto-queue: use Bambu Studio compatible printer models when no exact model is ready",
+    )
     auto_order_for_batches: bool = Field(
         default=True,
         description="Print dialog: a submission of two or more prints proposes a new order for the batch (spec 2026-09-06, Decision 6)",
@@ -745,6 +749,7 @@ class AppSettingsUpdate(BaseModel):
     prefer_lowest_filament: bool | None = None
     queue_shortest_first: bool | None = None
     auto_queue_rebalance_models: bool | None = None
+    auto_queue_compatible_models: bool | None = None
     auto_order_for_batches: bool | None = None
     preheat_enabled: bool | None = None
     preheat_filament_targets: str | None = None

@@ -12,6 +12,7 @@ from backend.app.core.permissions import Permission
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
+from backend.app.models.settings import Settings
 from backend.app.services import queue_sources
 from backend.app.services.filament_intake import (
     enrich_family_filament_types,
@@ -26,7 +27,8 @@ from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.filament_routing import resolve_filament_routing
 from backend.app.services.printer_location_service import load_tree, subtree_ids
 from backend.app.services.printer_manager import printer_manager
-from backend.app.utils.printer_models import is_dual_nozzle_model, normalize_model_name
+from backend.app.utils.model_compatibility import model_compatibility
+from backend.app.utils.printer_models import is_dual_nozzle_model
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +131,12 @@ async def printer_routing_preview(db, data, user):
                 exact_model = (
                     saved.get("exact_model", item.source_auto_item_id is not None) if data.editing_queue_item else False
                 )
+                if data.editing_queue_item and (
+                    saved_queue is None
+                    or saved_queue.printer_id != target.printer_id
+                    or item.plate_id != target.plate_id
+                ):
+                    exact_model = model_compatibility(req.model, snapshot.model) == "exact"
                 result = resolve_filament_routing(
                     req,
                     policy,
@@ -160,6 +168,8 @@ async def routing_preview(db, data, user):
         tree = await load_tree(db)
         query = query.where(Printer.location_id.in_(subtree_ids(tree, data.target_location_id)))
     printers = (await db.execute(query)).all()
+    setting = await db.scalar(select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
+    allow_compatible = isinstance(setting, str) and setting.lower() == "true"
     snapshots = {}
     advisory_unavailable = False
     for printer, _ in printers:
@@ -181,14 +191,15 @@ async def routing_preview(db, data, user):
         groups = {}
         if req.status == "ok":
             for printer, queue in printers:
-                model = normalize_model_name(printer.model)
-                if model != req.model:
+                model = printer_manager.effective_model_for(printer.id, printer.model)
+                verdict = model_compatibility(req.model, model)
+                if verdict != "exact" and not (allow_compatible and verdict == "compatible"):
                     continue
                 snapshot = snapshots.get(printer.id)
                 if snapshot is None:
                     continue
                 ams = ("present" if snapshot.ams_present else "absent") if snapshot.ams_known else "unknown"
-                nozzles = 2 if is_dual_nozzle_model(model) else 1
+                nozzles = 2 if is_dual_nozzle_model(printer.model) else 1
                 key = f"{model}:{nozzles}:{ams}"
                 group = groups.setdefault(
                     key,
@@ -205,7 +216,7 @@ async def routing_preview(db, data, user):
                         "reasons": {},
                     },
                 )
-                result = resolve_filament_routing(req, policy, snapshot)
+                result = resolve_filament_routing(req, policy, snapshot, exact_model=verdict == "exact")
                 group["total"] += 1
                 group[result.status] += 1
                 if result.reason:

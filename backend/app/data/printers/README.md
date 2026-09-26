@@ -1,14 +1,14 @@
 # Bambu Lab printer configs (mirrored from BambuStudio)
 
-**Byte-for-byte copies** of BambuStudio's `resources/printers/<code>.json`, one
+Copies of BambuStudio's `resources/printers/<code>.json`, one
 per printer model. They are the data-driven source of truth for **per-model
 device capabilities** — so this knowledge lives in data, not hardcoded Python.
 
-- **Source:** BambuStudio `resources/printers/` @ tag **`v02.08.02.61`**
-  (commit `ba049f6a`, 2026-07-14).
+- **Source:** BambuStudio `resources/printers/` @ tag **`v02.08.04.57`**
+  (commit `f977235e6`, checked 2026-09-27; `origin/master` has the same tree).
 - **Consumed by:** `backend/app/utils/printer_configs.py` (loader + the
   device-calibration availability resolver).
-- **Local BS checkout** (not in this repo): `temp/references/BambuStudio/`.
+- **Local BS checkout** (not in this repo): `D:/Development/bamdude/references/BambuStudio/`.
 
 ## What's inside each file
 
@@ -33,7 +33,7 @@ file using each JSON's own `display_name` / `model_id`, so it is independent of
 ### Code ↔ model (from the JSONs' own `display_name`)
 
 `BL-P001`=X1C · `BL-P002`=X1 · `C11`=**P1P** · `C12`=**P1S** · `C13`=X1E ·
-`N1`=A1 mini · `N2S`=A1 · `N6`=X2D · `N7`=P2S · `N9`=A2L · `O1C`/`O1C2`=H2C ·
+`N1`=A1 mini · `N2S`=A1 · `N6`=X2D · `N7`=P2S · `N8`=N8 · `N9`=A2L · `O1C`/`O1C2`=H2C ·
 `O1D`=H2D · `O1E`=H2D Pro · `O1S`=H2S.
 
 > `PRINTER_MODEL_ID_MAP` in `printer_models.py` was corrected to match these
@@ -50,10 +50,10 @@ configs have so far been identical across them. If a beta ever *does* change a
 config, that is worth a line in the audit note before mirroring it: a flag a beta
 turns on can still be reverted before release.
 
-1. `git -C temp/references/BambuStudio fetch --tags`, then check the newest tag
+1. `git -C D:/Development/bamdude/references/BambuStudio fetch --tags`, then check the newest tag
    **and** whether `origin/master` is ahead of it (BS ships config changes on
    master before tagging).
-2. Re-copy: `cp temp/references/BambuStudio/resources/printers/*.json backend/app/data/printers/`.
+2. Re-copy from `D:/Development/bamdude/references/BambuStudio/resources/printers/` into `backend/app/data/printers/`.
 3. **Compare parsed JSON, not bytes.** Review any real diff (new `support_*`
    flags, new models) and wire it up in `printer_configs.py` + the calibration UI.
 4. Bump the tag/commit noted above.
@@ -67,7 +67,7 @@ turns on can still be reverted before release.
 > ```bash
 > python - <<'EOF'
 > import json, io, os
-> ours, bs = 'backend/app/data/printers', 'temp/references/BambuStudio/resources/printers'
+> ours, bs = 'backend/app/data/printers', 'D:/Development/bamdude/references/BambuStudio/resources/printers'
 > for f in sorted(os.listdir(ours)):
 >     if not f.endswith('.json') or f == 'filaments_blacklist.json':
 >         continue

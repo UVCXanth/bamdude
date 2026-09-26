@@ -27,6 +27,7 @@ from backend.app.services.bambu_mqtt import (
 from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.fila_switch import extruder_slots_payload, inlet_bindings, switch_ready
 from backend.app.utils.kprofile_lookup import build_slot_k_resolver
+from backend.app.utils.model_compatibility import effective_model_for_state
 from backend.app.utils.printer_configs import airduct_fan_label, get_device_support_flags, is_bed_slinger
 from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.temperature_limits import limits_for
@@ -1337,6 +1338,10 @@ class PrinterManager:
         """Get the cached model for a printer."""
         return self._models.get(printer_id)
 
+    def effective_model_for(self, printer_id: int, model: str | None = None) -> str | None:
+        """Model for file compatibility; physical model stays in the printer row."""
+        return effective_model_for_state(model or self.get_model(printer_id), self.get_status(printer_id))
+
     def get_drying_targets(self, printer_id: int) -> dict[int, dict] | None:
         """Get cached active drying target params keyed by AMS id.
 
@@ -2272,6 +2277,7 @@ def printer_state_to_dict(
 
     result = {
         "connected": state.connected,
+        "effective_model": effective_model_for_state(model, state),
         "state": state.state,
         "current_print": state.current_print,
         "subtask_name": state.subtask_name,

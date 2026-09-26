@@ -9,6 +9,7 @@ import json
 from dataclasses import asdict, dataclass, field
 
 from backend.app.services.ams_advertised_overlay import matches_live, slot_key
+from backend.app.utils.model_compatibility import effective_model_for_state
 from backend.app.utils.printer_models import is_dual_nozzle_model, is_nozzle_rack_model, normalize_model_name
 
 
@@ -253,6 +254,7 @@ class FeedTelemetry:
 
 def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None) -> PrinterFeedSnapshot:
     normalized = normalize_model_name(model)
+    routing_model = effective_model_for_state(model, state)
     dual = is_dual_nozzle_model(normalized)
     telemetry = getattr(state, "feed_telemetry", None)
     if not isinstance(telemetry, FeedTelemetry):
@@ -317,7 +319,7 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
     )
     diameters = {k: tuple(sorted(v)) for k, v in telemetry.nozzles.items()}
     payload = {
-        "model": normalized,
+        "model": routing_model,
         "ams_known": telemetry.ams_known,
         "ams_present": telemetry.ams_present,
         "external_known": telemetry.external_known,
@@ -336,7 +338,7 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
     revision = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     return PrinterFeedSnapshot(
         printer_id,
-        normalized,
+        routing_model,
         bool(state and state.connected),
         getattr(state, "connection_generation", 0),
         revision,

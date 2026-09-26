@@ -105,6 +105,15 @@ def _cand(
     return plate, file, recipe
 
 
+def test_compatible_capacity_reserves_the_same_physical_lane():
+    p1p = _cand(1, 10, {1: 1}, model="P1P")[2]
+    p1s = _cand(2, 10, {1: 1}, model="P1S")[2]
+    capacity = FleetCapacity([FleetMachine(1, "P1S")], allow_compatible=True)
+    assert capacity.preview(p1p)[1].printer_id == 1
+    capacity.reserve(p1p)
+    assert capacity.preview(p1s)[0] == 200
+
+
 def test_worked_case_from_the_spec():
     c = _part(1, 10, "c", 1)
     line = _line(100, 10, 120)

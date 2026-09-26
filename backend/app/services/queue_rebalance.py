@@ -50,6 +50,7 @@ from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.queue_source import QueueSource
+from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.auto_queue import AutoQueueItemCreate
 from backend.app.schemas.project import RebalanceOut, RebalanceSkipped
@@ -69,6 +70,7 @@ from backend.app.services.plan_engine import (
 )
 from backend.app.services.print_option_defaults import preference_options
 from backend.app.services.print_scheduler import scheduler
+from backend.app.services.printer_manager import printer_manager
 from backend.app.services.product_composition import PlateRecipe, estimate_seconds, recipes_for_products
 from backend.app.services.queue_source_capture import (
     StagedSource,
@@ -78,6 +80,7 @@ from backend.app.services.queue_source_capture import (
     publish_staged,
     staged_requirements,
 )
+from backend.app.utils.model_compatibility import model_compatibility
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +188,7 @@ class FarmView:
 
     idle_by_model: dict[str, int]
     free_at_by_model: dict[str, float]  # seconds from now
+    allow_compatible: bool = False
 
 
 @dataclass(frozen=True)
@@ -257,10 +261,24 @@ def plan_moves(
         if item.line_id in cooling:
             plan.skipped.append((item.item_id, "cooldown"))
             continue
-        if idle.get(item.home_model, 0) > 0:
+        if idle.get(item.home_model, 0) > 0 or (
+            farm.allow_compatible
+            and any(
+                count > 0 and model_compatibility(item.home_model, model) == "compatible"
+                for model, count in idle.items()
+            )
+        ):
             plan.skipped.append((item.item_id, "home_model_idle"))
             continue
         home_free = free_at.get(item.home_model)
+        if farm.allow_compatible:
+            fallback_times = [
+                seconds
+                for model, seconds in free_at.items()
+                if model_compatibility(item.home_model, model) == "compatible"
+            ]
+            if fallback_times:
+                home_free = min(home_free, *fallback_times) if home_free is not None else min(fallback_times)
         home_finish = None if home_free is None else home_free + (item.seconds or 0)
         best: tuple[tuple[float, int, str], str, PlateOption, int, float, int] | None = None
         for model, capacity in idle.items():
@@ -386,7 +404,7 @@ async def idle_printers_by_model(db: AsyncSession, busy: set[int]) -> dict[str, 
     # second queue row of its own) is still one machine of capacity.
     by_model: dict[str, set[int]] = {}
     for printer_id, model in rows:
-        key = model_key(model)
+        key = model_key(printer_manager.effective_model_for(printer_id, model))
         if key is None or printer_id in busy or not scheduler._is_printer_idle(printer_id, require_plate_clear=True):
             continue
         by_model.setdefault(key, set()).add(printer_id)
@@ -591,6 +609,8 @@ async def rebalance(
     cooling = set() if force else await cooling_lines(db, {row.project_line_id for row in movable_rows}, now)
     homes: dict[int, str] = {}
     candidates: list[AutoQueueItem] = []
+    setting = await db.scalar(select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
+    allow_compatible = isinstance(setting, str) and setting.lower() == "true"
     for row in movable_rows:
         if row.project_line_id in cooling:
             result.skipped.append((row.id, "cooldown"))
@@ -599,7 +619,10 @@ async def rebalance(
         if home is None:
             result.skipped.append((row.id, "no_yield"))
             continue
-        if idle.get(home, 0) > 0:
+        if idle.get(home, 0) > 0 or (
+            allow_compatible
+            and any(count > 0 and model_compatibility(home, model) == "compatible" for model, count in idle.items())
+        ):
             result.skipped.append((row.id, "home_model_idle"))
             continue
         homes[row.id] = home
@@ -618,7 +641,8 @@ async def rebalance(
     )
     catalog = await load_line_catalog(db, sorted(set(line_projects.values())))
     rank = {project_id: i for i, project_id in enumerate(await rank_active_orders(db))}
-    free_at = home_wait_by_model(await load_snapshot(db, now))
+    snapshot = await load_snapshot(db, now)
+    free_at = home_wait_by_model(snapshot)
 
     keyed: list[tuple[tuple[int, int, int], MovableItem]] = []
     for row in candidates:
@@ -645,7 +669,7 @@ async def rebalance(
     plan = plan_moves(
         [item for _key, item in keyed],
         catalog.options_by_line,
-        FarmView(idle_by_model=idle, free_at_by_model=free_at),
+        FarmView(idle_by_model=idle, free_at_by_model=free_at, allow_compatible=snapshot.allow_compatible),
         cooling=cooling,
     )
     result.skipped.extend(plan.skipped)

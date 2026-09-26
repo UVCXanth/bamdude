@@ -9,7 +9,7 @@ import zlib
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -30,6 +30,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.printer_tag import PrinterTag
+from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.archive import ArchivePartRow
 from backend.app.schemas.printer import (
@@ -43,6 +44,7 @@ from backend.app.schemas.printer import (
     HmsActionBody,
     HMSErrorResponse,
     HmsMuteBody,
+    ModelCompatibilityResponse,
     MQTTRecordingRequest,
     NozzleInfoResponse,
     NozzleRackSlot,
@@ -112,6 +114,7 @@ from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.fila_switch import extruder_slots_payload, inlet_bindings, switch_ready
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.kprofile_lookup import build_slot_k_resolver
+from backend.app.utils.model_compatibility import compatibility_matrix, effective_model_for_state, model_compatibility
 from backend.app.utils.printer_configs import is_bed_slinger
 from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.slot_nozzle import slot_nozzle
@@ -366,9 +369,10 @@ async def get_available_filaments(
     # map was never reached and an internal code found no printers at all.
     normalized_model = normalize_model_name(model) or model
 
+    setting = await db.scalar(select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
+    allow_compatible = isinstance(setting, str) and setting.lower() == "true"
     query = (
         select(Printer)
-        .where(func.lower(Printer.model) == normalized_model.lower())
         .where(Printer.is_active == True)  # noqa: E712
         .where(Printer.archived.is_(False))
     )
@@ -379,7 +383,15 @@ async def get_available_filaments(
         query = query.where(Printer.location_id.in_(subtree_ids(tree, location_id)))
 
     result = await db.execute(query)
-    printers_list = list(result.scalars().all())
+    printers_list = []
+    for printer in result.scalars().all():
+        verdict = model_compatibility(normalized_model, printer.model)
+        if verdict != "exact":
+            verdict = model_compatibility(
+                normalized_model, effective_model_for_state(printer.model, printer_manager.get_status(printer.id))
+            )
+        if verdict == "exact" or (allow_compatible and verdict == "compatible"):
+            printers_list.append(printer)
 
     if not printers_list:
         return []
@@ -482,6 +494,12 @@ async def get_developer_mode_warnings(
                 }
             )
     return warnings
+
+
+@router.get("/model-compatibility", response_model=ModelCompatibilityResponse)
+async def get_model_compatibility(_=RequirePermission(Permission.PRINTERS_READ)) -> ModelCompatibilityResponse:
+    """Directed file-model lists from the mirrored Bambu Studio configs."""
+    return ModelCompatibilityResponse(models=compatibility_matrix())
 
 
 @router.get("/{printer_id}")
@@ -1115,6 +1133,7 @@ async def _build_printer_status(
             id=printer_id,
             name=printer.name,
             connected=False,
+            effective_model=printer_manager.effective_model_for(printer_id, printer.model),
             # What the model is known to have, even with nobody home. The helper
             # answers from the mirrored config here and opens on the card,
             # because "no card reported" and "no card" are different things.
@@ -1431,6 +1450,7 @@ async def _build_printer_status(
         id=printer_id,
         name=printer.name,
         connected=state.connected,
+        effective_model=printer_manager.effective_model_for(printer_id, printer.model),
         state=state.state,
         current_print=state.current_print,
         subtask_name=state.subtask_name,
