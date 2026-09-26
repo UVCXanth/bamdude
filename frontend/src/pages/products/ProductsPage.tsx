@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { FileBox, Plus, Upload } from 'lucide-react';
 import { api } from '../../api/client';
-import type { Product, ProductListItem } from '../../api/client';
+import type { Product, ProductListItem, ProductStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
@@ -25,6 +25,9 @@ import { FromFileDialog } from '../../components/products/FromFileDialog';
 import { ImportProductDialog } from '../../components/products/ImportProductDialog';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
+import { CategoryPanel } from '../../components/products/CategoryPanel';
+import { CategoryManagerDialog } from '../../components/products/CategoryManagerDialog';
+import { CatalogFilters, type CatalogFilterValues } from '../../components/products/CatalogFilters';
 
 /**
  * The product catalog.
@@ -35,6 +38,9 @@ import { Button } from '../../components/Button';
  * narrow it. The place in the list — page, search, sort, the toggle — lives in
  * the URL (Back, F5 and a shared link land on the same view); the view mode and
  * the page size are the viewer's preferences, kept in localStorage.
+ *
+ * The category panel and the filters (spec workshop-product-catalog) are
+ * request parameters too; the panel's counts come with the page.
  */
 export function ProductsPage() {
   const { t } = useTranslation();
@@ -44,9 +50,28 @@ export function ProductsPage() {
   const navigate = useNavigate();
 
   const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
-    defaults: { sort: 'name-asc', extra: { catalog: '1' } },
+    defaults: {
+      sort: 'name-asc',
+      extra: { catalog: '1', category: '', material: '', color: '', model: '', status: '', stock: '' },
+    },
   });
   const inCatalog = extra.catalog !== '0';
+  const filters: CatalogFilterValues = {
+    material: extra.material,
+    color: extra.color,
+    model: extra.model,
+    status: extra.status,
+    stock: extra.stock,
+  };
+  // A hand-edited URL naming no status is no filter, not a 422.
+  const status: ProductStatus | undefined =
+    extra.status === 'draft' || extra.status === 'ready' ? extra.status : undefined;
+  const [managing, setManaging] = useState(false);
+  const { data: directory = [] } = useQuery({
+    queryKey: ['product-categories'],
+    queryFn: () => api.getProductCategories(),
+    staleTime: 60_000,
+  });
   const [view, setView] = usePersistedState<ListView>('bamdude-products-view', 'cards', parseListView);
   const views = useCardsTableViews();
   const [perPage, setPerPage] = usePersistedState<number>('bamdude-products-perPage', 24, parsePageSize);
@@ -61,6 +86,12 @@ export function ProductsPage() {
   const params = {
     ...(inCatalog ? { active: true } : {}),
     ...(q ? { q } : {}),
+    ...(extra.category ? { category: extra.category } : {}),
+    ...(extra.material ? { material: extra.material } : {}),
+    ...(extra.color ? { color: extra.color } : {}),
+    ...(extra.model ? { model: extra.model } : {}),
+    ...(status ? { status } : {}),
+    ...(extra.stock === '1' ? { in_stock: true } : {}),
     sort_by: sort,
     page,
     ...(perPage === -1 ? { all: true } : { per_page: perPage }),
@@ -84,10 +115,14 @@ export function ProductsPage() {
   }, [data, isPlaceholderData, clampToLastPage]);
   // Only the search narrows: the catalog toggle OFF is the widest view there
   // is, so an empty answer there means the catalog is empty, not "no match".
-  const filtered = q !== '';
+  const filtered =
+    q !== '' || [extra.category, extra.material, extra.color, extra.model, extra.status, extra.stock].some(Boolean);
 
   const sortOptions = [
     { key: 'name', label: t('products.table.name') },
+    { key: 'sku', label: t('products.table.sku') },
+    { key: 'category', label: t('products.table.category') },
+    { key: 'status', label: t('products.table.status') },
     { key: 'updated', label: t('list.sort.updated'), descFirst: true },
     { key: 'created', label: t('list.sort.created'), descFirst: true },
     { key: 'parts', label: t('products.table.parts'), descFirst: true },
@@ -188,81 +223,98 @@ export function ProductsPage() {
         )}
       </ListPageHeader>
 
-      <div className="flex items-center gap-4 mb-4 flex-wrap">
-        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('products.list.search')} />
+      <div className="grid lg:grid-cols-[14rem_minmax(0,1fr)] gap-4">
+        <CategoryPanel
+          directory={directory}
+          counts={data?.categories ?? []}
+          uncategorized={data?.uncategorized ?? 0}
+          selected={extra.category}
+          onSelect={(value) => setExtra('category', value)}
+          onManage={hasPermission('projects:update') ? () => setManaging(true) : undefined}
+        />
+        <div className="min-w-0">
+          <div className="flex items-center gap-4 mb-4 flex-wrap">
+            <ListSearchBox value={typed} onChange={setTyped} placeholder={t('products.list.search')} />
 
-        <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
-          <input
-            type="checkbox"
-            checked={inCatalog}
-            onChange={(e) => setExtra('catalog', e.target.checked ? '1' : '0')}
-            className="accent-bambu-green"
-            aria-label={t('products.list.inCatalog')}
-          />
-          {t('products.list.inCatalog')}
-        </label>
+            <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
+              <input
+                type="checkbox"
+                checked={inCatalog}
+                onChange={(e) => setExtra('catalog', e.target.checked ? '1' : '0')}
+                className="accent-bambu-green"
+                aria-label={t('products.list.inCatalog')}
+              />
+              {t('products.list.inCatalog')}
+            </label>
 
-        <div className="ml-auto flex items-center gap-3">
-          {/* A table sorts from its headers; the cards need a control of their own. */}
-          {view === 'cards' && <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />}
+            <div className="ml-auto flex items-center gap-3">
+              {/* A table sorts from its headers; the cards need a control of their own. */}
+              {view === 'cards' && <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />}
+            </div>
+          </div>
+          <div className="mb-4">
+            <CatalogFilters values={filters} onChange={(key, value) => setExtra(key, value)} />
+          </div>
+
+          {!isLoading && total === 0 && (
+            filtered ? (
+              <div className="flex items-center gap-3 text-bambu-gray text-sm">
+                <span>{t('list.empty.noMatch')}</span>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    forget();
+                    resetFilters();
+                  }}
+                >
+                  {t('list.empty.reset')}
+                </Button>
+              </div>
+            ) : (
+              <p className="text-bambu-gray text-sm">{t('products.list.empty')}</p>
+            )
+          )}
+
+          {/* The previous page stays on screen while the next one loads — dimmed
+              and marked busy, so it is not read as the answer to the new question. */}
+          <div
+            data-testid="list-body"
+            aria-busy={isPlaceholderData}
+            className={`transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
+          >
+            {view === 'table' && products.length > 0 ? (
+              <ProductsTable
+                products={products}
+                sort={sort}
+                onSortChange={setSort}
+                onEdit={setEditing}
+                onDuplicate={(p) => duplicate.mutate(p.id)}
+                onToggleActive={(p) => toggleActive.mutate(p)}
+                onDelete={setDeleting}
+                footer={pageBar('card')}
+              />
+            ) : (
+              <>
+                <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
+                  {products.map((product) => (
+                    <ProductCard
+                      key={product.id}
+                      product={product}
+                      onEdit={setEditing}
+                      onDuplicate={(p) => duplicate.mutate(p.id)}
+                      onToggleActive={(p) => toggleActive.mutate(p)}
+                      onDelete={setDeleting}
+                    />
+                  ))}
+                </div>
+                {total > 0 && <div className="mt-4">{pageBar('bare')}</div>}
+              </>
+            )}
+          </div>
         </div>
       </div>
 
-      {!isLoading && total === 0 && (
-        filtered ? (
-          <div className="flex items-center gap-3 text-bambu-gray text-sm">
-            <span>{t('list.empty.noMatch')}</span>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                forget();
-                resetFilters();
-              }}
-            >
-              {t('list.empty.reset')}
-            </Button>
-          </div>
-        ) : (
-          <p className="text-bambu-gray text-sm">{t('products.list.empty')}</p>
-        )
-      )}
-
-      {/* The previous page stays on screen while the next one loads — dimmed
-          and marked busy, so it is not read as the answer to the new question. */}
-      <div
-        data-testid="list-body"
-        aria-busy={isPlaceholderData}
-        className={`transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
-      >
-        {view === 'table' && products.length > 0 ? (
-          <ProductsTable
-            products={products}
-            sort={sort}
-            onSortChange={setSort}
-            onEdit={setEditing}
-            onDuplicate={(p) => duplicate.mutate(p.id)}
-            onToggleActive={(p) => toggleActive.mutate(p)}
-            onDelete={setDeleting}
-            footer={pageBar('card')}
-          />
-        ) : (
-          <>
-            <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
-              {products.map((product) => (
-                <ProductCard
-                  key={product.id}
-                  product={product}
-                  onEdit={setEditing}
-                  onDuplicate={(p) => duplicate.mutate(p.id)}
-                  onToggleActive={(p) => toggleActive.mutate(p)}
-                  onDelete={setDeleting}
-                />
-              ))}
-            </div>
-            {total > 0 && <div className="mt-4">{pageBar('bare')}</div>}
-          </>
-        )}
-      </div>
+      {managing && <CategoryManagerDialog onClose={() => setManaging(false)} />}
 
       {editing && <ProductCardDialog product={editing === 'new' ? null : editing} onClose={() => setEditing(null)} />}
 

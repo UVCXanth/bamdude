@@ -13,9 +13,9 @@ describe('useWorkshopBadges', () => {
   beforeEach(() => vi.restoreAllMocks());
 
   it('asks the server when the user may see Projects', async () => {
-    const get = vi.spyOn(api, 'getProjectsNavBadges').mockResolvedValue({ active_orders: 3 });
+    const get = vi.spyOn(api, 'getProjectsNavBadges').mockResolvedValue({ active_orders: 3, draft_products: 0 });
     const { result } = renderHook(() => useWorkshopBadges(true), { wrapper });
-    await waitFor(() => expect(result.current.data).toEqual({ active_orders: 3 }));
+    await waitFor(() => expect(result.current.data).toEqual({ active_orders: 3, draft_products: 0 }));
     expect(get).toHaveBeenCalledTimes(1);
   });
 

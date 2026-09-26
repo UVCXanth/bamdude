@@ -4,6 +4,7 @@ import { Package } from 'lucide-react';
 import { api } from '../../api/client';
 import type { ProductListItem } from '../../api/client';
 import { ProductActionMenu } from './ProductActionMenu';
+import { ProductStatusBadge } from './ProductStatusBadge';
 
 interface ProductCardProps {
   product: ProductListItem;
@@ -65,7 +66,10 @@ export function ProductCard({ product, onEdit, onDuplicate, onToggleActive, onDe
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <h3 className="font-semibold text-white truncate">{product.name}</h3>
-              <span className="block text-xs text-bambu-gray">{product.code}</span>
+              <span className="block text-xs text-bambu-gray">
+                {product.code}
+                {product.sku && ` · ${product.sku}`}
+              </span>
             </div>
             {/* Above the overlay link, so the trigger is clickable at all. */}
             <div className="relative z-10 flex-shrink-0">
@@ -78,6 +82,8 @@ export function ProductCard({ product, onEdit, onDuplicate, onToggleActive, onDe
               />
             </div>
           </div>
+
+          <ProductStatusBadge product={product} />
 
           {!product.is_active && (
             <span className="inline-block px-2 py-0.5 rounded-full text-xs bg-bambu-dark text-bambu-gray">

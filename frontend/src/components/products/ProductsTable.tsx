@@ -6,6 +6,7 @@ import { api } from '../../api/client';
 import type { ProductListItem } from '../../api/client';
 import { SortableHeader } from '../SortableHeader';
 import { ProductActionMenu, type ProductActions } from './ProductActionMenu';
+import { ProductStatusBadge } from './ProductStatusBadge';
 
 /**
  * The catalog as a table — the second view of the products page.
@@ -38,6 +39,10 @@ export function ProductsTable({
             <tr>
               {/* Numbers read best largest-first; a name reads best A→Z. */}
               <SortableHeader sortKey="name" label={t('products.table.name')} sort={sort} onSort={onSortChange} />
+              <SortableHeader sortKey="sku" label={t('products.table.sku')} sort={sort} onSort={onSortChange} />
+              <th className="font-normal p-2 text-left">{t('products.table.version')}</th>
+              <SortableHeader sortKey="category" label={t('products.table.category')} sort={sort} onSort={onSortChange} />
+              <SortableHeader sortKey="status" label={t('products.table.status')} sort={sort} onSort={onSortChange} />
               <SortableHeader sortKey="parts" label={t('products.table.parts')} sort={sort} onSort={onSortChange} descFirst align="right" />
               <SortableHeader sortKey="plates" label={t('products.table.plates')} sort={sort} onSort={onSortChange} descFirst align="right" />
               <SortableHeader sortKey="orders" label={t('products.table.orders')} sort={sort} onSort={onSortChange} descFirst align="right" />
@@ -68,6 +73,12 @@ export function ProductsTable({
                       <span className="block text-xs text-bambu-gray">{p.code}</span>
                     </span>
                   </Link>
+                </td>
+                <td className="p-2 whitespace-nowrap">{p.sku ?? ''}</td>
+                <td className="p-2 text-bambu-gray">{p.version ?? ''}</td>
+                <td className="p-2">{p.category?.name ?? ''}</td>
+                <td className="p-2 whitespace-nowrap">
+                  <ProductStatusBadge product={p} showReady />
                 </td>
                 <td className="p-2 text-right tabular-nums">{p.parts_count}</td>
                 <td className="p-2 text-right tabular-nums">{p.plates_count}</td>

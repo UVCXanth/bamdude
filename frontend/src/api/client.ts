@@ -2007,10 +2007,21 @@ export interface OrdersSummary {
 /** `GET /projects/nav-badges` — the sidebar's counts for the Projects section. */
 export interface ProjectsNavBadges {
   active_orders: number;
+  /** Active catalog products still in draft (spec workshop-product-catalog, rule 18). */
+  draft_products: number;
+}
+/** One category of the catalog's panel — how many products it holds under the list's filters. */
+export interface ProductCategoryCount {
+  id: number;
+  name: string;
+  count: number;
 }
 export interface ProductListPage {
   items: ProductListItem[];
   meta: PaginationMeta;
+  /** Counts under every filter but the category; a category with none is absent. */
+  categories: ProductCategoryCount[];
+  uncategorized: number;
 }
 export interface CustomerListPage {
   items: Customer[];
@@ -2515,6 +2526,8 @@ export interface PlateRecipe {
   unassigned: PlateUnassignedEntry[];
   materials: string[];
   colors: string[];
+  /** The model the plate was sliced for, normalised (`X1C`); null when the file says nothing. */
+  printer_model: string | null;
   print_time_seconds: number | null;
   filament_used_grams: number | null;
 }
@@ -2545,11 +2558,34 @@ export interface ProductAttachment {
 /** Who made the product exist — see backend `models.product.ProductOrigin`. */
 export type ProductOrigin = 'catalog' | 'adhoc_job' | 'adhoc_plate';
 
+/** `draft` until the operator says a product is ready to print (spec workshop-product-catalog). */
+export type ProductStatus = 'draft' | 'ready';
+/** An entry of the category directory (`GET /product-categories`). */
+export interface ProductCategory {
+  id: number;
+  name: string;
+  products_count: number;
+}
+export interface ProductCategoryRef {
+  id: number;
+  name: string;
+}
+/** The values the catalog's filters offer (`GET /products/facets`). */
+export interface ProductFacets {
+  materials: string[];
+  colors: string[];
+  models: string[];
+}
+
 export interface ProductListItem {
   id: number;
   code: string;
   name: string;
   is_active: boolean;
+  sku: string | null;
+  version: string | null;
+  category: ProductCategoryRef | null;
+  status: ProductStatus;
   origin: ProductOrigin;
   origin_file_id: number | null;
   origin_plate_index: number | null;
@@ -2877,6 +2913,12 @@ export interface ProductCreate {
   license?: string | null;
   source_url?: string | null;
   design_id?: string | null;
+  /** A blank SKU / version is stored as none; the SKU is unique without case (409). */
+  sku?: string | null;
+  version?: string | null;
+  category_id?: number | null;
+  /** `ready` is refused (409) until the product has parts and a plate. */
+  status?: ProductStatus;
 }
 
 /** `Partial<ProductCreate>` rather than `extends ProductCreate`: an interface
@@ -2892,6 +2934,17 @@ export interface ProductListParams {
   active?: boolean;
   q?: string;
   include_adhoc?: boolean;
+}
+
+/** The catalog page's filters (spec workshop-product-catalog, rule 9) — each a request parameter. */
+export interface ProductCatalogFilters {
+  /** A category id, or `none` for the uncategorized. */
+  category?: string;
+  material?: string;
+  color?: string;
+  model?: string;
+  status?: ProductStatus;
+  in_stock?: boolean;
 }
 
 // API Key types
@@ -11218,12 +11271,27 @@ export const api = {
     return request<ProductListItem[]>(`/products/?${qs}`);
   },
   /** The catalog page's list — the only caller that sends `page`. */
-  getProductsPaged: (params: Omit<ProductListParams, 'q'> & PagedListParams) => {
+  getProductsPaged: (params: Omit<ProductListParams, 'q'> & ProductCatalogFilters & PagedListParams) => {
     const qs = new URLSearchParams();
     if (params.active != null) qs.set('active', String(params.active));
     if (params.include_adhoc) qs.set('include_adhoc', 'true');
+    for (const key of ['category', 'material', 'color', 'model', 'status'] as const) {
+      const value = params[key];
+      if (value) qs.set(key, value);
+    }
+    if (params.in_stock) qs.set('in_stock', 'true');
     return request<ProductListPage>(`/products/?${pagedSearchParams(qs, params)}`);
   },
+  getProductFacets: () => request<ProductFacets>('/products/facets'),
+
+  // The product category directory
+  getProductCategories: () => request<ProductCategory[]>('/product-categories/'),
+  createProductCategory: (name: string) =>
+    request<ProductCategory>('/product-categories/', { method: 'POST', body: JSON.stringify({ name }) }),
+  renameProductCategory: (id: number, name: string) =>
+    request<ProductCategory>(`/product-categories/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  deleteProductCategory: (id: number) =>
+    request<{ message: string; uncategorized: number }>(`/product-categories/${id}`, { method: 'DELETE' }),
   getProduct: (id: number) => request<Product>(`/products/${id}`),
   createProduct: (data: ProductCreate) =>
     request<Product>('/products/', { method: 'POST', body: JSON.stringify(data) }),

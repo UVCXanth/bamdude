@@ -23,6 +23,8 @@ const rows = [
 const pageOf = (items: unknown[], meta: Partial<{ total: number; current_page: number; per_page: number; last_page: number }> = {}) => ({
   items: items as ProductListItem[],
   meta: { total: items.length, current_page: 1, per_page: 24, last_page: 1, ...meta },
+  categories: [],
+  uncategorized: 0,
 });
 
 afterEach(() => {
@@ -198,5 +200,92 @@ describe('ProductsPage', () => {
     release();
     expect(await screen.findByText('Showing 49-60 of 60 products')).toBeInTheDocument();
     expect(window.location.search).toContain('page=3');
+  });
+});
+
+describe('ProductsPage — the catalog (spec workshop-product-catalog)', () => {
+  const envelope = (items: unknown[]) => ({
+    ...pageOf(items),
+    categories: [{ id: 3, name: 'Hooks', count: 2 }],
+    uncategorized: 1,
+  });
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    localStorage.clear();
+    window.history.pushState({}, '', '/products');
+    vi.spyOn(api, 'getProductFacets').mockResolvedValue({ materials: ['PETG'], colors: ['#FF0000'], models: ['P1S'] });
+    vi.spyOn(api, 'getProductCategories').mockResolvedValue([
+      { id: 3, name: 'Hooks', products_count: 2 },
+      { id: 4, name: 'Vases', products_count: 0 },
+    ]);
+  });
+
+  it('lists the categories with the server counts and filters by one through the URL', async () => {
+    const get = vi.spyOn(api, 'getProductsPaged').mockResolvedValue(envelope(rows));
+    render(<ProductsPage />);
+    const panel = await screen.findByRole('navigation', { name: 'Categories' });
+    expect(within(panel).getByRole('button', { name: 'All products' })).toHaveAttribute('aria-pressed', 'true');
+    expect(await within(panel).findByRole('button', { name: /^Uncategorized\s*1$/ })).toBeInTheDocument();
+    // A category with nothing under the filters is still listed — with 0.
+    expect(await within(panel).findByRole('button', { name: /^Vases\s*0$/ })).toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole('button', { name: /^Hooks\s*2$/ }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ category: '3', page: 1 })));
+    expect(window.location.search).toContain('category=3');
+    fireEvent.click(within(panel).getByRole('button', { name: /^Uncategorized/ }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ category: 'none' })));
+  });
+
+  it('sends each filter, keeps it in the URL and goes back to page 1', async () => {
+    window.history.pushState({}, '', '/products?page=2');
+    const get = vi.spyOn(api, 'getProductsPaged').mockResolvedValue(envelope(rows));
+    render(<ProductsPage />);
+    await screen.findByRole('option', { name: 'PETG' });
+    fireEvent.change(screen.getByLabelText('Material'), { target: { value: 'PETG' } });
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ material: 'PETG', page: 1 })));
+    fireEvent.change(screen.getByLabelText('Printer model'), { target: { value: 'P1S' } });
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'draft' } });
+    fireEvent.click(screen.getByLabelText('In stock'));
+    await waitFor(() =>
+      expect(get).toHaveBeenLastCalledWith(
+        expect.objectContaining({ material: 'PETG', model: 'P1S', status: 'draft', in_stock: true }),
+      ),
+    );
+    fireEvent.change(screen.getByLabelText('Colour'), { target: { value: '#FF0000' } });
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ color: '#FF0000' })));
+    for (const part of ['material=PETG', 'model=P1S', 'status=draft', 'stock=1']) {
+      expect(window.location.search).toContain(part);
+    }
+    expect(window.location.search).not.toContain('page=');
+  });
+
+  it('shows SKU, version, category and the status in the table', async () => {
+    localStorage.setItem('bamdude-products-view', 'table');
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue(
+      envelope([
+        { ...rows[0], sku: 'LMP-1', version: '2', category: { id: 3, name: 'Hooks' }, status: 'draft' },
+        { ...rows[1], sku: null, version: null, category: null, status: 'ready', plates_count: 0 },
+      ]),
+    );
+    render(<ProductsPage />);
+    const table = await screen.findByRole('table');
+    expect(within(table).getByText('LMP-1')).toBeInTheDocument();
+    expect(within(table).getByText('Hooks')).toBeInTheDocument();
+    expect(within(table).getByText('Draft')).toBeInTheDocument();
+    // Ready, but it lost its plates since: said, not silently demoted.
+    expect(within(table).getByText('Incomplete')).toBeInTheDocument();
+    for (const header of ['SKU', 'Version', 'Category', 'Status']) {
+      expect(within(table).getByRole('columnheader', { name: new RegExp(header) })).toBeInTheDocument();
+    }
+  });
+
+  it('the card says Draft and shows the SKU', async () => {
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue(
+      envelope([{ ...rows[0], sku: 'LMP-1', version: null, category: null, status: 'draft' }]),
+    );
+    render(<ProductsPage />);
+    const card = await screen.findByTestId('product-1-card');
+    expect(within(card).getByText('Draft')).toBeInTheDocument();
+    expect(within(card).getByText(/LMP-1/)).toBeInTheDocument();
   });
 });

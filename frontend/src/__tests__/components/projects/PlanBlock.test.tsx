@@ -176,6 +176,7 @@ const plates: PlateRecipe[] = [
     unassigned: [],
     materials: ['PETG'],
     colors: [],
+    printer_model: null,
     print_time_seconds: 3600,
     filament_used_grams: 100,
   },
@@ -189,6 +190,7 @@ const plates: PlateRecipe[] = [
     unassigned: [],
     materials: ['PETG'],
     colors: [],
+    printer_model: null,
     print_time_seconds: 1800,
     filament_used_grams: 20,
   },
@@ -207,6 +209,7 @@ const spare: PlateRecipe = {
   unassigned: [],
   materials: ['PETG'],
   colors: [],
+  printer_model: null,
   print_time_seconds: 900,
   filament_used_grams: 50,
 };
