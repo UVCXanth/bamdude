@@ -172,6 +172,14 @@
 
 ### Fixed
 
+- **Times recorded by an external PostgreSQL server are in UTC regardless of the
+  server's time zone.** Timestamps that the database fills itself (sensor history,
+  new archives and more) followed the PostgreSQL server's time zone, so on a server
+  set to UTC+3 they showed three hours in the future. BamDude now asks every
+  PostgreSQL connection for UTC. SQLite and the bundled PostgreSQL were already
+  correct. Rows written before the update keep the times they were given.
+  (upstream #2855)
+
 - **A slicer can trust the virtual printers of two installs at once.** Every
   install named its certificate authority the same, and a slicer holding two of
   them tried only the first, so one install failed to connect. A newly created
