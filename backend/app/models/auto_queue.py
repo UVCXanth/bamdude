@@ -22,7 +22,7 @@ See ``temp/auto-queue-adaptation-variants.md`` §12 for the full design.
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -35,6 +35,9 @@ class AutoQueueItem(Base):
     """Pre-dispatch queue item — auto-distributed to any eligible printer."""
 
     __tablename__ = "auto_queue_items"
+    # The order figures and the order's queue section read an order's
+    # undistributed rows (spec workshop-order-queue); measured plan in m188.
+    __table_args__ = (Index("ix_auto_queue_items_project_status", "project_id", "status"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
 

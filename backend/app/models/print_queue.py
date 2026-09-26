@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from backend.app.core.database import Base
@@ -10,6 +10,9 @@ class PrintQueueItem(Base):
     """Print queue item - always assigned to a specific printer's queue."""
 
     __tablename__ = "print_queue"
+    # The order figures and the order's queue section read an order's pending
+    # rows (spec workshop-order-queue); measured plan in m188.
+    __table_args__ = (Index("ix_print_queue_project_status", "project_id", "status"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
 

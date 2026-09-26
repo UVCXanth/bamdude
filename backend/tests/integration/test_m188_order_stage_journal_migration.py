@@ -70,3 +70,29 @@ async def test_a_second_run_changes_nothing(engine):
     await _run(engine)
     async with engine.connect() as conn:
         assert (await conn.execute(text("SELECT COUNT(*) FROM projects"))).scalar() == 2
+
+
+@pytest.mark.asyncio
+async def test_the_order_queue_reads_have_their_indexes(engine):
+    # spec workshop-order-queue, rules 8–9: the figures and the order's queue
+    # section filter both queue tiers and the archives by order.
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("CREATE TABLE print_queue (id INTEGER PRIMARY KEY, project_id INTEGER, status VARCHAR(20))")
+        )
+        await conn.execute(
+            text("CREATE TABLE auto_queue_items (id INTEGER PRIMARY KEY, project_id INTEGER, status VARCHAR(20))")
+        )
+        await conn.execute(
+            text("CREATE TABLE print_archives (id INTEGER PRIMARY KEY, project_id INTEGER, created_at DATETIME)")
+        )
+    await _run(engine)
+    await _run(engine)  # idempotent
+    async with engine.connect() as conn:
+        for table, index in (
+            ("print_queue", "ix_print_queue_project_status"),
+            ("auto_queue_items", "ix_auto_queue_items_project_status"),
+            ("print_archives", "ix_print_archives_project_created"),
+        ):
+            names = {r[1] for r in (await conn.execute(text(f"PRAGMA index_list({table})"))).all()}
+            assert index in names, table
