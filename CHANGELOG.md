@@ -172,6 +172,14 @@
 
 ### Fixed
 
+- **A virtual printer in Docker bridge mode can be told which address slicers
+  should upload to.** A virtual printer bound to a real printer passes the slicer
+  its own address as the upload destination; in bridge mode that was the
+  container's private IP, and a send from the slicer stalled at around 10 %. The
+  new `VIRTUAL_PRINTER_ADVERTISE_ADDRESS` setting supplies the host's LAN address.
+  Leave it unset on host or macvlan networking; nothing changes there. (upstream
+  #2930)
+
 - **A file only partly downloaded from the printer is no longer kept as
   complete.** A download that stopped early was accepted as long as it was not
   empty, so a truncated 3MF could be attached to an archive and fail later. The
