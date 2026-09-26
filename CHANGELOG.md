@@ -172,6 +172,14 @@
 
 ### Fixed
 
+- **A slicer can trust the virtual printers of two installs at once.** Every
+  install named its certificate authority the same, and a slicer holding two of
+  them tried only the first, so one install failed to connect. A newly created
+  authority is now named `BamDude Virtual Printer CA` plus a code unique to the
+  install. An existing one is kept as it is, so nothing needs to be imported
+  again; if two older installs still clash, regenerate one of them as described
+  in the virtual printer docs. (upstream #3014)
+
 - **On Windows and macOS every IP address of a network adapter can be a virtual
   printer's bind address.** Only the first address of each adapter was offered,
   so a Windows host with extra addresses added for more virtual printers still
