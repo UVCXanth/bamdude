@@ -6551,6 +6551,9 @@ export default {
     thankYou: 'Thank you!',
     submitted: 'Your bug report has been submitted.',
     viewIssue: 'View Issue',
+    closeKeepsRecording: 'You can close this panel while you reproduce the problem — recording keeps running, and reopening brings you back here.',
+    resumeRecording: 'Bug report recording — {{elapsed}}. Click to finish.',
+    resumeReport: 'Resume report',
     unexpectedError: 'An unexpected error occurred',
   },
 

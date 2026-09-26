@@ -172,6 +172,16 @@
 
 ### Fixed
 
+- **A bug report's debug recording survives closing the panel.** Closing the
+  bug-report panel while reproducing a problem used to lose the recording.
+  Reopening it within five minutes showed an empty form while debug logging
+  stayed on, and leaving it closed let the five-minute limit submit the report
+  unseen. Closing the panel now keeps the recording. The bug button turns amber
+  while it runs, and reopening it (or **Resume report** on the debug-logging
+  banner) returns to the recording with the description you wrote. A page reload
+  resumes it too. If the limit is reached while the panel is closed, the panel
+  opens before the report is submitted. (upstream #2847)
+
 - **Restoring a backup no longer relies on an order the database schema cannot
   give.** Restoring asked for the tables in dependency order, which a set of
   tables that refer to each other in a loop does not have. Every restore logged
