@@ -23,6 +23,11 @@ class ProjectLine(Base):
     material: Mapped[str | None] = mapped_column(String(50), nullable=True)
     color: Mapped[str | None] = mapped_column(String(64), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # spec workshop-product-variants, rule 4: ``product`` (quantity × the
+    # configured kit) or ``parts`` (a count of each part, quantity fixed at 1).
+    # ``config_key`` is written only by services/line_config.py.
+    mode: Mapped[str] = mapped_column(String(8), nullable=False, default="product", server_default="product")
+    config_key: Mapped[str] = mapped_column(String(512), nullable=False, default="", server_default="")
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

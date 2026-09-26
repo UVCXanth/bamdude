@@ -42,6 +42,18 @@ add here while the branch is unreleased:
   column is dropped and rebuilt — it is derived, and the seed refills it. The
   two case-free keys are wide enough for casefold(), which may lengthen text
   threefold.
+
+- **WS-08 (spec workshop-product-variants) — variants and line configuration.**
+  ``product_variant_groups`` / ``product_variant_options`` (AUTOINCREMENT) — a
+  product's choices; ``product_parts.variant_option_id`` — a part in the kit
+  only when its option is chosen. ``project_lines.mode`` (``product`` |
+  ``parts``) and ``config_key``; ``project_line_choices`` (the option a line
+  chose, written for every group) and ``project_line_part_counts`` (changed
+  per-unit counts, or a parts line's wanted counts). Existing lines are
+  standard product lines: no group exists yet, so nothing is seeded and their
+  figures do not change. ``product_variant_groups.default_option_id`` carries
+  no FK here — a circular one needs a table rebuild on SQLite — and the routes
+  keep it pointing at one of the group's own options.
 """
 
 from backend.app.migrations.helpers import add_column, column_exists, table_exists
@@ -146,6 +158,79 @@ async def upgrade(conn):
                 " AND EXISTS (SELECT 1 FROM product_plates pl JOIN library_files lf ON lf.id = pl.library_file_id"
                 " WHERE pl.product_id = products.id AND lf.deleted_at IS NULL)"
             )
+
+    # spec workshop-product-variants (WS-08): variant groups and options, the
+    # part's option, and the line's configuration.
+    if await table_exists(conn, "products"):
+        if not await table_exists(conn, "product_variant_groups"):
+            await conn.exec_driver_sql(
+                f"""
+                CREATE TABLE product_variant_groups (
+                    id {pk},
+                    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                    name VARCHAR(128) NOT NULL,
+                    position INTEGER NOT NULL DEFAULT 0,
+                    default_option_id INTEGER
+                )
+                """
+            )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_product_variant_groups_product_id ON product_variant_groups (product_id)"
+        )
+        if not await table_exists(conn, "product_variant_options"):
+            await conn.exec_driver_sql(
+                f"""
+                CREATE TABLE product_variant_options (
+                    id {pk},
+                    group_id INTEGER NOT NULL REFERENCES product_variant_groups(id) ON DELETE CASCADE,
+                    name VARCHAR(128) NOT NULL,
+                    position INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_product_variant_options_group_id ON product_variant_options (group_id)"
+        )
+    if await table_exists(conn, "product_parts"):
+        await add_column(
+            conn,
+            "product_parts",
+            "variant_option_id INTEGER REFERENCES product_variant_options(id) ON DELETE SET NULL",
+        )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_product_parts_variant_option_id ON product_parts (variant_option_id)"
+        )
+    if await table_exists(conn, "project_lines"):
+        await add_column(conn, "project_lines", "mode VARCHAR(8) NOT NULL DEFAULT 'product'")
+        await add_column(conn, "project_lines", "config_key VARCHAR(512) NOT NULL DEFAULT ''")
+        if not await table_exists(conn, "project_line_choices"):
+            await conn.exec_driver_sql(
+                """
+                CREATE TABLE project_line_choices (
+                    line_id INTEGER NOT NULL REFERENCES project_lines(id) ON DELETE CASCADE,
+                    group_id INTEGER NOT NULL REFERENCES product_variant_groups(id) ON DELETE CASCADE,
+                    option_id INTEGER NOT NULL REFERENCES product_variant_options(id),
+                    PRIMARY KEY (line_id, group_id)
+                )
+                """
+            )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_project_line_choices_option_id ON project_line_choices (option_id)"
+        )
+        if not await table_exists(conn, "project_line_part_counts"):
+            await conn.exec_driver_sql(
+                """
+                CREATE TABLE project_line_part_counts (
+                    line_id INTEGER NOT NULL REFERENCES project_lines(id) ON DELETE CASCADE,
+                    part_id INTEGER NOT NULL REFERENCES product_parts(id) ON DELETE CASCADE,
+                    qty INTEGER NOT NULL,
+                    PRIMARY KEY (line_id, part_id)
+                )
+                """
+            )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_project_line_part_counts_part_id ON project_line_part_counts (part_id)"
+        )
 
 
 async def seed(session_factory):

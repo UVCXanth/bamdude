@@ -135,3 +135,28 @@ async def test_the_order_queue_reads_have_their_indexes(engine):
         ):
             names = {r[1] for r in (await conn.execute(text(f"PRAGMA index_list({table})"))).all()}
             assert index in names, table
+
+
+@pytest.mark.asyncio
+async def test_the_variant_and_line_configuration_schema(engine):
+    # spec workshop-product-variants, rules 1–7: existing lines are standard
+    # product lines with no choice and no changed count.
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE products (id INTEGER PRIMARY KEY, name VARCHAR(255))"))
+        await conn.execute(text("CREATE TABLE product_parts (id INTEGER PRIMARY KEY, product_id INTEGER)"))
+        await conn.execute(text("CREATE TABLE project_lines (id INTEGER PRIMARY KEY, product_id INTEGER)"))
+        await conn.execute(text("INSERT INTO project_lines (id, product_id) VALUES (1, 1)"))
+    await _run(engine)
+    await _run(engine)  # idempotent
+    async with engine.connect() as conn:
+        line = (await conn.execute(text("SELECT mode, config_key FROM project_lines"))).one()
+        assert tuple(line) == ("product", "")
+        cols = {r[1] for r in (await conn.execute(text("PRAGMA table_info(product_parts)"))).all()}
+        assert "variant_option_id" in cols
+        for table in (
+            "product_variant_groups",
+            "product_variant_options",
+            "project_line_choices",
+            "project_line_part_counts",
+        ):
+            assert (await conn.execute(text(f"SELECT COUNT(*) FROM {table}"))).scalar() == 0

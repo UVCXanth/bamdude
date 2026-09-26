@@ -125,6 +125,10 @@ class Product(Base):
         "LibraryFolder", secondary="product_folders", back_populates="products"
     )
     lines: Mapped[list["ProjectLine"]] = relationship(back_populates="product")
+    # spec workshop-product-variants, rule 1: a choice an order makes once per unit.
+    variant_groups: Mapped[list["ProductVariantGroup"]] = relationship(
+        cascade="all, delete-orphan", order_by="(ProductVariantGroup.position, ProductVariantGroup.id)"
+    )
 
 
 class ProductPart(Base):
@@ -149,6 +153,11 @@ class ProductPart(Base):
     sourcing_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # spec workshop-product-variants, rule 3: in the kit only when a line chose
+    # this option; NULL = in every configuration.
+    variant_option_id: Mapped[int | None] = mapped_column(
+        ForeignKey("product_variant_options.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     product: Mapped["Product"] = relationship(back_populates="parts")
 
@@ -201,4 +210,5 @@ class ProductFacet(Base):
 
 from backend.app.models.library import LibraryFile, LibraryFolder  # noqa: E402
 from backend.app.models.product_category import ProductCategory  # noqa: E402
+from backend.app.models.product_variant import ProductVariantGroup  # noqa: E402
 from backend.app.models.project_line import ProjectLine  # noqa: E402
