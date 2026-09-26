@@ -2,17 +2,18 @@
 one domain, no new Permission (spec §API)."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import exists, func, or_, select, update
+from sqlalchemy import delete, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
-from backend.app.models.customer import Customer, CustomerContact
+from backend.app.models.customer import CONTACT_DATA_FIELDS, Customer, CustomerContact, DeliveryMethod
 from backend.app.models.project import Project
 from backend.app.models.user import User
 from backend.app.schemas.customer import (
+    CustomerContactIn,
     CustomerContactOut,
     CustomerCreate,
     CustomerFigures,
@@ -79,6 +80,44 @@ def _customer_out(customer: Customer, figures, orders: dict[int, int]) -> Custom
         contacts=[_contact_out(c, orders) for c in customer.contacts],
         figures=figures,
     )
+
+
+async def _sync_contacts(db: AsyncSession, customer_id: int, items: list[CustomerContactIn]) -> None:
+    """The form's list, synced by id (spec rule 13): an id updates its row, no id
+    creates one, a contact missing from the list is removed — and every order
+    that named it loses its contact (SQLite runs no SET NULL). The list's order
+    is the new ``position``; the first row is the main contact. Every refusal is
+    raised before the first write, so a refused save changes nothing."""
+    kept = [item for item in items if not item.is_empty()]
+    existing = {
+        c.id: c
+        for c in (await db.execute(select(CustomerContact).where(CustomerContact.customer_id == customer_id))).scalars()
+    }
+    seen: set[int] = set()
+    for item in kept:
+        if item.id is None:
+            continue
+        if item.id in seen:
+            raise HTTPException(status_code=422, detail=f"Contact {item.id} is listed twice")
+        if item.id not in existing:
+            raise HTTPException(status_code=422, detail=f"Contact {item.id} does not belong to this customer")
+        seen.add(item.id)
+    method_ids = {item.delivery_method_id for item in kept if item.delivery_method_id is not None}
+    if method_ids:
+        known = set((await db.execute(select(DeliveryMethod.id).where(DeliveryMethod.id.in_(method_ids)))).scalars())
+        for missing in sorted(method_ids - known):
+            raise HTTPException(status_code=422, detail=f"Delivery method {missing} not found")
+    for position, item in enumerate(kept):
+        row = existing[item.id] if item.id is not None else CustomerContact(customer_id=customer_id)
+        for field in CONTACT_DATA_FIELDS:
+            setattr(row, field, getattr(item, field))
+        row.position = position
+        db.add(row)
+    gone = sorted(set(existing) - seen)
+    if gone:
+        await db.execute(update(Project).where(Project.contact_id.in_(gone)).values(contact_id=None))
+        await db.execute(delete(CustomerContact).where(CustomerContact.id.in_(gone)))
+    await db.flush()
 
 
 async def _response(db: AsyncSession, customer_id: int) -> CustomerResponse:
@@ -237,6 +276,7 @@ async def create_customer(
     customer = Customer(name=data.name, kind=data.kind, notes=data.notes)
     db.add(customer)
     await db.flush()
+    await _sync_contacts(db, customer.id, data.contacts)
     return await _response(db, customer.id)
 
 
@@ -275,6 +315,8 @@ async def update_customer(
     for field_name in ("name", "kind", "notes"):
         if field_name in data.model_fields_set:  # explicit null clears; absent leaves alone
             setattr(customer, field_name, getattr(data, field_name))
+    if "contacts" in data.model_fields_set:
+        await _sync_contacts(db, customer.id, data.contacts)
     await db.flush()
     return await _response(db, customer.id)
 
@@ -283,8 +325,17 @@ async def update_customer(
 async def delete_customer(
     customer_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_DELETE)
 ):
-    customer = await _get_or_404(db, customer_id)
-    # SQLite does not enforce ON DELETE SET NULL — do it explicitly.
+    # A plain ``get``, not ``_get_or_404``: that one loads the contacts, and the
+    # ORM would then try to null out the very rows deleted below.
+    customer = await db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    # SQLite runs no FK actions: every order's pointer at the customer and at its
+    # contacts, and the contacts themselves, go in code (the CASCADE / SET NULL
+    # are PostgreSQL's backstop).
+    contact_ids = select(CustomerContact.id).where(CustomerContact.customer_id == customer_id)
+    await db.execute(update(Project).where(Project.contact_id.in_(contact_ids)).values(contact_id=None))
     await db.execute(update(Project).where(Project.customer_id == customer_id).values(customer_id=None))
+    await db.execute(delete(CustomerContact).where(CustomerContact.customer_id == customer_id))
     await db.delete(customer)
     return {"message": "Customer deleted"}

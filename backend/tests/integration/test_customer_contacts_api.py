@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy import select
 
 from backend.app.models.customer import Customer, CustomerContact, DeliveryMethod
 from backend.app.models.project import Project
@@ -74,3 +75,71 @@ async def test_kind_is_set_on_create_and_never_cleared_by_null(committing_client
     assert (await committing_client.patch(f"/api/v1/customers/{cid}", json={"kind": "wholesale"})).status_code == 422
     patched = await committing_client.patch(f"/api/v1/customers/{cid}", json={"kind": "regular"})
     assert patched.json()["kind"] == "regular"
+
+
+@pytest.mark.asyncio
+async def test_saving_syncs_contacts_by_id_in_the_order_given(committing_client, db_session):
+    acme, first, second = await _acme(db_session)
+    first_id = first.id  # read now: after expire_all() a lazy refresh would need the event loop
+    payload = {
+        "contacts": [
+            {"id": second.id, "name": "Serhii K.", "role": "Warehouse"},  # now the main one
+            {"name": "  New  ", "phone": " "},  # created; blanks become null
+            {"name": "", "email": "   "},  # every field empty: dropped
+        ]
+    }
+    r = await committing_client.patch(f"/api/v1/customers/{acme.id}", json=payload)
+    assert r.status_code == 200, r.text
+    contacts = r.json()["contacts"]
+    assert [c["name"] for c in contacts] == ["Serhii K.", "New"]
+    assert contacts[0]["id"] == second.id and contacts[1]["phone"] is None
+    # ``first`` was left out: removed, and the order that named it lost its contact.
+    db_session.expire_all()
+    order = (await db_session.execute(select(Project).where(Project.name == "A"))).scalar_one()
+    assert order.contact_id is None
+    assert await db_session.get(CustomerContact, first_id) is None
+
+
+@pytest.mark.asyncio
+async def test_a_patch_without_contacts_leaves_them_alone(committing_client, db_session):
+    acme, first, second = await _acme(db_session)
+    r = await committing_client.patch(f"/api/v1/customers/{acme.id}", json={"notes": "x"})
+    assert [c["id"] for c in r.json()["contacts"]] == [first.id, second.id]
+    assert (await committing_client.patch(f"/api/v1/customers/{acme.id}", json={"contacts": None})).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_or_repeated_contact_or_an_unknown_method_is_refused(committing_client, db_session):
+    acme, first, _ = await _acme(db_session)
+    other = Customer(name="Beta")
+    db_session.add(other)
+    await db_session.flush()
+    stranger = CustomerContact(customer_id=other.id, position=0, name="Stranger")
+    db_session.add(stranger)
+    await db_session.commit()
+    url = f"/api/v1/customers/{acme.id}"
+    for contacts in (
+        [{"id": stranger.id, "name": "x"}],
+        [{"id": first.id, "name": "a"}, {"id": first.id, "name": "b"}],
+        [{"name": "x", "delivery_method_id": 999999}],
+    ):
+        r = await committing_client.patch(url, json={"contacts": contacts})
+        assert r.status_code == 422, (contacts, r.text)
+    # Nothing moved on a refusal.
+    assert [c["id"] for c in (await committing_client.get(url)).json()["contacts"]][0] == first.id
+
+
+@pytest.mark.asyncio
+async def test_create_takes_contacts_and_delete_takes_them_away(committing_client, db_session):
+    r = await committing_client.post(
+        "/api/v1/customers", json={"name": "Gamma", "contacts": [{"name": "Ira", "email": "ira@g.ua"}]}
+    )
+    assert r.status_code == 200, r.text
+    cid, contact_id = r.json()["id"], r.json()["contacts"][0]["id"]
+    db_session.add(Project(name="G", customer_id=cid, contact_id=contact_id))
+    await db_session.commit()
+    assert (await committing_client.delete(f"/api/v1/customers/{cid}")).status_code == 200
+    db_session.expire_all()
+    order = (await db_session.execute(select(Project).where(Project.name == "G"))).scalar_one()
+    assert order.customer_id is None and order.contact_id is None
+    assert await db_session.get(CustomerContact, contact_id) is None

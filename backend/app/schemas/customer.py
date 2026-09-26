@@ -1,9 +1,10 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 CustomerKind = Literal["company", "regular", "private"]
+_CONTACT_TEXT = ("name", "role", "phone", "email", "city", "delivery_details", "note")
 
 
 def _clean_name(value: Any) -> Any:
@@ -29,10 +30,37 @@ def _clean_name(value: Any) -> Any:
     return trimmed
 
 
+class CustomerContactIn(BaseModel):
+    """One row of the customer form. With ``id`` it updates that contact; without,
+    it creates one. Blanks become null; a row with nothing in it is dropped."""
+
+    id: int | None = None
+    name: str | None = Field(default=None, max_length=255)
+    role: str | None = Field(default=None, max_length=255)
+    phone: str | None = Field(default=None, max_length=255)
+    email: str | None = Field(default=None, max_length=255)
+    city: str | None = Field(default=None, max_length=255)
+    delivery_method_id: int | None = None
+    delivery_details: str | None = Field(default=None, max_length=255)
+    note: str | None = None
+
+    @field_validator(*_CONTACT_TEXT, mode="before")
+    @classmethod
+    def _blank_is_null(cls, value: Any) -> Any:
+        # ``mode="before"``: the lengths measure what is stored, as ``_clean_name`` does.
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    def is_empty(self) -> bool:
+        return all(getattr(self, field) is None for field in (*_CONTACT_TEXT, "delivery_method_id"))
+
+
 class CustomerCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     kind: CustomerKind = "company"
     notes: str | None = None
+    contacts: list[CustomerContactIn] = Field(default_factory=list)
 
     @field_validator("name", mode="before")
     @classmethod
@@ -44,13 +72,16 @@ class CustomerUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     kind: CustomerKind | None = None
     notes: str | None = None
+    # Sent whole: a contact missing from the list is removed. Absent = leave them alone.
+    contacts: list[CustomerContactIn] | None = None
 
-    @field_validator("kind", mode="before")
+    @field_validator("kind", "contacts", mode="before")
     @classmethod
-    def _kind_is_never_null(cls, value: Any) -> Any:
-        """``customers.kind`` is NOT NULL: an explicit null is a 422, not a 500 from the flush."""
+    def _never_null(cls, value: Any, info: ValidationInfo) -> Any:
+        """``customers.kind`` is NOT NULL and a null contact list means nothing:
+        an explicit null is a 422, not a 500 from the flush or a silent wipe."""
         if value is None:
-            raise ValueError("kind cannot be null")
+            raise ValueError(f"{info.field_name} cannot be null")
         return value
 
     @field_validator("name", mode="before")
