@@ -32,6 +32,7 @@ from backend.app.api.routes import (
     cloud,
     cloud_link,
     customers,
+    delivery_methods,
     discovery,
     external_links,
     filament_calibration as filament_calibration_routes,
@@ -11678,6 +11679,7 @@ app.include_router(monitor.router, prefix=app_settings.api_prefix)
 app.include_router(external_links.router, prefix=app_settings.api_prefix)
 app.include_router(projects.router, prefix=app_settings.api_prefix)
 app.include_router(customers.router, prefix=app_settings.api_prefix)
+app.include_router(delivery_methods.router, prefix=app_settings.api_prefix)
 app.include_router(products.router, prefix=app_settings.api_prefix)
 app.include_router(stock.router, prefix=app_settings.api_prefix)
 app.include_router(library.router, prefix=app_settings.api_prefix)
