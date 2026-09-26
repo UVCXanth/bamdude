@@ -72,6 +72,8 @@ class Product(Base):
             sqlite_where=text("origin = 'adhoc_plate'"),
             postgresql_where=text("origin = 'adhoc_plate'"),
         ),
+        # Named as m188 names it, so create_all and a migrated database agree.
+        Index("ix_products_sku_key", "sku_key", unique=True),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -98,9 +100,19 @@ class Product(Base):
     # anyway; ``product_sync.purge_file_product_links`` nulls it in code.
     origin_file_id: Mapped[int | None] = mapped_column(ForeignKey("library_files.id"), nullable=True)
     origin_plate_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # spec workshop-product-catalog, rules 1 and 14–15: the operator's catalog
+    # fields. ``sku_key`` is ``name_key(sku)`` — unique when set, computed in Python.
+    sku: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sku_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    category_id: Mapped[int | None] = mapped_column(
+        ForeignKey("product_categories.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft", server_default="draft")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
+    category: Mapped["ProductCategory | None"] = relationship(lazy="joined")
     parts: Mapped[list["ProductPart"]] = relationship(
         back_populates="product", cascade="all, delete-orphan", order_by="ProductPart.sort_order"
     )
@@ -159,5 +171,22 @@ class ProductPlate(Base):
     library_file: Mapped["LibraryFile"] = relationship()
 
 
+PRODUCT_STATUSES = ("draft", "ready")
+FACET_KINDS = ("material", "color", "model")
+
+
+class ProductFacet(Base):
+    """What a product's plates are made of and sliced for — STORED, one writer:
+    ``services/product_facets.py`` (spec workshop-product-catalog, rules 3 and 5)."""
+
+    __tablename__ = "product_facets"
+    __table_args__ = (Index("ix_product_facets_kind_value", "kind", "value"),)
+
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    value: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+
 from backend.app.models.library import LibraryFile, LibraryFolder  # noqa: E402
+from backend.app.models.product_category import ProductCategory  # noqa: E402
 from backend.app.models.project_line import ProjectLine  # noqa: E402

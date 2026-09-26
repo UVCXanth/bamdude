@@ -26,6 +26,17 @@ add here while the branch is unreleased:
     ix_print_archives_project_created (project_id=?)``, the sort gone.
   A table missing here (the migration tests build only what they need) is
   skipped; ``create_all`` gives fresh installs the same indexes from the models.
+
+- **WS-07 (spec workshop-product-catalog) — the product catalog.** ``products``
+  gains ``sku`` (+ its case-free ``sku_key``, unique when set), ``version``,
+  ``category_id`` and ``status`` (``draft`` | ``ready``). Two tables:
+  ``product_categories`` — the category directory (AUTOINCREMENT, a unique
+  ``name_key``) — and ``product_facets`` — a product's plate materials,
+  colours and printer models, STORED and written only by
+  ``services/product_facets.py``. Seeds: a product that already has a part
+  and a plate is ``ready`` (owner, 2026-09-26: products already printing stay
+  printable); the rest stay ``draft``. The status seed only ever promotes a
+  qualifying draft, so it is safe to run again.
 """
 
 from backend.app.migrations.helpers import add_column, table_exists
@@ -80,3 +91,47 @@ async def upgrade(conn):
     ):
         if await table_exists(conn, table):
             await conn.exec_driver_sql(ddl)
+
+    # spec workshop-product-catalog (WS-07): catalog fields, the category
+    # directory and the stored plate facets.
+    if await table_exists(conn, "products"):
+        if not await table_exists(conn, "product_categories"):
+            await conn.exec_driver_sql(
+                f"""
+                CREATE TABLE product_categories (
+                    id {pk},
+                    name VARCHAR(128) NOT NULL,
+                    name_key VARCHAR(128) NOT NULL UNIQUE,
+                    created_at {ts} NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        await add_column(conn, "products", "sku VARCHAR(64)")
+        await add_column(conn, "products", "sku_key VARCHAR(64)")
+        await add_column(conn, "products", "version VARCHAR(64)")
+        await add_column(conn, "products", "category_id INTEGER REFERENCES product_categories(id) ON DELETE SET NULL")
+        await add_column(conn, "products", "status VARCHAR(16) NOT NULL DEFAULT 'draft'")
+        await conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ix_products_sku_key ON products (sku_key)")
+        await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_products_category_id ON products (category_id)")
+        if not await table_exists(conn, "product_facets"):
+            await conn.exec_driver_sql(
+                """
+                CREATE TABLE product_facets (
+                    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                    kind VARCHAR(16) NOT NULL,
+                    value VARCHAR(64) NOT NULL,
+                    PRIMARY KEY (product_id, kind, value)
+                )
+                """
+            )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_product_facets_kind_value ON product_facets (kind, value)"
+        )
+        # Products already printing stay ready; only incomplete ones become drafts
+        # (owner, 2026-09-26). Idempotent: only ever promotes drafts that qualify.
+        if await table_exists(conn, "product_parts") and await table_exists(conn, "product_plates"):
+            await conn.exec_driver_sql(
+                "UPDATE products SET status = 'ready' WHERE status = 'draft'"
+                " AND EXISTS (SELECT 1 FROM product_parts pp WHERE pp.product_id = products.id)"
+                " AND EXISTS (SELECT 1 FROM product_plates pl WHERE pl.product_id = products.id)"
+            )

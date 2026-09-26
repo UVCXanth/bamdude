@@ -69,7 +69,8 @@ def test_product_tables_and_uniques():
 def test_lines_procurement_and_customers():
     assert {"project_id", "product_id", "quantity", "material", "color", "note", "sort_order"} <= _cols(ProjectLine)
     assert {"project_id", "product_part_id", "quantity_acquired"} == _cols(ProjectProcurement)
-    assert {"name", "contact", "notes"} <= _cols(Customer)
+    # WS-03 moved the single ``contact`` into ``customer_contacts``.
+    assert {"name", "kind", "notes"} <= _cols(Customer)
 
 
 def test_project_line_id_travels_queue_to_archive():

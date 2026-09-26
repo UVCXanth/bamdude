@@ -324,6 +324,7 @@ def import_all_models() -> None:
         printer_setting_audit,
         printer_tag,
         product,
+        product_category,
         project,
         project_line,
         queue_source,

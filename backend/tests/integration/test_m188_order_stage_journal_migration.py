@@ -73,6 +73,29 @@ async def test_a_second_run_changes_nothing(engine):
 
 
 @pytest.mark.asyncio
+async def test_the_catalog_columns_tables_and_status_seed(engine):
+    # spec workshop-product-catalog, rules 1–4: products already printing stay ready.
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE products (id INTEGER PRIMARY KEY, name VARCHAR(255))"))
+        await conn.execute(text("CREATE TABLE product_parts (id INTEGER PRIMARY KEY, product_id INTEGER)"))
+        await conn.execute(text("CREATE TABLE product_plates (id INTEGER PRIMARY KEY, product_id INTEGER)"))
+        await conn.execute(text("INSERT INTO products (id, name) VALUES (1, 'Full'), (2, 'No plates'), (3, 'Empty')"))
+        await conn.execute(text("INSERT INTO product_parts (product_id) VALUES (1), (2)"))
+        await conn.execute(text("INSERT INTO product_plates (product_id) VALUES (1)"))
+    await _run(engine)
+    await _run(engine)  # idempotent
+    async with engine.connect() as conn:
+        rows = (
+            await conn.execute(text("SELECT id, status, sku, version, category_id FROM products ORDER BY id"))
+        ).all()
+        assert rows == [(1, "ready", None, None, None), (2, "draft", None, None, None), (3, "draft", None, None, None)]
+        for table in ("product_categories", "product_facets"):
+            assert (await conn.execute(text(f"SELECT COUNT(*) FROM {table}"))).scalar() == 0
+        indexes = {r[1] for r in (await conn.execute(text("PRAGMA index_list(products)"))).all()}
+        assert {"ix_products_sku_key", "ix_products_category_id"} <= indexes
+
+
+@pytest.mark.asyncio
 async def test_the_order_queue_reads_have_their_indexes(engine):
     # spec workshop-order-queue, rules 8–9: the figures and the order's queue
     # section filter both queue tiers and the archives by order.
