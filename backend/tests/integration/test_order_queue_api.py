@@ -92,5 +92,27 @@ async def test_a_key_limited_to_printers_sees_only_theirs_and_no_auto_queue(asyn
 
 
 @pytest.mark.asyncio
+async def test_a_key_limited_to_no_printers_sees_nothing(async_client, seeded):
+    _a, _b, order = seeded
+    created = await async_client.post(
+        "/api/v1/api-keys/", json={"name": "none", "can_read_status": True, "printer_ids": []}
+    )
+    headers = {"X-API-Key": created.json()["key"]}
+    body = (await async_client.get(f"/api/v1/projects/{order.id}/queue", headers=headers)).json()
+    assert body == {"printing": [], "pending": [], "awaiting": []}
+
+
+@pytest.mark.asyncio
+async def test_a_print_whose_printer_is_gone_still_shows_unnamed(async_client, db_session):
+    order = Project(name="Q-orphan")
+    db_session.add(order)
+    await db_session.commit()
+    db_session.add(_archive(project_id=order.id, printer_id=None, print_name="Lid"))
+    await db_session.commit()
+    body = (await async_client.get(f"/api/v1/projects/{order.id}/queue")).json()
+    assert [(p["name"], p["printer_id"], p["printer_name"]) for p in body["printing"]] == [("Lid", None, None)]
+
+
+@pytest.mark.asyncio
 async def test_an_unknown_order_is_a_404(async_client):
     assert (await async_client.get("/api/v1/projects/999999/queue")).status_code == 404

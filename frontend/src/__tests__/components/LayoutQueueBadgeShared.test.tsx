@@ -1,4 +1,4 @@
-/** The sidebar reads compact counts; the order panel owns full pending rows. */
+/** The sidebar reads compact counts; the order panel reads only its own order's queue (spec workshop-order-queue). */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { waitFor } from '@testing-library/react';

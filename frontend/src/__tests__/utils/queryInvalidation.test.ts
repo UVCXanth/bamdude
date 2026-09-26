@@ -158,6 +158,18 @@ describe('invalidateQueueViews', () => {
     // Not an order mutation — the order views are none of its business.
     expect(stale(qc, ['projects'])).toBe(false);
   });
+  it('moves an order\'s queue section too — cancelling its job on the queue page is its business', () => {
+    // spec workshop-order-queue: the section lists the rows this very mutation
+    // changed; with a 60 s staleTime a Back to the order would draw the old row.
+    const qc = new QueryClient();
+    seed(qc, [['project-queue', 7], ['project', 7]]);
+
+    invalidateQueueViews(qc);
+
+    expect(stale(qc, ['project-queue', 7])).toBe(true);
+    // The order's own figures follow the section (OrderQueue), not this sweep.
+    expect(stale(qc, ['project', 7])).toBe(false);
+  });
 });
 
 describe('invalidateSpoolViews', () => {

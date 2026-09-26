@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
@@ -79,6 +79,32 @@ describe('OrderQueue', () => {
     get.mockResolvedValue({ ...EMPTY, awaiting: [tiers.awaiting[1]] } as never);
     mountWithClient(newClient());
     expect(await screen.findByText('Foot')).toBeInTheDocument();
+  });
+
+  it('names a printing card after the order\'s print, not whatever the printer reports', async () => {
+    // Between dispatch and the real start (upload, preheat) the printer still
+    // reports the PREVIOUS job — possibly another order's.
+    vi.spyOn(api, 'getPrinterStatus').mockResolvedValue({ state: 'FINISH', subtask_name: 'Someone else', cover_url: '/c.png' } as never);
+    vi.spyOn(api, 'getOrderQueue').mockResolvedValue(tiers as never);
+    mountWithClient(newClient());
+    expect(await screen.findByText('Lid')).toBeInTheDocument();
+    await waitFor(() => expect(api.getPrinterStatus).toHaveBeenCalled());
+    expect(screen.queryByText('Someone else')).not.toBeInTheDocument();
+    expect(document.querySelector('img[src*="c.png"]')).toBeNull(); // not live: no cover from the printer either
+  });
+
+  it('when its rows change, the order\'s tiles are re-read with them — never on the first answer', async () => {
+    // The tiles (`['project', id]`) do not poll and no queue socket event reaches
+    // them; the section does both. Moving them together keeps «exactly the jobs
+    // the tiles count» true between two order mutations.
+    vi.spyOn(api, 'getOrderQueue').mockResolvedValue(tiers as never);
+    const client = newClient();
+    mountWithClient(client);
+    await screen.findByText('Body');
+    await waitFor(() => expect(client.getQueryData(['project', 1])).toBeDefined());
+    expect(client.getQueryState(['project', 1])?.isInvalidated).toBe(false);
+    act(() => client.setQueryData(['project-queue', 1], { ...tiers, pending: [] }));
+    await waitFor(() => expect(client.getQueryState(['project', 1])?.isInvalidated).toBe(true));
   });
 
   it('asks for the order through the same options the page does, meta included', async () => {

@@ -60,6 +60,7 @@ from backend.app.services.farm_forecast import FarmSnapshot, load_snapshot, mode
 from backend.app.services.filament_policy import auto_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.order_metrics import attribute, batch_contexts, line_accepts_materials
+from backend.app.services.order_queue import awaiting_auto_row_conditions
 from backend.app.services.plan_engine import (
     _pick_key,
     counted_parts_by_line,
@@ -503,8 +504,7 @@ async def _candidate_rows(
         stmt = stmt.where(AutoQueueItem.id.in_(item_ids))
     else:
         stmt = stmt.where(
-            AutoQueueItem.status == "pending",
-            AutoQueueItem.assigned_to_item_id.is_(None),
+            *awaiting_auto_row_conditions(),
             AutoQueueItem.cancelled_at.is_(None),
             AutoQueueItem.project_line_id.is_not(None),
             AutoQueueItem.scheduled_time.is_(None),

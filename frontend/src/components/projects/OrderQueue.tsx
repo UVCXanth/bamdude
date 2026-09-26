@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import { Clock, Layers, ListTodo, Package } from 'lucide-react';
@@ -48,6 +49,23 @@ export function OrderQueue({ orderId }: OrderQueueProps) {
   const pending = tiers?.pending ?? [];
   const awaiting = tiers?.awaiting ?? [];
   const nothing = printing.length === 0 && pending.length === 0 && awaiting.length === 0;
+
+  // The tiles (`['project', id]`) neither poll nor hear the queue's socket
+  // events; this section does both. When ITS rows change, the order's figures
+  // are re-read with them, so the two never tell different stories for long.
+  // The first answer is not a change — the page has just read the order.
+  const queryClient = useQueryClient();
+  const signature = tiers
+    ? [printing.map((p) => p.archive_id), pending.map((i) => i.id), awaiting.map((i) => i.id)].map((ids) => ids.join(',')).join('|')
+    : null;
+  const seen = useRef<string | null>(null);
+  useEffect(() => {
+    if (signature == null) return;
+    if (seen.current != null && seen.current !== signature) {
+      queryClient.invalidateQueries({ queryKey: ['project', orderId], exact: true });
+    }
+    seen.current = signature;
+  }, [signature, orderId, queryClient]);
 
   // A finished order with nothing left has nothing to say here; an active one
   // answers "is anything moving?" even when the answer is no.
@@ -239,12 +257,13 @@ function CurrentPrintInfoCard({ print, timeFormat, lineName }: CurrentPrintInfoC
     refetchInterval: query => farmStatusPollInterval(5000, query),
   });
 
-  const name =
-    status?.subtask_name
-    || status?.current_print
-    || print.name;
-  const thumbnail = status?.cover_url;
   const isLive = status?.state === 'RUNNING' || status?.state === 'PAUSE';
+  // The ORDER's print names the card. Between dispatch and the real start
+  // (upload, preheat) the printer still reports its previous job — possibly
+  // another order's — so its name never stands in for ours, and its cover shows
+  // only while it is actually running.
+  const name = print.name;
+  const thumbnail = isLive ? status?.cover_url : undefined;
   const progress = status?.progress ?? 0;
 
   return (

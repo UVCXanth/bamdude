@@ -47,6 +47,7 @@ from backend.app.services.order_metrics import (
     batch_contexts,
     line_accepts_materials,
 )
+from backend.app.services.order_queue import awaiting_auto_row_conditions, queued_printer_row_conditions
 from backend.app.services.product_composition import PlateRecipe, estimate_seconds, recipes_for_products
 from backend.app.utils.printer_models import normalize_model_name
 
@@ -694,7 +695,7 @@ async def queued_yield_by_line(
         (
             await db.execute(
                 select(PrintQueueItem.project_line_id, PrintQueueItem.library_file_id, PrintQueueItem.plate_id).where(
-                    PrintQueueItem.project_line_id.in_(line_ids), PrintQueueItem.status == "pending"
+                    PrintQueueItem.project_line_id.in_(line_ids), *queued_printer_row_conditions()
                 )
             )
         ).all()
@@ -703,8 +704,7 @@ async def queued_yield_by_line(
             await db.execute(
                 select(AutoQueueItem.project_line_id, AutoQueueItem.library_file_id, AutoQueueItem.plate_id).where(
                     AutoQueueItem.project_line_id.in_(line_ids),
-                    AutoQueueItem.status == "pending",
-                    AutoQueueItem.assigned_to_item_id.is_(None),
+                    *awaiting_auto_row_conditions(),
                 )
             )
         ).all()
@@ -727,7 +727,7 @@ async def queued_yield_by_line(
                 select(PrintQueueItem.project_id, PrintQueueItem.library_file_id, PrintQueueItem.plate_id).where(
                     PrintQueueItem.project_id.in_(project_ids),
                     PrintQueueItem.project_line_id.is_(None),
-                    PrintQueueItem.status == "pending",
+                    *queued_printer_row_conditions(),
                 )
             )
         ).all()
@@ -737,8 +737,7 @@ async def queued_yield_by_line(
                 select(AutoQueueItem.project_id, AutoQueueItem.library_file_id, AutoQueueItem.plate_id).where(
                     AutoQueueItem.project_id.in_(project_ids),
                     AutoQueueItem.project_line_id.is_(None),
-                    AutoQueueItem.status == "pending",
-                    AutoQueueItem.assigned_to_item_id.is_(None),
+                    *awaiting_auto_row_conditions(),
                 )
             )
         ).all()

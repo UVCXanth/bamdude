@@ -52,6 +52,7 @@ from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.queue_source import QueueSource
 from backend.app.models.spool import Spool
+from backend.app.services.order_queue import awaiting_auto_row_conditions
 from backend.app.services.plan_engine import OrderPlan, plan_for_orders
 from backend.app.services.product_composition import plate_filaments
 from backend.app.services.queue_source_descriptor import stored_descriptor
@@ -461,8 +462,7 @@ async def queued_needs_of(
                     AutoQueueItem.queue_source_id,
                     AutoQueueItem.source_snapshot,
                 ).where(
-                    AutoQueueItem.status == "pending",
-                    AutoQueueItem.assigned_to_item_id.is_(None),
+                    *awaiting_auto_row_conditions(),
                     or_(
                         AutoQueueItem.project_id.in_(project_ids),
                         AutoQueueItem.project_line_id.in_(line_ids),

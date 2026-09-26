@@ -31,6 +31,7 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project import Project
 from backend.app.services.filament_intake import loaded_descriptor
 from backend.app.services.order_filing import priority_rank
+from backend.app.services.order_queue import awaiting_auto_row_conditions
 from backend.app.services.plan_engine import FleetCapacity, FleetMachine, OrderPlan, plan_for_orders
 from backend.app.services.queue_times import print_time_for_row
 from backend.app.services.stagger_groups import StaggerGroupResolver
@@ -859,7 +860,7 @@ async def _staged(db: AsyncSession) -> list[StagedJob]:
     rows = (
         await db.execute(
             select(AutoQueueItem.project_id, AutoQueueItem.target_model, AutoQueueItem.print_time_seconds).where(
-                AutoQueueItem.status == "pending", AutoQueueItem.assigned_to_item_id.is_(None)
+                *awaiting_auto_row_conditions()
             )
         )
     ).all()

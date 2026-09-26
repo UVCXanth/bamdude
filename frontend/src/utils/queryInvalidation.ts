@@ -104,6 +104,9 @@ export function invalidateQueueViews(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: ['queue'] });
   qc.invalidateQueries({ queryKey: ['auto-queue', 'summary'] });
   qc.invalidateQueries({ queryKey: ['queue-forecast'] });
+  // An order's queue section lists these very rows (spec workshop-order-queue);
+  // the order's figures follow the section when its rows change (OrderQueue).
+  qc.invalidateQueries({ queryKey: ['project-queue'] });
 }
 
 /** A spool was written, used or synced: the shelf moved, and with it every «need vs shelf» figure. */

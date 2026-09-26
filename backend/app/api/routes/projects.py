@@ -20,8 +20,10 @@ from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.api.routes.auto_queue import _to_response, auto_queue_item_load_options
-from backend.app.api.routes.print_queue import _enrich_response, queue_item_load_options
+# Aliased: a private name imported into a module this size could be shadowed
+# by a local helper of the same name without anyone noticing.
+from backend.app.api.routes.auto_queue import _to_response as auto_queue_row_response, auto_queue_item_load_options
+from backend.app.api.routes.print_queue import _enrich_response as queue_row_response, queue_item_load_options
 from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
 from backend.app.core.config import settings
@@ -2178,8 +2180,7 @@ async def get_project_timeline(
             await db.execute(
                 select(PrintQueueItem)
                 .options(selectinload(PrintQueueItem.archive), selectinload(PrintQueueItem.library_file))
-                .where(PrintQueueItem.project_id == project_id)
-                .where(PrintQueueItem.status == "pending")
+                .where(PrintQueueItem.project_id == project_id, *queued_printer_row_conditions())
                 .order_by(PrintQueueItem.created_at.desc())
                 .limit(limit)
             )
@@ -2210,9 +2211,7 @@ async def get_project_timeline(
             await db.execute(
                 select(AutoQueueItem)
                 .options(selectinload(AutoQueueItem.archive), selectinload(AutoQueueItem.library_file))
-                .where(AutoQueueItem.project_id == project_id)
-                .where(AutoQueueItem.status == "pending")
-                .where(AutoQueueItem.assigned_to_item_id.is_(None))
+                .where(AutoQueueItem.project_id == project_id, *awaiting_auto_row_conditions())
                 .order_by(AutoQueueItem.created_at.desc())
                 .limit(limit)
             )
@@ -2464,11 +2463,7 @@ async def _pending_auto_prints(db: AsyncSession, line_ids: list[int]) -> dict[in
     rows = (
         await db.execute(
             select(AutoQueueItem.project_line_id, func.count())
-            .where(
-                AutoQueueItem.project_line_id.in_(line_ids),
-                AutoQueueItem.status == "pending",
-                AutoQueueItem.assigned_to_item_id.is_(None),
-            )
+            .where(AutoQueueItem.project_line_id.in_(line_ids), *awaiting_auto_row_conditions())
             .group_by(AutoQueueItem.project_line_id)
         )
     ).all()
@@ -2535,7 +2530,7 @@ async def get_order_queue(
         )
         for archive, printer_name in (await db.execute(printing_q)).all()
     ]
-    pending = [_enrich_response(item) for item in (await db.execute(pending_q)).scalars().all()]
+    pending = [queue_row_response(item) for item in (await db.execute(pending_q)).scalars().all()]
     awaiting = []
     if scope is None:
         awaiting_q = (
@@ -2544,7 +2539,7 @@ async def get_order_queue(
             .where(AutoQueueItem.project_id == project_id, *awaiting_auto_row_conditions())
             .order_by(AutoQueueItem.position, AutoQueueItem.id)
         )
-        awaiting = [_to_response(item) for item in (await db.execute(awaiting_q)).scalars().all()]
+        awaiting = [auto_queue_row_response(item) for item in (await db.execute(awaiting_q)).scalars().all()]
     return OrderQueueOut(printing=printing, pending=pending, awaiting=awaiting)
 
 
