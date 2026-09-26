@@ -172,6 +172,12 @@
 
 ### Fixed
 
+- **Controls no longer disappear on hover in the light themes.** Many icon
+  buttons and links turn white when the pointer is over them. On a light
+  background that made them vanish exactly while being pointed at. They now use
+  the theme's text colour on hover, as they already did when not hovered.
+  (upstream #1909)
+
 - **Buttons that appear on hover are usable on phones and tablets.** Several
   controls appeared only when the mouse was over them. A touchscreen has no hover,
   so they never appeared: the slot options menu (⋮) on printer cards, deleting a
