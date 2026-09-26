@@ -37,6 +37,15 @@
 
 ### Added
 
+- **An order's Queue section shows everything the order has in the queue.**
+  It used to list only jobs already on a printer's queue, so work the order
+  plan had just queued counted in the «In queue» tile but was nowhere in the
+  list until the auto-queue handed it to a printer. The section now shows what
+  is printing, what waits on a printer, and what waits for the auto-queue to
+  hand it out — with the printers it may go to and why it is still waiting —
+  exactly the jobs the tiles count. A print started from the printer's screen
+  and filed to the order shows under «Printing» too. The order page no longer
+  downloads the whole farm's queue to draw one order's part of it.
 - **The orders page switches between five views.** Besides the table and the
   cards there is now a **kanban** by stage — drag a card (or move it with the
   keyboard) to another column to set its stage, or into Done to complete the

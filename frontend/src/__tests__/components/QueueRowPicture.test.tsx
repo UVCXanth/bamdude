@@ -265,8 +265,11 @@ describe('the order page’s pending row', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: 60_000 } },
     });
-    queryClient.setQueryData(['queue', 'all', 'pending'], rows);
-    queryClient.setQueryData(['queue', 'all', 'printing'], []);
+    // The panel reads its order's own queue (spec workshop-order-queue); the
+    // seeded answer is what it draws, the spy a guard against a refetch.
+    const tiers = { printing: [], pending: rows, awaiting: [] };
+    vi.spyOn(api, 'getOrderQueue').mockResolvedValue(tiers as never);
+    queryClient.setQueryData(['project-queue', 1], tiers);
     // The panel renders a <Link>, so it needs the app's router — the shared
     // wrapper provides it, and the inner client is what serves the seeded cache.
     return renderInApp(

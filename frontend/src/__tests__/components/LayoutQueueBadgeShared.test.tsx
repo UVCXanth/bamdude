@@ -29,8 +29,13 @@ describe('sidebar queue summary', () => {
     );
   });
 
-  it('does not mount a second full pending reader just for the badge', async () => {
+  it('mounts no full farm-wide pending reader — the badge reads counts, the order panel its own order', async () => {
+    // spec workshop-order-queue: the order panel used to be the one owner of
+    // the farm-wide pending rows; it now reads only its order's queue.
     const getQueue = vi.spyOn(api, 'getQueue').mockResolvedValue([] as never);
+    const getOrderQueue = vi
+      .spyOn(api, 'getOrderQueue')
+      .mockResolvedValue({ printing: [], pending: [], awaiting: [] } as never);
     vi.spyOn(api, 'getOrder').mockResolvedValue({ id: 1, name: 'O', status: 'active', lines: [] } as never);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
 
@@ -41,20 +46,19 @@ describe('sidebar queue summary', () => {
       </QueryClientProvider>,
     );
 
-    await waitFor(() => expect(getQueue).toHaveBeenCalledWith(undefined, 'pending', expect.objectContaining({ signal: expect.any(AbortSignal) })));
+    await waitFor(() => expect(getOrderQueue).toHaveBeenCalledWith(1));
     await waitFor(() => expect(client.getQueryData(['queue', 'summary'])).toEqual({ pending_count: 0, groups: [] }));
 
     const pending = client
       .getQueryCache()
       .findAll({ queryKey: ['queue'] })
       .filter((q) => q.queryKey[q.queryKey.length - 1] === 'pending');
-    expect(pending.map((q) => q.queryKey)).toEqual([['queue', 'all', 'pending']]);
-    // Only the order panel observes full rows; the sidebar observes counts.
-    expect(pending[0].observers.length).toBe(1);
-    expect(getQueue.mock.calls.filter(([, status]) => status === 'pending')).toHaveLength(1);
-    // The order panel retains its fallback cadence.
-    const interval = pending[0].observers[0].options.refetchInterval;
-    expect(typeof interval === 'function' ? interval(pending[0]) : interval).toBe(10_000 + farmPollJitterMs);
+    expect(pending).toHaveLength(0);
+    expect(getQueue.mock.calls.filter(([, status]) => status === 'pending')).toHaveLength(0);
+    // The order panel keeps the queue lists' fallback cadence for its own query.
+    const own = client.getQueryCache().find({ queryKey: ['project-queue', 1] })!;
+    const interval = own.observers[0].options.refetchInterval;
+    expect(typeof interval === 'function' ? interval(own) : interval).toBe(10_000 + farmPollJitterMs);
   });
 
   it('does not present a partial badge count as a complete zero after one summary fails', async () => {
