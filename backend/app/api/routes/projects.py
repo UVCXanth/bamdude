@@ -9,6 +9,7 @@ import logging
 import os
 import shutil
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
@@ -47,6 +48,8 @@ from backend.app.schemas.farm_forecast import (
 )
 from backend.app.schemas.filament_needs import FarmNeedsOut, FarmRowOut, NeedRowOut, OrderNeedsOut
 from backend.app.schemas.listing import (
+    OrderBoard,
+    OrderBoardColumn,
     OrderListPage,
     OrderListTotals,
     OrdersSummary,
@@ -428,9 +431,7 @@ async def list_projects(
     """
     paged = page is not None
     key, direction, computed = resolve_sort(_ORDER_SORT, sort_by)
-    query = select(Project).options(
-        selectinload(Project.lines), selectinload(Project.customer), selectinload(Project.responsible)
-    )
+    query = _row_query()
     if not paged:
         query = query.order_by(Project.updated_at.desc())
     if status:
@@ -461,6 +462,43 @@ async def list_projects(
             if not all:
                 query = query.limit(per_page).offset((page - 1) * per_page)
     projects = (await db.execute(query)).scalars().all()
+    out = await _list_rows(db, projects)
+    if not paged:
+        return out
+    if computed:
+        if key in _ORDER_FORECAST:
+            # The cost is honest: one full walk of the simulation over the active
+            # orders under the filter, on every request that sorts by it — no
+            # cache (owner, 2026-09-25: «поки серверний прогін»). A closed order
+            # is never planned, so it has no value.
+            active_ids = [row.id for row in out if row.status == "active"]
+            forecasts = (await farm_forecast.forecast_projects(db, active_ids, _utc_now()))[1] if active_ids else {}
+            value_of = _ORDER_FORECAST[key]
+
+            def key_fn(row):
+                forecast = forecasts.get(row.id)
+                return value_of(forecast) if forecast is not None else None
+        else:
+            key_fn = _ORDER_COMPUTED[key]
+        out = sort_computed(out, key_fn, direction, id_fn=lambda r: r.id)
+        total = len(out)
+        out = slice_page(out, page, per_page, all)
+    return OrderListPage(items=out, meta=page_meta(total, page, per_page, all), totals=totals)
+
+
+def _row_query():
+    """A ``Project`` select loaded the way ``_list_rows`` reads it."""
+    return select(Project).options(
+        selectinload(Project.lines), selectinload(Project.customer), selectinload(Project.responsible)
+    )
+
+
+async def _list_rows(db: AsyncSession, projects: Sequence[Project]) -> list[ProjectListResponse]:
+    """The one builder of the list row (spec workshop-order-views, rule 20): the
+    list, the board and the deadlines view send the same row, with the same
+    figures batch (``grouped_figures``) asked once for all the rows given.
+    ``projects`` must be loaded with ``lines``, ``customer`` and ``responsible``
+    (``_row_query``)."""
     product_ids = {line.product_id for p in projects for line in p.lines}
     # The order card draws a cover strip per line, and the EFFECTIVE cover may be
     # the first picture attachment rather than the column — hence a flag per
@@ -525,27 +563,7 @@ async def list_projects(
                 ],
             )
         )
-    if not paged:
-        return out
-    if computed:
-        if key in _ORDER_FORECAST:
-            # The cost is honest: one full walk of the simulation over the active
-            # orders under the filter, on every request that sorts by it — no
-            # cache (owner, 2026-09-25: «поки серверний прогін»). A closed order
-            # is never planned, so it has no value.
-            active_ids = [row.id for row in out if row.status == "active"]
-            forecasts = (await farm_forecast.forecast_projects(db, active_ids, _utc_now()))[1] if active_ids else {}
-            value_of = _ORDER_FORECAST[key]
-
-            def key_fn(row):
-                forecast = forecasts.get(row.id)
-                return value_of(forecast) if forecast is not None else None
-        else:
-            key_fn = _ORDER_COMPUTED[key]
-        out = sort_computed(out, key_fn, direction, id_fn=lambda r: r.id)
-        total = len(out)
-        out = slice_page(out, page, per_page, all)
-    return OrderListPage(items=out, meta=page_meta(total, page, per_page, all), totals=totals)
+    return out
 
 
 @router.get("/summary", response_model=OrdersSummary)
@@ -589,6 +607,53 @@ async def projects_nav_badges(
     the tiles', not the menu's. Declared above ``/{project_id}``."""
     active = await db.scalar(select(func.count(Project.id)).where(Project.status == "active")) or 0
     return ProjectsNavBadges(active_orders=active)
+
+
+_BOARD_LIMIT = 50
+_BOARD_DONE = 6
+
+
+def _board_filters(query, *, customer_id: int | None, responsible_id: int | None, q: str | None):
+    """The list's filters a board keeps (spec workshop-order-views, rule 2): no status, no stage, no page."""
+    query = _order_filters(query, customer_id=customer_id, product_id=None, responsible_id=responsible_id, stage=None)
+    if q:
+        query = _order_search(query.outerjoin(Customer, Customer.id == Project.customer_id), q)
+    return query
+
+
+@router.get("/board", response_model=OrderBoard)
+async def get_order_board(
+    customer_id: int | None = None,
+    responsible_id: int | None = None,
+    q: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """The kanban in one request (spec workshop-order-views, rule 5): active orders
+    by their manual stage — the most urgent first, at most ``_BOARD_LIMIT`` each —
+    and the latest ``_BOARD_DONE`` completed ones; every column with its total.
+    Cancelled orders are not on the board. One figures batch for every card.
+    Declared above ``/{project_id}``, or ``board`` would be parsed as an id."""
+    filters = {"customer_id": customer_id, "responsible_id": responsible_id, "q": q}
+    picked: dict[str, tuple[list[Project], int]] = {}
+    for stage in PROJECT_STAGES:
+        query = _board_filters(_row_query(), **filters).where(Project.status == "active", Project.stage == stage)
+        total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
+        ordered = query.order_by(_PRIORITY_RANK.desc(), Project.due_date.is_(None), Project.due_date, Project.id).limit(
+            _BOARD_LIMIT
+        )
+        picked[stage] = (list((await db.execute(ordered)).scalars().all()), total)
+    done = _board_filters(_row_query(), **filters).where(Project.status == "completed")
+    done_total = await db.scalar(select(func.count()).select_from(done.subquery())) or 0
+    latest = done.order_by(Project.updated_at.desc(), Project.id.desc()).limit(_BOARD_DONE)
+    picked["done"] = (list((await db.execute(latest)).scalars().all()), done_total)
+    rows = {row.id: row for row in await _list_rows(db, [p for projects, _t in picked.values() for p in projects])}
+    return OrderBoard(
+        **{
+            key: OrderBoardColumn(items=[rows[p.id] for p in projects if p.id in rows], total=total)
+            for key, (projects, total) in picked.items()
+        }
+    )
 
 
 @router.get("/assignees", response_model=list[OrderAssigneeOut])

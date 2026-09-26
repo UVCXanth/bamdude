@@ -33,6 +33,22 @@ class OrderListTotals(BaseModel):
     stages: OrderStageCounts
 
 
+class OrderBoardColumn(BaseModel):
+    """One kanban column: the cards shown and how many the column holds (spec workshop-order-views, rule 5)."""
+
+    items: list[ProjectListResponse]
+    total: int
+
+
+class OrderBoard(BaseModel):
+    """``GET /projects/board`` — three active stages and the latest completed orders."""
+
+    prep: OrderBoardColumn
+    printing: OrderBoardColumn
+    qc: OrderBoardColumn
+    done: OrderBoardColumn
+
+
 class OrderListPage(BaseModel):
     items: list[ProjectListResponse]
     meta: PaginationMeta
