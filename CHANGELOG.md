@@ -37,6 +37,19 @@
 
 ### Added
 
+- **Customers have several contacts, a type and a code; everything in Projects
+  has a code.** A customer is a Company, a Regular or a Private person — the
+  list filters by «Regular» — and holds any number of contacts, each with its
+  name, role, phone, email, city, a delivery method and delivery details, and a
+  note; the first contact is the main one, shown in the list and on the card,
+  and a table row opens to all of them. Delivery methods are a list you edit
+  from a contact — rename, reorder, add; one that contacts use cannot be
+  deleted. An order names its contact person. Customers, contacts, orders and
+  products carry codes made from their number — `CU-0007`, `CT-0012`,
+  `OR-0042`, `PR-0015` — shown on lists, cards, pages and pickers, and every
+  search finds them. The old single «Contact» text moved into each customer's
+  first contact: the email and phone into their fields, the rest into the name,
+  or the whole text into the contact's note when it did not fit.
 - **Summary tiles above the orders, customers and stock lists.** They sum up
   the whole farm, whatever the list below is filtered by. For orders: active
   orders with how many are overdue and urgent, prints running and jobs waiting,
