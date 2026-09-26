@@ -26,6 +26,7 @@ function wrapper() {
 /** One candidate, in the shape the endpoint sends it. */
 const CANDIDATE: OrderCandidate = {
   project_id: 4,
+  project_code: 'OR-0004',
   project_name: 'Kickstarter batch',
   project_line_id: 9,
   product_id: 2,
@@ -73,6 +74,7 @@ describe('useOrderCandidates', () => {
         plate === 1 ? [] : [
           {
             project_id: 4,
+            project_code: 'OR-0004',
             project_name: 'Kickstarter batch',
             project_line_id: 9,
             product_id: 2,

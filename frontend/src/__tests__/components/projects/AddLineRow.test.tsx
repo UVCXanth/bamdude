@@ -67,7 +67,7 @@ function mount(probe?: ReactNode) {
 describe('AddLineRow · from stock', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.spyOn(api, 'getProducts').mockResolvedValue([{ id: 3, name: 'Cap', is_active: true }] as never);
+    vi.spyOn(api, 'getProducts').mockResolvedValue([{ id: 3, code: 'PR-0003', name: 'Cap', is_active: true }] as never);
   });
 
   it('asks nothing about stock until a product is picked', async () => {
@@ -76,7 +76,7 @@ describe('AddLineRow · from stock', () => {
 
     // ⚠️ A DISABLED query in TanStack v5 is pending and NOT fetching — the row
     // must not ask the server about a product nobody chose.
-    expect(await screen.findByRole('button', { name: 'Cap' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'PR-0003 · Cap' })).toBeInTheDocument();
     expect(get).not.toHaveBeenCalled();
     expect(screen.queryByLabelText(/from stock/i)).not.toBeInTheDocument();
   });
@@ -84,7 +84,7 @@ describe('AddLineRow · from stock', () => {
   it('defaults to min(kits, quantity) and follows the quantity until it is touched', async () => {
     vi.spyOn(api, 'getProductStock').mockResolvedValue(stock);
     mount();
-    fireEvent.click(await screen.findByRole('button', { name: 'Cap' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'PR-0003 · Cap' }));
 
     // Five on the shelf, one asked for: one kit, not five.
     const box = (await screen.findByTestId('add-line-from-stock')) as HTMLInputElement;
@@ -103,7 +103,7 @@ describe('AddLineRow · from stock', () => {
     vi.spyOn(api, 'getProductStock').mockResolvedValue(stock);
     const add = vi.spyOn(api, 'addOrderLine').mockResolvedValue(savedOrder(3));
     mount();
-    fireEvent.click(await screen.findByRole('button', { name: 'Cap' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'PR-0003 · Cap' }));
     // ⚠️ The shelf has to have ARRIVED before the quantity is typed: until it
     // does there are no kits to offer, and a click that beat the answer would
     // send a line reserving nothing while the box on screen said otherwise.
@@ -127,7 +127,7 @@ describe('AddLineRow · from stock', () => {
     vi.spyOn(api, 'getProductStock').mockResolvedValue(stock);
     const add = vi.spyOn(api, 'addOrderLine').mockResolvedValue(savedOrder(0));
     mount();
-    fireEvent.click(await screen.findByRole('button', { name: 'Cap' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'PR-0003 · Cap' }));
     fireEvent.change(await screen.findByTestId('add-line-from-stock'), { target: { value: '0' } });
     fireEvent.click(screen.getByRole('button', { name: /add line/i }));
 
@@ -157,7 +157,7 @@ describe('AddLineRow · from stock', () => {
     const product = vi.fn();
     mount(<ProductProbe onFetch={product} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Cap' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'PR-0003 · Cap' }));
     await screen.findByTestId('add-line-from-stock');
     await waitFor(() => expect(get).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(product).toHaveBeenCalledTimes(1));
@@ -173,7 +173,7 @@ describe('AddLineRow · from stock', () => {
     // Asked for three, the server could only hold one back.
     vi.spyOn(api, 'addOrderLine').mockResolvedValue(savedOrder(1));
     mount();
-    fireEvent.click(await screen.findByRole('button', { name: 'Cap' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'PR-0003 · Cap' }));
     // ⚠️ The shelf has to have ARRIVED before the quantity is typed: until it
     // does there are no kits to offer, and a click that beat the answer would
     // send a line reserving nothing while the box on screen said otherwise.

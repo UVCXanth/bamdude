@@ -6,7 +6,7 @@ import { OrdersTable } from '../../../components/projects/OrdersTable';
 import type { OrderForecast, OrderListItem } from '../../../api/client';
 
 const row = (over: Partial<OrderListItem>): OrderListItem => ({
-  id: 1, name: 'A', customer_id: null, customer_name: null, color: null, status: 'active', due_date: null, priority: 'normal',
+  id: 1, code: 'OR-0001', name: 'A', customer_id: null, customer_name: null, color: null, status: 'active', due_date: null, priority: 'normal',
   price: null, tags: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00', lines_count: 1, ordered: 10, printed: 4,
   progress: 0.4, covered_units: 4, remaining: 6, from_stock_units: 0, line_products: [], prints_in_progress: 2, prints_queued: 3, ...over,
 });
@@ -17,7 +17,12 @@ const fc = (over: Partial<OrderForecast>): OrderForecast => ({
 });
 
 const noSort = { sort: 'updated-desc', onSortChange: () => {} };
-const names = () => screen.getAllByRole('row').slice(1).map((r) => within(r).getAllByRole('cell')[0].textContent);
+// The order's name is the link in its first cell; the code sits beneath it.
+const names = () =>
+  screen
+    .getAllByRole('row')
+    .slice(1)
+    .map((r) => within(within(r).getAllByRole('cell')[0]).getByRole('link').textContent);
 
 describe('OrdersTable', () => {
   it('keeps the server order and asks the server to sort — a fresh numeric column most-first', async () => {
@@ -33,6 +38,7 @@ describe('OrdersTable', () => {
     expect(onSort).toHaveBeenLastCalledWith('queued-desc');
     // The table never reorders what the server sent.
     expect(names()).toEqual(['A', 'B']);
+    expect(screen.getAllByText('OR-0001')).toHaveLength(2); // the fixture's code, under each name
     expect(screen.getByTestId('order-1-queued')).toHaveTextContent('3');
     expect(screen.getByTestId('order-1-printing')).toHaveTextContent('2');
   });

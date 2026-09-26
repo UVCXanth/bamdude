@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useId, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
@@ -104,8 +104,22 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
   const initialPrice = order?.price ?? null;
   const initialStatus: ProjectStatus = order?.status ?? 'active';
 
+  // The order's contact person (spec workshop-customers, rule 23). A list row has
+  // no `contact_id` — like `description`, the field is shown only when known.
+  const hasContact = !order || 'contact_id' in order;
+  const initialContactId = order && 'contact_id' in order ? order.contact_id : null;
+  const customerFieldId = useId();
+  const contactFieldId = useId();
+  // The customers the picker already reads — same key, one cache — carry their contacts.
+  const { data: customers = [] } = useQuery({ queryKey: ['customers'], queryFn: api.getCustomers });
+
   const [name, setName] = useState(order?.name ?? '');
   const [customerId, setCustomerId] = useState<number | null>(initialCustomerId);
+  // `undefined` = «the main contact of whichever customer is chosen»; a number or
+  // null is the operator's own pick. Choosing a customer resets it to the main one.
+  const [contactChoice, setContactChoice] = useState<number | null | undefined>(order ? initialContactId : undefined);
+  const contactsOf = customers.find((c) => c.id === customerId)?.contacts ?? [];
+  const contactId = contactChoice === undefined ? (contactsOf[0]?.id ?? null) : contactChoice;
   const [description, setDescription] = useState(initialDescription);
   const [color, setColor] = useState<string | null>(order ? initialColor : ORDER_COLORS[0]);
   const [tags, setTags] = useState(initialTags ?? '');
@@ -121,6 +135,7 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
         const data: OrderUpdate = {};
         if (name.trim() !== order.name) data.name = name.trim();
         if (customerId !== initialCustomerId) data.customer_id = customerId;
+        if (hasContact && contactId !== initialContactId) data.contact_id = contactId;
         const normDescription = description.trim() === '' ? null : description.trim();
         if (normDescription !== (initialDescription === '' ? null : initialDescription)) data.description = normDescription;
         if (color !== initialColor) data.color = color;
@@ -142,6 +157,7 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
       const data: OrderCreate = {
         name: name.trim(),
         customer_id: customerId,
+        contact_id: contactId,
         description: description.trim() === '' ? null : description.trim(),
         color,
         tags: tags.trim() === '' ? null : tags.trim(),
@@ -195,9 +211,42 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
           </div>
 
           <div>
-            <label className={LABEL_CLASS}>{t('orders.modal.customer')}</label>
-            <CustomerPicker value={customerId} onChange={setCustomerId} disabled={mutation.isPending} allowCreate />
+            <label className={LABEL_CLASS} htmlFor={customerFieldId}>
+              {t('orders.modal.customer')}
+            </label>
+            <CustomerPicker
+              id={customerFieldId}
+              value={customerId}
+              onChange={(id) => {
+                setCustomerId(id);
+                setContactChoice(undefined);
+              }}
+              disabled={mutation.isPending}
+              allowCreate
+            />
           </div>
+
+          {hasContact && (
+            <div>
+              <label className={LABEL_CLASS} htmlFor={contactFieldId}>
+                {t('orders.modal.contact')}
+              </label>
+              <Select
+                id={contactFieldId}
+                className="w-full"
+                value={contactId ?? ''}
+                disabled={mutation.isPending || customerId == null || contactsOf.length === 0}
+                onChange={(e) => setContactChoice(e.target.value ? Number(e.target.value) : null)}
+              >
+                <option value="">{t('orders.modal.noContact')}</option>
+                {contactsOf.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {`${c.name ?? c.code}${c.role ? ` — ${c.role}` : ''}`}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          )}
 
           {hasDescription && (
             <div>

@@ -15,6 +15,7 @@ import { ProductCard } from '../../../components/products/ProductCard';
 
 const base: ProductListItem = {
   id: 4,
+  code: 'PR-0004',
   name: 'Flask',
   is_active: true,
   origin: 'catalog',
@@ -41,6 +42,13 @@ function mount(over: Partial<ProductListItem> = {}) {
     />,
   );
 }
+
+describe('ProductCard code', () => {
+  it('shows the product code under its name', () => {
+    mount();
+    expect(screen.getByText('PR-0004')).toBeInTheDocument();
+  });
+});
 
 describe('ProductCard cover', () => {
   it('shows the whole picture: contain, and the stacked card gives it a 160 px band', () => {

@@ -131,10 +131,10 @@ describe('OrderLinesTable', () => {
   });
 
   it('adds a line with the picked product and an uppercased material', async () => {
-    vi.spyOn(api, 'getProducts').mockResolvedValue([{ id: 3, name: 'Cap', is_active: true }] as never);
+    vi.spyOn(api, 'getProducts').mockResolvedValue([{ id: 3, code: 'PR-0003', name: 'Cap', is_active: true }] as never);
     const add = vi.spyOn(api, 'addOrderLine').mockResolvedValue(order);
     render(<OrderLinesTable order={order} canEdit />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Cap' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'PR-0003 · Cap' }));
     fireEvent.change(screen.getByLabelText(/material/i), { target: { value: 'petg' } });
     fireEvent.blur(screen.getByLabelText(/material/i));
     fireEvent.click(screen.getByRole('button', { name: /add line/i }));

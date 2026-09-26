@@ -16,11 +16,13 @@ interface CustomerPickerProps {
   onChange: (id: number | null) => void;
   disabled?: boolean;
   allowCreate?: boolean;
+  /** For a `<label htmlFor>` outside the picker. */
+  id?: string;
 }
 
 /** `<select>` over customers, with a "new customer…" option that swaps to an
  *  inline name field + create button rather than opening a separate modal. */
-export function CustomerPicker({ value, onChange, disabled, allowCreate }: CustomerPickerProps) {
+export function CustomerPicker({ value, onChange, disabled, allowCreate, id }: CustomerPickerProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
@@ -92,6 +94,7 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate }: Custo
 
   return (
     <Select
+      id={id}
       className="w-full"
       value={value ?? ''}
       onChange={(e) => {
@@ -106,7 +109,7 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate }: Custo
       <option value="">{t('pickers.noCustomer')}</option>
       {customers?.map((c) => (
         <option key={c.id} value={c.id}>
-          {c.name}
+          {`${c.code} · ${c.name}`}
         </option>
       ))}
       {allowCreate && <option value={NEW_CUSTOMER}>{t('pickers.newCustomer')}</option>}

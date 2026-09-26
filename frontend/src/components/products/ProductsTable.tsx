@@ -63,7 +63,10 @@ export function ProductsTable({
                         <Package className="w-4 h-4 text-bambu-gray" />
                       </span>
                     )}
-                    <span className="truncate">{p.name}</span>
+                    <span className="min-w-0">
+                      <span className="block truncate">{p.name}</span>
+                      <span className="block text-xs text-bambu-gray">{p.code}</span>
+                    </span>
                   </Link>
                 </td>
                 <td className="p-2 text-right tabular-nums">{p.parts_count}</td>

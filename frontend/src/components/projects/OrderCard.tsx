@@ -83,7 +83,10 @@ export function OrderCard({ order, onEdit, onDuplicate, onSetStatus, onDelete }:
 
         <div className="flex-1 min-w-0 space-y-1.5">
           <div className="flex items-start justify-between gap-2">
-            <h3 className="font-semibold text-white truncate">{order.name}</h3>
+            <div className="min-w-0">
+              <h3 className="font-semibold text-white truncate">{order.name}</h3>
+              <span className="block text-xs text-bambu-gray">{order.code}</span>
+            </div>
             {/* Above the overlay link, so the trigger is clickable at all. */}
             <div className="relative z-10 flex-shrink-0">
               <CardActionMenu label={t('common.actions')} testId={`order-${order.id}-menu`} width={160}>

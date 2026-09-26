@@ -91,6 +91,7 @@ export function OrderHeader({
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0 space-y-2">
           <h1 className="text-2xl font-semibold text-white">{order.name}</h1>
+          <p className="text-sm text-bambu-gray">{order.code}</p>
           {/* The description was stored and edited but shown nowhere (spec workshop-lists, rule 17). */}
           {order.description?.trim() && (
             <p data-testid="order-description" className="text-sm text-bambu-gray whitespace-pre-line">
@@ -105,6 +106,19 @@ export function OrderHeader({
               </Link>
             ) : (
               <span className="text-bambu-gray">{t('orders.header.noCustomer')}</span>
+            )}
+            {order.contact && (
+              <span className="text-bambu-gray">
+                {t('orders.header.contact', { name: order.contact.name ?? order.contact.code })}
+                {order.contact.phone && (
+                  <>
+                    {' · '}
+                    <a href={`tel:${order.contact.phone.replace(/[^\d+]/g, '')}`} className="hover:text-white">
+                      {order.contact.phone}
+                    </a>
+                  </>
+                )}
+              </span>
             )}
             <StatusBadge status={order.status} />
             <PriorityBadge priority={order.priority} />

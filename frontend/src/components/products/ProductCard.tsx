@@ -63,7 +63,10 @@ export function ProductCard({ product, onEdit, onDuplicate, onToggleActive, onDe
 
         <div className="flex-1 min-w-0 space-y-1.5">
           <div className="flex items-start justify-between gap-2">
-            <h3 className="font-semibold text-white truncate">{product.name}</h3>
+            <div className="min-w-0">
+              <h3 className="font-semibold text-white truncate">{product.name}</h3>
+              <span className="block text-xs text-bambu-gray">{product.code}</span>
+            </div>
             {/* Above the overlay link, so the trigger is clickable at all. */}
             <div className="relative z-10 flex-shrink-0">
               <ProductActionMenu

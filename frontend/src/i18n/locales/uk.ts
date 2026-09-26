@@ -5454,6 +5454,8 @@ export default {
       editTitle: 'Редагування замовлення',
       name: 'Назва',
       customer: 'Замовник',
+      contact: 'Контактна особа',
+      noContact: '— без контакту —',
       description: 'Опис',
       color: 'Колір',
       tags: 'Теги',
@@ -5481,6 +5483,7 @@ export default {
     header: {
       breadcrumb: 'Замовлення',
       noCustomer: 'Без замовника',
+      contact: 'контакт: {{name}}',
       price: 'Ціна',
       margin: 'Маржа',
       edit: 'Редагувати',

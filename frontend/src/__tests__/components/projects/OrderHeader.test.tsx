@@ -149,3 +149,30 @@ describe('OrderHeader · description', () => {
     expect(screen.queryByTestId('order-description')).not.toBeInTheDocument();
   });
 });
+
+describe('OrderHeader · code and contact person', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    auth.granted = null;
+    vi.spyOn(api, 'getSettings').mockResolvedValue({ currency: 'USD' } as never);
+  });
+
+  it('shows the order code and who receives it, with a phone link', () => {
+    mount({
+      ...orderWith(0),
+      code: 'OR-0001',
+      customer_id: 2,
+      customer_name: 'ACME',
+      contact_id: 10,
+      contact: { id: 10, code: 'CT-0010', name: 'Olena', role: null, phone: '+380 1', email: null },
+    } as Order);
+    expect(screen.getByText('OR-0001')).toBeInTheDocument();
+    expect(screen.getByText(/contact: Olena/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '+380 1' })).toHaveAttribute('href', 'tel:+3801');
+  });
+
+  it('says nothing about a contact when the order has none', () => {
+    mount({ ...orderWith(0), code: 'OR-0001', contact_id: null, contact: null } as Order);
+    expect(screen.queryByText(/contact:/)).not.toBeInTheDocument();
+  });
+});

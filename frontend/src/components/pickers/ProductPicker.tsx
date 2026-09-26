@@ -37,7 +37,10 @@ export function ProductPicker({ value, onChange, disabled, allowCreate }: Produc
   const keepOffered = useBoundIds(value);
   const bound = selectableProducts(products, keepOffered);
   const query = filter.trim().toLowerCase();
-  const filtered = query ? bound.filter((p) => p.name.toLowerCase().includes(query)) : bound;
+  // The picker's own flat list, already loaded — matched by name or by its PR code.
+  const filtered = query
+    ? bound.filter((p) => p.name.toLowerCase().includes(query) || p.code.toLowerCase().includes(query))
+    : bound;
   const offerCreate = Boolean(allowCreate) && filtered.length === 0 && query.length > 0;
 
   const createMutation = useMutation({
@@ -73,7 +76,7 @@ export function ProductPicker({ value, onChange, disabled, allowCreate }: Produc
                   : 'bg-bambu-dark text-white hover:bg-bambu-dark-tertiary'
               }`}
             >
-              {p.name}
+              {`${p.code} · ${p.name}`}
             </button>
             {p.is_active === false && (
               <span className="text-xs text-bambu-gray">{t('pickers.notInCatalog')}</span>

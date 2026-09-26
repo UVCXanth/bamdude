@@ -58,8 +58,8 @@ describe('StockPage', () => {
     );
     vi.spyOn(api, 'getSettings').mockResolvedValue({ date_format: 'system' } as never);
     getProducts = vi.spyOn(api, 'getProducts').mockResolvedValue([
-      { id: 1, name: 'Lamp', is_active: true, origin: 'catalog', origin_file_id: null, origin_plate_index: null, cover_image_filename: null, has_cover: false, parts_count: 2, plates_count: 1, lines_count: 0, kits_available: 3 },
-      { id: 2, name: 'Old vase', is_active: false, origin: 'catalog', origin_file_id: null, origin_plate_index: null, cover_image_filename: null, has_cover: false, parts_count: 1, plates_count: 1, lines_count: 0, kits_available: 0 },
+      { id: 1, code: 'PR-0001', name: 'Lamp', is_active: true, origin: 'catalog', origin_file_id: null, origin_plate_index: null, cover_image_filename: null, has_cover: false, parts_count: 2, plates_count: 1, lines_count: 0, kits_available: 3 },
+      { id: 2, code: 'PR-0002', name: 'Old vase', is_active: false, origin: 'catalog', origin_file_id: null, origin_plate_index: null, cover_image_filename: null, has_cover: false, parts_count: 1, plates_count: 1, lines_count: 0, kits_available: 0 },
     ]);
   });
 

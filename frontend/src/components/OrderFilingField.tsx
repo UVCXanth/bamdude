@@ -82,7 +82,7 @@ export function OrderFilingField({ value, onChange, candidates, loading, offerNe
         {offerNewOrder && <option value="new">{t('orderFiling.newOrder')}</option>}
         {list.map((c) => (
           <option key={optionValue(c)} value={optionValue(c)}>
-            {`${c.project_name} — ${c.product_name}${c.line_material ? ` · ${c.line_material}` : ''} · ${
+            {`${c.project_code} · ${c.project_name} — ${c.product_name}${c.line_material ? ` · ${c.line_material}` : ''} · ${
               c.outstanding_prints > 0
                 ? t('orderFiling.stillNeeds', { count: c.outstanding_prints })
                 : t('orderFiling.satisfied')

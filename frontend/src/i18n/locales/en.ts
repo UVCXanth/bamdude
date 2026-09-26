@@ -5421,6 +5421,8 @@ export default {
       editTitle: 'Edit order',
       name: 'Name',
       customer: 'Customer',
+      contact: 'Contact person',
+      noContact: '— no contact —',
       description: 'Description',
       color: 'Colour',
       tags: 'Tags',
@@ -5448,6 +5450,7 @@ export default {
     header: {
       breadcrumb: 'Orders',
       noCustomer: 'No customer',
+      contact: 'contact: {{name}}',
       price: 'Price',
       margin: 'Margin',
       edit: 'Edit',

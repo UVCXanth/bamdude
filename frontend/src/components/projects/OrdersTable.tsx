@@ -74,7 +74,10 @@ export function OrdersTable({
           <tbody>
             {orders.map((o) => (
                 <tr key={o.id} className="border-t border-bambu-dark-tertiary text-white">
-                  <td className="p-2"><Link to={`/projects/${o.id}`} className="hover:underline">{o.name}</Link></td>
+                  <td className="p-2">
+                    <Link to={`/projects/${o.id}`} className="hover:underline">{o.name}</Link>
+                    <div className="text-xs text-bambu-gray">{o.code}</div>
+                  </td>
                   <td className="p-2 text-bambu-gray">{o.customer_name ?? ''}</td>
                   <td className="p-2"><StatusBadge status={o.status} /></td>
                   <td className="p-2 text-right tabular-nums">{o.ordered}</td>

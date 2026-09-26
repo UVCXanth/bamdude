@@ -129,6 +129,7 @@ export function ProductHeader({ product, onEdit, onDuplicate, onDelete, onToggle
               </span>
             )}
           </div>
+          <p className="text-sm text-bambu-gray">{product.code}</p>
 
           <label className="flex items-center gap-2 text-sm text-white cursor-pointer w-fit">
             <input

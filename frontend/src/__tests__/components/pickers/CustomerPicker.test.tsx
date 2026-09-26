@@ -12,6 +12,12 @@ const customers = [
 describe('CustomerPicker', () => {
   beforeEach(() => vi.restoreAllMocks());
 
+  it('names each customer by its code and name', async () => {
+    vi.spyOn(api, 'getCustomers').mockResolvedValue(customers);
+    render(<CustomerPicker value={null} onChange={() => {}} />);
+    expect(await screen.findByRole('option', { name: 'CU-0001 · Acme' })).toBeInTheDocument();
+  });
+
   it('renders "no customer" first', async () => {
     vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
     render(<CustomerPicker value={null} onChange={() => {}} />);

@@ -38,7 +38,7 @@ export function OrderPicker({ value, onChange, disabled, id }: OrderPickerProps)
       <option value="">{t('pickers.noOrder')}</option>
       {options.map((o) => (
         <option key={o.id} value={o.id}>
-          {o.name}
+          {`${o.code} · ${o.name}`}
         </option>
       ))}
     </Select>

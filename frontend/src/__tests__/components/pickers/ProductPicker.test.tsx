@@ -6,8 +6,8 @@ import { api } from '../../../api/client';
 import { ProductPicker } from '../../../components/pickers/ProductPicker';
 
 const products = [
-  { id: 1, name: 'Flask', is_active: true },
-  { id: 2, name: 'Old lid', is_active: false },
+  { id: 1, code: 'PR-0001', name: 'Flask', is_active: true },
+  { id: 2, code: 'PR-0002', name: 'Old lid', is_active: false },
 ];
 
 /** Somebody retires a product in another tab: the catalog query is invalidated
@@ -26,13 +26,13 @@ describe('ProductPicker', () => {
   it('offers catalog products and hides inactive ones unless bound', async () => {
     vi.spyOn(api, 'getProducts').mockResolvedValue(products as never);
     render(<ProductPicker value={null} onChange={() => {}} />);
-    expect(await screen.findByRole('button', { name: 'Flask' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Old lid' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'PR-0001 · Flask' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'PR-0002 · Old lid' })).not.toBeInTheDocument();
   });
   it('keeps a product the picker ARRIVED bound to, retired or not', async () => {
     vi.spyOn(api, 'getProducts').mockResolvedValue(products as never);
     render(<ProductPicker value={2} onChange={() => {}} />);
-    expect(await screen.findByRole('button', { name: 'Old lid' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'PR-0002 · Old lid' })).toBeInTheDocument();
     expect(screen.getByText(/not in catalog/i)).toBeInTheDocument();
   });
   it('a product retired AFTER mount stays on offer', async () => {
@@ -42,8 +42,8 @@ describe('ProductPicker', () => {
     // write that emptiness back.
     const get = vi
       .spyOn(api, 'getProducts')
-      .mockResolvedValueOnce([{ id: 1, name: 'Flask', is_active: true }] as never)
-      .mockResolvedValue([{ id: 1, name: 'Flask', is_active: false }] as never);
+      .mockResolvedValueOnce([{ id: 1, code: 'PR-0001', name: 'Flask', is_active: true }] as never)
+      .mockResolvedValue([{ id: 1, code: 'PR-0001', name: 'Flask', is_active: false }] as never);
 
     render(
       <>
@@ -52,13 +52,13 @@ describe('ProductPicker', () => {
       </>,
     );
 
-    expect(await screen.findByRole('button', { name: 'Flask' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'PR-0001 · Flask' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('retire'));
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
 
     expect(await screen.findByText(/not in catalog/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Flask' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'PR-0001 · Flask' })).toBeInTheDocument();
   });
   it('creates a product from the typed name when nothing matches', async () => {
     vi.spyOn(api, 'getProducts').mockResolvedValue(products as never);

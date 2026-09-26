@@ -1827,11 +1827,24 @@ export interface ProjectFigures {
   prints_queued: number;
 }
 
+/** Who receives the order — a contact of its customer. */
+export interface OrderContact {
+  id: number;
+  code: string;
+  name: string | null;
+  role: string | null;
+  phone: string | null;
+  email: string | null;
+}
+
 export interface Order {
   id: number;
+  code: string;
   name: string;
   customer_id: number | null;
   customer_name: string | null;
+  contact_id: number | null;
+  contact: OrderContact | null;
   description: string | null;
   color: string | null;
   status: ProjectStatus;
@@ -1854,6 +1867,7 @@ export interface Order {
 
 export interface OrderListItem {
   id: number;
+  code: string;
   name: string;
   customer_id: number | null;
   customer_name: string | null;
@@ -1897,6 +1911,7 @@ export interface LineProduct {
 export interface OrderCreate {
   name: string;
   customer_id?: number | null;
+  contact_id?: number | null;
   description?: string | null;
   color?: string | null;
   notes?: string | null;
@@ -1916,6 +1931,7 @@ export interface OrderUpdate {
   tags?: string | null;
   url?: string | null;
   customer_id?: number | null;
+  contact_id?: number | null;
   due_date?: string | null;
   priority?: ProjectPriority;
   price?: number | null;
@@ -2118,6 +2134,7 @@ export interface OrderPlan {
  */
 export interface OrderCandidate {
   project_id: number;
+  project_code: string;
   project_name: string;
   project_line_id: number;
   product_id: number;
@@ -2435,6 +2452,7 @@ export type ProductOrigin = 'catalog' | 'adhoc_job' | 'adhoc_plate';
 
 export interface ProductListItem {
   id: number;
+  code: string;
   name: string;
   is_active: boolean;
   origin: ProductOrigin;

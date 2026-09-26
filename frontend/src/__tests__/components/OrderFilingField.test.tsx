@@ -18,6 +18,7 @@ import type { OrderCandidate } from '../../api/client';
 
 const candidate = (over: Partial<OrderCandidate> = {}): OrderCandidate => ({
   project_id: 4,
+  project_code: 'OR-0004',
   project_name: 'Kickstarter batch',
   project_line_id: 9,
   product_id: 2,
@@ -38,7 +39,7 @@ describe('OrderFilingField', () => {
         onChange={vi.fn()}
         candidates={[
           candidate(),
-          candidate({ project_id: 6, project_name: 'Spare stock', project_line_id: 12, outstanding_prints: 0 }),
+          candidate({ project_id: 6, project_code: 'OR-0006', project_name: 'Spare stock', project_line_id: 12, outstanding_prints: 0 }),
         ]}
       />,
     );
@@ -46,8 +47,8 @@ describe('OrderFilingField', () => {
     const options = screen.getAllByRole('option').map((o) => o.textContent);
     expect(options).toEqual([
       'Without an order',
-      'Kickstarter batch — Desk Lamp · still needs 5 prints',
-      'Spare stock — Desk Lamp · already covered',
+      'OR-0004 · Kickstarter batch — Desk Lamp · still needs 5 prints',
+      'OR-0006 · Spare stock — Desk Lamp · already covered',
     ]);
   });
 
@@ -70,10 +71,10 @@ describe('OrderFilingField', () => {
     const options = screen.getAllByRole('option').map((o) => o.textContent);
     expect(options).toEqual([
       'Without an order',
-      'Kickstarter batch — Desk Lamp · PETG · still needs 5 prints',
+      'OR-0004 · Kickstarter batch — Desk Lamp · PETG · still needs 5 prints',
       // A line with no material takes any plate; the label says nothing extra
       // rather than the word "none".
-      'Kickstarter batch — Desk Lamp · still needs 5 prints',
+      'OR-0004 · Kickstarter batch — Desk Lamp · still needs 5 prints',
     ]);
   });
 
@@ -87,7 +88,7 @@ describe('OrderFilingField', () => {
     );
 
     expect(
-      screen.getByRole('option', { name: 'Kickstarter batch — Desk Lamp · still needs 1 print' }),
+      screen.getByRole('option', { name: 'OR-0004 · Kickstarter batch — Desk Lamp · still needs 1 print' }),
     ).toBeInTheDocument();
   });
 
