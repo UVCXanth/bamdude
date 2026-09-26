@@ -172,6 +172,12 @@
 
 ### Fixed
 
+- **The per-event ntfy priority is actually sent.** The priorities chosen in an
+  ntfy provider's **Event priority** section never reached ntfy: they were saved
+  under one spelling of the event name and looked up under another, so every
+  notification went out at the ntfy server's default. Existing settings now take
+  effect as saved, without re-entering them. (upstream #3139)
+
 - **Swapping a spool updates the slot card right away, and a Spoolman sync
   updates it in every open tab.** After a spool change the slot card could keep
   showing the previous spool's name for up to five seconds, because refreshing
