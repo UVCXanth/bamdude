@@ -121,6 +121,16 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         except json.JSONDecodeError:
             nozzle_mapping_parsed = None
 
+    # The operator's rack-position pick (upstream #1784), keyed by filament
+    # group. Sent parsed so the print dialog can show which hotend each group
+    # will use when the item is edited.
+    nozzle_rack_choice_parsed = None
+    if item.nozzle_rack_choice:
+        try:
+            nozzle_rack_choice_parsed = json.loads(item.nozzle_rack_choice)
+        except json.JSONDecodeError:
+            nozzle_rack_choice_parsed = None
+
     # Create response with parsed ams_mapping
     item_dict = {
         "id": item.id,
@@ -156,6 +166,7 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         "preheat_chamber_target_override": getattr(item, "preheat_chamber_target_override", None),
         # H2C rack-swap nozzle pick (#1780)
         "nozzle_mapping": nozzle_mapping_parsed,
+        "nozzle_rack_choice": nozzle_rack_choice_parsed,
         "status": item.status,
         "started_at": item.started_at,
         "completed_at": item.completed_at,
@@ -1009,6 +1020,13 @@ async def update_queue_item(
     if "nozzle_mapping" in update_data:
         update_data["nozzle_mapping"] = (
             json.dumps(update_data["nozzle_mapping"]) if update_data["nozzle_mapping"] else None
+        )
+
+    # Same Text-as-JSON convention for the rack-position pick (upstream #1784).
+    # An empty object or null clears it: "assign these for me again".
+    if "nozzle_rack_choice" in update_data:
+        update_data["nozzle_rack_choice"] = (
+            json.dumps(update_data["nozzle_rack_choice"]) if update_data["nozzle_rack_choice"] else None
         )
 
     # swap_macro_events is stored as a JSON-encoded TEXT column.
@@ -1865,6 +1883,10 @@ async def update_batch(
     if "nozzle_mapping" in update_data:
         update_data["nozzle_mapping"] = (
             json.dumps(update_data["nozzle_mapping"]) if update_data["nozzle_mapping"] else None
+        )
+    if "nozzle_rack_choice" in update_data:
+        update_data["nozzle_rack_choice"] = (
+            json.dumps(update_data["nozzle_rack_choice"]) if update_data["nozzle_rack_choice"] else None
         )
     if "swap_macro_events" in update_data:
         events = update_data["swap_macro_events"]

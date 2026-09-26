@@ -4543,6 +4543,10 @@ export interface PrintQueueItem {
   manual_start: boolean;
   require_previous_success: boolean;
   ams_mapping: number[] | null;
+  /** Which rack position each filament group prints from, on a nozzle-rack
+   *  machine (upstream #1784): `{ [group_id]: 1-based position }`. Re-checked
+   *  against the live rack at dispatch; omit to have the dispatcher assign them. */
+  nozzle_rack_choice?: Record<number, number> | null;
   plate_id: number | null;
   // Print options — tri-state calibration (off/auto/on)
   bed_levelling: CalibrationMode;
@@ -4719,6 +4723,10 @@ export interface PrintQueueItemCreate {
   manual_start?: boolean;
   require_previous_success?: boolean;
   ams_mapping?: number[] | null;
+  /** Which rack position each filament group prints from, on a nozzle-rack
+   *  machine (upstream #1784): `{ [group_id]: 1-based position }`. Re-checked
+   *  against the live rack at dispatch; omit to have the dispatcher assign them. */
+  nozzle_rack_choice?: Record<number, number> | null;
   plate_id?: number | null;
   bed_levelling?: CalibrationMode;
   flow_cali?: CalibrationMode;
@@ -4767,6 +4775,10 @@ export interface PrintQueueItemUpdate {
   manual_start?: boolean;
   require_previous_success?: boolean;
   ams_mapping?: number[];
+  /** Which rack position each filament group prints from, on a nozzle-rack
+   *  machine (upstream #1784): `{ [group_id]: 1-based position }`. Re-checked
+   *  against the live rack at dispatch; omit to have the dispatcher assign them. */
+  nozzle_rack_choice?: Record<number, number> | null;
   plate_id?: number | null;
   bed_levelling?: CalibrationMode;
   flow_cali?: CalibrationMode;
@@ -9120,6 +9132,8 @@ export const api = {
       plate_id?: number;
       plate_name?: string;
       ams_mapping?: number[];
+      /** Rack position per filament group on an H2C (upstream #1784). */
+      nozzle_rack_choice?: Record<number, number>;
       feed_policy?: FeedPolicy;
       force_color_match?: boolean;
       allow_base_material_match?: boolean;
@@ -11732,6 +11746,8 @@ export const api = {
       plate_id?: number;
       plate_name?: string;
       ams_mapping?: number[];
+      /** Rack position per filament group on an H2C (upstream #1784). */
+      nozzle_rack_choice?: Record<number, number>;
       feed_policy?: FeedPolicy;
       force_color_match?: boolean;
       allow_base_material_match?: boolean;

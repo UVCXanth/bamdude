@@ -643,8 +643,50 @@ describe('PrintersPage', () => {
       const rackLabel = screen.getAllByText('Nozzle Rack')[0];
       const rackCard = rackLabel.parentElement!;
       const slotRow = rackCard.querySelectorAll('div.flex')[0];
-      const slotTexts = Array.from(slotRow.querySelectorAll('span')).map(s => s.textContent);
+      // Match the diameter spans specifically — each chip also carries a slot
+      // number span, and a bare `span` sweep would interleave the two.
+      const slotTexts = Array.from(slotRow.querySelectorAll('span[data-rack-diameter]')).map(s => s.textContent);
       expect(slotTexts).toEqual(['-', '0.2', '0.6', '0.8', '1.0', '1.2']);
+    });
+
+    it('labels every rack position 1..6 regardless of which nozzles are present (upstream d0e217f6)', async () => {
+      // The numbering is positional, not a count of what is loaded: an empty
+      // position keeps its number, so "the nozzle in R4" — the name the print
+      // dialog's rack picker uses — means the same whatever else is loaded.
+      server.use(
+        http.get('/api/v1/printers/:id/status', () => {
+          return HttpResponse.json(h2cStatus);
+        })
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText('Nozzle Rack').length).toBeGreaterThan(0);
+      });
+
+      const rackLabel = screen.getAllByText('Nozzle Rack')[0];
+      const slotRow = rackLabel.parentElement!.querySelectorAll('div.flex')[0];
+      const numbers = Array.from(slotRow.querySelectorAll('span[data-rack-position]')).map(s => s.textContent);
+      expect(numbers).toEqual(['1', '2', '3', '4', '5', '6']);
+    });
+
+    it('sizes the rack card to its chips instead of growing into the readings beside it (upstream d0e217f6)', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/status', () => {
+          return HttpResponse.json(h2cStatus);
+        })
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText('Nozzle Rack').length).toBeGreaterThan(0);
+      });
+
+      const rackCard = screen.getAllByText('Nozzle Rack')[0].parentElement!;
+      expect(rackCard.className).toContain('flex-[0_1_auto]');
+      expect(rackCard.className).not.toMatch(/flex-\[2_1_190px\]/);
     });
 
     it('hides nozzle rack when only L/R nozzles present (H2D)', async () => {

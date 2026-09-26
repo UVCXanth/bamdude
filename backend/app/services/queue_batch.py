@@ -72,6 +72,9 @@ def _item_columns(
         "archive_id": archive_id,
         "library_file_id": library_file_id,
         "ams_mapping": json.dumps(ams_mapping) if ams_mapping else None,
+        # The direct print's own row mirrors its options like every other field;
+        # the dispatch reads the pick from the job options, not from here.
+        "nozzle_rack_choice": json.dumps(rack_choice) if (rack_choice := opts.get("nozzle_rack_choice")) else None,
         "plate_id": opts.get("plate_id"),
         "bed_levelling": bed_mode == "on",
         "bed_levelling_mode": bed_mode,
@@ -270,6 +273,7 @@ async def enqueue_batch_copies(
     library_file_id: int | None = None,
     plate_id: int | None = None,
     ams_mapping: list[int] | None = None,
+    nozzle_rack_choice: dict[int, int] | None = None,
     bed_levelling: str | bool = True,
     flow_cali: str | bool = True,
     layer_inspect: bool = False,
@@ -364,6 +368,8 @@ async def enqueue_batch_copies(
         flow_mode = normalize_mode(flow_cali)
         nozzle_mode = normalize_mode(nozzle_offset_cali)
         ams_mapping_json = json.dumps(ams_mapping) if ams_mapping else None
+        # Every copy prints from the hotends the operator picked (upstream #1784).
+        nozzle_rack_choice_json = json.dumps(nozzle_rack_choice) if nozzle_rack_choice else None
         swap_macro_events_json = json.dumps(swap_macro_events) if execute_swap_macros and swap_macro_events else None
         selected_macro_ids_json = json.dumps(selected_macro_ids) if selected_macro_ids is not None else None
         created_ids: list[int] = []
@@ -405,6 +411,7 @@ async def enqueue_batch_copies(
                             archive_id=archive_id,
                             library_file_id=library_file_id,
                             ams_mapping=ams_mapping_json,
+                            nozzle_rack_choice=nozzle_rack_choice_json,
                             filament_routing=stamped_routing,
                             plate_id=plate_id,
                             bed_levelling=bed_mode == "on",

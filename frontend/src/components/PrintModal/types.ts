@@ -480,10 +480,40 @@ export interface FilamentReqsData {
     strict_profile_match?: boolean;
     /** UI-only matcher policy; never sent as part of the raw 3MF requirement. */
     strict_color_match?: boolean;
+    /** Which filament group this slot prints in, on a nozzle-rack machine
+     *  (upstream #1784). The group is the slicer's logical nozzle, so it — not
+     *  the slot — is what a rack position is chosen for. Absent on every other
+     *  model. */
+    group_id?: number;
+    /** What that group needs of a hotend. Only groups with `on_rack` get a
+     *  position picker; the rest are on the fixed hotend and have no choice to
+     *  make. */
+    group?: RackGroupInfo;
   }>;
   /** The slicer's Filament Track Switch inputs for the plate — the inlet
    *  recommendation only; nothing that routes or dispatches reads it. */
   track_switch_plan?: TrackSwitchPlan | null;
+}
+
+/** A filament group's hotend requirements, from the 3MF (upstream #1784). */
+export interface RackGroupInfo {
+  on_rack: boolean;
+  nozzle_diameter: string;
+  volume_type: string;
+  filament_color: string;
+}
+
+/** One position on the H2C's six-slot nozzle rack, as offered to the user. */
+export interface RackPositionOption {
+  /** 1-based, the way the printer card, BambuStudio and the operator count. */
+  position: number;
+  diameter: string;
+  nozzleType: string;
+  filamentColor: string;
+  /** False when the position is empty or holds the wrong nozzle for the group. */
+  eligible: boolean;
+  /** Why not, when `eligible` is false — shown as the option's title. */
+  reason?: string;
 }
 
 /**
@@ -513,6 +543,14 @@ export interface FilamentMappingProps {
    *  plate. Each plate prints its own subset of the file's slots and gets its
    *  own AMS mapping, so the panels have to be told apart (upstream #2551). */
   plateLabel?: string;
+  /** The operator's rack-position pick per filament group (upstream #1784),
+   *  keyed by group id. Only meaningful on a nozzle-rack model; elsewhere no
+   *  picker is rendered. A group absent from the object is assigned a position
+   *  by the dispatcher against the rack as it stands at dispatch. */
+  nozzleRackChoice?: Record<number, number>;
+  /** Called when a rack position is picked for a group. Without it the picker
+   *  is shown read-only. */
+  onNozzleRackChoiceChange?: (choice: Record<number, number>) => void;
 }
 
 /**

@@ -2655,6 +2655,10 @@ class PrintScheduler:
             # parses + injects it only for dual-nozzle models, so a null on
             # every other model is a transparent pass-through.
             "nozzle_mapping": item.nozzle_mapping,
+            # The operator's rack-position pick (upstream #1784), the column's
+            # JSON text as is; the dispatcher reads it after the upload, against
+            # the rack as it stands then.
+            "nozzle_rack_choice": item.nozzle_rack_choice,
             "execute_swap_macros": item.execute_swap_macros,
             "swap_macro_events": swap_events,
             # Which macros the operator ticked for this job. None means no

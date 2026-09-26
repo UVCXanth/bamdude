@@ -38,6 +38,10 @@ class PrintQueueItemCreate(FilamentRoutingChoices):
     # failure (m116). Off by default — a gate nobody asked for is a stalled farm.
     require_previous_success: bool = False
     ams_mapping: list[int] | None = None
+    # Which rack position each filament group prints from on an H2C (upstream
+    # #1784), as {group_id: 1-based position}. The operator's pick, re-checked
+    # against the live rack at dispatch; null means "assign them for me".
+    nozzle_rack_choice: dict[int, int] | None = None
     plate_id: int | None = Field(default=None, ge=0)
     # Print options — bed_levelling / flow_cali / nozzle_offset_cali are
     # tri-state (off/auto/on); the CalibrationMode field also accepts a legacy
@@ -138,6 +142,10 @@ class PrintQueueItemUpdate(FilamentRoutingChoices):
     # physical nozzle position IDs — an opaque list[int] BambuStudio sends in
     # its project_file MQTT body; replayed to the printer verbatim on dispatch.
     nozzle_mapping: list[int] | None = None
+    # Which rack position each filament group prints from on an H2C (upstream
+    # #1784), as {group_id: 1-based position}. The operator's pick, re-checked
+    # against the live rack at dispatch; null means "assign them for me".
+    nozzle_rack_choice: dict[int, int] | None = None
 
 
 class QueueSummaryGroup(BaseModel):
@@ -211,6 +219,10 @@ class PrintQueueItemResponse(BaseModel):
     # "edit print → choose nozzle" UI; null on every model except O1C2
     # uploads from BambuStudio.
     nozzle_mapping: list[int] | None = None
+    # Which rack position each filament group prints from on an H2C (upstream
+    # #1784), as {group_id: 1-based position}. The operator's pick, re-checked
+    # against the live rack at dispatch; null means "assign them for me".
+    nozzle_rack_choice: dict[int, int] | None = None
     status: Literal["pending", "printing", "completed", "failed", "skipped", "cancelled"]
     started_at: UTCDatetime
     completed_at: UTCDatetime

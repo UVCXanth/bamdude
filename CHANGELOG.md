@@ -40,6 +40,27 @@
 
 ### Added
 
+- **H2C: choose which rack nozzle each filament prints from.** The rack holds
+  six hotends, and a multi-colour plate is often sliced to use a different one
+  per colour. Which of the six each colour takes is not in the 3MF — Bambu
+  Studio sends it with the print — so BamDude used to leave it to the printer.
+  The print dialog now shows a rack position, R1 to R6, beside every filament
+  that prints from the rack, listing the nozzle each position holds; an empty
+  position, or one holding the wrong diameter or flow type, is greyed out with
+  the reason. The choice is made per filament group: filaments the slicer put
+  in one group share one hotend. Nothing has to be picked — positions are
+  assigned on their own, preferring one already loaded with that colour, and
+  the nozzle sitting on the carriage counts too. The pick is checked again when
+  the print is sent, because the rack can be reloaded in the meantime: a
+  position you chose that no longer fits stops the print with a message saying
+  what it holds now, and the uploaded file is removed from the printer; an
+  automatic assignment that cannot be made leaves the choice to the printer, as
+  before. It works for queued jobs, prints started straight away, reprints and
+  every copy of a quantity. The print dialog is wider on every printer, so
+  filament names are no longer cut short. On the printer card the nozzle rack
+  numbers its positions 1 to 6 and takes only the width its six nozzles need,
+  so the temperatures beside it stay on one line. (upstream #1784 3954d3a7,
+  d0e217f6)
 - **Each AMS slot card shows its K value.** The calibrated pressure-advance
   value used to be readable only in the slot's hover card; it now sits under
   the material on every calibrated slot — AMS, AMS HT and the external spool
@@ -177,12 +198,9 @@
   rack carriage and the rack carriage as the fixed hotend. A plate using both
   could be levelled with one nozzle and printed with the other, several
   millimetres above the bed, and a plate using only the fixed hotend was sent
-  with a rack position for it. The carriages now follow Bambu Studio's numbering.
-  When a plate needs more than one nozzle from the rack, BamDude no longer tries
-  to choose the rack positions itself and leaves that to the printer, because the
-  file does not say which positions to use. The nozzle-size check before
-  dispatch on an H2C now compares each carriage with its own nozzles.
-  (upstream 45dc139c)
+  with a rack position for it. The carriages now follow Bambu Studio's numbering,
+  and the nozzle-size check before dispatch on an H2C compares each carriage with
+  its own nozzles. (upstream 45dc139c)
 
 - **A colour mismatch in the print dialog says which colours it compares.** When
   the requested colour and the slot's colour have the same name, for example a

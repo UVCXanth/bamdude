@@ -13,6 +13,7 @@ import {
 } from '../utils/amsHelpers';
 import { api } from '../api/client';
 import type { PrinterStatus } from '../api/client';
+import type { RackGroupInfo } from '../components/PrintModal/types';
 
 /**
  * Build loaded filaments list from printer status (non-hook version).
@@ -189,6 +190,13 @@ export interface FilamentRequirement {
   strict_profile_match?: boolean;
   /** Reject a differently-coloured loaded slot instead of merely warning. */
   strict_color_match?: boolean;
+  /** Filament group this slot prints in, on a nozzle-rack machine (upstream
+   *  #1784). The group is the slicer's logical nozzle, so it is what a rack
+   *  position gets chosen for. Absent on every other model. */
+  group_id?: number;
+  /** What that group needs of a hotend, for filtering the rack positions it
+   *  can be sent to. */
+  group?: RackGroupInfo;
 }
 
 /**

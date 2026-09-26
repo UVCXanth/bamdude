@@ -63,6 +63,11 @@ from backend.app.utils.filename import InvalidFilenameError, is_sliced_file, val
 from backend.app.utils.printer_models import is_gcode_compatible
 
 
+def _rack_choice_json(data: PrintQueueItemCreate) -> str | None:
+    """The rack-position pick as the column stores it (upstream #1784); None = auto."""
+    return json.dumps(data.nozzle_rack_choice) if data.nozzle_rack_choice else None
+
+
 async def add_items_to_printer_queue(
     db: AsyncSession,
     data: PrintQueueItemCreate,
@@ -427,6 +432,7 @@ async def _add_items_from_queue_source(
                         manual_start=data.manual_start,
                         require_previous_success=data.require_previous_success,
                         ams_mapping=ams_mapping_json,
+                        nozzle_rack_choice=_rack_choice_json(data),
                         filament_routing=stamped_routing,
                         plate_id=data.plate_id,
                         bed_levelling=mode_to_bool(data.bed_levelling),
@@ -578,6 +584,7 @@ async def _publish_items(
                         manual_start=data.manual_start,
                         require_previous_success=data.require_previous_success,
                         ams_mapping=ams_mapping_json,
+                        nozzle_rack_choice=_rack_choice_json(data),
                         filament_routing=stamped_routing,
                         plate_id=data.plate_id,
                         bed_levelling=mode_to_bool(data.bed_levelling),
@@ -670,6 +677,7 @@ def _new_rows_for_data(
             manual_start=data.manual_start,
             require_previous_success=data.require_previous_success,
             ams_mapping=json.dumps(data.ams_mapping) if data.ams_mapping else None,
+            nozzle_rack_choice=_rack_choice_json(data),
             filament_routing=record_queue_source(routing, source),
             plate_id=data.plate_id,
             bed_levelling=mode_to_bool(data.bed_levelling),

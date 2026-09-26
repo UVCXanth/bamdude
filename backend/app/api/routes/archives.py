@@ -42,6 +42,7 @@ from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.archive_defects import DefectsWrite, record_defects
 from backend.app.services.archive_write_scope import archive_write_scope
 from backend.app.services.design_settings import overrides_from_config
+from backend.app.services.filament_requirements import annotate_rack_groups
 from backend.app.services.library_helpers import names_carry_sliced_gcode, sliced_gcode_in_3mf, sliced_gcode_members
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.services.track_switch_plan import read_track_switch_plan
@@ -3174,6 +3175,11 @@ async def get_filament_requirements(
                 for filament in filaments:
                     filament["nozzle_id"] = nozzle_mapping.get(filament["slot_id"])
 
+            # Nozzle-rack machines (upstream #1784): the print dialog offers a
+            # rack position per filament group, which needs the group table as
+            # well as the carriage above.
+            annotate_rack_groups(filaments, file_path, plate_id)
+
             # The slicer's Filament Track Switch inputs for the print
             # dialog's inlet recommendation. A separate block, read by the
             # dialog only — nothing that matches or dispatches reads it.
@@ -3281,6 +3287,7 @@ async def reprint_archive(
             archive_id=archive_id,
             plate_id=body.plate_id,
             ams_mapping=body.ams_mapping,
+            nozzle_rack_choice=body.nozzle_rack_choice,
             bed_levelling=body.bed_levelling,
             flow_cali=body.flow_cali,
             layer_inspect=body.layer_inspect,

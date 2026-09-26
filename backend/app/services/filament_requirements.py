@@ -49,7 +49,7 @@ from defusedxml.common import DefusedXmlException
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable, source_probe
 from backend.app.utils.printer_models import is_dual_nozzle_model, normalize_model_name
-from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
+from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf, extract_rack_plan_from_3mf
 
 logger = logging.getLogger(__name__)
 
@@ -502,6 +502,42 @@ def extract_filament_requirements(file_path: Path | str, plate_id: int | None = 
 
     out.sort(key=lambda x: x["slot_id"])
     return out
+
+
+def annotate_rack_groups(filaments: list[dict], file_path: Path | str, plate_id: int | None) -> None:
+    """Tag each filament with its group and that group's hotend needs (upstream #1784).
+
+    ``nozzle_id`` says which *carriage*, which is all a two-hotend printer needs.
+    An H2C's rack carriage hosts six, so the print dialog also needs the
+    filament *group* -- the slicer's logical nozzle -- to offer a rack position
+    for it. Groups are the unit of choice, not slots: two slots in one group
+    share a hotend and cannot be pointed at different positions.
+
+    Annotated whenever the file describes a rack, independently of the nozzle
+    mapping. Mutates ``filaments`` in place and returns nothing, so the two
+    filament-requirements routes (archive and library), which each build their
+    list by hand, land on one implementation instead of two that drift --
+    upstream first shipped a picker that never appeared because only one path
+    was annotated. Never raises: the plan reader answers None for anything it
+    cannot read.
+    """
+    rack_plan = extract_rack_plan_from_3mf(Path(file_path), plate_id=plate_id)
+    if rack_plan is None:
+        return
+
+    group_dicts = rack_plan.group_dicts()
+    for filament in filaments:
+        slot_id = filament.get("slot_id")
+        if not isinstance(slot_id, int) or isinstance(slot_id, bool):
+            continue
+        index = slot_id - 1
+        if not 0 <= index < len(rack_plan.slot_groups):
+            continue
+        group_id = rack_plan.slot_groups[index]
+        if group_id < 0:
+            continue
+        filament["group_id"] = group_id
+        filament["group"] = group_dicts.get(group_id)
 
 
 def overrides_for_plate(

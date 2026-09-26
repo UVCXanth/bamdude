@@ -734,42 +734,122 @@ class ActiveDispatchState:
     upload_total_bytes: int | None = None
 
 
-def _rack_slot_extruders(printer, file_path, plate_id, nozzle_mapping) -> str | None:
-    """Per-slot extruder assignment for a nozzle-rack printer, as JSON, or None.
+@dataclass(frozen=True, slots=True)
+class RackDispatch:
+    """What the nozzle-rack step hands ``start_print``, or why it will not.
 
-    ⚠️ **Derived at dispatch, not at queue time.** This is the first point that
-    knows both the actual printer and the actual file: an item can be created
-    without a printer (model-based assignment), reassigned afterwards, or have
-    its file swapped for a G-code-injected copy. One call here therefore covers
-    the print dialog, a bulk library add, the webhook and a pipeline run, and no
-    column is needed.
+    At most one field is set. ``nozzle_mapping`` is a wire mapping resolved from
+    the file's rack plan and the operator's pick (upstream #1784);
+    ``slot_extruders`` is the #2800 fallback, JSON, whose live dock the MQTT
+    layer reads; ``refusal`` is an explicit pick the rack no longer fits. All
+    None means no ``nozzle_mapping`` goes out and the firmware picks.
+    """
+
+    nozzle_mapping: list[int] | None = None
+    slot_extruders: str | None = None
+    refusal: str | None = None
+
+
+def _rack_choice(raw) -> dict[int, int]:
+    """The pick as ``{group: position}`` from either form a job carries it in.
+
+    A queue item's column is JSON text, whose object keys are strings; a direct
+    print's request hands the parsed dict. Anything unreadable is no pick at all
+    -- the positions are then assigned -- never a refusal: the operator cannot
+    have meant a value nobody can read.
+    """
+    if not raw:
+        return {}
+    value = raw
+    if isinstance(raw, str):
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("Unreadable nozzle_rack_choice %r; assigning rack positions instead", raw)
+            return {}
+    if not isinstance(value, dict):
+        return {}
+    choice: dict[int, int] = {}
+    for key, position in value.items():
+        try:
+            choice[int(key)] = int(position)
+        except (TypeError, ValueError):
+            continue
+    return choice
+
+
+def _rack_dispatch(printer, file_path, plate_id, nozzle_mapping, rack_choice, live_rack) -> RackDispatch:
+    """Resolve the nozzle-rack part of a dispatch, or say why it cannot go out.
+
+    ⚠️ **Derived at dispatch, not at queue time** -- the first point that knows
+    the actual printer, the actual file and the rack as it stands now. An item
+    can be created without a printer, reassigned afterwards, or have its file
+    swapped for a G-code-injected copy, and a rack can be re-loaded from the
+    touchscreen between queueing and printing.
+
+    Two attempts, in order:
+
+    1. **The rack plan** (upstream #1784): which filament groups the plate has
+       and what hotend each needs, paired with the operator's position pick --
+       groups the pick does not name are assigned, preferring a position
+       already carrying the group's colour. The only path that can place a
+       plate needing several rack hotends. An EXPLICIT pick that no longer fits
+       is a refusal: the operator named a hotend, and printing from another one
+       is how a plate is levelled on one nozzle and drawn millimetres above the
+       bed by another. An assignment that cannot be made is not -- nothing was
+       promised -- and falls through.
+    2. **The #2800 fallback**: the carriage per slot, which the MQTT layer
+       resolves against the live dock. It withholds a plate that needs two rack
+       hotends (``_plate_needs_several_rack_nozzles``), and the firmware picks.
 
     Skipped when the job already carries a BambuStudio capture from the Virtual
-    Printer: that one wins downstream anyway, so reading the 3MF again would be
-    work thrown away on every dispatch.
+    Printer: the slicer's own pick outranks anything derived here.
 
-    ⚠️ Takes the file **actually being sent** — the patched copy when G-code
-    injection or an M970 rewrite produced one — rather than the archive on disk.
-    The patcher does not touch ``slice_info.config`` today, so the two agree;
-    reading the dispatched file is what keeps that from mattering if it ever
-    stops being true.
+    Takes the file **actually being sent** -- the patched copy when G-code
+    injection or an M970 rewrite produced one. The patcher does not touch
+    ``slice_info.config`` today, so the two agree; reading the dispatched file is
+    what keeps that from mattering if it ever stops being true.
 
-    ⚠️ Nothing here may fail a dispatch — the queue item is already committed as
-    ``printing`` and the command is published with no handler above it. Every
-    failure degrades to "no field, firmware picks", which is the behaviour that
-    existed before.
+    Nothing here raises for a bad file or a bad pick: every reader answers None
+    for what it cannot read, and the caller turns only ``refusal`` into a failed
+    dispatch.
     """
     if nozzle_mapping or file_path is None:
-        return None
+        return RackDispatch()
     from backend.app.utils.printer_models import is_nozzle_rack_model
 
     if not is_nozzle_rack_model(getattr(printer, "model", None)):
-        return None
+        return RackDispatch()
 
-    from backend.app.utils.threemf_tools import extract_slot_extruders_from_3mf
+    from backend.app.services.bambu_mqtt import resolve_rack_plan_mapping
+    from backend.app.utils.threemf_tools import extract_rack_plan_from_3mf, extract_slot_extruders_from_3mf
 
-    slot_extruders = extract_slot_extruders_from_3mf(file_path, plate_id=plate_id or 1)
-    return json.dumps(slot_extruders) if slot_extruders else None
+    plate = plate_id or 1
+    plan = extract_rack_plan_from_3mf(file_path, plate_id=plate)
+    if plan is not None:
+        choice = _rack_choice(rack_choice)
+        wire, error = resolve_rack_plan_mapping(plan.slot_groups, plan.group_dicts(), choice, live_rack)
+        if wire is not None:
+            logger.info(
+                "Nozzle rack mapping for %s: %s (groups %s, chosen %s)",
+                getattr(file_path, "name", file_path),
+                wire,
+                plan.slot_groups,
+                choice or "auto",
+            )
+            return RackDispatch(nozzle_mapping=wire)
+        if choice:
+            logger.warning(
+                "Refusing a rack pick that no longer fits: %s (chose %s, rack ids %s)",
+                error,
+                choice,
+                [slot.get("id") for slot in live_rack if isinstance(slot, dict)],
+            )
+            return RackDispatch(refusal=error)
+        logger.info("No rack positions assignable (%s); falling back to the live dock", error)
+
+    slot_extruders = extract_slot_extruders_from_3mf(file_path, plate_id=plate)
+    return RackDispatch(slot_extruders=json.dumps(slot_extruders) if slot_extruders else None)
 
 
 class BackgroundDispatchService:
@@ -2236,6 +2316,25 @@ class BackgroundDispatchService:
                 # already on disk.
                 file_md5 = await source_probe(("digest", str(upload_file_path)), _file_digest, upload_file_path)
 
+                plate_id = await source_probe(
+                    ("plate", str(file_path), job.options.get("plate_id")),
+                    self._resolve_plate_id,
+                    file_path,
+                    job.options.get("plate_id"),
+                )
+                # H2C nozzle rack (upstream #1784): resolved here, before preheat,
+                # so a pick the rack no longer fits refuses before anything heats.
+                rack = await self._resolve_rack(
+                    job,
+                    printer,
+                    upload_file_path,
+                    plate_id,
+                    printer_ip=printer_ip,
+                    access_code=printer_access_code,
+                    remote_path=remote_path,
+                    printer_model=printer_model,
+                )
+
                 # Preheat / heat-soak (#1468) — bring the bed (and chamber, on supported
                 # models) up to temperature on the now-idle printer before start_print.
                 # Best-effort: only a cancel request propagates (via cancel_check); every
@@ -2279,13 +2378,6 @@ class BackgroundDispatchService:
                 # into this archive for the next two hours.
                 _unconfirmed_expected_print = (job.printer_id, remote_filename)
 
-                plate_id = await source_probe(
-                    ("plate", str(file_path), job.options.get("plate_id")),
-                    self._resolve_plate_id,
-                    file_path,
-                    job.options.get("plate_id"),
-                )
-
                 self._raise_if_cancel_requested(job)
 
                 # Swap-mode start macro — fires before the print starts.
@@ -2321,20 +2413,6 @@ class BackgroundDispatchService:
                 effective_timelapse = _timelapse_or_off(
                     job.printer_id, printer, bool(job.options.get("timelapse", False))
                 )
-                rack_extruders = await source_probe(
-                    (
-                        "rack",
-                        printer.model,
-                        str(upload_file_path),
-                        plate_id,
-                        json.dumps(job.options.get("nozzle_mapping")),
-                    ),
-                    _rack_slot_extruders,
-                    printer,
-                    upload_file_path,
-                    plate_id,
-                    job.options.get("nozzle_mapping"),
-                )
                 # A session that changed during preparation gets to report again
                 # before the final check (spec direct-print-silent-cancel §4.3).
                 if await settle_feed(
@@ -2364,10 +2442,14 @@ class BackgroundDispatchService:
                     layer_inspect=job.options.get("layer_inspect", False),
                     use_ams=job.options.get("use_ams", True),
                     nozzle_offset_cali=job.options.get("nozzle_offset_cali", False),
-                    nozzle_mapping=job.options.get("nozzle_mapping"),
-                    # H2C only: the physical rack position is resolved in the
-                    # MQTT layer, where the live mounted hotend is known.
-                    nozzle_slot_extruders=rack_extruders,
+                    # A BambuStudio capture, forwarded verbatim -- or, on an H2C,
+                    # the rack mapping resolved from the plan and the pick.
+                    nozzle_mapping=(
+                        json.dumps(rack.nozzle_mapping) if rack.nozzle_mapping else job.options.get("nozzle_mapping")
+                    ),
+                    # H2C only, when the plan placed nothing: the #2800 fallback,
+                    # whose live dock the MQTT layer reads.
+                    nozzle_slot_extruders=rack.slot_extruders,
                     # The medium and the URL scheme are one decision, carried
                     # here from where it was made rather than re-derived.
                     storage=storage,
@@ -2949,6 +3031,25 @@ class BackgroundDispatchService:
                 # already on disk.
                 file_md5 = await source_probe(("digest", str(upload_file_path)), _file_digest, upload_file_path)
 
+                plate_id = await source_probe(
+                    ("plate", str(file_path), job.options.get("plate_id")),
+                    self._resolve_plate_id,
+                    file_path,
+                    job.options.get("plate_id"),
+                )
+                # H2C nozzle rack (upstream #1784): resolved here, before preheat,
+                # so a pick the rack no longer fits refuses before anything heats.
+                rack = await self._resolve_rack(
+                    job,
+                    printer,
+                    upload_file_path,
+                    plate_id,
+                    printer_ip=printer_ip,
+                    access_code=printer_access_code,
+                    remote_path=remote_path,
+                    printer_model=printer_model,
+                )
+
                 # Preheat / heat-soak (#1468) — same idle-window stage as the reprint
                 # path: bed (and chamber, on supported models) up to temperature before
                 # start_print. Best-effort; only a cancel request propagates.
@@ -2989,13 +3090,6 @@ class BackgroundDispatchService:
                 # into this archive for the next two hours.
                 _unconfirmed_expected_print = (job.printer_id, remote_filename)
 
-                plate_id = await source_probe(
-                    ("plate", str(file_path), job.options.get("plate_id")),
-                    self._resolve_plate_id,
-                    file_path,
-                    job.options.get("plate_id"),
-                )
-
                 self._raise_if_cancel_requested(job)
 
                 # Swap-mode start macro — fires before the print starts.
@@ -3031,20 +3125,6 @@ class BackgroundDispatchService:
                 effective_timelapse = _timelapse_or_off(
                     job.printer_id, printer, bool(job.options.get("timelapse", False))
                 )
-                rack_extruders = await source_probe(
-                    (
-                        "rack",
-                        printer.model,
-                        str(upload_file_path),
-                        plate_id,
-                        json.dumps(job.options.get("nozzle_mapping")),
-                    ),
-                    _rack_slot_extruders,
-                    printer,
-                    upload_file_path,
-                    plate_id,
-                    job.options.get("nozzle_mapping"),
-                )
                 # A session that changed during preparation gets to report again
                 # before the final check (spec direct-print-silent-cancel §4.3).
                 if await settle_feed(
@@ -3074,10 +3154,14 @@ class BackgroundDispatchService:
                     layer_inspect=job.options.get("layer_inspect", False),
                     use_ams=job.options.get("use_ams", True),
                     nozzle_offset_cali=job.options.get("nozzle_offset_cali", False),
-                    nozzle_mapping=job.options.get("nozzle_mapping"),
-                    # H2C only: the physical rack position is resolved in the
-                    # MQTT layer, where the live mounted hotend is known.
-                    nozzle_slot_extruders=rack_extruders,
+                    # A BambuStudio capture, forwarded verbatim -- or, on an H2C,
+                    # the rack mapping resolved from the plan and the pick.
+                    nozzle_mapping=(
+                        json.dumps(rack.nozzle_mapping) if rack.nozzle_mapping else job.options.get("nozzle_mapping")
+                    ),
+                    # H2C only, when the plan placed nothing: the #2800 fallback,
+                    # whose live dock the MQTT layer reads.
+                    nozzle_slot_extruders=rack.slot_extruders,
                     # The medium and the URL scheme are one decision, carried
                     # here from where it was made rather than re-derived.
                     storage=storage,
@@ -3476,6 +3560,55 @@ class BackgroundDispatchService:
         )
         if not await printer_manager.connect_printer(printer):
             logger.warning("Dispatch: %s reconnect before start_print failed", printer_name)
+
+    async def _resolve_rack(
+        self,
+        job: PrintDispatchJob,
+        printer,
+        upload_file_path,
+        plate_id,
+        *,
+        printer_ip: str,
+        access_code: str,
+        remote_path: str,
+        printer_model: str | None,
+    ) -> RackDispatch:
+        """The nozzle-rack step of both runners (upstream #1784), refusal included.
+
+        Runs after the upload and before preheat, the swap macro and the
+        expected-print registration, so a refused pick has nothing to undo but
+        the file on the card -- which is deleted here: a 3MF left there is a
+        phantom print waiting to be started from the touchscreen, from a hotend
+        nobody chose.
+        """
+        status = printer_manager.get_status(job.printer_id)
+        live_rack = [dict(slot) for slot in (getattr(status, "nozzle_rack", None) or []) if isinstance(slot, dict)]
+        choice = job.options.get("nozzle_rack_choice")
+        rack = await source_probe(
+            (
+                "rack",
+                printer.model,
+                str(upload_file_path),
+                plate_id,
+                json.dumps(job.options.get("nozzle_mapping")),
+                json.dumps(choice, sort_keys=True, default=str),
+                json.dumps(live_rack, sort_keys=True, default=str),
+            ),
+            _rack_dispatch,
+            printer,
+            upload_file_path,
+            plate_id,
+            job.options.get("nozzle_mapping"),
+            choice,
+            live_rack,
+        )
+        if rack.refusal:
+            await self._cleanup_sd_card_file(printer_ip, access_code, remote_path, printer_model)
+            raise RuntimeError(
+                f"Nozzle rack pick no longer fits the printer: {rack.refusal}. "
+                "Choose another rack position and send the print again."
+            )
+        return rack
 
     @staticmethod
     async def _cleanup_sd_card_file(

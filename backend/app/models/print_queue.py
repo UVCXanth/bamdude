@@ -186,6 +186,15 @@ class PrintQueueItem(Base):
     # command["print"]. Keep the two strictly separate.
     nozzle_mapping: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Which rack position each filament GROUP prints from on an H2C (upstream
+    # #1784), as the operator picked it: JSON ``{group_id: 1-based position}``.
+    # The 3MF states the pick nowhere. Kept as the pick rather than expanded into
+    # ``nozzle_mapping`` above, whose meaning is "BambuStudio decided, forward
+    # verbatim"; ``background_dispatch`` re-checks it against the live rack and
+    # refuses the print when it no longer fits. NULL = assign them at dispatch.
+    # m187.
+    nozzle_rack_choice: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Status: pending, printing, completed, failed, skipped, cancelled
     status: Mapped[str] = mapped_column(String(20), default="pending")
 

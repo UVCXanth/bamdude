@@ -99,6 +99,9 @@ interface SubmitOptions {
  * source is add-to-queue only: it preserves saved bytes and cannot enter the
  * auto-queue or immediate-reprint routes, which require an archive/library id.
  */
+/** No rack pick at all — one shared object, so the mapping panel's memo keeps. */
+const NO_RACK_CHOICE: Record<number, number> = {};
+
 export function PrintModal({
   mode,
   archiveId,
@@ -997,6 +1000,31 @@ export function PrintModal({
   // Manual slot overrides are per plate: slot 3 of plate 1 and slot 3 of plate 2
   // are different prints and may want different trays.
   const [manualMappingsByPlate, setManualMappingsByPlate] = useState<Record<number, Record<number, number>>>({});
+
+  // Rack position per filament group on an H2C (upstream #1784), per plate (key
+  // 0 when no plate is chosen) and for ONE printer: a pick names a hotend on
+  // that machine's rack and means nothing on another, so it stays with the
+  // printer it was made for and is not sent to any other.
+  const [rackPick, setRackPick] = useState<{ printerId: number | null; byPlate: Record<number, Record<number, number>> }>(() => {
+    // Re-opening an item shows the positions it was queued with, so editing one
+    // filament does not silently drop the rest.
+    if (mode === 'edit-queue-item' && queueItem?.nozzle_rack_choice && queueItem.printer_id != null) {
+      const seeded: Record<number, number> = {};
+      for (const [groupId, position] of Object.entries(queueItem.nozzle_rack_choice)) {
+        const group = Number(groupId);
+        if (Number.isInteger(group) && Number.isInteger(position)) seeded[group] = position;
+      }
+      return { printerId: queueItem.printer_id, byPlate: { [queueItem.plate_id ?? 0]: seeded } };
+    }
+    return { printerId: null, byPlate: {} };
+  });
+  const rackChoiceFor = (plateId: number | null | undefined): Record<number, number> =>
+    (rackPick.printerId === effectivePrinterId ? rackPick.byPlate[plateId ?? 0] : undefined) ?? NO_RACK_CHOICE;
+  const setRackChoiceFor = (plateId: number | null | undefined, choice: Record<number, number>) =>
+    setRackPick((prev) => ({
+      printerId: effectivePrinterId,
+      byPlate: { ...(prev.printerId === effectivePrinterId ? prev.byPlate : {}), [plateId ?? 0]: choice },
+    }));
 
   // Only ever computed for a single target printer: a global tray id names a
   // different spool on a different machine, so a fan-out must not reuse these.
@@ -1993,6 +2021,13 @@ export function PrintModal({
       return { execute_swap_macros: true, swap_macro_events: swapMacros.events };
     };
 
+    // The rack pick goes only to the one printer the picker was shown for.
+    const rackChoiceForSubmit = (printerId: number, plateId: number | null | undefined) => {
+      if (selectedPrinters.length !== 1 || rackPick.printerId !== printerId) return undefined;
+      const choice = rackPick.byPlate[plateId ?? 0];
+      return choice && Object.keys(choice).length > 0 ? choice : undefined;
+    };
+
     // Common queue data for add-to-queue and edit modes
     const getQueueData = (printerId: number, plateOverride?: number | null): PrintQueueItemCreate => {
       const plateId = plateOverride !== undefined ? plateOverride : selectedPlate;
@@ -2012,6 +2047,9 @@ export function PrintModal({
         !Object.values(perPrinterConfigs).some(config => !config.useDefault && !config.autoConfigured)
         ? undefined : getMappingForPrinter(printerId, plateId),
       manual_mapping: isManualMapping(printerId, plateId),
+      // Rack positions per filament group (upstream #1784); omitted, the
+      // dispatcher assigns them against the rack as it stands then.
+      nozzle_rack_choice: rackChoiceForSubmit(printerId, plateId),
       ...{
         feed_policy: autoModeOptions.feed_policy,
         force_color_match: autoModeOptions.force_color_match,
@@ -2102,6 +2140,7 @@ export function PrintModal({
                 plate_id: selectedPlate ?? undefined,
                 plate_name: selectedPlateName,
                 ams_mapping: printerMapping,
+                nozzle_rack_choice: rackChoiceForSubmit(printerId, plateId),
                 manual_mapping: isManualMapping(printerId, plateId),
                 feed_policy: autoModeOptions.feed_policy,
                 force_color_match: autoModeOptions.force_color_match,
@@ -2123,6 +2162,7 @@ export function PrintModal({
                 plate_id: selectedPlate ?? undefined,
                 plate_name: selectedPlateName,
                 ams_mapping: printerMapping,
+                nozzle_rack_choice: rackChoiceForSubmit(printerId, plateId),
                 manual_mapping: isManualMapping(printerId, plateId),
                 feed_policy: autoModeOptions.feed_policy,
                 force_color_match: autoModeOptions.force_color_match,
@@ -2144,6 +2184,10 @@ export function PrintModal({
               manual_start: scheduleOptions.scheduleType === 'manual',
               require_previous_success: scheduleOptions.requirePreviousSuccess,
               ams_mapping: mappingReviewed ? printerMapping : undefined,
+              // null, not undefined: a pick that was cleared — or one made for
+              // the printer this item is moving away from — means "assign them
+              // again", and undefined would leave the stale one on the row.
+              nozzle_rack_choice: rackChoiceForSubmit(printerId, plateId) ?? null,
               // ⚠️ The same routing answers `getQueueData` sends on the add
               // path. The PATCH merges only what arrives (`exclude_unset=True`),
               // so leaving them out kept the stored answer and the operator's
@@ -2622,11 +2666,15 @@ export function PrintModal({
 
   return (
     <>
+      {/* 4xl rather than 2xl (upstream #1784): a filament row carries the most
+          horizontal content in the dialog — the required name, a rack-position
+          picker on an H2C, and an AMS slot dropdown naming type, colour and
+          remaining weight — and anything narrower truncated the name. */}
       <Modal
         onClose={onClose}
         closeDisabled={isSubmitting}
         labelledBy={headingId}
-        size="2xl"
+        size="4xl"
         header={
           <>
             <TitleIcon className="w-5 h-5 text-bambu-green" />
@@ -2937,6 +2985,8 @@ export function PrintModal({
                 defaultExpanded={!!initialSelectedPrinterIds?.length || (settings?.per_printer_mapping_expanded ?? false)}
                 currencySymbol={currencySymbol}
                 defaultCostPerKg={defaultCostPerKg}
+                nozzleRackChoice={rackChoiceFor(selectedPlate)}
+                onNozzleRackChoiceChange={(choice) => setRackChoiceFor(selectedPlate, choice)}
               />
             )}
 
@@ -2962,6 +3012,8 @@ export function PrintModal({
                   defaultExpanded={false}
                   currencySymbol={currencySymbol}
                   defaultCostPerKg={defaultCostPerKg}
+                  nozzleRackChoice={rackChoiceFor(plateId)}
+                  onNozzleRackChoiceChange={(choice) => setRackChoiceFor(plateId, choice)}
                 />
               );
             })}

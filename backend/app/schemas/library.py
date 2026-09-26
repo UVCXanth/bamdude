@@ -379,6 +379,11 @@ class FilePrintRequest(FilamentRoutingChoices):
     plate_id: int | None = None
     plate_name: str | None = None
     ams_mapping: list[int] | None = None
+    # Which rack position each filament group prints from on an H2C (upstream
+    # #1784), as {group_id: 1-based position}. A direct print reaches the
+    # dispatcher as job options, not a queue row, so the pick travels here; the
+    # dispatcher re-checks it against the live rack. Null = assign them for me.
+    nozzle_rack_choice: dict[int, int] | None = None
     # Tri-state calibration (off/auto/on) or legacy bool.
     bed_levelling: CalibrationMode = "on"
     flow_cali: CalibrationMode = "off"
