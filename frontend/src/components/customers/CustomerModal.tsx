@@ -2,12 +2,15 @@ import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { api } from '../../api/client';
-import type { Customer, CustomerCreate, CustomerUpdate } from '../../api/client';
+import { api, CUSTOMER_KINDS } from '../../api/client';
+import type { Customer, CustomerCreate, CustomerKind, CustomerUpdate } from '../../api/client';
 import { Button } from '../Button';
 import { Modal } from '../Modal';
+import { Select } from '../Select';
 import { useToast } from '../../contexts/ToastContext';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
+import { ContactRowsEditor } from './ContactRowsEditor';
+import { draftFromContact, draftsToInput, emptyDraft, type ContactDraft } from './contactDrafts';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
@@ -19,12 +22,14 @@ interface CustomerModalProps {
 }
 
 /**
- * Create/edit dialog for one customer.
+ * Create/edit dialog for one customer — its name, kind, contacts and notes
+ * (spec workshop-customers, rule 19).
  *
  * Unlike `OrderModal`, this one sends the whole record on an edit rather than
- * a diff: a customer carries the same three fields in the list response and in
- * the detail one, so there is no shape here that could blank a field the
- * dialog never showed.
+ * a diff: a customer carries the same fields — contacts included — in the list
+ * response and in the detail one, so there is no shape here that could blank a
+ * field the dialog never showed. The contacts go as the whole ordered list: the
+ * server syncs it by id, so a row removed here is removed there.
  *
  * There is deliberately no `onSaved` callback: both call sites just close the
  * dialog, and the saved record reaches every list through
@@ -39,13 +44,19 @@ export function CustomerModal({ customer, onClose }: CustomerModalProps) {
   const isEdit = !!customer;
 
   const [name, setName] = useState(customer?.name ?? '');
+  const [kind, setKind] = useState<CustomerKind>(customer?.kind ?? 'company');
+  const [drafts, setDrafts] = useState<ContactDraft[]>(() =>
+    customer ? customer.contacts.map(draftFromContact) : [emptyDraft()],
+  );
   const [notes, setNotes] = useState(customer?.notes ?? '');
 
   const mutation = useMutation({
     mutationFn: () => {
       const data: CustomerCreate & CustomerUpdate = {
         name: name.trim(),
+        kind,
         notes: notes.trim() === '' ? null : notes.trim(),
+        contacts: draftsToInput(drafts),
       };
       return customer ? api.updateCustomer(customer.id, data) : api.createCustomer(data);
     },
@@ -65,8 +76,8 @@ export function CustomerModal({ customer, onClose }: CustomerModalProps) {
   return (
     <Modal
       onClose={onClose}
-      title={isEdit ? t('customers.modal.editTitle') : t('customers.modal.createTitle')}
-      size="md"
+      title={isEdit ? `${t('customers.modal.editTitle')} · ${customer.code}` : t('customers.modal.createTitle')}
+      size="lg"
       closeDisabled={mutation.isPending}
     >
       <form
@@ -76,20 +87,42 @@ export function CustomerModal({ customer, onClose }: CustomerModalProps) {
         }}
       >
         <div className="p-4 space-y-4">
-          <div>
-            <label className={LABEL_CLASS} htmlFor="customer-name">
-              {t('customers.modal.name')}
-            </label>
-            <input
-              id="customer-name"
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className={FIELD_CLASS}
-              disabled={mutation.isPending}
-              required
-            />
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="sm:col-span-2">
+              <label className={LABEL_CLASS} htmlFor="customer-name">
+                {t('customers.modal.name')}
+              </label>
+              <input
+                id="customer-name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className={FIELD_CLASS}
+                disabled={mutation.isPending}
+                required
+              />
+            </div>
+            <div>
+              <label className={LABEL_CLASS} htmlFor="customer-kind">
+                {t('customers.modal.kind')}
+              </label>
+              <Select
+                id="customer-kind"
+                className="w-full"
+                value={kind}
+                onChange={(e) => setKind(e.target.value as CustomerKind)}
+                disabled={mutation.isPending}
+              >
+                {CUSTOMER_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {t(`customers.kind.${k}`)}
+                  </option>
+                ))}
+              </Select>
+            </div>
           </div>
+
+          <ContactRowsEditor drafts={drafts} onChange={setDrafts} disabled={mutation.isPending} />
 
           <div>
             <label className={LABEL_CLASS} htmlFor="customer-notes">
