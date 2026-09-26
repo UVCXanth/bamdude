@@ -9,6 +9,8 @@ from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
 
 PROJECT_STATUSES = ("active", "completed", "cancelled")
 PROJECT_PRIORITIES = ("low", "normal", "high", "urgent")
+# Set by hand only (spec workshop-order-stage, rule 1); «done» is status=completed.
+PROJECT_STAGES = ("prep", "printing", "qc")
 
 
 def validate_http_url(value: str | None) -> str | None:
@@ -115,6 +117,8 @@ class ProjectCreate(BaseModel):
     priority: str = "normal"
     price: float | None = Field(default=None, ge=0)
     url: str | None = None
+    # Absent → the author of the request (spec workshop-order-stage, rule 10); null → nobody.
+    responsible_id: int | None = None
     lines: list[ProjectLineCreate] = Field(default_factory=list)
 
     @field_validator("url")
@@ -143,6 +147,7 @@ class ProjectUpdate(BaseModel):
     priority: str | None = None
     price: float | None = Field(default=None, ge=0)
     url: str | None = None
+    responsible_id: int | None = None
 
     @field_validator("name", "status", "priority")
     @classmethod
@@ -153,6 +158,19 @@ class ProjectUpdate(BaseModel):
     @classmethod
     def _url(cls, v: str | None) -> str | None:
         return validate_http_url(v)
+
+
+class ProjectStageUpdate(BaseModel):
+    """``PUT /projects/{id}/stage`` — the only way a stage changes (spec workshop-order-stage, rule 4)."""
+
+    stage: Literal["prep", "printing", "qc"]
+
+
+class OrderAssigneeOut(BaseModel):
+    """Someone who may be made responsible for an order — an active user (rule 26)."""
+
+    id: int
+    username: str
 
 
 class ProjectDuplicate(BaseModel):
@@ -287,6 +305,10 @@ class ProjectResponse(BaseModel):
     description: str | None
     color: str | None
     status: str
+    # The column while active, «done» once completed, none once cancelled (spec workshop-order-stage, rule 2).
+    stage: str | None = None
+    responsible_id: int | None = None
+    responsible_name: str | None = None
     notes: str | None
     attachments: list | None
     tags: str | None
@@ -313,6 +335,10 @@ class ProjectListResponse(BaseModel):
     customer_name: str | None
     color: str | None
     status: str
+    # As on ``ProjectResponse`` (spec workshop-order-stage, rules 2 and 8).
+    stage: str | None = None
+    responsible_id: int | None = None
+    responsible_name: str | None = None
     due_date: datetime | None
     priority: str
     price: float | None

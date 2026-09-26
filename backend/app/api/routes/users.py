@@ -21,6 +21,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.long_lived_token import LongLivedToken
 from backend.app.models.oidc_provider import UserOIDCLink
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.project import Project
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.models.user_notification import UserNotification
@@ -34,6 +35,7 @@ from backend.app.schemas.auth import (
     UserSlim,
     UserUpdate,
 )
+from backend.app.services import order_journal
 from backend.app.services.email_service import (
     create_welcome_email_from_template,
     generate_secure_password,
@@ -514,6 +516,10 @@ async def delete_user(
     await db.execute(delete(LongLivedToken).where(LongLivedToken.user_id == user_id))
     # The in-app inbox is one-to-many per user; SQLite never fires the CASCADE.
     await db.execute(delete(UserNotification).where(UserNotification.user_id == user_id))
+    # Spec workshop-order-stage, rule 12: nothing keeps naming a deleted user by
+    # id — SQLite runs no SET NULL, and a later user could inherit the id.
+    await db.execute(update(Project).where(Project.responsible_id == user_id).values(responsible_id=None))
+    await order_journal.detach_user(db, user_id)
 
     await db.delete(user)
     await db.commit()

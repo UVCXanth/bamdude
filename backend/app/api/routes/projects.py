@@ -56,6 +56,7 @@ from backend.app.schemas.project import (
     BatchAddQueueItems,
     LinePlanOut,
     LineProductOut,
+    OrderAssigneeOut,
     OrderContactOut,
     OrderPlanResponse,
     OrderPrintDefectsIn,
@@ -78,6 +79,7 @@ from backend.app.schemas.project import (
     ProjectLineUpdate,
     ProjectListResponse,
     ProjectResponse,
+    ProjectStageUpdate,
     ProjectUpdate,
     RebalanceOut,
     StockMovedOut,
@@ -88,6 +90,7 @@ from backend.app.services import (
     farm_forecast,
     filament_needs,
     order_from_files,
+    order_journal,
     part_stock,
     product_delete,
     queue_rebalance,
@@ -145,6 +148,31 @@ async def _get_project(db: AsyncSession, project_id: int) -> Project:
     return project
 
 
+def _stage_out(project: Project) -> str | None:
+    """The stage the operator sees (spec workshop-order-stage, rule 2): the
+    column while active, «done» once completed, none once cancelled."""
+    if project.status == "completed":
+        return "done"
+    if project.status == "cancelled":
+        return None
+    return project.stage
+
+
+async def _check_responsible(db: AsyncSession, user_id: int | None) -> None:
+    """Only an existing ACTIVE user may be made responsible (rule 9) — asked only when the value changes."""
+    if user_id is None:
+        return
+    user = await db.get(User, user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=422, detail=f"User {user_id} not found or inactive")
+
+
+async def _responsible_ref(db: AsyncSession, user_id: int | None) -> dict | None:
+    """``{id, name}`` for the journal — a name snapshot, so the line survives a rename or a delete."""
+    user = await db.get(User, user_id) if user_id else None
+    return {"id": user.id, "name": user.username} if user else None
+
+
 async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
     """The one response builder — every mutating handler returns through it.
 
@@ -161,6 +189,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
     project = ctx.project
     customer = await db.get(Customer, project.customer_id) if project.customer_id else None
     contact = await db.get(CustomerContact, project.contact_id) if project.contact_id else None
+    responsible = await db.get(User, project.responsible_id) if project.responsible_id else None
     lines = [
         ProjectLineResponse(
             id=line.id,
@@ -215,6 +244,9 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
         description=project.description,
         color=project.color,
         status=project.status,
+        stage=_stage_out(project),
+        responsible_id=project.responsible_id,
+        responsible_name=responsible.username if responsible else None,
         notes=project.notes,
         attachments=project.attachments,
         tags=project.tags,
@@ -338,7 +370,9 @@ async def list_projects(
     """
     paged = page is not None
     key, direction, computed = resolve_sort(_ORDER_SORT, sort_by)
-    query = select(Project).options(selectinload(Project.lines), selectinload(Project.customer))
+    query = select(Project).options(
+        selectinload(Project.lines), selectinload(Project.customer), selectinload(Project.responsible)
+    )
     if not paged:
         query = query.order_by(Project.updated_at.desc())
     if status:
@@ -404,6 +438,9 @@ async def list_projects(
                 customer_name=project.customer.name if project.customer else None,
                 color=project.color,
                 status=project.status,
+                stage=_stage_out(project),
+                responsible_id=project.responsible_id,
+                responsible_name=project.responsible.username if project.responsible else None,
                 due_date=project.due_date,
                 priority=project.priority,
                 price=project.price,
@@ -498,6 +535,21 @@ async def projects_nav_badges(
     return ProjectsNavBadges(active_orders=active)
 
 
+@router.get("/assignees", response_model=list[OrderAssigneeOut])
+async def list_order_assignees(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """Who may be made responsible for an order (spec workshop-order-stage, rule 26):
+    every active user, by name. Under ``projects:read`` — the administrative user
+    list is not something everyone who works with orders may read. Declared above
+    ``/{project_id}``, or ``assignees`` would be parsed as an id."""
+    rows = (
+        await db.execute(select(User.id, User.username).where(User.is_active.is_(True)).order_by(User.username))
+    ).all()
+    return [OrderAssigneeOut(id=row.id, username=row.username) for row in rows]
+
+
 async def _check_customer(db: AsyncSession, customer_id: int | None) -> None:
     if customer_id is not None and await db.get(Customer, customer_id) is None:
         raise HTTPException(status_code=404, detail="Customer not found")
@@ -573,7 +625,14 @@ async def create_project(
     await _check_contact(db, data.contact_id, data.customer_id)
     for line in data.lines:
         await _check_product(db, line.product_id)
-    project = Project(**data.model_dump(exclude={"lines"}))
+    if "responsible_id" in data.model_fields_set:
+        await _check_responsible(db, data.responsible_id)
+        responsible_id = data.responsible_id
+    else:
+        # Rule 10 of spec workshop-order-stage: an order without the field
+        # belongs to whoever created it.
+        responsible_id = current_user.id if current_user else None
+    project = Project(**data.model_dump(exclude={"lines", "responsible_id"}), responsible_id=responsible_id)
     # Appended BEFORE the flush: on a pending row the collection is created
     # empty without a query, and the cascade fills in ``project_id``. Touching
     # it after the flush would be a lazy load, which async SQLAlchemy refuses.
@@ -600,7 +659,7 @@ async def create_project(
 async def create_project_from_files(
     data: OrderFromFilesRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_CREATE),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_CREATE),
 ):
     """Product + order out of library files, with nobody authoring either
     (spec 2026-09-06, Slice C). One request, one transaction: a refusal after
@@ -640,6 +699,8 @@ async def create_project_from_files(
         raise HTTPException(status_code=400, detail="Product is not a catalogue product")
     except order_from_files.FilesNotLinked:
         raise HTTPException(status_code=400, detail="Every file must be linked to the product")
+    # Rule 10 of spec workshop-order-stage: the author is responsible.
+    project.responsible_id = current_user.id if current_user else None
     return await _response(db, project.id)
 
 
@@ -737,7 +798,7 @@ async def update_project(
     project_id: int,
     data: ProjectUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     project = await _get_project(db, project_id)
     lines = list(project.lines)
@@ -754,6 +815,15 @@ async def update_project(
     if "contact_id" in data.model_fields_set:
         target = data.customer_id if "customer_id" in data.model_fields_set else project.customer_id
         await _check_contact(db, data.contact_id, target)
+    # Checked only when the value CHANGES (spec workshop-order-stage, rule 9): an
+    # order whose responsible was deactivated since must stay editable.
+    responsible_change = None
+    if "responsible_id" in data.model_fields_set and data.responsible_id != project.responsible_id:
+        await _check_responsible(db, data.responsible_id)
+        responsible_change = {
+            "from": await _responsible_ref(db, project.responsible_id),
+            "to": await _responsible_ref(db, data.responsible_id),
+        }
     # Every field keys off model_fields_set: an explicit null CLEARS, an absent
     # field leaves the column alone (the tags/due_date/#2536 lesson, applied to all).
     for field_name in data.model_fields_set:
@@ -761,6 +831,8 @@ async def update_project(
     if moves_customer and "contact_id" not in data.model_fields_set:
         # The contact belonged to the customer the order just left (spec workshop-customers, rule 17).
         project.contact_id = None
+    if responsible_change:
+        await order_journal.record(db, project.id, "responsible_changed", responsible_change, actor=current_user)
     if data.status == "cancelled" and not was_completed:
         # Cancelling gives the shelf its kits back (pass 8, Decision 4) — the
         # order will never consume them. COMPLETING deliberately does not: the
@@ -781,6 +853,30 @@ async def update_project(
         # re-enters the number in the line dialog, which asks the shelf afresh.
         for line in lines:
             await _release(db, line, part_stock.NOTE_ORDER_CANCELLED)
+    return await _response(db, project.id)
+
+
+@router.put("/{project_id}/stage", response_model=ProjectResponse)
+async def set_project_stage(
+    project_id: int,
+    data: ProjectStageUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Set the order's stage by hand — the only way it changes (spec workshop-order-stage, rule 4).
+
+    Whoever is on the farm with ``projects:update`` may set it, and the journal
+    says who. The same stage again writes nothing; a closed order has none.
+    """
+    project = await _get_project(db, project_id)
+    if project.status != "active":
+        raise HTTPException(status_code=409, detail="Only an active order has a stage")
+    if data.stage != project.stage:
+        before = project.stage
+        project.stage = data.stage
+        await order_journal.record(
+            db, project.id, "stage_changed", {"from": before, "to": data.stage}, actor=current_user
+        )
     return await _response(db, project.id)
 
 
@@ -1875,6 +1971,8 @@ async def duplicate_project(
         priority=source.priority,
         price=source.price,
         url=source.url,
+        # A reorder keeps who runs it; the stage starts over (column default).
+        responsible_id=source.responsible_id,
     )
     for line in source.lines:
         copy.lines.append(
