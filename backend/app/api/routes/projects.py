@@ -10,7 +10,7 @@ import os
 import shutil
 import uuid
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import NamedTuple
 
@@ -48,8 +48,12 @@ from backend.app.schemas.farm_forecast import (
 )
 from backend.app.schemas.filament_needs import FarmNeedsOut, FarmRowOut, NeedRowOut, OrderNeedsOut
 from backend.app.schemas.listing import (
+    AttentionOrder,
+    DeadlineOrder,
+    EtaMark,
     OrderBoard,
     OrderBoardColumn,
+    OrderDeadlines,
     OrderListPage,
     OrderListTotals,
     OrdersSummary,
@@ -119,6 +123,7 @@ from backend.app.services.list_paging import (
     slice_page,
     sort_computed,
 )
+from backend.app.services.order_deadlines import ATTENTION_ORDER, attention_reason, eta_is_late
 from backend.app.services.order_metrics import (
     attribute,
     grouped_figures,
@@ -653,6 +658,69 @@ async def get_order_board(
             key: OrderBoardColumn(items=[rows[p.id] for p in projects if p.id in rows], total=total)
             for key, (projects, total) in picked.items()
         }
+    )
+
+
+@router.get("/deadlines", response_model=OrderDeadlines)
+async def get_order_deadlines(
+    start: date = Query(..., description="The first day of the window, YYYY-MM-DD"),
+    days: int = Query(14, ge=1, le=42),
+    customer_id: int | None = None,
+    responsible_id: int | None = None,
+    q: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """The deadlines board (spec workshop-order-views, rules 14–16). The forecast is
+    one ``forecast_projects`` walk over the active orders under the filters, on
+    every request — no cache (owner, 2026-09-26). An ETA counts only when the
+    simulation is complete (the «Ready» sort's rule); «late» and the attention
+    reasons come from ``services/order_deadlines``. Declared above ``/{project_id}``."""
+    window_start = datetime.combine(start, datetime.min.time())
+    window_end = window_start + timedelta(days=days)
+    filters = {"customer_id": customer_id, "responsible_id": responsible_id, "q": q}
+    due_projects = list(
+        (
+            await db.execute(
+                _board_filters(_row_query(), **filters)
+                .where(Project.status.in_(("active", "completed")))
+                .where(Project.due_date >= window_start, Project.due_date < window_end)
+                .order_by(Project.due_date, Project.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    active = list(
+        (await db.execute(_board_filters(_row_query(), **filters).where(Project.status == "active"))).scalars().all()
+    )
+    forecasts = (await farm_forecast.forecast_projects(db, [p.id for p in active], _utc_now()))[1] if active else {}
+    eta = {pid: forecast.now_eta if forecast.eta_complete else None for pid, forecast in forecasts.items()}
+    start_of_today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    reasons = {p.id: attention_reason(p.due_date, eta.get(p.id), start_of_today) for p in active}
+    flagged = sorted(
+        (p for p in active if reasons[p.id]),
+        key=lambda p: (ATTENTION_ORDER.index(reasons[p.id]), p.due_date is None, p.due_date or datetime.max, p.id),
+    )
+    due_ids = {p.id for p in due_projects}
+    rows = {r.id: r for r in await _list_rows(db, [*due_projects, *(p for p in flagged if p.id not in due_ids)])}
+    marks = [
+        EtaMark(id=p.id, code=code_for("order", p.id), name=p.name, eta=eta[p.id])
+        for p in active
+        if p.id not in due_ids and eta.get(p.id) is not None and window_start <= eta[p.id] < window_end
+    ]
+    return OrderDeadlines(
+        start=start,
+        days=days,
+        due=[
+            DeadlineOrder(order=rows[p.id], eta=eta.get(p.id), late=eta_is_late(eta.get(p.id), p.due_date))
+            for p in due_projects
+            if p.id in rows
+        ],
+        eta_marks=sorted(marks, key=lambda m: (m.eta, m.id)),
+        attention=[
+            AttentionOrder(order=rows[p.id], reason=reasons[p.id], eta=eta.get(p.id)) for p in flagged if p.id in rows
+        ],
     )
 
 

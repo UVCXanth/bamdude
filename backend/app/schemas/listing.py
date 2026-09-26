@@ -6,6 +6,9 @@ already carries only what its card draws, so a second, slimmer shape would be
 drift without a saving. ``PaginationMeta`` is the archive's.
 """
 
+from datetime import date, datetime
+from typing import Literal
+
 from pydantic import BaseModel
 
 from backend.app.schemas.archive import PaginationMeta
@@ -47,6 +50,39 @@ class OrderBoard(BaseModel):
     printing: OrderBoardColumn
     qc: OrderBoardColumn
     done: OrderBoardColumn
+
+
+class DeadlineOrder(BaseModel):
+    """An order due inside the window, with the forecast and the server's late verdict."""
+
+    order: ProjectListResponse
+    eta: datetime | None
+    late: bool
+
+
+class EtaMark(BaseModel):
+    """An active order whose forecast lands inside the window while its deadline does not."""
+
+    id: int
+    code: str
+    name: str
+    eta: datetime
+
+
+class AttentionOrder(BaseModel):
+    order: ProjectListResponse
+    reason: Literal["overdue", "late_eta", "no_due"]
+    eta: datetime | None
+
+
+class OrderDeadlines(BaseModel):
+    """``GET /projects/deadlines`` (spec workshop-order-views, rules 14–16)."""
+
+    start: date
+    days: int
+    due: list[DeadlineOrder]
+    eta_marks: list[EtaMark]
+    attention: list[AttentionOrder]
 
 
 class OrderListPage(BaseModel):
