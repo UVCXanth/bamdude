@@ -737,7 +737,8 @@ async def test_timeline_still_reads_the_archive(committing_client, db_session, c
     pid = (await committing_client.post("/api/v1/projects/", json={"name": "O"})).json()["id"]
     await _completed_print(db_session, pid, catalog["file"].id)
     events = (await committing_client.get(f"/api/v1/projects/{pid}/timeline")).json()
-    assert [e["event_type"] for e in events] == ["print_completed", "project_created"]
+    # «Created» comes from the order journal now (spec workshop-order-stage, rule 20).
+    assert [e["event_type"] for e in events] == ["print_completed", "order_created"]
 
 
 # ---------------------------------------------------------------------------

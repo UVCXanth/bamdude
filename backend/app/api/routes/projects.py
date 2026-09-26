@@ -32,7 +32,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.product import Product, ProductPart, ProductPlate
-from backend.app.models.project import Project
+from backend.app.models.project import Project, ProjectEvent
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
 from backend.app.schemas.archive import ArchivePartRow
@@ -679,8 +679,8 @@ async def create_project(
 ):
     await _check_customer(db, data.customer_id)
     await _check_contact(db, data.contact_id, data.customer_id)
-    for line in data.lines:
-        await _check_product(db, line.product_id)
+    # The names go into the journal's «line added» snapshots below.
+    names = {line.product_id: (await _check_product(db, line.product_id)).name for line in data.lines}
     if "responsible_id" in data.model_fields_set:
         await _check_responsible(db, data.responsible_id)
         responsible_id = data.responsible_id
@@ -708,6 +708,15 @@ async def create_project(
     for row, units in wanted:
         if units:
             await _reserve(db, row, units, current_user)
+    await order_journal.record(db, project.id, "order_created", {"source": "manual"}, actor=current_user)
+    for row, units in wanted:
+        await order_journal.record(
+            db,
+            project.id,
+            "line_added",
+            {"line_id": row.id, "product": names[row.product_id], "quantity": row.quantity, "from_stock": units},
+            actor=current_user,
+        )
     return await _response(db, project.id)
 
 
@@ -757,6 +766,7 @@ async def create_project_from_files(
         raise HTTPException(status_code=400, detail="Every file must be linked to the product")
     # Rule 10 of spec workshop-order-stage: the author is responsible.
     project.responsible_id = current_user.id if current_user else None
+    await order_journal.record(db, project.id, "order_created", {"source": "files"}, actor=current_user)
     return await _response(db, project.id)
 
 
@@ -849,6 +859,16 @@ async def get_project(
     return await _response(db, project_id)
 
 
+# Journaled as «order details changed» (spec workshop-order-stage, rule 17):
+# column → the field code the frontend translates. Status and the responsible
+# user have journal lines of their own.
+_JOURNAL_FIELDS = {
+    "name": "name", "customer_id": "customer", "contact_id": "contact", "description": "description",
+    "color": "color", "notes": "notes", "tags": "tags", "due_date": "due_date", "priority": "priority",
+    "price": "price", "url": "url",
+}  # fmt: skip
+
+
 @router.patch("/{project_id}", response_model=ProjectResponse)
 async def update_project(
     project_id: int,
@@ -880,6 +900,9 @@ async def update_project(
             "from": await _responsible_ref(db, project.responsible_id),
             "to": await _responsible_ref(db, data.responsible_id),
         }
+    # Read before the write: the journal records what actually changed, not what was sent.
+    before = {column: getattr(project, column) for column in _JOURNAL_FIELDS}
+    status_before = project.status
     # Every field keys off model_fields_set: an explicit null CLEARS, an absent
     # field leaves the column alone (the tags/due_date/#2536 lesson, applied to all).
     for field_name in data.model_fields_set:
@@ -887,8 +910,15 @@ async def update_project(
     if moves_customer and "contact_id" not in data.model_fields_set:
         # The contact belonged to the customer the order just left (spec workshop-customers, rule 17).
         project.contact_id = None
+    if project.status != status_before:
+        await order_journal.record(
+            db, project.id, "status_changed", {"from": status_before, "to": project.status}, actor=current_user
+        )
     if responsible_change:
         await order_journal.record(db, project.id, "responsible_changed", responsible_change, actor=current_user)
+    changed = [label for column, label in _JOURNAL_FIELDS.items() if getattr(project, column) != before[column]]
+    if changed:
+        await order_journal.record(db, project.id, "fields_changed", {"fields": changed}, actor=current_user)
     if data.status == "cancelled" and not was_completed:
         # Cancelling gives the shelf its kits back (pass 8, Decision 4) — the
         # order will never consume them. COMPLETING deliberately does not: the
@@ -995,6 +1025,8 @@ async def delete_project(
         if still_owns_its_stock:
             await part_stock.credit_if_unfiled(db, archive, note=part_stock.NOTE_PROJECT_DELETED)
     line_products = {line.product_id for line in project.lines}
+    # The journal goes with the order — in code, SQLite runs no CASCADE.
+    await order_journal.delete_for_project(db, project_id)
     await db.delete(project)
     await db.flush()
     # Decision 5: an adhoc product lives exactly as long as a line references it.
@@ -1952,14 +1984,46 @@ async def get_project_timeline(
             )
         )
 
-    events.append(
-        TimelineEvent(
-            event_type="project_created",
-            timestamp=project.created_at,
-            title=_EVENT_TITLES["project_created"],
-            description=project.name,
+    # The order journal (spec workshop-order-stage, rule 20): its newest ``limit``
+    # merged like the other sources. Its ``kind`` is the event type the frontend
+    # translates; the payload and the author ride in ``metadata``.
+    journal = (
+        (
+            await db.execute(
+                select(ProjectEvent)
+                .where(ProjectEvent.project_id == project_id)
+                .order_by(ProjectEvent.created_at.desc(), ProjectEvent.id.desc())
+                .limit(limit)
+            )
         )
+        .scalars()
+        .all()
     )
+    for entry in journal:
+        events.append(
+            TimelineEvent(
+                event_type=entry.kind,
+                timestamp=entry.created_at,
+                title=order_journal.TITLES.get(entry.kind, entry.kind),
+                metadata={**(entry.payload or {}), "user_id": entry.user_id, "user_name": entry.user_name},
+            )
+        )
+
+    # An order from before the journal has no «created» line of its own.
+    created_logged = await db.scalar(
+        select(ProjectEvent.id)
+        .where(ProjectEvent.project_id == project_id, ProjectEvent.kind == "order_created")
+        .limit(1)
+    )
+    if created_logged is None:
+        events.append(
+            TimelineEvent(
+                event_type="project_created",
+                timestamp=project.created_at,
+                title=_EVENT_TITLES["project_created"],
+                description=project.name,
+            )
+        )
 
     events.sort(key=lambda e: e.timestamp, reverse=True)
 
@@ -2009,7 +2073,7 @@ async def duplicate_project(
     project_id: int,
     data: ProjectDuplicate = Body(default_factory=ProjectDuplicate),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_CREATE),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_CREATE),
 ):
     """A reorder: lines, customer, notes, attachments come across; history never does; status is active."""
     source = await _get_project(db, project_id)
@@ -2043,6 +2107,10 @@ async def duplicate_project(
         )
     db.add(copy)
     await db.flush()
+    # The copy's journal starts with where it came from; the source's own history stays with the source.
+    await order_journal.record(
+        db, copy.id, "order_created", {"source": "copy", "from_code": code_for("order", source.id)}, actor=current_user
+    )
     if source.attachments or source.cover_image_filename:
         if await _copy_attachment_files(source.id, copy.id):
             copy.attachments = source.attachments
