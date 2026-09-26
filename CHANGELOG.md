@@ -172,6 +172,12 @@
 
 ### Fixed
 
+- **The File Manager card menu no longer loses its top entry.** On a card near
+  the top of the screen the "…" menu opened upward and ran past the top edge, so
+  its first entry (Slice, on an STL) could not be reached. All "…" menus now open
+  on the side with enough room and, when neither side has enough, scroll inside
+  their own panel instead of running off the screen. (upstream #2846)
+
 - **Controls no longer disappear on hover in the light themes.** Many icon
   buttons and links turn white when the pointer is over them. On a light
   background that made them vanish exactly while being pointed at. They now use

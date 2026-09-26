@@ -187,14 +187,17 @@ export function CardActionMenu({
               data-testid={testId ? `${testId}-panel` : undefined}
               style={{
                 position: 'fixed',
-                top: coords?.top ?? 0,
+                top: coords?.top,
+                bottom: coords?.bottom,
                 right: coords?.right ?? 0,
+                maxHeight: coords?.maxHeight,
+                overflowY: 'auto',
                 width,
                 visibility: coords ? 'visible' : 'hidden',
               }}
-              // Never taller than the viewport: a long menu on a short screen
-              // scrolls inside its own panel rather than running off the bottom
-              // where the flip could not save it (no room above either).
+              // Never runs off the screen: `maxHeight` above is the room on the
+              // side the hook chose, and the panel scrolls past it. The class
+              // is the ceiling before the first measurement, while hidden.
               className="z-[60] max-h-[calc(100vh-1rem)] overflow-y-auto bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 whitespace-nowrap"
             >
               {children(close)}

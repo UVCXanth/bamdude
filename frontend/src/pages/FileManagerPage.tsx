@@ -799,8 +799,11 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
           <div
             style={{
               position: 'fixed',
-              top: coords?.top ?? 0,
+              top: coords?.top,
+              bottom: coords?.bottom,
               right: coords?.right ?? 0,
+              maxHeight: coords?.maxHeight,
+              overflowY: 'auto',
               width: MENU_WIDTH,
               visibility: coords ? 'visible' : 'hidden',
             }}
@@ -983,10 +986,11 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
     setShowActions(false);
     triggerRef.current?.focus();
   };
-  // Anchor the menu's bottom edge to the trigger's top (default) so the gap
-  // stays a fixed 4 px regardless of menu height. Flip to top-anchor when
-  // there isn't enough room above (e.g. trigger near top of viewport).
-  const [coords, setCoords] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
+  // Placed by the same hook as every other "…" menu. This card used to carry
+  // its own copy that opened above past 120 px of room, so a seven-entry menu
+  // near the top of the screen ran off the top edge and lost its first entry —
+  // Slice, on an STL (upstream #2846).
+  const coords = useAnchoredPosition(triggerRef, showActions);
   const [showPlateObjects, setShowPlateObjects] = useState(false);
   // Which plate the card is showing (vault 60-specs/library-multiplate-card-spec 5).
   // A POSITION, not a plate index - the slices are what the row carries. Reset
@@ -999,31 +1003,6 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
   const plate = plateAt(file, current);
   const figures = figuresAt(file, current);
   const thumbUrl = plateThumbnailUrl(file, current, thumbnailVersion);
-
-  useEffect(() => {
-    if (!showActions) return;
-    const update = () => {
-      const btn = triggerRef.current;
-      if (!btn) return;
-      const rect = btn.getBoundingClientRect();
-      const right = Math.max(8, window.innerWidth - rect.right);
-      // Default: anchor menu's bottom 4 px above the trigger — flush layout,
-      // exact gap. Flip below when the trigger is near the top of the viewport.
-      const minOpenAboveHeight = 120;
-      if (rect.top > minOpenAboveHeight + 8) {
-        setCoords({ bottom: window.innerHeight - rect.top + 4, right });
-      } else {
-        setCoords({ top: rect.bottom + 4, right });
-      }
-    };
-    update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
-  }, [showActions]);
 
   return (
     <div
@@ -1256,7 +1235,7 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
         )}
       </div>
 
-      {/* Actions - always visible on mobile, hover on desktop */}
+      {/* Actions - hover-revealed with a mouse, always there without one (upstream #2865) */}
       <div className="absolute bottom-2 right-2 transition-opacity can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100" onClick={(e) => e.stopPropagation()}>
         <button
           ref={triggerRef}
@@ -1276,6 +1255,8 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
                 top: coords?.top,
                 bottom: coords?.bottom,
                 right: coords?.right ?? 0,
+                maxHeight: coords?.maxHeight,
+                overflowY: 'auto',
                 visibility: coords ? 'visible' : 'hidden',
               }}
               className="z-[60] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 whitespace-nowrap w-max max-w-[calc(100vw-16px)]"
