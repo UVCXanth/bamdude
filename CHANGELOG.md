@@ -37,6 +37,19 @@
 
 ### Added
 
+- **The orders page switches between five views.** Besides the table and the
+  cards there is now a **kanban** by stage — drag a card (or move it with the
+  keyboard) to another column to set its stage, or into Done to complete the
+  order after a confirmation; each column shows its count, and a long column
+  links to the list filtered by that stage. The **workspace** keeps the list on
+  the left and the open order on the right, so going through orders one by one
+  no longer means leaving the list; the order you picked stays in the address.
+  The **deadlines** board lays two weeks out day by day: each order on its
+  deadline day with the farm's forecast «ready ≈» beside it — in red when the
+  forecast lands after the deadline — the other orders' expected ready days,
+  and below it everything that needs attention: overdue, without a deadline,
+  or forecast to be late. Search, customer and responsible filter every view
+  alike.
 - **Orders have a stage, a responsible person and an activity log of who did
   what.** Every active order stands at a stage — Preparation, Printing or
   Quality check — which whoever is on the farm sets by hand from the order
