@@ -236,6 +236,18 @@ describe('ProductsPage — the catalog (spec workshop-product-catalog)', () => {
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ category: 'none' })));
   });
 
+  it('drops the category from the URL when that category is deleted', async () => {
+    window.history.pushState({}, '', '/products?category=3');
+    const get = vi.spyOn(api, 'getProductsPaged').mockResolvedValue(envelope(rows));
+    vi.spyOn(api, 'deleteProductCategory').mockResolvedValue({ message: 'ok', uncategorized: 2 });
+    render(<ProductsPage />);
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ category: '3' })));
+    fireEvent.click(within(await screen.findByRole('navigation', { name: 'Categories' })).getByRole('button', { name: 'Manage categories' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Hooks' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(window.location.search).not.toContain('category='));
+  });
+
   it('sends each filter, keeps it in the URL and goes back to page 1', async () => {
     window.history.pushState({}, '', '/products?page=2');
     const get = vi.spyOn(api, 'getProductsPaged').mockResolvedValue(envelope(rows));

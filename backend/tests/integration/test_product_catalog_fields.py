@@ -1,8 +1,15 @@
 """Catalog fields of a product (spec workshop-product-catalog, rules 13–15, 17)."""
 
-import pytest
+from datetime import UTC, datetime
 
+import pytest
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from backend.app.api.routes import products as product_routes
 from backend.app.models.library import LibraryFile
+from backend.app.models.product import Product
+from backend.app.models.product_category import ProductCategory, category_key
 
 pytestmark = pytest.mark.integration
 
@@ -92,3 +99,53 @@ async def test_a_plate_names_its_printer_model(committing_client, sliced_file):
     p = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()
     plates = (await committing_client.get(f"/api/v1/products/{p['id']}/plates")).json()
     assert [pl["printer_model"] for pl in plates] == ["X1C"]
+
+
+@pytest.mark.asyncio
+async def test_ready_counts_only_plates_outside_the_trash(committing_client, db_session, sliced_file):
+    # What the row, the card and the dialog show: a plate of a trashed file is no plate.
+    p = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()
+    await db_session.execute(
+        update(LibraryFile).where(LibraryFile.id == sliced_file.id).values(deleted_at=datetime.now(UTC))
+    )
+    await db_session.commit()
+    refused = await committing_client.patch(f"/api/v1/products/{p['id']}", json={"status": "ready"})
+    assert refused.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_a_sku_that_lost_a_race_is_409_not_500(committing_client, monkeypatch):
+    # Two saves pass the check at once; the unique index decides — and says so as a 409.
+    async def no_clash(db, key, product_id):
+        return None
+
+    monkeypatch.setattr(product_routes, "_sku_clash", no_clash)
+    assert (await committing_client.post("/api/v1/products/", json={"name": "A", "sku": "RACE"})).status_code == 200
+    second = await committing_client.post("/api/v1/products/", json={"name": "B", "sku": "race"})
+    assert second.status_code == 409, second.text
+    b = (await committing_client.post("/api/v1/products/", json={"name": "C"})).json()
+    patched = await committing_client.patch(f"/api/v1/products/{b['id']}", json={"sku": "RACE"})
+    assert patched.status_code == 409, patched.text
+
+
+def test_the_folded_keys_fit_their_columns():
+    # casefold() may lengthen a string up to three times ("ß" → "ss", "ΐ" → three
+    # characters); PostgreSQL refuses a value longer than the column.
+    assert Product.__table__.c.sku_key.type.length >= 3 * 64
+    assert ProductCategory.__table__.c.name_key.type.length >= 3 * 128
+
+
+@pytest.mark.asyncio
+async def test_a_response_loads_a_category_the_session_never_saw(test_engine):
+    maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    async with maker() as db:
+        cat = ProductCategory(name="Fresh", name_key=category_key("Fresh"))
+        db.add(cat)
+        await db.commit()
+        cid = cat.id
+    async with maker() as db:
+        p = Product(name="New row", category_id=cid)
+        db.add(p)
+        await db.flush()
+        out = await product_routes._response(db, p)
+    assert out.category is not None and out.category.name == "Fresh"

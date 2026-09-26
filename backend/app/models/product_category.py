@@ -19,6 +19,7 @@ class ProductCategory(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
-    # ``category_key(name)`` — the duplicate check, computed in Python.
-    name_key: Mapped[str] = mapped_column(String(128), unique=True)
+    # ``category_key(name)`` — the duplicate check, computed in Python; wide
+    # enough for casefold(), which may lengthen a name threefold.
+    name_key: Mapped[str] = mapped_column(String(512), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

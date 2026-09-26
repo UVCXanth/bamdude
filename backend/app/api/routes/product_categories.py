@@ -9,6 +9,7 @@ actions (the ``ON DELETE SET NULL`` is PostgreSQL's backstop).
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import RequirePermission
@@ -35,10 +36,22 @@ async def _listing(db: AsyncSession, only_id: int | None = None) -> list[Product
     return [ProductCategoryOut(id=i, name=n, products_count=c) for i, n, c in (await db.execute(stmt)).all()]
 
 
+_NAME_TAKEN = "A category with this name already exists"
+
+
 async def _refuse_duplicate(db: AsyncSession, name: str, own_id: int | None = None) -> None:
     clash = await db.scalar(select(ProductCategory.id).where(ProductCategory.name_key == category_key(name)))
     if clash is not None and clash != own_id:
-        raise HTTPException(status_code=409, detail="A category with this name already exists")
+        raise HTTPException(status_code=409, detail=_NAME_TAKEN)
+
+
+async def _flush_name(db: AsyncSession) -> None:
+    """Two saves can pass the duplicate check at once; the unique key settles the
+    race, and the loser hears the same 409 — never a 500."""
+    try:
+        await db.flush()
+    except IntegrityError as e:
+        raise HTTPException(status_code=409, detail=_NAME_TAKEN) from e
 
 
 async def _get_or_404(db: AsyncSession, category_id: int) -> ProductCategory:
@@ -66,7 +79,7 @@ async def create_product_category(
     await _refuse_duplicate(db, data.name)
     category = ProductCategory(name=data.name, name_key=category_key(data.name))
     db.add(category)
-    await db.flush()
+    await _flush_name(db)
     return ProductCategoryOut(id=category.id, name=category.name, products_count=0)
 
 
@@ -81,7 +94,7 @@ async def rename_product_category(
     await _refuse_duplicate(db, data.name, own_id=category.id)
     category.name = data.name
     category.name_key = category_key(data.name)
-    await db.flush()
+    await _flush_name(db)
     return (await _listing(db, only_id=category.id))[0]
 
 

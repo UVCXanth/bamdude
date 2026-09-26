@@ -1,8 +1,10 @@
 """The catalog list: word search, filters, category counts, facets, the draft badge
 (spec workshop-product-catalog, rules 8–12 and 18)."""
 
+from datetime import UTC, datetime
+
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product, ProductPart, sku_key
@@ -33,6 +35,7 @@ async def seeded_catalog(db_session):
     hook = Product(name="Hook", sku="HK-1", sku_key=sku_key("HK-1"), category_id=hooks.id)
     db_session.add_all([lamp, hook])
     await db_session.flush()
+    files = {}
     for product, name, obj, material, model in (
         (lamp, "lamp.gcode.3mf", "shade.stl", "PETG", "P1S"),
         (hook, "hook.gcode.3mf", "peg.stl", "PLA", "X1C"),
@@ -43,12 +46,13 @@ async def seeded_catalog(db_session):
         db_session.add(f)
         await db_session.flush()
         await sync_product_for_file(db_session, library_file_id=f.id, product_ids=[product.id])
+        files[product.name] = f.id
     for part_id in (
         await db_session.execute(select(ProductPart.id).where(ProductPart.product_id == lamp.id))
     ).scalars():
         await part_stock.move(db_session, part_id=part_id, delta=1, reason="manual", note="counted")
     await db_session.commit()
-    return {"lamp": lamp.id, "hook": hook.id, "hooks": hooks.id}
+    return {"lamp": lamp.id, "hook": hook.id, "hooks": hooks.id, "lamp_file": files["Lamp"]}
 
 
 async def _names(client, **params) -> list[str]:
@@ -108,3 +112,56 @@ async def test_facets_and_the_draft_badge(committing_client, seeded_catalog):
     assert f == {"materials": ["PETG", "PLA"], "colors": ["#123456"], "models": ["P1S", "X1C"]}
     badges = (await committing_client.get("/api/v1/projects/nav-badges")).json()
     assert badges["draft_products"] == 1
+
+
+async def _set_trashed(db, file_id: int, trashed: bool) -> None:
+    await db.execute(
+        update(LibraryFile).where(LibraryFile.id == file_id).values(deleted_at=datetime.now(UTC) if trashed else None)
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_trashed_file_leaves_the_filters_the_search_and_the_choices(
+    committing_client, db_session, seeded_catalog
+):
+    # Owner, 2026-09-27: the trash does not count — and it needs no refresh: a
+    # restore brings the file's facets straight back.
+    await _set_trashed(db_session, seeded_catalog["lamp_file"], True)
+    assert await _names(committing_client, material="PETG") == []
+    assert await _names(committing_client, q="petg") == []
+    assert await _names(committing_client, q="lamp.gcode") == []
+    facets = (await committing_client.get("/api/v1/products/facets")).json()
+    assert facets["materials"] == ["PLA"] and facets["models"] == ["X1C"]
+    await _set_trashed(db_session, seeded_catalog["lamp_file"], False)
+    assert await _names(committing_client, material="PETG") == ["Lamp"]
+
+
+@pytest.mark.asyncio
+async def test_the_model_filter_takes_any_spelling_of_the_model(committing_client, seeded_catalog):
+    assert await _names(committing_client, model="x1c") == ["Hook"]
+    assert await _names(committing_client, model="Bambu Lab X1 Carbon") == ["Hook"]
+
+
+@pytest.mark.asyncio
+async def test_like_wildcards_in_a_search_word_are_literal(committing_client, db_session, seeded_catalog):
+    db_session.add_all(
+        [
+            Product(name="Underscore", sku="LMP_01", sku_key=sku_key("LMP_01")),
+            Product(name="Letter", sku="LMPX01", sku_key=sku_key("LMPX01")),
+            Product(name="Percent 100%"),
+            Product(name="Percent 1000"),
+        ]
+    )
+    await db_session.commit()
+    assert await _names(committing_client, q="lmp_01") == ["Underscore"]
+    assert await _names(committing_client, q="100%") == ["Percent 100%"]
+
+
+@pytest.mark.asyncio
+async def test_in_stock_reads_its_candidates_in_chunks(committing_client, seeded_catalog, monkeypatch):
+    from backend.app.services import product_facets
+
+    monkeypatch.setattr(product_facets, "SQL_CHUNK", 1)
+    r = (await committing_client.get("/api/v1/products", params={"page": 1, "in_stock": "true"})).json()
+    assert [i["name"] for i in r["items"]] == ["Lamp"]

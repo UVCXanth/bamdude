@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { FileBox, Loader2, Search } from 'lucide-react';
 import { api } from '../../api/client';
+import { invalidateProductCatalog } from '../../utils/queryInvalidation';
 import type { LibraryFolderTree, Product } from '../../api/client';
 import { Button } from '../Button';
 import { Modal } from '../Modal';
@@ -77,7 +78,7 @@ export function FromFileDialog({ onClose, onCreated }: FromFileDialogProps) {
   const create = useMutation({
     mutationFn: (fileId: number) => api.createProductFromFile(fileId),
     onSuccess: (created) => {
-      queryClient.invalidateQueries({ queryKey: ['products'] });
+      invalidateProductCatalog(queryClient);
       // Its own key, not `products.toast.saved`: nothing was saved here — a
       // product was CREATED, out of a file the operator picked, and the toast
       // is the only confirmation of which of the two happened.

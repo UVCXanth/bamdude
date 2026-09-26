@@ -11,7 +11,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { ProductGallery } from './ProductGallery';
 import { useProductDetail } from '../../hooks/useProductDetail';
-import { invalidateOrderViews } from '../../utils/queryInvalidation';
+import { invalidateOrderViews, invalidateProductCatalog } from '../../utils/queryInvalidation';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
@@ -191,6 +191,8 @@ function ProductForm({ product, onClose }: ProductFormProps) {
       // `staleTime` said the answer was fresh. Same one decision as an order
       // save — see `utils/queryInvalidation`.
       invalidateOrderViews(queryClient);
+      // A new product is a draft, and a category change moves the directory's counts.
+      invalidateProductCatalog(queryClient);
       showToast(t('products.toast.saved'));
       onClose();
     },

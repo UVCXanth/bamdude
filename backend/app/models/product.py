@@ -101,9 +101,10 @@ class Product(Base):
     origin_file_id: Mapped[int | None] = mapped_column(ForeignKey("library_files.id"), nullable=True)
     origin_plate_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # spec workshop-product-catalog, rules 1 and 14–15: the operator's catalog
-    # fields. ``sku_key`` is ``name_key(sku)`` — unique when set, computed in Python.
+    # fields. ``sku_key`` is ``sku_key(sku)`` — unique when set, computed in Python;
+    # wide enough for casefold(), which may lengthen a 64-character SKU threefold.
     sku: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    sku_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sku_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     category_id: Mapped[int | None] = mapped_column(
         ForeignKey("product_categories.id", ondelete="SET NULL"), nullable=True, index=True
@@ -184,12 +185,16 @@ FACET_KINDS = ("material", "color", "model")
 
 class ProductFacet(Base):
     """What a product's plates are made of and sliced for — STORED, one writer:
-    ``services/product_facets.py`` (spec workshop-product-catalog, rules 3 and 5)."""
+    ``services/product_facets.py`` (spec workshop-product-catalog, rules 3 and 5).
+
+    A row per FILE: the catalog skips a trashed file's rows when it reads them
+    (owner, 2026-09-27), so trashing and restoring change nothing here."""
 
     __tablename__ = "product_facets"
     __table_args__ = (Index("ix_product_facets_kind_value", "kind", "value"),)
 
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), primary_key=True)
+    library_file_id: Mapped[int] = mapped_column(ForeignKey("library_files.id", ondelete="CASCADE"), primary_key=True)
     kind: Mapped[str] = mapped_column(String(16), primary_key=True)
     value: Mapped[str] = mapped_column(String(64), primary_key=True)
 

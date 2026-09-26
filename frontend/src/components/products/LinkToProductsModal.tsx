@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link2, Loader2, Package, X } from 'lucide-react';
 import { api } from '../../api/client';
+import { invalidateProductCatalog } from '../../utils/queryInvalidation';
 import type { ProductRef } from '../../api/client';
 import { Button } from '../Button';
 import { Modal } from '../Modal';
@@ -101,7 +102,7 @@ export function LinkToProductsModal({ kind, item, onClose }: LinkToProductsModal
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
-      queryClient.invalidateQueries({ queryKey: ['products'] });
+      invalidateProductCatalog(queryClient);
       queryClient.invalidateQueries({ queryKey: ['product-files'] });
       queryClient.invalidateQueries({ queryKey: ['product-folders'] });
       // Literal keys, one per outcome: the i18n guard only sees keys spelled

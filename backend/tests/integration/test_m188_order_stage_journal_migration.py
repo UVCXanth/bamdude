@@ -78,17 +78,33 @@ async def test_the_catalog_columns_tables_and_status_seed(engine):
     async with engine.begin() as conn:
         await conn.execute(text("CREATE TABLE products (id INTEGER PRIMARY KEY, name VARCHAR(255))"))
         await conn.execute(text("CREATE TABLE product_parts (id INTEGER PRIMARY KEY, product_id INTEGER)"))
-        await conn.execute(text("CREATE TABLE product_plates (id INTEGER PRIMARY KEY, product_id INTEGER)"))
-        await conn.execute(text("INSERT INTO products (id, name) VALUES (1, 'Full'), (2, 'No plates'), (3, 'Empty')"))
-        await conn.execute(text("INSERT INTO product_parts (product_id) VALUES (1), (2)"))
-        await conn.execute(text("INSERT INTO product_plates (product_id) VALUES (1)"))
+        await conn.execute(
+            text("CREATE TABLE product_plates (id INTEGER PRIMARY KEY, product_id INTEGER, library_file_id INTEGER)")
+        )
+        await conn.execute(text("CREATE TABLE library_files (id INTEGER PRIMARY KEY, deleted_at DATETIME)"))
+        await conn.execute(
+            text("INSERT INTO products (id, name) VALUES (1, 'Full'), (2, 'No plates'), (3, 'Empty'), (4, 'Trashed')")
+        )
+        await conn.execute(text("INSERT INTO product_parts (product_id) VALUES (1), (2), (4)"))
+        await conn.execute(text("INSERT INTO library_files (id, deleted_at) VALUES (10, NULL), (11, '2026-09-01')"))
+        # A plate of a trashed file is no plate — what every list shows.
+        await conn.execute(text("INSERT INTO product_plates (product_id, library_file_id) VALUES (1, 10), (4, 11)"))
     await _run(engine)
     await _run(engine)  # idempotent
     async with engine.connect() as conn:
         rows = (
             await conn.execute(text("SELECT id, status, sku, version, category_id FROM products ORDER BY id"))
         ).all()
-        assert rows == [(1, "ready", None, None, None), (2, "draft", None, None, None), (3, "draft", None, None, None)]
+        assert rows == [
+            (1, "ready", None, None, None),
+            (2, "draft", None, None, None),
+            (3, "draft", None, None, None),
+            (4, "draft", None, None, None),
+        ]
+        facet_cols = {r[1] for r in (await conn.execute(text("PRAGMA table_info(product_facets)"))).all()}
+        assert facet_cols == {"product_id", "library_file_id", "kind", "value"}
+        types = {r[1]: r[2] for r in (await conn.execute(text("PRAGMA table_info(products)"))).all()}
+        assert types["sku_key"] == "VARCHAR(255)"
         for table in ("product_categories", "product_facets"):
             assert (await conn.execute(text(f"SELECT COUNT(*) FROM {table}"))).scalar() == 0
         indexes = {r[1] for r in (await conn.execute(text("PRAGMA index_list(products)"))).all()}

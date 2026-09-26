@@ -27,6 +27,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import and_, delete, exists, func, inspect as sqla_inspect, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from starlette.background import BackgroundTask
@@ -79,7 +80,7 @@ from backend.app.schemas.product import (
     StockBalanceOut,
     StockMovementOut,
 )
-from backend.app.services import part_stock, product_delete
+from backend.app.services import part_stock, product_delete, product_facets
 from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.list_paging import (
     SortSpec,
@@ -126,6 +127,7 @@ from backend.app.services.product_files import (
 from backend.app.services.product_sync import apply_folder_products, sync_product_for_file
 from backend.app.services.stock_views import movement_out, orders_of_lines
 from backend.app.utils.http import build_content_disposition
+from backend.app.utils.printer_models import normalize_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +215,24 @@ async def _part_out(db: AsyncSession, part: ProductPart) -> ProductPartResponse:
 # spec workshop-product-catalog, rules 13–15: the catalog fields travel apart
 # from the plain columns — each has a rule the route checks before it writes.
 CATALOG_FIELDS = ("sku", "version", "category_id", "status")
+_SKU_TAKEN = "Another product already has this SKU"
+
+
+async def _sku_clash(db: AsyncSession, key: str, product_id: int) -> int | None:
+    """Another product holding this SKU key, if any."""
+    return await db.scalar(select(Product.id).where(Product.sku_key == key, Product.id != product_id))
+
+
+async def _flush_catalog(db: AsyncSession) -> None:
+    """Flush a product's catalog fields. The SKU is checked before the write, but
+    two saves can pass that check at once; the unique index settles the race, and
+    the loser hears the same 409 — never a 500."""
+    try:
+        await db.flush()
+    except IntegrityError as e:
+        if "sku_key" in str(e.orig):
+            raise HTTPException(status_code=409, detail=_SKU_TAKEN) from e
+        raise
 
 
 def _catalog_out(product: Product) -> dict:
@@ -233,16 +253,15 @@ async def _apply_catalog_fields(db: AsyncSession, product: Product, fields: dict
     """
     sku = fields.get("sku")
     key = sku_key(sku) if sku else None
-    if "sku" in fields and key:
-        clash = await db.scalar(select(Product.id).where(Product.sku_key == key, Product.id != product.id))
-        if clash is not None:
-            raise HTTPException(status_code=409, detail="Another product already has this SKU")
+    if "sku" in fields and key and await _sku_clash(db, key, product.id) is not None:
+        raise HTTPException(status_code=409, detail=_SKU_TAKEN)
     category_id = fields.get("category_id")
     if "category_id" in fields and category_id is not None and await db.get(ProductCategory, category_id) is None:
         raise HTTPException(status_code=422, detail="Category not found")
     if fields.get("status") == "ready" and product.status != "ready":
         parts = await db.scalar(select(func.count(ProductPart.id)).where(ProductPart.product_id == product.id))
-        plates = await db.scalar(select(func.count(ProductPlate.id)).where(ProductPlate.product_id == product.id))
+        # The plates the lists show — a trashed file's plate is no plate.
+        plates = (await _plates_count(db, [product.id])).get(product.id, 0)
         if not parts or not plates:
             raise HTTPException(status_code=409, detail="A product needs parts and a plate to be ready to print")
 
@@ -259,7 +278,9 @@ async def _apply_catalog_fields(db: AsyncSession, product: Product, fields: dict
 
 
 async def _response(db: AsyncSession, product: Product, *, reload_links: bool = False) -> ProductResponse:
-    links = ["parts", "plates", "library_files", "library_folders"]
+    # ``category`` too: a row built in this request (a copy, a new product) has
+    # it unloaded, and reading it would be a lazy load the async session refuses.
+    links = ["parts", "plates", "library_files", "library_folders", "category"]
     # ``reload_links`` — a sync ran, and it wrote ``product_files`` /
     # ``product_plates`` with core SQL underneath the ORM, so what is loaded is
     # stale. ``unloaded`` — a row built and flushed in this request never had
@@ -357,20 +378,34 @@ _PRODUCT_COMPUTED = {
 }
 
 
+def _contains(word: str) -> str:
+    """A LIKE pattern for ``word`` anywhere — its own ``%`` and ``_`` taken literally."""
+    escaped = word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def _word_matches(word: str):
-    """One search word against every field of a product (spec workshop-product-catalog, rule 8)."""
-    needle = f"%{word}%"
+    """One search word against every field of a product (spec workshop-product-catalog, rule 8).
+
+    A trashed file is not searched — neither its name nor its facets: the product
+    page does not show it either (owner, 2026-09-27)."""
+    needle = _contains(word)
+
+    def like(column):
+        return column.ilike(needle, escape="\\")
+
     fields = [
-        Product.name.ilike(needle),
-        Product.sku.ilike(needle),
-        ProductCategory.name.ilike(needle),
-        exists().where(ProductPart.product_id == Product.id, ProductPart.name.ilike(needle)),
+        like(Product.name),
+        like(Product.sku),
+        like(ProductCategory.name),
+        exists().where(ProductPart.product_id == Product.id, like(ProductPart.name)),
         exists().where(
             product_files.c.product_id == Product.id,
             LibraryFile.id == product_files.c.library_file_id,
-            LibraryFile.filename.ilike(needle),
+            LibraryFile.deleted_at.is_(None),
+            like(LibraryFile.filename),
         ),
-        exists().where(ProductFacet.product_id == Product.id, ProductFacet.value.ilike(needle)),
+        product_facets.visible_facet(like(ProductFacet.value)),
     ]
     if (product_id := id_from_query("product", word)) is not None:
         fields.append(Product.id == product_id)
@@ -378,11 +413,15 @@ def _word_matches(word: str):
 
 
 def _has_facet(kind: str, value: str):
-    # Materials and colours are stored upper-cased (``product_facets.facets_of``).
-    wanted = value.strip().upper() if kind in ("material", "color") else value.strip()
-    return exists().where(
-        ProductFacet.product_id == Product.id, ProductFacet.kind == kind, ProductFacet.value == wanted
-    )
+    # Stored as ``product_facets.facets_of`` writes them: materials and colours
+    # upper-cased, a model through ``normalize_model_name`` — so ``x1c`` and
+    # «Bambu Lab X1 Carbon» from a link find the same printer.
+    raw = value.strip()
+    if kind == "model":
+        wanted = normalize_model_name(raw) or raw
+    else:
+        wanted = raw.upper()
+    return product_facets.visible_facet(ProductFacet.kind == kind, ProductFacet.value == wanted)
 
 
 async def _in_stock_ids(db: AsyncSession, conditions: list) -> list[int]:
@@ -399,13 +438,15 @@ async def _in_stock_ids(db: AsyncSession, conditions: list) -> list[int]:
         .scalars()
         .all()
     )
-    if not ids:
-        return []
-    parts: dict[int, list[ProductPart]] = {}
-    for part in (await db.execute(select(ProductPart).where(ProductPart.product_id.in_(ids)))).scalars():
-        parts.setdefault(part.product_id, []).append(part)
-    stock = await part_stock.balances_for_products(db, ids)
-    return [pid for pid in ids if part_stock.kits_available(stock.get(pid, {}), parts.get(pid, [])) > 0]
+    kept: list[int] = []
+    # In chunks — a whole catalog in one IN would pass asyncpg's bind-parameter limit.
+    for chunk in product_facets.id_chunks(ids):
+        parts: dict[int, list[ProductPart]] = {}
+        for part in (await db.execute(select(ProductPart).where(ProductPart.product_id.in_(chunk)))).scalars():
+            parts.setdefault(part.product_id, []).append(part)
+        stock = await part_stock.balances_for_products(db, chunk)
+        kept += [pid for pid in chunk if part_stock.kits_available(stock.get(pid, {}), parts.get(pid, [])) > 0]
+    return kept
 
 
 async def _category_counts(db: AsyncSession, conditions: list) -> tuple[list[CategoryCount], int]:
@@ -558,7 +599,8 @@ async def list_product_facets(
         await db.execute(
             select(ProductFacet.kind, ProductFacet.value)
             .join(Product, Product.id == ProductFacet.product_id)
-            .where(Product.origin == ProductOrigin.CATALOG.value)
+            .join(LibraryFile, LibraryFile.id == ProductFacet.library_file_id)
+            .where(Product.origin == ProductOrigin.CATALOG.value, LibraryFile.deleted_at.is_(None))
             .distinct()
         )
     ).all()
@@ -581,7 +623,7 @@ async def create_product(
     db.add(product)
     await db.flush()
     await _apply_catalog_fields(db, product, data.model_dump(include=set(CATALOG_FIELDS)))
-    await db.flush()
+    await _flush_catalog(db)
     return await _response(db, product)
 
 
@@ -727,7 +769,7 @@ async def update_product(
     await _apply_catalog_fields(db, product, data.model_dump(include=data.model_fields_set & set(CATALOG_FIELDS)))
     for field_name in data.model_fields_set - set(CATALOG_FIELDS):  # explicit null clears; absent leaves alone
         setattr(product, field_name, getattr(data, field_name))
-    await db.flush()
+    await _flush_catalog(db)
     return await _response(db, product)
 
 

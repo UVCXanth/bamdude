@@ -109,3 +109,32 @@ async def test_the_seed_fills_existing_products(db_session, test_engine):
     await m188.seed(async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False))
 
     assert await _facets(db_session, p.id) == {("material", "PLA"), ("color", "#00FF00"), ("model", "X1C")}
+
+
+@pytest.mark.asyncio
+async def test_each_row_remembers_the_file_it_came_from(db_session):
+    p = await _product(db_session, "Two files")
+    a, b = await _file(db_session, "x.gcode.3mf", PETG), await _file(db_session, "y.gcode.3mf", PETG)
+    for f in (a, b):
+        await sync_product_for_file(db_session, library_file_id=f.id, product_ids=[p.id])
+    rows = (
+        await db_session.execute(
+            select(ProductFacet.library_file_id).where(ProductFacet.product_id == p.id, ProductFacet.kind == "material")
+        )
+    ).scalars()
+    assert sorted(rows) == sorted([a.id, b.id])
+
+
+@pytest.mark.asyncio
+async def test_refresh_all_works_in_chunks(db_session, monkeypatch):
+    monkeypatch.setattr(product_facets, "SQL_CHUNK", 1)
+    ids = []
+    for n in range(3):
+        p = await _product(db_session, f"P{n}")
+        f = await _file(db_session, f"c{n}.gcode.3mf", PLA)
+        await sync_product_for_file(db_session, library_file_id=f.id, product_ids=[p.id])
+        await product_facets.delete_for_product(db_session, p.id)
+        ids.append(p.id)
+    await product_facets.refresh_all(db_session)
+    for pid in ids:
+        assert await _facets(db_session, pid) == {("material", "PLA"), ("color", "#00FF00"), ("model", "X1C")}

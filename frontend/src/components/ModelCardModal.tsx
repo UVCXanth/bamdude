@@ -21,7 +21,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { api, getAuthToken, withStreamToken } from '../api/client';
-import { invalidateOrderViews } from '../utils/queryInvalidation';
+import { invalidateOrderViews, invalidateProductCatalog } from '../utils/queryInvalidation';
 import type { CardAux } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -609,7 +609,7 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
   const create = useMutation({
     mutationFn: () => api.createProductFromFile(fileId),
     onSuccess: (product) => {
-      queryClient.invalidateQueries({ queryKey: ['products'] });
+      invalidateProductCatalog(queryClient);
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       onClose();
       navigate(`/products/${product.id}`);

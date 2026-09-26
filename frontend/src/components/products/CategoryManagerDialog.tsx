@@ -18,7 +18,14 @@ const FIELD_CLASS =
  * A rename is one row — every product shows the new name. Deleting leaves the
  * category's products uncategorized, and the confirmation says how many.
  */
-export function CategoryManagerDialog({ onClose }: { onClose: () => void }) {
+export function CategoryManagerDialog({
+  onClose,
+  onDeleted,
+}: {
+  onClose: () => void;
+  /** Told which category went, so a page filtered by it can drop the filter. */
+  onDeleted?: (id: number) => void;
+}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -69,8 +76,9 @@ export function CategoryManagerDialog({ onClose }: { onClose: () => void }) {
   });
   const remove = useMutation({
     mutationFn: (id: number) => api.deleteProductCategory(id),
-    onSuccess: () => {
+    onSuccess: (_res, id) => {
       setDeleting(null);
+      onDeleted?.(id);
       refresh();
     },
     onError,

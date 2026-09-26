@@ -17,7 +17,7 @@ import { LinkedFiles } from '../../components/products/LinkedFiles';
 import { ProductOrders } from '../../components/products/ProductOrders';
 import { ProductCardDialog } from '../../components/products/ProductCardDialog';
 import { ConfirmModal } from '../../components/ConfirmModal';
-import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
+import { invalidateAfterDelete, invalidateOrderViews, invalidateProductCatalog } from '../../utils/queryInvalidation';
 import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 import { useProductDetail } from '../../hooks/useProductDetail';
 
@@ -75,7 +75,7 @@ export function ProductPage() {
     mutationFn: () => api.updateProduct(id, { origin: 'catalog' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['product', id] });
-      queryClient.invalidateQueries({ queryKey: ['products'] });
+      invalidateProductCatalog(queryClient);
       showToast(t('products.toast.promoted'));
     },
     onError: (e: Error) => showToast(e.message, 'error'),
@@ -88,7 +88,7 @@ export function ProductPage() {
     // Invalidating them would refetch every order on the way out of a page
     // nobody is coming back to.
     onSuccess: (saved) => {
-      queryClient.invalidateQueries({ queryKey: ['products'] });
+      invalidateProductCatalog(queryClient);
       showToast(t('products.toast.duplicated'));
       navigate(`/products/${saved.id}`);
     },

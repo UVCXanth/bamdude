@@ -7,7 +7,7 @@ import { api } from '../../api/client';
 import type { Product, ProductListItem, ProductStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
-import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
+import { invalidateAfterDelete, invalidateOrderViews, invalidateProductCatalog } from '../../utils/queryInvalidation';
 import { ProductCard } from '../../components/products/ProductCard';
 import { ProductsTable } from '../../components/products/ProductsTable';
 import { ListPageHeader } from '../../components/ListPageHeader';
@@ -185,7 +185,7 @@ export function ProductsPage() {
     // product that no order line names yet. Invalidating them would refetch
     // every order on the way out of a page nobody is coming back to.
     onSuccess: (saved) => {
-      queryClient.invalidateQueries({ queryKey: ['products'] });
+      invalidateProductCatalog(queryClient);
       showToast(t('products.toast.duplicated'));
       navigate(`/products/${saved.id}`);
     },
@@ -314,7 +314,16 @@ export function ProductsPage() {
         </div>
       </div>
 
-      {managing && <CategoryManagerDialog onClose={() => setManaging(false)} />}
+      {managing && (
+        <CategoryManagerDialog
+          onClose={() => setManaging(false)}
+          // A deleted category the list is filtered by would leave an empty
+          // list under a selection that no longer exists.
+          onDeleted={(id) => {
+            if (extra.category === String(id)) setExtra('category', '');
+          }}
+        />
+      )}
 
       {editing && <ProductCardDialog product={editing === 'new' ? null : editing} onClose={() => setEditing(null)} />}
 

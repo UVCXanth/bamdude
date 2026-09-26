@@ -48,3 +48,18 @@ async def test_deleting_a_category_leaves_its_products_uncategorized(committing_
     await db_session.refresh(p)
     assert p.category_id is None
     assert (await committing_client.delete(f"/api/v1/product-categories/{cat['id']}")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_name_that_lost_a_race_is_409_not_500(committing_client, monkeypatch):
+    from backend.app.api.routes import product_categories
+
+    async def no_duplicate(db, name, own_id=None):
+        return None
+
+    monkeypatch.setattr(product_categories, "_refuse_duplicate", no_duplicate)
+    assert (await committing_client.post("/api/v1/product-categories", json={"name": "Race"})).status_code == 200
+    assert (await committing_client.post("/api/v1/product-categories", json={"name": "RACE"})).status_code == 409
+    other = (await committing_client.post("/api/v1/product-categories", json={"name": "Other"})).json()
+    renamed = await committing_client.patch(f"/api/v1/product-categories/{other['id']}", json={"name": "race"})
+    assert renamed.status_code == 409

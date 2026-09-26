@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
+import { invalidateProductCatalog } from '../../utils/queryInvalidation';
 import { selectableProducts } from '../../utils/projects';
 import { useBoundIds } from '../../hooks/useBoundIds';
 import { useToast } from '../../contexts/ToastContext';
@@ -46,7 +47,7 @@ export function ProductPicker({ value, onChange, disabled, allowCreate }: Produc
   const createMutation = useMutation({
     mutationFn: (name: string) => api.createProduct({ name }),
     onSuccess: (created) => {
-      queryClient.invalidateQueries({ queryKey: ['products'] });
+      invalidateProductCatalog(queryClient);
       onChange(created.id);
       setFilter('');
     },

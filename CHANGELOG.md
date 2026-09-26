@@ -42,8 +42,8 @@
   version, and a category chosen from a list you keep in one place — rename a
   category and every product shows the new name; delete it and its products
   become uncategorized. Each product is a **draft** until you mark it **ready
-  to print**, which needs at least one part and one plate; products that
-  already have both start as ready. A ready product that later loses its parts
+  to print**, which needs at least one part and one plate (a file in the
+  trash does not count); products that already have both start as ready. A ready product that later loses its parts
   or plates is not demoted behind your back — it is marked «incomplete». The
   catalog has a category panel with counts beside the list, and filters for
   material, colour, printer model, status and «in stock», all kept in the
@@ -52,7 +52,8 @@
   colour. A plate shows the printer model it was sliced for, and the sidebar
   counts the drafts beside «Products». Material, colour and model are stored
   with the product and refreshed when its plates change, so filtering a large
-  catalog stays fast.
+  catalog stays fast; a file in the trash drops out of the filters and the
+  search, and comes back when it is restored.
 - **An order's Queue section shows everything the order has in the queue.**
   It used to list only jobs already on a printer's queue, so work the order
   plan had just queued counted in the «In queue» tile but was nowhere in the

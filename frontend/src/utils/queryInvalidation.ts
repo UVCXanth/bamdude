@@ -162,11 +162,32 @@ const DELETE_KEYS: Record<DeletedKind, readonly string[]> = {
   // reservation and re-credits its finished prints, so the shelf moves — and
   // the page that deleted it is usually a LIST, which knows no product at all.
   order: ['projects', 'customers', 'customer', 'product-stock', 'product', 'products'],
-  // An order card renders the product's cover off the `projects` query.
-  product: ['products', 'projects'],
+  // An order card renders the product's cover off the `projects` query; the
+  // catalog's filter choices and category counts lose the product too.
+  product: ['products', 'projects', 'product-facets', 'product-categories'],
   // The orders survive their customer and lose the denormalised name.
   customer: ['customers', 'projects'],
 };
+
+/**
+ * The catalog's server figures (spec workshop-product-catalog) — the list with
+ * its category panel, the sidebar's drafts badge, the filter choices and the
+ * directory's per-category counts. Every mutation that creates a product or
+ * changes its files calls this, never `['products']` alone: a duplicate always
+ * makes a new draft, and a newly linked file can bring a material the filter did
+ * not offer. `__tests__/utils/productCatalogInvalidation.test.ts` scans for the
+ * call sites.
+ */
+export const PRODUCT_CATALOG_KEYS: readonly (readonly string[])[] = [
+  ['products'],
+  ['projects', 'nav-badges'],
+  ['product-facets'],
+  ['product-categories'],
+];
+
+export function invalidateProductCatalog(qc: QueryClient): void {
+  for (const queryKey of PRODUCT_CATALOG_KEYS) qc.invalidateQueries({ queryKey: [...queryKey] });
+}
 
 /** The DETAIL key of one deleted row — an order's page is `['project', id]`. */
 const DETAIL_KEY: Record<DeletedKind, string> = {

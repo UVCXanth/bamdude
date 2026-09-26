@@ -38,6 +38,15 @@ describe('CategoryManagerDialog', () => {
     await waitFor(() => expect(del).toHaveBeenCalledWith(3));
   });
 
+  it('tells the page which category went, so a selection of it can be dropped', async () => {
+    vi.spyOn(api, 'deleteProductCategory').mockResolvedValue({ message: 'ok', uncategorized: 2 });
+    const onDeleted = vi.fn();
+    render(<CategoryManagerDialog onClose={() => {}} onDeleted={onDeleted} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Hooks' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledWith(3));
+  });
+
   it('says «product» for one', async () => {
     render(<CategoryManagerDialog onClose={() => {}} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Delete Vases' }));

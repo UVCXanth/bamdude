@@ -35,11 +35,16 @@ add here while the branch is unreleased:
   colours and printer models, STORED and written only by
   ``services/product_facets.py``. Seeds: a product that already has a part
   and a plate is ``ready`` (owner, 2026-09-26: products already printing stay
-  printable); the rest stay ``draft``. The status seed only ever promotes a
-  qualifying draft, so it is safe to run again.
+  printable) — a plate of a trashed file is no plate, as on every list; the rest
+  stay ``draft``. The status seed only ever promotes a qualifying draft, so it
+  is safe to run again. A facet row names its file, and the catalog skips a
+  trashed file's rows (owner, 2026-09-27); a ``product_facets`` from before that
+  column is dropped and rebuilt — it is derived, and the seed refills it. The
+  two case-free keys are wide enough for casefold(), which may lengthen text
+  threefold.
 """
 
-from backend.app.migrations.helpers import add_column, table_exists
+from backend.app.migrations.helpers import add_column, column_exists, table_exists
 
 version = 188
 name = "order_stage_journal"
@@ -101,26 +106,31 @@ async def upgrade(conn):
                 CREATE TABLE product_categories (
                     id {pk},
                     name VARCHAR(128) NOT NULL,
-                    name_key VARCHAR(128) NOT NULL UNIQUE,
+                    name_key VARCHAR(512) NOT NULL UNIQUE,
                     created_at {ts} NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
         await add_column(conn, "products", "sku VARCHAR(64)")
-        await add_column(conn, "products", "sku_key VARCHAR(64)")
+        await add_column(conn, "products", "sku_key VARCHAR(255)")
         await add_column(conn, "products", "version VARCHAR(64)")
         await add_column(conn, "products", "category_id INTEGER REFERENCES product_categories(id) ON DELETE SET NULL")
         await add_column(conn, "products", "status VARCHAR(16) NOT NULL DEFAULT 'draft'")
         await conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ix_products_sku_key ON products (sku_key)")
         await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_products_category_id ON products (category_id)")
+        if await table_exists(conn, "product_facets") and not await column_exists(
+            conn, "product_facets", "library_file_id"
+        ):
+            await conn.exec_driver_sql("DROP TABLE product_facets")
         if not await table_exists(conn, "product_facets"):
             await conn.exec_driver_sql(
                 """
                 CREATE TABLE product_facets (
                     product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                    library_file_id INTEGER NOT NULL REFERENCES library_files(id) ON DELETE CASCADE,
                     kind VARCHAR(16) NOT NULL,
                     value VARCHAR(64) NOT NULL,
-                    PRIMARY KEY (product_id, kind, value)
+                    PRIMARY KEY (product_id, library_file_id, kind, value)
                 )
                 """
             )
@@ -129,11 +139,12 @@ async def upgrade(conn):
         )
         # Products already printing stay ready; only incomplete ones become drafts
         # (owner, 2026-09-26). Idempotent: only ever promotes drafts that qualify.
-        if await table_exists(conn, "product_parts") and await table_exists(conn, "product_plates"):
+        if all([await table_exists(conn, t) for t in ("product_parts", "product_plates", "library_files")]):
             await conn.exec_driver_sql(
                 "UPDATE products SET status = 'ready' WHERE status = 'draft'"
                 " AND EXISTS (SELECT 1 FROM product_parts pp WHERE pp.product_id = products.id)"
-                " AND EXISTS (SELECT 1 FROM product_plates pl WHERE pl.product_id = products.id)"
+                " AND EXISTS (SELECT 1 FROM product_plates pl JOIN library_files lf ON lf.id = pl.library_file_id"
+                " WHERE pl.product_id = products.id AND lf.deleted_at IS NULL)"
             )
 
 

@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { FileArchive, Loader2, Upload } from 'lucide-react';
 import { api, ApiError } from '../../api/client';
+import { invalidateProductCatalog } from '../../utils/queryInvalidation';
 import { useToast } from '../../contexts/ToastContext';
 import { FolderTreePicker } from '../FolderTreePicker';
 import { Button } from '../Button';
@@ -52,7 +53,7 @@ export function ImportProductDialog({ onClose }: ImportProductDialogProps) {
   const run = useMutation({
     mutationFn: (chosen: File) => api.importProduct(chosen, folderId),
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['products'] });
+      invalidateProductCatalog(queryClient);
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
       // One toast, every warning in it: they are one answer to one question,
