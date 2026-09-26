@@ -5408,6 +5408,9 @@ export default {
       tabAll: 'Усі',
       noCustomer: 'Без замовника',
       customerFilterAll: 'Усі замовники',
+      responsible: 'Відповідальний',
+      responsibleAll: 'Усі відповідальні',
+      responsibleMine: 'Мої',
       groupByCustomer: 'Групувати за замовником',
       searchPlaceholder: 'Пошук замовлень, замовників або тегів…',
       items_one: 'замовлення',
@@ -5435,6 +5438,8 @@ export default {
       due: 'Дедлайн',
       readyAt: 'Готово',
       machineHours: 'Маш.-год',
+      stage: 'Етап',
+      responsible: 'Відповідальний',
     },
     card: {
       lines_one: '{{count}} позиція',

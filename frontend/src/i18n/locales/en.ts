@@ -5381,6 +5381,9 @@ export default {
       tabAll: 'All',
       noCustomer: 'No customer',
       customerFilterAll: 'All customers',
+      responsible: 'Responsible',
+      responsibleAll: 'All responsible',
+      responsibleMine: 'Mine',
       groupByCustomer: 'Group by customer',
       searchPlaceholder: 'Search orders, customers or tags…',
       items_one: 'order',
@@ -5406,6 +5409,8 @@ export default {
       due: 'Due',
       readyAt: 'Ready',
       machineHours: 'Machine h',
+      stage: 'Stage',
+      responsible: 'Responsible',
     },
     card: {
       lines_one: '{{count}} line',

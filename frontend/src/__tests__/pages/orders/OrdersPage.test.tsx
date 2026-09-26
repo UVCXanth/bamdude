@@ -39,6 +39,21 @@ describe('OrdersPage', () => {
     vi.spyOn(api, 'getCustomers').mockResolvedValue([{ id: 1, name: 'ACME', figures: {} }] as never);
     vi.spyOn(api, 'getOrdersFilament').mockResolvedValue(EMPTY_FARM);
     vi.spyOn(api, 'getOrdersSummary').mockResolvedValue({ active: 4, overdue: 1, urgent: 2, printing: 3, queued: 7, remaining: 12, all_covered: 1 });
+    vi.spyOn(api, 'getOrderAssignees').mockResolvedValue([]);
+  });
+  it('filters by responsible — «Mine» asks for the signed-in user, and the choice lands in the URL', async () => {
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    vi.spyOn(api, 'getOrderAssignees').mockResolvedValue([{ id: 1, username: 'admin' }, { id: 7, username: 'ira' }]);
+    window.history.pushState({}, '', '/projects');
+    render(<OrdersPage />);
+    const select = await screen.findByLabelText('Responsible');
+    await screen.findByRole('option', { name: 'ira' });
+    fireEvent.change(select, { target: { value: '7' } });
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ responsible_id: 7, page: 1 })));
+    expect(window.location.search).toContain('responsible=7');
+    fireEvent.change(select, { target: { value: 'me' } });
+    // The msw user is id 1 (__tests__/mocks/handlers.ts, /auth/me).
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ responsible_id: 1 })));
   });
   it('draws the farm tiles from the summary, whatever the filter', async () => {
     vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));

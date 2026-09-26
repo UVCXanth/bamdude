@@ -45,7 +45,7 @@ const PER_PAGE_STORAGE_KEY = 'projects.perPage';
  */
 export function OrdersPage() {
   const { t } = useTranslation();
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -54,7 +54,7 @@ export function OrdersPage() {
   const views = useCardsTableViews();
   const sortOptions = useOrderSortOptions();
   const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
-    defaults: { sort: ORDERS_DEFAULT_SORT[view], extra: { tab: 'active', customer: '' } },
+    defaults: { sort: ORDERS_DEFAULT_SORT[view], extra: { tab: 'active', customer: '', responsible: '' } },
   });
   // Another view is another default order, so the page it stood on means nothing there.
   const setView = (next: ListView) => {
@@ -65,6 +65,14 @@ export function OrdersPage() {
     ? (extra.tab as ProjectStatus | 'all')
     : 'active';
   const customerId = extra.customer && Number.isInteger(Number(extra.customer)) ? Number(extra.customer) : null;
+  // «Mine» stays `me` in the URL — a link means the same for whoever opens it —
+  // and is resolved to the signed-in user's id only for the request.
+  const responsibleId =
+    extra.responsible === 'me'
+      ? (user?.id ?? null)
+      : extra.responsible && Number.isInteger(Number(extra.responsible))
+        ? Number(extra.responsible)
+        : null;
   const { typed, setTyped, forget } = useSearchBox(q, setQ);
   const [perPage, setPerPage] = usePersistedState<number>(PER_PAGE_STORAGE_KEY, 24, parsePageSize);
   const [groupByCustomer, setGroupByCustomer] = useState<boolean>(() => {
@@ -80,6 +88,7 @@ export function OrdersPage() {
   const params = {
     ...(tab !== 'all' ? { status: tab } : {}),
     ...(customerId != null ? { customer_id: customerId } : {}),
+    ...(responsibleId != null ? { responsible_id: responsibleId } : {}),
     ...(q ? { q } : {}),
     sort_by: sort,
     page,
@@ -92,6 +101,7 @@ export function OrdersPage() {
     placeholderData: keepPreviousData,
   });
   const { data: customers = [] } = useQuery({ queryKey: ['customers'], queryFn: api.getCustomers });
+  const { data: assignees = [] } = useQuery({ queryKey: ['order-assignees'], queryFn: api.getOrderAssignees });
   // A delete (ours or someone else's) can leave us past the last page. Only an
   // answer for THIS view may clamp: the previous page's, still on screen while
   // the next loads, knows nothing about how many pages the new filter has.
@@ -180,6 +190,20 @@ export function OrdersPage() {
           {customers.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
+            </option>
+          ))}
+        </Select>
+
+        <Select
+          aria-label={t('orders.list.responsible')}
+          value={extra.responsible}
+          onChange={(e) => setExtra('responsible', e.target.value)}
+        >
+          <option value="">{t('orders.list.responsibleAll')}</option>
+          <option value="me">{t('orders.list.responsibleMine')}</option>
+          {assignees.map((u) => (
+            <option key={u.id} value={u.id}>
+              {u.username}
             </option>
           ))}
         </Select>

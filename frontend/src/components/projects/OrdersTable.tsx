@@ -6,7 +6,8 @@ import { api } from '../../api/client';
 import type { OrderForecast, OrderListItem } from '../../api/client';
 import { SortableHeader } from '../SortableHeader';
 import { ProgressBar } from './ProgressBar';
-import { StatusBadge } from './StatusBadge';
+import { ResponsibleName } from './ResponsibleName';
+import { StageBadge } from './StageBadge';
 import { ForecastHint } from './ForecastHint';
 import { etaFull, etaShort, hoursMinutes } from '../../utils/forecast';
 import { isOverdue } from '../../utils/orderDates';
@@ -58,7 +59,9 @@ export function OrdersTable({
             <tr>
               {header('name', t('orders.table.name'))}
               {header('customer', t('orders.table.customer'))}
-              <th className="font-normal p-2 text-left">{t('orders.table.status')}</th>
+              {/* The stage replaces the status (spec workshop-order-stage, rule 30): the
+                  status is on the tabs, and a cancelled order shows it in this cell. */}
+              {header('stage', t('orders.table.stage'))}
               <th className="font-normal p-2 text-right">{t('orders.table.ordered')}</th>
               <th className="font-normal p-2 text-right">{t('orders.table.printed')}</th>
               <th className="font-normal p-2 text-right">{t('orders.table.fromStock')}</th>
@@ -69,6 +72,7 @@ export function OrdersTable({
               {header('due', t('orders.table.due'))}
               {header('ready', t('orders.table.readyAt'))}
               {header('hours', t('orders.table.machineHours'), true)}
+              <th className="font-normal p-2 text-left">{t('orders.table.responsible')}</th>
             </tr>
           </thead>
           <tbody>
@@ -79,7 +83,7 @@ export function OrdersTable({
                     <div className="text-xs text-bambu-gray">{o.code}</div>
                   </td>
                   <td className="p-2 text-bambu-gray">{o.customer_name ?? ''}</td>
-                  <td className="p-2"><StatusBadge status={o.status} /></td>
+                  <td className="p-2"><StageBadge stage={o.stage} status={o.status} /></td>
                   <td className="p-2 text-right tabular-nums">{o.ordered}</td>
                   <td className="p-2 text-right tabular-nums">{o.printed}</td>
                   <td className="p-2 text-right tabular-nums">{o.from_stock_units}</td>
@@ -124,6 +128,9 @@ export function OrdersTable({
                     ) : (
                       '…'
                     )}
+                  </td>
+                  <td className="p-2 text-xs whitespace-nowrap">
+                    <ResponsibleName name={o.responsible_name} />
                   </td>
                 </tr>
             ))}

@@ -11,6 +11,7 @@ export function useOrderSortOptions(): ListSortOption[] {
     { key: 'name', label: t('orders.table.name') },
     { key: 'due', label: t('orders.table.due') },
     { key: 'priority', label: t('orders.modal.priority'), descFirst: true },
+    { key: 'stage', label: t('orders.table.stage') },
     { key: 'customer', label: t('orders.table.customer') },
     { key: 'progress', label: t('orders.table.progress'), descFirst: true },
     { key: 'remaining', label: t('orders.table.remaining'), descFirst: true },

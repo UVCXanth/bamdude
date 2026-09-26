@@ -66,6 +66,14 @@ describe('OrderCard', () => {
     // Scoped to the card: the rule is "a hidden bar leaves no bare 0 behind", not "the card never shows a zero" (pre-flight ruling 1).
     expect(strayZeroTextNodes(screen.getByTestId('order-1-card'))).toHaveLength(0);
   });
+  it('shows the stage rather than the status, and who is responsible', () => {
+    render(<OrderCard order={{ ...base, stage: 'qc', responsible_name: 'ira' }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    expect(screen.getByText('Quality check')).toBeInTheDocument();
+    expect(screen.queryByText('Active')).not.toBeInTheDocument();
+    expect(screen.getByText('IR')).toBeInTheDocument();
+    expect(screen.getByText('ira')).toBeInTheDocument();
+  });
+
   it('flags an overdue active order', () => {
     render(<OrderCard order={{ ...base, due_date: '2020-01-01' }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
     expect(screen.getByText(/overdue/i)).toBeInTheDocument();

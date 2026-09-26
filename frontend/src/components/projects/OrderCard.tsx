@@ -6,9 +6,10 @@ import type { OrderListItem, ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { isOverdue } from '../../utils/orderDates';
 import { CardActionMenu, CardActionMenuItem } from '../CardActionMenu';
-import { StatusBadge } from './StatusBadge';
+import { StageBadge } from './StageBadge';
 import { PriorityBadge } from './PriorityBadge';
 import { ProgressBar } from './ProgressBar';
+import { ResponsibleName } from './ResponsibleName';
 
 interface OrderCardProps {
   order: OrderListItem;
@@ -168,7 +169,7 @@ export function OrderCard({ order, onEdit, onDuplicate, onSetStatus, onDelete }:
           {order.customer_name && <p className="text-sm text-bambu-gray truncate">{order.customer_name}</p>}
 
           <div className="flex items-center gap-1.5 flex-wrap">
-            <StatusBadge status={order.status} />
+            <StageBadge stage={order.stage} status={order.status} />
             <PriorityBadge priority={order.priority} />
           </div>
 
@@ -211,6 +212,10 @@ export function OrderCard({ order, onEdit, onDuplicate, onSetStatus, onDelete }:
           )}
 
           <p className="text-xs text-bambu-gray">{t('orders.card.lines', { count: order.lines_count })}</p>
+
+          {order.responsible_name && (
+            <ResponsibleName name={order.responsible_name} className="text-xs text-bambu-gray" />
+          )}
         </div>
       </div>
 

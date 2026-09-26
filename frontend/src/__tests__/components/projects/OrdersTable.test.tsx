@@ -138,4 +138,23 @@ describe('OrdersTable', () => {
     expect(ready).not.toHaveTextContent('No estimate');
     expect(screen.getByTestId('order-1-machine-hours')).toHaveTextContent('—');
   });
+
+  it('shows the stage in place of the status, sorts by it, and names who is responsible', async () => {
+    const onSort = vi.fn();
+    render(
+      <OrdersTable
+        orders={[row({ id: 1, stage: 'printing', responsible_name: 'olena.koval' }), row({ id: 2, stage: null, status: 'cancelled' })]}
+        sort="updated-desc"
+        onSortChange={onSort}
+      />,
+    );
+    expect(screen.queryByRole('columnheader', { name: 'Status' })).not.toBeInTheDocument();
+    expect(screen.getByText('Printing')).toBeInTheDocument();
+    expect(screen.getByText('Cancelled')).toBeInTheDocument(); // a cancelled order has no stage
+    expect(screen.getByText('OK')).toBeInTheDocument();
+    expect(screen.getByText('olena.koval')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Responsible' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Stage' }));
+    expect(onSort).toHaveBeenLastCalledWith('stage-asc');
+  });
 });
