@@ -54,7 +54,14 @@ async def test_page_gives_the_envelope_with_tab_totals_under_the_filters(async_c
     assert [o["name"] for o in body["items"]] == ["a1"]
     assert body["meta"] == {"total": 1, "current_page": 1, "per_page": 24, "last_page": 1}
     # Tabs count under the customer filter, ignoring the status filter.
-    assert body["totals"] == {"active": 1, "completed": 1, "cancelled": 0, "all": 2}
+    # The stage counts follow the same filters, active orders only (spec workshop-order-stage, rule 27).
+    assert body["totals"] == {
+        "active": 1,
+        "completed": 1,
+        "cancelled": 0,
+        "all": 2,
+        "stages": {"prep": 1, "printing": 0, "qc": 0},
+    }
 
 
 @pytest.mark.asyncio

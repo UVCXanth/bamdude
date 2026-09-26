@@ -15,6 +15,14 @@ from backend.app.schemas.project import ProjectListResponse
 from backend.app.schemas.stock import StockListItem
 
 
+class OrderStageCounts(BaseModel):
+    """Active orders per stage under every filter but status and stage (spec workshop-order-stage, rule 27)."""
+
+    prep: int = 0
+    printing: int = 0
+    qc: int = 0
+
+
 class OrderListTotals(BaseModel):
     """Tab counts over the current filters WITHOUT the status filter."""
 
@@ -22,6 +30,7 @@ class OrderListTotals(BaseModel):
     completed: int
     cancelled: int
     all: int
+    stages: OrderStageCounts
 
 
 class OrderListPage(BaseModel):

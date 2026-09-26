@@ -46,10 +46,17 @@ from backend.app.schemas.farm_forecast import (
     RowForecastOut,
 )
 from backend.app.schemas.filament_needs import FarmNeedsOut, FarmRowOut, NeedRowOut, OrderNeedsOut
-from backend.app.schemas.listing import OrderListPage, OrderListTotals, OrdersSummary, ProjectsNavBadges
+from backend.app.schemas.listing import (
+    OrderListPage,
+    OrderListTotals,
+    OrdersSummary,
+    OrderStageCounts,
+    ProjectsNavBadges,
+)
 from backend.app.schemas.order_from_files import OrderFromFilesRequest
 from backend.app.schemas.project import (
     PROJECT_PRIORITIES,
+    PROJECT_STAGES,
     PROJECT_STATUSES,
     BankSurplusResponse,
     BatchAddArchives,
@@ -277,6 +284,14 @@ _PRIORITY_RANK = case(
     (Project.priority == "high", 2),
     else_=3,
 )
+# prep < printing < qc < completed («done») < cancelled (spec workshop-order-stage, rule 27).
+_STAGE_RANK = case(
+    (Project.status == "cancelled", 4),
+    (Project.status == "completed", 3),
+    (Project.stage == "prep", 0),
+    (Project.stage == "printing", 1),
+    else_=2,
+)
 _ORDER_SORT = SortSpec(
     sql={
         "updated": (Project.updated_at, False),
@@ -285,6 +300,7 @@ _ORDER_SORT = SortSpec(
         "due": (Project.due_date, True),
         "priority": (_PRIORITY_RANK, False),
         "customer": (func.lower(Customer.name), True),
+        "stage": (_STAGE_RANK, False),
     },
     computed={"progress", "remaining", "printing", "queued", "ready", "hours"},
     default="updated-desc",
@@ -314,24 +330,64 @@ def _order_search(query, q: str):
     return query.where(or_(*conditions))
 
 
+def _order_filters(
+    query, *, customer_id: int | None, product_id: int | None, responsible_id: int | None, stage: str | None
+):
+    """The list's filters but ``status`` and ``q`` — one copy for the rows, the tabs and the stage counts."""
+    if customer_id is not None:
+        query = query.where(Project.customer_id == customer_id)
+    if product_id is not None:
+        # "Where is this product ordered?" — a subquery over the lines rather
+        # than a join, so an order carrying two lines of the same product is
+        # still one row. Composes with the other filters.
+        query = query.where(Project.id.in_(select(ProjectLine.project_id).where(ProjectLine.product_id == product_id)))
+    if responsible_id is not None:
+        query = query.where(Project.responsible_id == responsible_id)
+    if stage is not None:
+        # «done» is not a stored stage — it is a completed order (spec workshop-order-stage, rule 2).
+        if stage == "done":
+            query = query.where(Project.status == "completed")
+        elif stage in PROJECT_STAGES:
+            query = query.where(Project.status == "active", Project.stage == stage)
+        else:
+            raise HTTPException(status_code=400, detail="Invalid stage")
+    return query
+
+
 async def _order_totals(
-    db: AsyncSession, *, customer_id: int | None, product_id: int | None, q: str | None
+    db: AsyncSession,
+    *,
+    customer_id: int | None,
+    product_id: int | None,
+    q: str | None,
+    responsible_id: int | None = None,
+    stage: str | None = None,
 ) -> OrderListTotals:
     """Tab counts under the current filters WITHOUT status, so the tabs tell the
-    truth under the chosen customer or search — not the whole farm's numbers."""
+    truth under the chosen customer or search — not the whole farm's numbers.
+
+    ``stages`` counts the ACTIVE orders per stage under every filter but status
+    and stage itself (spec workshop-order-stage, rule 27) — the columns of the
+    board, which must not collapse to the one stage being looked at."""
     base = select(Project.status, func.count(Project.id)).group_by(Project.status)
-    if customer_id is not None:
-        base = base.where(Project.customer_id == customer_id)
-    if product_id is not None:
-        base = base.where(Project.id.in_(select(ProjectLine.project_id).where(ProjectLine.product_id == product_id)))
+    base = _order_filters(
+        base, customer_id=customer_id, product_id=product_id, responsible_id=responsible_id, stage=stage
+    )
+    by_stage = select(Project.stage, func.count(Project.id)).where(Project.status == "active").group_by(Project.stage)
+    by_stage = _order_filters(
+        by_stage, customer_id=customer_id, product_id=product_id, responsible_id=responsible_id, stage=None
+    )
     if q:
         base = _order_search(base.outerjoin(Customer, Customer.id == Project.customer_id), q)
+        by_stage = _order_search(by_stage.outerjoin(Customer, Customer.id == Project.customer_id), q)
     counts = dict((await db.execute(base)).all())
+    stage_counts = dict((await db.execute(by_stage)).all())
     return OrderListTotals(
         active=counts.get("active", 0),
         completed=counts.get("completed", 0),
         cancelled=counts.get("cancelled", 0),
         all=sum(counts.values()),
+        stages=OrderStageCounts(**{name: stage_counts.get(name, 0) for name in PROJECT_STAGES}),
     )
 
 
@@ -341,6 +397,8 @@ async def list_projects(
     status: str | None = None,
     customer_id: int | None = None,
     product_id: int | None = None,
+    responsible_id: int | None = None,
+    stage: str | None = Query(None, description="prep | printing | qc (active orders) or done (completed)"),
     q: str | None = Query(
         None, description="With page set: ilike on the order name, its customer's name or its tags, or an OR code"
     ),
@@ -382,13 +440,9 @@ async def list_projects(
         if status not in PROJECT_STATUSES:
             raise HTTPException(status_code=400, detail="Invalid status")
         query = query.where(Project.status == status)
-    if customer_id is not None:
-        query = query.where(Project.customer_id == customer_id)
-    if product_id is not None:
-        # "Where is this product ordered?" — a subquery over the lines rather
-        # than a join, so an order carrying two lines of the same product is
-        # still one row. Composes with the filters above.
-        query = query.where(Project.id.in_(select(ProjectLine.project_id).where(ProjectLine.product_id == product_id)))
+    query = _order_filters(
+        query, customer_id=customer_id, product_id=product_id, responsible_id=responsible_id, stage=stage
+    )
     total = 0
     totals: OrderListTotals | None = None
     if paged:
@@ -398,7 +452,9 @@ async def list_projects(
             query = query.outerjoin(Customer, Customer.id == Project.customer_id)
         if q:
             query = _order_search(query, q)
-        totals = await _order_totals(db, customer_id=customer_id, product_id=product_id, q=q)
+        totals = await _order_totals(
+            db, customer_id=customer_id, product_id=product_id, q=q, responsible_id=responsible_id, stage=stage
+        )
         if not computed:
             total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
             query = apply_sql_sort(query, _ORDER_SORT, key, direction, Project.id)

@@ -351,6 +351,7 @@
   "Invalid spool tag format (all-zero tag is not linkable)": "Некоректний формат тегу котушки (тег із самих нулів не можна привʼязати)",
   "Invalid spool tag format (must be 16 or 32 hex characters)": "Некоректний формат тегу котушки (має бути 16 або 32 шістнадцяткові символи)",
   "Invalid spool tag format (must be hex)": "Некоректний формат тегу котушки (має бути шістнадцятковим)",
+  "Invalid stage": "Невідомий етап",
   "Invalid status": "Некоректний статус",
   "Invalid template: {}": "Некоректний шаблон: {}",
   "Invalid thumbnail URL: {}": "Неприпустимий URL мініатюри: {}",
