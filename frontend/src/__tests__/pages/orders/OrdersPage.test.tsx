@@ -89,7 +89,7 @@ describe('OrdersPage', () => {
     expect(screen.queryByRole('navigation', { name: 'Projects' })).not.toBeInTheDocument();
   });
   it('falls back to the default view when the stored one is not a mode', async () => {
-    localStorage.setItem('projects.view', 'kanban');
+    localStorage.setItem('projects.view', 'timeline');
     vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
     window.history.pushState({}, '', '/projects');
     render(<OrdersPage />);
@@ -185,6 +185,43 @@ describe('OrdersPage', () => {
     expect(screen.getByLabelText('Responsible')).toHaveValue('9');
     expect(screen.getByRole('option', { name: '#9' })).toBeInTheDocument();
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ responsible_id: 9 })));
+  });
+  it('the switch offers five views; kanban and deadlines hide the status tabs and the page bar', async () => {
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA], { meta: { total: 30, last_page: 2 } }));
+    window.history.pushState({}, '', '/projects');
+    render(<OrdersPage />);
+    await screen.findByText('Showing 1-24 of 30 orders');
+    for (const name of ['Table', 'Cards', 'Kanban', 'Workspace', 'Deadlines']) {
+      expect(screen.getByRole('button', { name })).toBeInTheDocument();
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Kanban' }));
+    await waitFor(() => expect(screen.queryByRole('tablist')).not.toBeInTheDocument());
+    expect(screen.queryByText('Showing 1-24 of 30 orders')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Deadlines' }));
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Workspace' }));
+    expect(await screen.findByRole('tablist')).toBeInTheDocument(); // the workspace pages like the list
+    fireEvent.click(screen.getByRole('button', { name: 'Table' }));
+    expect(await screen.findByText('Showing 1-24 of 30 orders')).toBeInTheDocument();
+  });
+  it('a stored kanban is restored and never asks for the list page', async () => {
+    localStorage.setItem('projects.view', 'kanban');
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    window.history.pushState({}, '', '/projects');
+    render(<OrdersPage />);
+    expect(await screen.findByRole('button', { name: 'Kanban' })).toHaveAttribute('aria-pressed', 'true');
+    await screen.findByTestId('orders-tile-active');
+    expect(get).not.toHaveBeenCalled();
+  });
+  it('a stage filter from the URL reaches the request and shows a chip that clears it', async () => {
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    window.history.pushState({}, '', '/projects?stage=qc');
+    render(<OrdersPage />);
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ stage: 'qc' })));
+    expect(screen.getByText('Stage: Quality check')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove the stage filter' }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.not.objectContaining({ stage: expect.anything() })));
+    expect(window.location.search).not.toContain('stage');
   });
   it('draws the pagination bar from meta', async () => {
     vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA], { meta: { total: 30, last_page: 2 } }));

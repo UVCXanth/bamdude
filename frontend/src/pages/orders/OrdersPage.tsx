@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { Plus } from 'lucide-react';
-import { api } from '../../api/client';
-import type { OrderListItem, ProjectStatus } from '../../api/client';
+import { Plus, X } from 'lucide-react';
+import { api, ORDER_STAGES } from '../../api/client';
+import type { OrderListItem, OrderStage, OrderViewFilters, ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { OrderModal } from '../../components/projects/OrderModal';
@@ -20,10 +20,10 @@ import { ListPageHeader } from '../../components/ListPageHeader';
 import { ListSearchBox } from '../../components/ListSearchBox';
 import { ListViewToggle } from '../../components/ListViewToggle';
 import { ListSortControl } from '../../components/ListSortControl';
-import type { ListView } from '../../components/ListViewToggle';
-import { useCardsTableViews } from '../../hooks/useCardsTableViews';
+import { useOrdersViews } from '../../hooks/useOrdersViews';
 import { useListUrlState } from '../../hooks/useListUrlState';
-import { parseListView, parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
+import { parseOrdersView, parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
+import type { OrdersView } from '../../hooks/usePersistedState';
 import { useSearchBox } from '../../hooks/useSearchBox';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
 
@@ -42,6 +42,11 @@ const PER_PAGE_STORAGE_KEY = 'projects.perPage';
  * viewer's preferences. Grouping groups the PAGE — it is not a sort. The
  * default sort follows the view (`ORDERS_DEFAULT_SORT`). The cards, the table
  * and the page bar are `OrdersListView`, shared with the customer page.
+ *
+ * Five views (spec workshop-order-views): the table, the cards and the
+ * workspace page through the list; the kanban and the deadlines ask their own
+ * endpoints, so the tabs, the page bar and the list request are theirs to skip.
+ * Search, customer and responsible filter every view alike.
  */
 export function OrdersPage() {
   const { t } = useTranslation();
@@ -50,17 +55,24 @@ export function OrdersPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
-  const [view, setViewPref] = usePersistedState<ListView>(VIEW_STORAGE_KEY, 'cards', parseListView);
-  const views = useCardsTableViews();
+  const [view, setViewPref] = usePersistedState<OrdersView>(VIEW_STORAGE_KEY, 'cards', parseOrdersView);
+  const views = useOrdersViews();
   const sortOptions = useOrderSortOptions();
   const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
-    defaults: { sort: ORDERS_DEFAULT_SORT[view], extra: { tab: 'active', customer: '', responsible: '' } },
+    defaults: { sort: ORDERS_DEFAULT_SORT[view], extra: { tab: 'active', customer: '', responsible: '', stage: '' } },
   });
   // Another view is another default order, so the page it stood on means nothing there.
-  const setView = (next: ListView) => {
+  const setView = (next: OrdersView) => {
     setViewPref(next);
     setPage(1);
   };
+  const listLike = view === 'table' || view === 'cards';
+  // The views that page through the list; the board and the deadlines never ask for it.
+  const paged = listLike || view === 'workspace';
+  // Only a stored stage counts: anything else in the URL is not a filter (the server would refuse it).
+  const stage: OrderStage | '' = (ORDER_STAGES as readonly string[]).includes(extra.stage)
+    ? (extra.stage as OrderStage)
+    : '';
   const tab: ProjectStatus | 'all' = (ORDER_TABS as readonly string[]).includes(extra.tab)
     ? (extra.tab as ProjectStatus | 'all')
     : 'active';
@@ -85,11 +97,15 @@ export function OrdersPage() {
   const [editing, setEditing] = useState<OrderListItem | null | 'new'>(null);
   const [deleting, setDeleting] = useState<OrderListItem | null>(null);
 
-  const params = {
-    ...(tab !== 'all' ? { status: tab } : {}),
+  const viewFilters: OrderViewFilters = {
     ...(customerId != null ? { customer_id: customerId } : {}),
     ...(responsibleId != null ? { responsible_id: responsibleId } : {}),
     ...(q ? { q } : {}),
+  };
+  const params = {
+    ...(tab !== 'all' ? { status: tab } : {}),
+    ...viewFilters,
+    ...(stage ? { stage } : {}),
     sort_by: sort,
     page,
     ...(perPage === -1 ? { all: true } : { per_page: perPage }),
@@ -97,6 +113,7 @@ export function OrdersPage() {
   const { data, isLoading, isPlaceholderData } = useQuery({
     queryKey: ['projects', params],
     queryFn: () => api.getOrdersPaged(params),
+    enabled: paged,
     // The old page stays on screen while the next one loads — no skeleton flash.
     placeholderData: keepPreviousData,
   });
@@ -112,7 +129,7 @@ export function OrdersPage() {
   const total = data?.meta.total ?? 0;
   // Every filter Reset clears — «Mine» with nothing of mine is a filter that
   // matched nothing, never «no orders yet» on a farm full of them.
-  const filtered = q !== '' || customerId != null || extra.responsible !== '';
+  const filtered = q !== '' || customerId != null || extra.responsible !== '' || stage !== '';
 
   // The farm-wide filament strip over the list — every active order, not just the visible tab/filter.
   const filamentQuery = useQuery({ queryKey: ['orders-filament'], queryFn: api.getOrdersFilament, staleTime: 30_000 });
@@ -183,7 +200,7 @@ export function OrdersPage() {
       )}
 
       <div className="flex items-center gap-4 mb-4 flex-wrap">
-        <OrderStatusTabs tab={tab} totals={data?.totals} onChange={(key) => setExtra('tab', key)} />
+        {paged && <OrderStatusTabs tab={tab} totals={data?.totals} onChange={(key) => setExtra('tab', key)} />}
 
         <ListSearchBox value={typed} onChange={setTyped} placeholder={t('orders.list.searchPlaceholder')} />
 
@@ -217,22 +234,36 @@ export function OrdersPage() {
             )}
         </Select>
 
-        <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
-          <input
-            type="checkbox"
-            checked={groupByCustomer}
-            onChange={(e) => toggleGroupByCustomer(e.target.checked)}
-            className="accent-bambu-green"
-            aria-label={t('orders.list.groupByCustomer')}
-          />
-          {t('orders.list.groupByCustomer')}
-        </label>
+        {listLike && (
+          <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
+            <input
+              type="checkbox"
+              checked={groupByCustomer}
+              onChange={(e) => toggleGroupByCustomer(e.target.checked)}
+              className="accent-bambu-green"
+              aria-label={t('orders.list.groupByCustomer')}
+            />
+            {t('orders.list.groupByCustomer')}
+          </label>
+        )}
 
-        {/* A table sorts from its headers; the cards need a control of their own. */}
-        {view === 'cards' && <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />}
+        {/* A table sorts from its headers; the cards and the workspace's compact rows need a control of their own. */}
+        {(view === 'cards' || view === 'workspace') && (
+          <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />
+        )}
+
+        {/* The kanban's «…and N more» lands here with the stage it came from (spec workshop-order-views, rule 9). */}
+        {paged && stage && (
+          <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-bambu-dark-tertiary text-xs text-white">
+            {t('orders.list.stageChip', { stage: t(`orders.stage.${stage}`) })}
+            <button type="button" aria-label={t('orders.list.stageChipRemove')} onClick={() => setExtra('stage', '')}>
+              <X className="w-3 h-3" />
+            </button>
+          </span>
+        )}
       </div>
 
-      {!isLoading && total === 0 && (
+      {paged && !isLoading && total === 0 && (
         filtered ? (
           <div className="flex items-center gap-3 text-bambu-gray text-sm">
             <span>{t('list.empty.noMatch')}</span>
@@ -251,25 +282,27 @@ export function OrdersPage() {
         )
       )}
 
-      <OrdersListView
-        data={data}
-        isLoading={isLoading}
-        isPlaceholderData={isPlaceholderData}
-        view={view}
-        sort={sort}
-        onSortChange={setSort}
-        perPage={perPage}
-        onPageChange={setPage}
-        onPerPageChange={(n) => {
-          setPerPage(n);
-          setPage(1);
-        }}
-        groupByCustomer={groupByCustomer}
-        onEdit={setEditing}
-        onDuplicate={(o) => duplicate.mutate(o.id)}
-        onSetStatus={(o, status) => setStatus.mutate({ id: o.id, status })}
-        onDelete={setDeleting}
-      />
+      {listLike && (
+        <OrdersListView
+          data={data}
+          isLoading={isLoading}
+          isPlaceholderData={isPlaceholderData}
+          view={view}
+          sort={sort}
+          onSortChange={setSort}
+          perPage={perPage}
+          onPageChange={setPage}
+          onPerPageChange={(n) => {
+            setPerPage(n);
+            setPage(1);
+          }}
+          groupByCustomer={groupByCustomer}
+          onEdit={setEditing}
+          onDuplicate={(o) => duplicate.mutate(o.id)}
+          onSetStatus={(o, status) => setStatus.mutate({ id: o.id, status })}
+          onDelete={setDeleting}
+        />
+      )}
 
       {editing && (
         <OrderModal order={editing === 'new' ? null : editing} defaultCustomerId={customerId} onClose={() => setEditing(null)} />

@@ -62,3 +62,11 @@ export function listViewParser<V extends string>(modes: readonly V[]): (raw: str
 export const CARDS_TABLE_MODES: readonly ListView[] = ['cards', 'table'];
 
 export const parseListView = listViewParser<ListView>(CARDS_TABLE_MODES);
+
+/** The orders page's views (spec workshop-order-views, rule 1) — its own type: products and
+ *  customers stay on `ListView`. */
+export type OrdersView = 'table' | 'cards' | 'kanban' | 'workspace' | 'deadlines';
+
+export const ORDERS_VIEW_MODES: readonly OrdersView[] = ['table', 'cards', 'kanban', 'workspace', 'deadlines'];
+
+export const parseOrdersView = listViewParser<OrdersView>(ORDERS_VIEW_MODES);

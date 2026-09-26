@@ -5403,6 +5403,14 @@ export default {
       high: 'Високий',
       urgent: 'Терміновий',
     },
+    // П'ять виглядів сторінки замовлень (спека workshop-order-views).
+    view: {
+      table: 'Таблиця',
+      cards: 'Картки',
+      kanban: 'Канбан',
+      workspace: 'Робочий простір',
+      deadlines: 'Терміни',
+    },
     list: {
       title: 'Замовлення',
       subtitle: 'Що виготовити, для кого й до якого терміну — цифри рахуються з друків і складу',
@@ -5413,6 +5421,8 @@ export default {
       responsible: 'Відповідальний',
       responsibleAll: 'Усі відповідальні',
       responsibleMine: 'Мої',
+      stageChip: 'Етап: {{stage}}',
+      stageChipRemove: 'Зняти фільтр етапу',
       groupByCustomer: 'Групувати за замовником',
       searchPlaceholder: 'Пошук замовлень, замовників або тегів…',
       items_one: 'замовлення',

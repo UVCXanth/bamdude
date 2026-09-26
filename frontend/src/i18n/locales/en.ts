@@ -5376,6 +5376,14 @@ export default {
       high: 'High',
       urgent: 'Urgent',
     },
+    // The five views of the orders page (spec workshop-order-views).
+    view: {
+      table: 'Table',
+      cards: 'Cards',
+      kanban: 'Kanban',
+      workspace: 'Workspace',
+      deadlines: 'Deadlines',
+    },
     list: {
       title: 'Orders',
       subtitle: 'What to make, for whom and by when — the figures come from the prints and the shelf',
@@ -5386,6 +5394,8 @@ export default {
       responsible: 'Responsible',
       responsibleAll: 'All responsible',
       responsibleMine: 'Mine',
+      stageChip: 'Stage: {{stage}}',
+      stageChipRemove: 'Remove the stage filter',
       groupByCustomer: 'Group by customer',
       searchPlaceholder: 'Search orders, customers or tags…',
       items_one: 'order',

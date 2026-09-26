@@ -2026,6 +2026,62 @@ function pagedSearchParams(qs: URLSearchParams, params: PagedListParams): URLSea
   return qs;
 }
 
+// ---- the orders' board and deadlines views (spec workshop-order-views) ----
+
+/** The filters every orders view shares (rule 2) — the list's, minus status, stage and page. */
+export interface OrderViewFilters {
+  customer_id?: number;
+  responsible_id?: number;
+  q?: string;
+}
+/** One kanban column: the cards shown and how many the column holds. */
+export interface OrderBoardColumn {
+  items: OrderListItem[];
+  total: number;
+}
+/** `GET /projects/board` — three active stages and the latest completed orders. */
+export interface OrderBoard {
+  prep: OrderBoardColumn;
+  printing: OrderBoardColumn;
+  qc: OrderBoardColumn;
+  done: OrderBoardColumn;
+}
+/** An order due inside the window; `late` is the server's verdict, never recomputed here. */
+export interface DeadlineOrder {
+  order: OrderListItem;
+  eta: string | null;
+  late: boolean;
+}
+/** An active order whose forecast lands in the window while its deadline does not. */
+export interface EtaMark {
+  id: number;
+  code: string;
+  name: string;
+  eta: string;
+}
+export type AttentionReason = 'overdue' | 'late_eta' | 'no_due';
+export interface AttentionOrder {
+  order: OrderListItem;
+  reason: AttentionReason;
+  eta: string | null;
+}
+/** `GET /projects/deadlines` — `start` is a date (`YYYY-MM-DD`), `eta` an instant. */
+export interface OrderDeadlines {
+  start: string;
+  days: number;
+  due: DeadlineOrder[];
+  eta_marks: EtaMark[];
+  attention: AttentionOrder[];
+}
+
+function orderViewQuery(filters: OrderViewFilters, extra: Record<string, string> = {}): URLSearchParams {
+  const qs = new URLSearchParams(extra);
+  if (filters.customer_id != null) qs.set('customer_id', String(filters.customer_id));
+  if (filters.responsible_id != null) qs.set('responsible_id', String(filters.responsible_id));
+  if (filters.q) qs.set('q', filters.q);
+  return qs;
+}
+
 // ---- the print plan (pass 3) ----
 //
 // One contiguous block mirroring `backend/app/schemas/project.py`'s own plan
@@ -11016,6 +11072,11 @@ export const api = {
     if (params.responsible_id != null) qs.set('responsible_id', String(params.responsible_id));
     return request<OrderListPage>(`/projects/?${pagedSearchParams(qs, params)}`);
   },
+  /** The kanban (spec workshop-order-views, rule 5) — the list's filters but status, stage and page. */
+  getOrderBoard: (filters: OrderViewFilters) => request<OrderBoard>(`/projects/board?${orderViewQuery(filters)}`),
+  /** The deadlines board — one forecast walk per request (rule 15). */
+  getOrderDeadlines: ({ start, days, ...filters }: OrderViewFilters & { start: string; days?: number }) =>
+    request<OrderDeadlines>(`/projects/deadlines?${orderViewQuery(filters, { start, days: String(days ?? 14) })}`),
   /** Set an active order's stage by hand (spec workshop-order-stage, rule 4). */
   setOrderStage: (id: number, stage: OrderStage) =>
     request<Order>(`/projects/${id}/stage`, { method: 'PUT', body: JSON.stringify({ stage }) }),
