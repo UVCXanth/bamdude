@@ -37,7 +37,7 @@ from backend.app.models.customer import Customer, CustomerContact
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
-from backend.app.models.product import Product, ProductPart, ProductPlate
+from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate
 from backend.app.models.project import Project, ProjectEvent
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
@@ -623,7 +623,15 @@ async def projects_nav_badges(
     loads an order — ``/summary`` computes every active order's figures and is
     the tiles', not the menu's. Declared above ``/{project_id}``."""
     active = await db.scalar(select(func.count(Project.id)).where(Project.status == "active")) or 0
-    return ProjectsNavBadges(active_orders=active)
+    drafts = (
+        await db.scalar(
+            select(func.count(Product.id)).where(
+                Product.origin == ProductOrigin.CATALOG.value, Product.is_active.is_(True), Product.status == "draft"
+            )
+        )
+        or 0
+    )
+    return ProjectsNavBadges(active_orders=active, draft_products=drafts)
 
 
 _BOARD_LIMIT = 50

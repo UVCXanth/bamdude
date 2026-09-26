@@ -852,6 +852,7 @@
   "axis must be one of: x, y, z, e": "axis має бути одним із: x, y, z, e",
   "can_access_cloud requires an owning user; create the key while authenticated as a user": "can_access_cloud потребує користувача-власника; створіть ключ, автентифікувавшись як користувач",
   "cannot reserve {} units for line {}; a reservation is never negative": "не можна зарезервувати {} одиниць для рядка замовлення {}; резерв ніколи не буває відʼємним",
+  "category must be a category id or 'none'": "category має бути id категорії або «none»",
   "days must be one of 7, 30, 180": "days має бути одним зі значень 7, 30, 180",
   "default_group_id references a non-existent group": "default_group_id посилається на неіснуючу групу",
   "event='layer_reached' requires trigger_layer >= 1": "event='layer_reached' потребує trigger_layer >= 1",

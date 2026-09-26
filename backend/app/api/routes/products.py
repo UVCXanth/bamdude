@@ -22,10 +22,11 @@ import shutil
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import delete, func, inspect as sqla_inspect, or_, select
+from sqlalchemy import and_, delete, exists, func, inspect as sqla_inspect, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from starlette.background import BackgroundTask
@@ -37,7 +38,9 @@ from backend.app.core.permissions import Permission
 from backend.app.i18n.api_errors import json_error
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.product import (
+    FACET_KINDS,
     Product,
+    ProductFacet,
     ProductOrigin,
     ProductPart,
     ProductPlate,
@@ -48,7 +51,7 @@ from backend.app.models.product import (
 from backend.app.models.product_category import ProductCategory
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
-from backend.app.schemas.listing import ProductListPage
+from backend.app.schemas.listing import CategoryCount, ProductFacetsOut, ProductListPage
 from backend.app.schemas.product import (
     AttachmentOrderRequest,
     CoverPickRequest,
@@ -338,6 +341,10 @@ _PRODUCT_SORT = SortSpec(
         "name": (func.lower(Product.name), False),
         "updated": (Product.updated_at, False),
         "created": (Product.created_at, False),
+        # spec workshop-product-catalog, rule 10 — no SKU / no category sorts last.
+        "sku": (func.lower(Product.sku), True),
+        "category": (func.lower(ProductCategory.name), True),
+        "status": (Product.status, False),
     },
     computed={"parts", "plates", "orders", "kits"},
     default="name-asc",
@@ -350,12 +357,87 @@ _PRODUCT_COMPUTED = {
 }
 
 
+def _word_matches(word: str):
+    """One search word against every field of a product (spec workshop-product-catalog, rule 8)."""
+    needle = f"%{word}%"
+    fields = [
+        Product.name.ilike(needle),
+        Product.sku.ilike(needle),
+        ProductCategory.name.ilike(needle),
+        exists().where(ProductPart.product_id == Product.id, ProductPart.name.ilike(needle)),
+        exists().where(
+            product_files.c.product_id == Product.id,
+            LibraryFile.id == product_files.c.library_file_id,
+            LibraryFile.filename.ilike(needle),
+        ),
+        exists().where(ProductFacet.product_id == Product.id, ProductFacet.value.ilike(needle)),
+    ]
+    if (product_id := id_from_query("product", word)) is not None:
+        fields.append(Product.id == product_id)
+    return or_(*fields)
+
+
+def _has_facet(kind: str, value: str):
+    # Materials and colours are stored upper-cased (``product_facets.facets_of``).
+    wanted = value.strip().upper() if kind in ("material", "color") else value.strip()
+    return exists().where(
+        ProductFacet.product_id == Product.id, ProductFacet.kind == kind, ProductFacet.value == wanted
+    )
+
+
+async def _in_stock_ids(db: AsyncSession, conditions: list) -> list[int]:
+    """The products under ``conditions`` with at least one free kit — ``kits_available``,
+    the same number the row shows, for every candidate in two grouped reads."""
+    ids = (
+        (
+            await db.execute(
+                select(Product.id)
+                .outerjoin(ProductCategory, ProductCategory.id == Product.category_id)
+                .where(*conditions)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not ids:
+        return []
+    parts: dict[int, list[ProductPart]] = {}
+    for part in (await db.execute(select(ProductPart).where(ProductPart.product_id.in_(ids)))).scalars():
+        parts.setdefault(part.product_id, []).append(part)
+    stock = await part_stock.balances_for_products(db, ids)
+    return [pid for pid in ids if part_stock.kits_available(stock.get(pid, {}), parts.get(pid, [])) > 0]
+
+
+async def _category_counts(db: AsyncSession, conditions: list) -> tuple[list[CategoryCount], int]:
+    """The category panel: one GROUP BY under every filter but the category."""
+    rows = (
+        await db.execute(
+            select(Product.category_id, ProductCategory.name, func.count(Product.id))
+            .outerjoin(ProductCategory, ProductCategory.id == Product.category_id)
+            .where(*conditions)
+            .group_by(Product.category_id, ProductCategory.name)
+        )
+    ).all()
+    uncategorized = sum(n for cid, _name, n in rows if cid is None)
+    named = sorted(
+        (CategoryCount(id=cid, name=name, count=n) for cid, name, n in rows if cid is not None and name is not None),
+        key=lambda c: (c.name.casefold(), c.id),
+    )
+    return named, uncategorized
+
+
 @router.get("", response_model=list[ProductListItem] | ProductListPage)
 @router.get("/", response_model=list[ProductListItem] | ProductListPage)
 async def list_products(
     active: bool | None = None,
     q: str | None = None,
     include_adhoc: bool = False,
+    category: str | None = Query(None, description="A category id, or 'none' for the uncategorized"),
+    material: str | None = None,
+    color: str | None = None,
+    model: str | None = None,
+    status: Literal["draft", "ready"] | None = None,
+    in_stock: bool = Query(False, description="Only products with at least one free kit"),
     sort_by: str | None = Query(None, description="With page set: '<key>-<asc|desc>'; unknown → name-asc"),
     page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
     per_page: int = Query(24, ge=1, le=200),
@@ -371,23 +453,47 @@ async def list_products(
     database and the counts below are read for that page only; a computed key
     (``parts``, ``plates``, ``orders``, ``kits``) loads the filtered catalog,
     counts it as the unpaged list always did, sorts here and slices.
+
+    Search and filters (spec workshop-product-catalog, rules 8–11): every word
+    of ``q`` must hit some field; the facet filters read the stored
+    ``product_facets``; ``in_stock`` keeps the products with a free kit. The
+    page also carries the category panel's counts — every filter but the
+    category's own.
     """
     paged = page is not None
     key, direction, computed = resolve_sort(_PRODUCT_SORT, sort_by)
-    query = select(Product).options(selectinload(Product.parts), selectinload(Product.plates))
-    if not paged:
-        query = query.order_by(Product.name)
+    conditions = []
     # The catalogue never saw an adhoc product (spec Decision 2); only a
     # caller that asks by name gets them.
     if not include_adhoc:
-        query = query.where(Product.origin == ProductOrigin.CATALOG.value)
+        conditions.append(Product.origin == ProductOrigin.CATALOG.value)
     if active is not None:
-        query = query.where(Product.is_active.is_(active))
-    if q:
-        conditions = [Product.name.ilike(f"%{q.strip()}%")]
-        if (product_id := id_from_query("product", q)) is not None:
-            conditions.append(Product.id == product_id)
-        query = query.where(or_(*conditions))
+        conditions.append(Product.is_active.is_(active))
+    if q and (words := q.split()):
+        conditions.append(and_(*(_word_matches(w) for w in words)))
+    for kind, value in (("material", material), ("color", color), ("model", model)):
+        if value and value.strip():
+            conditions.append(_has_facet(kind, value))
+    if status is not None:
+        conditions.append(Product.status == status)
+    if in_stock:
+        conditions.append(Product.id.in_(await _in_stock_ids(db, conditions)))
+    panel = await _category_counts(db, conditions) if paged else None
+    if category == "none":
+        conditions.append(Product.category_id.is_(None))
+    elif category:
+        try:
+            conditions.append(Product.category_id == int(category))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="category must be a category id or 'none'") from None
+    query = (
+        select(Product)
+        .outerjoin(ProductCategory, ProductCategory.id == Product.category_id)
+        .options(selectinload(Product.parts), selectinload(Product.plates))
+        .where(*conditions)
+    )
+    if not paged:
+        query = query.order_by(Product.name)
     total = 0
     if paged and not computed:
         total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
@@ -432,7 +538,36 @@ async def list_products(
         items = sort_computed(items, _PRODUCT_COMPUTED[key], direction, id_fn=lambda r: r.id)
         total = len(items)
         items = slice_page(items, page, per_page, all)
-    return ProductListPage(items=items, meta=page_meta(total, page, per_page, all))
+    categories, uncategorized = panel if panel else ([], 0)
+    return ProductListPage(
+        items=items,
+        meta=page_meta(total, page, per_page, all),
+        categories=categories,
+        uncategorized=uncategorized,
+    )
+
+
+@router.get("/facets", response_model=ProductFacetsOut)
+async def list_product_facets(
+    db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
+):
+    """The values the catalog's filters offer (spec workshop-product-catalog, rule 12):
+    what the catalog's products are made of and sliced for. Declared above
+    ``/{product_id}``, or ``facets`` would be read as an id."""
+    rows = (
+        await db.execute(
+            select(ProductFacet.kind, ProductFacet.value)
+            .join(Product, Product.id == ProductFacet.product_id)
+            .where(Product.origin == ProductOrigin.CATALOG.value)
+            .distinct()
+        )
+    ).all()
+    by_kind: dict[str, list[str]] = {kind: [] for kind in FACET_KINDS}
+    for kind, value in rows:
+        by_kind.setdefault(kind, []).append(value)
+    return ProductFacetsOut(
+        materials=sorted(by_kind["material"]), colors=sorted(by_kind["color"]), models=sorted(by_kind["model"])
+    )
 
 
 @router.post("", response_model=ProductResponse)

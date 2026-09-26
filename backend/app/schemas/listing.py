@@ -91,9 +91,29 @@ class OrderListPage(BaseModel):
     totals: OrderListTotals
 
 
+class CategoryCount(BaseModel):
+    id: int
+    name: str
+    count: int
+
+
 class ProductListPage(BaseModel):
     items: list[ProductListItem]
     meta: PaginationMeta
+    # The catalog's category panel (spec workshop-product-catalog, rule 11):
+    # counts under every filter of the request except the category itself. A
+    # category with nothing under the filters is absent; ``uncategorized``
+    # counts the products without one.
+    categories: list[CategoryCount] = []
+    uncategorized: int = 0
+
+
+class ProductFacetsOut(BaseModel):
+    """``GET /products/facets`` — the values the catalog's filters offer."""
+
+    materials: list[str]
+    colors: list[str]
+    models: list[str]
 
 
 class CustomerListPage(BaseModel):
@@ -150,3 +170,5 @@ class ProjectsNavBadges(BaseModel):
     ``draft_products``, WS-09 ``stock_below_min``."""
 
     active_orders: int
+    # Active catalog products still in draft (spec workshop-product-catalog, rule 18).
+    draft_products: int = 0
