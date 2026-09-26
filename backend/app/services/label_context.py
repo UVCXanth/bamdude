@@ -133,9 +133,10 @@ def spoolman_context(
     color_hex = filament.get("color_hex")
     rgba = color_hex.lstrip("#") if isinstance(color_hex, str) else None
 
-    multi = filament.get("multi_color_hexes")
-    if isinstance(multi, list):
-        multi = ",".join(str(t) for t in multi)
+    # One parser for the card and the label (upstream #2967).
+    from backend.app.api.routes._spoolman_helpers import parse_spoolman_multi_colors
+
+    multi = ",".join(parse_spoolman_multi_colors(filament)) or None
 
     try:
         ean = spool_ean13(spool_id)

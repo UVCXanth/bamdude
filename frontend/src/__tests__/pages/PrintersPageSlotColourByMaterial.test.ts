@@ -29,3 +29,15 @@ describe('slot colour names ask with the material', () => {
     expect(synthesizedGuards).toHaveLength(3);
   });
 });
+
+describe("the slot card's hover header paints the assigned spool (upstream #2967)", () => {
+  it('passes the spool swatch on every assigned-spool site', () => {
+    const src = flat(printersPage);
+    for (const who of ['spoolmanSpool', 'assignment.spool']) {
+      for (const field of ['rgba', 'extra_colors', 'effect_type']) {
+        const hits = src.split(`${field}: ${who}.${field} ?? null`).length - 1;
+        expect(hits, `${who}.${field}`).toBe(3);
+      }
+    }
+  });
+});

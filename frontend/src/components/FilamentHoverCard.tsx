@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { Droplets, Copy, Check, Settings2, Package, Repeat, Unlink } from 'lucide-react';
 import { isLightColor, resolveSpoolColorName } from '../utils/colors';
+import { buildFilamentBackground, parseStops } from './filamentSwatchHelpers';
 import { Modal } from './Modal';
 
 type CardPlacement = { top: number; left: number; side: 'top' | 'bottom'; arrowLeft: number };
@@ -122,6 +123,13 @@ interface InventoryConfig {
     material: string;
     brand: string | null;
     color_name: string | null;
+    // The spool's own swatch. A tray reports one `tray_color` hex and can
+    // never describe a gradient or a surface effect, so a tri-colour roll
+    // read as one flat band (upstream #2967).
+    subtype?: string | null;
+    rgba?: string | null;
+    extra_colors?: string | null;
+    effect_type?: string | null;
     remainingWeightGrams?: number | null;
     /**
      * Pre-formatted display name from the user's spool-name template
@@ -257,6 +265,31 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
   const displayColorName = assignedColorName || data.colorName;
   const assignedRemainingWeight = inventory?.assignedSpool?.remainingWeightGrams ?? null;
 
+  // The header paints the assigned spool's own swatch whenever the spool says
+  // more than one colour or a surface effect (upstream #2967), through the
+  // builder the Inventory swatches use, so the two cannot disagree. A plain
+  // single-colour spool keeps the flat slot colour. "Any stop at all", not
+  // "more than one": the builder ignores rgba once stops exist, so a one-stop
+  // spool paints that stop — as its Inventory row does.
+  const assignedSwatch = inventory?.assignedSpool ?? null;
+  const swatchStops = parseStops(assignedSwatch?.extra_colors);
+  const useSpoolSwatch = Boolean(assignedSwatch) && (swatchStops.length > 0 || Boolean(assignedSwatch?.effect_type));
+  const spoolSwatchStyle = useSpoolSwatch
+    ? buildFilamentBackground({
+        rgba: assignedSwatch?.rgba ?? colorHex,
+        extraColors: assignedSwatch?.extra_colors,
+        effectType: assignedSwatch?.effect_type,
+        subtype: assignedSwatch?.subtype,
+      })
+    : null;
+  // Several bands: no single hex decides legibility, so the name goes on the
+  // scrim the vendor badge already uses. One stop, or an effect over one
+  // colour, keeps the contrast test — against the colour actually painted.
+  const swatchNeedsScrim = swatchStops.length > 1;
+  const contrastBaseHex = useSpoolSwatch
+    ? (swatchStops.length === 1 ? swatchStops[0] : assignedSwatch?.rgba ?? colorHex)
+    : colorHex;
+
   return (
     <div
       ref={triggerRef}
@@ -306,20 +339,28 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
             {/* Color swatch header - the hero element */}
             <div
               className="h-12 relative overflow-hidden"
-              style={{
-                backgroundColor: colorHex || '#3d3d3d',
-              }}
+              style={
+                spoolSwatchStyle
+                  ? { ...spoolSwatchStyle, backgroundColor: colorHex || '#3d3d3d' }
+                  : { backgroundColor: colorHex || '#3d3d3d' }
+              }
             >
               {/* Subtle gradient overlay for depth */}
               <div className="absolute inset-0 bg-gradient-to-b from-white/10 to-transparent" />
 
               {/* Color name on swatch */}
-              <div className={`
-                absolute inset-0 flex items-center justify-center
-                font-semibold text-sm tracking-wide
-                ${isLightColor(colorHex) ? 'text-black/80' : 'text-white/90'}
-              `}>
-                {displayColorName}
+              <div className="absolute inset-0 flex items-center justify-center">
+                <span
+                  className={
+                    swatchNeedsScrim
+                      ? 'px-2 py-0.5 rounded bg-black/60 text-white font-semibold text-sm tracking-wide'
+                      : `font-semibold text-sm tracking-wide ${
+                          isLightColor(contrastBaseHex) ? 'text-black/80' : 'text-white/90'
+                        }`
+                  }
+                >
+                  {displayColorName}
+                </span>
               </div>
 
               {/* Vendor badge - solid background for visibility on any color */}

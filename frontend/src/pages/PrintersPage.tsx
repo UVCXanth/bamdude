@@ -5378,6 +5378,12 @@ function PrinterCard({
                                                 // A synthesized name is the spool's subtype, not a colour: it must
                                                 // not outrank the catalogue answer on the card.
                                                 color_name: spoolmanSpool.color_name_is_synthesized ? null : (spoolmanSpool.color_name ?? null),
+                                                // The spool's own swatch (upstream #2967). Spoolman carries the
+                                                // extra stops but no effect field, so those rolls gradient and never shimmer.
+                                                subtype: spoolmanSpool.subtype ?? null,
+                                                rgba: spoolmanSpool.rgba ?? null,
+                                                extra_colors: spoolmanSpool.extra_colors ?? null,
+                                                effect_type: spoolmanSpool.effect_type ?? null,
                                                 remainingWeightGrams: spoolmanSpool.label_weight
                                                   ? Math.max(0, Math.round(spoolmanSpool.label_weight - spoolmanSpool.weight_used))
                                                   : undefined,
@@ -5410,6 +5416,11 @@ function PrinterCard({
                                               material: assignment.spool.material,
                                               brand: assignment.spool.brand,
                                               color_name: assignment.spool.color_name,
+                                              // The spool's own swatch (upstream #2967).
+                                              subtype: assignment.spool.subtype ?? null,
+                                              rgba: assignment.spool.rgba ?? null,
+                                              extra_colors: assignment.spool.extra_colors ?? null,
+                                              effect_type: assignment.spool.effect_type ?? null,
                                               remainingWeightGrams: Math.max(0, Math.round(assignment.spool.label_weight - assignment.spool.weight_used)),
                                               displayName: formatSpoolDisplayName(assignment.spool, effectiveSpoolTemplate),
                                             } : null,
@@ -5790,6 +5801,12 @@ function PrinterCard({
                                                 // A synthesized name is the spool's subtype, not a colour: it must
                                                 // not outrank the catalogue answer on the card.
                                                 color_name: spoolmanSpool.color_name_is_synthesized ? null : (spoolmanSpool.color_name ?? null),
+                                                // The spool's own swatch (upstream #2967). Spoolman carries the
+                                                // extra stops but no effect field, so those rolls gradient and never shimmer.
+                                                subtype: spoolmanSpool.subtype ?? null,
+                                                rgba: spoolmanSpool.rgba ?? null,
+                                                extra_colors: spoolmanSpool.extra_colors ?? null,
+                                                effect_type: spoolmanSpool.effect_type ?? null,
                                             remainingWeightGrams: spoolmanSpool.label_weight
                                               ? Math.max(0, Math.round(spoolmanSpool.label_weight - spoolmanSpool.weight_used))
                                               : undefined,
@@ -5822,6 +5839,11 @@ function PrinterCard({
                                           material: assignment.spool.material,
                                           brand: assignment.spool.brand,
                                           color_name: assignment.spool.color_name,
+                                          // The spool's own swatch (upstream #2967).
+                                          subtype: assignment.spool.subtype ?? null,
+                                          rgba: assignment.spool.rgba ?? null,
+                                          extra_colors: assignment.spool.extra_colors ?? null,
+                                          effect_type: assignment.spool.effect_type ?? null,
                                           remainingWeightGrams: Math.max(0, Math.round(assignment.spool.label_weight - assignment.spool.weight_used)),
                                           displayName: formatSpoolDisplayName(assignment.spool, effectiveSpoolTemplate),
                                         } : null,
@@ -6114,6 +6136,12 @@ function PrinterCard({
                                                 // A synthesized name is the spool's subtype, not a colour: it must
                                                 // not outrank the catalogue answer on the card.
                                                 color_name: spoolmanSpool.color_name_is_synthesized ? null : (spoolmanSpool.color_name ?? null),
+                                                // The spool's own swatch (upstream #2967). Spoolman carries the
+                                                // extra stops but no effect field, so those rolls gradient and never shimmer.
+                                                subtype: spoolmanSpool.subtype ?? null,
+                                                rgba: spoolmanSpool.rgba ?? null,
+                                                extra_colors: spoolmanSpool.extra_colors ?? null,
+                                                effect_type: spoolmanSpool.effect_type ?? null,
                                               remainingWeightGrams: spoolmanSpool.label_weight
                                                 ? Math.max(0, Math.round(spoolmanSpool.label_weight - spoolmanSpool.weight_used))
                                                 : undefined,
@@ -6146,6 +6174,11 @@ function PrinterCard({
                                             material: assignment.spool.material,
                                             brand: assignment.spool.brand,
                                             color_name: assignment.spool.color_name,
+                                            // The spool's own swatch (upstream #2967).
+                                            subtype: assignment.spool.subtype ?? null,
+                                            rgba: assignment.spool.rgba ?? null,
+                                            extra_colors: assignment.spool.extra_colors ?? null,
+                                            effect_type: assignment.spool.effect_type ?? null,
                                             remainingWeightGrams: Math.max(0, Math.round(assignment.spool.label_weight - assignment.spool.weight_used)),
                                             displayName: formatSpoolDisplayName(assignment.spool, effectiveSpoolTemplate),
                                           } : null,

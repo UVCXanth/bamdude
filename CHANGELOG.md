@@ -172,6 +172,13 @@
 
 ### Fixed
 
+- **The AMS slot hover card paints a multi-colour spool as it is.** A printer
+  reports one colour per slot, so a tri-colour or silk roll showed as a flat band
+  of that one colour. With a spool assigned, the card's colour header now paints
+  the spool's own swatch — its colour stops and effect, as on the Filaments page —
+  and keeps the name readable over it. Spoolman spools now carry their colour
+  stops too (on the card and in the Filaments list); Spoolman has no field for a
+  surface effect, so those show the gradient only.
 - **An AMS slot names its colour for its own material.** One hex can be two
   colours in Bambu's range — white is Jade White in PLA Basic and Ivory White in
   PLA Matte — and the slot card named it from the hex alone, so an ivory Matte
