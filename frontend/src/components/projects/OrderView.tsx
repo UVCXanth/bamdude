@@ -38,7 +38,16 @@ import { useOrderDetail } from '../../hooks/useOrderDetail';
  * how to send it. It owns its own query and its own what-if counts, so the
  * page hands it the order and the edit permission and nothing else.
  */
-export function OrderView({ id, onDeleted }: { id: number; onDeleted: () => void }) {
+export function OrderView({
+  id,
+  onDeleted,
+  embedded = false,
+}: {
+  id: number;
+  onDeleted: () => void;
+  /** Inside another page (the workspace's pane): no breadcrumb out of it, and not the page's heading. */
+  embedded?: boolean;
+}) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const { showToast } = useToast();
@@ -177,6 +186,7 @@ export function OrderView({ id, onDeleted }: { id: number; onDeleted: () => void
             onSetStatus={(status) => setStatus.mutate(status)}
             onBankSurplus={() => bankSurplus.mutate()}
             bankingSurplus={bankSurplus.isPending}
+            embedded={embedded}
           />
         </div>
         <OrderCover order={order} canEdit={canEdit} />

@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { ChevronLeft, ChevronRight, Clock } from 'lucide-react';
@@ -34,10 +34,12 @@ export function OrdersDeadlines({ filters, week, onWeek }: OrdersDeadlinesProps)
   const start = keys[0];
   const today = localDateKey(new Date());
 
-  const { data } = useQuery({
+  const { data, isError, isPlaceholderData } = useQuery({
     // Under `projects`, so every order write re-reads it (`invalidateOrderViews`).
     queryKey: ['projects', 'deadlines', start, filters],
     queryFn: () => api.getOrderDeadlines({ start, days: DAYS, ...filters }),
+    // The previous fortnight stays (dimmed) while the next week or filter is asked.
+    placeholderData: keepPreviousData,
   });
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
   const timeFormat: TimeFormat = settings?.time_format || 'system';
@@ -69,36 +71,41 @@ export function OrdersDeadlines({ filters, week, onWeek }: OrdersDeadlinesProps)
         )}
       </div>
 
-      {[keys.slice(0, 7), keys.slice(7)].map((row) => (
-        <div key={row[0]} className="grid grid-cols-1 md:grid-cols-7 gap-2">
-          {row.map((key) => {
-            const weekday = new Date(`${key}T00:00:00`).getDay();
-            const weekend = weekday === 0 || weekday === 6;
-            return (
-              <div
-                key={key}
-                data-testid={`deadline-day-${key}`}
-                aria-current={key === today ? 'date' : undefined}
-                className={`min-h-24 rounded-lg border p-2 space-y-1.5 ${
-                  key === today ? 'border-bambu-green' : 'border-bambu-dark-tertiary'
-                } ${weekend ? 'bg-bambu-dark' : 'bg-bambu-dark-secondary'}`}
-              >
-                <div className={`text-xs ${key === today ? 'text-bambu-green font-semibold' : 'text-bambu-gray'}`}>
-                  {dayLabel(key)}
-                </div>
-                {(dueByDay.get(key) ?? []).map((d) => (
-                  <DueCard key={d.order.id} due={d} when={when} />
-                ))}
-                {(marksByDay.get(key) ?? []).map((m) => (
-                  <EtaMarkLink key={m.id} mark={m} when={when} />
-                ))}
-              </div>
-            );
-          })}
-        </div>
-      ))}
+      {/* A failed read with nothing to show is said out loud: an empty fortnight would read as «nothing due». */}
+      {isError && !data && <p className="text-sm text-red-500">{t('orders.deadlines.loadFailed')}</p>}
 
-      {data && <Attention items={data.attention} when={when} />}
+      <div aria-busy={isPlaceholderData} className={`space-y-4 transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}>
+        {[keys.slice(0, 7), keys.slice(7)].map((row) => (
+          <div key={row[0]} className="grid grid-cols-1 md:grid-cols-7 gap-2">
+            {row.map((key) => {
+              const weekday = new Date(`${key}T00:00:00`).getDay();
+              const weekend = weekday === 0 || weekday === 6;
+              return (
+                <div
+                  key={key}
+                  data-testid={`deadline-day-${key}`}
+                  aria-current={key === today ? 'date' : undefined}
+                  className={`min-h-24 rounded-lg border p-2 space-y-1.5 ${
+                    key === today ? 'border-bambu-green' : 'border-bambu-dark-tertiary'
+                  } ${weekend ? 'bg-bambu-dark' : 'bg-bambu-dark-secondary'}`}
+                >
+                  <div className={`text-xs ${key === today ? 'text-bambu-green font-semibold' : 'text-bambu-gray'}`}>
+                    {dayLabel(key)}
+                  </div>
+                  {(dueByDay.get(key) ?? []).map((d) => (
+                    <DueCard key={d.order.id} due={d} when={when} />
+                  ))}
+                  {(marksByDay.get(key) ?? []).map((m) => (
+                    <EtaMarkLink key={m.id} mark={m} when={when} />
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+
+        {data && <Attention items={data.attention} when={when} />}
+      </div>
     </div>
   );
 }

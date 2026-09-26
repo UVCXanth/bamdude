@@ -123,7 +123,7 @@ from backend.app.services.list_paging import (
     slice_page,
     sort_computed,
 )
-from backend.app.services.order_deadlines import ATTENTION_ORDER, attention_reason, eta_is_late
+from backend.app.services.order_deadlines import ATTENTION_ORDER, attention_reason, eta_is_late, server_wall_time
 from backend.app.services.order_metrics import (
     attribute,
     grouped_figures,
@@ -663,7 +663,9 @@ async def get_order_board(
 
 @router.get("/deadlines", response_model=OrderDeadlines)
 async def get_order_deadlines(
-    start: date = Query(..., description="The first day of the window, YYYY-MM-DD"),
+    # The upper bound keeps ``start + days`` inside the calendar: past it Python
+    # raises OverflowError, which would answer a hand-typed date with a 500.
+    start: date = Query(..., le=date(9999, 11, 1), description="The first day of the window, YYYY-MM-DD"),
     days: int = Query(14, ge=1, le=42),
     customer_id: int | None = None,
     responsible_id: int | None = None,
@@ -675,7 +677,11 @@ async def get_order_deadlines(
     one ``forecast_projects`` walk over the active orders under the filters, on
     every request — no cache (owner, 2026-09-26). An ETA counts only when the
     simulation is complete (the «Ready» sort's rule); «late» and the attention
-    reasons come from ``services/order_deadlines``. Declared above ``/{project_id}``."""
+    reasons come from ``services/order_deadlines``, and so does the calendar: the
+    window, the deadline days and «today» are the server's own days, the ETA a
+    naive-UTC instant turned into them (``server_wall_time``). Only the orders
+    that are shown load as full rows; the rest of the active set is read as
+    id / name / deadline. Declared above ``/{project_id}``."""
     window_start = datetime.combine(start, datetime.min.time())
     window_end = window_start + timedelta(days=days)
     filters = {"customer_id": customer_id, "responsible_id": responsible_id, "q": q}
@@ -691,9 +697,13 @@ async def get_order_deadlines(
         .scalars()
         .all()
     )
-    active = list(
-        (await db.execute(_board_filters(_row_query(), **filters).where(Project.status == "active"))).scalars().all()
-    )
+    active = (
+        await db.execute(
+            _board_filters(select(Project.id, Project.name, Project.due_date), **filters).where(
+                Project.status == "active"
+            )
+        )
+    ).all()
     forecasts = (await farm_forecast.forecast_projects(db, [p.id for p in active], _utc_now()))[1] if active else {}
     eta = {pid: forecast.now_eta if forecast.eta_complete else None for pid, forecast in forecasts.items()}
     start_of_today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -703,11 +713,15 @@ async def get_order_deadlines(
         key=lambda p: (ATTENTION_ORDER.index(reasons[p.id]), p.due_date is None, p.due_date or datetime.max, p.id),
     )
     due_ids = {p.id for p in due_projects}
-    rows = {r.id: r for r in await _list_rows(db, [*due_projects, *(p for p in flagged if p.id not in due_ids)])}
+    extra_ids = [p.id for p in flagged if p.id not in due_ids]
+    extra = (await db.execute(_row_query().where(Project.id.in_(extra_ids)))).scalars().all() if extra_ids else []
+    rows = {r.id: r for r in await _list_rows(db, [*due_projects, *extra])}
     marks = [
         EtaMark(id=p.id, code=code_for("order", p.id), name=p.name, eta=eta[p.id])
         for p in active
-        if p.id not in due_ids and eta.get(p.id) is not None and window_start <= eta[p.id] < window_end
+        if p.id not in due_ids
+        and eta.get(p.id) is not None
+        and window_start <= server_wall_time(eta[p.id]) < window_end
     ]
     return OrderDeadlines(
         start=start,

@@ -7,9 +7,10 @@ import { OrdersBoard } from '../../../../components/projects/board/OrdersBoard';
 
 // Dragging is gated on `projects:update`, and the real provider resolves the
 // admin only after its own request — the hook alone is replaced.
+const auth = vi.hoisted(() => ({ canUpdate: true }));
 vi.mock('../../../../contexts/AuthContext', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../../contexts/AuthContext')>();
-  return { ...actual, useAuth: () => ({ ...actual.useAuth(), hasPermission: () => true }) };
+  return { ...actual, useAuth: () => ({ ...actual.useAuth(), hasPermission: () => auth.canUpdate }) };
 });
 
 const order = (over: Partial<OrderListItem>): OrderListItem => ({
@@ -38,6 +39,7 @@ afterEach(() => {
 describe('OrdersBoard', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    auth.canUpdate = true;
     window.history.pushState({}, '', '/projects');
   });
   it('draws four columns with their titles and totals, and asks with the filters', async () => {
@@ -96,6 +98,30 @@ describe('OrdersBoard', () => {
     expect(within(screen.getByRole('region', { name: 'Preparation' })).queryByRole('link', { name: /more in the list/ })).toBeNull();
     fireEvent.click(printingMore);
     expect(onOpenList).toHaveBeenCalled();
+  });
+  it('a viewer who may not move orders is not invited to drop cards', async () => {
+    auth.canUpdate = false;
+    vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
+    render(<OrdersBoard filters={{}} onOpenList={() => {}} />);
+    const qc = await screen.findByRole('region', { name: 'Quality check' });
+    expect(await within(qc).findByText('No orders')).toBeInTheDocument();
+    expect(screen.queryByText('Drop a card here')).not.toBeInTheDocument();
+    expect(within(screen.getByTestId('board-card-1')).queryByRole('button')).not.toBeInTheDocument();
+  });
+  it('a filter that matches nothing says so and offers the reset', async () => {
+    const empty = { items: [], total: 0 };
+    vi.spyOn(api, 'getOrderBoard').mockResolvedValue({ prep: empty, printing: empty, qc: empty, done: empty });
+    const onReset = vi.fn();
+    render(<OrdersBoard filters={{ q: 'zzz' }} onOpenList={() => {}} onReset={onReset} />);
+    expect(await screen.findByText('Nothing matches your search or filters.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    expect(onReset).toHaveBeenCalled();
+  });
+  it('a board that could not be read says so, instead of four empty columns', async () => {
+    vi.spyOn(api, 'getOrderBoard').mockRejectedValue(new Error('boom'));
+    render(<OrdersBoard filters={{}} onOpenList={() => {}} />);
+    expect(await screen.findByText('Could not load the board.')).toBeInTheDocument();
+    expect(screen.queryByTestId('board-total-prep')).not.toBeInTheDocument();
   });
   it('a completed-card drop asks first; the confirmation completes the order', async () => {
     vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());

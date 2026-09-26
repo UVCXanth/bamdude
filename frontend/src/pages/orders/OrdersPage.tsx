@@ -308,7 +308,16 @@ export function OrdersPage() {
           onDelete={setDeleting}
         />
       )}
-      {view === 'kanban' && <OrdersBoard filters={viewFilters} onOpenList={() => setViewPref('table')} />}
+      {view === 'kanban' && (
+        <OrdersBoard
+          filters={viewFilters}
+          onOpenList={() => setViewPref('table')}
+          onReset={() => {
+            forget();
+            resetFilters(['tab']);
+          }}
+        />
+      )}
       {view === 'workspace' && (
         <OrdersWorkspace
           data={data}

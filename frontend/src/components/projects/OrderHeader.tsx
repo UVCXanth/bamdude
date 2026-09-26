@@ -33,6 +33,9 @@ interface OrderHeaderProps {
    *  toast — it is the one that knows which products the order is for. */
   onBankSurplus: () => void;
   bankingSurplus: boolean;
+  /** Drawn inside another page (the orders workspace): no breadcrumb back to the list the
+   *  viewer is already in, and an h2 — the page has its own h1. */
+  embedded?: boolean;
 }
 
 /**
@@ -65,6 +68,7 @@ export function OrderHeader({
   onSetStatus,
   onBankSurplus,
   bankingSurplus,
+  embedded = false,
 }: OrderHeaderProps) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -82,17 +86,23 @@ export function OrderHeader({
 
   return (
     <header className="space-y-3">
-      <nav className="flex items-center gap-1 text-sm text-bambu-gray">
-        <Link to="/projects" className="hover:text-white transition-colors">
-          {t('orders.header.breadcrumb')}
-        </Link>
-        <ChevronRight className="w-4 h-4" />
-        <span className="text-white truncate">{order.name}</span>
-      </nav>
+      {!embedded && (
+        <nav className="flex items-center gap-1 text-sm text-bambu-gray">
+          <Link to="/projects" className="hover:text-white transition-colors">
+            {t('orders.header.breadcrumb')}
+          </Link>
+          <ChevronRight className="w-4 h-4" />
+          <span className="text-white truncate">{order.name}</span>
+        </nav>
+      )}
 
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0 space-y-2">
-          <h1 className="text-2xl font-semibold text-white">{order.name}</h1>
+          {embedded ? (
+            <h2 className="text-xl font-semibold text-white">{order.name}</h2>
+          ) : (
+            <h1 className="text-2xl font-semibold text-white">{order.name}</h1>
+          )}
           <p className="text-sm text-bambu-gray">{order.code}</p>
           {/* The description was stored and edited but shown nowhere (spec workshop-lists, rule 17). */}
           {order.description?.trim() && (

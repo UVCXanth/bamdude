@@ -113,4 +113,22 @@ describe('OrdersWorkspace', () => {
     // The list has not been read again yet — the deleted row is still in it — and the pane is already on the next.
     expect(await screen.findByRole('heading', { name: 'Lamp' })).toBeInTheDocument();
   });
+  it('the next answer of the list ends the skip — an order that reuses the id shows', async () => {
+    vi.spyOn(api, 'deleteOrder').mockResolvedValue(undefined as never);
+    const { rerender } = render(<OrdersWorkspace data={page(ROWS)} {...props} picked={2} onPick={() => {}} />);
+    await screen.findByRole('heading', { name: 'Lamp' });
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
+    await waitFor(() => expect(api.deleteOrder).toHaveBeenCalledWith(2));
+    // SQLite without AUTOINCREMENT gives the newest id to the next order created.
+    rerender(<OrdersWorkspace data={page([ROWS[0], row({ id: 2, code: 'OR-0002', name: 'Reborn' })])} {...props} picked={null} onPick={() => {}} />);
+    expect(await within(screen.getByRole('list', { name: 'Orders' })).findByRole('button', { name: /Reborn/ })).toBeInTheDocument();
+  });
+  it('the pane is the order without the page chrome — no breadcrumb, not the page heading', async () => {
+    render(<OrdersWorkspace data={page(ROWS)} {...props} picked={null} onPick={() => {}} />);
+    const heading = await screen.findByRole('heading', { name: 'Ten flasks' });
+    expect(heading.tagName).toBe('H2');
+    expect(screen.queryByRole('navigation', { name: /breadcrumb/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Orders' })).not.toBeInTheDocument();
+  });
 });

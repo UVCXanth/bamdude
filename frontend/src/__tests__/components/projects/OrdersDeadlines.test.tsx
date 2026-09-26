@@ -80,6 +80,12 @@ describe('OrdersDeadlines', () => {
       expect.stringContaining('No deadline'),
     ]);
   });
+  it('a board that could not be read says so, instead of an empty fortnight', async () => {
+    vi.spyOn(api, 'getOrderDeadlines').mockRejectedValue(new Error('boom'));
+    render(<OrdersDeadlines filters={{}} week={0} onWeek={() => {}} />);
+    expect(await screen.findByText('Could not load the deadlines.')).toBeInTheDocument();
+    expect(screen.queryByText('Nothing needs attention')).not.toBeInTheDocument();
+  });
   it('marks today; Next and Previous step by a week; Today shows only away from this week', async () => {
     vi.spyOn(api, 'getOrderDeadlines').mockResolvedValue(answer());
     const onWeek = vi.fn();

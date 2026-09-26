@@ -78,9 +78,11 @@ export function OrderQueue({ orderId }: OrderQueueProps) {
         <>
           {printing.length > 0 && (
             // Container tiers, not window ones: the order view is also the workspace's
-            // right pane (spec workshop-order-views, rule 12). @xl / @4xl keep each card
-            // about as wide as a list card (~280px); @sm / @lg would fit three into 512px.
-            <div className="grid grid-cols-1 @xl:grid-cols-2 @4xl:grid-cols-3 gap-3">
+            // right pane (spec workshop-order-views, rule 12). @xl / @2xl (576 / 672px of
+            // the view) are where the old window sm / lg landed on the order page itself —
+            // a 1024px window with the sidebar open leaves the view ~736px; @sm / @lg
+            // (384 / 512px) would fit three cards into 512px.
+            <div className="grid grid-cols-1 @xl:grid-cols-2 @2xl:grid-cols-3 gap-3">
               {printing.map((item) => (
                 <CurrentPrintInfoCard
                   key={item.id}

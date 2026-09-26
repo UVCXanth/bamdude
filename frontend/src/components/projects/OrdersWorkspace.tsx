@@ -41,9 +41,12 @@ export function OrdersWorkspace({
   const { t } = useTranslation();
   const wide = useIsWideLayout();
   // An order deleted from the right pane stays in the page until the list is
-  // read again; the pane must not fall back onto it meanwhile.
-  const [gone, setGone] = useState<number | null>(null);
-  const items = (data?.items ?? []).filter((o) => o.id !== gone);
+  // read again; the pane must not fall back onto it meanwhile. The skip is tied
+  // to the answer it was made against and ends with the next one — on SQLite a
+  // new order can take the deleted id, and must not be hidden with it.
+  const [gone, setGone] = useState<{ id: number; page: OrderListPage | undefined } | null>(null);
+  const skip = gone && gone.page === data ? gone.id : null;
+  const items = (data?.items ?? []).filter((o) => o.id !== skip);
   const shown = picked != null && items.some((o) => o.id === picked) ? picked : (items[0]?.id ?? null);
   const total = data?.meta.total ?? 0;
 
@@ -95,8 +98,9 @@ export function OrdersWorkspace({
           <OrderView
             key={shown}
             id={shown}
+            embedded
             onDeleted={() => {
-              setGone(shown);
+              setGone({ id: shown, page: data });
               onPick(null);
             }}
           />

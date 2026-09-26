@@ -5389,6 +5389,8 @@ export default {
       more_one: 'and {{count}} more in the list',
       more_other: 'and {{count}} more in the list',
       empty: 'Drop a card here',
+      none: 'No orders',
+      loadFailed: 'Could not load the board.',
       drag: 'Move {{code}}',
       completeTitle: 'Mark the order completed?',
       completeBody: '{{code}} «{{name}}» will be marked completed; it can be reopened from its menu.',
@@ -5419,6 +5421,7 @@ export default {
         no_due: 'No deadline',
       },
       empty: 'Nothing needs attention',
+      loadFailed: 'Could not load the deadlines.',
     },
     list: {
       title: 'Orders',
