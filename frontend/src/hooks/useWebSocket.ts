@@ -968,8 +968,12 @@ export function useWebSocket() {
         break;
 
       case 'sensor_bindings_changed':
-        queryClient.invalidateQueries({ queryKey: ['zigbee-sensors'] });
-        queryClient.invalidateQueries({ queryKey: inventoryLocationsQueryKey });
+        debouncedInvalidate(
+          'zigbee-sensors', 'haSensors', 'locationHaSensors',
+          'haSensorManagementReadings', 'locationHaSensorManagementReadings',
+          'haSensorReadings', 'locationHaSensorReadings', 'locationSensorPrimary',
+          inventoryLocationsQueryKey, 'inventory-spools', 'spoolman-inventory-spools',
+        );
         break;
 
       case 'zigbee_status_changed':

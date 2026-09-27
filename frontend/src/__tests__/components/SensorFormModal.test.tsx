@@ -88,16 +88,18 @@ describe('SensorFormModal', () => {
     const name = await screen.findByDisplayValue('SONOFF SNZB-02DR2');
     await userEvent.clear(name);
     await userEvent.type(name, 'Bench');
+    await userEvent.click(screen.getByRole('radio', { name: 'A printer' }));
+    await userEvent.selectOptions(screen.getByLabelText('A printer'), '3');
     await userEvent.click(screen.getByRole('button', { name: /save/i }));
 
     await waitFor(() =>
       expect(adopt).toHaveBeenCalledWith({
         zigbee_ieee: 'aa:bb:cc:dd:ee:ff:00:11',
         name: 'Bench',
-        location_id: null,
-        // ⚠️ Sent, and sent as null. Both sides always travel, so a payload can
-        // never say only half of what the dialog shows.
-        printer_id: null,
+        initial_binding: {
+          printer_id: 3, printer_location_id: null, storage_location_id: null,
+          display_name: null, visible: true, sort_order: 0, notify_enabled: false,
+        },
       }),
     );
   });
@@ -117,6 +119,7 @@ describe('SensorFormModal', () => {
     );
 
     expect(await screen.findByText('Shop')).toBeInTheDocument();
+    expect(await screen.findByRole('option', { name: 'P1S' })).toBeInTheDocument();
     await userEvent.selectOptions(screen.getByLabelText(/choose a target/i), '4');
     await userEvent.click(screen.getByRole('button', { name: /add binding/i }));
 

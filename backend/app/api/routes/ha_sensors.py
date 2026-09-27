@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,11 +21,12 @@ from backend.app.models.user import User
 from backend.app.schemas.printer_ha_sensor import (
     HADisplayEntity,
     PrinterHASensorCreate,
+    PrinterHASensorManagementReading,
     PrinterHASensorReading,
     PrinterHASensorResponse,
     PrinterHASensorUpdate,
 )
-from backend.app.services.ha_sensor_manager import ha_sensor_manager
+from backend.app.services.ha_sensor_manager import POLL_INTERVAL, ha_sensor_manager, utcnow_naive
 from backend.app.services.homeassistant import homeassistant_service
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,64 @@ async def list_ha_sensors(
         query = query.where(PrinterHASensor.printer_id.in_(scope))
     result = await db.execute(query.order_by(PrinterHASensor.printer_id, PrinterHASensor.sort_order))
     return list(result.scalars().all())
+
+
+class PrinterSensorManagementBatch(BaseModel):
+    configured: bool
+    readings: list[PrinterHASensorManagementReading]
+
+
+@router.get("/management/readings", response_model=PrinterSensorManagementBatch)
+async def list_printer_sensor_management_readings(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = _READ,
+):
+    """All permitted bindings, including those hidden from printer cards.
+
+    Read the poller's cache only. The ordinary per-printer card route keeps its
+    card-visible filter and response contract.
+    """
+    from backend.app.api.routes.settings import get_homeassistant_settings
+
+    settings = await get_homeassistant_settings(db)
+    query = select(PrinterHASensor)
+    scope = key_printer_scope(request)
+    if scope is not None:
+        query = query.where(PrinterHASensor.printer_id.in_(scope))
+    rows = (
+        await db.scalars(query.order_by(PrinterHASensor.printer_id, PrinterHASensor.sort_order, PrinterHASensor.id))
+    ).all()
+    now = utcnow_naive()
+    readings = []
+    for sensor in rows:
+        cached = ha_sensor_manager.get_reading(sensor.id)
+        fresh = bool(cached and cached.observed_at and now - cached.observed_at <= timedelta(seconds=POLL_INTERVAL * 2))
+        readings.append(
+            PrinterHASensorManagementReading(
+                id=sensor.id,
+                printer_id=sensor.printer_id,
+                name=sensor.name,
+                entity_id=sensor.entity_id,
+                kind=sensor.kind,
+                device_class=sensor.device_class,
+                unit=sensor.unit,
+                state=cached.state if cached else sensor.last_state,
+                value=cached.value if cached else None,
+                alerting=cached.alerting if cached and fresh else False,
+                block_print=sensor.block_print,
+                reachable=bool(cached and cached.reachable and fresh),
+                last_changed=sensor.last_changed,
+                show_on_printer_card=sensor.show_on_printer_card,
+                observed_at=cached.observed_at if cached else None,
+                last_checked=sensor.last_checked,
+                fresh=fresh,
+            )
+        )
+    return PrinterSensorManagementBatch(
+        configured=bool(settings["ha_enabled"] and settings["ha_url"] and settings["ha_token"]),
+        readings=readings,
+    )
 
 
 # Must precede /{sensor_id} so "entities" is not parsed as an id.

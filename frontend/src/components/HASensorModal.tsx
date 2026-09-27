@@ -6,7 +6,9 @@ import { api } from '../api/client';
 import type { HADisplayEntity, Printer, PrinterHASensor } from '../api/client';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
 import { HA_SENSOR_BINARY_LABELS } from '../utils/haSensorDisplay';
+import { invalidateSensorViews } from '../utils/sensorQueryInvalidation';
 
 /**
  * Bind a Home Assistant entity to a printer, or edit an existing binding
@@ -21,20 +23,23 @@ interface Props {
   sensor?: PrinterHASensor | null;
   printers: Printer[];
   onClose: () => void;
+  initialEntity?: HADisplayEntity;
+  configured?: boolean;
 }
 
-export function HASensorModal({ sensor, printers, onClose }: Props) {
+export function HASensorModal({ sensor, printers, onClose, initialEntity, configured }: Props) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const { hasPermission } = useAuth();
   const isEditing = !!sensor;
 
   const [printerId, setPrinterId] = useState<number | ''>(sensor?.printer_id ?? printers[0]?.id ?? '');
-  const [entityId, setEntityId] = useState(sensor?.entity_id ?? '');
-  const [kind, setKind] = useState<'binary' | 'numeric'>(sensor?.kind ?? 'binary');
-  const [deviceClass, setDeviceClass] = useState<string | null>(sensor?.device_class ?? null);
-  const [unit, setUnit] = useState<string | null>(sensor?.unit ?? null);
-  const [name, setName] = useState(sensor?.name ?? '');
+  const [entityId, setEntityId] = useState(sensor?.entity_id ?? initialEntity?.entity_id ?? '');
+  const [kind, setKind] = useState<'binary' | 'numeric'>(sensor?.kind ?? (initialEntity?.domain === 'sensor' ? 'numeric' : 'binary'));
+  const [deviceClass, setDeviceClass] = useState<string | null>(sensor?.device_class ?? initialEntity?.device_class ?? null);
+  const [unit, setUnit] = useState<string | null>(sensor?.unit ?? initialEntity?.unit_of_measurement ?? null);
+  const [name, setName] = useState(sensor?.name ?? initialEntity?.friendly_name.slice(0, 100) ?? '');
   const [alertState, setAlertState] = useState<'on' | 'off' | ''>(sensor?.alert_state ?? '');
   const [alertAbove, setAlertAbove] = useState(sensor?.alert_above?.toString() ?? '');
   const [alertBelow, setAlertBelow] = useState(sensor?.alert_below?.toString() ?? '');
@@ -58,8 +63,9 @@ export function HASensorModal({ sensor, printers, onClose }: Props) {
   const { data: settings } = useQuery({
     queryKey: ['settings'],
     queryFn: api.getSettings,
+    enabled: hasPermission('settings:read'),
   });
-  const haConfigured = !!(settings?.ha_enabled && settings?.ha_url && settings?.ha_token);
+  const haConfigured = configured ?? !!(settings?.ha_enabled && settings?.ha_url && settings?.ha_token);
 
   const { data: entities, isLoading: entitiesLoading, error: entitiesError } = useQuery({
     queryKey: ['bindableHAEntities'],
@@ -96,8 +102,7 @@ export function HASensorModal({ sensor, printers, onClose }: Props) {
   };
 
   const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['haSensors'] });
-    queryClient.invalidateQueries({ queryKey: ['haSensorReadings'] });
+    invalidateSensorViews(queryClient);
   };
 
   const saveMutation = useMutation({
@@ -367,7 +372,7 @@ export function HASensorModal({ sensor, printers, onClose }: Props) {
           </label>
 
           <div className="flex items-center justify-between pt-2">
-            {isEditing ? (
+            {isEditing && hasPermission('smart_sensors:delete') ? (
               <Button type="button" variant="danger" onClick={() => deleteMutation.mutate()} disabled={isPending}>
                 {t('common.delete')}
               </Button>

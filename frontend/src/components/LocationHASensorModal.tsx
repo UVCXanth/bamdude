@@ -8,13 +8,17 @@ import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
 import { LocationsModal } from './LocationsModal';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
 import { loadLocationSensorDefaults } from '../utils/locationSensorDefaults';
 import { HA_SENSOR_BINARY_LABELS } from '../utils/haSensorDisplay';
+import { invalidateSensorViews } from '../utils/sensorQueryInvalidation';
 
 interface Props {
   sensor?: LocationHASensor | null;
   locations: StorageLocation[];
   onClose: () => void;
+  initialEntity?: HADisplayEntity;
+  configured?: boolean;
 }
 
 type SensorCategory = 'temperature' | 'humidity' | 'battery';
@@ -60,23 +64,24 @@ function findSiblingEntities(
   return siblings;
 }
 
-export function LocationHASensorModal({ sensor, locations, onClose }: Props) {
+export function LocationHASensorModal({ sensor, locations, onClose, initialEntity, configured }: Props) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const { hasPermission } = useAuth();
   const isEditing = !!sensor;
 
   const [locationId, setLocationId] = useState<number | ''>(sensor?.location_id ?? locations[0]?.id ?? '');
-  const [entityId, setEntityId] = useState(sensor?.entity_id ?? '');
-  const [kind, setKind] = useState<'binary' | 'numeric'>(sensor?.kind ?? 'numeric');
-  const [deviceClass, setDeviceClass] = useState<string | null>(sensor?.device_class ?? null);
-  const [unit, setUnit] = useState<string | null>(sensor?.unit ?? null);
-  const [name, setName] = useState(sensor?.name ?? '');
+  const [entityId, setEntityId] = useState(sensor?.entity_id ?? initialEntity?.entity_id ?? '');
+  const [kind, setKind] = useState<'binary' | 'numeric'>(sensor?.kind ?? (initialEntity?.domain === 'binary_sensor' ? 'binary' : 'numeric'));
+  const [deviceClass, setDeviceClass] = useState<string | null>(sensor?.device_class ?? initialEntity?.device_class ?? null);
+  const [unit, setUnit] = useState<string | null>(sensor?.unit ?? initialEntity?.unit_of_measurement ?? null);
+  const [name, setName] = useState(sensor?.name ?? initialEntity?.friendly_name.slice(0, 100) ?? '');
   // Tracks the last name we auto-filled (or the initial saved name), so
   // switching to a different entity can follow along with the new friendly
   // name — but only while the field still holds what we put there. A name
   // the user typed themselves is never overwritten by an entity change.
-  const autoFilledNameRef = useRef(sensor?.name ?? '');
+  const autoFilledNameRef = useRef(sensor?.name ?? initialEntity?.friendly_name.slice(0, 100) ?? '');
   const [alertState, setAlertState] = useState<'on' | 'off' | ''>(sensor?.alert_state ?? '');
   const [alertAbove, setAlertAbove] = useState(sensor?.alert_above?.toString() ?? '');
   const [alertBelow, setAlertBelow] = useState(sensor?.alert_below?.toString() ?? '');
@@ -96,8 +101,9 @@ export function LocationHASensorModal({ sensor, locations, onClose }: Props) {
   const { data: settings } = useQuery({
     queryKey: ['settings'],
     queryFn: api.getSettings,
+    enabled: hasPermission('settings:read'),
   });
-  const haConfigured = !!(settings?.ha_enabled && settings?.ha_url && settings?.ha_token);
+  const haConfigured = configured ?? !!(settings?.ha_enabled && settings?.ha_url && settings?.ha_token);
 
   const { data: rawEntities, isLoading: entitiesLoading, error: entitiesError } = useQuery({
     queryKey: ['bindableLocationHAEntities'],
@@ -167,8 +173,7 @@ export function LocationHASensorModal({ sensor, locations, onClose }: Props) {
   };
 
   const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['locationHaSensors'] });
-    queryClient.invalidateQueries({ queryKey: ['locationHaSensorReadings'] });
+    invalidateSensorViews(queryClient);
   };
 
   const buildPrimaryPayload = () => ({
@@ -203,27 +208,42 @@ export function LocationHASensorModal({ sensor, locations, onClose }: Props) {
   const autoAddMutation = useMutation({
     mutationFn: async () => {
       const targetLocationId = Number(locationId);
-      await api.createLocationHASensor({ ...buildPrimaryPayload(), location_id: targetLocationId });
+      const existing = await api.getLocationHASensors(targetLocationId);
+      if (!existing.some(sensor => sensor.entity_id === entityId)) {
+        await api.createLocationHASensor({ ...buildPrimaryPayload(), location_id: targetLocationId });
+      }
       const defaults = loadLocationSensorDefaults(settings?.location_sensor_alert_defaults);
       const chosen = autoAddCandidates.filter((entity) => autoAddSelected[entity.entity_id]);
+      const added: HADisplayEntity[] = [];
+      const failed: string[] = [];
       for (const entity of chosen) {
+        if (existing.some(sensor => sensor.entity_id === entity.entity_id)) continue;
         const categoryDefaults = categoryFor(entity.device_class);
         const d = categoryDefaults ? defaults[categoryDefaults] : null;
-        await api.createLocationHASensor({
-          name: entity.friendly_name.slice(0, 100),
-          entity_id: entity.entity_id,
-          kind: entity.domain === 'binary_sensor' ? 'binary' : 'numeric',
-          device_class: entity.device_class,
-          unit: entity.unit_of_measurement?.slice(0, 16) ?? null,
-          alert_state: null,
-          alert_above: categoryDefaults !== 'battery' && d && d.alertAbove !== '' ? Number(d.alertAbove) : null,
-          alert_below: d && d.alertBelow !== '' ? Number(d.alertBelow) : null,
-          notify_on_alert: d?.notifyOnAlert ?? false,
-          show_on_card: d?.showOnCard ?? showOnCard,
-          location_id: targetLocationId,
-        });
+        try {
+          await api.createLocationHASensor({
+            name: entity.friendly_name.slice(0, 100),
+            entity_id: entity.entity_id,
+            kind: entity.domain === 'binary_sensor' ? 'binary' : 'numeric',
+            device_class: entity.device_class,
+            unit: entity.unit_of_measurement?.slice(0, 16) ?? null,
+            alert_state: null,
+            alert_above: categoryDefaults !== 'battery' && d && d.alertAbove !== '' ? Number(d.alertAbove) : null,
+            alert_below: d && d.alertBelow !== '' ? Number(d.alertBelow) : null,
+            notify_on_alert: d?.notifyOnAlert ?? false,
+            show_on_card: d?.showOnCard ?? showOnCard,
+            location_id: targetLocationId,
+          });
+          added.push(entity);
+        } catch {
+          failed.push(entity.entity_id);
+        }
       }
-      return chosen;
+      if (failed.length) throw new Error(t('sensorSettings.partialAdd', {
+        count: added.length + (existing.some(sensor => sensor.entity_id === entityId) ? 0 : 1),
+        failed: failed.join(', '),
+      }));
+      return added;
     },
     onSuccess: (chosen) => {
       invalidate();
@@ -292,6 +312,23 @@ export function LocationHASensorModal({ sensor, locations, onClose }: Props) {
       if (category) {
         const conflicting = locationSensors.find((s) => categoryFor(s.device_class) === category);
         if (conflicting) {
+          if (conflicting.entity_id === entityId) {
+            const pending = findSiblingEntities(entityId, category, entities)
+              .filter(entity => !locationSensors.some(sensor => sensor.entity_id === entity.entity_id));
+            if (pending.length) {
+              setAutoAddCandidates(pending);
+              setAutoAddSelected(Object.fromEntries(pending.map(entity => [entity.entity_id, true])));
+              setShowAutoAddConfirm(true);
+            } else {
+              invalidate();
+              onClose();
+            }
+            return;
+          }
+          if (!hasPermission('smart_sensors:update')) {
+            setError(t('sensorSettings.updateRequired'));
+            return;
+          }
           setOverwriteTarget(conflicting);
           setShowOverwriteConfirm(true);
           return;
@@ -569,7 +606,7 @@ export function LocationHASensorModal({ sensor, locations, onClose }: Props) {
           </label>
 
           <div className="flex items-center justify-between pt-2">
-            {isEditing ? (
+            {isEditing && hasPermission('smart_sensors:delete') ? (
               <Button type="button" variant="danger" onClick={() => deleteMutation.mutate()} disabled={isPending}>
                 {t('common.delete')}
               </Button>

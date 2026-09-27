@@ -19,7 +19,6 @@ import { LdapUserPicker } from '../components/LdapUserPicker';
 import { ZigbeeCoordinatorCard } from '../components/zigbee/ZigbeeCoordinatorCard';
 import { DryingSchedulesCard } from '../components/settings/DryingSchedulesCard';
 import { SensorsSection } from '../components/zigbee/SensorsSection';
-import { HASensorsSettings } from '../components/HASensorsSettings';
 import { SmartPlugCard } from '../components/SmartPlugCard';
 import { AddSmartPlugModal } from '../components/AddSmartPlugModal';
 import { NotificationProviderCard } from '../components/NotificationProviderCard';
@@ -99,7 +98,7 @@ registerSettingsSearch({ labelKey: 'labelEditor.title', tab: 'filament', subTab:
 registerSettingsSearch({ labelKey: 'labelSheets.title', tab: 'filament', subTab: 'marking', keywords: 'sheet sheets avery paper page grid columns rows margin gap label stickers a4 a5 letter', anchor: 'card-label-sheets' });
 registerSettingsSearch({ labelKey: 'settings.tabs.filament', tab: 'filament', keywords: 'filament checks warning runout remaining print modal custom mapping ams thresholds humidity temperature history retention spoolman tracking inventory sync remote integration spool catalog color catalog brand material import export', anchor: 'tab-filament' });
 registerSettingsSearch({ labelKey: 'settings.tabs.notifications', tab: 'notifications', keywords: 'notifications providers telegram discord email webhook ntfy pushover home assistant message templates notification text edit digest log viewer', anchor: 'tab-notifications' });
-registerSettingsSearch({ labelKey: 'settings.tabs.smartPlugs', tab: 'plugs', keywords: 'smart plugs energy power automation tapo kasa tplink shelly tasmota discovery kwh monitoring', anchor: 'tab-plugs' });
+registerSettingsSearch({ labelKey: 'settings.tabs.smartPlugs', tab: 'plugs', keywords: 'smart plugs sensors датчики Zigbee Home Assistant storage температура вологість energy power automation tapo kasa tplink shelly tasmota discovery kwh monitoring', anchor: 'tab-plugs' });
 registerSettingsSearch({ labelKey: 'settings.tabs.network', tab: 'network', keywords: 'network external url reverse proxy public notification link ftp retry upload retries backoff home assistant ha hass mqtt publishing broker topic integration prometheus metrics grafana monitoring bearer token', anchor: 'tab-network' });
 registerSettingsSearch({ labelKey: 'settings.tabs.cloudLink', tab: 'network', keywords: 'cloud link portal remote pairing publish', anchor: 'card-cloud-link' });
 registerSettingsSearch({ labelKey: 'settings.tabs.virtualPrinter', tab: 'virtual-printer', keywords: 'virtual printer proxy archive slicer bambustudio orcaslicer ip bind port', anchor: 'tab-virtual-printer' });
@@ -4841,7 +4840,6 @@ export function SettingsPage() {
           )}
 
           <SensorsSection adoptDevice={adoptSensorDevice} onAdoptHandled={() => setAdoptSensorDevice(null)} />
-          <HASensorsSettings />
         </div>
       )}
       {/* ══════ /SMART PLUGS TAB ══════ */}

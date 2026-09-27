@@ -7,11 +7,48 @@ from backend.app.models.location import Location
 from backend.app.models.printer import Printer
 from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.smart_sensor import SmartSensor
+from backend.app.models.smart_sensor_binding import SmartSensorBinding
 from backend.app.models.smart_sensor_history import SmartSensorHistory
 from backend.app.models.smart_sensor_threshold import SmartSensorThreshold
+from backend.app.models.zigbee_device import ZigbeeDevice
 from backend.app.services.sensor_alerts import evaluate_thresholds
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+
+
+async def test_adopt_with_storage_binding_is_atomic_and_keeps_legacy_clients(async_client, db_session):
+    ieee = "aa:bb:cc:dd:ee:ff:22:33"
+    db_session.add(ZigbeeDevice(ieee=ieee, kind="sensor", name="Box sensor"))
+    box = Location(name="Atomic box", name_key="atomic box")
+    db_session.add(box)
+    await db_session.commit()
+    payload = {
+        "zigbee_ieee": ieee,
+        "name": "Box sensor",
+        "initial_binding": {
+            "storage_location_id": box.id,
+            "notify_enabled": False,
+        },
+    }
+    invalid = await async_client.post(
+        "/api/v1/zigbee/sensors",
+        json={
+            **payload,
+            "initial_binding": {"storage_location_id": box.id + 99999},
+        },
+    )
+    assert invalid.status_code == 422
+    assert (await db_session.scalars(select(SmartSensor).where(SmartSensor.zigbee_ieee == ieee))).first() is None
+
+    ambiguous = await async_client.post("/api/v1/zigbee/sensors", json={**payload, "location_id": None})
+    assert ambiguous.status_code == 422
+    created = await async_client.post("/api/v1/zigbee/sensors", json=payload)
+    assert created.status_code == 201, created.text
+    sensor = created.json()
+    assert sensor["bindings"][0]["storage_location_id"] == box.id
+    binding = await db_session.scalar(select(SmartSensorBinding).where(SmartSensorBinding.sensor_id == sensor["id"]))
+    assert binding.notify_enabled is False
+    assert (await async_client.post("/api/v1/zigbee/sensors", json=payload)).status_code == 409
 
 
 async def _setup(db):

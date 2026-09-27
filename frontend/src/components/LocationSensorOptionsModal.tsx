@@ -7,6 +7,8 @@ import type { AppSettingsUpdate } from '../api/client';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
+import { invalidateSensorViews } from '../utils/sensorQueryInvalidation';
 import {
   LOCATION_SENSOR_ALERT_COLORS,
   loadLocationSensorAlertAboveColor,
@@ -146,6 +148,9 @@ function CategorySection({
 export function LocationSensorOptionsModal({ onClose }: Props) {
   const { t } = useTranslation();
   const { showToast } = useToast();
+  const { hasPermission } = useAuth();
+  const canManageServer = hasPermission('settings:update');
+  const canResetBindings = canManageServer && hasPermission('smart_sensors:update');
   const queryClient = useQueryClient();
   // Built-ins first, then seeded from the server once the settings query
   // lands. The alert fields come from `location_sensor_alert_defaults`;
@@ -217,7 +222,7 @@ export function LocationSensorOptionsModal({ onClose }: Props) {
     if (appSettings && alertDefaults !== appSettings.location_sensor_alert_defaults) {
       patch.location_sensor_alert_defaults = alertDefaults;
     }
-    if (Object.keys(patch).length > 0) {
+    if (canManageServer && Object.keys(patch).length > 0) {
       await api.updateSettings(patch);
       queryClient.invalidateQueries({ queryKey: ['settings'] });
     }
@@ -247,41 +252,48 @@ export function LocationSensorOptionsModal({ onClose }: Props) {
 
   const resetMutation = useMutation({
     mutationFn: async () => {
-      // Sensors first, options after — the same write-order rule Save follows,
-      // one level up. Reset is the risky half: it rewrites every bound sensor,
-      // and if that fails the error toast has to mean "nothing was saved". The
-      // per-sensor PATCHes below stay individually non-atomic (there is no bulk
-      // route), so a failure part-way still leaves some rows reset — but it no
-      // longer also leaves the options saved against a reset that half ran.
+      // Fetch current rows before each attempt so a retry writes only rows
+      // that still differ. The per-sensor writes are not atomic as a group.
       const [sensors, entities] = await Promise.all([api.getLocationHASensors(), api.getBindableLocationHAEntities()]);
       const friendlyNameByEntityId = new Map(entities.map((entity) => [entity.entity_id, entity.friendly_name]));
       const targets = sensors.filter((sensor) => categoryFor(sensor.device_class) !== null);
-      await Promise.all(
-        targets.map((sensor) => {
+      const pending = targets.flatMap((sensor) => {
           const category = categoryFor(sensor.device_class)!;
           const categoryDefaults = defaults[category];
           const friendlyName = friendlyNameByEntityId.get(sensor.entity_id);
-          return api.updateLocationHASensor(sensor.id, {
+          const patch = {
             ...(friendlyName ? { name: friendlyName.slice(0, 100) } : {}),
             alert_above:
               category !== 'battery' && categoryDefaults.alertAbove !== '' ? Number(categoryDefaults.alertAbove) : null,
             alert_below: categoryDefaults.alertBelow !== '' ? Number(categoryDefaults.alertBelow) : null,
             notify_on_alert: categoryDefaults.notifyOnAlert,
             show_on_card: categoryDefaults.showOnCard,
-          });
-        })
-      );
-      await persistDefaults();
-      return targets.length;
+          };
+          return Object.entries(patch).every(([key, value]) =>
+            sensor[key as keyof typeof sensor] === value) ? [] : [{ sensor, patch }];
+        });
+      const results = await Promise.allSettled(pending.map(({ sensor, patch }) =>
+        api.updateLocationHASensor(sensor.id, patch)));
+      const failed = results.flatMap((result, index) => result.status === 'rejected'
+        ? [pending[index].sensor.entity_id] : []);
+      if (failed.length) throw new Error(t('sensorSettings.partialReset', {
+        count: results.length - failed.length, failed: failed.join(', '),
+      }));
+      try {
+        await persistDefaults();
+      } catch {
+        throw new Error(t('sensorSettings.partialResetDefaults', { count: pending.length }));
+      }
+      return pending.length;
     },
     onSuccess: (count) => {
-      queryClient.invalidateQueries({ queryKey: ['locationHaSensors'] });
-      queryClient.invalidateQueries({ queryKey: ['locationHaSensorReadings'] });
+      invalidateSensorViews(queryClient);
       showToast(t('locationHaSensors.options.resetDone', { count }), 'success');
       setShowResetConfirm(false);
       onClose();
     },
     onError: (err: Error) => {
+      invalidateSensorViews(queryClient);
       showToast(err.message || t('locationHaSensors.options.resetFailed'), 'error');
       setShowResetConfirm(false);
     },
@@ -309,7 +321,7 @@ export function LocationSensorOptionsModal({ onClose }: Props) {
         <form onSubmit={handleSave} className="px-6 pb-6 pt-3 space-y-4">
           <p className="text-xs text-bambu-gray">{t('locationHaSensors.options.description')}</p>
 
-          <div className="space-y-3">
+          {canManageServer ? <div className="space-y-3">
             <CategorySection
               category="temperature"
               state={defaults.temperature}
@@ -325,7 +337,14 @@ export function LocationSensorOptionsModal({ onClose }: Props) {
               state={defaults.battery}
               onChange={(patch) => updateCategory('battery', patch)}
             />
-          </div>
+          </div> : <div className="space-y-2 rounded-lg border border-bambu-dark-tertiary p-3">
+            {(['temperature', 'humidity', 'battery'] as const).map(category =>
+              <label key={category} className="flex items-center gap-2 text-sm text-white">
+                <input type="checkbox" checked={defaults[category].showOnCard}
+                  onChange={event => updateCategory(category, { showOnCard: event.target.checked })} />
+                {t(`inventory.${category}`)} · {t('locationHaSensors.showOnCard')}
+              </label>)}
+          </div>}
 
           <div className="p-3 border border-bambu-dark-tertiary rounded-lg space-y-3">
             <label className="flex items-center gap-3 cursor-pointer">
@@ -390,10 +409,7 @@ export function LocationSensorOptionsModal({ onClose }: Props) {
             </div>
           </div>
 
-          {/* Everything above is local display preference (localStorage); the
-              poll interval below is the one field here that actually lives on
-              the server, hence its own heading. */}
-          <div className="pt-4 mt-4 border-t border-bambu-dark-tertiary">
+          {canManageServer && <><div className="pt-4 mt-4 border-t border-bambu-dark-tertiary">
             <p className="text-xs font-medium text-bambu-gray uppercase tracking-wider mb-3">
               {t('locationHaSensors.options.generalSettings')}
             </p>
@@ -414,13 +430,13 @@ export function LocationSensorOptionsModal({ onClose }: Props) {
               className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white"
             />
             <p className="text-xs text-bambu-gray">{t('locationHaSensors.options.pollIntervalHint')}</p>
-          </div>
+          </div></>}
 
           <div className="flex items-center justify-between gap-2 pt-2">
-            <Button type="button" variant="secondary" onClick={() => setShowResetConfirm(true)}>
+            {canResetBindings && <Button type="button" variant="secondary" onClick={() => setShowResetConfirm(true)}>
               <RotateCcw className="w-4 h-4" />
               {t('locationHaSensors.options.reset')}
-            </Button>
+            </Button>}
             <div className="flex items-center gap-2">
               <Button type="button" variant="secondary" onClick={onClose}>
                 {t('common.cancel')}

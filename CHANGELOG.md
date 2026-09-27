@@ -38,6 +38,7 @@
 
 ### Changed
 
+- **Sensor settings now use one section.** Zigbee and Home Assistant sensors appear together in the existing Sensors panel under Smart plugs, with one Add sensor button and filters for source and place. A Home Assistant entity used by several printers or spool-storage locations has one card with separate readings, alerts and actions for each binding; hidden card readings remain manageable here. Pairing, history, reporting, storage defaults and print holds keep their existing controls. Adding a Zigbee sensor directly to spool storage now saves the sensor and first binding together, so a failed target cannot leave an unbound sensor behind.
 - **New API keys start with `bd_`.** The `bb_` they used to start with came
   from Bambuddy, the project BamDude grew out of. Keys you already have keep
   working exactly as before — through `X-API-Key` and through

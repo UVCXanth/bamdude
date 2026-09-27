@@ -12,6 +12,7 @@ import { PrinterLocationSelect } from '../PrinterLocationSelect';
 import { Button } from '../Button';
 import { Select } from '../Select';
 import { SensorThresholdsModal } from './SensorThresholdsModal';
+import { invalidateSensorViews } from '../../utils/sensorQueryInvalidation';
 
 interface Props {
   /** Set when editing, null when adopting. */
@@ -38,8 +39,9 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
   const [name, setName] = useState<string>(sensor?.name ?? initialDevice?.name ?? initialDevice?.model ?? '');
   const [locationId, setLocationId] = useState<number | null>(sensor?.location?.id ?? null);
   const [printerId, setPrinterId] = useState<number | null>(sensor?.printer_id ?? null);
+  const [storageId, setStorageId] = useState<number | null>(null);
   // Adoption offers one initial target; editing manages the full target list.
-  const [boundTo, setBoundTo] = useState<'location' | 'printer'>(
+  const [boundTo, setBoundTo] = useState<'location' | 'printer' | 'storage'>(
     sensor?.printer_id != null ? 'printer' : 'location',
   );
   const [targetType, setTargetType] = useState<'printer' | 'room' | 'storage'>('printer');
@@ -60,7 +62,7 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
   const { data: deviceList } = useQuery({
     queryKey: ['zigbee-devices'],
     queryFn: api.getZigbeeDevices,
-    enabled: sensor === null,
+    enabled: sensor === null && hasPermission('smart_plugs:read'),
   });
 
   const free = (deviceList?.devices ?? []).filter((d) => d.kind === 'sensor' && !d.adopted);
@@ -68,31 +70,33 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
   const { data: printers } = useQuery({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
+    enabled: hasPermission('printers:read'),
   });
   const { data: rooms } = useQuery({ queryKey: ['printer-locations'], queryFn: api.getPrinterLocations,
-    enabled: sensor !== null });
+    enabled: sensor !== null && hasPermission('printers:read') });
   const { data: storage } = useQuery({ queryKey: ['inventory-locations'], queryFn: api.getLocations,
-    enabled: sensor !== null && hasPermission('inventory:read') });
+    enabled: hasPermission('inventory:read') });
 
   const done = () => {
-    queryClient.invalidateQueries({ queryKey: ['zigbee-sensors'] });
+    invalidateSensorViews(queryClient);
     // Adoption flips `adopted` in the paired list, so that cache is stale too.
     queryClient.invalidateQueries({ queryKey: ['zigbee-devices'] });
     onClose();
   };
 
-  // The legacy adoption endpoint accepts one initial target. Additional
-  // targets are managed through the binding API once the device has an id.
-  const binding = {
-    location_id: boundTo === 'location' ? locationId : null,
-    printer_id: boundTo === 'printer' ? printerId : null,
+  const initialTarget = boundTo === 'printer' ? printerId : boundTo === 'storage' ? storageId : locationId;
+  const initialBinding: ZigbeeSensorBindingInput | undefined = initialTarget == null ? undefined : {
+    printer_id: boundTo === 'printer' ? initialTarget : null,
+    printer_location_id: boundTo === 'location' ? initialTarget : null,
+    storage_location_id: boundTo === 'storage' ? initialTarget : null,
+    display_name: null, visible: true, sort_order: 0, notify_enabled: false,
   };
 
   const save = useMutation({
     mutationFn: () =>
       sensor
         ? api.updateZigbeeSensor(sensor.id, { name: name.trim() })
-        : api.adoptZigbeeSensor({ zigbee_ieee: ieee, name: name.trim(), ...binding }),
+        : api.adoptZigbeeSensor({ zigbee_ieee: ieee, name: name.trim(), initial_binding: initialBinding }),
     onSuccess: done,
   });
 
@@ -262,7 +266,7 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
               only the operator knows which. Where the reading is drawn follows
               from this and nothing else. */}
           <div className="flex gap-1 mb-2" role="radiogroup" aria-label={t('settings.zigbee.sensors.boundTo')}>
-            {(['location', 'printer'] as const).map((option) => (
+            {(['location', 'printer', ...(hasPermission('inventory:read') ? ['storage' as const] : [])] as const).map((option) => (
               <button
                 key={option}
                 type="button"
@@ -275,14 +279,15 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
                     : 'bg-bambu-dark text-bambu-gray hover:text-white'
                 }`}
               >
-                {t(`settings.zigbee.sensors.boundTo${option === 'location' ? 'Location' : 'Printer'}`)}
+                {option === 'storage' ? t('settings.zigbee.sensors.storage')
+                  : t(`settings.zigbee.sensors.boundTo${option === 'location' ? 'Location' : 'Printer'}`)}
               </button>
             ))}
           </div>
 
           {boundTo === 'location' ? (
             <PrinterLocationSelect value={locationId} onChange={setLocationId} allowCreate />
-          ) : (
+          ) : boundTo === 'printer' ? (
             <Select
               size="sm"
               className="w-full"
@@ -298,15 +303,23 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
                 </option>
               ))}
             </Select>
+          ) : (
+            <Select size="sm" className="w-full" aria-label={t('settings.zigbee.sensors.storage')}
+              value={storageId ?? ''} onChange={e => setStorageId(e.target.value ? Number(e.target.value) : null)}>
+              <option value="">{t('settings.zigbee.sensors.pickTarget')}</option>
+              {(storage ?? []).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </Select>
           )}
           <p className="text-xs text-bambu-gray mt-1">
             {t(
-              boundTo === 'location'
-                ? 'settings.zigbee.sensors.boundToLocationHint'
-                : 'settings.zigbee.sensors.boundToPrinterHint',
+              boundTo === 'location' ? 'settings.zigbee.sensors.boundToLocationHint'
+                : boundTo === 'printer' ? 'settings.zigbee.sensors.boundToPrinterHint'
+                  : 'sensorSettings.storageHint',
             )}
           </p>
         </div>}
+
+        {save.isError && <p className="text-sm text-status-error" role="alert">{save.error.message}</p>}
 
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>

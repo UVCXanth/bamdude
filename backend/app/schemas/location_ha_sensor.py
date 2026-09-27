@@ -138,3 +138,10 @@ class LocationHASensorReading(BaseModel):
     # still pick out the card-visible subset itself, instead of issuing a
     # second request for the same location.
     show_on_card: bool = True
+
+
+class LocationHASensorManagementReading(LocationHASensorReading):
+    location_id: int
+    observed_at: datetime | None = None
+    last_checked: datetime | None = None
+    fresh: bool = False

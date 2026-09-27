@@ -58,11 +58,16 @@ export function SensorCard({
       <CardContent>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-white truncate">{sensor.name}</p>
+            <p className="text-white truncate">{sensor.name}
+              <span className="ml-2 rounded bg-bambu-dark-tertiary px-1.5 py-0.5 text-xs text-bambu-gray">Zigbee</span>
+            </p>
             <p className="text-xs text-bambu-gray truncate">
               {[(sensor.bindings ?? []).length
-                ? sensor.bindings!.map((binding) => binding.printer_name || binding.location?.path
-                  || binding.storage_location_name).filter(Boolean).join(', ')
+                ? sensor.bindings!.map((binding) => binding.printer_id != null
+                  ? `${t('sensorSettings.printer')}: ${binding.printer_name ?? `#${binding.printer_id}`}`
+                  : binding.storage_location_id != null
+                    ? `${t('sensorSettings.storage')}: ${binding.storage_location_name ?? `#${binding.storage_location_id}`}`
+                    : binding.location?.path ? `${t('sensorSettings.room')}: ${binding.location.path}` : null).filter(Boolean).join(', ')
                 : sensor.printer_name ?? sensor.location?.name, sensor.model || sensor.ieee]
                 .filter(Boolean)
                 .join(' · ')}

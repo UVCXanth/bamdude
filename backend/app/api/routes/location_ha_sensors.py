@@ -24,10 +24,12 @@ from backend.app.models.user import User
 from backend.app.schemas.location_ha_sensor import (
     HADisplayEntity,
     LocationHASensorCreate,
+    LocationHASensorManagementReading,
     LocationHASensorReading,
     LocationHASensorResponse,
     LocationHASensorUpdate,
 )
+from backend.app.services.ha_sensor_manager import utcnow_naive
 from backend.app.services.homeassistant import homeassistant_service
 from backend.app.services.location_ha_sensor_manager import location_ha_sensor_manager
 
@@ -191,6 +193,64 @@ async def list_location_ha_sensors(
         query = query.where(LocationHASensor.location_id == location_id)
     result = await db.execute(query.order_by(LocationHASensor.location_id, LocationHASensor.sort_order))
     return list(result.scalars().all())
+
+
+class LocationSensorManagementBatch(BaseModel):
+    configured: bool
+    readings: list[LocationHASensorManagementReading]
+
+
+@router.get("/management/readings", response_model=LocationSensorManagementBatch)
+async def list_location_sensor_management_readings(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = _READ,
+):
+    """All storage bindings from the local poller cache, including hidden rows."""
+    from backend.app.api.routes.settings import get_homeassistant_settings
+
+    _check_storage_scope(request)
+    settings = await get_homeassistant_settings(db)
+    cadence = await location_ha_sensor_manager._get_poll_interval()
+    rows = (
+        await db.scalars(
+            select(LocationHASensor).order_by(
+                LocationHASensor.location_id, LocationHASensor.sort_order, LocationHASensor.id
+            )
+        )
+    ).all()
+    now = utcnow_naive()
+    readings = []
+    for sensor in rows:
+        cached = location_ha_sensor_manager.get_reading(sensor.id)
+        fresh = bool(cached and cached.observed_at and now - cached.observed_at <= timedelta(seconds=cadence * 2))
+        readings.append(
+            LocationHASensorManagementReading(
+                id=sensor.id,
+                location_id=sensor.location_id,
+                name=sensor.name,
+                entity_id=sensor.entity_id,
+                kind=sensor.kind,
+                device_class=sensor.device_class,
+                unit=sensor.unit,
+                state=cached.state if cached else sensor.last_state,
+                value=cached.value if cached else None,
+                alerting=cached.alerting if cached and fresh else False,
+                reachable=bool(cached and cached.reachable and fresh),
+                alert_state=sensor.alert_state,
+                alert_above=sensor.alert_above,
+                alert_below=sensor.alert_below,
+                last_changed=sensor.last_changed,
+                show_on_card=sensor.show_on_card,
+                observed_at=cached.observed_at if cached else None,
+                last_checked=sensor.last_checked,
+                fresh=fresh,
+            )
+        )
+    return LocationSensorManagementBatch(
+        configured=bool(settings["ha_enabled"] and settings["ha_url"] and settings["ha_token"]),
+        readings=readings,
+    )
 
 
 # Must precede /{sensor_id} so "entities" is not parsed as an id.

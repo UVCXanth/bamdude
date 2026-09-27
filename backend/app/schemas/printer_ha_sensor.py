@@ -116,6 +116,14 @@ class PrinterHASensorReading(BaseModel):
     last_changed: datetime | None = None
 
 
+class PrinterHASensorManagementReading(PrinterHASensorReading):
+    printer_id: int
+    show_on_printer_card: bool
+    observed_at: datetime | None = None
+    last_checked: datetime | None = None
+    fresh: bool = False
+
+
 class HADisplayEntity(BaseModel):
     """A bindable entity, as offered by the picker."""
 

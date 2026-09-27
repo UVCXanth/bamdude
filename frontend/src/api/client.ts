@@ -4528,6 +4528,19 @@ export interface PrinterHASensorReading {
   last_changed: string | null;
 }
 
+export interface PrinterHASensorManagementReading extends PrinterHASensorReading {
+  printer_id: number;
+  show_on_printer_card: boolean;
+  observed_at: string | null;
+  last_checked: string | null;
+  fresh: boolean;
+}
+
+export interface HASensorManagementBatch<T> {
+  configured: boolean;
+  readings: T[];
+}
+
 export interface PrinterHASensorCreate {
   printer_id: number;
   name: string;
@@ -4583,6 +4596,13 @@ export interface LocationHASensorReading {
   alert_below: number | null;
   last_changed: string | null;
   show_on_card: boolean;
+}
+
+export interface LocationHASensorManagementReading extends LocationHASensorReading {
+  location_id: number;
+  observed_at: string | null;
+  last_checked: string | null;
+  fresh: boolean;
 }
 
 export interface HASensorHistoryPoint {
@@ -9684,8 +9704,9 @@ export const api = {
   adoptZigbeeSensor: (payload: {
     zigbee_ieee: string;
     name: string;
-    location_id: number | null;
+    location_id?: number | null;
     printer_id?: number | null;
+    initial_binding?: ZigbeeSensorBindingInput;
   }) =>
     request<{ id: number; name: string }>('/zigbee/sensors', {
       method: 'POST',
@@ -9782,6 +9803,8 @@ export const api = {
     request<PrinterHASensor[]>(`/ha-sensors/${printerId ? `?printer_id=${printerId}` : ''}`),
   getHASensorReadings: (printerId: number) =>
     request<PrinterHASensorReading[]>(`/ha-sensors/by-printer/${printerId}/readings`),
+  getHASensorManagementReadings: () =>
+    request<HASensorManagementBatch<PrinterHASensorManagementReading>>('/ha-sensors/management/readings'),
   getHASensorHistory: (sensorId: number, hours = 24) =>
     request<HASensorHistoryPoint[]>(`/ha-sensors/${sensorId}/history?hours=${hours}`),
   getBindableHAEntities: (search?: string) => {
@@ -9804,6 +9827,8 @@ export const api = {
     request<LocationHASensorReading[]>(
       `/location-ha-sensors/by-location/${locationId}/readings?show_on_card=${showOnCard}`
     ),
+  getLocationHASensorManagementReadings: () =>
+    request<HASensorManagementBatch<LocationHASensorManagementReading>>('/location-ha-sensors/management/readings'),
   getLocationHASensorHistory: (sensorId: number, hours = 24) =>
     request<HASensorHistoryPoint[]>(`/location-ha-sensors/${sensorId}/history?hours=${hours}`),
   getBindableLocationHAEntities: (search?: string) => {

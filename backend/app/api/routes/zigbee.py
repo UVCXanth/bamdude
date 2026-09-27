@@ -32,7 +32,7 @@ from backend.app.models.smart_sensor import SmartSensor
 from backend.app.models.smart_sensor_binding import SmartSensorBinding, SmartSensorBindingThreshold
 from backend.app.models.user import User
 from backend.app.schemas.printer_location import PrinterLocationOut
-from backend.app.schemas.smart_sensor import SmartSensorCreate, SmartSensorOut, SmartSensorUpdate
+from backend.app.schemas.smart_sensor import SensorBindingIn, SmartSensorCreate, SmartSensorOut, SmartSensorUpdate
 from backend.app.schemas.zigbee_settings import DeviceSettingsUpdate
 
 # Imported as a module so the lock and the restart sequence are visibly the same
@@ -585,25 +585,6 @@ def _binding_out(binding: SmartSensorBinding) -> dict:
     }
 
 
-class SensorBindingIn(BaseModel):
-    printer_id: int | None = None
-    printer_location_id: int | None = None
-    storage_location_id: int | None = None
-    display_name: str | None = Field(default=None, max_length=100)
-    visible: bool = True
-    sort_order: int = 0
-    notify_enabled: bool = False
-
-    @model_validator(mode="after")
-    def _one_target(self):
-        if (
-            sum(value is not None for value in (self.printer_id, self.printer_location_id, self.storage_location_id))
-            != 1
-        ):
-            raise ValueError("A binding needs exactly one target.")
-        return self
-
-
 class BindingThresholdIn(BaseModel):
     kind: str
     custom: bool = False
@@ -971,16 +952,26 @@ async def adopt_sensor(
 
     sensor = SmartSensor(name=payload.name.strip(), zigbee_ieee=ieee)
     db.add(sensor)
-    await db.flush()
-    await _bind_sensor(
-        db,
-        sensor,
-        location_id=payload.location_id,
-        printer_id=payload.printer_id,
-        set_location=True,
-        set_printer=True,
-    )
-    await db.commit()
+    try:
+        await db.flush()
+        if payload.initial_binding is not None:
+            await _validate_binding_target(db, payload.initial_binding)
+            db.add(SmartSensorBinding(sensor_id=sensor.id, **payload.initial_binding.model_dump()))
+            sensor.printer_id = payload.initial_binding.printer_id
+            sensor.location_id = payload.initial_binding.printer_location_id
+        else:
+            await _bind_sensor(
+                db,
+                sensor,
+                location_id=payload.location_id,
+                printer_id=payload.printer_id,
+                set_location=True,
+                set_printer=True,
+            )
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, "This sensor or target has already been added.") from exc
     await db.refresh(sensor)
     await db.refresh(sensor, attribute_names=["bindings"])
     await ws_manager.broadcast({"type": "sensor_bindings_changed"})

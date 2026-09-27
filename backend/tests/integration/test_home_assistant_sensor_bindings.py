@@ -16,7 +16,13 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.smart_sensor import SmartSensor
 from backend.app.models.smart_sensor_binding import SmartSensorBinding
 from backend.app.models.spool import Spool
-from backend.app.services.ha_sensor_manager import HASensorManager, SensorReading, record_ha_reading, utcnow_naive
+from backend.app.services.ha_sensor_manager import (
+    HASensorManager,
+    SensorReading,
+    ha_sensor_manager,
+    record_ha_reading,
+    utcnow_naive,
+)
 from backend.app.services.homeassistant import homeassistant_service
 from backend.app.services.location_ha_sensor_manager import location_ha_sensor_manager
 from backend.app.services.print_scheduler import PrintScheduler
@@ -76,6 +82,72 @@ async def test_printer_scoped_key_sees_only_its_ha_bindings(async_client, printe
         await async_client.get(
             "/api/v1/inventory/spools?archived=active&page=1&sort_by=temperature_desc", headers=headers
         )
+    ).status_code == 403
+
+
+async def test_management_readings_include_hidden_bindings_and_keep_scopes(async_client, printer_factory, db_session):
+    first = await printer_factory(name="Scoped A")
+    second = await printer_factory(name="Scoped B")
+    location = Location(name="Scoped box", name_key="scoped box")
+    db_session.add(location)
+    await db_session.commit()
+    for printer in (first, second):
+        response = await async_client.post(
+            "/api/v1/ha-sensors/",
+            json={
+                "printer_id": printer.id,
+                "name": "Humidity",
+                "entity_id": "sensor.shop_humidity",
+                "kind": "numeric",
+                "unit": "%",
+                "show_on_printer_card": False,
+            },
+        )
+        assert response.status_code == 200, response.text
+    stored = await async_client.post(
+        "/api/v1/location-ha-sensors/",
+        json={
+            "location_id": location.id,
+            "name": "Humidity",
+            "entity_id": "sensor.shop_humidity",
+            "kind": "numeric",
+            "unit": "%",
+            "device_class": "humidity",
+            "show_on_card": False,
+        },
+    )
+    assert stored.status_code == 200, stored.text
+
+    old = SensorReading("49.7", 49.7, False, True, utcnow_naive() - timedelta(hours=1))
+    with (
+        patch.object(ha_sensor_manager, "get_reading", return_value=old),
+        patch.object(location_ha_sensor_manager, "get_reading", return_value=old),
+        patch.object(homeassistant_service, "fetch_states", side_effect=AssertionError("reader fetched HA")),
+    ):
+        printer_batch = await async_client.get("/api/v1/ha-sensors/management/readings")
+        storage_batch = await async_client.get("/api/v1/location-ha-sensors/management/readings")
+    assert printer_batch.status_code == 200, printer_batch.text
+    assert storage_batch.status_code == 200, storage_batch.text
+    assert len(printer_batch.json()["readings"]) == 2
+    assert printer_batch.json()["readings"][0]["show_on_printer_card"] is False
+    assert printer_batch.json()["readings"][0]["fresh"] is False
+    assert printer_batch.json()["readings"][0]["reachable"] is False
+    assert storage_batch.json()["readings"][0]["show_on_card"] is False
+
+    key = await async_client.post(
+        "/api/v1/api-keys/",
+        json={
+            "name": "management-scope",
+            "can_read_status": True,
+            "printer_ids": [first.id],
+        },
+    )
+    headers = {"X-API-Key": key.json()["key"]}
+    scoped = await async_client.get("/api/v1/ha-sensors/management/readings", headers=headers)
+    assert scoped.status_code == 200
+    assert [row["printer_id"] for row in scoped.json()["readings"]] == [first.id]
+    assert (
+        await async_client.get("/api/v1/location-ha-sensors/management/readings", headers=headers)
     ).status_code == 403
 
 
