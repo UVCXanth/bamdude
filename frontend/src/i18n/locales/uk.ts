@@ -5874,7 +5874,10 @@ export default {
       showLess: 'Згорнути',
       stock: {
         ready: 'готових {{count}} зі складу',
-        kits: 'комплектів {{count}} зі складу',
+        kits_one: '{{count}} комплект зі складу',
+        kits_few: '{{count}} комплекти зі складу',
+        kits_many: '{{count}} комплектів зі складу',
+        kits_other: '{{count}} комплекту зі складу',
       },
       events: {
         print_started: 'Друк почато',

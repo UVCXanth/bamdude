@@ -85,6 +85,22 @@
   every position has a page with its reservations, the product's other
   configurations and the parts its kit needs. A product or a variant option
   that finished goods are kept under cannot be deleted.
+- **«Add to order» adds many lines at once and takes what is already in
+  stock.** One dialog, opened from an order or from a catalog product's page
+  (which asks which active order), adds several products with their
+  configuration, material and colour, parts of a product, or a one-off product
+  made of a file's plate — picked across searches, pages and tabs, and added
+  in one go: if any line is refused, nothing is added. The stock is picked by
+  itself: ready units of exactly that configuration first, then kits of free
+  parts, and only the rest goes to print; you can change either number, and
+  «pick» brings the proposal back. If the stock moved while you were choosing,
+  the line takes what is left and you are told how much. A line now shows how
+  many ready units and kits it takes, and editing it has «Pick from stock».
+  Completing an order ships its ready units to the customer; cancelling it,
+  deleting a line or the order puts them back; changing a line's configuration
+  moves them to the new configuration's position, as far as it has free. Only
+  an active order takes ready units. The order's activity log says what each
+  new line took from stock.
 - **An order's Queue section shows everything the order has in the queue.**
   It used to list only jobs already on a printer's queue, so work the order
   plan had just queued counted in the «In queue» tile but was nowhere in the
