@@ -400,3 +400,78 @@ async def test_preview_lists_the_catalogue_products_standard_kit(committing_clie
     await db_session.commit()
     body = (await committing_client.post("/api/v1/library/files/parts-preview", json={"file_ids": [p1s.id]})).json()
     assert [p["name"] for p in body["catalog_product"]["parts"]] == ["flask"]
+
+
+async def _read_own_caller(async_client: AsyncClient, name: str) -> tuple[dict, int]:
+    """A caller who may create and edit orders but sees only its OWN library files,
+    and the id of another user of the same group (whose files it must not reach)."""
+    admin = {"Authorization": f"Bearer {create_access_token(data={'sub': 'test_admin'})}"}
+    grp = await async_client.post(
+        "/api/v1/groups/",
+        headers=admin,
+        json={
+            "name": f"{name}_grp",
+            "permissions": ["library:read_own", "projects:read", "projects:create", "projects:update"],
+        },
+    )
+    assert grp.status_code == 201, grp.text
+    ids = []
+    for username in (f"{name}_me", f"{name}_other"):
+        created = await async_client.post(
+            "/api/v1/users/",
+            headers=admin,
+            json={"username": username, "password": _PW, "role": "user", "group_ids": [grp.json()["id"]]},
+        )
+        assert created.status_code == 201, created.text
+        ids.append(created.json()["id"])
+    login = await async_client.post("/api/v1/auth/login", json={"username": f"{name}_me", "password": _PW})
+    assert login.status_code == 200, login.text
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}, ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["job", "catalog", "plates"])
+async def test_an_order_from_files_honours_the_library_ownership_read_split(
+    async_client: AsyncClient, db_session, kind
+):
+    """Owner, 2026-09-27 (WS-10 final review): the order routes that name library
+    files ask the library's own gate — a caller who sees only its own files cannot
+    make an order of another user's file by its id (404, as the library answers)."""
+    headers, (_me, other) = await _read_own_caller(async_client, f"off_{kind}")
+    foreign = await _file(db_session, f"foreign-{kind}.gcode.3mf", P1S)
+    foreign.created_by_id = other
+    catalog = Product(name=f"Catalog {kind}")
+    db_session.add(catalog)
+    await db_session.commit()
+    body = {
+        "job": {"kind": "job", "name": "J", "file_ids": [foreign.id], "targets": {"flask": 2}},
+        "catalog": {"kind": "catalog", "name": "C", "product_id": catalog.id, "file_ids": [foreign.id], "quantity": 1},
+        "plates": {"kind": "plates", "library_file_id": foreign.id, "plates": [{"plate_index": 1, "copies": 1}]},
+    }[kind]
+    r = await async_client.post("/api/v1/projects/from-files", json=body, headers=headers)
+    assert r.status_code == 404, r.text
+    assert r.json()["detail"] == "Library file not found"
+
+
+@pytest.mark.asyncio
+async def test_a_plate_line_honours_the_library_ownership_read_split(async_client: AsyncClient, db_session):
+    """The add-to-order dialog's «one-off from a file» asks the same gate: another
+    user's file is 404, the caller's own file is taken."""
+    headers, (me, other) = await _read_own_caller(async_client, "batch")
+    foreign = await _file(db_session, "foreign-batch.gcode.3mf", P1S)
+    foreign.created_by_id = other
+    own = await _file(db_session, "own-batch.gcode.3mf", P1S)
+    own.created_by_id = me
+    order = Project(name="O")
+    db_session.add(order)
+    await db_session.commit()
+    url = f"/api/v1/projects/{order.id}/lines/batch"
+
+    def line(file_id):
+        return {"lines": [{"kind": "plate", "library_file_id": file_id, "plate_index": 1, "copies": 1}]}
+
+    r = await async_client.post(url, json=line(foreign.id), headers=headers)
+    assert r.status_code == 404, r.text
+    assert r.json()["detail"] == "Library file not found"
+    r = await async_client.post(url, json=line(own.id), headers=headers)
+    assert r.status_code == 200, r.text

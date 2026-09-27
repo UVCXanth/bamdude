@@ -285,6 +285,11 @@
 
 ### Fixed
 
+- **An order made from library files respects who may see those files.** A user
+  whose group sees only its own library files could still start an order from
+  another user's file by its number; the order now answers «file not found»
+  for it, exactly as the library does. Groups that see the whole library are
+  not affected.
 - **A customer's order total no longer counts cancelled orders** — in the
   customers list and its «Total» sort, on the customer page and in the tiles. A
   cancelled order is not revenue. On the customer page «covered of ordered»

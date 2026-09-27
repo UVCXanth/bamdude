@@ -226,14 +226,22 @@ async def _new_order(db: AsyncSession, *, name: str, lines: list[tuple[int, int]
     return project
 
 
-async def create_job_order(db: AsyncSession, *, name: str, file_ids: list[int], targets: dict[str, int]) -> Project:
+async def create_job_order(
+    db: AsyncSession,
+    *,
+    name: str,
+    file_ids: list[int],
+    targets: dict[str, int],
+    visible: Callable[[LibraryFile], bool] | None = None,
+) -> Project:
     """The wizard's shape (spec Decision 4): one ``adhoc_job`` product over every
     selected file; the kit is ``gcd`` of the positive targets — the line's
     quantity — and a targeted part keeps ``target // gcd``; untargeted parts
     are zeroed ("do not measure"). Raises before anything is written when the
     targets are empty; raises after the syncs (inside the caller's transaction,
-    so nothing survives) when a key names no part."""
-    files = await _active_files(db, file_ids)
+    so nothing survives) when a key names no part. ``visible`` — the caller's
+    ownership-scoped predicate, as in :func:`parts_preview`."""
+    files = await _active_files(db, file_ids, visible=visible)
     for f in files:
         if not is_plan_eligible(f.file_type):
             raise NotPlannable(f.id)
@@ -260,11 +268,20 @@ async def create_job_order(db: AsyncSession, *, name: str, file_ids: list[int], 
 
 
 async def create_catalog_order(
-    db: AsyncSession, *, name: str, product_id: int, file_ids: list[int], quantity: int
+    db: AsyncSession,
+    *,
+    name: str,
+    product_id: int,
+    file_ids: list[int],
+    quantity: int,
+    visible: Callable[[LibraryFile], bool] | None = None,
 ) -> Project:
     """The wizard's shape when the preview found the one catalogue product that
     links every file: an order of ``quantity`` units, the product untouched.
-    Re-checked here — the client's word that the files are linked is not enough."""
+    Re-checked here — the client's word that the files are linked is not enough.
+    The files are the caller's to name first (``visible``, as in :func:`parts_preview`)."""
+    if visible is not None:
+        await _active_files(db, file_ids, visible=visible)
     product = await db.get(Product, product_id)
     if product is None or product.origin != ProductOrigin.CATALOG.value:
         raise NotACatalogProduct()
@@ -332,11 +349,18 @@ def _normalise_plate(file: LibraryFile, plate_index: int) -> int:
     raise PlateNotFound(plate_index)
 
 
-async def plate_product_for(db: AsyncSession, library_file_id: int, plate_index: int) -> Product:
+async def plate_product_for(
+    db: AsyncSession,
+    library_file_id: int,
+    plate_index: int,
+    *,
+    visible: Callable[[LibraryFile], bool] | None = None,
+) -> Product:
     """The one-off product of a file's plate — the add-to-order dialog's third tab
     (spec workshop-add-to-order, rule 11): the same checks and the same product the
-    print dialog's «order from plates» reaches."""
-    file = (await _active_files(db, [library_file_id]))[0]
+    print dialog's «order from plates» reaches — and the same ownership gate
+    (``visible``)."""
+    file = (await _active_files(db, [library_file_id], visible=visible))[0]
     if not is_plan_eligible(file.file_type):
         raise NotPlannable(file.id)
     idx = _normalise_plate(file, plate_index)
@@ -344,14 +368,20 @@ async def plate_product_for(db: AsyncSession, library_file_id: int, plate_index:
 
 
 async def create_plates_order(
-    db: AsyncSession, *, library_file_id: int, plates: list[tuple[int, int]], name: str | None
+    db: AsyncSession,
+    *,
+    library_file_id: int,
+    plates: list[tuple[int, int]],
+    name: str | None,
+    visible: Callable[[LibraryFile], bool] | None = None,
 ) -> Project:
     """The print dialog's shape (spec Decision 4): one line per plate, each on
     its plate product, ``quantity = copies``. The plate index is normalised the
     way the sync numbers plates — a single-plate file (or one without plate
     metadata) is plate 0 whatever the dialog said, so the slicer's ``1`` and the
-    sync's ``0`` never make two products for one plate."""
-    files = await _active_files(db, [library_file_id])
+    sync's ``0`` never make two products for one plate. ``visible`` — as in
+    :func:`parts_preview`."""
+    files = await _active_files(db, [library_file_id], visible=visible)
     file = files[0]
     if not is_plan_eligible(file.file_type):
         raise NotPlannable(file.id)

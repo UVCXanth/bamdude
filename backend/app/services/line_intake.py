@@ -20,11 +20,12 @@ rolls back — a batch is added whole or not at all.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
@@ -57,11 +58,15 @@ _PLATE_ERRORS: dict[type, tuple[str, int]] = {
 }
 
 
-async def _new_line(db: AsyncSession, spec, sort_order: int) -> ProjectLine:
+async def _new_line(
+    db: AsyncSession, spec, sort_order: int, visible: Callable[[LibraryFile], bool] | None
+) -> ProjectLine:
     common = {"material": spec.material, "color": spec.color, "note": spec.note, "sort_order": sort_order}
     if isinstance(spec, BatchPlateLineIn):
         try:
-            product = await order_from_files.plate_product_for(db, spec.library_file_id, spec.plate_index)
+            product = await order_from_files.plate_product_for(
+                db, spec.library_file_id, spec.plate_index, visible=visible
+            )
         except order_from_files.OrderFromFilesError as e:
             detail, status = _PLATE_ERRORS.get(type(e), ("Plate not found", 404))
             raise LineIntakeError(detail, status) from e
@@ -90,14 +95,16 @@ async def add_lines(
     specs: Sequence[BatchProductLineIn | BatchPartsLineIn | BatchPlateLineIn],
     *,
     actor: User | None,
+    visible: Callable[[LibraryFile], bool] | None = None,
 ) -> list[Intake]:
     """Add every line in ``specs`` to ``project`` with its configuration, stock and
-    journal entry; never commits."""
+    journal entry; never commits. ``visible`` is the caller's library ownership
+    gate for plate lines — a file it rejects is the same 404 as a missing one."""
     active = project.status == "active"
     sort_order = max((ln.sort_order for ln in project.lines), default=-1) + 1
     out: list[Intake] = []
     for spec in specs:
-        line = await _new_line(db, spec, sort_order)
+        line = await _new_line(db, spec, sort_order, visible)
         sort_order += 1
         project.lines.append(line)
         # Flushed first so the configuration, the movements and the journal have an id to name.

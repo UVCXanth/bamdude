@@ -9,7 +9,7 @@ import logging
 import os
 import shutil
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import NamedTuple
@@ -23,6 +23,7 @@ from sqlalchemy.orm import selectinload
 # Aliased: a private name imported into a module this size could be shadowed
 # by a local helper of the same name without anyone noticing.
 from backend.app.api.routes.auto_queue import _to_response as auto_queue_row_response, auto_queue_item_load_options
+from backend.app.api.routes.library import _library_file_visible as library_file_visible
 from backend.app.api.routes.print_queue import _enrich_response as queue_row_response, queue_item_load_options
 from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
@@ -946,15 +947,22 @@ async def create_project_from_files(
     the product was created rolls the product back with it. Three shapes by
     ``kind``: ``job`` (the wizard, targets per part), ``catalog`` (the wizard
     over the one catalogue product linking every file), ``plates`` (the print
-    dialog, copies per plate)."""
+    dialog, copies per plate). The files are the caller's to name — the library's
+    own ownership gate (:func:`_library_visible`)."""
+    visible = _library_visible(current_user)
     try:
         if data.kind == "job":
             project = await order_from_files.create_job_order(
-                db, name=data.name, file_ids=data.file_ids, targets=data.targets
+                db, name=data.name, file_ids=data.file_ids, targets=data.targets, visible=visible
             )
         elif data.kind == "catalog":
             project = await order_from_files.create_catalog_order(
-                db, name=data.name, product_id=data.product_id, file_ids=data.file_ids, quantity=data.quantity
+                db,
+                name=data.name,
+                product_id=data.product_id,
+                file_ids=data.file_ids,
+                quantity=data.quantity,
+                visible=visible,
             )
         else:
             project = await order_from_files.create_plates_order(
@@ -962,6 +970,7 @@ async def create_project_from_files(
                 library_file_id=data.library_file_id,
                 plates=[(p.plate_index, p.copies) for p in data.plates],
                 name=data.name,
+                visible=visible,
             )
     except order_from_files.FileNotFound:
         raise HTTPException(status_code=404, detail="Library file not found")
@@ -1283,9 +1292,18 @@ def _spec_of(data: ProjectLineCreate) -> BatchProductLineIn | BatchPartsLineIn:
     )
 
 
+def _library_visible(user: User | None) -> Callable[[LibraryFile], bool]:
+    """The library's own ownership gate for an order route that names library files
+    (owner, 2026-09-27): a caller who sees only its own files may use only those, and
+    another user's file is the same 404 the library answers. API keys have no row
+    identity and see all, as the library's own routes decide."""
+    can_read_all = user is None or user.has_permission(Permission.LIBRARY_READ_ALL.value)
+    return lambda f: library_file_visible(f, user, can_read_all)
+
+
 async def _intake(db: AsyncSession, project: Project, specs, actor: User | None) -> list[line_intake.Intake]:
     try:
-        return await line_intake.add_lines(db, project, specs, actor=actor)
+        return await line_intake.add_lines(db, project, specs, actor=actor, visible=_library_visible(actor))
     except line_intake.LineIntakeError as e:
         raise HTTPException(status_code=e.status, detail=str(e)) from e
     except (part_stock.PartStockError, finished_stock.FinishedStockError) as e:
