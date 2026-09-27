@@ -62,8 +62,10 @@ async def test_a_merged_part_moves_its_count_rows_to_the_target(committing_clien
         json={"source_part_id": order["flask"].id},
     )
     assert r.status_code == 200, r.text
+    # The line wanted 3 flasks and its standard 1 cap; a merge says they are one
+    # part, so it wants 4 of the target.
     rows = await _rows(db_session, ProjectLinePartCount, line_id=order["line_id"])
-    assert [(row.part_id, row.qty) for row in rows] == [(order["cap"].id, 3)]
+    assert [(row.part_id, row.qty) for row in rows] == [(order["cap"].id, 4)]
 
 
 @pytest.mark.asyncio

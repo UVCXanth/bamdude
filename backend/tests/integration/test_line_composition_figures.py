@@ -117,12 +117,16 @@ async def test_each_line_needs_its_own_parts(committing_client, db_session, pipe
 @pytest.mark.asyncio
 async def test_a_print_of_straight_tails_does_not_cover_the_angled_line(committing_client, db_session, pipe):
     # A print of straight tails filed under the ANGLED line: that line does not
-    # count a straight tail, so it covers nothing there.
+    # count a straight tail, so it covers nothing there — the tails read as its
+    # surplus (a per-unit 0 row, bankable), never as coverage.
     pid, first, second = await _order(committing_client, db_session, pipe)
     await _file(db_session, pid, second, straight=4)
     lines = (await committing_client.get(f"/api/v1/projects/{pid}")).json()["lines"]
-    assert set(_parts(lines[1])) == {"flask", "angled"}
-    assert all(usable == 0 for _per, _need, usable in _parts(lines[1]).values())
+    parts = _parts(lines[1])
+    assert parts.pop("straight") == (0, 0, 4)
+    assert set(parts) == {"flask", "angled"}
+    assert all(usable == 0 for _per, _need, usable in parts.values())
+    assert lines[1]["covered_units"] == 0
     await _file(db_session, pid, first, straight=4, flask=4)
     lines = (await committing_client.get(f"/api/v1/projects/{pid}")).json()["lines"]
     assert lines[0]["covered_units"] == 4

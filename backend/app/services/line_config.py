@@ -26,13 +26,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.models.line_config import ProjectLineChoice, ProjectLinePartCount
-from backend.app.models.product import Product
+from backend.app.models.product import Product, ProductPart
 from backend.app.models.product_variant import ProductVariantGroup
+from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
 from backend.app.services import order_journal, part_stock
@@ -42,8 +43,10 @@ from backend.app.services.line_composition import (
     composition,
     config_key,
     counted,
+    default_options,
     line_composition,
     load_line_configs,
+    standard_per,
 )
 
 MAX_COUNT = 9999
@@ -163,8 +166,12 @@ def _describe(product: Product, cfg: LineConfig) -> dict:
 async def _dropping(
     db: AsyncSession, line: ProjectLine, product: Product, old: Composition, new: Composition
 ) -> list[DroppedPart]:
-    """Printed and queued of every counted part the new kit wants less of —
-    read from the order's own figures and plan (no second arithmetic)."""
+    """Every counted part the new kit wants less of, with how many of its
+    printed and of its queued would BECOME surplus — the printed and queued
+    counts come from the order's own figures and plan; only the difference in
+    surplus is worked out here, against the full quantity as the figures
+    measure it (``order_metrics._finish``). A count that drops from 4 to 3 on
+    a line whose prints are still short turns nothing into surplus."""
     from backend.app.services.order_metrics import attribute, load_order_context
     from backend.app.services.plan_engine import queued_yield_by_line
     from backend.app.services.product_composition import recipes_for_products
@@ -182,17 +189,26 @@ async def _dropping(
     recipes = await recipes_for_products(db, [product])
     queued = await queued_yield_by_line(db, recipes, [line], {line.id: {p.id for p, _per in counted(old)}})
     line_queued = queued.get(line.id, {})
-    return [
-        DroppedPart(
-            part_id=part.id,
-            name=part.name,
-            per_before=before,
-            per_after=after,
-            printed=usable.get(part.id, 0),
-            queued=line_queued.get(part.id, 0),
+    units = 1 if line.mode == "parts" else line.quantity
+
+    def becomes_surplus(total: int, before: int, after: int) -> int:
+        return max(0, total - after * units) - max(0, total - before * units)
+
+    out: list[DroppedPart] = []
+    for part, before, after in shrinking:
+        printed, queued = usable.get(part.id, 0), line_queued.get(part.id, 0)
+        from_printed = becomes_surplus(printed, before, after)
+        out.append(
+            DroppedPart(
+                part_id=part.id,
+                name=part.name,
+                per_before=before,
+                per_after=after,
+                printed=from_printed,
+                queued=becomes_surplus(printed + queued, before, after) - from_printed,
+            )
         )
-        for part, before, after in shrinking
-    ]
+    return out
 
 
 async def seed_line(
@@ -219,15 +235,24 @@ async def set_configuration(
     choice; ``counts`` is the WHOLE set of changed counts (or, for a parts line,
     of wanted counts): what is not in it goes back to the standard.
     """
+    status = await db.scalar(select(Project.status).where(Project.id == line.project_id))
+    if status == "completed":
+        # Its kits shipped (Ruling 25): the ledger still holds them as taken, and
+        # moving the reservation would put shipped parts back on the shelf.
+        # Reopen the order to change what it was.
+        raise LineConfigError("A completed order's lines cannot be reconfigured", 409)
     product = await _product(db, line.product_id)
     current = (await load_line_configs(db, [line.id])).get(line.id, LineConfig())
     new_choices, new_counts = _validate(product, line.mode, {**current.choices, **choices}, counts)
+    reserved_before = await part_stock.reserved_units_for_line(db, line)
+    if new_choices == current.choices and new_counts == current.counts:
+        # Nothing changes: no rows, no reservation move, no journal entry.
+        return ConfigOutcome(reserved_before, reserved_before, [])
     parts = list(product.parts)
     old_comp = line_composition(parts, line.mode, current, _defaults(product))
     new_comp = composition(parts, line.mode, set(new_choices.values()), new_counts)
-    reserved_before = await part_stock.reserved_units_for_line(db, line)
-    dropping = await _dropping(db, line, product, old_comp, new_comp)
     if dry_run:
+        dropping = await _dropping(db, line, product, old_comp, new_comp)
         after = 0
         if reserved_before:
             shelf = await part_stock.balances(db, product.id)
@@ -256,7 +281,48 @@ async def set_configuration(
         },
         actor=actor,
     )
-    return ConfigOutcome(reserved_before, after, dropping)
+    return ConfigOutcome(reserved_before, after, [])
+
+
+def _per_under(part: ProductPart, option_id: int | None, chosen: set[int]) -> int:
+    """The part's standard count on a line that chose ``chosen``, were it bound to ``option_id``."""
+    return standard_per(part) if option_id is None or option_id in chosen else 0
+
+
+async def freeze_binding(db: AsyncSession, part: ProductPart, new_option_id: int | None) -> int:
+    """A part's binding is about to change: every saved product line whose kit
+    that would change keeps it, through an explicit count row (the principle
+    rule 5 applies to a new group or a new standard — a saved order's kit does
+    not move under it). Lines created afterwards follow the new binding.
+    Returns the number of lines frozen."""
+    if part.variant_option_id == new_option_id:
+        return 0
+    line_ids = (
+        (
+            await db.execute(
+                select(ProjectLine.id).where(ProjectLine.product_id == part.product_id, ProjectLine.mode == "product")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not line_ids:
+        return 0
+    configs = await load_line_configs(db, line_ids)
+    defaults = (await default_options(db, [part.product_id])).get(part.product_id, {})
+    rows = []
+    for line_id in line_ids:
+        cfg = configs.get(line_id, LineConfig())
+        if part.id in cfg.counts:
+            continue  # the line already says how many it wants
+        chosen = set({**defaults, **cfg.choices}.values())
+        before = _per_under(part, part.variant_option_id, chosen)
+        if before != _per_under(part, new_option_id, chosen):
+            rows.append({"line_id": line_id, "part_id": part.id, "qty": before})
+    if rows:
+        await db.execute(insert(ProjectLinePartCount), rows)
+        await _rekey(db, [r["line_id"] for r in rows])
+    return len(rows)
 
 
 async def add_group_to_lines(db: AsyncSession, group: ProductVariantGroup) -> int:
@@ -308,37 +374,56 @@ async def forget_part(db: AsyncSession, part_id: int) -> None:
 
 
 async def repoint_part(db: AsyncSession, source_id: int, target_id: int) -> None:
-    """A merged part's count rows move to the target (summed where both exist)."""
-    rows = (
-        await db.execute(
-            select(ProjectLinePartCount.line_id, ProjectLinePartCount.qty).where(
-                ProjectLinePartCount.part_id == source_id
-            )
-        )
-    ).all()
-    if not rows:
+    """A merge says the source IS the target. A line that changed either one
+    wants, of the merged part, what it wanted of both — each read as the line
+    had it (its row, else its standard under its choices) — stored only where
+    that differs from the target's standard; a line that changed neither
+    follows the product (the target's own count). Call before the source goes."""
+    parts = {
+        p.id: p
+        for p in (await db.execute(select(ProductPart).where(ProductPart.id.in_([source_id, target_id])))).scalars()
+    }
+    source, target = parts.get(source_id), parts.get(target_id)
+    if source is None or target is None:
         return
-    existing = dict(
-        (
-            await db.execute(
-                select(ProjectLinePartCount.line_id, ProjectLinePartCount.qty).where(
-                    ProjectLinePartCount.part_id == target_id,
-                    ProjectLinePartCount.line_id.in_([lid for lid, _q in rows]),
+    line_ids = sorted(
+        set(
+            (
+                await db.execute(
+                    select(ProjectLinePartCount.line_id).where(ProjectLinePartCount.part_id.in_([source_id, target_id]))
                 )
             )
-        ).all()
+            .scalars()
+            .all()
+        )
     )
-    await db.execute(delete(ProjectLinePartCount).where(ProjectLinePartCount.part_id == source_id))
-    for line_id, qty in rows:
-        if line_id in existing:
-            await db.execute(
-                update(ProjectLinePartCount)
-                .where(ProjectLinePartCount.line_id == line_id, ProjectLinePartCount.part_id == target_id)
-                .values(qty=min(MAX_COUNT, existing[line_id] + qty))
-            )
+    if not line_ids:
+        return
+    configs = await load_line_configs(db, line_ids)
+    defaults = (await default_options(db, [target.product_id])).get(target.product_id, {})
+    modes = dict((await db.execute(select(ProjectLine.id, ProjectLine.mode).where(ProjectLine.id.in_(line_ids)))).all())
+    await db.execute(
+        delete(ProjectLinePartCount).where(
+            ProjectLinePartCount.line_id.in_(line_ids), ProjectLinePartCount.part_id.in_([source_id, target_id])
+        )
+    )
+    rows = []
+    for line_id in line_ids:
+        cfg = configs.get(line_id, LineConfig())
+        if modes.get(line_id) == "parts":
+            merged, standard = cfg.counts.get(target_id, 0) + cfg.counts.get(source_id, 0), 0
         else:
-            await db.execute(insert(ProjectLinePartCount).values(line_id=line_id, part_id=target_id, qty=qty))
-    await _rekey(db, [lid for lid, _q in rows])
+            chosen = set({**defaults, **cfg.choices}.values())
+            standard = _per_under(target, target.variant_option_id, chosen)
+            merged = cfg.counts.get(target_id, standard) + cfg.counts.get(
+                source_id, _per_under(source, source.variant_option_id, chosen)
+            )
+        merged = min(MAX_COUNT, merged)
+        if merged != standard:
+            rows.append({"line_id": line_id, "part_id": target_id, "qty": merged})
+    if rows:
+        await db.execute(insert(ProjectLinePartCount), rows)
+    await _rekey(db, line_ids)
 
 
 async def forget_line(db: AsyncSession, line_id: int) -> None:

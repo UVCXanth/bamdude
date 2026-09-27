@@ -363,3 +363,40 @@ async def test_a_plate_product_that_already_exists_is_found_not_duplicated(db_se
     await db_session.commit()
     found = await find_or_create_plate_product(db_session, file=p1s, plate_index=1, stem="job-p1s")
     assert found.id == existing.id
+
+
+@pytest.mark.asyncio
+async def test_preview_lists_the_catalogue_products_standard_kit(committing_client, db_session):
+    """spec workshop-product-variants, rule 22: the offered kit is the product's
+    standard one — a part of a non-standard option is not in it."""
+    from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
+
+    p1s = await _file(db_session, "tail-p1s.gcode.3mf", P1S)
+    product = Product(name="Pipe")
+    db_session.add(product)
+    await db_session.flush()
+    group = ProductVariantGroup(product_id=product.id, name="Tail")
+    db_session.add(group)
+    await db_session.flush()
+    straight = ProductVariantOption(group_id=group.id, name="straight", position=0)
+    angled = ProductVariantOption(group_id=group.id, name="angled", position=1)
+    db_session.add_all([straight, angled])
+    await db_session.flush()
+    group.default_option_id = straight.id
+    db_session.add_all(
+        [
+            ProductPart(product_id=product.id, kind="printed", name="flask", name_key="flask", qty_per_unit=1),
+            ProductPart(
+                product_id=product.id,
+                kind="printed",
+                name="angled",
+                name_key="angled",
+                qty_per_unit=1,
+                variant_option_id=angled.id,
+            ),
+        ]
+    )
+    await db_session.execute(product_files.insert().values(product_id=product.id, library_file_id=p1s.id))
+    await db_session.commit()
+    body = (await committing_client.post("/api/v1/library/files/parts-preview", json={"file_ids": [p1s.id]})).json()
+    assert [p["name"] for p in body["catalog_product"]["parts"]] == ["flask"]

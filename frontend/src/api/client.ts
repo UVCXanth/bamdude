@@ -2583,6 +2583,13 @@ export interface VariantOptionUpdate {
   position?: number;
 }
 
+/** A configuration to count kits of — chosen option ids (other groups take
+ *  their standard) and changed per-unit counts. */
+export interface KitsConfiguration {
+  options?: number[];
+  counts?: Record<number, number>;
+}
+
 export interface ProductPartCreate {
   kind: ProductPartKind;
   name: string;
@@ -11424,6 +11431,15 @@ export const api = {
    *  ledger that got it there (newest first, capped by `limit`). */
   getProductStock: (id: number, limit: number = STOCK_MOVEMENT_LIMIT) =>
     request<ProductStock>(`/products/${id}/stock?limit=${limit}`),
+  /** Whole kits of one configuration the shelf can make. */
+  getConfigurationKits: (id: number, config: KitsConfiguration) => {
+    const search = new URLSearchParams();
+    if (config.options?.length) search.set('options', config.options.join(','));
+    const counts = Object.entries(config.counts ?? {}).map(([pid, qty]) => `${pid}:${qty}`);
+    if (counts.length) search.set('counts', counts.join(','));
+    const qs = search.toString();
+    return request<{ kits_available: number }>(`/products/${id}/kits${qs ? `?${qs}` : ''}`);
+  },
   /** A hand correction. 409 when it would take a balance below zero, 422 for a
    *  part that holds no stock — the server's own sentence is in `detail`, which
    *  is what `ApiError.message` carries. */

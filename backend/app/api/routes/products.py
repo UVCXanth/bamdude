@@ -68,6 +68,7 @@ from backend.app.schemas.product import (
     ProductCreate,
     ProductDuplicate,
     ProductImportResponse,
+    ProductKitsOut,
     ProductListItem,
     ProductPartAlias,
     ProductPartCreate,
@@ -90,7 +91,7 @@ from backend.app.schemas.product import (
 )
 from backend.app.services import line_config, part_stock, product_delete, product_facets
 from backend.app.services.entity_codes import code_for, id_from_query
-from backend.app.services.line_composition import default_options, standard_composition
+from backend.app.services.line_composition import composition, default_options, standard_composition
 from backend.app.services.list_paging import (
     SortSpec,
     apply_sql_sort,
@@ -1090,6 +1091,9 @@ async def update_part(
         )
         if owner != product.id:
             raise HTTPException(status_code=422, detail="That option does not belong to this product")
+    if "variant_option_id" in data.model_fields_set:
+        # Saved order lines keep the kit they had (spec workshop-product-variants).
+        await line_config.freeze_binding(db, part, data.variant_option_id)
     # A PURCHASED part IS its name — ``name_key`` is derived from it (there is no
     # 3MF object to key off), so a rename that left the key behind made the two
     # disagree for good and let a second "M4 screw" be created beside the first.
@@ -1440,6 +1444,43 @@ async def get_product_stock(
         kits_available=await _standard_kits(db, product, part_balances),
         movements=[movement_out(row, names, orders) for row in rows],
     )
+
+
+@router.get("/{product_id}/kits", response_model=ProductKitsOut)
+async def get_product_kits(
+    product_id: int,
+    options: str | None = Query(
+        None, description="Chosen option ids, comma-separated; other groups take their standard"
+    ),
+    counts: str | None = Query(None, description="Changed per-unit counts as part_id:qty, comma-separated"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """Whole kits of ONE configuration the free stock can make — what the
+    add-line row and the line editor may offer to take off the shelf. The
+    product's own ``kits_available`` is the STANDARD kit's; a line with other
+    options reserves its own kit (spec workshop-product-variants, rules 9, 22)."""
+    product = await _get(db, product_id)
+    try:
+        option_ids = [int(item) for item in (options or "").split(",") if item.strip()]
+        count_map: dict[int, int] = {}
+        for item in (counts or "").split(","):
+            if item.strip():
+                part_id, qty = item.split(":")
+                count_map[int(part_id)] = int(qty)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail="Options and counts must be numbers") from e
+    groups = await _variant_groups(db, product.id)
+    group_of = {o.id: g.id for g in groups for o in g.options}
+    chosen = {g.id: g.default_option_id for g in groups if g.default_option_id is not None}
+    for option_id in option_ids:
+        if option_id not in group_of:
+            raise HTTPException(status_code=422, detail="That option does not belong to this product")
+        chosen[group_of[option_id]] = option_id
+    if any(part_id not in {p.id for p in product.parts} for part_id in count_map):
+        raise HTTPException(status_code=422, detail="That part does not belong to this product")
+    kit = composition(list(product.parts), "product", set(chosen.values()), count_map)
+    return ProductKitsOut(kits_available=part_stock.kits_of(await part_stock.balances(db, product.id), kit))
 
 
 @router.post("/{product_id}/stock/adjust", response_model=StockMovementOut)

@@ -70,6 +70,7 @@ from backend.app.services.line_composition import (
     LineConfig,
     counted,
     default_options,
+    has_shelf,
     line_composition,
     load_line_configs,
 )
@@ -158,10 +159,10 @@ def counted_part_clause():
 def is_counted(part: ProductPart) -> bool:
     """Does this part have a stock balance at all.
 
-    Mirrors ``order_metrics._new_line_figures`` and ``plan_engine.line_yield``:
-    printed, and wanted in a quantity greater than zero.
+    Printed, and wanted in the product's own kit in a quantity greater than
+    zero — ``line_composition.has_shelf``, the one definition the figures ask too.
     """
-    return part.kind == "printed" and part.qty_per_unit > 0
+    return has_shelf(part)
 
 
 async def balances(db: AsyncSession, product_id: int) -> dict[int, int]:
@@ -254,24 +255,6 @@ async def line_composition_of(db: AsyncSession, line: ProjectLine) -> Compositio
     config = (await load_line_configs(db, [line.id])).get(line.id, LineConfig())
     defaults = (await default_options(db, [line.product_id])).get(line.product_id, {})
     return line_composition(list(parts), line.mode, config, defaults)
-
-
-def kits_available(part_balances: dict[int, int], parts: list[ProductPart]) -> int:
-    """How many whole units the free stock can already make.
-
-    ``min`` over the counted parts of ``floor(balance / qty_per_unit)`` — the
-    kit is the unit the operator thinks in (Decision 4), so five lids and three
-    bases are three kits and the two spare lids stay lids. A product with no
-    counted part makes no kits: there is nothing to be short of, and answering
-    "unlimited" would offer stock nobody has.
-    """
-    counted = [p for p in parts if is_counted(p)]
-    if not counted:
-        return 0
-    # ``max(0, …)`` cannot fire while the ledger refuses negative balances; it
-    # is here so a hand-edited database degrades to "no kits" rather than to a
-    # negative offer in the line dialog.
-    return max(0, min(part_balances.get(p.id, 0) // p.qty_per_unit for p in counted))
 
 
 def lock_part_stmt(part_id: int):

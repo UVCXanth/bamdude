@@ -74,6 +74,15 @@ def standard_composition(parts: Sequence[ProductPart], default_option_ids: set[i
     return composition(parts, "product", default_option_ids, {})
 
 
+def has_shelf(part: ProductPart) -> bool:
+    """Does this part have a stock balance at all — printed, and in the
+    product's own kit (``qty_per_unit > 0``). The stock ledger's definition
+    (``part_stock.is_counted`` delegates here), kept beside the reader so the
+    figures can ask it without importing the ledger. A line may bring in a
+    part the product does not count; it still has no shelf."""
+    return part.kind == "printed" and part.qty_per_unit > 0
+
+
 def counted(comp: Iterable[tuple[ProductPart, int]]) -> Composition:
     """The parts that have a shelf and make kits: printed, wanted at all."""
     return [(p, per) for p, per in comp if p.kind == "printed" and per > 0]

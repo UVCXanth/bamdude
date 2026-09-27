@@ -27,6 +27,7 @@ from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
 from backend.app.schemas.print_options_preference import PrintOptionsPreferenceData
 from backend.app.services import part_stock, plan_engine
+from backend.app.services.line_composition import standard_composition
 from backend.app.services.order_filing import order_candidates, resolve_line_id
 from backend.app.services.order_metrics import attribute, load_order_context
 from backend.app.services.plan_engine import queued_yield_by_line
@@ -2585,7 +2586,7 @@ async def _shelf(db, product_id: int, kits: int) -> dict[str, ProductPart]:
 async def _kits(db, product_id: int) -> int:
     db.expire_all()
     parts = (await db.execute(select(ProductPart).where(ProductPart.product_id == product_id))).scalars().all()
-    return part_stock.kits_available(await part_stock.balances(db, product_id), list(parts))
+    return part_stock.kits_of(await part_stock.balances(db, product_id), standard_composition(list(parts), set()))
 
 
 async def _line_movements(db, line_id: int) -> list[ProductPartStockMovement]:

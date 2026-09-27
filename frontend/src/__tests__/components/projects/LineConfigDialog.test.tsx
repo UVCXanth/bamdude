@@ -129,6 +129,8 @@ describe('LineConfigDialog', () => {
     render(<LineConfigDialog orderId={9} line={angled} onClose={() => {}} />);
     expect(((await screen.findByLabelText('Хвіст')) as HTMLSelectElement).value).toBe('12');
     fireEvent.click(screen.getByRole('button', { name: 'Reset to standard' }));
+    // Save waits for the dry run's answer.
+    await screen.findByText('Nothing printed or queued is affected.');
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(9, 21, { choices: { 3: 11 }, part_counts: {} }));
   });
@@ -149,6 +151,7 @@ describe('LineConfigDialog', () => {
     render(<LineConfigDialog orderId={9} line={line} onClose={() => {}} />);
     fireEvent.change(await screen.findByLabelText('Колба — per unit'), { target: { value: '2' } });
     fireEvent.click(screen.getByLabelText('straight tail — in the kit'));
+    await screen.findByText('Nothing printed or queued is affected.');
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(9, 21, { choices: { 3: 11 }, part_counts: { 5: 2, 6: 0 } }));
   });
@@ -190,6 +193,8 @@ describe('AddLineRow · parts of the product', () => {
 
   it('sends the chosen option for a product with variants', async () => {
     const add = vi.spyOn(api, 'addOrderLine').mockResolvedValue({ id: 1, lines: [] } as unknown as Order);
+    // The shelf offer follows the chosen option's kit.
+    vi.spyOn(api, 'getConfigurationKits').mockResolvedValue({ kits_available: 3 });
     render(
       <table>
         <tbody>

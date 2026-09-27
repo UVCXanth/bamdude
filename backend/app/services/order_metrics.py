@@ -34,6 +34,7 @@ from backend.app.services.line_composition import (
     LineConfig,
     counted,
     default_options,
+    has_shelf,
     line_composition,
     load_line_configs,
     per_by_line,
@@ -139,6 +140,10 @@ class PartFigures:
     surplus: int = 0
     already_banked: int = 0
     bankable: int = 0
+    #: Has a stock balance (``line_composition.has_shelf``). A part the line
+    #: brings in though the product does not count it has no shelf, so its
+    #: surplus is shown but never bankable.
+    shelf: bool = True
 
 
 @dataclass
@@ -473,17 +478,21 @@ def _new_line_figures(
                 per=per,
                 need=per * to_print,
                 already_banked=(banked or {}).get((line.id, part.id), 0),
+                shelf=has_shelf(part),
             )
         )
     return figs
 
 
 def _units_printed(figs: LineFigures) -> int:
-    if not figs.parts:
+    # ``per == 0`` rows are parts the line's configuration dropped (see
+    # ``attribute``): all surplus, never a unit.
+    kit = [p for p in figs.parts if p.per > 0]
+    if not kit:
         return 0
     if figs.mode == "parts":
-        return sum(min(p.usable, p.per) for p in figs.parts)
-    return min(p.usable // p.per for p in figs.parts)
+        return sum(min(p.usable, p.per) for p in kit)
+    return min(p.usable // p.per for p in kit)
 
 
 def _finish(figs: LineFigures) -> None:
@@ -498,7 +507,7 @@ def _finish(figs: LineFigures) -> None:
     for p in figs.parts:
         p.remaining = max(0, p.need - p.usable)
         p.surplus = max(0, p.usable - p.per * (1 if figs.mode == "parts" else figs.quantity))
-        p.bankable = max(0, p.surplus - p.already_banked)
+        p.bankable = max(0, p.surplus - p.already_banked) if p.shelf else 0
     figs.units_printed = _units_printed(figs)
     # Capped on the wire: ``progress`` is what a bar fills from, and a bar
     # cannot be 300% full. The excess is not lost — ``units_printed`` and each
@@ -584,7 +593,31 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
         """This line's figures for that object, or None when its product does not
         count it — an object the product never heard of, or one it zeroed."""
         part = indexes.get(line.product_id, {}).get(name_key)
-        return None if part is None else by_part_id[line.id].get(part.id)
+        pf = None if part is None else by_part_id[line.id].get(part.id)
+        return pf if pf is not None and pf.per > 0 else None
+
+    def spare(line: ProjectLine, name_key: str) -> PartFigures | None:
+        """A ``per = 0`` row for a part of the line's product the line's
+        configuration left out — a straight tail on a line switched to angled
+        (spec workshop-product-variants, rule 14). The parts are real and were
+        made for this order, so they read as the line's surplus and can be
+        banked; a part without a shelf (the product does not count it at all —
+        a calibration cube) stays uncounted, as before."""
+        part = indexes.get(line.product_id, {}).get(name_key)
+        if part is None or not has_shelf(part):
+            return None
+        pf = by_part_id[line.id].get(part.id)
+        if pf is None:
+            pf = PartFigures(
+                part_id=part.id,
+                name=part.name,
+                kind=part.kind,
+                per=0,
+                already_banked=ctx.banked_by_line_part.get((line.id, part.id), 0),
+            )
+            figures[line.id].parts.append(pf)
+            by_part_id[line.id][part.id] = pf
+        return pf
 
     def candidates(archive: PrintArchive, exclude: ProjectLine | None = None) -> list[ProjectLine]:
         """The lines this print may feed, in ``sort_order``.
@@ -606,14 +639,21 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
             if ln.product_id in product_ids and ln is not exclude and line_accepts_materials(ln, materials)
         ]
 
-    def hand_out(archive: PrintArchive, rows: list[PrintArchivePart], lines: list[ProjectLine]) -> set[int]:
+    def hand_out(
+        archive: PrintArchive,
+        rows: list[PrintArchivePart],
+        lines: list[ProjectLine],
+        spares: list[ProjectLine] | None = None,
+    ) -> set[int]:
         """Deal every part row out over ``lines`` greedily; return the ids of the
         lines that got something.
 
         Each row goes to the first line that counts the part and still needs it,
         the remainder to the next, and whatever survives every need to the first
         line that counts the part at all — surplus is visible, never dropped. A
-        row no line counts is skipped, exactly like a ``qty_per_unit = 0`` part.
+        row no line counts goes, as surplus, to the first of ``spares`` (default:
+        ``lines``) whose product has a shelf for it (``spare``); one no product
+        counts at all is skipped, exactly like a ``qty_per_unit = 0`` part.
         """
         fed: set[int] = set()
         if archive.status not in (_DONE, _RUNNING):
@@ -621,6 +661,14 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
         for row in rows:
             takers = [(ln, pf) for ln in lines if (pf := counted(ln, row.name_key)) is not None]
             if not takers:
+                quantity = row_quantity(row, archive.status)
+                for ln in lines if spares is None else spares:
+                    pf = spare(ln, row.name_key)
+                    if pf is not None:
+                        if quantity:
+                            _award(pf, archive.status, quantity)
+                            fed.add(ln.id)
+                        break
                 continue
             quantity = row_quantity(row, archive.status)
             for line, pf in takers:
@@ -681,7 +729,8 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
         # the leftover on it as surplus — which IS "in full, need or no need": an
         # operator's filing is never second-guessed. Rows the home's product does
         # not count fall through to the other candidates rather than vanishing.
-        fed = hand_out(archive, home_rows, [home]) | hand_out(archive, foreign_rows, candidates(archive, exclude=home))
+        others = candidates(archive, exclude=home)
+        fed = hand_out(archive, home_rows, [home]) | hand_out(archive, foreign_rows, others, [home, *others])
         list_under(archive, fed | {home.id})
     for archive in implicit:
         lines = candidates(archive)

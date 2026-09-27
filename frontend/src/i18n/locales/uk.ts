@@ -5380,6 +5380,7 @@ export default {
       changedParts_many: 'змінено деталей: {{count}}',
       changedParts_other: 'змінено деталей: {{count}}',
       configure: 'Конфігурація…',
+      completed: 'Замовлення завершене — відкрийте його знову, щоб змінити конфігурацію позиції',
       title: 'Конфігурація «{{product}}»',
       options: 'Опції',
       parts: 'Деталі',

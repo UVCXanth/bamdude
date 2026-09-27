@@ -7,6 +7,7 @@ import type { LineMode, Order, ProjectLine, ProjectLineCreate } from '../../api/
 import { useToast } from '../../contexts/ToastContext';
 import { useProductStock } from '../../hooks/useProductStock';
 import { useProductDetail } from '../../hooks/useProductDetail';
+import { useConfigurationKits } from '../../hooks/useConfigurationKits';
 import { ProductPicker } from '../pickers/ProductPicker';
 import { Button } from '../Button';
 import { Select } from '../Select';
@@ -67,7 +68,13 @@ export function AddLineRow({ orderId }: { orderId: number }) {
   // and NOT fetching, so nothing is asked for until there is something to ask
   // about. The hook owns the key; see `useProductStock`.
   const { data: stock } = useProductStock(productId);
-  const kits = stock?.kits_available ?? 0;
+  // A line with other options reserves ITS kit, not the product's standard one.
+  const chosenOptions = Object.values(choices);
+  const { data: configKits } = useConfigurationKits(
+    productId,
+    chosenOptions.length ? { options: chosenOptions } : null,
+  );
+  const kits = (chosenOptions.length ? configKits?.kits_available : stock?.kits_available) ?? 0;
   // Clamped against BOTH the shelf and the line: reserving more kits than the
   // line will ship is not a reservation, it is stock taken out of circulation.
   // The server clamps too — this is what the operator SEES it will send.

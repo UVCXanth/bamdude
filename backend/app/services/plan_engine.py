@@ -296,7 +296,7 @@ def counted_parts_by_line(figures_by_project: dict[int, dict[int, LineFigures]])
     disagree with the plan on screen.
     """
     return {
-        line_id: {pf.part_id for pf in figs.parts}
+        line_id: {pf.part_id for pf in figs.parts if pf.per > 0}
         for figures in figures_by_project.values()
         for line_id, figs in figures.items()
     }
@@ -578,7 +578,8 @@ def plan_lines(
     truncated = False
     for line in ctx.lines:
         figs = figures.get(line.id)
-        parts = list(figs.parts) if figs is not None else []
+        # A `per == 0` row is surplus of a part the configuration dropped — never planned.
+        parts = [pf for pf in figs.parts if pf.per > 0] if figs is not None else []
         counted = {pf.part_id for pf in parts}
         already = queued.get(line.id) or {}
         outstanding = {pf.part_id: max(0, pf.remaining - pf.in_progress - already.get(pf.part_id, 0)) for pf in parts}

@@ -550,6 +550,14 @@ class StockBalanceOut(BaseModel):
     balance: int
 
 
+class ProductKitsOut(BaseModel):
+    """``GET /products/{id}/kits`` — whole kits of ONE configuration the free
+    stock can make (spec workshop-product-variants): what a line with those
+    options and counts could take off the shelf."""
+
+    kits_available: int = 0
+
+
 class StockMovementOut(BaseModel):
     """One row of the ledger, as the product page reads it.
 

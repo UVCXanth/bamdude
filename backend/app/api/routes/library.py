@@ -105,6 +105,7 @@ from backend.app.services.library_preview import (
     sliced_preview,
 )
 from backend.app.services.library_trash import library_trash_service
+from backend.app.services.line_composition import counted, default_options, standard_composition
 from backend.app.services.order_filing import order_candidates
 from backend.app.services.plate_summaries import cached_plates, plate_summary, split_types
 from backend.app.services.preview_artifacts import disk as preview_disk
@@ -4502,6 +4503,12 @@ async def preview_parts_of_files(
     except order_from_files.NotPlannable:
         raise HTTPException(status_code=400, detail="Only 3MF files can be planned")
     catalog = preview.catalog_product
+    # The product's STANDARD kit — the one the order will get (spec
+    # workshop-product-variants, rule 22), not the parts of every option.
+    catalog_kit = []
+    if catalog is not None:
+        defaults = (await default_options(db, [catalog.id])).get(catalog.id, {})
+        catalog_kit = counted(standard_composition(list(catalog.parts), set(defaults.values())))
     return PartsPreviewResponse(
         files=[
             PreviewFileOut(
@@ -4521,9 +4528,7 @@ async def preview_parts_of_files(
                 id=catalog.id,
                 name=catalog.name,
                 parts=[
-                    PreviewCatalogPartOut(id=part.id, name=part.name, qty_per_unit=part.qty_per_unit)
-                    for part in sorted(catalog.parts, key=lambda p: (p.sort_order, p.id))
-                    if part.kind == "printed" and part.qty_per_unit > 0
+                    PreviewCatalogPartOut(id=part.id, name=part.name, qty_per_unit=per) for part, per in catalog_kit
                 ],
             )
             if catalog is not None

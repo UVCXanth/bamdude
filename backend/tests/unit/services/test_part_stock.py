@@ -18,6 +18,7 @@ from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import part_stock as part_stock_module
+from backend.app.services.line_composition import standard_composition
 from backend.app.services.part_stock import (
     NOTE_DEFECTS_RECORDED,
     NOTE_FILED_UNDER_ORDER,
@@ -36,7 +37,7 @@ from backend.app.services.part_stock import (
     detach_archive,
     detach_archives,
     detach_line,
-    kits_available,
+    kits_of,
     line_ledger_reads,
     lock_part_stmt,
     move,
@@ -141,7 +142,7 @@ async def test_kits_available_is_the_scarcest_counted_part(db_session, kit):
     """Five lids and three bases make three widgets; the two spare lids stay
     lids."""
     product, parts = kit
-    assert kits_available(await balances(db_session, product.id), list(parts.values())) == 3
+    assert kits_of(await balances(db_session, product.id), standard_composition(list(parts.values()), set())) == 3
 
 
 async def test_a_part_needed_twice_per_unit_halves_what_it_can_supply(db_session):
@@ -150,13 +151,13 @@ async def test_a_part_needed_twice_per_unit_halves_what_it_can_supply(db_session
     await move(db_session, part_id=parts["foot"].id, delta=5, reason="unfiled_print")
 
     # 5 feet at 2 per unit is two kits and a spare foot, not two and a half.
-    assert kits_available(await balances(db_session, product.id), list(parts.values())) == 2
+    assert kits_of(await balances(db_session, product.id), standard_composition(list(parts.values()), set())) == 2
 
 
 async def test_a_product_with_no_counted_part_makes_no_kits(db_session):
     """Answering "unlimited" here would offer stock nobody has."""
     product, parts = await _make_product(db_session, ("screw", "purchased", 4))
-    assert kits_available(await balances(db_session, product.id), list(parts.values())) == 0
+    assert kits_of(await balances(db_session, product.id), standard_composition(list(parts.values()), set())) == 0
 
 
 async def test_move_refuses_a_reason_no_reader_knows(db_session):
@@ -705,7 +706,7 @@ async def test_a_line_reserves_whole_kits_across_every_counted_part(db_session, 
     assert await reserve_for_line(db_session, line, 2) == 2
 
     assert await balances(db_session, product.id) == {parts["lid"].id: 3, parts["base"].id: 1}
-    assert kits_available(await balances(db_session, product.id), list(parts.values())) == 1
+    assert kits_of(await balances(db_session, product.id), standard_composition(list(parts.values()), set())) == 1
     assert [(m.reason, m.delta) for m in await _line_rows(db_session, line.id)] == [
         ("reserved_for_order", -2),
         ("reserved_for_order", -2),

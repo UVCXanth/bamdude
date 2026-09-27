@@ -5,7 +5,7 @@ import { Plus, Trash2 } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Product, VariantGroup, VariantOption } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
-import { invalidateProductCatalog } from '../../utils/queryInvalidation';
+import { invalidateOrderViews, invalidateProductCatalog } from '../../utils/queryInvalidation';
 import { Button } from '../Button';
 import { ConfirmModal } from '../ConfirmModal';
 
@@ -46,6 +46,8 @@ export function ProductVariants({ product, canEdit }: { product: Product; canEdi
   const refresh = async () => {
     await queryClient.invalidateQueries({ queryKey: ['product', product.id] });
     invalidateProductCatalog(queryClient);
+    // Order lines name the options they chose, and a new group adds a choice to each.
+    invalidateOrderViews(queryClient);
   };
   const fail = (e: Error) => showToast(e.message, 'error');
 

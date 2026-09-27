@@ -7,6 +7,7 @@ import { api } from '../../api/client';
 import type { Order, ProjectLine, ProjectLineUpdate } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { useProductStock } from '../../hooks/useProductStock';
+import { useConfigurationKits } from '../../hooks/useConfigurationKits';
 import { ConfirmModal } from '../ConfirmModal';
 import { ProgressBar } from './ProgressBar';
 import { LinePartsTable } from './LinePartsTable';
@@ -128,6 +129,22 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
   // The hook owns the key so this and the add-line row below cannot end up
   // fighting over one query's options; see `useProductStock`.
   const { data: editStock } = useProductStock(draft ? draft.productId : null);
+  // A configured line holds its own kit, not the product's standard one.
+  const editedLine = draft ? order.lines.find((l) => l.id === draft.id) : undefined;
+  const editConfig = editedLine?.configuration;
+  const nonStandard =
+    editConfig != null &&
+    (editConfig.choices.some((c) => !c.is_default) || editConfig.changed_parts.length > 0);
+  const { data: editKits } = useConfigurationKits(
+    draft ? draft.productId : null,
+    nonStandard && editConfig
+      ? {
+          options: editConfig.choices.map((c) => c.option_id),
+          counts: Object.fromEntries(editConfig.changed_parts.map((p) => [p.part_id, p.qty])),
+        }
+      : null,
+  );
+  const editFreeKits = (nonStandard ? editKits?.kits_available : editStock?.kits_available) ?? 0;
 
   const save = useMutation({
     mutationFn: ({ lineId, data }: { lineId: number; data: ProjectLineUpdate }) =>
@@ -289,7 +306,7 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                     {editing
                       ? (() => {
                           if (line.mode === 'parts') return null;
-                          const pool = (editStock?.kits_available ?? 0) + line.from_stock_units;
+                          const pool = editFreeKits + line.from_stock_units;
                           if (pool <= 0) return null;
                           return (
                             <div className="mt-1">
@@ -435,7 +452,13 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                             type="button"
                             data-testid={`line-${line.id}-configure`}
                             onClick={() => setConfiguring(line)}
-                            title={t('orders.lineConfig.configure')}
+                            // Its kits shipped; the server refuses (409) — reopen the order first.
+                            disabled={order.status === 'completed'}
+                            title={
+                              order.status === 'completed'
+                                ? t('orders.lineConfig.completed')
+                                : t('orders.lineConfig.configure')
+                            }
                             aria-label={t('orders.lineConfig.configure')}
                             className={ICON_BUTTON_CLASS}
                           >

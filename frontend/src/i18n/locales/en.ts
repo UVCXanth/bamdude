@@ -5351,6 +5351,7 @@ export default {
       changedParts_one: '{{count}} part changed',
       changedParts_other: '{{count}} parts changed',
       configure: 'Configuration…',
+      completed: 'The order is completed — reopen it to change a line’s configuration',
       title: 'Configuration of “{{product}}”',
       options: 'Options',
       parts: 'Parts',

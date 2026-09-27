@@ -178,9 +178,11 @@ export function LineConfigDialog({
             <Button variant="secondary" onClick={onClose} disabled={save.isPending}>
               {t('common.cancel')}
             </Button>
+            {/* Not while the impact is still being asked: a quick Save would skip
+                the warning the dry run exists to give (spec rules 14, 26). */}
             <Button
               onClick={() => (dirty ? save.mutate() : onClose())}
-              disabled={product == null || save.isPending}
+              disabled={product == null || save.isPending || previewing}
             >
               {t('common.save')}
             </Button>
