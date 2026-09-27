@@ -123,6 +123,10 @@ class DroppedPartOut(BaseModel):
 class LineConfigurationImpact(BaseModel):
     reserved_before: int = 0
     reserved_after: int = 0
+    #: The ready units the line holds and would hold in the new configuration's
+    #: position (spec workshop-add-to-order, rule 8).
+    finished_before: int = 0
+    finished_after: int = 0
     dropping: list[DroppedPartOut] = []
 
 
@@ -162,6 +166,9 @@ class ProjectLineUpdate(BaseModel):
     #: has a meaningful "don't touch it", and the dialog sends the box only
     #: when the operator has a shelf to take from.
     from_stock_units: int | None = Field(default=None, ge=0)
+    #: Ready units off the finished-goods shelf — absent leaves them alone, a
+    #: number rewrites them (only on an active order; spec workshop-add-to-order, rule 13).
+    from_finished: int | None = Field(default=None, ge=0, le=MAX_QTY)
 
     @field_validator("quantity", "sort_order")
     @classmethod

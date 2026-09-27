@@ -53,7 +53,7 @@ async def test_lines_added_changed_and_removed(committing_client, db_session):
     added = await committing_client.post(f"/api/v1/projects/{oid}/lines", json={"product_id": pid, "quantity": 3})
     lid = added.json()["lines"][0]["id"]
     assert await _only(db_session, oid, "line_added") == [
-        {"line_id": lid, "product": "Lamp", "quantity": 3, "from_stock": 0}
+        {"line_id": lid, "product": "Lamp", "quantity": 3, "from_finished": 0, "from_stock": 0}
     ]
     await committing_client.patch(f"/api/v1/projects/{oid}/lines/{lid}", json={"quantity": 5, "note": "x"})
     await committing_client.patch(f"/api/v1/projects/{oid}/lines/{lid}", json={"quantity": 5})  # nothing changed

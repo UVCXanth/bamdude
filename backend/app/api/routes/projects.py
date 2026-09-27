@@ -891,10 +891,12 @@ async def _seed(db: AsyncSession, line: ProjectLine, data: ProjectLineCreate) ->
 
 
 async def _release(db: AsyncSession, line: ProjectLine, note: str) -> None:
-    """Put a line's reservation back (line deleted, order cancelled)."""
+    """Put a line's reservations back (line deleted, order cancelled or deleted) —
+    the kits and the ready units (spec workshop-add-to-order, rule 8)."""
     try:
         await part_stock.release_for_line(db, line, note=note)
-    except part_stock.PartStockError as e:
+        await finished_stock.release_for_line(db, line)
+    except (part_stock.PartStockError, finished_stock.FinishedStockError) as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
 
 
@@ -1145,6 +1147,12 @@ async def update_project(
         )
     if responsible_change:
         await order_journal.record(db, project.id, "responsible_changed", responsible_change, actor=current_user)
+    if project.status == "completed" and status_before != "completed":
+        # The ready units leave with the order, to its customer (spec
+        # workshop-add-to-order, rule 8). The kits need nothing: completing
+        # consumes them (Ruling 25). WS-11's batch issue will take this place.
+        for line in lines:
+            await finished_stock.issue_for_line(db, line, customer_id=project.customer_id, actor=current_user)
     changed = [label for column, label in _JOURNAL_FIELDS.items() if getattr(project, column) != before[column]]
     if changed:
         await order_journal.record(db, project.id, "fields_changed", {"fields": changed}, actor=current_user)
@@ -1218,6 +1226,7 @@ async def delete_project(
             await _release(db, line, part_stock.NOTE_PROJECT_DELETED)
         await part_stock.detach_line(db, line.id)
         await line_config.forget_line(db, line.id)
+    await finished_stock.detach_project(db, project_id)
     # Read before the un-filing: after the UPDATE below, no archive names this
     # order any more and there is nothing left to look them up by.
     unfiled = (await db.execute(select(PrintArchive).where(PrintArchive.project_id == project_id))).scalars().all()
@@ -1356,14 +1365,27 @@ async def update_line(
         # Rules 15–16: one set of parts, never kits.
         if "quantity" in data.model_fields_set and data.quantity != 1:
             raise HTTPException(status_code=422, detail="A parts line always has quantity 1")
-        if data.from_stock_units:
+        if data.from_stock_units or data.from_finished:
             raise HTTPException(status_code=422, detail=_PARTS_LINE_NO_STOCK)
+    wants_finished = data.from_finished is not None
+    if wants_finished:
+        # Ready units are taken only by an ACTIVE order (spec workshop-add-to-order,
+        # rule 7): a completed one already shipped what it held, and a reservation
+        # made now would hang on the shelf for ever. Unlike the kits (Ruling 33) —
+        # correcting them on a completed order puts parts back where they are.
+        status = await db.scalar(select(Project.status).where(Project.id == project_id))
+        if status != "active":
+            raise HTTPException(status_code=409, detail="Only an active order takes finished goods from stock")
     # Read before the write: the journal says what changed, not what was sent.
     tracked = ("quantity", "material", "color", "note")
     before = {field_name: getattr(line, field_name) for field_name in tracked}
     stock_before = await part_stock.reserved_units_for_line(db, line)
-    for field_name in data.model_fields_set - {"from_stock_units"}:
+    finished_before = await finished_stock.held_for_line(db, line.id)
+    for field_name in data.model_fields_set - {"from_stock_units", "from_finished"}:
         setattr(line, field_name, getattr(data, field_name))
+    if wants_finished:
+        # Ready units first (rule 6); the kits below are fitted into what is left.
+        await finished_stock.reserve_for_line(db, line, min(data.from_finished, line.quantity), actor=current_user)
     if data.from_stock_units is not None:
         # ⚠️ The fourth reservation door, and the one that is deliberately NOT
         # gated on :func:`_consumed_its_stock` (Ruling 33). Cancelling, deleting
@@ -1379,19 +1401,28 @@ async def update_line(
         # again, in this same transaction. Editing 3 → 3 must therefore still
         # end at 3, which is why the release comes first — the product's
         # balance already has this line's own kits subtracted from it.
-        await _reserve(db, line, data.from_stock_units, current_user)
-    elif "quantity" in data.model_fields_set and await part_stock.reserved_units_for_line(db, line) > line.quantity:
-        # Ruling 16: the quantity came down past what the line is holding, and
-        # the dialog said nothing about the stock. Re-reserving AT the new
-        # quantity releases exactly the difference — kits a line cannot use are
-        # withheld from every other order for nothing. Only ever downwards: a
-        # quantity going UP does not help itself to more of the shelf, because
-        # nobody asked it to.
-        await _reserve(db, line, line.quantity, current_user)
+        held = await finished_stock.held_for_line(db, line.id)
+        await _reserve(db, line, min(data.from_stock_units, max(0, line.quantity - held)), current_user)
+    else:
+        # Ruling 16, now over both shelves (spec workshop-add-to-order, rule 6): what
+        # the line holds never exceeds its quantity. The quantity came down, or the
+        # ready units grew, past it: the KITS go back first, then the ready units.
+        # Only ever downwards — a quantity going up does not help itself to more.
+        held = await finished_stock.held_for_line(db, line.id)
+        kits = await part_stock.reserved_units_for_line(db, line)
+        if held + kits > line.quantity:
+            fitted = max(0, line.quantity - held)
+            if kits > fitted:
+                await _reserve(db, line, fitted, current_user)
+            if held > line.quantity:
+                await finished_stock.reserve_for_line(db, line, line.quantity, actor=current_user)
     changes = {name: [before[name], getattr(line, name)] for name in tracked if getattr(line, name) != before[name]}
     stock_after = await part_stock.reserved_units_for_line(db, line)
     if stock_after != stock_before:
         changes["from_stock"] = [stock_before, stock_after]
+    finished_after = await finished_stock.held_for_line(db, line.id)
+    if finished_after != finished_before:
+        changes["from_finished"] = [finished_before, finished_after]
     if changes:
         product = await db.get(Product, line.product_id)
         await order_journal.record(
@@ -1423,6 +1454,8 @@ async def configure_line(
     printed or queued, and the reservation before and after.
     """
     line = await _get_line(db, project_id, line_id)
+    old_key = line.config_key
+    finished_before = await finished_stock.held_for_line(db, line.id)
     try:
         outcome = await line_config.set_configuration(
             db, line, choices=data.choices, counts=data.part_counts, actor=current_user, dry_run=data.dry_run
@@ -1432,9 +1465,18 @@ async def configure_line(
     except part_stock.PartStockError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     if data.dry_run:
+        finished_after = 0
+        if finished_before:
+            position = await finished_stock.position_for_key(db, line.product_id, outcome.new_key)
+            free = position.on_hand - position.reserved if position is not None else 0
+            if outcome.new_key == old_key:
+                free += finished_before  # the same position: the line keeps its own
+            finished_after = min(finished_before, line.quantity, free)
         return LineConfigurationImpact(
             reserved_before=outcome.reserved_before,
             reserved_after=outcome.reserved_after,
+            finished_before=finished_before,
+            finished_after=finished_after,
             dropping=[
                 DroppedPartOut(
                     part_id=d.part_id,
@@ -1446,6 +1488,22 @@ async def configure_line(
                 )
                 for d in outcome.dropping
             ],
+        )
+    if line.config_key != old_key and finished_before:
+        # The ready units follow the line into the position of its new configuration
+        # (spec workshop-add-to-order, rule 8), in this same transaction.
+        before, after = await finished_stock.move_for_line(db, line, old_key, actor=current_user)
+        product = await db.get(Product, line.product_id)
+        await order_journal.record(
+            db,
+            project_id,
+            "line_changed",
+            {
+                "line_id": line.id,
+                "product": product.name if product else None,
+                "changes": {"from_finished": [before, after]},
+            },
+            actor=current_user,
         )
     return await _response(db, project_id)
 
@@ -1476,6 +1534,7 @@ async def delete_line(
     for model in (PrintArchive, PrintQueueItem, AutoQueueItem):
         await db.execute(update(model).where(model.project_line_id == line_id).values(project_line_id=None))
     await part_stock.detach_line(db, line_id)
+    await finished_stock.detach_line(db, line_id)
     await line_config.forget_line(db, line_id)
     product = await db.get(Product, line.product_id)
     await order_journal.record(

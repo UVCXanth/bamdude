@@ -79,6 +79,8 @@ class ConfigOutcome:
     reserved_before: int = 0
     reserved_after: int = 0
     dropping: list[DroppedPart] = field(default_factory=list)
+    #: The configuration key the line has (or, on a dry run, would have) after the change.
+    new_key: str = ""
 
 
 async def _product(db: AsyncSession, product_id: int) -> Product:
@@ -350,7 +352,7 @@ async def set_configuration(
     reserved_before = await part_stock.reserved_units_for_line(db, line)
     if new_choices == current.choices and new_counts == current.counts:
         # Nothing changes: no rows, no reservation move, no journal entry.
-        return ConfigOutcome(reserved_before, reserved_before, [])
+        return ConfigOutcome(reserved_before, reserved_before, [], line.config_key)
     parts = list(product.parts)
     old_comp = line_composition(parts, line.mode, current, _defaults(product))
     new_comp = composition(parts, line.mode, set(new_choices.values()), new_counts)
@@ -363,7 +365,7 @@ async def set_configuration(
             for part, per in counted(old_comp):
                 shelf[part.id] = shelf.get(part.id, 0) + reserved_before * per
             after = min(reserved_before, line.quantity, part_stock.kits_of(shelf, new_comp))
-        return ConfigOutcome(reserved_before, after, dropping)
+        return ConfigOutcome(reserved_before, after, dropping, config_key(line.mode, new_choices, new_counts))
     await _write(db, line, new_choices, new_counts)
     await db.flush()
     after = 0
@@ -384,7 +386,7 @@ async def set_configuration(
         },
         actor=actor,
     )
-    return ConfigOutcome(reserved_before, after, [])
+    return ConfigOutcome(reserved_before, after, [], line.config_key)
 
 
 def _per_under(part: ProductPart, option_id: int | None, chosen: set[int]) -> int:

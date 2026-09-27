@@ -471,8 +471,9 @@ def _new_line_figures(
         quantity=sum(per for _part, per in printed) if line.mode == "parts" else line.quantity,
         material=line.material,
         mode=line.mode,
-        from_stock_units=from_stock_units + line.from_finished,
-        from_finished=line.from_finished,
+        # ``or 0``: a row built in memory has no server default until it is flushed.
+        from_stock_units=from_stock_units + (line.from_finished or 0),
+        from_finished=line.from_finished or 0,
         from_kit_units=from_stock_units,
     )
     to_print = max(0, line.quantity - figs.from_stock_units)

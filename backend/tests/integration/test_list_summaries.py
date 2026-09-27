@@ -116,9 +116,13 @@ async def test_nav_badges_count_active_orders_only(async_client, db_session):
     await _order(db_session, "gone", status="cancelled")
     r = await async_client.get("/api/v1/projects/nav-badges")
     assert r.status_code == 200, r.text  # not swallowed by /{project_id}
-    assert r.json() == {"active_orders": 2, "draft_products": 0}
+    assert r.json() == {"active_orders": 2, "draft_products": 0, "stock_below_min": 0}
 
 
 @pytest.mark.asyncio
 async def test_nav_badges_of_an_empty_farm(async_client):
-    assert (await async_client.get("/api/v1/projects/nav-badges")).json() == {"active_orders": 0, "draft_products": 0}
+    assert (await async_client.get("/api/v1/projects/nav-badges")).json() == {
+        "active_orders": 0,
+        "draft_products": 0,
+        "stock_below_min": 0,
+    }
