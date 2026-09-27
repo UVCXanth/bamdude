@@ -27,9 +27,16 @@ from backend.app.core.database import take_write_lock
 from backend.app.models.finished_stock import MOVEMENT_KINDS, StockItem, StockItemMovement
 from backend.app.models.product import Product, ProductOrigin, ProductPart
 from backend.app.models.project_line import ProjectLine
+from backend.app.models.stock_issue import StockIssue
 from backend.app.models.user import User
 from backend.app.services import line_config, part_stock
-from backend.app.services.line_composition import Composition, compositions_for_items, counted
+from backend.app.services.line_composition import (
+    Composition,
+    LineConfig,
+    compositions_for_items,
+    counted,
+    load_line_configs,
+)
 
 
 class FinishedStockError(Exception):
@@ -67,13 +74,14 @@ async def item_for(
     counts: Mapping[int, int] | None = None,
     *,
     create: bool,
+    any_origin: bool = False,
 ) -> StockItem | None:
     """The position of this product configuration — found by its key, or created
     when ``create`` (spec rule 9). Only catalogue products are kept (rule 6)."""
     origin = await db.scalar(select(Product.origin).where(Product.id == product_id))
     if origin is None:
         raise FinishedStockError("Product not found", 404)
-    if origin != ProductOrigin.CATALOG.value:
+    if origin != ProductOrigin.CATALOG.value and not any_origin:
         raise FinishedStockError("Only catalogue products are kept in stock", 422)
     try:
         key, new_choices, new_counts = await line_config.resolve(db, product_id, choices, counts)
@@ -117,18 +125,26 @@ async def _record(
     actor: User | None = None,
     line: ProjectLine | None = None,
     d_line: int = 0,
+    counters: Mapping[str, int] | None = None,
+    stock_issue_id: int | None = None,
 ) -> StockItemMovement:
     """Write one movement and move the columns by it — the only place both happen.
 
     Under an order ``line`` the movement names the line and its order, and the
     line's ``from_finished`` moves by ``d_line`` in the same flush (spec
     workshop-add-to-order, rule 1): a reserve adds, a release takes back, an
-    issue leaves it — the units stay the line's."""
+    issue leaves it — the units stay the line's. ``counters`` moves the line's
+    WS-11 counters (``assembled`` / ``received`` / ``issued`` / ``returned``) the
+    same way; ``stock_issue_id`` names the issue an ``issue`` belongs to."""
     if kind not in MOVEMENT_KINDS:
         raise ValueError(f"unknown finished-goods movement {kind!r}")
     locked = await lock_item(db, item.id)
     on_hand, reserved = locked.on_hand + d_on_hand, locked.reserved + d_reserved
-    if on_hand < 0 or reserved < 0 or reserved > on_hand or (line is not None and line.from_finished + d_line < 0):
+    counters = dict(counters or {})
+    below = line is not None and (
+        line.from_finished + d_line < 0 or any((getattr(line, name) or 0) + n < 0 for name, n in counters.items())
+    )
+    if on_hand < 0 or reserved < 0 or reserved > on_hand or below:
         # The callers decide under the same lock, so this is a backstop, not a path.
         raise FinishedStockError("Stock never goes below zero")
     move = StockItemMovement(
@@ -141,11 +157,14 @@ async def _record(
         created_by=actor.id if actor else None,
         project_id=line.project_id if line is not None else None,
         project_line_id=line.id if line is not None else None,
+        stock_issue_id=stock_issue_id,
     )
     db.add(move)
     locked.on_hand, locked.reserved = on_hand, reserved
     if line is not None:
         line.from_finished += d_line
+        for name, n in counters.items():
+            setattr(line, name, (getattr(line, name) or 0) + n)
     await db.flush()
     return move
 
@@ -367,6 +386,132 @@ async def move_for_line(db: AsyncSession, line: ProjectLine, *, actor: User | No
         return 0, 0
     # The line's total: what it issued (a reactivated order) plus what it holds.
     return before, await reserve_for_line(db, line, line.from_finished, actor=actor)
+
+
+# ---------- an order line's units on the shelf (spec workshop-order-issue, rules 5, 7, 8) ----------
+
+
+def moved(line: ProjectLine) -> bool:
+    """Has the line's stock moved — anything assembled, received or issued (spec rule 13)?"""
+    return (line.assembled or 0) + (line.received or 0) + (line.issued or 0) > 0
+
+
+def held_units(line: ProjectLine) -> int:
+    """Units on the shelf under the order (spec rule 7) — equal, by construction, to
+    Σ ``delta_reserved`` of the line's movements."""
+    return (
+        (line.from_finished or 0)
+        + (line.assembled or 0)
+        + (line.received or 0)
+        - (line.issued or 0)
+        - (line.returned or 0)
+    )
+
+
+async def position_for_line(db: AsyncSession, line: ProjectLine, *, create: bool) -> StockItem | None:
+    """The position of the line's configuration. An order line's position may be of ANY
+    of its products — a one-off product's printed units go through the shelf like the
+    rest; only the manual doors keep stock for catalogue products (WS-09 rule 6)."""
+    found = await position_for_key(db, line.product_id, line.config_key)
+    if found is not None or not create:
+        return found
+    config = (await load_line_configs(db, [line.id])).get(line.id, LineConfig())
+    return await item_for(db, line.product_id, config.choices, config.counts, create=True, any_origin=True)
+
+
+async def produce_for_line(db: AsyncSession, line: ProjectLine, units: int, *, actor: User | None = None) -> None:
+    """Printed units received onto the shelf under the order (``produced``, rule 5)."""
+    _at_least_one(units)
+    await lock_line(db, line)
+    item = await position_for_line(db, line, create=True)
+    await _record(db, item, "produced", units, units, note=None, actor=actor, line=line, counters={"received": units})
+
+
+async def assemble_for_line(db: AsyncSession, line: ProjectLine, units: int, *, actor: User | None = None) -> None:
+    """The line's reserved kits assembled into units for the order (``assembled`` with the
+    line): the parts writer turns the kit reservation into a write-off first — a refusal
+    there writes nothing here."""
+    _at_least_one(units)
+    await lock_line(db, line)
+    item = await position_for_line(db, line, create=True)
+    await part_stock.convert_reserved_kits(
+        db, line, units, stock_item_id=item.id, created_by=actor.id if actor is not None else None
+    )
+    await _record(db, item, "assembled", units, units, note=None, actor=actor, line=line, counters={"assembled": units})
+
+
+async def issue_from_line(
+    db: AsyncSession, line: ProjectLine, units: int, *, stock_issue: StockIssue, actor: User | None = None
+) -> None:
+    """``units`` of what the line holds handed to the customer under ``stock_issue`` —
+    part of it or all (rule 8); from its positions in id order."""
+    _at_least_one(units)
+    await lock_line(db, line)
+    held = held_units(line)
+    if units > held:
+        raise FinishedStockError(f"Only {held} held for this order")
+    left = units
+    for item_id, holding in sorted((await held_by_item(db, line.id)).items()):
+        if left == 0:
+            break
+        take = min(left, holding)
+        if take <= 0:
+            continue
+        item = await lock_item(db, item_id)
+        await _record(
+            db,
+            item,
+            "issue",
+            -take,
+            -take,
+            note=None,
+            customer_id=stock_issue.customer_id,
+            actor=actor,
+            line=line,
+            counters={"issued": take},
+            stock_issue_id=stock_issue.id,
+        )
+        left -= take
+
+
+async def give_back_for_line(db: AsyncSession, line: ProjectLine, *, actor: User | None = None) -> int:
+    """Cancel or delete: everything the line holds becomes free stock (rule 14). A line
+    whose stock never moved behaves as in WS-10 — ``from_finished`` comes down, so a
+    reactivation (allowed to it, rule 15) does not count what went back; a moved line
+    counts it in ``returned`` and keeps its counters as history. Returns the units."""
+    await lock_line(db, line)
+    if not moved(line):
+        return await release_for_line(db, line, actor=actor)
+    back = 0
+    for item_id, holding in sorted((await held_by_item(db, line.id)).items()):
+        if holding <= 0:
+            continue
+        item = await lock_item(db, item_id)
+        await _record(
+            db, item, "release", 0, -holding, note=None, actor=actor, line=line, counters={"returned": holding}
+        )
+        back += holding
+    return back
+
+
+async def take_for_line(db: AsyncSession, line: ProjectLine, units: int, *, actor: User | None = None) -> int:
+    """«Взяти зі складу» (rule 17): MORE ready units for the line — never a release first,
+    never past its quantity, never more than is free. Returns the units taken."""
+    if units <= 0 or line.mode != "product":
+        return 0
+    await lock_line(db, line)
+    found = await position_for_key(db, line.product_id, line.config_key)
+    if found is None:
+        return 0
+    item = await lock_item(db, found.id)
+    room = (
+        line.quantity - (line.from_finished or 0) - (line.assembled or 0) - (line.received or 0) + (line.returned or 0)
+    )
+    take = min(units, room, item.on_hand - item.reserved)
+    if take <= 0:
+        return 0
+    await _record(db, item, "reserve", 0, take, note=None, actor=actor, line=line, d_line=take)
+    return take
 
 
 async def free_by_keys(db: AsyncSession, pairs: Iterable[tuple[int, str]]) -> dict[tuple[int, str], StockItem]:
