@@ -173,6 +173,9 @@ class LineFigures:
     #: and kits off the free-parts one (the ledger reading).
     from_finished: int = 0
     from_kit_units: int = 0
+    #: Units the line received onto the shelf (spec workshop-order-issue): receiving is
+    #: the check, so they stay covered whatever defects are recorded on their prints later.
+    received: int = 0
     #: Units this line has covered with printed kits and its allocated stock.
     #: Unlike both sources, it can never cover more than the line asks for.
     covered_units: int = 0
@@ -479,6 +482,7 @@ def _new_line_figures(
         from_stock_units=from_stock_units + (line.from_finished or 0) + (line.assembled or 0),
         from_finished=line.from_finished or 0,
         from_kit_units=from_stock_units + (line.assembled or 0),
+        received=(line.received or 0) if line.mode != "parts" else 0,
     )
     to_print = max(0, line.quantity - figs.from_stock_units)
     for part, per in printed:
@@ -517,7 +521,9 @@ def _finish(figs: LineFigures) -> None:
     # 5-unit line holding 2 and 7 prints, and the shelf ended at 13 of a farm's
     # 16 with 5 shipped.
     for p in figs.parts:
-        p.remaining = max(0, p.need - p.usable)
+        # A received unit is covered even when its print's defects were recorded after the
+        # receipt (final review M3): the plan never asks to print what is on the shelf.
+        p.remaining = max(0, p.need - max(p.usable, p.per * figs.received))
         p.surplus = max(0, p.usable - p.per * (1 if figs.mode == "parts" else figs.quantity))
         p.bankable = max(0, p.surplus - p.already_banked) if p.shelf else 0
     figs.units_printed = _units_printed(figs)
@@ -531,7 +537,7 @@ def _finish(figs: LineFigures) -> None:
     # a unit the order has, so a fully reserved line reads 100 % with nothing
     # printed. ``units_printed`` stays prints only — the two numbers are shown
     # side by side and must not be one number that quietly means both.
-    figs.covered_units = min(figs.quantity, figs.units_printed + figs.from_stock_units)
+    figs.covered_units = min(figs.quantity, max(figs.units_printed, figs.received) + figs.from_stock_units)
     figs.progress = round(figs.covered_units / figs.quantity, 4) if figs.quantity else 0.0
 
 

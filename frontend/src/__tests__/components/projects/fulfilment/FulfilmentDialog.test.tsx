@@ -172,3 +172,35 @@ describe('FulfilmentDialog', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 });
+
+describe('FulfilmentDialog · after a refusal', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
+  });
+
+  it('reads the state again and keeps the numbers inside it', async () => {
+    const moved = {
+      ...state,
+      lines: [{ ...state.lines[0], can_assemble: 0, can_receive: 1 }, state.lines[1]],
+    };
+    const get = vi.spyOn(api, 'getFulfilment').mockResolvedValueOnce(state).mockResolvedValue(moved);
+    vi.spyOn(api, 'fulfilOrder').mockRejectedValue(new ApiError('«Pipe»: only 1 can be received', 409));
+    render(<FulfilmentDialog orderId={5} onClose={() => {}} />);
+    fireEvent.change(await screen.findByLabelText('Waybill no.'), { target: { value: '2045' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Execute' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('«Pipe»: only 1 can be received');
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByLabelText('Receive — Pipe')).toHaveValue(1));
+    expect(screen.getByLabelText('Assemble — Pipe')).toHaveValue(0);
+    expect(screen.getByLabelText('Waybill no.')).toHaveValue('2045'); // what was typed stays
+  });
+
+  it('bounds the recipient fields as the server does', async () => {
+    vi.spyOn(api, 'getFulfilment').mockResolvedValue(state);
+    render(<FulfilmentDialog orderId={5} onClose={() => {}} />);
+    for (const label of ['Recipient name', 'Phone', 'Delivery details']) {
+      expect(await screen.findByLabelText(label)).toHaveAttribute('maxLength', '255');
+    }
+  });
+});

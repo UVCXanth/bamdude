@@ -131,6 +131,8 @@ async def take(
     await finished_stock.lock_positions_for_lines(db, list(lines))
     for line_id in sorted(lines):
         await finished_stock.lock_line(db, lines[line_id])
+    if await db.scalar(select(Project.status).where(Project.id == project.id)) != "active":
+        raise StockOfferError("Only an active order takes finished goods from stock")
     current = {offer.line_id: offer for offer in await offers(db, project)}
     asked = dict(shown) if shown is not None else {lid: (o.from_finished, o.kits) for lid, o in current.items()}
     out = []

@@ -1087,6 +1087,20 @@ async def _update_archive_locked(
     )
     # For the order journal below — which order held the print before this edit.
     project_before = archive.project_id
+    # A print whose output the order received onto its shelf stays with the order —
+    # un-filing it, or moving it to another order, would count those parts twice
+    # (spec workshop-order-issue; final review C1). Checked before anything is written.
+    if (
+        project_before is not None
+        and "project_id" in update_data.model_fields_set
+        and update_data.project_id != project_before
+    ):
+        from backend.app.services import order_fulfilment
+
+        try:
+            await order_fulfilment.ensure_prints_can_leave(db, project_before, [archive.id])
+        except order_fulfilment.FulfilmentError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from e
 
     # An order line has to belong to the order the archive is filed under, or
     # the order's progress would count a print it never asked for. The target is

@@ -962,7 +962,10 @@ async def add_kits_for_line(db: AsyncSession, line: ProjectLine, kits: int, *, c
     if not kit:
         return 0
     await lock_parts(db, [part for part, _per in kit])
-    room = line.quantity - (line.from_finished or 0) - (line.assembled or 0) - await reserved_units_for_line(db, line)
+    # What the shelf, the kits and the prints already cover — the same room as the ready
+    # units door's (final review M5).
+    covered = (line.from_finished or 0) + (line.assembled or 0) + (line.received or 0) - (line.returned or 0)
+    room = line.quantity - covered - await reserved_units_for_line(db, line)
     take = min(kits, room, kits_of(await balances(db, line.product_id), kit))
     if take <= 0:
         return 0
@@ -1504,7 +1507,8 @@ async def _repoint_line_counters(db: AsyncSession, from_part_id: int, to_part_id
     for row in rows:
         target = await db.get(ProjectLinePartStock, (row.line_id, to_part_id))
         if target is None:
-            target = ProjectLinePartStock(line_id=row.line_id, part_id=to_part_id)
+            # Zeros spelled out: the column defaults apply only at the INSERT (final review I1).
+            target = ProjectLinePartStock(line_id=row.line_id, part_id=to_part_id, received=0, issued=0, returned=0)
             db.add(target)
         target.received += row.received
         target.issued += row.issued

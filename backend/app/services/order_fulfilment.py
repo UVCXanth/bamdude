@@ -11,6 +11,7 @@ ledgers' own writers only (``finished_stock``, ``part_stock``, ``stock_issues``)
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -95,13 +96,50 @@ class LineRequest:
         return [self.assemble, self.receive, self.issue, *(n for pair in self.parts.values() for n in pair)]
 
 
-def _product_line(ctx: OrderContext, line, figs: LineFigures, name: str) -> LineState:
+def _order_parts(
+    ctx: OrderContext, figures: dict[int, LineFigures], counters: dict[int, dict[int, ProjectLinePartStock]]
+) -> tuple[dict[int, int], dict[int, int]]:
+    """``(usable, received)`` per part over the WHOLE order: the good parts its prints
+    made, and the parts its lines already received (a product line — ``received × per``).
+
+    Receiving is capped by the order's prints, not by a line's share of them (final
+    review C2): ``attribute`` hands prints out by each line's remaining need, and that
+    share moves when a quantity, a take or a deletion changes the needs — a line's own
+    ``received`` stays where it was, so a per-line bound alone received one print twice."""
+    usable: dict[int, int] = defaultdict(int)
+    received: dict[int, int] = defaultdict(int)
+    for line in ctx.lines:
+        figs = figures[line.id]
+        for pf in figs.parts:
+            usable[pf.part_id] += pf.usable
+        if line.mode == "parts":
+            for part_id, row in counters.get(line.id, {}).items():
+                received[part_id] += row.received
+        else:
+            for pf in figs.parts:
+                if pf.per > 0:
+                    received[pf.part_id] += (line.received or 0) * pf.per
+    return usable, received
+
+
+def _product_line(ctx: OrderContext, line, figs: LineFigures, name: str, room: dict[int, int]) -> LineState:
     kits = ctx.reserved_by_line.get(line.id, 0)
     from_finished, assembled, received = line.from_finished or 0, line.assembled or 0, line.received or 0
     # What the shelf and the kits already cover is not printed work to receive; what is
     # received covers the printed units from before (defects recorded later can make
     # ``units_printed`` smaller than ``received`` — then there is simply nothing more).
-    room = line.quantity - from_finished - (kits + assembled)
+    uncovered = line.quantity - from_finished - (kits + assembled)
+    kit = [pf for pf in figs.parts if pf.per > 0]
+    if kit:
+        can_receive = max(0, min(uncovered, figs.units_printed) - received)
+        # …and never more than the order's prints still hold beyond what was received.
+        can_receive = min(can_receive, *(max(0, room[pf.part_id]) // pf.per for pf in kit))
+        for pf in kit:
+            room[pf.part_id] -= can_receive * pf.per
+    else:
+        # Nothing to print (a kit of bought parts): its units are received as they come
+        # (final review M4) — otherwise such an order could never be issued and closed.
+        can_receive = max(0, uncovered - received)
     # A kit is assembled only into a unit the order still needs: past the quantity it
     # would leave finished units held for an order that closes (spec rule 12).
     covered = from_finished + assembled + received
@@ -113,13 +151,15 @@ def _product_line(ctx: OrderContext, line, figs: LineFigures, name: str) -> Line
         from_finished=from_finished,
         kits_reserved=kits,
         can_assemble=max(0, min(kits, line.quantity - covered)),
-        can_receive=max(0, min(room, figs.units_printed) - received),
+        can_receive=can_receive,
         held=finished_stock.held_units(line),
         issued=line.issued or 0,
     )
 
 
-def _parts_line(line, figs: LineFigures, name: str, counters: dict[int, ProjectLinePartStock]) -> LineState:
+def _parts_line(
+    line, figs: LineFigures, name: str, counters: dict[int, ProjectLinePartStock], room: dict[int, int]
+) -> LineState:
     parts = []
     # The parts with a shelf — the ones the parts ledger can hold for the order.
     for pf in figs.parts:
@@ -127,12 +167,14 @@ def _parts_line(line, figs: LineFigures, name: str, counters: dict[int, ProjectL
             continue
         row = counters.get(pf.part_id)
         received = row.received if row is not None else 0
+        can_receive = min(max(0, min(pf.per, pf.usable) - received), max(0, room[pf.part_id]))
+        room[pf.part_id] -= can_receive
         parts.append(
             PartState(
                 part_id=pf.part_id,
                 name=pf.name,
                 wanted=pf.per,
-                can_receive=max(0, min(pf.per, pf.usable) - received),
+                can_receive=can_receive,
                 held=part_stock.part_held(row) if row is not None else 0,
                 issued=row.issued if row is not None else 0,
             )
@@ -171,14 +213,17 @@ async def state(db: AsyncSession, project: Project) -> OrderState:
         raise FulfilmentError("Project not found", 404)
     figures, _other = attribute(ctx)
     counters = await part_stock.line_part_stock(db, [line.id for line in ctx.lines if line.mode == "parts"])
+    usable, received = _order_parts(ctx, figures, counters)
+    # What the order's prints hold beyond what its lines received — shared out in line order.
+    room: dict[int, int] = defaultdict(int, {pid: usable[pid] - received[pid] for pid in set(usable) | set(received)})
     lines = []
     for line in ctx.lines:
         product = ctx.products_by_id.get(line.product_id)
         name = product.name if product is not None else ""
         if line.mode == "parts":
-            lines.append(_parts_line(line, figures[line.id], name, counters.get(line.id, {})))
+            lines.append(_parts_line(line, figures[line.id], name, counters.get(line.id, {}), room))
         else:
-            lines.append(_product_line(ctx, line, figures[line.id], name))
+            lines.append(_product_line(ctx, line, figures[line.id], name, room))
     return OrderState(
         lines=lines,
         ordered=sum(row.ordered for row in lines),
@@ -191,6 +236,25 @@ async def state(db: AsyncSession, project: Project) -> OrderState:
             row.held + row.can_assemble + row.can_receive + sum(p.can_receive for p in row.parts) for row in lines
         ),
     )
+
+
+async def ensure_prints_can_leave(db: AsyncSession, project_id: int, archive_ids: Sequence[int]) -> None:
+    """Refuse taking prints out of an order when the order's remaining prints would no
+    longer cover what its lines received (final review C1): those parts are on the shelf
+    as finished goods — or with the customer — and un-filing would credit them to the
+    free parts shelf a second time. A print beyond what was received may leave."""
+    ctx = await load_order_context(db, project_id)
+    if ctx is None or not archive_ids:
+        return
+    counters = await part_stock.line_part_stock(db, [line.id for line in ctx.lines if line.mode == "parts"])
+    _usable, received = _order_parts(ctx, attribute(ctx)[0], counters)
+    if not any(received.values()):
+        return
+    leaving = set(archive_ids)
+    ctx.archives = [archive for archive in ctx.archives if archive.id not in leaving]
+    usable_after, _received = _order_parts(ctx, attribute(ctx)[0], counters)
+    if any(usable_after.get(part_id, 0) < n for part_id, n in received.items() if n > 0):
+        raise FulfilmentError("These prints went onto the shelf for the order — they cannot leave it")
 
 
 def _check(row: LineState, request: LineRequest) -> None:
@@ -264,6 +328,10 @@ async def apply(
     await finished_stock.lock_positions_for_lines(db, list(lines))
     for line_id in sorted(lines):
         await finished_stock.lock_line(db, lines[line_id])
+    # The status read before the locks may be stale: a cancel that committed while this
+    # request waited has given the shelf back (final review M1).
+    if await db.scalar(select(Project.status).where(Project.id == project.id)) != "active":
+        raise FulfilmentError("Only an active order can be fulfilled")
     current = {row.line_id: row for row in (await state(db, project)).lines}
     for line_id in sorted(asked):
         _check(current[line_id], asked[line_id])

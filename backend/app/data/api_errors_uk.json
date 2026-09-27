@@ -739,6 +739,7 @@
   "The quantity cannot go below what is issued and held for this order ({})": "Кількість не може бути меншою за видане й відкладене під це замовлення ({})",
   "The standard option cannot be deleted; choose another standard first": "Стандартну опцію не можна видалити; спершу оберіть іншу стандартною",
   "The start time must be in the future": "Час старту має бути в майбутньому",
+  "These prints went onto the shelf for the order — they cannot leave it": "Ці друки вже оприбутковані на склад під замовлення — прибрати їх із замовлення не можна",
   "This line's stock has moved; take more from stock instead": "Склад цієї позиції вже рухався — додайте, взявши зі складу",
   "This order's stock has moved; duplicate it instead": "Склад цього замовлення вже рухався — створіть його копію",
   "Times must be HH:MM": "Час має бути у форматі ГГ:ХХ",

@@ -116,9 +116,12 @@
   nobody has printed, is printing or has queued yet. Its configuration stays,
   and its quantity cannot go below what is issued and held; cancelling gives
   the shelf back everything still held, and such an order is duplicated
-  rather than reopened. Lines, cards and the orders table say how much went
-  out, and the activity log says what was assembled, received, issued and
-  taken.
+  rather than reopened. A print whose units went onto the shelf for an order
+  stays filed under it, so its parts are never counted a second time, and the
+  order receives no more units than its prints made, however they are shared
+  between its lines; a product made only of bought parts is received as its
+  units come. Lines, cards and the orders table say how much went out, and the
+  activity log says what was assembled, received, issued and taken.
 - **An order's Queue section shows everything the order has in the queue.**
   It used to list only jobs already on a printer's queue, so work the order
   plan had just queued counted in the «In queue» tile but was nowhere in the

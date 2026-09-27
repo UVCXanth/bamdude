@@ -79,7 +79,10 @@ function FulfilmentForm({
   const { t } = useTranslation();
   const qc = useQueryClient();
   const { showToast } = useToast();
-  const [draft, setDraft] = useState<Draft>(() => draftFrom(state, mode));
+  const [typed, setDraft] = useState<Draft>(() => draftFrom(state, mode));
+  // Always inside the CURRENT state: after a refusal the state is read again, and what the
+  // operator typed is kept only as far as it still fits (final review I2).
+  const draft = clampDraft(typed, state);
   const [recipient, setRecipient] = useState<FulfilmentRecipient>(state.recipient);
   const [waybill, setWaybill] = useState('');
   const [note, setNote] = useState('');
@@ -92,7 +95,10 @@ function FulfilmentForm({
   const units = issuingUnits(draft);
 
   const change = (lineId: number, patch: (d: LineDraft) => LineDraft) =>
-    setDraft((prev) => clampDraft({ ...prev, [lineId]: patch(prev[lineId]) }, state));
+    setDraft((prev) => {
+      const current = clampDraft(prev, state);
+      return clampDraft({ ...current, [lineId]: patch(current[lineId]) }, state);
+    });
 
   const fulfil = useMutation({
     mutationFn: () =>
@@ -109,7 +115,11 @@ function FulfilmentForm({
       onDone?.(result);
       onClose();
     },
-    onError: (err: Error) => setError(err.message),
+    // The server's sentence, and the numbers read again — the refusal means they moved.
+    onError: (err: Error) => {
+      setError(err.message);
+      void qc.invalidateQueries({ queryKey: ['project-fulfilment', orderId] });
+    },
   });
 
   const canSubmit = (lines.length > 0 || closing) && !fulfil.isPending;

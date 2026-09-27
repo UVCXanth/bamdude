@@ -61,19 +61,12 @@ async def delete_orphaned_adhoc_products(db: AsyncSession, product_ids: Iterable
     still_used = set(
         (await db.execute(select(ProjectLine.product_id).where(ProjectLine.product_id.in_(ids)))).scalars().all()
     )
-    # A one-off product whose printed units went through the shelf and were given back
-    # (spec workshop-order-issue, rule 14) keeps them: its units are real goods, and the
-    # product stays while its position holds any (``delete_product`` would refuse it).
+    # A one-off product whose printed units went through the shelf keeps its position for
+    # good (spec workshop-order-issue, rule 14): units given back are real goods, and the
+    # movements of units issued ARE the issues' units and the stock journal — deleting
+    # the product would take them along (``delete_for_product``).
     still_used |= set(
-        (
-            await db.execute(
-                select(StockItem.product_id).where(
-                    StockItem.product_id.in_(ids), (StockItem.on_hand > 0) | (StockItem.reserved > 0)
-                )
-            )
-        )
-        .scalars()
-        .all()
+        (await db.execute(select(StockItem.product_id).where(StockItem.product_id.in_(ids)))).scalars().all()
     )
     orphans = (
         (

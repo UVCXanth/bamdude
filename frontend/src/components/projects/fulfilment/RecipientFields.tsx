@@ -4,6 +4,8 @@ import { useDeliveryMethods } from '../../../hooks/useDeliveryMethods';
 import { Select } from '../../Select';
 
 const FIELD_CLS = 'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white';
+/** The snapshot columns of `stock_issues` — `String(255)` (final review M7). */
+const MAX_LEN = 255;
 
 /**
  * Who takes the goods (spec workshop-order-issue, rules 1 and 27): name, phone, a
@@ -32,6 +34,7 @@ export function RecipientFields({
         <input
           value={value.name ?? ''}
           onChange={(e) => set('name', e.target.value)}
+          maxLength={MAX_LEN}
           aria-label={t('orders.fulfil.recipientName')}
           className={FIELD_CLS}
         />
@@ -41,6 +44,7 @@ export function RecipientFields({
         <input
           value={value.phone ?? ''}
           onChange={(e) => set('phone', e.target.value)}
+          maxLength={MAX_LEN}
           aria-label={t('orders.fulfil.phone')}
           className={FIELD_CLS}
         />
@@ -66,6 +70,7 @@ export function RecipientFields({
         <input
           value={value.delivery_details ?? ''}
           onChange={(e) => set('delivery_details', e.target.value)}
+          maxLength={MAX_LEN}
           aria-label={t('orders.fulfil.deliveryDetails')}
           className={FIELD_CLS}
         />

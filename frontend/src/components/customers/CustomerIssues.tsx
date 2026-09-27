@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Check, Pencil, X } from 'lucide-react';
 import { api, WAYBILL_MAX } from '../../api/client';
@@ -8,6 +8,8 @@ import type { StockIssueRow } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { useCustomerIssues } from '../../hooks/useFulfilment';
 import { PaginationBar } from '../PaginationBar';
+import { formatDateTime } from '../../utils/date';
+import type { DateFormat, TimeFormat } from '../../utils/date';
 
 const PER_PAGE = 20;
 const ICON_BTN = 'p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark transition-colors';
@@ -78,6 +80,11 @@ function IssueRow({ issue, canEdit }: { issue: StockIssueRow; canEdit: boolean }
   const qc = useQueryClient();
   const { showToast } = useToast();
   const [editing, setEditing] = useState<string | null>(null);
+  // The server sends naive UTC; the app's own formatter reads it as such and follows the
+  // date and time settings (final review I3).
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;
+  const dateFormat = (settings?.date_format ?? 'system') as DateFormat;
 
   const save = useMutation({
     mutationFn: (waybill: string) => api.updateStockIssue(issue.id, { waybill: waybill.trim() || null }),
@@ -90,7 +97,7 @@ function IssueRow({ issue, canEdit }: { issue: StockIssueRow; canEdit: boolean }
 
   return (
     <tr className="border-t border-bambu-dark-tertiary text-white" data-testid={`issue-${issue.id}`}>
-      <td className="p-2 whitespace-nowrap text-bambu-gray">{new Date(issue.created_at).toLocaleString()}</td>
+      <td className="p-2 whitespace-nowrap text-bambu-gray">{formatDateTime(issue.created_at, timeFormat, dateFormat)}</td>
       <td className="p-2">
         {issue.project_id != null && issue.project_code ? (
           <Link to={`/projects/${issue.project_id}`} className="hover:underline">

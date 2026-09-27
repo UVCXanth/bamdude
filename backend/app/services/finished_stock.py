@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
-from sqlalchemy import delete, func, select, tuple_, update
+from sqlalchemy import and_, delete, func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import take_write_lock
@@ -321,14 +321,33 @@ async def lock_positions_for_lines(db: AsyncSession, line_ids: Iterable[int]) ->
     ids = sorted(set(line_ids))
     if not ids:
         return
-    item_ids = (
-        await db.execute(
-            select(StockItemMovement.item_id)
-            .where(StockItemMovement.project_line_id.in_(ids))
-            .group_by(StockItemMovement.item_id)
-            .having(func.sum(StockItemMovement.delta_reserved) != 0)
-        )
-    ).scalars()
+    item_ids = set(
+        (
+            await db.execute(
+                select(StockItemMovement.item_id)
+                .where(StockItemMovement.project_line_id.in_(ids))
+                .group_by(StockItemMovement.item_id)
+                .having(func.sum(StockItemMovement.delta_reserved) != 0)
+            )
+        ).scalars()
+    )
+    # …and the position of each line's own configuration, which a receipt, an assembly or
+    # a take writes next: locked here, in the same ascending order, rather than after the
+    # lines — two orders never lock each other's positions crosswise (final review I4).
+    item_ids |= set(
+        (
+            await db.execute(
+                select(StockItem.id)
+                .join(
+                    ProjectLine,
+                    and_(
+                        ProjectLine.product_id == StockItem.product_id, ProjectLine.config_key == StockItem.config_key
+                    ),
+                )
+                .where(ProjectLine.id.in_(ids))
+            )
+        ).scalars()
+    )
     for item_id in sorted(item_ids):
         await lock_item(db, item_id)
 
@@ -395,6 +414,13 @@ def moved(line: ProjectLine) -> bool:
     return (line.assembled or 0) + (line.received or 0) + (line.issued or 0) > 0
 
 
+def covered_units(line: ProjectLine) -> int:
+    """Units of the line the shelf already gave or its prints already made: ready units,
+    assembled kits and received prints, less what went back — the room both «take from
+    stock» doors fill up to (with the live kits beside it)."""
+    return (line.from_finished or 0) + (line.assembled or 0) + (line.received or 0) - (line.returned or 0)
+
+
 def held_units(line: ProjectLine) -> int:
     """Units on the shelf under the order (spec rule 7) — equal, by construction, to
     Σ ``delta_reserved`` of the line's movements."""
@@ -433,6 +459,8 @@ async def assemble_for_line(db: AsyncSession, line: ProjectLine, units: int, *, 
     _at_least_one(units)
     await lock_line(db, line)
     item = await position_for_line(db, line, create=True)
+    # The position before the parts, as the stock page's assembly takes them (final review I4).
+    await lock_item(db, item.id)
     await part_stock.convert_reserved_kits(
         db, line, units, stock_item_id=item.id, created_by=actor.id if actor is not None else None
     )
@@ -503,9 +531,9 @@ async def take_for_line(db: AsyncSession, line: ProjectLine, units: int, *, acto
     if found is None:
         return 0
     item = await lock_item(db, found.id)
-    room = (
-        line.quantity - (line.from_finished or 0) - (line.assembled or 0) - (line.received or 0) + (line.returned or 0)
-    )
+    # The same room as the kits door's: what the shelf, the kits and the prints already
+    # cover is not taken again (final review M5).
+    room = line.quantity - covered_units(line) - await part_stock.reserved_units_for_line(db, line)
     take = min(units, room, item.on_hand - item.reserved)
     if take <= 0:
         return 0

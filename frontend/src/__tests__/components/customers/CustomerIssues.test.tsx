@@ -4,6 +4,7 @@ import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { StockIssueRow } from '../../../api/client';
 import { CustomerIssues } from '../../../components/customers/CustomerIssues';
+import { formatDateTime } from '../../../utils/date';
 
 const row = (over: Partial<StockIssueRow>): StockIssueRow => ({
   id: 1,
@@ -67,5 +68,18 @@ describe('CustomerIssues', () => {
     });
     render(<CustomerIssues customerId={2} canEdit={false} />);
     expect(await screen.findByText('No issues yet.')).toBeInTheDocument();
+  });
+});
+
+describe('CustomerIssues · time', () => {
+  it('reads the server time as UTC and formats it as the app does', async () => {
+    vi.spyOn(api, 'getSettings').mockResolvedValue({} as never);
+    vi.spyOn(api, 'getCustomerIssues').mockResolvedValue({
+      items: [row({ id: 2, created_at: '2026-09-27T10:00:00' })],
+      meta: { total: 1, current_page: 1, per_page: 20, last_page: 1 },
+    });
+    render(<CustomerIssues customerId={2} canEdit={false} />);
+    const issue = await screen.findByTestId('issue-2');
+    expect(within(issue).getByText(formatDateTime('2026-09-27T10:00:00'))).toBeInTheDocument();
   });
 });

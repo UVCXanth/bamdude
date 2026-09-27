@@ -58,8 +58,8 @@ function clamp(n: number, max: number): number {
 export function clampDraft(draft: Draft, state: FulfilmentState): Draft {
   const out: Draft = {};
   for (const line of state.lines) {
-    const d = draft[line.line_id];
-    if (!d) continue;
+    // A line the draft never had (the state was read again) starts at nothing.
+    const d = draft[line.line_id] ?? { assemble: 0, receive: 0, issue: 0, parts: {} };
     const assemble = clamp(d.assemble, line.can_assemble);
     const receive = clamp(d.receive, line.can_receive);
     const parts: Record<number, PartDraft> = {};

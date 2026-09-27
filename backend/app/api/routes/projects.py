@@ -1141,6 +1141,7 @@ _JOURNAL_FIELDS = {
 async def update_project(
     project_id: int,
     data: ProjectUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
@@ -1221,7 +1222,7 @@ async def update_project(
         # re-enters the number in the line dialog, which asks the shelf afresh.
         await finished_stock.lock_positions_for_lines(db, [line.id for line in lines])
         for line in lines:
-            await _release(db, line, part_stock.NOTE_ORDER_CANCELLED, current_user)
+            await _release(db, line, part_stock.NOTE_ORDER_CANCELLED, await acting_user(request, db, current_user))
     return await _response(db, project.id)
 
 
@@ -1369,7 +1370,10 @@ async def take_stock(
 
 @router.delete("/{project_id}")
 async def delete_project(
-    project_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_DELETE)
+    project_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_DELETE),
 ):
     """Archives and queue rows survive, unlinked (SET NULL done explicitly — SQLite enforces nothing)."""
     project = await _get_project(db, project_id)
@@ -1385,11 +1389,18 @@ async def delete_project(
     # The same answer decides the un-filing credit below (Ruling 32), which is
     # why it is one variable and not two reads of the status.
     still_owns_its_stock = not _consumed_its_stock(project.status)
+    # An order whose lines received, assembled or issued anything has USED its prints:
+    # the parts are finished units on the shelf or with the customer, so un-filing must
+    # not credit them to the free parts shelf a second time — Ruling 32's reason, reached
+    # without completing (spec workshop-order-issue; final review C1). Read before the
+    # parts lines' counters go with their lines below.
+    prints_are_free = still_owns_its_stock and not await order_fulfilment.moved_line_ids(db, list(project.lines))
+    actor = await acting_user(request, db, current_user)
     if still_owns_its_stock:
         await finished_stock.lock_positions_for_lines(db, [line.id for line in project.lines])
     for line in list(project.lines):
         if still_owns_its_stock:
-            await _release(db, line, part_stock.NOTE_PROJECT_DELETED)
+            await _release(db, line, part_stock.NOTE_PROJECT_DELETED, actor)
         await part_stock.detach_line(db, line.id)
         await line_config.forget_line(db, line.id)
     await finished_stock.detach_project(db, project_id)
@@ -1429,7 +1440,7 @@ async def delete_project(
     for archive in unfiled:
         archive.project_id = None
         archive.project_line_id = None
-        if still_owns_its_stock:
+        if prints_are_free:
             await part_stock.credit_if_unfiled(db, archive, note=part_stock.NOTE_PROJECT_DELETED)
     line_products = {line.product_id for line in project.lines}
     # The journal goes with the order — in code, SQLite runs no CASCADE.
@@ -1710,6 +1721,7 @@ async def configure_line(
 async def delete_line(
     project_id: int,
     line_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
@@ -1722,7 +1734,7 @@ async def delete_line(
     # its units, and deleting the paperwork afterwards does not bring them back
     # to the shelf. The detach below still runs — the line row goes either way.
     if not _consumed_its_stock(project.status):
-        await _release(db, line, part_stock.NOTE_LINE_DELETED, current_user)
+        await _release(db, line, part_stock.NOTE_LINE_DELETED, await acting_user(request, db, current_user))
     # The prints stay, and stay in the order: only the line they were filed
     # under goes. Done explicitly because SQLite enforces nothing — this
     # codebase never sets ``PRAGMA foreign_keys = ON``, so the ON DELETE SET
@@ -1990,6 +2002,10 @@ async def remove_archives_from_project(
     current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     """Unfile prints from this order — the line goes with the order, never alone."""
+    try:
+        await order_fulfilment.ensure_prints_can_leave(db, project_id, data.archive_ids)
+    except order_fulfilment.FulfilmentError as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
     updated = 0
     removed: list[int] = []
     for archive_id in data.archive_ids:
