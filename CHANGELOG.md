@@ -54,6 +54,22 @@
   with the product and refreshed when its plates change, so filtering a large
   catalog stays fast; a file in the trash drops out of the filters and the
   search, and comes back when it is restored.
+- **Products have variants, and an order line keeps its configuration.** A
+  product can carry variant groups — a tail that is straight or angled, a
+  mount for the wall or the desk — each with options and a standard one. A
+  part belongs to one option or is always in the kit, and the product page
+  manages groups, options and bindings; a delete that would change an order's
+  kit is refused and says why. An order line records the option of every group
+  and any per-unit count it changed, so changing the product's standard later
+  leaves saved orders alone. «Configuration…» on a line changes it afterwards:
+  before saving, the dialog says what is already printed or queued for the
+  parts that drop out (it becomes surplus) and what the line's stock
+  reservation becomes, and the reservation follows the new kit. A line can
+  also order just some parts of a product — a set of parts, with no kits and
+  nothing from stock. The order figures, the print plan, stock reservations,
+  filament needs and the matching of prints to lines all follow each line's
+  own configuration; copying a product or an order, and a product's export
+  file, carry it.
 - **An order's Queue section shows everything the order has in the queue.**
   It used to list only jobs already on a printer's queue, so work the order
   plan had just queued counted in the «In queue» tile but was nowhere in the
