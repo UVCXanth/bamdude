@@ -429,6 +429,10 @@ async def list_sensors(
     # only smart_sensors:read would have got a 403 on every one of them.
     _: User | None = RequirePermission(Permission.SMART_SENSORS_READ),
 ):
+    return await sensor_payloads(request, db)
+
+
+async def sensor_payloads(request: Request, db: AsyncSession) -> dict:
     """Every adopted sensor with what it last told us.
 
     Built from the ``smart_sensors`` rows, with the live device enriching them.

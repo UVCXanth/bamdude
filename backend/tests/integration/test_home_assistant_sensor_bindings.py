@@ -15,8 +15,10 @@ from backend.app.models.printer_ha_sensor import PrinterHASensor
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.smart_sensor import SmartSensor
 from backend.app.models.smart_sensor_binding import SmartSensorBinding
+from backend.app.models.spool import Spool
 from backend.app.services.ha_sensor_manager import HASensorManager, SensorReading, record_ha_reading, utcnow_naive
 from backend.app.services.homeassistant import homeassistant_service
+from backend.app.services.location_ha_sensor_manager import location_ha_sensor_manager
 from backend.app.services.print_scheduler import PrintScheduler
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -70,6 +72,11 @@ async def test_printer_scoped_key_sees_only_its_ha_bindings(async_client, printe
     assert (await async_client.get(f"/api/v1/ha-sensors/{sensor_ids[1]}", headers=headers)).status_code == 403
     assert (await async_client.get(f"/api/v1/ha-sensors/{sensor_ids[1]}/history", headers=headers)).status_code == 403
     assert (await async_client.get("/api/v1/location-ha-sensors/", headers=headers)).status_code == 403
+    assert (
+        await async_client.get(
+            "/api/v1/inventory/spools?archived=active&page=1&sort_by=temperature_desc", headers=headers
+        )
+    ).status_code == 403
 
 
 async def test_storage_ha_binding_blocks_delete_and_allows_entity_replacement(async_client, db_session):
@@ -242,6 +249,121 @@ async def test_primary_selection_validates_owner_and_source(async_client, db_ses
     assert rows == [selected_zigbee]
     assert (await async_client.delete(f"/api/v1/zigbee/sensors/{zigbee.id}/bindings/{binding.id}")).status_code == 200
     assert (await async_client.get("/api/v1/location-ha-sensors/primary")).json() == []
+
+
+async def test_live_storage_temperature_sort_orders_before_pagination(async_client, db_session, monkeypatch):
+    cooler = Location(name="Cool box", name_key="cool box")
+    warmer = Location(name="Warm box", name_key="warm box")
+    db_session.add_all([cooler, warmer])
+    await db_session.flush()
+    cool_spool = Spool(material="PLA", location_id=cooler.id)
+    warm_spool = Spool(material="PLA", location_id=warmer.id)
+    no_reading_spool = Spool(material="PLA")
+    db_session.add_all([cool_spool, warm_spool, no_reading_spool])
+    await db_session.commit()
+
+    sensors = []
+    for location, name in ((cooler, "cool"), (warmer, "warm")):
+        response = await async_client.post(
+            "/api/v1/location-ha-sensors/",
+            json={
+                "location_id": location.id,
+                "name": name,
+                "entity_id": f"sensor.{name}_temperature",
+                "kind": "numeric",
+                "device_class": "temperature",
+                "unit": "°C",
+            },
+        )
+        assert response.status_code == 200, response.text
+        sensors.append(response.json()["id"])
+    monkeypatch.setattr(location_ha_sensor_manager, "_config_generation", homeassistant_service._config_generation)
+    monkeypatch.setattr(
+        location_ha_sensor_manager,
+        "_readings",
+        {
+            sensors[0]: SensorReading("18", 18, False, True),
+            sensors[1]: SensorReading("26", 26, False, True),
+        },
+    )
+
+    url = "/api/v1/inventory/spools?archived=active&sort_by=temperature_desc&per_page=1&page="
+    first = await async_client.get(url + "1")
+    second = await async_client.get(url + "2")
+    third = await async_client.get(url + "3")
+    assert first.status_code == second.status_code == third.status_code == 200, (first.text, second.text, third.text)
+    assert first.json()["meta"]["total"] == 3
+    assert first.json()["items"][0]["id"] == warm_spool.id
+    assert second.json()["items"][0]["id"] == cool_spool.id
+    assert third.json()["items"][0]["id"] == no_reading_spool.id
+
+    ascending = await async_client.get(url.replace("temperature_desc", "temperature_asc") + "1")
+    assert ascending.status_code == 200, ascending.text
+    assert ascending.json()["items"][0]["id"] == cool_spool.id
+
+
+async def test_storage_sort_uses_selected_zigbee_source_in_mixed_location(async_client, db_session, monkeypatch):
+    mixed = Location(name="Mixed box", name_key="mixed box")
+    ha_only = Location(name="HA box", name_key="ha box")
+    db_session.add_all([mixed, ha_only])
+    await db_session.flush()
+    mixed_spool = Spool(material="PLA", location_id=mixed.id)
+    ha_spool = Spool(material="PLA", location_id=ha_only.id)
+    zigbee = SmartSensor(name="Zigbee temp", zigbee_ieee="00:11:22:33:44:55:66:78")
+    db_session.add_all([mixed_spool, ha_spool, zigbee])
+    await db_session.flush()
+    binding = SmartSensorBinding(sensor_id=zigbee.id, storage_location_id=mixed.id)
+    db_session.add(binding)
+    await db_session.commit()
+
+    ids = []
+    for location, name in ((mixed, "mixed"), (ha_only, "ha_only")):
+        response = await async_client.post(
+            "/api/v1/location-ha-sensors/",
+            json={
+                "location_id": location.id,
+                "name": name,
+                "entity_id": f"sensor.{name}_temperature",
+                "kind": "numeric",
+                "device_class": "temperature",
+                "unit": "°C",
+            },
+        )
+        assert response.status_code == 200, response.text
+        ids.append(response.json()["id"])
+    monkeypatch.setattr(location_ha_sensor_manager, "_config_generation", homeassistant_service._config_generation)
+    monkeypatch.setattr(
+        location_ha_sensor_manager,
+        "_readings",
+        {ids[0]: SensorReading("18", 18, False, True), ids[1]: SensorReading("26", 26, False, True)},
+    )
+
+    async def zigbee_payloads(_request, _db):
+        return {
+            "sensors": [
+                {
+                    "present": True,
+                    "unreachable": False,
+                    "measurements": {"temperature": {"value": 30, "stale": False}},
+                    "bindings": [{"id": binding.id, "storage_location_id": mixed.id, "visible": True}],
+                }
+            ]
+        }
+
+    monkeypatch.setattr("backend.app.api.routes.zigbee.sensor_payloads", zigbee_payloads)
+    url = "/api/v1/inventory/spools?archived=active&sort_by=temperature_desc&per_page=1&page=1"
+    ambiguous = await async_client.get(url)
+    assert ambiguous.status_code == 200, ambiguous.text
+    assert ambiguous.json()["items"][0]["id"] == ha_spool.id
+
+    selected = await async_client.put(
+        "/api/v1/location-ha-sensors/primary",
+        json={"location_id": mixed.id, "category": "temperature", "source": "zigbee", "binding_id": binding.id},
+    )
+    assert selected.status_code == 200, selected.text
+    sorted_page = await async_client.get(url)
+    assert sorted_page.status_code == 200, sorted_page.text
+    assert sorted_page.json()["items"][0]["id"] == mixed_spool.id
 
 
 async def test_scheduler_keeps_interlocked_item_pending(db_session, printer_factory):

@@ -147,6 +147,7 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
  * and toggling Group ON resets an incompatible sort (never fire the 400).
  */
 const GROUP_SORT_COLUMNS = new Set(['display_name', 'material', 'brand', 'color_name']);
+const CONDITION_SORT_COLUMNS = new Set(['temperature', 'humidity', 'battery']);
 
 /**
  * Map a table column id to its server sort key.
@@ -698,6 +699,12 @@ const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Re
     const expectedGross = Math.max(0, s.label_weight - s.weight_used) + s.core_weight;
     return Math.abs(s.last_scale_weight - expectedGross);
   },
+  // These markers enable the server sort; current storage values are resolved
+  // at request time, before pagination. They are deliberately disabled in
+  // client/Spoolman mode below, where this extractor cannot read sensor data.
+  temperature: () => 0,
+  humidity: () => 0,
+  battery: () => 0,
 };
 
 const SORT_STATE_KEY = 'bamdude-inventory-sort';
@@ -1029,8 +1036,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     if (!sortState) return undefined;
     const key = mapServerSortColumn(sortState.column);
     if (groupSimilar && !GROUP_SORT_COLUMNS.has(key)) return undefined;
+    if (CONDITION_SORT_COLUMNS.has(key) && !hasPermission('smart_sensors:read')) return undefined;
     return `${key}_${sortState.direction}`;
-  }, [sortState, groupSimilar]);
+  }, [sortState, groupSimilar, hasPermission]);
 
   // The filter params shared by the list, ids and label-set queries.
   // ⚠️ `archived` is ALWAYS sent: the paged branch ignores the legacy
@@ -1889,6 +1897,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
    */
   const isColumnSortable = (colId: string): boolean => {
     if (!columnSortValues[colId]) return false;
+    if (CONDITION_SORT_COLUMNS.has(colId)) return serverMode && !groupSimilar && hasPermission('smart_sensors:read');
     if (serverMode && groupSimilar) return GROUP_SORT_COLUMNS.has(mapServerSortColumn(colId));
     return true;
   };

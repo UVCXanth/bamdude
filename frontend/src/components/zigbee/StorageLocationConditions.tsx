@@ -22,7 +22,10 @@ function PrimarySelector({ locationId, category }: { locationId: number; categor
   const { candidates, primary } = useStorageCondition(locationId, category);
   const mutation = useMutation({
     mutationFn: api.setLocationSensorPrimary,
-    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['locationSensorPrimary'] }); },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['locationSensorPrimary'] });
+      void queryClient.invalidateQueries({ queryKey: ['inventory-spools', 'page'] });
+    },
     onError: (error: Error) => showToast(error.message || t('haSensors.selectPrimaryFailed'), 'error'),
   });
   if (candidates.length < 2 || !hasPermission('smart_sensors:update')) return null;

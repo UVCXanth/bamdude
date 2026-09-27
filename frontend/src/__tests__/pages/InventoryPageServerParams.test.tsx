@@ -436,6 +436,14 @@ describe('InventoryPage — server-driven params (task 4)', () => {
     expect(u.searchParams.get('sort_by')).toBe('color_name_asc');
   });
 
+  it('passes storage temperature sort to the server before pagination', async () => {
+    localStorage.setItem('bamdude-inventory-sort', JSON.stringify({ column: 'temperature', direction: 'desc' }));
+    render(<InventoryPageRouter />);
+    await waitFor(() =>
+      expect(pageRequests().some((u) => u.searchParams.get('sort_by') === 'temperature_desc')).toBe(true)
+    );
+  });
+
   it('grouped mode drops a sort outside the group-key subset instead of sending it (the server 400s on those)', async () => {
     localStorage.setItem('bamdude-inventory-group', 'true');
     localStorage.setItem('bamdude-inventory-sort', JSON.stringify({ column: 'weight_check', direction: 'desc' }));

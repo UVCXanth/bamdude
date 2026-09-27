@@ -317,7 +317,7 @@ def _spool_sort_columns() -> dict[str, Any]:
     }
 
 
-def _spool_order_by(sort_by: str | None) -> tuple[list, bool]:
+def _spool_order_by(sort_by: str | None, condition_values: dict[int, float] | None = None) -> tuple[list, bool]:
     """Resolve ``sort_by`` (``<column>_asc``/``<column>_desc``) into ORDER BY
     clauses, plus whether the assignment/printer join is needed (``location``
     sort only).
@@ -340,6 +340,14 @@ def _spool_order_by(sort_by: str | None) -> tuple[list, bool]:
     sort_key, _, sort_dir = sort_by.rpartition("_")
     if sort_dir not in ("asc", "desc"):
         return [*_DEFAULT_ORDER, tiebreak], False
+
+    if sort_key in {"temperature", "humidity", "battery"} and condition_values is not None:
+        # Values are one live snapshot for this request, keyed by the spool's
+        # catalog location. SQL orders the whole filtered set before LIMIT /
+        # OFFSET, so spools on later pages can move to page one correctly.
+        value = case(condition_values, value=Spool.location_id, else_=None) if condition_values else literal(None)
+        clause = value.asc().nulls_last() if sort_dir == "asc" else value.desc().nulls_last()
+        return [clause, tiebreak], False
 
     if sort_key == "location":
         # OPERATOR RULING 2026-08-29: implemented server-side (the operator
@@ -558,6 +566,7 @@ async def list_spools(
     include_archived: bool = False,
     filters: list | None = None,
     sort_by: str | None = None,
+    condition_values: dict[int, float] | None = None,
     limit: int | None = None,
     offset: int = 0,
     load_k_profiles: bool = True,
@@ -591,7 +600,7 @@ async def list_spools(
             query = query.where(Spool.archived_at.is_(None))
         query = query.order_by(*_DEFAULT_ORDER)
     else:
-        order_clauses, needs_location_join = _spool_order_by(sort_by)
+        order_clauses, needs_location_join = _spool_order_by(sort_by, condition_values)
         if needs_location_join:
             query = _join_first_assignment(query)
         query = query.where(*filters).order_by(*order_clauses)

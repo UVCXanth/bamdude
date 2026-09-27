@@ -7,15 +7,17 @@ from datetime import date, datetime, timedelta
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, case, delete, func, literal, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.auth import RequireAnyPermission, RequirePermission
+from backend.app.core.api_key_scope import key_printer_scope
+from backend.app.core.auth import RequireAnyPermission, RequirePermission, require_permission
 from backend.app.core.catalog_defaults import DEFAULT_COLOR_CATALOG, DEFAULT_SPOOL_CATALOG
 from backend.app.core.config import APP_VERSION
 from backend.app.core.database import get_db
@@ -1289,6 +1291,7 @@ class SpoolGroupPage(BaseModel):
 
 @router.get("/spools", response_model=None)
 async def list_spools(
+    request: Request,
     include_archived: bool = False,
     archived: str | None = Query(None, description="'active' or 'archived' — paged mode only"),
     usage: str | None = Query(None, description="'used', 'new', or 'lowstock'"),
@@ -1318,7 +1321,9 @@ async def list_spools(
         None,
         description=(
             "<column>_asc|_desc — see inventory_service._spool_sort_columns plus "
-            "the special-cased 'display_name' and 'location' keys. Omitted keeps "
+            "the special-cased 'display_name', 'location', 'temperature', "
+            "'humidity' and 'battery' keys. Condition sorts require "
+            "smart_sensors:read. Omitted keeps "
             "the legacy material/brand/color_name ordering."
         ),
     ),
@@ -1457,8 +1462,27 @@ async def list_spools(
             ),
         )
 
+    condition_values = None
+    sort_key, _, sort_direction = (sort_by or "").rpartition("_")
+    if sort_key in {"temperature", "humidity", "battery"} and sort_direction in {"asc", "desc"}:
+        # Storage readings are a separate permission domain. A printer-scoped
+        # key cannot inspect storage at all, even indirectly through ordering.
+        if key_printer_scope(request) is not None:
+            raise HTTPException(403, "A printer-scoped API key cannot sort storage conditions")
+        authorization = request.headers.get("authorization", "")
+        bearer = authorization.split(" ", 1)[1] if authorization.lower().startswith("bearer ") else None
+        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=bearer) if bearer else None
+        await require_permission(Permission.SMART_SENSORS_READ)(
+            request, credentials=credentials, x_api_key=request.headers.get("x-api-key")
+        )
+        from backend.app.services.storage_condition_sort import current_condition_values
+
+        condition_values = await current_condition_values(db, request, sort_key)
+
     total = await inventory_service.count_spools(db, filters=filters)
-    spools = await inventory_service.list_spools(db, filters=filters, sort_by=sort_by, limit=limit, offset=offset)
+    spools = await inventory_service.list_spools(
+        db, filters=filters, sort_by=sort_by, condition_values=condition_values, limit=limit, offset=offset
+    )
 
     last_page = 1 if all else max(1, math.ceil(total / per_page))
     return SpoolListPage(
