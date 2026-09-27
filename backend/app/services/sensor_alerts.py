@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from sqlalchemy import literal, select, union_all
 
 from backend.app.models.smart_sensor import SmartSensor
+from backend.app.models.smart_sensor_binding import SmartSensorBinding
 from backend.app.models.smart_sensor_history import SmartSensorHistory
 from backend.app.models.smart_sensor_threshold import SmartSensorThreshold
 from backend.app.services.notification_service import notification_service
@@ -103,19 +104,28 @@ class AlertEvent:
     location: str
     template: str
     variables: dict[str, str]
+    printer_id: int | None = None
 
 
 def _place(sensor: SmartSensor) -> str:
     """Where to walk.
 
-    The printer first, because a sensor bound to one is bound to nothing else —
-    the two are exclusive — and "go to the X1C" is the more useful instruction
-    of the two anyway. A sensor with neither falls back to its own name: a
-    message opening with an empty dash says nothing.
+    Legacy rows without a binding use their previous scalar target. New events
+    name one explicit binding via ``_binding_place`` instead.
     """
     if sensor.printer is not None:
         return sensor.printer.name
     return (sensor.location.path if sensor.location else None) or sensor.name
+
+
+def _binding_place(binding: SmartSensorBinding) -> str:
+    if binding.printer is not None:
+        return binding.printer.name
+    if binding.printer_location is not None:
+        return binding.printer_location.path
+    if binding.storage_location is not None:
+        return binding.storage_location.name
+    return binding.sensor.name
 
 
 def _number(value: float) -> str:
@@ -139,68 +149,121 @@ async def evaluate_thresholds(db) -> list[AlertEvent]:
     engines would cost more than it saves.
     """
     events: list[AlertEvent] = []
-    rows = (await db.execute(select(SmartSensorThreshold))).scalars().all()
+    defaults = (await db.execute(select(SmartSensorThreshold))).scalars().all()
+    bindings = (await db.execute(select(SmartSensorBinding))).scalars().all()
+    by_sensor: dict[int, list[SmartSensorBinding]] = {}
+    for binding in bindings:
+        by_sensor.setdefault(binding.sensor_id, []).append(binding)
+    default_by_key = {(row.sensor_id, row.kind): row for row in defaults}
+    readings: dict[tuple[int, str], SmartSensorHistory | None] = {}
 
-    for row in rows:
-        if not row.enabled:
-            # Switched off: forget any alarm silently. An all-clear about a
-            # limit somebody just disabled is a message about nothing.
-            if row.state != OK:
-                row.state = OK
-                row.state_since = datetime.now(timezone.utc)
-            continue
-
-        reading = (
-            await db.execute(
-                select(SmartSensorHistory)
-                .where(
-                    SmartSensorHistory.sensor_id == row.sensor_id,
-                    SmartSensorHistory.sensor_kind == row.kind,
+    async def newest(sensor_id: int, kind: str):
+        key = sensor_id, kind
+        if key not in readings:
+            readings[key] = (
+                await db.execute(
+                    select(SmartSensorHistory)
+                    .where(SmartSensorHistory.sensor_id == sensor_id, SmartSensorHistory.sensor_kind == kind)
+                    .order_by(SmartSensorHistory.recorded_at.desc())
+                    .limit(1)
                 )
-                .order_by(SmartSensorHistory.recorded_at.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+            ).scalar_one_or_none()
+        return readings[key]
+
+    async def evaluate(rule, sensor_id: int, kind: str, place: str, printer_id: int | None, deliver: bool):
+        if not rule.enabled:
+            if rule.state != OK:
+                rule.state = OK
+                rule.state_since = datetime.now(timezone.utc)
+            return
+        reading = await newest(sensor_id, kind)
         if reading is None:
-            continue
-
-        new_state = next_state(
-            row.state,
-            reading.value,
-            min_value=row.min_value,
-            max_value=row.max_value,
-            deadband=row.deadband or 0.0,
+            return
+        state = next_state(
+            rule.state, reading.value, min_value=rule.min_value, max_value=rule.max_value, deadband=rule.deadband or 0.0
         )
-        template = template_for(row.state, new_state)
+        template = template_for(rule.state, state)
         if template is None:
-            continue
-
-        sensor = await db.get(SmartSensor, row.sensor_id)
+            return
+        sensor = await db.get(SmartSensor, sensor_id)
         if sensor is None:
-            continue
-
-        measurement = BY_KEY.get(row.kind)
-        limit = row.max_value if new_state == ABOVE else row.min_value
-        events.append(
-            AlertEvent(
-                sensor_id=sensor.id,
-                sensor_name=sensor.name,
-                location=_place(sensor),
-                template=template,
-                variables={
-                    "location": _place(sensor),
-                    "sensor": sensor.name,
-                    "quantity": row.kind,
-                    "value": _number(reading.value),
-                    "unit": measurement.unit if measurement else "",
-                    "limit": _number(limit) if limit is not None else "",
-                },
+            return
+        if deliver:
+            measurement = BY_KEY.get(kind)
+            limit = rule.max_value if state == ABOVE else rule.min_value
+            events.append(
+                AlertEvent(
+                    sensor_id=sensor_id,
+                    sensor_name=sensor.name,
+                    location=place,
+                    template=template,
+                    printer_id=printer_id,
+                    variables={
+                        "location": place,
+                        "sensor": sensor.name,
+                        "quantity": kind,
+                        "value": _number(reading.value),
+                        "unit": measurement.unit if measurement else "",
+                        "limit": _number(limit) if limit is not None else "",
+                    },
+                )
             )
-        )
+            rule.notified_at = datetime.now(timezone.utc)
+        rule.state = state
+        rule.state_since = datetime.now(timezone.utc)
 
-        row.state = new_state
-        row.state_since = datetime.now(timezone.utc)
-        row.notified_at = datetime.now(timezone.utc)
+    for rule in defaults:
+        sensor = await db.get(SmartSensor, rule.sensor_id)
+        if sensor is not None:
+            await evaluate(rule, rule.sensor_id, rule.kind, _place(sensor), None, not by_sensor.get(rule.sensor_id))
+
+    for binding in bindings:
+        own_rules = {row.kind: row for row in binding.thresholds}
+        kinds = {kind for sensor_id, kind in default_by_key if sensor_id == binding.sensor_id} | {
+            kind for kind, row in own_rules.items() if row.custom
+        }
+        for kind in kinds:
+            default = default_by_key.get((binding.sensor_id, kind))
+            state_row = own_rules.get(kind)
+            if state_row is None:
+                from backend.app.models.smart_sensor_binding import SmartSensorBindingThreshold
+
+                state_row = SmartSensorBindingThreshold(
+                    binding_id=binding.id,
+                    kind=kind,
+                    # A default added after the binding exists is a new rule.
+                    # Its first violating reading must still reach this target.
+                    state=OK,
+                )
+                db.add(state_row)
+            if state_row.custom:
+                effective = state_row
+            elif default is not None:
+                effective = default
+            else:
+                continue
+            # Inherited configuration with independent persistent state.
+            if not state_row.custom:
+
+                class InheritedRule:
+                    pass
+
+                inherited = InheritedRule()
+                inherited.enabled = effective.enabled
+                inherited.min_value = effective.min_value
+                inherited.max_value = effective.max_value
+                inherited.deadband = effective.deadband
+                inherited.state = state_row.state
+                inherited.state_since = state_row.state_since
+                inherited.notified_at = state_row.notified_at
+                effective = inherited
+            await evaluate(
+                effective, binding.sensor_id, kind, _binding_place(binding), binding.printer_id, binding.notify_enabled
+            )
+            if effective is not state_row:
+                state_row.state = effective.state
+                state_row.state_since = effective.state_since
+                state_row.notified_at = effective.notified_at
 
     # Committed BEFORE anything is sent. The other order turns a sustained
     # database failure into an identical message every minute.
@@ -308,35 +371,43 @@ async def sweep_silence(db, *, uptime_seconds: float) -> list[AlertEvent]:
             newest = newest.replace(tzinfo=timezone.utc)
 
         quiet_for = (now - newest).total_seconds()
+        bindings = (
+            (await db.execute(select(SmartSensorBinding).where(SmartSensorBinding.sensor_id == sensor.id)))
+            .scalars()
+            .all()
+        )
+        targets = [(binding, _binding_place(binding)) for binding in bindings if binding.notify_enabled]
+        if not bindings:
+            targets = [(None, _place(sensor))]
 
         if quiet_for > window and sensor.silent_since is None:
             sensor.silent_since = newest
             sensor.silence_notified_at = now
-            events.append(
-                AlertEvent(
-                    sensor_id=sensor.id,
-                    sensor_name=sensor.name,
-                    location=_place(sensor),
-                    template="sensor_silent",
-                    variables={
-                        "location": _place(sensor),
-                        "sensor": sensor.name,
-                        "minutes": str(int(quiet_for // 60)),
-                    },
+            for binding, place in targets:
+                events.append(
+                    AlertEvent(
+                        sensor_id=sensor.id,
+                        sensor_name=sensor.name,
+                        location=place,
+                        template="sensor_silent",
+                        printer_id=binding.printer_id if binding else None,
+                        variables={"location": place, "sensor": sensor.name, "minutes": str(int(quiet_for // 60))},
+                    )
                 )
-            )
         elif quiet_for <= window and sensor.silent_since is not None:
             sensor.silent_since = None
             sensor.silence_notified_at = now
-            events.append(
-                AlertEvent(
-                    sensor_id=sensor.id,
-                    sensor_name=sensor.name,
-                    location=_place(sensor),
-                    template="sensor_speaking_again",
-                    variables={"location": _place(sensor), "sensor": sensor.name},
+            for binding, place in targets:
+                events.append(
+                    AlertEvent(
+                        sensor_id=sensor.id,
+                        sensor_name=sensor.name,
+                        location=place,
+                        template="sensor_speaking_again",
+                        printer_id=binding.printer_id if binding else None,
+                        variables={"location": place, "sensor": sensor.name},
+                    )
                 )
-            )
 
     await db.commit()
     return events

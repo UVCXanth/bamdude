@@ -33,6 +33,7 @@ import { ColumnConfigModal, type ColumnConfig } from '../components/ColumnConfig
 import { LabelTemplatePickerModal } from '../components/LabelTemplatePickerModal';
 import { BulkEditSpoolsModal } from '../components/BulkEditSpoolsModal';
 import { LocationsModal } from '../components/LocationsModal';
+import { StorageLocationConditions } from '../components/zigbee/StorageLocationConditions';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { resolveSpoolColorName } from '../utils/colors';
@@ -2762,6 +2763,13 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               <option value="__none__">{t('inventory.storageLocationNone')}</option>
             )}
           </Select>
+        )}
+        {storageLocationFilter && storageLocationFilter !== '__none__' &&
+          Number.isFinite(Number(storageLocationFilter)) && (
+          <span className="inline-flex items-center gap-2 text-sm text-bambu-gray">
+            {t('locations.conditions')}
+            <StorageLocationConditions locationId={Number(storageLocationFilter)} />
+          </span>
         )}
 
         {/* Spool name dropdown chip */}

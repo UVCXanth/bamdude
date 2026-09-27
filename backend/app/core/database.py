@@ -364,6 +364,7 @@ def import_all_models() -> None:
         smart_plug_energy_snapshot,
         smart_plug_power_history,
         smart_sensor,
+        smart_sensor_binding,
         smart_sensor_history,
         smart_sensor_threshold,
         spool,

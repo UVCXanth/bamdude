@@ -944,8 +944,22 @@ async def delete_printer(
     # provider or a usage-history row survives its printer with ``printer_id``
     # nulled, which is what ``ondelete="SET NULL"`` asks for and what the ORM
     # already does.
+    from backend.app.services.sensor_target_lock import lock_sensor_target
+
+    if not await lock_sensor_target(db, "printers", printer_id):
+        raise HTTPException(404, "Printer not found")
     for model in PRINTER_CASCADE_MODELS:
         await db.execute(sql_delete(model).where(model.printer_id == printer_id))
+
+    # A Zigbee device can measure more than this printer. Only this target's
+    # binding and rule state go; the physical sensor and other targets survive.
+    from backend.app.models.smart_sensor_binding import SmartSensorBinding, SmartSensorBindingThreshold
+
+    binding_ids = select(SmartSensorBinding.id).where(SmartSensorBinding.printer_id == printer_id)
+    await db.execute(
+        sql_delete(SmartSensorBindingThreshold).where(SmartSensorBindingThreshold.binding_id.in_(binding_ids))
+    )
+    await db.execute(sql_delete(SmartSensorBinding).where(SmartSensorBinding.printer_id == printer_id))
 
     # SQLite ignores ON DELETE CASCADE; the link rows go explicitly, like every
     # other child row above.

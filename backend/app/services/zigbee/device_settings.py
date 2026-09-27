@@ -233,11 +233,20 @@ async def forget_device_row(db, ieee: str) -> None:
     without pairing — at which point the row would be in the way rather than
     useful.
     """
-    from sqlalchemy import delete
+    from sqlalchemy import delete, select
 
     from backend.app.models.smart_sensor import SmartSensor
+    from backend.app.models.smart_sensor_binding import SmartSensorBinding, SmartSensorBindingThreshold
+    from backend.app.models.smart_sensor_history import SmartSensorHistory
+    from backend.app.models.smart_sensor_threshold import SmartSensorThreshold
 
     key = str(ieee).strip().lower()
+    sensor_ids = select(SmartSensor.id).where(SmartSensor.zigbee_ieee == key)
+    binding_ids = select(SmartSensorBinding.id).where(SmartSensorBinding.sensor_id.in_(sensor_ids))
+    await db.execute(delete(SmartSensorBindingThreshold).where(SmartSensorBindingThreshold.binding_id.in_(binding_ids)))
+    await db.execute(delete(SmartSensorBinding).where(SmartSensorBinding.sensor_id.in_(sensor_ids)))
+    await db.execute(delete(SmartSensorHistory).where(SmartSensorHistory.sensor_id.in_(sensor_ids)))
+    await db.execute(delete(SmartSensorThreshold).where(SmartSensorThreshold.sensor_id.in_(sensor_ids)))
     await db.execute(delete(SmartSensor).where(SmartSensor.zigbee_ieee == key))
     row = await db.get(ZigbeeDevice, key)
     if row is not None:

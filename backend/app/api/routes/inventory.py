@@ -560,12 +560,13 @@ async def _spool_counts_for_locations(
     return counts
 
 
-def _location_to_response(location: Location, spool_count: int) -> LocationResponse:
+def _location_to_response(location: Location, spool_count: int, sensor_count: int = 0) -> LocationResponse:
     return LocationResponse(
         id=location.id,
         name=location.name,
         identifier=location.identifier,
         spool_count=spool_count,
+        sensor_count=sensor_count,
         created_at=location.created_at,
         updated_at=location.updated_at,
     )
@@ -581,7 +582,18 @@ async def list_locations(
     result = await db.execute(select(Location).order_by(Location.name))
     locations = list(result.scalars().all())
     counts = await _spool_counts_for_locations(db, locations, settings)
-    return [_location_to_response(loc, counts.get(loc.id, 0)) for loc in locations]
+    from backend.app.models.smart_sensor_binding import SmartSensorBinding
+
+    sensor_counts = dict(
+        (
+            await db.execute(
+                select(SmartSensorBinding.storage_location_id, func.count())
+                .where(SmartSensorBinding.storage_location_id.is_not(None))
+                .group_by(SmartSensorBinding.storage_location_id)
+            )
+        ).all()
+    )
+    return [_location_to_response(loc, counts.get(loc.id, 0), sensor_counts.get(loc.id, 0)) for loc in locations]
 
 
 @router.post("/locations", response_model=LocationResponse, status_code=201)
@@ -660,8 +672,17 @@ async def update_location(
     await db.refresh(location)
     settings = await _load_settings_map(db)
     counts = await _spool_counts_for_locations(db, [location], settings)
+    from backend.app.models.smart_sensor_binding import SmartSensorBinding
+
+    sensor_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(SmartSensorBinding)
+            .where(SmartSensorBinding.storage_location_id == location_id)
+        )
+    ).scalar_one()
     await ws_manager.broadcast({"type": "inventory_changed"})
-    return _location_to_response(location, counts.get(location.id, 0))
+    return _location_to_response(location, counts.get(location.id, 0), sensor_count)
 
 
 @router.delete("/locations/{location_id}")
@@ -679,6 +700,23 @@ async def delete_location(
     counts = await _spool_counts_for_locations(db, [location], settings)
     if counts.get(location.id, 0) > 0:
         raise HTTPException(status_code=409, detail="Location has spools assigned and cannot be deleted")
+
+    from backend.app.services.sensor_target_lock import lock_sensor_target
+
+    if not await lock_sensor_target(db, "locations", location_id):
+        raise HTTPException(status_code=404, detail="Location not found")
+
+    from backend.app.models.smart_sensor_binding import SmartSensorBinding
+
+    sensor_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(SmartSensorBinding)
+            .where(SmartSensorBinding.storage_location_id == location_id)
+        )
+    ).scalar_one()
+    if sensor_count:
+        raise HTTPException(status_code=409, detail="Location has sensors assigned; detach them first")
 
     await db.delete(location)
     await db.commit()

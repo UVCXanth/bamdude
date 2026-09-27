@@ -2715,15 +2715,18 @@ class NotificationService:
     async def on_sensor_alert(self, event, db: AsyncSession):
         """One sensor alert, raised or cleared.
 
-        ``unscoped_only``: a sensor belongs to a place, not to a printer, so a
-        provider bound to one printer is not a recipient.
+        A target binding may belong to a printer. Room and storage alerts stay
+        unscoped so a printer-only recipient cannot see another target.
         """
         from backend.app.i18n import get_language, t
 
         field = self._SENSOR_ALERT_FIELDS.get(event.template)
         if field is None:
             return
-        providers = await self._get_providers_for_event(db, field, unscoped_only=True)
+        printer_id = getattr(event, "printer_id", None)
+        providers = await self._get_providers_for_event(
+            db, field, printer_id=printer_id, unscoped_only=printer_id is None
+        )
         if not providers:
             return
 
@@ -2741,6 +2744,7 @@ class NotificationService:
             message,
             db,
             event.template,
+            printer_id=printer_id,
             variables=variables,
         )
 

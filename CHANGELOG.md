@@ -40,6 +40,13 @@
 
 ### Added
 
+- **One Zigbee sensor can serve several explicit targets.** A paired sensor can
+  appear on multiple printer cards, in rooms and at spool storage locations at
+  the same time. Each binding has its own display name, order and alert rules;
+  notifications are enabled per target. The device still records one history,
+  and removing one binding leaves the others in place. Existing single-target
+  sensors are migrated automatically.
+
 - **Printer model compatibility follows Bambu Studio.** The target printer's `compatible_machine` list now decides whether a sliced file is exact, compatible, or incompatible; a confirmed P1P upgrade kit uses P1S for that decision. Manual compatible targets show a warning and remain subject to nozzle, filament, and dispatch checks. Auto Queue has a default-off **Use compatible printers** fallback that prefers ready exact-model printers, then ready compatible printers; its preview, offline wake, forecast, and queue rebalance use the same rule. The REST model matrix feeds the print and queue UI without a second hard-coded family table. The complete printer JSON catalog is mirrored from Bambu Studio `v02.08.04.57`, including the new N8 description, serial prefixes, and updated filament blacklist.
 
 - **H2C: choose which rack nozzle each filament prints from.** The rack holds

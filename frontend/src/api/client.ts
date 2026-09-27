@@ -3396,6 +3396,7 @@ export interface StorageLocation {
   name: string;
   identifier: string | null;
   spool_count: number;
+  sensor_count?: number;
   created_at: string;
   updated_at: string;
 }
@@ -4186,12 +4187,14 @@ export interface SensorMeasurement {
 export interface ZigbeeSensor {
   id: number;
   name: string;
-  /** Where this reading belongs, when the answer is a room or a shelf. */
+  /** Legacy scalar projection for a single room binding. */
   location: PrinterLocation | null;
-  /** ...or the machine it is taped to. Exclusive with `location` -- the
-   *  operator picks one, and setting either clears the other. */
+  /** Legacy scalar projection for a single printer binding. */
   printer_id: number | null;
   printer_name: string | null;
+  bindings?: ZigbeeSensorBinding[];
+  /** Context-local display order after a binding has been selected. */
+  binding_sort_order?: number;
   ieee: string;
   nwk: number | null;
   manufacturer: string | null;
@@ -4205,6 +4208,24 @@ export interface ZigbeeSensor {
   present: boolean;
   measurements: Record<string, SensorMeasurement>;
 }
+
+export interface ZigbeeSensorBinding {
+  id: number;
+  sensor_id: number;
+  printer_id: number | null;
+  printer_name: string | null;
+  printer_location_id: number | null;
+  location: PrinterLocation | null;
+  storage_location_id: number | null;
+  storage_location_name: string | null;
+  display_name: string | null;
+  visible: boolean;
+  sort_order: number;
+  notify_enabled: boolean;
+}
+
+export type ZigbeeSensorBindingInput = Pick<ZigbeeSensorBinding,
+  'printer_id' | 'printer_location_id' | 'storage_location_id' | 'display_name' | 'visible' | 'sort_order' | 'notify_enabled'>;
 
 export interface DeviceSettingsTarget {
   min_interval: number;
@@ -4261,6 +4282,8 @@ export interface SensorThreshold {
 
 /** What a write carries. `state` and `unit` are the backend's to say. */
 export type SensorThresholdInput = Omit<SensorThreshold, 'state' | 'unit'>;
+export type BindingThreshold = Omit<SensorThreshold, 'unit'> & { custom: boolean };
+export type BindingThresholdInput = Omit<BindingThreshold, 'state'>;
 
 export interface SensorHistoryPoint {
   recorded_at: string;
@@ -9460,6 +9483,16 @@ export const api = {
   getZigbeePorts: () => request<{ ports: ZigbeePort[] }>('/zigbee/ports'),
   getZigbeeDevices: () => request<{ devices: ZigbeeDevice[] }>('/zigbee/devices'),
   getZigbeeSensors: () => request<{ sensors: ZigbeeSensor[] }>('/zigbee/sensors'),
+  addZigbeeSensorBinding: (sensorId: number, payload: ZigbeeSensorBindingInput) =>
+    request<ZigbeeSensorBinding>(`/zigbee/sensors/${sensorId}/bindings`, {
+      method: 'POST', body: JSON.stringify(payload),
+    }),
+  updateZigbeeSensorBinding: (sensorId: number, bindingId: number, payload: ZigbeeSensorBindingInput) =>
+    request<ZigbeeSensorBinding>(`/zigbee/sensors/${sensorId}/bindings/${bindingId}`, {
+      method: 'PATCH', body: JSON.stringify(payload),
+    }),
+  deleteZigbeeSensorBinding: (sensorId: number, bindingId: number) =>
+    request<{ deleted: number }>(`/zigbee/sensors/${sensorId}/bindings/${bindingId}`, { method: 'DELETE' }),
 
   // Cameras that belong to no printer. The list carries the URL because it
   // feeds the settings screen where that URL is typed; the wall's own feeds
@@ -9507,9 +9540,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  // `location_id: null` clears the place; omitting the key leaves it alone.
-  // Sending `printer_id` binds to that printer INSTEAD, clearing the place --
-  // the two are exclusive, and the backend is what enforces it.
+  // Legacy target updates work for 0/1 binding only. For multiple targets use
+  // the binding endpoints above; a scalar target update then returns 409.
   updateZigbeeSensor: (
     id: number,
     payload: { name?: string; location_id?: number | null; printer_id?: number | null },
@@ -9558,6 +9590,12 @@ export const api = {
     request<{ thresholds: SensorThreshold[] }>(`/zigbee/sensors/${sensorId}/thresholds`, {
       method: 'PUT',
       body: JSON.stringify({ thresholds }),
+    }),
+  getZigbeeBindingThresholds: (sensorId: number, bindingId: number) =>
+    request<{ thresholds: BindingThreshold[] }>(`/zigbee/sensors/${sensorId}/bindings/${bindingId}/thresholds`),
+  putZigbeeBindingThresholds: (sensorId: number, bindingId: number, thresholds: BindingThresholdInput[]) =>
+    request<{ thresholds: BindingThreshold[] }>(`/zigbee/sensors/${sensorId}/bindings/${bindingId}/thresholds`, {
+      method: 'PUT', body: JSON.stringify({ thresholds }),
     }),
   testSmartPlugConnection: (ip_address: string, username?: string | null, password?: string | null) =>
     request<SmartPlugTestResult>('/smart-plugs/test-connection', {

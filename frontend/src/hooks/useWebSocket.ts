@@ -967,6 +967,11 @@ export function useWebSocket() {
         queryClient.invalidateQueries({ queryKey: ['zigbee-sensors'] });
         break;
 
+      case 'sensor_bindings_changed':
+        queryClient.invalidateQueries({ queryKey: ['zigbee-sensors'] });
+        queryClient.invalidateQueries({ queryKey: inventoryLocationsQueryKey });
+        break;
+
       case 'zigbee_status_changed':
         queryClient.invalidateQueries({ queryKey: ['zigbee-status'] });
         // A radio coming up or going down changes every sensor's readings at

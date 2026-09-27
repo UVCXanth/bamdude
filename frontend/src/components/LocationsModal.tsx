@@ -8,6 +8,7 @@ import { ConfirmModal } from './ConfirmModal';
 import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
 import { inventoryLocationsQueryKey, invalidateInventoryLocations } from '../utils/inventoryQueries';
+import { StorageLocationConditions } from './zigbee/StorageLocationConditions';
 
 interface LocationsModalProps {
   open: boolean;
@@ -136,6 +137,7 @@ export function LocationsModal({ open, onClose, onPickLocation }: LocationsModal
                 <tr className="border-b border-bambu-dark-tertiary text-left text-bambu-gray">
                   <th className="px-4 py-3 font-medium">{t('locations.name')}</th>
                   <th className="px-4 py-3 font-medium text-right">{t('locations.spools')}</th>
+                  <th className="px-4 py-3 font-medium">{t('locations.conditions')}</th>
                   <th className="px-4 py-3 font-medium text-right w-32">{t('common.actions')}</th>
                 </tr>
               </thead>
@@ -153,6 +155,9 @@ export function LocationsModal({ open, onClose, onPickLocation }: LocationsModal
                   >
                     <td className="px-4 py-3 text-white font-medium">{loc.name}</td>
                     <td className="px-4 py-3 text-right text-bambu-gray">{loc.spool_count}</td>
+                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                      <StorageLocationConditions locationId={loc.id} />
+                    </td>
                     <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1">
                         <button
@@ -167,9 +172,10 @@ export function LocationsModal({ open, onClose, onPickLocation }: LocationsModal
                         <button
                           type="button"
                           className="p-1.5 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 rounded disabled:opacity-40"
-                          disabled={loc.spool_count > 0}
+                          disabled={loc.spool_count > 0 || (loc.sensor_count ?? 0) > 0}
                           onClick={() => setDeleteTarget(loc)}
-                          title={loc.spool_count > 0 ? t('locations.deleteBlocked') : t('common.delete')}
+                          title={loc.spool_count > 0 || (loc.sensor_count ?? 0) > 0
+                            ? t('locations.deleteBlocked') : t('common.delete')}
                           aria-label={t('locations.deleteAria', { name: loc.name, defaultValue: `Delete ${loc.name}` })}
                         >
                           <Trash2 className="w-4 h-4" />

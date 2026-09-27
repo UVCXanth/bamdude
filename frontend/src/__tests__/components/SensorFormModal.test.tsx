@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { render } from '../utils';
@@ -49,6 +49,7 @@ describe('SensorFormModal', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.spyOn(api, 'getPrinterLocations').mockResolvedValue({ locations: [] });
+    vi.spyOn(api, 'getZigbeeSensors').mockResolvedValue({ sensors: [] });
     vi.spyOn(api, 'getPrinters').mockResolvedValue([
       { id: 3, name: 'X1C' },
       { id: 4, name: 'P1S' },
@@ -101,57 +102,58 @@ describe('SensorFormModal', () => {
     );
   });
 
-  it('binds to the chosen printer, and clears the place doing it', async () => {
-    const update = vi.spyOn(api, 'updateZigbeeSensor').mockResolvedValue({ id: 7, name: 'Майстерня' });
+  it('adds a second printer while retaining the existing room binding', async () => {
+    const add = vi.spyOn(api, 'addZigbeeSensorBinding').mockResolvedValue({ id: 12 } as never);
 
     render(
       <SensorFormModal
-        sensor={existing({ location: { id: 9, name: 'Shop', parent_id: null } as never })}
+        sensor={existing({ bindings: [{ id: 11, sensor_id: 7, printer_id: null, printer_name: null,
+          printer_location_id: 9, location: { id: 9, name: 'Shop', parent_id: null, path: 'Shop' },
+          storage_location_id: null, storage_location_name: null, display_name: null,
+          visible: true, sort_order: 0, notify_enabled: true }] })}
         initialDevice={null}
         onClose={() => {}}
       />,
     );
 
-    await userEvent.click(await screen.findByRole('radio', { name: /a printer/i }));
-    await userEvent.selectOptions(screen.getByLabelText(/a printer/i), '4');
-    await userEvent.click(screen.getByRole('button', { name: /save/i }));
+    expect(await screen.findByText('Shop')).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText(/choose a target/i), '4');
+    await userEvent.click(screen.getByRole('button', { name: /add binding/i }));
 
     await waitFor(() =>
-      expect(update).toHaveBeenCalledWith(7, {
-        name: 'Майстерня',
-        printer_id: 4,
-        // ⚠️ The whole point of the choice: the place the sensor used to have
-        // is released, not kept beside the printer.
-        location_id: null,
-      }),
+      expect(add).toHaveBeenCalledWith(7, expect.objectContaining({ printer_id: 4,
+        printer_location_id: null, storage_location_id: null })),
     );
   });
 
-  it('opens on the side the sensor is already bound to', async () => {
+  it('shows an existing printer binding as an independent target', async () => {
     render(
-      <SensorFormModal sensor={existing({ printer_id: 3, printer_name: 'X1C' })} initialDevice={null} onClose={() => {}} />,
+      <SensorFormModal sensor={existing({ bindings: [{ id: 15, sensor_id: 7, printer_id: 3,
+        printer_name: 'X1C', printer_location_id: null, location: null, storage_location_id: null,
+        storage_location_name: null, display_name: null, visible: true, sort_order: 0,
+        notify_enabled: true }] })} initialDevice={null} onClose={() => {}} />,
     );
 
-    expect(await screen.findByRole('radio', { name: /a printer/i })).toHaveAttribute('aria-checked', 'true');
-    // The list arrives with the printers query, so the preselection is only
-    // visible once there is an option to select.
-    await screen.findByRole('option', { name: 'X1C' });
-    expect(screen.getByLabelText(/a printer/i)).toHaveValue('3');
+    expect(await screen.findByText('X1C')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /remove/i })).toBeInTheDocument();
   });
 
-  it('going back to a place releases the printer', async () => {
-    const update = vi.spyOn(api, 'updateZigbeeSensor').mockResolvedValue({ id: 7, name: 'Майстерня' });
+  it('removes only the selected binding', async () => {
+    const remove = vi.spyOn(api, 'deleteZigbeeSensorBinding').mockResolvedValue({ deleted: 15 });
 
     render(
-      <SensorFormModal sensor={existing({ printer_id: 3, printer_name: 'X1C' })} initialDevice={null} onClose={() => {}} />,
+      <SensorFormModal sensor={existing({ bindings: [{ id: 15, sensor_id: 7, printer_id: 3,
+        printer_name: 'X1C', printer_location_id: null, location: null, storage_location_id: null,
+        storage_location_name: null, display_name: null, visible: true, sort_order: 0,
+        notify_enabled: true }] })} initialDevice={null} onClose={() => {}} />,
     );
 
-    await userEvent.click(await screen.findByRole('radio', { name: /a place/i }));
-    await userEvent.click(screen.getByRole('button', { name: /save/i }));
+    await userEvent.click(await screen.findByRole('button', { name: /remove/i }));
+    const confirmation = await screen.findByRole('dialog', { name: 'Remove' });
+    expect(within(confirmation).getByText(/device-level alerts will resume/i)).toBeInTheDocument();
+    await userEvent.click(within(confirmation).getByRole('button', { name: 'Remove' }));
 
-    await waitFor(() =>
-      expect(update).toHaveBeenCalledWith(7, { name: 'Майстерня', location_id: null, printer_id: null }),
-    );
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(7, 15));
   });
 
   it('editing does not offer to change the device', async () => {
