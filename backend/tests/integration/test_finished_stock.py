@@ -169,3 +169,26 @@ async def test_a_position_holds_one_configuration_per_product(db_session, lamp):
     again = await finished_stock.item_for(db_session, lamp.id, {}, create=True)
     assert again is first
     assert (await db_session.execute(select(func.count(StockItem.id)))).scalar() == 1
+
+
+@pytest.mark.asyncio
+async def test_a_first_receipt_that_lost_the_race_finds_the_winners_position(db_session, lamp, monkeypatch):
+    """Two first receipts of a new configuration at the same moment: the second INSERT
+    meets the UNIQUE key — it must take the position the first one created, not answer
+    500 (review Minor 12). Simulated by hiding the existing row from the first lookup:
+    the second look, taken under the product lock, finds it."""
+    winner = await _item(db_session, lamp)
+    await db_session.commit()
+    original = finished_stock._find_item
+    calls = []
+
+    async def blind_once(db, product_id, key):
+        calls.append(key)
+        return None if len(calls) == 1 else await original(db, product_id, key)
+
+    monkeypatch.setattr(finished_stock, "_find_item", blind_once)
+    item = await finished_stock.item_for(db_session, lamp.id, {}, create=True)
+    assert item.id == winner.id
+    await finished_stock.receive(db_session, item, 1)
+    await db_session.commit()
+    assert (await db_session.scalar(select(func.count(StockItem.id)))) == 1

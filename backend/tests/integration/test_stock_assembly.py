@@ -170,3 +170,22 @@ async def test_deleting_a_user_detaches_both_ledgers(committing_client, db_sessi
             select(ProductPartStockMovement.created_by).where(ProductPartStockMovement.created_by.is_not(None))
         )
     ).all() == []
+
+
+@pytest.mark.asyncio
+async def test_a_configuration_of_purchased_parts_only_cannot_be_assembled(db_session):
+    """Nothing printed, nothing on a shelf: «can assemble» is 0 and the request writes
+    nothing in either ledger (Review Focus 5)."""
+    kit = Product(name="Kit")
+    db_session.add(kit)
+    await db_session.flush()
+    db_session.add(
+        ProductPart(product_id=kit.id, kind="purchased", name="bolt", name_key="purchased:bolt", qty_per_unit=4)
+    )
+    await db_session.commit()
+    item = await finished_stock.item_for(db_session, kit.id, {}, create=True)
+    before = await _rows(db_session)
+    assert await finished_stock.can_assemble_item(db_session, item) == 0
+    with pytest.raises(finished_stock.FinishedStockError):
+        await finished_stock.assemble(db_session, item, 1)
+    assert await _rows(db_session) == before

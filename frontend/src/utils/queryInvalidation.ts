@@ -78,7 +78,13 @@ export const ORDER_VIEW_KEYS = [
   // bank, an order deleted — and with the print completions the socket
   // reports. Prefixes: the page keys its queries by its filters.
   'stock-summary',
-  'stock-movements',
+  // finished goods (WS-09): the journal of both ledgers shows the parts rows
+  // these mutations write, and «can assemble» on the positions, their page and
+  // a dialog's lookup reads the same free shelf.
+  'stock-journal',
+  'stock-items',
+  'stock-item',
+  'stock-lookup',
 ] as const;
 
 /**
@@ -156,7 +162,8 @@ export function invalidateOrderCandidates(qc: QueryClient): void {
  *
  * A finished-goods move changes the positions, their tiles, the journal and
  * the sidebar badge; an assembly also takes parts off the free shelf, so the
- * parts list, the product page's shelf and its kits move with it. One list,
+ * parts list, the product page's shelf, its kits and the catalog cards move
+ * with it. One list,
  * every prefix — a dialog does not get to have an opinion about which views it
  * touched, and TanStack refetches only the mounted ones.
  */
@@ -170,6 +177,7 @@ export const STOCK_KEYS: readonly (readonly string[])[] = [
   ['product-stock'],
   ['product-kits'],
   ['product'],
+  ['products'],
   ['projects', 'nav-badges'],
 ];
 

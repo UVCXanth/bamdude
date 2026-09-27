@@ -143,3 +143,22 @@ async def test_forgetting_positions_removes_their_configuration(db_session, pipe
     await db_session.commit()
     assert (await db_session.execute(select(StockItemChoice))).scalars().all() == []
     assert (await db_session.execute(select(StockItemPartCount))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_a_part_merge_that_would_merge_two_positions_is_refused(committing_client, db_session, pipe):
+    """Merging «straight» into «flask»: a position that asked for two straight tails wants
+    1 + 2 = 3 flasks, and so does the one that asked for three flasks and no tail — the same
+    kit, two shelves. Refused, nothing merged (Review Focus 4, review Minor 14). A position
+    that changed neither part follows the product, as an order line does."""
+    flask, straight = pipe["parts"]["flask"], pipe["parts"]["straight"]
+    standard = await _item(db_session, pipe, counts={straight.id: 2})
+    doubled = await _item(db_session, pipe, counts={flask.id: 3, straight.id: 0})
+    before = (standard.config_key, doubled.config_key)
+    r = await committing_client.post(
+        f"/api/v1/products/{pipe['product'].id}/parts/{flask.id}/merge", json={"source_part_id": straight.id}
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"] == "That change would make two stock positions the same configuration"
+    assert (await _key(db_session, standard.id), await _key(db_session, doubled.id)) == before
+    assert await db_session.get(ProductPart, straight.id) is not None

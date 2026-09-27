@@ -3,7 +3,7 @@
 from datetime import datetime
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import text, update
 
 from backend.app.models.customer import Customer
 from backend.app.models.finished_stock import StockItemMovement
@@ -46,12 +46,14 @@ async def test_both_ledgers_newest_first(committing_client, db_session, lamp):
     await finished_stock.issue(db_session, item, 1, customer_id=customer.id, actor=person)
     await db_session.commit()
     rows = (await _page(committing_client))["items"]
+    # Deterministic even when two rows share an instant: the finished row ranks
+    # above the parts row, and ids descend within a book.
     assert [(r["book"], r["kind"]) for r in rows] == [
         ("finished", "issue"),
         ("finished", "assembled"),
         ("parts", "assembled"),
         ("parts", "manual"),
-    ] or [(r["book"], r["kind"]) for r in rows][:2] == [("finished", "issue"), ("finished", "assembled")]
+    ]
     issue = rows[0]
     assert issue["customer"] == {"id": customer.id, "name": "Acme"}
     assert issue["user"]["username"] == "clerk"
@@ -95,3 +97,53 @@ async def test_the_cursor_never_loses_or_repeats_a_row(committing_client, db_ses
     assert len(seen) == 14 and len(set(seen)) == 14
     # Finished rows sort above parts rows at the same instant; ids descend within a book.
     assert seen[:7] == sorted([s for s in seen if s[0] == "finished"], key=lambda s: -s[1])
+
+
+async def _walk(client, limit):
+    seen, cursor = [], None
+    while True:
+        params = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        body = await _page(client, **params)
+        seen += [(r["book"], r["id"]) for r in body["items"]]
+        cursor = body["next_cursor"]
+        if not cursor:
+            return seen
+
+
+@pytest.mark.asyncio
+async def test_the_cursor_keeps_rows_whose_millisecond_would_round_up(committing_client, db_session, lamp):
+    """⚠️ SQLite's ``strftime('%f')`` ROUNDS to the millisecond while Python truncates:
+    a page ending on ``.123900`` handed back a ``.123`` cursor that ``.123789`` (``.124``
+    in SQL) was neither older than nor equal to — the row was lost. Found by the
+    final review (Critical 1)."""
+    item = await finished_stock.item_for(db_session, lamp["product"].id, {}, create=True)
+    first = await finished_stock.receive(db_session, item, 1)
+    second = await finished_stock.receive(db_session, item, 1)
+    third = await finished_stock.receive(db_session, item, 1)
+    stamps = {
+        first.id: datetime(2026, 9, 27, 10, 0, 0, 123789),
+        second.id: datetime(2026, 9, 27, 10, 0, 0, 123900),
+        third.id: datetime(2026, 9, 27, 10, 0, 0, 0),
+    }
+    for move_id, stamp in stamps.items():
+        await db_session.execute(
+            update(StockItemMovement).where(StockItemMovement.id == move_id).values(created_at=stamp)
+        )
+    legacy = await part_stock.move(db_session, part_id=lamp["shade"].id, delta=1, reason="manual", note="x")
+    await db_session.commit()
+    # A parts row written before the ledger stamped its own time: the SQLite server
+    # default, no fractional part — the same instant as the finished row at .000000.
+    await db_session.execute(
+        text("UPDATE product_part_stock_movements SET created_at = '2026-09-27 10:00:00' WHERE id = :id"),
+        {"id": legacy.id},
+    )
+    await db_session.commit()
+    seen = await _walk(committing_client, 1)
+    assert seen == [
+        ("finished", second.id),
+        ("finished", first.id),
+        ("finished", third.id),
+        ("parts", legacy.id),
+    ]

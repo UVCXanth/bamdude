@@ -3,7 +3,9 @@
 Writes ``stock_items`` (the ``on_hand`` / ``reserved`` columns, the location and
 the minimum) and ``stock_item_movements``; nothing else does
 (``tests/unit/test_finished_stock_has_one_writer.py``). Every operation locks
-the position row, decides against what it read under the lock, writes ONE
+the position row — ``FOR UPDATE`` on PostgreSQL, SQLite's write lock taken
+before the read (``core/database.take_write_lock``) — decides against what it
+read under the lock, writes ONE
 movement and moves the columns by the same deltas in the caller's transaction —
 so the columns always equal the sum of the ledger. The columns are what lists,
 filters and sorts read; the ledger is the history.
@@ -21,6 +23,7 @@ from collections.abc import Mapping
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.database import take_write_lock
 from backend.app.models.finished_stock import MOVEMENT_KINDS, StockItem, StockItemMovement
 from backend.app.models.product import Product, ProductOrigin, ProductPart
 from backend.app.models.user import User
@@ -43,7 +46,17 @@ def lock_item_stmt(item_id: int):
 
 
 async def lock_item(db: AsyncSession, item_id: int) -> StockItem | None:
+    """The position row, locked and read fresh — on SQLite after taking the write
+    lock (``take_write_lock``), which is what its dialect's missing ``FOR UPDATE``
+    leaves to us."""
+    await take_write_lock(db, StockItem.__table__, item_id)
     return (await db.execute(lock_item_stmt(item_id))).scalar_one_or_none()
+
+
+async def _find_item(db: AsyncSession, product_id: int, key: str) -> StockItem | None:
+    return (
+        await db.execute(select(StockItem).where(StockItem.product_id == product_id, StockItem.config_key == key))
+    ).scalar_one_or_none()
 
 
 async def item_for(
@@ -65,10 +78,18 @@ async def item_for(
         key, new_choices, new_counts = await line_config.resolve(db, product_id, choices, counts)
     except line_config.LineConfigError as e:
         raise FinishedStockError(str(e), e.status) from e
-    item = (
-        await db.execute(select(StockItem).where(StockItem.product_id == product_id, StockItem.config_key == key))
-    ).scalar_one_or_none()
+    item = await _find_item(db, product_id, key)
     if item is not None or not create:
+        return item
+    # Two first receipts of one new configuration at the same moment would both
+    # INSERT and the second would meet UNIQUE(product_id, config_key) as a 500.
+    # The creation is serialised on the PRODUCT row instead, and the key looked up
+    # again under that lock: the second one finds the position the first created.
+    # (Not a savepoint: RELEASE of the outermost SAVEPOINT is a COMMIT on SQLite.)
+    await take_write_lock(db, Product.__table__, product_id)
+    await db.execute(select(Product.id).where(Product.id == product_id).with_for_update())
+    item = await _find_item(db, product_id, key)
+    if item is not None:
         return item
     item = StockItem(product_id=product_id, config_key=key)
     db.add(item)
@@ -290,6 +311,14 @@ async def delete_for_product(db: AsyncSession, product_id: int) -> None:
     await db.execute(delete(StockItemMovement).where(StockItemMovement.item_id.in_(ids)))
     await line_config.forget_items(db, ids)
     await db.execute(delete(StockItem).where(StockItem.id.in_(ids)))
+
+
+async def detach_customer(db: AsyncSession, customer_id: int) -> None:
+    """A deleted customer leaves the issues, not a dangling id — SQLite runs no FK
+    actions, and ``customers`` reuses ids, so the next customer would inherit them."""
+    await db.execute(
+        update(StockItemMovement).where(StockItemMovement.customer_id == customer_id).values(customer_id=None)
+    )
 
 
 async def detach_user(db: AsyncSession, user_id: int) -> None:

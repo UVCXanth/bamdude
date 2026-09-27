@@ -57,6 +57,17 @@ describe('StockJournal', () => {
     expect(within(part).getByText(/counted by the operator/)).toBeInTheDocument();
   });
 
+  it('a finished-goods note is shown as typed, even when it spells a server token', async () => {
+    get.mockResolvedValue({
+      items: [{ ...page1.items[0], note: 'assembled' }],
+      next_cursor: null,
+    });
+    render(<StockJournal />);
+    const row = await screen.findByTestId('journal-row-finished-4');
+    expect(within(row).getByText('assembled')).toBeInTheDocument();
+    expect(within(row).queryByText('assembled into a stock position')).not.toBeInTheDocument();
+  });
+
   it('the ledger filter asks the server again', async () => {
     render(<StockJournal />);
     await screen.findByTestId('journal-row-finished-4');

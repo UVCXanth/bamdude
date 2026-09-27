@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { api } from '../../api/client';
+import { api, STOCK_MAX_QTY as MAX_QTY } from '../../api/client';
 import type { StockItem, StockMoveBody, StockMoveKind } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { useStockLookup } from '../../hooks/useFinishedStock';
@@ -57,21 +57,29 @@ export function StockMoveDialog({
 
   const move = useMutation({
     mutationFn: (body: StockMoveBody) => api.moveStock(body),
-    onSuccess: () => {
+    onSuccess: (result) => {
       invalidateStock(queryClient);
-      showToast(t('stock.move.saved'));
+      showToast(t(result.moved ? 'stock.move.saved' : 'stock.move.nothingMoved'));
       onClose();
     },
-    onError: (e: Error) => showToast(e.message, 'error'),
+    // The refusal says what the server saw; what the dialog shows is re-read so
+    // the operator decides again against it (spec rule 26).
+    onError: (e: Error) => {
+      showToast(e.message, 'error');
+      invalidateStock(queryClient);
+    },
   });
 
   const qtyValue = Number(qty);
   const countedValue = Number(counted);
   const amountValid =
     kind === 'stocktake'
-      ? counted.trim() !== '' && Number.isInteger(countedValue) && countedValue >= 0
-      : Number.isInteger(qtyValue) && qtyValue >= 1;
-  const targetValid = item != null || (productId != null && lookup != null && (creates || lookup.item != null));
+      ? counted.trim() !== '' && Number.isInteger(countedValue) && countedValue >= 0 && countedValue <= MAX_QTY
+      : Number.isInteger(qtyValue) && qtyValue >= 1 && qtyValue <= MAX_QTY;
+  // A count of 0 of a configuration with no position would move nothing, and the
+  // server creates nothing for it — so it is not offered.
+  const createsHere = kind === 'receipt' || (kind === 'stocktake' && amountValid && countedValue > 0);
+  const targetValid = item != null || (productId != null && lookup != null && (createsHere || lookup.item != null));
   const diff = kind === 'stocktake' && counted.trim() !== '' ? countedValue - (position?.on_hand ?? 0) : null;
 
   const submit = () => {
@@ -112,6 +120,7 @@ export function StockMoveDialog({
               id="stock-move-counted"
               type="number"
               min={0}
+              max={MAX_QTY}
               value={counted}
               onChange={(e) => setCounted(e.target.value)}
               className={FIELD_CLASS}
@@ -134,6 +143,7 @@ export function StockMoveDialog({
               id="stock-move-qty"
               type="number"
               min={1}
+              max={MAX_QTY}
               value={qty}
               onChange={(e) => setQty(e.target.value)}
               className={FIELD_CLASS}

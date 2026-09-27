@@ -23,6 +23,7 @@ import { parsePageSize, usePersistedState } from '../../hooks/usePersistedState'
 import { useSearchBox } from '../../hooks/useSearchBox';
 import { useStockItems } from '../../hooks/useFinishedStock';
 import { useStockPage } from '../../hooks/useStock';
+import { invalidateStock } from '../../utils/queryInvalidation';
 
 const TABS = ['finished', 'parts', 'journal'] as const;
 type StockTab = (typeof TABS)[number];
@@ -338,10 +339,7 @@ function PartsTab() {
           productId={adjusting.id}
           parts={adjusting.parts.map((b) => ({ part_id: b.part_id, name: b.name }))}
           onClose={() => setAdjusting(null)}
-          onSaved={() => {
-            queryClient.invalidateQueries({ queryKey: ['stock-summary'] });
-            queryClient.invalidateQueries({ queryKey: ['stock-movements'] });
-          }}
+          onSaved={() => invalidateStock(queryClient)}
         />
       )}
     </>

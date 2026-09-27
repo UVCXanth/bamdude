@@ -7,11 +7,17 @@ parts row written in the same instant — and the cursor is that triple of the
 last row, so a page boundary between rows of the same timestamp neither loses
 nor repeats one.
 
-⚠️ The timestamp compared and sorted is truncated to the MILLISECOND, in SQL
-and in Python alike: the parts ledger holds rows from before its clock moved to
-Python (SQLite server default ``YYYY-MM-DD HH:MM:SS``, no fraction) beside rows
-with microseconds, and a string comparison of the two formats disagrees with
-the datetime they mean. Rows inside one millisecond fall to ``(book, id)``.
+⚠️ The timestamp is compared at its full MICROSECOND precision, in SQL and in
+Python alike, and the cursor carries all six digits. An earlier version
+truncated to the millisecond — and SQLite's ``strftime('%f')`` ROUNDS where
+Python truncates, so a page ending on ``.123900`` lost the ``.123789`` row
+behind it (final review of WS-09). On SQLite a datetime is a string: the
+parts ledger still holds rows from before its clock moved to Python (the
+server default ``YYYY-MM-DD HH:MM:SS``, no fraction) beside rows with six
+digits, so its column is padded to one format before it is compared; the
+finished ledger is written by its one writer only, always with six digits,
+and is compared as it is. On PostgreSQL both are real timestamps, compared
+as they are — which lets the ``(created_at, id)`` indexes serve the order.
 """
 
 from __future__ import annotations
@@ -19,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import and_, func, literal, or_, select
+from sqlalchemy import String, and_, case, func, literal, or_, select, type_coerce
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.customer import Customer
@@ -44,24 +50,25 @@ FINISHED, PARTS = "finished", "parts"
 _RANK = {FINISHED: 1, PARTS: 0}
 
 
-def _ms(dt: datetime) -> datetime:
-    return dt.replace(microsecond=dt.microsecond // 1000 * 1000)
+_SQLITE_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 
 
-def _sql_ms(column, sqlite: bool):
-    """The column truncated to the millisecond — a comparable, sortable SQL value."""
-    return func.strftime("%Y-%m-%d %H:%M:%f", column) if sqlite else func.date_trunc("milliseconds", column)
+def _sql_ts(column, sqlite: bool, legacy: bool):
+    """The column as the keyset compares it: a SQLite string padded to six digits
+    when the table can hold legacy rows without a fraction, else the column."""
+    if sqlite and legacy:
+        text = type_coerce(column, String)
+        return case((func.length(text) == 19, text + ".000000"), else_=text)
+    return column
 
 
-def _bind_ms(dt: datetime, sqlite: bool):
-    """The cursor's timestamp in the same shape as :func:`_sql_ms`."""
-    if sqlite:
-        return literal(dt.strftime("%Y-%m-%d %H:%M:%S.") + f"{dt.microsecond // 1000:03d}")
-    return literal(dt)
+def _bind_ts(dt: datetime, sqlite: bool):
+    """The cursor's timestamp in the same shape as :func:`_sql_ts`."""
+    return literal(dt.strftime(_SQLITE_FORMAT)) if sqlite else literal(dt)
 
 
 def encode_cursor(created_at: datetime, book: str, row_id: int) -> str:
-    return f"{_ms(created_at).isoformat()}|{book}|{row_id}"
+    return f"{created_at.isoformat(timespec='microseconds')}|{book}|{row_id}"
 
 
 def decode_cursor(cursor: str) -> tuple[datetime, str, int]:
@@ -75,7 +82,7 @@ def _older_than(ts_sql, id_col, rank: int, cursor, sqlite: bool):
     """``(ts, rank, id) < cursor`` lexicographically, for a table of one fixed rank."""
     ct, cbook, cid = cursor
     crank = _RANK[cbook]
-    bound = _bind_ms(ct, sqlite)
+    bound = _bind_ts(ct, sqlite)
     same_instant = ts_sql == bound
     if rank < crank:
         tie = same_instant
@@ -109,7 +116,7 @@ async def journal(
     rows: list[_Row] = []
 
     if book in ("both", FINISHED):
-        ts = _sql_ms(StockItemMovement.created_at, sqlite)
+        ts = _sql_ts(StockItemMovement.created_at, sqlite, legacy=False)
         q = select(StockItemMovement, StockItem.product_id).join(StockItem, StockItem.id == StockItemMovement.item_id)
         if product_id is not None:
             q = q.where(StockItem.product_id == product_id)
@@ -121,10 +128,10 @@ async def journal(
             q = q.where(_older_than(ts, StockItemMovement.id, _RANK[FINISHED], position, sqlite))
         q = q.order_by(ts.desc(), StockItemMovement.id.desc()).limit(limit)
         for move, pid in (await db.execute(q)).all():
-            rows.append(_Row(FINISHED, (_ms(move.created_at), _RANK[FINISHED], move.id), move, (pid,)))
+            rows.append(_Row(FINISHED, (move.created_at, _RANK[FINISHED], move.id), move, (pid,)))
 
     if book in ("both", PARTS):
-        ts = _sql_ms(ProductPartStockMovement.created_at, sqlite)
+        ts = _sql_ts(ProductPartStockMovement.created_at, sqlite, legacy=True)
         q = select(ProductPartStockMovement, ProductPart.name, ProductPart.product_id).join(
             ProductPart, ProductPart.id == ProductPartStockMovement.product_part_id
         )
@@ -138,7 +145,7 @@ async def journal(
             q = q.where(_older_than(ts, ProductPartStockMovement.id, _RANK[PARTS], position, sqlite))
         q = q.order_by(ts.desc(), ProductPartStockMovement.id.desc()).limit(limit)
         for move, part_name, pid in (await db.execute(q)).all():
-            rows.append(_Row(PARTS, (_ms(move.created_at), _RANK[PARTS], move.id), move, (pid, part_name)))
+            rows.append(_Row(PARTS, (move.created_at, _RANK[PARTS], move.id), move, (pid, part_name)))
 
     rows.sort(key=lambda r: r.key, reverse=True)
     rows = rows[:limit]

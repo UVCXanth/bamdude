@@ -118,7 +118,7 @@ export function StockItemPage() {
       >
         <p className={`text-sm ${item.below_min ? 'text-status-warning' : 'text-bambu-gray'}`}>
           {item.below_min
-            ? t('stock.item.needsReplenishment', { n: item.min_qty - item.available })
+            ? t('stock.item.needsReplenishment', { n: item.short_by })
             : item.min_qty > 0
               ? t('stock.item.withinNorm')
               : t('stock.item.noMinimum')}

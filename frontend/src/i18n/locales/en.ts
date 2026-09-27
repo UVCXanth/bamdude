@@ -6491,6 +6491,7 @@ export default {
       stocktakeNoteHint: 'Needed when the count is lower',
       submit: 'Save',
       saved: 'The stock was updated.',
+      nothingMoved: 'Nothing changed — the count matches the shelf.',
     },
     assemble: {
       title: 'Assemble from parts',

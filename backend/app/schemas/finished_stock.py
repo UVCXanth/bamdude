@@ -13,6 +13,10 @@ from pydantic import BaseModel, Field
 from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.project import LineConfigurationOut
 
+#: The most one request may move or set. Far above any shelf, far below the
+#: INTEGER a PostgreSQL column overflows at — a typo is refused, never a 500.
+MAX_QTY = 1_000_000
+
 
 class StockProductRef(BaseModel):
     id: int
@@ -32,8 +36,17 @@ class StockItemOut(BaseModel):
     available: int
     min_qty: int
     below_min: bool
+    #: How many the free quantity is short of the minimum — 0 when it is not below it.
+    short_by: int = 0
     #: Whole units of this configuration the free-parts shelf can make.
     can_assemble: int = 0
+
+
+class StockMoveOut(StockItemOut):
+    """The position after a movement. ``moved`` is False when nothing moved — a
+    count that matched the shelf (spec rule 10: «без змін»)."""
+
+    moved: bool = True
 
 
 class StockItemsPage(BaseModel):
@@ -101,9 +114,9 @@ class StockMoveIn(BaseModel):
     item_id: int | None = None
     product_id: int | None = None
     options: list[int] = Field(default_factory=list)
-    qty: int | None = None
+    qty: int | None = Field(default=None, le=MAX_QTY)
     #: Інвентаризація — the counted quantity.
-    counted: int | None = None
+    counted: int | None = Field(default=None, le=MAX_QTY)
     note: str | None = Field(default=None, max_length=500)
     customer_id: int | None = None
     from_reserve: bool = False
@@ -113,13 +126,13 @@ class StockAssembleIn(BaseModel):
     item_id: int | None = None
     product_id: int | None = None
     options: list[int] = Field(default_factory=list)
-    qty: int
+    qty: int = Field(le=MAX_QTY)
     note: str | None = Field(default=None, max_length=500)
 
 
 class StockItemParamsIn(BaseModel):
     location: str | None = Field(default=None, max_length=64)
-    min_qty: int | None = None
+    min_qty: int | None = Field(default=None, le=MAX_QTY)
 
 
 class StockJournalItemRef(BaseModel):

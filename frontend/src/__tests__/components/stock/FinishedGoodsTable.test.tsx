@@ -18,6 +18,7 @@ const lamp: StockItem = {
   available: 3,
   min_qty: 5,
   below_min: true,
+  short_by: 2,
   can_assemble: 2,
 };
 const vase: StockItem = {
@@ -32,6 +33,7 @@ const vase: StockItem = {
   available: 2,
   min_qty: 0,
   below_min: false,
+  short_by: 0,
   can_assemble: 0,
 };
 
@@ -65,11 +67,13 @@ describe('FinishedGoodsTable', () => {
     expect(within(row).getByTestId('finished-available-3')).toHaveTextContent('3');
   });
 
-  it('marks a position under its minimum and says how many are missing', () => {
-    renderTable();
+  it('marks a position under its minimum and says how many are missing — the server\'s number', () => {
+    // `short_by` is read, never recomputed: a figure that disagrees with the
+    // columns on screen still wins, because the server is where it is decided.
+    renderTable({ items: [{ ...lamp, short_by: 9 }, vase] });
+    expect(within(screen.getByTestId('finished-row-3')).getByText('short by 9')).toBeInTheDocument();
     expect(screen.getByTestId('finished-available-3')).toHaveClass('text-status-warning');
     expect(screen.getByTestId('finished-available-4')).not.toHaveClass('text-status-warning');
-    expect(within(screen.getByTestId('finished-row-3')).getByText('short by 2')).toBeInTheDocument();
   });
 
   it('says «not assigned» for a position without a location and shows what the shelf can assemble', () => {

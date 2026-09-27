@@ -1598,6 +1598,31 @@ def apikey_effective_permissions(api_key: APIKey, owner: User | None = None) -> 
     )
 
 
+async def acting_user(request: Request, db: AsyncSession, current_user: User | None) -> User | None:
+    """Who a write is recorded against: the signed-in user, or — for an API key,
+    whose requests reach a route with ``current_user`` None — the key's owner.
+    None only for an ownerless key (or no credential at all): «the system».
+
+    The authority lookup is the one the permission gate already made for this
+    request (``resolve_api_key_authority`` caches it per request), so this costs
+    the owner's row and nothing else.
+    """
+    if current_user is not None:
+        return current_user
+    credential = request.headers.get("X-API-Key")
+    if not credential:
+        header = request.headers.get("Authorization", "")
+        token = header[7:] if header.startswith("Bearer ") else None
+        credential = token if is_api_key_token(token) else None
+    if not credential:
+        return None
+    try:
+        authority = await resolve_api_key_authority(request, credential)
+    except APIKeyValidationFailure:
+        return None
+    return await resolve_apikey_owner(db, authority.key)
+
+
 async def resolve_apikey_owner(db: AsyncSession, api_key: APIKey) -> User | None:
     """Load the owner of ``api_key`` for an authorization decision.
 

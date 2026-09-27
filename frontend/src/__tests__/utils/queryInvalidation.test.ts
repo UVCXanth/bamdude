@@ -25,6 +25,7 @@ import {
   invalidateOrderViews,
   invalidateQueueViews,
   invalidateSpoolViews,
+  invalidateStock,
 } from '../../utils/queryInvalidation';
 
 /** A query only has a state once something has put it in the cache. */
@@ -132,8 +133,21 @@ describe('invalidateOrderViews', () => {
       'products',
       // stock tab (2026-09-10)
       'stock-summary',
-      'stock-movements',
+      // finished goods (WS-09): the journal shows the parts rows an order moves,
+      // and «can assemble» reads the same free shelf.
+      'stock-journal',
+      'stock-items',
+      'stock-item',
+      'stock-lookup',
     ]);
+  });
+
+  it('a stock movement refreshes the catalog cards and the sidebar badge too', () => {
+    const qc = new QueryClient();
+    const spy = vi.spyOn(qc, 'invalidateQueries');
+    invalidateStock(qc);
+    const keys = spy.mock.calls.map(([filters]) => JSON.stringify(filters?.queryKey));
+    expect(keys).toEqual(expect.arrayContaining(['["products"]', '["projects","nav-badges"]', '["stock-journal"]']));
   });
 });
 

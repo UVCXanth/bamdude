@@ -7,12 +7,12 @@ discipline — and nothing here writes (``inv-stock-ledger-single-writer``).
 
 from typing import Literal, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequirePermission, acting_user
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.customer import Customer
@@ -32,6 +32,7 @@ from backend.app.schemas.finished_stock import (
     StockJournalPage,
     StockLookupOut,
     StockMoveIn,
+    StockMoveOut,
 )
 from backend.app.schemas.listing import StockFigures, StockListPage
 from backend.app.schemas.product import StockBalanceOut
@@ -307,7 +308,12 @@ async def _choices_from_options(db: AsyncSession, product_id: int, options: list
     )
     if any(option_id not in rows for option_id in options):
         raise HTTPException(status_code=422, detail="That option does not belong to this product")
-    return {rows[option_id]: option_id for option_id in options}
+    choices = {rows[option_id]: option_id for option_id in set(options)}
+    if len(choices) < len(set(options)):
+        # Two options of one group are not a configuration; the last one must not
+        # silently win.
+        raise HTTPException(status_code=422, detail="Pick one option per group")
+    return choices
 
 
 def _parse_options(options: str | None) -> list[int]:
@@ -345,6 +351,10 @@ async def _fresh_out(db: AsyncSession, item: StockItem) -> StockItemOut:
     await db.flush()
     await db.refresh(item)
     return (await finished_stock_views.items_out(db, [item]))[0]
+
+
+def _counted(data: StockMoveIn) -> int:
+    return data.counted if data.counted is not None else -1
 
 
 @router.get("/items", response_model=StockItemsPage)
@@ -486,33 +496,40 @@ async def update_stock_item(
     return await _fresh_out(db, item)
 
 
-@router.post("/moves", response_model=StockItemOut)
+@router.post("/moves", response_model=StockMoveOut)
 async def move_stock(
     data: StockMoveIn,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
-    """One movement of a position: receipt, stocktake, reserve, release or issue."""
+    """One movement of a position: receipt, stocktake, reserve, release or issue.
+
+    A receipt, and a count of more than nothing, create the position; a count of
+    0 of a configuration with no position moves nothing and leaves nothing behind
+    (a position appears with its first movement). ``moved`` is False when the
+    count matched the shelf."""
     item = await _resolve_item(
         db,
         item_id=data.item_id,
         product_id=data.product_id,
         options=data.options,
-        create=data.kind in ("receipt", "stocktake"),
+        create=data.kind == "receipt" or (data.kind == "stocktake" and _counted(data) > 0),
     )
+    actor = await acting_user(request, db, current_user)
     if data.customer_id is not None and await db.get(Customer, data.customer_id) is None:
         raise HTTPException(status_code=404, detail="Customer not found")
     qty = data.qty if data.qty is not None else 0
+    moved = True
     try:
         if data.kind == "receipt":
-            await finished_stock.receive(db, item, qty, note=data.note, actor=current_user)
+            await finished_stock.receive(db, item, qty, note=data.note, actor=actor)
         elif data.kind == "stocktake":
-            counted = data.counted if data.counted is not None else -1
-            await finished_stock.stocktake(db, item, counted, note=data.note, actor=current_user)
+            moved = await finished_stock.stocktake(db, item, _counted(data), note=data.note, actor=actor) is not None
         elif data.kind == "reserve":
-            await finished_stock.reserve(db, item, qty, note=data.note, actor=current_user)
+            await finished_stock.reserve(db, item, qty, note=data.note, actor=actor)
         elif data.kind == "release":
-            await finished_stock.release(db, item, qty, note=data.note, actor=current_user)
+            await finished_stock.release(db, item, qty, note=data.note, actor=actor)
         else:
             await finished_stock.issue(
                 db,
@@ -521,23 +538,26 @@ async def move_stock(
                 from_reserve=data.from_reserve,
                 customer_id=data.customer_id,
                 note=data.note,
-                actor=current_user,
+                actor=actor,
             )
     except finished_stock.FinishedStockError as e:
         _raise(e)
-    return await _fresh_out(db, item)
+    return StockMoveOut(**(await _fresh_out(db, item)).model_dump(), moved=moved)
 
 
 @router.post("/assemble", response_model=StockItemOut)
 async def assemble_stock(
     data: StockAssembleIn,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     """Зібрати з деталей — the kit's parts leave the shelf, the position grows."""
     item = await _resolve_item(db, item_id=data.item_id, product_id=data.product_id, options=data.options, create=True)
     try:
-        await finished_stock.assemble(db, item, data.qty, note=data.note, actor=current_user)
+        await finished_stock.assemble(
+            db, item, data.qty, note=data.note, actor=await acting_user(request, db, current_user)
+        )
     except (finished_stock.FinishedStockError, part_stock.PartStockError) as e:
         _raise(e)
     return await _fresh_out(db, item)

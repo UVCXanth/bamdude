@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from sqlalchemy import event
+from sqlalchemy import Table, event, update
 from sqlalchemy.dialects.postgresql.base import PGDialect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Session
@@ -28,6 +28,27 @@ def configure_sqlite_connection(dbapi_conn, connection_record):
     cursor.execute("PRAGMA synchronous = NORMAL")
     cursor.close()
     case_folding.register_sqlite_functions(dbapi_conn)
+
+
+async def take_write_lock(db: AsyncSession, table: Table, row_id: int) -> None:
+    """SQLite: begin the write transaction NOW, before a read-decide-write reads.
+
+    ⚠️ SQLite's dialect emits no ``FOR UPDATE``, and pysqlite opens a transaction
+    only at the first write — so a read taken before it runs outside any
+    transaction and decides against a row another connection is about to
+    change. Two reservations over one shelf both succeeded that way, and the
+    second one's absolute column write overwrote the first (final review of
+    WS-09, reproduced on a file-backed database). A no-op UPDATE of the row takes
+    SQLite's single write lock here, so a concurrent writer waits at this line
+    (``busy_timeout``) and then reads what the first one committed.
+
+    Every column with an ``onupdate`` is set to itself so the no-op stays one.
+    PostgreSQL: nothing — the caller's ``SELECT … FOR UPDATE`` is the lock.
+    """
+    if db.get_bind().dialect.name != "sqlite":
+        return
+    same = {column.name: column for column in table.c if column.primary_key or column.onupdate is not None}
+    await db.execute(update(table).where(table.c.id == row_id).values(same))
 
 
 def _strip_tz_from_params(conn, cursor, statement, parameters, context, executemany):

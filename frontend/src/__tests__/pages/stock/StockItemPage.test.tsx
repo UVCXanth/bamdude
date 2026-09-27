@@ -47,6 +47,12 @@ describe('StockItemPage', () => {
     expect(screen.getByTestId('item-strip')).toHaveTextContent('Replenishment needed — short by 7');
   });
 
+  it('the shortfall on the strip is the server\'s', async () => {
+    vi.spyOn(api, 'getStockItem').mockResolvedValue({ ...pipeDetail, short_by: 4 });
+    renderPage();
+    expect(await screen.findByTestId('item-strip')).toHaveTextContent('short by 4');
+  });
+
   it('lists the reservations, the other configurations and the parts under this one', async () => {
     renderPage();
     const reservations = await screen.findByTestId('item-reservations');

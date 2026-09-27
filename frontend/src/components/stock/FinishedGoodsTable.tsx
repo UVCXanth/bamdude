@@ -115,7 +115,7 @@ export function FinishedGoodsTable({ items, sort, onSortChange, canEdit, onActio
                     {item.min_qty > 0 ? item.min_qty : <span className="text-bambu-gray">—</span>}
                     {item.below_min && (
                       <span className="block text-xs text-status-warning">
-                        {t('stock.finished.shortBy', { n: item.min_qty - item.available })}
+                        {t('stock.finished.shortBy', { n: item.short_by })}
                       </span>
                     )}
                   </td>

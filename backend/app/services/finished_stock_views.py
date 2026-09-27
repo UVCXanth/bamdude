@@ -42,6 +42,10 @@ def below_min(item: StockItem) -> bool:
     return item.min_qty > 0 and item.on_hand - item.reserved < item.min_qty
 
 
+def short_by(item: StockItem) -> int:
+    return item.min_qty - (item.on_hand - item.reserved) if below_min(item) else 0
+
+
 def parts_out(kit, shelf) -> list[StockItemPartOut]:
     """The kit's printed parts with what one unit takes and what the free shelf holds."""
     return [
@@ -104,6 +108,7 @@ class _Context:
             available=item.on_hand - item.reserved,
             min_qty=item.min_qty,
             below_min=below_min(item),
+            short_by=short_by(item),
             can_assemble=self.can_assemble(item),
         )
 

@@ -47,7 +47,10 @@ export function AssembleDialog({ item, onClose }: { item?: StockItem; onClose: (
       showToast(t('stock.assemble.done'));
       onClose();
     },
-    onError: (e: Error) => showToast(e.message, 'error'),
+    onError: (e: Error) => {
+      showToast(e.message, 'error');
+      invalidateStock(queryClient);
+    },
   });
 
   const count = Number(qty);

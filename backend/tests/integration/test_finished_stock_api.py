@@ -2,11 +2,15 @@
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 
-from backend.app.core.auth import create_access_token
+from backend.app.core.auth import create_access_token, generate_api_key
+from backend.app.models.api_key import APIKey
 from backend.app.models.customer import Customer
+from backend.app.models.finished_stock import StockItemMovement
 from backend.app.models.product import Product, ProductOrigin, ProductPart
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
+from backend.app.models.user import User
 from backend.app.services import part_stock
 
 pytestmark = pytest.mark.integration
@@ -274,3 +278,123 @@ async def test_reading_is_not_moving(async_client: AsyncClient, farm):
         "/api/v1/stock/moves", headers=headers, json={"kind": "receipt", "product_id": farm["lamp"].id, "qty": 1}
     )
     assert r.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_customer_detaches_their_issues(committing_client, db_session, farm):
+    """SQLite runs no FK actions, and `customers` reuses ids: an issue left pointing at a
+    deleted customer would be credited to whoever gets the id next (review Important 3)."""
+    acme = Customer(name="Acme")
+    db_session.add(acme)
+    await db_session.commit()
+    lamp = await _move(committing_client, kind="receipt", product_id=farm["lamp"].id, qty=2)
+    await _move(committing_client, kind="issue", item_id=lamp["id"], qty=1, customer_id=acme.id)
+    assert (await committing_client.delete(f"/api/v1/customers/{acme.id}")).status_code in (200, 204)
+    rows = (await committing_client.get("/api/v1/stock/journal", params={"book": "finished"})).json()["items"]
+    issue = next(r for r in rows if r["kind"] == "issue")
+    assert issue["customer"] is None
+    customer_ids = (await db_session.execute(select(StockItemMovement.customer_id))).scalars().all()
+    assert acme.id not in customer_ids
+
+
+@pytest.mark.asyncio
+async def test_an_api_key_records_its_owner_as_the_performer(committing_client, db_session, farm):
+    """Spec rule 12: for an API key the performer is its owner — not NULL, which reads as
+    «the system» (review Important 5)."""
+    admin = (await db_session.execute(select(User).where(User.username == "test_admin"))).scalar_one()
+    full_key, key_hash, key_prefix = generate_api_key()
+    db_session.add(
+        APIKey(
+            name="stock-bridge",
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            user_id=admin.id,
+            can_manage_projects=True,
+            can_read_status=True,
+        )
+    )
+    await db_session.commit()
+    jwt = committing_client.headers.pop("Authorization")
+    try:
+        r = await committing_client.post(
+            "/api/v1/stock/moves",
+            headers={"X-API-Key": full_key},
+            json={"kind": "receipt", "product_id": farm["lamp"].id, "qty": 1},
+        )
+    finally:
+        committing_client.headers["Authorization"] = jwt
+    assert r.status_code == 200, r.text
+    rows = (await committing_client.get("/api/v1/stock/journal", params={"book": "finished"})).json()["items"]
+    assert rows[0]["user"] == {"id": admin.id, "username": "test_admin"}
+
+
+@pytest.mark.asyncio
+async def test_a_zero_count_of_a_configuration_without_a_position_creates_nothing(committing_client, farm):
+    """A position appears with its first movement; a count of 0 moves nothing, so an
+    empty position must not be left behind to hold its option forever (review Minor 6)."""
+    r = await committing_client.post(
+        "/api/v1/stock/moves", json={"kind": "stocktake", "product_id": farm["lamp"].id, "counted": 0}
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Stock position not found"
+    page = (await committing_client.get("/api/v1/stock/items", params={"mode": "all", "page": 1})).json()
+    assert page["meta"]["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_count_that_matches_the_shelf_says_nothing_moved(committing_client, farm):
+    """Spec rule 10: no difference — no movement, and the answer says so (review Minor 7)."""
+    lamp = await _move(committing_client, kind="receipt", product_id=farm["lamp"].id, qty=3)
+    assert lamp["moved"] is True
+    same = await _move(committing_client, kind="stocktake", item_id=lamp["id"], counted=3)
+    assert same["moved"] is False and same["on_hand"] == 3
+    rows = (await committing_client.get("/api/v1/stock/journal", params={"book": "finished"})).json()["items"]
+    assert [r["kind"] for r in rows] == ["receipt"]
+
+
+@pytest.mark.asyncio
+async def test_the_shortfall_is_the_servers(committing_client, farm):
+    """Workshop rule: figures come from the server — «short by N» too (review Minor 9)."""
+    standard, _angled, lamp = await _positions(committing_client, farm)
+    rows = {
+        r["id"]: r
+        for r in (await committing_client.get("/api/v1/stock/items", params={"mode": "all", "page": 1})).json()["items"]
+    }
+    assert rows[standard["id"]]["short_by"] == 5
+    assert rows[lamp["id"]]["short_by"] == 0
+    detail = (await committing_client.get(f"/api/v1/stock/items/{standard['id']}")).json()
+    assert detail["short_by"] == 5
+
+
+@pytest.mark.asyncio
+async def test_an_absurd_quantity_is_refused_not_a_server_error(committing_client, farm):
+    """An INTEGER column overflows on PostgreSQL — the request must be refused first (review Minor 10)."""
+    for body in (
+        {"kind": "receipt", "product_id": farm["lamp"].id, "qty": 10**10},
+        {"kind": "stocktake", "product_id": farm["lamp"].id, "counted": 10**10},
+    ):
+        assert (await committing_client.post("/api/v1/stock/moves", json=body)).status_code == 422
+    r = await committing_client.post("/api/v1/stock/assemble", json={"product_id": farm["lamp"].id, "qty": 10**10})
+    assert r.status_code == 422
+    lamp = await _move(committing_client, kind="receipt", product_id=farm["lamp"].id, qty=1)
+    r = await committing_client.patch(f"/api/v1/stock/items/{lamp['id']}", json={"min_qty": 10**10})
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_two_options_of_one_group_are_refused(committing_client, farm):
+    """A position has one option per group; two of the same group is not a choice (review Minor 11)."""
+    body = {
+        "kind": "receipt",
+        "product_id": farm["pipe"].id,
+        "options": [farm["straight"].id, farm["angled"].id],
+        "qty": 1,
+    }
+    r = await committing_client.post("/api/v1/stock/moves", json=body)
+    assert r.status_code == 422
+    assert r.json()["detail"] == "Pick one option per group"
+    r = await committing_client.get(
+        "/api/v1/stock/items/lookup",
+        params={"product_id": farm["pipe"].id, "options": f"{farm['straight'].id},{farm['angled'].id}"},
+    )
+    assert r.status_code == 422

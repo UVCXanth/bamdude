@@ -27,7 +27,7 @@ const figures: StockFigures = { kits: 3, kit_products: 1, parts: 8, reserved_kit
 const position: StockItem = {
   id: 3, code: 'SK-0003', product: { id: 1, name: 'Lamp', sku: null, has_cover: false },
   configuration: { choices: [], changed_parts: [] }, location: null,
-  on_hand: 4, reserved: 1, available: 3, min_qty: 0, below_min: false, can_assemble: 0,
+  on_hand: 4, reserved: 1, available: 3, min_qty: 0, below_min: false, short_by: 0, can_assemble: 0,
 };
 const itemsOf = (items: StockItem[]): StockItemsPage =>
   ({ items, meta: { total: items.length, current_page: 1, per_page: 24, last_page: 1 } });

@@ -589,6 +589,7 @@
   "Path traversal detected": "Виявлено вихід за межі дозволеного шляху",
   "Permission stats:filter_by_user required": "Потрібен дозвіл stats:filter_by_user",
   "Photo not found": "Фото не знайдено",
+  "Pick one option per group": "Оберіть одну опцію в кожній групі",
   "Picture file not found": "Файл зображення не знайдено",
   "Picture not found": "Зображення не знайдено",
   "Pipeline not found": "Конвеєр не знайдено",

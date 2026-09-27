@@ -60,6 +60,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.database import take_write_lock
 from backend.app.models.archive import PrintArchive
 from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.product import Product, ProductPart, ProductPlate
@@ -273,10 +274,12 @@ def lock_part_stmt(part_id: int):
     read-decide-write for that part.
 
     PostgreSQL emits ``FOR UPDATE`` and the second transaction waits.
-    **SQLite's dialect emits nothing at all** — and needs to: its writes are
-    already serialised by a single write lock over the whole database. So this
-    is a no-op on the small backend and the fix on the large one, which is why
-    the test compiles it against both dialects rather than trusting either.
+    **SQLite's dialect emits nothing at all**, and a read taken before the
+    first write runs outside any transaction — so on SQLite the lock is
+    :func:`lock_part`'s ``take_write_lock``, taken BEFORE this SELECT. (This
+    docstring once said SQLite's single write lock made it unnecessary; two
+    hand corrections of one part both passed the balance check that way —
+    final review of WS-09.) Take it through :func:`lock_part`, never alone.
 
     ``populate_existing`` because the identity map would otherwise hand back a
     part loaded earlier in the same transaction, ``kind`` and ``qty_per_unit``
@@ -287,6 +290,13 @@ def lock_part_stmt(part_id: int):
     return (
         select(ProductPart).where(ProductPart.id == part_id).with_for_update().execution_options(populate_existing=True)
     )
+
+
+async def lock_part(db: AsyncSession, part_id: int) -> ProductPart | None:
+    """The part row, locked and read fresh: SQLite's write lock first
+    (``take_write_lock``), then :func:`lock_part_stmt`."""
+    await take_write_lock(db, ProductPart.__table__, part_id)
+    return (await db.execute(lock_part_stmt(part_id))).scalar_one_or_none()
 
 
 async def lock_parts(db: AsyncSession, parts: Sequence[ProductPart]) -> None:
@@ -304,11 +314,11 @@ async def lock_parts(db: AsyncSession, parts: Sequence[ProductPart]) -> None:
     Sorted here rather than trusted from the caller, because the callers get
     their parts from three different queries.
 
-    A no-op on SQLite (its dialect emits no ``FOR UPDATE``), whose single write
-    lock already serialises what this is for.
+    On SQLite the first :func:`lock_part` takes the database's write lock, which
+    serialises the rest of the transaction.
     """
     for part in sorted(parts, key=lambda part: part.id):
-        await db.execute(lock_part_stmt(part.id))
+        await lock_part(db, part.id)
 
 
 async def _balance_of(db: AsyncSession, part_id: int) -> int:
@@ -362,7 +372,7 @@ async def move(
         raise ValueError(f"unknown stock movement reason {reason!r}; expected one of {REASONS}")
     # The lock is taken before the balance is read and held to the caller's
     # commit, so a concurrent reservation cannot decide against the same stock.
-    part = (await db.execute(lock_part_stmt(part_id))).scalar_one_or_none()
+    part = await lock_part(db, part_id)
     if part is None:
         # SQLite does not enforce the FK, so without this the row would be
         # written and then be invisible to every reader, which joins the part.

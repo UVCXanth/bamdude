@@ -2952,7 +2952,15 @@ export interface StockItem {
   available: number;
   min_qty: number;
   below_min: boolean;
+  /** How many the free quantity is short of the minimum — 0 when not below it. */
+  short_by: number;
   can_assemble: number;
+}
+
+/** `POST /stock/moves` — the position after it; `moved` false when nothing moved
+ *  (a count that matched the shelf). */
+export interface StockMoveResult extends StockItem {
+  moved: boolean;
 }
 
 export interface StockItemsPage {
@@ -3015,6 +3023,9 @@ export interface StockLookup {
 }
 
 export type StockMoveKind = 'receipt' | 'stocktake' | 'reserve' | 'release' | 'issue';
+
+/** The most one request may move or set — `schemas/finished_stock.py::MAX_QTY`. */
+export const STOCK_MAX_QTY = 1_000_000;
 
 /** `POST /stock/moves` — a position by id, or a product and its chosen options. */
 export interface StockMoveBody {
@@ -11631,7 +11642,7 @@ export const api = {
   },
   /** One movement; the refusal is the server's own sentence in `ApiError.message`. */
   moveStock: (body: StockMoveBody) =>
-    request<StockItem>('/stock/moves', { method: 'POST', body: JSON.stringify(body) }),
+    request<StockMoveResult>('/stock/moves', { method: 'POST', body: JSON.stringify(body) }),
   assembleStock: (body: StockAssembleBody) =>
     request<StockItem>('/stock/assemble', { method: 'POST', body: JSON.stringify(body) }),
   updateStockItem: (id: number, body: StockItemParamsBody) =>

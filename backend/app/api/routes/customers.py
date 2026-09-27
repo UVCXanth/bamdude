@@ -23,6 +23,7 @@ from backend.app.schemas.customer import (
     CustomerUpdate,
 )
 from backend.app.schemas.listing import CustomerListPage, CustomersSummary
+from backend.app.services import finished_stock
 from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.list_paging import (
     SortSpec,
@@ -365,5 +366,8 @@ async def delete_customer(
     await db.execute(update(Project).where(Project.contact_id.in_(contact_ids)).values(contact_id=None))
     await db.execute(update(Project).where(Project.customer_id == customer_id).values(customer_id=None))
     await db.execute(delete(CustomerContact).where(CustomerContact.customer_id == customer_id))
+    # The finished-goods issues keep their rows and lose the customer — its id
+    # would otherwise pass to the next customer (``customers`` reuses ids).
+    await finished_stock.detach_customer(db, customer_id)
     await db.delete(customer)
     return {"message": "Customer deleted"}

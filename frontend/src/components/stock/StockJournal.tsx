@@ -216,10 +216,12 @@ function JournalChange({ row }: { row: StockJournalRow }) {
   );
 }
 
-/** Order · customer · note — a server note is a token and is translated; an operator's is verbatim. */
+/** Order · customer · note — a server note is a token and is translated; an operator's is
+ *  verbatim. Only the parts ledger writes tokens: every finished-goods note is the
+ *  operator's own, even one that happens to spell a token. */
 function JournalContext({ row }: { row: StockJournalRow }) {
   const { t } = useTranslation();
-  const note = row.note ? (isNoteToken(row.note) ? t(`stock.note.${row.note}`) : row.note) : null;
+  const note = row.note ? (row.book === 'parts' && isNoteToken(row.note) ? t(`stock.note.${row.note}`) : row.note) : null;
   const bits = [
     row.project ? (
       <Link key="order" to={`/projects/${row.project.id}`} className="text-bambu-green hover:underline">

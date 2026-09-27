@@ -15,6 +15,7 @@ export const pipeItem: StockItem = {
   available: 3,
   min_qty: 0,
   below_min: false,
+  short_by: 0,
   can_assemble: 1,
 };
 
@@ -22,6 +23,7 @@ export const pipeDetail: StockItemDetail = {
   ...pipeItem,
   min_qty: 10,
   below_min: true,
+  short_by: 7,
   reservations: [{ project_line_id: null, project_id: null, project_code: null, qty: 2 }],
   siblings: [
     {

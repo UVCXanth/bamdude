@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { api } from '../../api/client';
+import { api, STOCK_MAX_QTY as MAX_QTY } from '../../api/client';
 import type { StockItem } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { invalidateStock } from '../../utils/queryInvalidation';
@@ -30,11 +30,14 @@ export function StockParamsDialog({ item, onClose }: { item: StockItem; onClose:
       showToast(t('stock.params.saved'));
       onClose();
     },
-    onError: (e: Error) => showToast(e.message, 'error'),
+    onError: (e: Error) => {
+      showToast(e.message, 'error');
+      invalidateStock(queryClient);
+    },
   });
 
   const min = Number(minQty);
-  const valid = minQty.trim() !== '' && Number.isInteger(min) && min >= 0;
+  const valid = minQty.trim() !== '' && Number.isInteger(min) && min >= 0 && min <= MAX_QTY;
 
   return (
     <Modal onClose={onClose} title={t('stock.finished.action.params')} size="md">
@@ -62,6 +65,7 @@ export function StockParamsDialog({ item, onClose }: { item: StockItem; onClose:
             id="stock-params-min"
             type="number"
             min={0}
+            max={MAX_QTY}
             value={minQty}
             onChange={(e) => setMinQty(e.target.value)}
             className={FIELD_CLASS}

@@ -6599,6 +6599,7 @@ export default {
       stocktakeNoteHint: 'Обовʼязкова, коли фактично менше',
       submit: 'Зберегти',
       saved: 'Склад оновлено.',
+      nothingMoved: 'Без змін — кількість збігається з полицею.',
     },
     assemble: {
       title: 'Зібрати з деталей',
