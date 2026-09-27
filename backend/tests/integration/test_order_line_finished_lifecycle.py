@@ -7,6 +7,7 @@ from backend.app.models.customer import Customer
 from backend.app.models.finished_stock import StockItem, StockItemMovement
 from backend.app.models.project import Project
 from backend.app.services import finished_stock
+from backend.tests.fixtures.order_fulfilment import complete_order
 from backend.tests.integration.test_order_lines_batch import farm  # noqa: F401 — the shared fixture
 
 pytestmark = pytest.mark.integration
@@ -51,6 +52,11 @@ async def _standard(db, farm):
     ).scalar_one()
 
 
+async def _complete(client, order):
+    r = await complete_order(client, order.id)
+    assert r.status_code == 200, r.text
+
+
 async def _set_status(client, order, status):
     r = await client.patch(f"/api/v1/projects/{order.id}", json={"status": status})
     assert r.status_code == 200, r.text
@@ -69,13 +75,13 @@ async def test_the_figures_count_ready_units_as_covered(committing_client, db_se
 async def test_completing_ships_the_ready_units_to_the_customer(committing_client, db_session, farm):
     order, acme = await _order(db_session)
     line = await _add(committing_client, order, farm["pipe"].id)
-    await _set_status(committing_client, order, "completed")
+    await _complete(committing_client, order)
     issue = (await db_session.execute(select(StockItemMovement).where(StockItemMovement.kind == "issue"))).scalar_one()
     assert (issue.customer_id, issue.project_line_id, issue.delta_on_hand, issue.delta_reserved) == (
         acme.id,
         line["id"],
-        -2,
-        -2,
+        -4,
+        -4,
     )
     standard = await _standard(db_session, farm)
     assert (standard.on_hand, standard.reserved) == (0, 0)
@@ -84,12 +90,16 @@ async def test_completing_ships_the_ready_units_to_the_customer(committing_clien
 
 
 @pytest.mark.asyncio
-async def test_completing_without_a_customer_ships_without_one(committing_client, db_session, farm):
+async def test_an_order_without_a_customer_issues_nothing(committing_client, db_session, farm):
+    """An issue names its customer (spec workshop-order-issue, rule 16) — the WS-10 silent
+    issue to nobody at completion is gone."""
     order, _ = await _order(db_session, customer=False)
-    await _add(committing_client, order, farm["pipe"].id)
-    await _set_status(committing_client, order, "completed")
-    issue = (await db_session.execute(select(StockItemMovement).where(StockItemMovement.kind == "issue"))).scalar_one()
-    assert issue.customer_id is None
+    line = await _add(committing_client, order, farm["pipe"].id)
+    body = {"lines": [{"line_id": line["id"], "assemble": 2, "issue": 4}], "complete": True}
+    r = await committing_client.post(f"/api/v1/projects/{order.id}/fulfilment", json=body)
+    assert r.status_code == 409
+    assert r.json()["detail"] == "An issue names its customer — set the order's customer first"
+    assert (await db_session.execute(select(StockItemMovement).where(StockItemMovement.kind == "issue"))).all() == []
 
 
 @pytest.mark.asyncio
@@ -119,7 +129,7 @@ async def test_deleting_a_line_of_an_active_order_gives_back(committing_client, 
 async def test_deleting_a_line_of_a_completed_order_gives_back_nothing(committing_client, db_session, farm):
     order, _ = await _order(db_session)
     line = await _add(committing_client, order, farm["pipe"].id)
-    await _set_status(committing_client, order, "completed")
+    await _complete(committing_client, order)
     r = await committing_client.delete(f"/api/v1/projects/{order.id}/lines/{line['id']}")
     assert r.status_code == 200, r.text
     standard = await _standard(db_session, farm)
@@ -180,7 +190,7 @@ async def test_patch_rewrites_the_ready_units_and_only_on_an_active_order(commit
     assert (await committing_client.patch(url, json={"from_finished": 1})).status_code == 200
     after = await _line(committing_client, order, line["id"])
     assert after["from_finished"] == 1 and (await _standard(db_session, farm)).reserved == 1
-    await _set_status(committing_client, order, "completed")
+    await _set_status(committing_client, order, "cancelled")
     r = await committing_client.patch(url, json={"from_finished": 1})
     assert r.status_code == 409
     assert r.json()["detail"] == "Only an active order takes finished goods from stock"
@@ -194,7 +204,7 @@ async def test_a_reactivated_order_edits_its_ready_units_as_a_total(committing_c
     order, _ = await _order(db_session)
     line = await _add(committing_client, order, farm["pipe"].id, quantity=2)
     assert line["from_finished"] == 2
-    await _set_status(committing_client, order, "completed")
+    await _complete(committing_client, order)
     await _set_status(committing_client, order, "active")
     standard = await _standard(db_session, farm)
     await finished_stock.receive(db_session, standard, 5)
@@ -229,7 +239,7 @@ async def test_a_line_lowered_under_what_it_shipped_is_covered_not_overcovered(c
     gave up — Finding C1), and its coverage is what the quantity caps."""
     order, _ = await _order(db_session)
     line = await _add(committing_client, order, farm["pipe"].id, quantity=2)
-    await _set_status(committing_client, order, "completed")
+    await _complete(committing_client, order)
     url = f"/api/v1/projects/{order.id}/lines/{line['id']}"
     assert (await committing_client.patch(url, json={"quantity": 1})).status_code == 200
     after = await _line(committing_client, order, line["id"])
@@ -268,5 +278,8 @@ async def test_closing_an_order_locks_its_positions_in_one_order(
         return await original(db, item_id)
 
     monkeypatch.setattr(finished_stock, "lock_item", recording)
-    await _set_status(committing_client, order, status)
+    if status == "completed":
+        await _complete(committing_client, order)
+    else:
+        await _set_status(committing_client, order, status)
     assert len(seen) == 2 and seen == sorted(seen)

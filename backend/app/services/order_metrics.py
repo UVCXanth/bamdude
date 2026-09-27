@@ -474,9 +474,11 @@ def _new_line_figures(
         # ``or 0``: a row built in memory has no server default until it is flushed.
         # RAW, like the kits reading it extends (Finding C1): the line reports what
         # the shelves gave up; coverage and the order's sum cap it by the quantity.
-        from_stock_units=from_stock_units + (line.from_finished or 0),
+        # An assembled kit stopped being a reservation of parts but covers the same
+        # unit (spec workshop-order-issue, rule 23): it stays a kit off the shelf.
+        from_stock_units=from_stock_units + (line.from_finished or 0) + (line.assembled or 0),
         from_finished=line.from_finished or 0,
-        from_kit_units=from_stock_units,
+        from_kit_units=from_stock_units + (line.assembled or 0),
     )
     to_print = max(0, line.quantity - figs.from_stock_units)
     for part, per in printed:

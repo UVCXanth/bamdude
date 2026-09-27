@@ -192,8 +192,9 @@ async def test_candidates_are_ranked_by_every_key_in_turn(committing_client, db_
     # instead — with A winning, which is the opposite of what this pins.
     await db_session.execute(update(Project).where(Project.id == f_id).values(created_at=datetime(2020, 1, 1, 0, 0, 0)))
     await _finish_one_unit(db_session, b_id, file_id)
-    closed = await committing_client.patch(f"/api/v1/projects/{c_id}", json={"status": "completed"})
-    assert closed.status_code == 200, closed.text
+    # Completed as it would be once everything went out (spec workshop-order-issue, rule 12).
+    await db_session.execute(update(Project).where(Project.id == c_id).values(status="completed"))
+    await db_session.commit()
 
     rows = await _candidates(committing_client, file_id)
     assert [r["project_name"] for r in rows] == ["D", "E", "F", "A", "B"]

@@ -33,6 +33,7 @@ from backend.app.services.order_metrics import attribute, load_order_context
 from backend.app.services.plan_engine import queued_yield_by_line
 from backend.app.services.product_composition import recipes_for_product
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
+from backend.tests.fixtures.order_fulfilment import complete_order
 from backend.tests.unit.services.test_order_metrics import build_parity_fixture
 from backend.tests.unit.services.test_product_composition import counting_statements
 
@@ -2808,10 +2809,10 @@ async def test_completing_an_order_releases_nothing(committing_client, db_sessio
         )
     ).json()["id"]
 
-    r = await committing_client.patch(f"/api/v1/projects/{order_id}", json={"status": "completed"})
+    r = await complete_order(committing_client, order_id)
 
     assert r.status_code == 200, r.text
-    assert r.json()["lines"][0]["from_stock_units"] == 3
+    assert r.json()["order"]["lines"][0]["from_stock_units"] == 3
     assert await _kits(db_session, product_id) == 2
 
 
@@ -3249,7 +3250,7 @@ async def test_cancelling_a_completed_order_keeps_its_kits_off_the_shelf(committ
             json={"name": "Lamps", "lines": [{"product_id": product_id, "quantity": 3, "from_stock_units": 3}]},
         )
     ).json()["id"]
-    await committing_client.patch(f"/api/v1/projects/{order_id}", json={"status": "completed"})
+    assert (await complete_order(committing_client, order_id)).status_code == 200
 
     r = await committing_client.patch(f"/api/v1/projects/{order_id}", json={"status": "cancelled"})
 
@@ -3272,14 +3273,15 @@ async def test_deleting_a_line_of_a_completed_order_keeps_its_kits_off_the_shelf
         )
     ).json()
     order_id, line_id = body["id"], body["lines"][0]["id"]
-    await committing_client.patch(f"/api/v1/projects/{order_id}", json={"status": "completed"})
+    assert (await complete_order(committing_client, order_id)).status_code == 200
+    written = len((await db_session.execute(select(ProductPartStockMovement))).scalars().all())
 
     r = await committing_client.delete(f"/api/v1/projects/{order_id}/lines/{line_id}")
 
     assert r.status_code == 200, r.text
     assert await _kits(db_session, product_id) == 6
     rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
-    assert {m.reason for m in rows} == {"unfiled_print", "reserved_for_order"}, "no release was written"
+    assert len(rows) == written, "no release was written"
     assert {m.project_line_id for m in rows} == {None}, "detached anyway - the line row is gone"
 
 
@@ -3294,7 +3296,7 @@ async def test_deleting_a_completed_order_keeps_its_kits_off_the_shelf(committin
             json={"name": "Lamps", "lines": [{"product_id": product_id, "quantity": 3, "from_stock_units": 3}]},
         )
     ).json()["id"]
-    await committing_client.patch(f"/api/v1/projects/{order_id}", json={"status": "completed"})
+    assert (await complete_order(committing_client, order_id)).status_code == 200
 
     assert (await committing_client.delete(f"/api/v1/projects/{order_id}")).status_code == 200
 
@@ -3350,7 +3352,7 @@ async def test_deleting_a_completed_order_leaves_its_finished_prints_shipped(com
     line_id = (await committing_client.get(f"/api/v1/projects/{order_id}")).json()["lines"][0]["id"]
     archive_id = (await _completed_print(db_session, order_id, catalog["file"].id, line_id=line_id)).id
     product_id = catalog["product"].id
-    await committing_client.patch(f"/api/v1/projects/{order_id}", json={"status": "completed"})
+    assert (await complete_order(committing_client, order_id)).status_code == 200
 
     assert (await committing_client.delete(f"/api/v1/projects/{order_id}")).status_code == 200
 

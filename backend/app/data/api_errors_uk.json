@@ -29,6 +29,7 @@
   "A multipart body must carry 'file'": "Тіло multipart-запиту має містити «file»",
   "A part cannot be merged into itself": "Деталь не можна обʼєднати саму з собою",
   "A part count must be between 0 and 9999": "Кількість деталі має бути від 0 до 9999",
+  "A part is named twice": "Деталь названо двічі",
   "A parts line always has quantity 1": "Позиція з деталей завжди має кількість 1",
   "A parts line needs at least one part": "Позиція з деталей потребує хоча б однієї деталі",
   "A parts line takes nothing from the shelf": "Позиція з деталей нічого не бере зі складу",

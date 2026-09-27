@@ -10,6 +10,7 @@ import os
 import shutil
 import uuid
 from collections.abc import Callable, Sequence
+from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import NamedTuple
@@ -26,7 +27,7 @@ from backend.app.api.routes.auto_queue import _to_response as auto_queue_row_res
 from backend.app.api.routes.library import _library_file_visible as library_file_visible
 from backend.app.api.routes.print_queue import _enrich_response as queue_row_response, queue_item_load_options
 from backend.app.core.api_key_scope import key_printer_scope
-from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
+from backend.app.core.auth import RequireCameraStreamToken, RequirePermission, acting_user
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -82,12 +83,16 @@ from backend.app.schemas.project import (
     BatchProductLineIn,
     BatchStockIn,
     DroppedPartOut,
+    FulfilmentIn,
+    FulfilmentOut,
+    FulfilmentStateOut,
     LineConfigurationImpact,
     LineConfigurationIn,
     LineConfigurationOut,
     LineIntakeOut,
     LinePlanOut,
     LineProductOut,
+    LineStateOut,
     OrderAssigneeOut,
     OrderContactOut,
     OrderPlanResponse,
@@ -114,6 +119,7 @@ from backend.app.schemas.project import (
     ProjectStageUpdate,
     ProjectUpdate,
     RebalanceOut,
+    RecipientOut,
     StockMovedOut,
     TimelineEvent,
 )
@@ -125,6 +131,7 @@ from backend.app.services import (
     line_config,
     line_intake,
     order_from_files,
+    order_fulfilment,
     order_journal,
     part_stock,
     product_delete,
@@ -237,6 +244,25 @@ async def _configurations(db: AsyncSession, ctx) -> dict[int, LineConfigurationO
     }
 
 
+def _line_counters(line: ProjectLine, parts: dict) -> dict[str, int]:
+    """The stock counters a line response carries (spec workshop-order-issue, rule 23) — a
+    parts line sums its parts' (``project_line_part_stock``)."""
+    if line.mode == "parts":
+        rows = list(parts.values())
+        return {
+            "assembled": 0,
+            "received": sum(row.received for row in rows),
+            "issued": sum(row.issued for row in rows),
+            "held": sum(part_stock.part_held(row) for row in rows),
+        }
+    return {
+        "assembled": line.assembled or 0,
+        "received": line.received or 0,
+        "issued": line.issued or 0,
+        "held": finished_stock.held_units(line),
+    }
+
+
 async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
     """The one response builder — every mutating handler returns through it.
 
@@ -251,6 +277,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
         raise HTTPException(status_code=404, detail="Project not found")
     figs, other = attribute(ctx)
     configurations = await _configurations(db, ctx)
+    part_counters = await part_stock.line_part_stock(db, [line.id for line in ctx.lines if line.mode == "parts"])
     project = ctx.project
     customer = await db.get(Customer, project.customer_id) if project.customer_id else None
     contact = await db.get(CustomerContact, project.contact_id) if project.contact_id else None
@@ -270,6 +297,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
             from_stock_units=figs[line.id].from_stock_units,
             from_finished=figs[line.id].from_finished,
             from_kit_units=figs[line.id].from_kit_units,
+            **_line_counters(line, part_counters.get(line.id, {})),
             covered_units=figs[line.id].covered_units,
             progress=figs[line.id].progress,
             parts=[
@@ -579,6 +607,11 @@ async def _list_rows(db: AsyncSession, projects: Sequence[Project]) -> list[Proj
     figures = {
         order.project_id: order for order in await grouped_figures(db, project_ids=[project.id for project in projects])
     }
+    # «issued X of Y» (spec workshop-order-issue, rule 23): a product line's column, a
+    # parts line's parts — one read for every parts line of the page.
+    part_counters = await part_stock.line_part_stock(
+        db, [line.id for project in projects for line in project.lines if line.mode == "parts"]
+    )
     out: list[ProjectListResponse] = []
     for project in projects:
         pf = figures.get(project.id)
@@ -611,6 +644,9 @@ async def _list_rows(db: AsyncSession, projects: Sequence[Project]) -> list[Proj
                 # already capped per line by ``project_figures`` — no second
                 # query and no second copy of the cap rule.
                 from_stock_units=pf.from_stock_units,
+                issued_units=sum(
+                    _line_counters(line, part_counters.get(line.id, {}))["issued"] for line in project.lines
+                ),
                 prints_in_progress=pf.prints_in_progress,
                 prints_queued=pf.prints_queued,
                 progress=pf.progress,
@@ -1125,6 +1161,11 @@ async def update_project(
             "from": await _responsible_ref(db, project.responsible_id),
             "to": await _responsible_ref(db, data.responsible_id),
         }
+    if data.status == "completed" and project.status != "completed":
+        # An order completes only when everything it ordered went out (spec
+        # workshop-order-issue, rule 12) — refused before anything is written.
+        if not (await order_fulfilment.state(db, project)).fully_issued:
+            raise HTTPException(status_code=409, detail="Issue everything the order holds before completing it")
     # Read before the write: the journal records what actually changed, not what was sent.
     before = {column: getattr(project, column) for column in _JOURNAL_FIELDS}
     status_before = project.status
@@ -1142,12 +1183,10 @@ async def update_project(
     if responsible_change:
         await order_journal.record(db, project.id, "responsible_changed", responsible_change, actor=current_user)
     if project.status == "completed" and status_before != "completed":
-        # The ready units leave with the order, to its customer (spec
-        # workshop-add-to-order, rule 8). The kits need nothing: completing
-        # consumes them (Ruling 25). WS-11's batch issue will take this place.
-        await finished_stock.lock_positions_for_lines(db, [line.id for line in lines])
+        # Everything went out through the issue dialog; kits nobody assembled go back
+        # on the shelf, as the dialog's own completion does (spec workshop-order-issue, rule 12).
         for line in lines:
-            await finished_stock.issue_for_line(db, line, customer_id=project.customer_id, actor=current_user)
+            await part_stock.release_for_line(db, line, note=part_stock.NOTE_ORDER_COMPLETED)
     changed = [label for column, label in _JOURNAL_FIELDS.items() if getattr(project, column) != before[column]]
     if changed:
         await order_journal.record(db, project.id, "fields_changed", {"fields": changed}, actor=current_user)
@@ -1197,6 +1236,86 @@ async def set_project_stage(
             db, project.id, "stage_changed", {"from": before, "to": data.stage}, actor=current_user
         )
     return await _response(db, project.id)
+
+
+# ---------- issuing the order in batches (spec workshop-order-issue, rules 11, 18, 19) ----------
+
+
+def _recipient_out(recipient: stock_issues.Recipient) -> RecipientOut:
+    return RecipientOut(
+        name=recipient.name,
+        phone=recipient.phone,
+        delivery_method=recipient.delivery_method,
+        delivery_details=recipient.delivery_details,
+    )
+
+
+@router.get("/{project_id}/fulfilment", response_model=FulfilmentStateOut)
+async def get_fulfilment(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """What each line can assemble, receive and issue now — the numbers the issue dialog
+    shows and the ones ``POST`` checks against (one arithmetic, ``order_fulfilment.state``)
+    — and the recipient it starts from."""
+    project = await _get_project(db, project_id)
+    state = await order_fulfilment.state(db, project)
+    recipient = (
+        await stock_issues.default_recipient(db, project=project, customer_id=project.customer_id)
+        if project.customer_id is not None
+        else stock_issues.Recipient()
+    )
+    return FulfilmentStateOut(
+        lines=[LineStateOut(**asdict(row)) for row in state.lines],
+        ordered=state.ordered,
+        issued=state.issued,
+        held=state.held,
+        fully_issued=state.fully_issued,
+        recipient=_recipient_out(recipient),
+    )
+
+
+@router.post("/{project_id}/fulfilment", response_model=FulfilmentOut)
+async def fulfil_order(
+    project_id: int,
+    data: FulfilmentIn,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """One «Виконати» of the issue dialog: assemble, receive and issue, one issue for the
+    whole batch, and — asked and everything issued — the order completed. A number above
+    what the order allows is refused with its sentence and nothing is written."""
+    project = await _get_project(db, project_id)
+    requests = []
+    for line in data.lines:
+        parts: dict[int, tuple[int, int]] = {}
+        for part in line.parts:
+            if part.part_id in parts:
+                raise HTTPException(status_code=422, detail="A part is named twice")
+            parts[part.part_id] = (part.receive, part.issue)
+        requests.append(
+            order_fulfilment.LineRequest(
+                line_id=line.line_id, assemble=line.assemble, receive=line.receive, issue=line.issue, parts=parts
+            )
+        )
+    try:
+        issue = await order_fulfilment.apply(
+            db,
+            project,
+            requests,
+            recipient=stock_issues.Recipient(**data.recipient.model_dump()),
+            waybill=data.waybill,
+            note=data.note,
+            complete=data.complete,
+            actor=await acting_user(request, db, current_user),
+        )
+    except (order_fulfilment.FulfilmentError, stock_issues.StockIssueError, finished_stock.FinishedStockError) as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
+    except part_stock.PartStockError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return FulfilmentOut(order=await _response(db, project.id), issue_id=issue.id if issue is not None else None)
 
 
 @router.delete("/{project_id}")

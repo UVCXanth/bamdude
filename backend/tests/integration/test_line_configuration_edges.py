@@ -15,6 +15,7 @@ from backend.app.models.product_variant import ProductVariantGroup, ProductVaria
 from backend.app.models.project import ProjectEvent
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import line_config, part_stock
+from backend.tests.fixtures.order_fulfilment import complete_order
 
 pytestmark = pytest.mark.integration
 
@@ -105,7 +106,7 @@ async def test_a_completed_orders_line_cannot_be_reconfigured(committing_client,
     await db_session.commit()
     body = await _order(committing_client, [{"product_id": pipe["product"].id, "quantity": 2, "from_stock_units": 2}])
     line_id = body["lines"][0]["id"]
-    done = await committing_client.patch(f"/api/v1/projects/{body['id']}", json={"status": "completed"})
+    done = await complete_order(committing_client, body["id"])
     assert done.status_code == 200, done.text
     before = await part_stock.balances(db_session, pipe["product"].id)
     for dry_run in (True, False):

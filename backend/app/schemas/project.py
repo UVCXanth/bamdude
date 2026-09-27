@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
+from backend.app.models.stock_issue import WAYBILL_MAX
 from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
 
 #: The most one request may put on a line or move on a shelf. Far above any
@@ -305,6 +306,13 @@ class ProjectLineResponse(BaseModel):
     #: ready units off the finished-goods shelf and kits off the free-parts one.
     from_finished: int = 0
     from_kit_units: int = 0
+    #: The line's stock counters (spec workshop-order-issue, rule 23): assembled from its
+    #: kits, received from its prints, issued to the customer, and on the shelf under the
+    #: order now. A parts line sums its parts.
+    assembled: int = 0
+    received: int = 0
+    issued: int = 0
+    held: int = 0
     #: Capped printed-plus-stock coverage for this line.  A production surplus
     #: stays visible in ``units_printed`` but cannot overfill this number.
     covered_units: int
@@ -440,6 +448,9 @@ class ProjectListResponse(BaseModel):
     # the page it opens cannot disagree about what is already done. Beside
     # ``printed``, never inside it: one is prints, the other is the shelf.
     from_stock_units: int = 0
+    #: Units (a parts line: parts) issued to the customer — «issued X of Y» beside
+    #: ``ordered`` (spec workshop-order-issue, rule 23), a sum of the counters.
+    issued_units: int = 0
     # Off the same batch as ``ordered``/``printed`` — archives in ``printing``
     # under this order, and pending queue rows of both tiers under it.
     prints_in_progress: int = 0
@@ -773,3 +784,84 @@ class LineIntakeOut(BaseModel):
 class BatchLinesOut(BaseModel):
     order: ProjectResponse
     results: list[LineIntakeOut]
+
+
+# ---------- the issue dialog (spec workshop-order-issue, rules 18–19) ----------
+
+
+class RecipientIn(BaseModel):
+    """Who takes the goods — copied into the issue as text."""
+
+    name: str | None = Field(default=None, max_length=255)
+    phone: str | None = Field(default=None, max_length=255)
+    delivery_method: str | None = Field(default=None, max_length=255)
+    delivery_details: str | None = Field(default=None, max_length=255)
+
+
+class RecipientOut(BaseModel):
+    name: str | None = None
+    phone: str | None = None
+    delivery_method: str | None = None
+    delivery_details: str | None = None
+
+
+class FulfilmentPartIn(BaseModel):
+    part_id: int
+    receive: int = Field(default=0, ge=0, le=MAX_QTY)
+    issue: int = Field(default=0, ge=0, le=MAX_QTY)
+
+
+class FulfilmentLineIn(BaseModel):
+    line_id: int
+    assemble: int = Field(default=0, ge=0, le=MAX_QTY)
+    receive: int = Field(default=0, ge=0, le=MAX_QTY)
+    issue: int = Field(default=0, ge=0, le=MAX_QTY)
+    #: A parts line's numbers, part by part.
+    parts: list[FulfilmentPartIn] = Field(default_factory=list, max_length=500)
+
+
+class FulfilmentIn(BaseModel):
+    lines: list[FulfilmentLineIn] = Field(default_factory=list, max_length=500)
+    recipient: RecipientIn = Field(default_factory=RecipientIn)
+    waybill: str | None = Field(default=None, max_length=WAYBILL_MAX)
+    note: str | None = Field(default=None, max_length=2000)
+    complete: bool = False
+
+
+class PartStateOut(BaseModel):
+    part_id: int
+    name: str
+    wanted: int
+    can_receive: int
+    held: int
+    issued: int
+
+
+class LineStateOut(BaseModel):
+    line_id: int
+    product_name: str
+    mode: Literal["product", "parts"]
+    ordered: int
+    from_finished: int
+    kits_reserved: int
+    can_assemble: int
+    can_receive: int
+    held: int
+    issued: int
+    parts: list[PartStateOut] = []
+
+
+class FulfilmentStateOut(BaseModel):
+    lines: list[LineStateOut]
+    ordered: int
+    issued: int
+    held: int
+    fully_issued: bool
+    #: The order's contact person, else the customer's main contact (rule 18).
+    recipient: RecipientOut
+
+
+class FulfilmentOut(BaseModel):
+    order: ProjectResponse
+    #: The issue this batch opened; None when it issued nothing.
+    issue_id: int | None = None

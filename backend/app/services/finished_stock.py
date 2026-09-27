@@ -361,20 +361,6 @@ async def reserve_for_line(db: AsyncSession, line: ProjectLine, units: int, *, a
     return take
 
 
-async def issue_for_line(
-    db: AsyncSession, line: ProjectLine, *, customer_id: int | None, actor: User | None = None
-) -> int:
-    """The order completed: everything the line holds leaves with it, to its
-    customer (spec rule 8). ``from_finished`` stays — the units were the line's."""
-    await lock_line(db, line)
-    out = 0
-    for item_id, held in sorted((await held_by_item(db, line.id)).items()):
-        item = await lock_item(db, item_id)
-        await _record(db, item, "issue", -held, -held, note=None, customer_id=customer_id, actor=actor, line=line)
-        out += held
-    return out
-
-
 async def move_for_line(db: AsyncSession, line: ProjectLine, *, actor: User | None = None) -> tuple[int, int]:
     """The line's configuration changed (``line.config_key`` is already the new
     one): give back in the old position, take in the new one what it has.

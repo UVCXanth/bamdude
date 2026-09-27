@@ -9,7 +9,7 @@ from backend.app.models.product import Product, ProductPart
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
-from backend.app.services import finished_stock, line_config
+from backend.app.services import finished_stock, line_config, stock_issues
 
 pytestmark = pytest.mark.integration
 
@@ -56,6 +56,18 @@ async def customer(db_session):
     db_session.add(row)
     await db_session.commit()
     return row
+
+
+async def _issue(db, shelf, customer):
+    return await stock_issues.create(
+        db,
+        customer_id=customer.id,
+        project_id=shelf["order"].id,
+        recipient=stock_issues.Recipient(),
+        waybill=None,
+        note=None,
+        actor=None,
+    )
 
 
 @pytest.fixture
@@ -120,12 +132,13 @@ async def test_release_gives_back_what_is_held(db_session, shelf):
 @pytest.mark.asyncio
 async def test_issue_ships_the_reservation_and_keeps_the_count(db_session, shelf, customer):
     await finished_stock.reserve_for_line(db_session, shelf["line"], 3)
-    assert await finished_stock.issue_for_line(db_session, shelf["line"], customer_id=customer.id) == 3
+    await finished_stock.issue_from_line(
+        db_session, shelf["line"], 3, stock_issue=await _issue(db_session, shelf, customer)
+    )
     assert (shelf["item"].on_hand, shelf["item"].reserved) == (2, 0)
     assert shelf["line"].from_finished == 3  # coverage of a completed order stays
     issue = (await db_session.execute(select(StockItemMovement).where(StockItemMovement.kind == "issue"))).scalar_one()
     assert issue.customer_id == customer.id and issue.project_line_id == shelf["line"].id
-    assert await finished_stock.issue_for_line(db_session, shelf["line"], customer_id=None) == 0
 
 
 @pytest.mark.asyncio
@@ -180,7 +193,7 @@ async def test_the_columns_stay_the_sum_of_the_ledger(db_session, shelf, custome
     await finished_stock.reserve_for_line(db_session, line, 4)
     await finished_stock.release_for_line(db_session, line)
     await finished_stock.reserve_for_line(db_session, line, 1)
-    await finished_stock.issue_for_line(db_session, line, customer_id=customer.id)
+    await finished_stock.issue_from_line(db_session, line, 1, stock_issue=await _issue(db_session, shelf, customer))
     await db_session.flush()
     rows = (await db_session.execute(select(StockItemMovement.delta_on_hand, StockItemMovement.delta_reserved))).all()
     assert item.on_hand == sum(r[0] for r in rows) and item.reserved == sum(r[1] for r in rows)
