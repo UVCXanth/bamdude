@@ -6463,6 +6463,7 @@ export default {
       counted_by_operator: 'counted by the operator',
       defects_recorded: 'defects recorded after the print was counted',
       assembled: 'assembled into a stock position',
+      order_completed: 'the order was completed without assembling them',
     },
     adjust: {
       open: 'Adjust',

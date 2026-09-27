@@ -6579,6 +6579,7 @@ export default {
       counted_by_operator: 'зараховано оператором',
       defects_recorded: 'брак записано після зарахування друку',
       assembled: 'зібрано в позицію складу',
+      order_completed: 'замовлення виконано, комплекти не знадобились',
     },
     adjust: {
       open: 'Коригувати',

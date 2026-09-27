@@ -2812,6 +2812,7 @@ export const STOCK_NOTE_TOKENS = [
   'counted_by_operator',
   'defects_recorded',
   'assembled',
+  'order_completed',
 ] as const;
 
 export type StockNoteToken = (typeof STOCK_NOTE_TOKENS)[number];

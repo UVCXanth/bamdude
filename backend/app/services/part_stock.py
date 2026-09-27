@@ -108,6 +108,8 @@ NOTE_COUNTED_BY_OPERATOR = "counted_by_operator"
 NOTE_DEFECTS_RECORDED = "defects_recorded"
 # Parts taken off the shelf into a finished-goods position (spec workshop-finished-goods, rule 10).
 NOTE_ASSEMBLED = "assembled"
+# Kits a completed order never assembled go back on the shelf (spec workshop-order-issue, rule 12).
+NOTE_ORDER_COMPLETED = "order_completed"
 
 NOTE_TOKENS = (
     NOTE_ORDER_CANCELLED,
@@ -119,6 +121,7 @@ NOTE_TOKENS = (
     NOTE_COUNTED_BY_OPERATOR,
     NOTE_DEFECTS_RECORDED,
     NOTE_ASSEMBLED,
+    NOTE_ORDER_COMPLETED,
 )
 
 #: The one archive status a print may be credited from. Spelled here rather
