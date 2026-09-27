@@ -197,26 +197,19 @@ async def test_patch_rewrites_the_ready_units_and_only_on_an_active_order(commit
 
 
 @pytest.mark.asyncio
-async def test_a_reactivated_order_edits_its_ready_units_as_a_total(committing_client, db_session, farm):
-    """Final review I2: after completion the line's ready units were ISSUED — they stay
-    counted (issued included) but no longer held. Editing them on the reactivated order
-    treats the number as the line's total, so asking for fewer takes nothing more."""
+async def test_a_reactivated_completed_order_no_longer_rewrites_its_ready_units(committing_client, db_session, farm):
+    """WS-10's «the number is the line's total» (final review I2) is over for a line whose
+    units went out through the issue dialog: its stock has moved (spec workshop-order-issue,
+    rule 13), so more is only ever TAKEN from stock."""
     order, _ = await _order(db_session)
     line = await _add(committing_client, order, farm["pipe"].id, quantity=2)
     assert line["from_finished"] == 2
     await _complete(committing_client, order)
     await _set_status(committing_client, order, "active")
-    standard = await _standard(db_session, farm)
-    await finished_stock.receive(db_session, standard, 5)
-    await db_session.commit()
     url = f"/api/v1/projects/{order.id}/lines/{line['id']}"
     r = await committing_client.patch(url, json={"from_finished": 1})
-    assert r.status_code == 200, r.text
+    assert (r.status_code, r.json()["detail"]) == (409, "This line's stock has moved; take more from stock instead")
     assert (await _line(committing_client, order, line["id"]))["from_finished"] == 2
-    assert (await _standard(db_session, farm)).reserved == 0
-    assert (await committing_client.patch(url, json={"quantity": 3, "from_finished": 3})).status_code == 200
-    assert (await _line(committing_client, order, line["id"]))["from_finished"] == 3
-    assert (await _standard(db_session, farm)).reserved == 1
 
 
 @pytest.mark.asyncio
@@ -234,17 +227,16 @@ async def test_lowering_the_quantity_with_kits_fits_the_ready_units_too(committi
 
 
 @pytest.mark.asyncio
-async def test_a_line_lowered_under_what_it_shipped_is_covered_not_overcovered(committing_client, db_session, farm):
-    """Final review M9, ruled: the line keeps reporting the raw reading (what the shelves
-    gave up — Finding C1), and its coverage is what the quantity caps."""
+async def test_a_line_is_never_lowered_under_what_it_issued(committing_client, db_session, farm):
+    """WS-10's «lowered under what it shipped» (final review M9) cannot happen any more: the
+    quantity stays at or above what is issued and held (spec workshop-order-issue, rule 13)."""
     order, _ = await _order(db_session)
     line = await _add(committing_client, order, farm["pipe"].id, quantity=2)
     await _complete(committing_client, order)
     url = f"/api/v1/projects/{order.id}/lines/{line['id']}"
-    assert (await committing_client.patch(url, json={"quantity": 1})).status_code == 200
-    after = await _line(committing_client, order, line["id"])
-    assert (after["from_finished"], after["from_stock_units"]) == (2, 2)  # shipped is shipped
-    assert after["covered_units"] == 1 and after["progress"] == 1.0
+    r = await committing_client.patch(url, json={"quantity": 1})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "The quantity cannot go below what is issued and held for this order (2)"
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.models.finished_stock import StockItem
 from backend.app.models.product import Product, ProductOrigin, ProductPart
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.services import finished_stock, part_stock, product_facets
@@ -59,6 +60,20 @@ async def delete_orphaned_adhoc_products(db: AsyncSession, product_ids: Iterable
         return []
     still_used = set(
         (await db.execute(select(ProjectLine.product_id).where(ProjectLine.product_id.in_(ids)))).scalars().all()
+    )
+    # A one-off product whose printed units went through the shelf and were given back
+    # (spec workshop-order-issue, rule 14) keeps them: its units are real goods, and the
+    # product stays while its position holds any (``delete_product`` would refuse it).
+    still_used |= set(
+        (
+            await db.execute(
+                select(StockItem.product_id).where(
+                    StockItem.product_id.in_(ids), (StockItem.on_hand > 0) | (StockItem.reserved > 0)
+                )
+            )
+        )
+        .scalars()
+        .all()
     )
     orphans = (
         (

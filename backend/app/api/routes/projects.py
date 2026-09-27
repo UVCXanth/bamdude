@@ -903,6 +903,7 @@ async def _reserve(db: AsyncSession, line: ProjectLine, units: int, user: User |
 
 
 _PARTS_LINE_NO_STOCK = "A parts line takes nothing from the shelf"
+_LINE_MOVED = "This line's stock has moved; take more from stock instead"
 
 
 def _check_line_create(data: ProjectLineCreate) -> None:
@@ -912,12 +913,14 @@ def _check_line_create(data: ProjectLineCreate) -> None:
         raise HTTPException(status_code=422, detail=_PARTS_LINE_NO_STOCK)
 
 
-async def _release(db: AsyncSession, line: ProjectLine, note: str) -> None:
-    """Put a line's reservations back (line deleted, order cancelled or deleted) —
-    the kits and the ready units (spec workshop-add-to-order, rule 8)."""
+async def _release(db: AsyncSession, line: ProjectLine, note: str, actor: User | None = None) -> None:
+    """Everything under the order becomes free stock (line deleted, order cancelled or
+    deleted — spec workshop-order-issue, rule 14): the units the line holds on the shelf,
+    a parts line's parts, and the kits nobody assembled. What was issued stays issued."""
     try:
+        await finished_stock.give_back_for_line(db, line, actor=actor)
+        await part_stock.return_parts_for_line(db, line, created_by=actor.id if actor is not None else None)
         await part_stock.release_for_line(db, line, note=note)
-        await finished_stock.release_for_line(db, line)
     except (part_stock.PartStockError, finished_stock.FinishedStockError) as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
 
@@ -1161,6 +1164,10 @@ async def update_project(
             "from": await _responsible_ref(db, project.responsible_id),
             "to": await _responsible_ref(db, data.responsible_id),
         }
+    if data.status == "active" and project.status == "cancelled" and await order_fulfilment.moved_line_ids(db, lines):
+        # What it gave back is free stock now and may be gone; its prints stay filed under
+        # it, and a reactivated order would count them as coverage a second time (rule 15).
+        raise HTTPException(status_code=409, detail="This order's stock has moved; duplicate it instead")
     if data.status == "completed" and project.status != "completed":
         # An order completes only when everything it ordered went out (spec
         # workshop-order-issue, rule 12) — refused before anything is written.
@@ -1210,7 +1217,7 @@ async def update_project(
         # re-enters the number in the line dialog, which asks the shelf afresh.
         await finished_stock.lock_positions_for_lines(db, [line.id for line in lines])
         for line in lines:
-            await _release(db, line, part_stock.NOTE_ORDER_CANCELLED)
+            await _release(db, line, part_stock.NOTE_ORDER_CANCELLED, current_user)
     return await _response(db, project.id)
 
 
@@ -1495,6 +1502,19 @@ async def update_line(
             raise HTTPException(status_code=422, detail="A parts line always has quantity 1")
         if data.from_stock_units or data.from_finished:
             raise HTTPException(status_code=422, detail=_PARTS_LINE_NO_STOCK)
+    if line.mode != "parts" and finished_stock.moved(line):
+        # After the first movement the stock numbers are only added to — through «take
+        # from stock» — and the quantity stays above what went out and what is held.
+        if "from_finished" in data.model_fields_set or "from_stock_units" in data.model_fields_set:
+            raise HTTPException(status_code=409, detail=_LINE_MOVED)
+        if "quantity" in data.model_fields_set:
+            await finished_stock.lock_line(db, line)
+            floor = (line.issued or 0) + finished_stock.held_units(line)
+            if data.quantity is not None and data.quantity < floor:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"The quantity cannot go below what is issued and held for this order ({floor})",
+                )
     wants_finished = data.from_finished is not None
     if wants_finished:
         # Ready units are taken only by an ACTIVE order (spec workshop-add-to-order,
@@ -1543,7 +1563,8 @@ async def update_line(
         # ready units grew, past it: the KITS go back first — the ready units were
         # fitted above. Only ever downwards.
         kits = await part_stock.reserved_units_for_line(db, line)
-        fitted = max(0, line.quantity - line.from_finished)
+        # What the shelf already gave the line, assembled and received included.
+        fitted = max(0, line.quantity - line.from_finished - (line.assembled or 0) - (line.received or 0))
         if kits > fitted:
             await _reserve(db, line, fitted, current_user)
     changes = {name: [before[name], getattr(line, name)] for name in tracked if getattr(line, name) != before[name]}
@@ -1584,6 +1605,11 @@ async def configure_line(
     printed or queued, and the reservation before and after.
     """
     line = await _get_line(db, project_id, line_id)
+    # A completed order answers with its own refusal (``line_config``); an active one
+    # whose line has moved stock keeps the line's configuration (spec workshop-order-issue, rule 13).
+    status = await db.scalar(select(Project.status).where(Project.id == project_id))
+    if not data.dry_run and status != "completed" and await order_fulfilment.moved_line_ids(db, [line]):
+        raise HTTPException(status_code=409, detail=_LINE_MOVED)
     old_key = line.config_key
     finished_before = await finished_stock.held_for_line(db, line.id)
     try:
@@ -1654,7 +1680,7 @@ async def delete_line(
     # its units, and deleting the paperwork afterwards does not bring them back
     # to the shelf. The detach below still runs — the line row goes either way.
     if not _consumed_its_stock(project.status):
-        await _release(db, line, part_stock.NOTE_LINE_DELETED)
+        await _release(db, line, part_stock.NOTE_LINE_DELETED, current_user)
     # The prints stay, and stay in the order: only the line they were filed
     # under goes. Done explicitly because SQLite enforces nothing — this
     # codebase never sets ``PRAGMA foreign_keys = ON``, so the ON DELETE SET

@@ -147,6 +147,17 @@ def _parts_line(line, figs: LineFigures, name: str, counters: dict[int, ProjectL
     )
 
 
+async def moved_line_ids(db: AsyncSession, lines: Sequence[ProjectLine]) -> set[int]:
+    """The lines whose stock has moved (spec rule 13): a product line assembled, received
+    or issued something; a parts line received or issued a part. One read for the parts lines."""
+    moved = {line.id for line in lines if line.mode != "parts" and finished_stock.moved(line)}
+    counters = await part_stock.line_part_stock(db, [line.id for line in lines if line.mode == "parts"])
+    for line_id, rows in counters.items():
+        if any(row.received + row.issued > 0 for row in rows.values()):
+            moved.add(line_id)
+    return moved
+
+
 async def state(db: AsyncSession, project: Project) -> OrderState:
     """What each line can assemble, receive and issue now — the order's context and the
     parts lines' counters read once each, whatever the order's size."""

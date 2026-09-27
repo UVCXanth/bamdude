@@ -1000,6 +1000,9 @@ async def detach_line(db: AsyncSession, line_id: int) -> int:
         .where(ProductPartStockMovement.project_line_id == line_id)
         .values(project_line_id=None)
     )
+    # A parts line's counters are the line's own and go with it (the CASCADE is
+    # PostgreSQL's); the movements above keep the history.
+    await db.execute(delete(ProjectLinePartStock).where(ProjectLinePartStock.line_id == line_id))
     return result.rowcount or 0
 
 
@@ -1016,6 +1019,7 @@ async def delete_for_part(db: AsyncSession, part_id: int) -> int:
     result = await db.execute(
         delete(ProductPartStockMovement).where(ProductPartStockMovement.product_part_id == part_id)
     )
+    await db.execute(delete(ProjectLinePartStock).where(ProjectLinePartStock.part_id == part_id))
     return result.rowcount or 0
 
 
@@ -1033,6 +1037,7 @@ async def delete_for_parts(db: AsyncSession, part_ids: Sequence[int]) -> int:
     result = await db.execute(
         delete(ProductPartStockMovement).where(ProductPartStockMovement.product_part_id.in_(part_ids))
     )
+    await db.execute(delete(ProjectLinePartStock).where(ProjectLinePartStock.part_id.in_(part_ids)))
     return result.rowcount or 0
 
 
@@ -1488,6 +1493,26 @@ async def adjust_unfiled_print(
     return result
 
 
+async def _repoint_line_counters(db: AsyncSession, from_part_id: int, to_part_id: int) -> None:
+    """A merged part's parts-line counters follow it: added to the target's row of the
+    same line, or moved onto the target where the line had none."""
+    rows = (
+        (await db.execute(select(ProjectLinePartStock).where(ProjectLinePartStock.part_id == from_part_id)))
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        target = await db.get(ProjectLinePartStock, (row.line_id, to_part_id))
+        if target is None:
+            target = ProjectLinePartStock(line_id=row.line_id, part_id=to_part_id)
+            db.add(target)
+        target.received += row.received
+        target.issued += row.issued
+        target.returned += row.returned
+        await db.delete(row)
+    await db.flush()
+
+
 async def repoint(db: AsyncSession, *, from_part_id: int, to_part_id: int) -> int:
     """Move one part's movements onto another. Returns how many rows moved.
 
@@ -1504,6 +1529,7 @@ async def repoint(db: AsyncSession, *, from_part_id: int, to_part_id: int) -> in
     """
     if from_part_id == to_part_id:
         return 0
+    await _repoint_line_counters(db, from_part_id, to_part_id)
     moving = await db.scalar(
         select(func.count())
         .select_from(ProductPartStockMovement)
