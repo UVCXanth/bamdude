@@ -244,6 +244,7 @@ async def issue(
     customer_id: int | None = None,
     note: str | None = None,
     actor: User | None = None,
+    stock_issue_id: int | None = None,
 ) -> StockItemMovement:
     """Видати: out of what is available, or — ``from_reserve`` — out of the
     reservation held without an order (both columns go down)."""
@@ -253,11 +254,23 @@ async def issue(
         free = await unassigned_reserved(db, locked)
         if qty > free:
             raise FinishedStockError(f"Only {free} reserved without an order")
-        return await _record(db, item, "issue", -qty, -qty, note=note, customer_id=customer_id, actor=actor)
+        return await _record(
+            db,
+            item,
+            "issue",
+            -qty,
+            -qty,
+            note=note,
+            customer_id=customer_id,
+            actor=actor,
+            stock_issue_id=stock_issue_id,
+        )
     available = locked.on_hand - locked.reserved
     if qty > available:
         raise FinishedStockError(f"Only {available} available")
-    return await _record(db, item, "issue", -qty, 0, note=note, customer_id=customer_id, actor=actor)
+    return await _record(
+        db, item, "issue", -qty, 0, note=note, customer_id=customer_id, actor=actor, stock_issue_id=stock_issue_id
+    )
 
 
 # ---------- order lines (spec workshop-add-to-order, rules 1–9) ----------

@@ -9,8 +9,9 @@ drift without a saving. ``PaginationMeta`` is the archive's.
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from backend.app.models.stock_issue import WAYBILL_MAX
 from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.customer import CustomerResponse
 from backend.app.schemas.product import ProductListItem
@@ -204,3 +205,37 @@ class ProjectsNavBadges(BaseModel):
     draft_products: int = 0
     # Finished-goods positions whose free quantity is under their minimum (spec workshop-finished-goods, rule 19).
     stock_below_min: int = 0
+
+
+# ---------- issues of goods (spec workshop-order-issue, rules 21–22) ----------
+
+
+class StockIssueRow(BaseModel):
+    id: int
+    created_at: datetime
+    #: None — a manual issue, without an order.
+    project_id: int | None = None
+    project_code: str | None = None
+    customer_id: int | None = None
+    customer_name: str = ""
+    #: Units, and a parts line's parts, the issue handed over — from its movements.
+    units: int = 0
+    recipient_name: str | None = None
+    recipient_phone: str | None = None
+    delivery_method: str | None = None
+    delivery_details: str | None = None
+    waybill: str | None = None
+    note: str | None = None
+    created_by_name: str | None = None
+
+
+class StockIssuePage(BaseModel):
+    items: list[StockIssueRow]
+    meta: PaginationMeta
+
+
+class StockIssueUpdate(BaseModel):
+    """The two things an issue may change afterwards."""
+
+    waybill: str | None = Field(default=None, max_length=WAYBILL_MAX)
+    note: str | None = Field(default=None, max_length=2000)

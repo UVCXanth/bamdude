@@ -10,8 +10,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from backend.app.models.stock_issue import WAYBILL_MAX
 from backend.app.schemas.archive import PaginationMeta
-from backend.app.schemas.project import MAX_QTY, LineConfigurationOut
+from backend.app.schemas.project import MAX_QTY, LineConfigurationOut, RecipientIn
 
 
 class StockProductRef(BaseModel):
@@ -146,6 +147,10 @@ class StockMoveIn(BaseModel):
     note: str | None = Field(default=None, max_length=500)
     customer_id: int | None = None
     from_reserve: bool = False
+    #: An issue (spec workshop-order-issue, rule 16): the waybill, and who takes the goods —
+    #: absent, the customer's main contact.
+    waybill: str | None = Field(default=None, max_length=WAYBILL_MAX)
+    recipient: RecipientIn | None = None
 
 
 class StockAssembleIn(BaseModel):

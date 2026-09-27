@@ -54,6 +54,7 @@ from backend.app.services import (
     finished_stock_views,
     line_config,
     part_stock,
+    stock_issues,
     stock_journal,
     stock_pick,
 )
@@ -586,6 +587,9 @@ async def move_stock(
     actor = await acting_user(request, db, current_user)
     if data.customer_id is not None and await db.get(Customer, data.customer_id) is None:
         raise HTTPException(status_code=404, detail="Customer not found")
+    if data.kind == "issue" and data.customer_id is None:
+        # Every issue is an issue TO somebody (spec workshop-order-issue, rule 16).
+        raise HTTPException(status_code=422, detail="An issue names its customer")
     qty = data.qty if data.qty is not None else 0
     moved = True
     try:
@@ -598,6 +602,20 @@ async def move_stock(
         elif data.kind == "release":
             await finished_stock.release(db, item, qty, note=data.note, actor=actor)
         else:
+            recipient = (
+                stock_issues.Recipient(**data.recipient.model_dump())
+                if data.recipient is not None
+                else await stock_issues.default_recipient(db, project=None, customer_id=data.customer_id)
+            )
+            issue = await stock_issues.create(
+                db,
+                customer_id=data.customer_id,
+                project_id=None,
+                recipient=recipient,
+                waybill=data.waybill,
+                note=data.note,
+                actor=actor,
+            )
             await finished_stock.issue(
                 db,
                 item,
@@ -606,8 +624,9 @@ async def move_stock(
                 customer_id=data.customer_id,
                 note=data.note,
                 actor=actor,
+                stock_issue_id=issue.id,
             )
-    except finished_stock.FinishedStockError as e:
+    except (finished_stock.FinishedStockError, stock_issues.StockIssueError) as e:
         _raise(e)
     return StockMoveOut(**(await _fresh_out(db, item)).model_dump(), moved=moved)
 

@@ -11,6 +11,7 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.customer import CONTACT_DATA_FIELDS, Customer, CustomerContact, DeliveryMethod
 from backend.app.models.project import Project
+from backend.app.models.stock_issue import StockIssue
 from backend.app.models.user import User
 from backend.app.schemas.customer import (
     CustomerContactIn,
@@ -22,7 +23,7 @@ from backend.app.schemas.customer import (
     CustomerResponse,
     CustomerUpdate,
 )
-from backend.app.schemas.listing import CustomerListPage, CustomersSummary
+from backend.app.schemas.listing import CustomerListPage, CustomersSummary, StockIssuePage
 from backend.app.services import finished_stock, stock_issues
 from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.list_paging import (
@@ -34,6 +35,7 @@ from backend.app.services.list_paging import (
     sort_computed,
 )
 from backend.app.services.order_metrics import customer_figures
+from backend.app.services.stock_issue_views import issue_rows
 
 router = APIRouter(prefix="/customers", tags=["customers"])
 
@@ -324,6 +326,28 @@ async def customers_summary(
         active_orders=sum(f.active for f in figures),
         total_price=round(sum(f.total_price for f in figures), 2),
     )
+
+
+@router.get("/{customer_id}/issues", response_model=StockIssuePage)
+async def list_customer_issues(
+    customer_id: int,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(24, ge=1, le=200),
+    all: bool = Query(False, description="Skip pagination and return every issue"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """The customer's issues, newest first, paged on the server (spec workshop-order-issue,
+    rule 22): from its orders and without one."""
+    if await db.get(Customer, customer_id) is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    query = select(StockIssue).where(StockIssue.customer_id == customer_id)
+    total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    query = query.order_by(StockIssue.created_at.desc(), StockIssue.id.desc())
+    if not all:
+        query = query.limit(per_page).offset((page - 1) * per_page)
+    issues = (await db.execute(query)).scalars().all()
+    return StockIssuePage(items=await issue_rows(db, issues), meta=page_meta(total, page, per_page, all))
 
 
 @router.get("/{customer_id}", response_model=CustomerResponse)

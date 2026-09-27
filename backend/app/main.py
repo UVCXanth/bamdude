@@ -85,6 +85,7 @@ from backend.app.api.routes import (
     spoolman_inventory,
     statistics,
     stock,
+    stock_issues,
     support,
     system,
     telegram,
@@ -11684,6 +11685,7 @@ app.include_router(delivery_methods.router, prefix=app_settings.api_prefix)
 app.include_router(products.router, prefix=app_settings.api_prefix)
 app.include_router(product_categories.router, prefix=app_settings.api_prefix)
 app.include_router(stock.router, prefix=app_settings.api_prefix)
+app.include_router(stock_issues.router, prefix=app_settings.api_prefix)
 app.include_router(library.router, prefix=app_settings.api_prefix)
 app.include_router(library_notes.router, prefix=app_settings.api_prefix)
 app.include_router(library_tags.router, prefix=app_settings.api_prefix)
