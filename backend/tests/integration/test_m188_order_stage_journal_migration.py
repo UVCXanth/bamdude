@@ -197,3 +197,20 @@ async def test_the_finished_goods_schema(engine):
         assert (await conn.execute(text("SELECT from_finished FROM project_lines WHERE id = 1"))).scalar() == 0
         with pytest.raises(IntegrityError):
             await conn.execute(text("UPDATE project_lines SET from_finished = -1 WHERE id = 1"))
+        # WS-11 (spec workshop-order-issue, rules 1–6).
+        line_cols = {r[1] for r in (await conn.execute(text("PRAGMA table_info(project_lines)"))).all()}
+        assert {"assembled", "received", "issued", "returned"} <= line_cols
+        table_sql = (
+            await conn.execute(text("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'project_lines'"))
+        ).scalar()
+        for col in ("assembled", "received", "issued", "returned"):
+            assert f"ck_project_lines_{col}" in table_sql
+        with pytest.raises(IntegrityError):
+            await conn.execute(text("UPDATE project_lines SET issued = -1 WHERE id = 1"))
+        issue_cols = {r[1] for r in (await conn.execute(text("PRAGMA table_info(stock_issues)"))).all()}
+        assert {"project_id", "customer_id", "customer_name", "recipient_name", "waybill", "created_by"} <= issue_cols
+        part_cols = {r[1] for r in (await conn.execute(text("PRAGMA table_info(project_line_part_stock)"))).all()}
+        assert part_cols == {"line_id", "part_id", "received", "issued", "returned"}
+        for table in ("stock_item_movements", "product_part_stock_movements"):
+            cols = {r[1] for r in (await conn.execute(text(f"PRAGMA table_info({table})"))).all()}
+            assert "stock_issue_id" in cols

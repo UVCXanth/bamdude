@@ -78,6 +78,10 @@ class ProductPartStockMovement(Base):
     stock_item_id: Mapped[int | None] = mapped_column(
         ForeignKey("stock_items.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    #: The issue an ``issued_for_order`` movement belongs to (spec workshop-order-issue, rule 2).
+    stock_issue_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_issues.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: NULL for the completion handler, which writes with no user (Decision 7).
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

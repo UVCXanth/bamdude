@@ -68,6 +68,12 @@ add here while the branch is unreleased:
   only by ``services/finished_stock.py`` with the movement that explains it.
   ``product_part_stock_movements.stock_item_id`` — the position assembled parts
   went into. New tables only; nothing is seeded.
+- WS-11 (spec workshop-order-issue): ``stock_issues`` (AUTOINCREMENT: WS-12 derives
+  a dispatch note's code from its id) — an issue of goods with a snapshot of its
+  customer, recipient and delivery and an optional waybill; ``project_lines.assembled
+  / received / issued / returned`` (written only by services/finished_stock.py);
+  ``project_line_part_stock`` (a parts line's counters, only services/part_stock.py);
+  ``stock_issue_id`` on both ledgers' movements.
 """
 
 from backend.app.migrations.helpers import add_column, column_exists, table_exists
@@ -338,6 +344,62 @@ async def upgrade(conn):
             "CREATE INDEX IF NOT EXISTS ix_product_part_stock_movements_stock_item_id"
             " ON product_part_stock_movements (stock_item_id)"
         )
+
+    # spec workshop-order-issue (WS-11): issues, the line counters, parts-line counters.
+    # Gated like the finished-goods block above: an install that has products has the rest.
+    if await table_exists(conn, "products"):
+        if not await table_exists(conn, "stock_issues"):
+            await conn.exec_driver_sql(
+                f"""
+                CREATE TABLE stock_issues (
+                    id {pk},
+                    project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+                    customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+                    customer_name VARCHAR(255) NOT NULL DEFAULT '',
+                    recipient_name VARCHAR(255),
+                    recipient_phone VARCHAR(255),
+                    delivery_method VARCHAR(255),
+                    delivery_details VARCHAR(255),
+                    waybill VARCHAR(24),
+                    note TEXT,
+                    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    created_at {ts} NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_stock_issues_customer_created ON stock_issues (customer_id, created_at)"
+        )
+        await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_stock_issues_project_id ON stock_issues (project_id)")
+    if await table_exists(conn, "project_lines"):
+        for col in ("assembled", "received", "issued", "returned"):
+            await add_column(
+                conn,
+                "project_lines",
+                f"{col} INTEGER NOT NULL DEFAULT 0 CONSTRAINT ck_project_lines_{col} CHECK ({col} >= 0)",
+            )
+        if not await table_exists(conn, "project_line_part_stock"):
+            await conn.exec_driver_sql(
+                """
+                CREATE TABLE project_line_part_stock (
+                    line_id INTEGER NOT NULL REFERENCES project_lines(id) ON DELETE CASCADE,
+                    part_id INTEGER NOT NULL REFERENCES product_parts(id) ON DELETE CASCADE,
+                    received INTEGER NOT NULL DEFAULT 0,
+                    issued INTEGER NOT NULL DEFAULT 0,
+                    returned INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (line_id, part_id),
+                    CONSTRAINT ck_project_line_part_stock_received CHECK (received >= 0),
+                    CONSTRAINT ck_project_line_part_stock_issued CHECK (issued >= 0),
+                    CONSTRAINT ck_project_line_part_stock_returned CHECK (returned >= 0)
+                )
+                """
+            )
+    for table in ("stock_item_movements", "product_part_stock_movements"):
+        if await table_exists(conn, table) and await table_exists(conn, "stock_issues"):
+            await add_column(conn, table, "stock_issue_id INTEGER REFERENCES stock_issues(id) ON DELETE SET NULL")
+            await conn.exec_driver_sql(
+                f"CREATE INDEX IF NOT EXISTS ix_{table}_stock_issue_id ON {table} (stock_issue_id)"
+            )
 
 
 async def seed(session_factory):

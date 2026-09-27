@@ -135,6 +135,12 @@ REASONS = (
     "reservation_released",
     "manual",
     "assembled",
+    # spec workshop-order-issue, rule 6 — order-bound parts, in zero-sum pairs so
+    # the free balance never counts what belongs to an order.
+    "made_for_order",
+    "held_for_order",
+    "hold_released",
+    "issued_for_order",
 )
 
 #: Which way a reason is allowed to point. Banking a surplus, counting an
@@ -149,6 +155,10 @@ _REQUIRED_SIGN = {
     "reservation_released": 1,
     "reserved_for_order": -1,
     "assembled": -1,  # into a finished-goods position
+    "made_for_order": 1,  # a parts line's printed parts onto the shelf — paired with held_for_order
+    "held_for_order": -1,  # …and held off the free balance for that order
+    "hold_released": 1,  # the hold lifted — paired with issued_for_order, or alone on cancel
+    "issued_for_order": -1,  # handed to the customer under an issue
     "manual": 0,  # either
 }
 

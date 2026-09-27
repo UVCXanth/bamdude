@@ -14,7 +14,13 @@ class ProjectLine(Base):
     and never matched."""
 
     __tablename__ = "project_lines"
-    __table_args__ = (CheckConstraint("from_finished >= 0", name="ck_project_lines_from_finished"),)
+    __table_args__ = (
+        CheckConstraint("from_finished >= 0", name="ck_project_lines_from_finished"),
+        CheckConstraint("assembled >= 0", name="ck_project_lines_assembled"),
+        CheckConstraint("received >= 0", name="ck_project_lines_received"),
+        CheckConstraint("issued >= 0", name="ck_project_lines_issued"),
+        CheckConstraint("returned >= 0", name="ck_project_lines_returned"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
@@ -34,12 +40,40 @@ class ProjectLine(Base):
     # a completed order stays covered). Written only by services/finished_stock.py,
     # in the same flush as the movement that explains it.
     from_finished: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # spec workshop-order-issue, rule 3: what reached the shelf under the order and
+    # what left it — assembled from the reserved kits, received from the prints,
+    # issued to the customer, returned to free stock (cancel / delete). Only ever
+    # grow; written only by services/finished_stock.py with the movement that
+    # explains them. Held on the shelf = from_finished + assembled + received
+    # − issued − returned (rule 7).
+    assembled: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    received: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    issued: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    returned: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     project: Mapped["Project"] = relationship(back_populates="lines")
     product: Mapped["Product"] = relationship(back_populates="lines")
+
+
+class ProjectLinePartStock(Base):
+    """A parts line's part on the shelf under its order (spec workshop-order-issue,
+    rule 4) — written only by ``services/part_stock.py``."""
+
+    __tablename__ = "project_line_part_stock"
+    __table_args__ = (
+        CheckConstraint("received >= 0", name="ck_project_line_part_stock_received"),
+        CheckConstraint("issued >= 0", name="ck_project_line_part_stock_issued"),
+        CheckConstraint("returned >= 0", name="ck_project_line_part_stock_returned"),
+    )
+
+    line_id: Mapped[int] = mapped_column(ForeignKey("project_lines.id", ondelete="CASCADE"), primary_key=True)
+    part_id: Mapped[int] = mapped_column(ForeignKey("product_parts.id", ondelete="CASCADE"), primary_key=True)
+    received: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    issued: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    returned: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
 
 class ProjectProcurement(Base):

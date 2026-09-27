@@ -7,7 +7,7 @@ APP = Path(__file__).resolve().parents[2] / "app"
 ALLOWED = {APP / "services" / "finished_stock.py", APP / "models" / "finished_stock.py"}
 MODELS = {"StockItem", "StockItemMovement"}
 #: The balance and the position's parameters — no other module sets them.
-COLUMNS = {"on_hand", "reserved", "min_qty", "from_finished"}
+COLUMNS = {"on_hand", "reserved", "min_qty", "from_finished", "assembled", "received", "issued", "returned"}
 
 
 #: The order line's column the writer keeps (spec workshop-add-to-order, rule 1).
@@ -61,5 +61,6 @@ def test_the_scan_sees_a_writer_when_there_is_one():
         "db.add(ProjectLine(product_id=1, from_finished=2))\n"
         "await db.execute(update(ProjectLine).values(from_finished=0))\n"
         "setattr(line, 'from_finished', 3)\n"
+        "line.issued += 1\n"
     )
-    assert _writes(tree) == [1, 2, 3, 4, 5, 6, 7]
+    assert _writes(tree) == [1, 2, 3, 4, 5, 6, 7, 8]

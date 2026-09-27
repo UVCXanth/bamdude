@@ -16,7 +16,7 @@ from backend.app.core.database import Base
 
 #: The closed list of what may move a position (spec rule 4). WS-10/11 add their
 #: order-bound kinds here.
-MOVEMENT_KINDS = ("receipt", "stocktake", "assembled", "reserve", "release", "issue")
+MOVEMENT_KINDS = ("receipt", "stocktake", "assembled", "produced", "reserve", "release", "issue")
 
 
 def utcnow() -> datetime:
@@ -95,6 +95,10 @@ class StockItemMovement(Base):
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     project_line_id: Mapped[int | None] = mapped_column(
         ForeignKey("project_lines.id", ondelete="SET NULL"), nullable=True
+    )
+    #: The issue an ``issue`` movement belongs to (spec workshop-order-issue, rule 2).
+    stock_issue_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_issues.id", ondelete="SET NULL"), nullable=True, index=True
     )
     #: Who did it; NULL — the system.
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
