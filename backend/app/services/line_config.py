@@ -30,6 +30,7 @@ from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.models.finished_stock import StockItem, StockItemChoice, StockItemPartCount
 from backend.app.models.line_config import ProjectLineChoice, ProjectLinePartCount
 from backend.app.models.product import Product, ProductPart
 from backend.app.models.product_variant import ProductVariantGroup
@@ -45,6 +46,7 @@ from backend.app.services.line_composition import (
     counted,
     default_options,
     line_composition,
+    load_item_configs,
     load_line_configs,
     standard_per,
 )
@@ -125,20 +127,98 @@ def _validate(
     return new_choices, changed
 
 
-async def _write(db: AsyncSession, line: ProjectLine, choices: Mapping[int, int], counts: Mapping[int, int]) -> None:
-    await db.execute(delete(ProjectLineChoice).where(ProjectLineChoice.line_id == line.id))
-    await db.execute(delete(ProjectLinePartCount).where(ProjectLinePartCount.line_id == line.id))
+async def _write_rows(
+    db: AsyncSession,
+    choice_model,
+    count_model,
+    owner: str,
+    owner_id: int,
+    choices: Mapping[int, int],
+    counts: Mapping[int, int],
+) -> None:
+    """Replace one holder's rows — a line's or a stock position's."""
+    await db.execute(delete(choice_model).where(getattr(choice_model, owner) == owner_id))
+    await db.execute(delete(count_model).where(getattr(count_model, owner) == owner_id))
     if choices:
         await db.execute(
-            insert(ProjectLineChoice),
-            [{"line_id": line.id, "group_id": gid, "option_id": oid} for gid, oid in sorted(choices.items())],
+            insert(choice_model),
+            [{owner: owner_id, "group_id": gid, "option_id": oid} for gid, oid in sorted(choices.items())],
         )
     if counts:
         await db.execute(
-            insert(ProjectLinePartCount),
-            [{"line_id": line.id, "part_id": pid, "qty": qty} for pid, qty in sorted(counts.items())],
+            insert(count_model),
+            [{owner: owner_id, "part_id": pid, "qty": qty} for pid, qty in sorted(counts.items())],
         )
+
+
+async def _write(db: AsyncSession, line: ProjectLine, choices: Mapping[int, int], counts: Mapping[int, int]) -> None:
+    await _write_rows(db, ProjectLineChoice, ProjectLinePartCount, "line_id", line.id, choices, counts)
     line.config_key = config_key(line.mode, choices, counts)
+
+
+_SAME_POSITION = "That change would make two stock positions the same configuration"
+
+
+async def _apply_item_configs(db: AsyncSession, product_id: int, new: Mapping[int, LineConfig]) -> None:
+    """Write new configurations for some of a product's stock positions.
+
+    Checked BEFORE the first write: two positions of one product may never end
+    up with the same key (spec workshop-finished-goods, rule 14) — that would
+    silently merge two shelves. The keys move through a temporary value so an
+    intermediate state never trips the unique index.
+    """
+    if not new:
+        return
+    items = {
+        item.id: item
+        for item in (await db.execute(select(StockItem).where(StockItem.product_id == product_id))).scalars()
+    }
+    keys = {item_id: item.config_key for item_id, item in items.items()}
+    for item_id, cfg in new.items():
+        keys[item_id] = config_key("product", cfg.choices, cfg.counts)
+    if len(set(keys.values())) != len(keys):
+        raise LineConfigError(_SAME_POSITION, 409)
+    for item_id, cfg in new.items():
+        await _write_rows(db, StockItemChoice, StockItemPartCount, "item_id", item_id, cfg.choices, cfg.counts)
+        items[item_id].config_key = f"#rekey:{item_id}"
+    await db.flush()
+    for item_id in new:
+        items[item_id].config_key = keys[item_id]
+    await db.flush()
+
+
+async def _item_configs(db: AsyncSession, product_id: int) -> dict[int, LineConfig]:
+    """Every stock position of a product with its configuration."""
+    ids = (await db.execute(select(StockItem.id).where(StockItem.product_id == product_id))).scalars().all()
+    return await load_item_configs(db, ids) if ids else {}
+
+
+async def resolve(
+    db: AsyncSession, product_id: int, choices: Mapping[int, int], counts: Mapping[int, int] | None = None
+) -> tuple[str, dict[int, int], dict[int, int]]:
+    """The key a stock position of this configuration has, and the choices and
+    counts to store — validated exactly as an order line's; writes nothing."""
+    product = await _product(db, product_id)
+    new_choices, new_counts = _validate(product, "product", choices, counts or {})
+    return config_key("product", new_choices, new_counts), new_choices, new_counts
+
+
+async def seed_item(
+    db: AsyncSession, item: StockItem, choices: Mapping[int, int], counts: Mapping[int, int] | None = None
+) -> None:
+    """A new stock position's configuration rows (spec workshop-finished-goods, rule 9)."""
+    product = await _product(db, item.product_id)
+    new_choices, new_counts = _validate(product, "product", choices, counts or {})
+    await _write_rows(db, StockItemChoice, StockItemPartCount, "item_id", item.id, new_choices, new_counts)
+    item.config_key = config_key("product", new_choices, new_counts)
+
+
+async def forget_items(db: AsyncSession, item_ids: Sequence[int]) -> None:
+    """Deleted stock positions take their configuration with them (SQLite runs no FK actions)."""
+    if not item_ids:
+        return
+    await db.execute(delete(StockItemChoice).where(StockItemChoice.item_id.in_(item_ids)))
+    await db.execute(delete(StockItemPartCount).where(StockItemPartCount.item_id.in_(item_ids)))
 
 
 async def _rekey(db: AsyncSession, line_ids: Sequence[int]) -> None:
@@ -297,6 +377,16 @@ async def freeze_binding(db: AsyncSession, part: ProductPart, new_option_id: int
     Returns the number of lines frozen."""
     if part.variant_option_id == new_option_id:
         return 0
+    defaults = (await default_options(db, [part.product_id])).get(part.product_id, {})
+    frozen_items: dict[int, LineConfig] = {}
+    for item_id, cfg in (await _item_configs(db, part.product_id)).items():
+        if part.id in cfg.counts:
+            continue
+        chosen = set({**defaults, **cfg.choices}.values())
+        before = _per_under(part, part.variant_option_id, chosen)
+        if before != _per_under(part, new_option_id, chosen):
+            frozen_items[item_id] = LineConfig(dict(cfg.choices), {**cfg.counts, part.id: before})
+    await _apply_item_configs(db, part.product_id, frozen_items)
     line_ids = (
         (
             await db.execute(
@@ -307,9 +397,8 @@ async def freeze_binding(db: AsyncSession, part: ProductPart, new_option_id: int
         .all()
     )
     if not line_ids:
-        return 0
+        return len(frozen_items)
     configs = await load_line_configs(db, line_ids)
-    defaults = (await default_options(db, [part.product_id])).get(part.product_id, {})
     rows = []
     for line_id in line_ids:
         cfg = configs.get(line_id, LineConfig())
@@ -322,7 +411,7 @@ async def freeze_binding(db: AsyncSession, part: ProductPart, new_option_id: int
     if rows:
         await db.execute(insert(ProjectLinePartCount), rows)
         await _rekey(db, [r["line_id"] for r in rows])
-    return len(rows)
+    return len(rows) + len(frozen_items)
 
 
 async def add_group_to_lines(db: AsyncSession, group: ProductVariantGroup) -> int:
@@ -330,6 +419,15 @@ async def add_group_to_lines(db: AsyncSession, group: ProductVariantGroup) -> in
     records the group's standard option (rule 5 — choices are explicit)."""
     if group.default_option_id is None:
         return 0
+    await _apply_item_configs(
+        db,
+        group.product_id,
+        {
+            item_id: LineConfig({**cfg.choices, group.id: group.default_option_id}, dict(cfg.counts))
+            for item_id, cfg in (await _item_configs(db, group.product_id)).items()
+            if group.id not in cfg.choices
+        },
+    )
     line_ids = (
         (
             await db.execute(
@@ -363,7 +461,19 @@ async def add_group_to_lines(db: AsyncSession, group: ProductVariantGroup) -> in
 
 
 async def forget_part(db: AsyncSession, part_id: int) -> None:
-    """A deleted part takes its count rows with it."""
+    """A deleted part takes its count rows with it — of lines and of stock positions
+    (a position whose key would then match another's refuses the deletion: 409)."""
+    product_id = await db.scalar(select(ProductPart.product_id).where(ProductPart.id == part_id))
+    if product_id is not None:
+        await _apply_item_configs(
+            db,
+            product_id,
+            {
+                item_id: LineConfig(dict(cfg.choices), {pid: n for pid, n in cfg.counts.items() if pid != part_id})
+                for item_id, cfg in (await _item_configs(db, product_id)).items()
+                if part_id in cfg.counts
+            },
+        )
     line_ids = (
         (await db.execute(select(ProjectLinePartCount.line_id).where(ProjectLinePartCount.part_id == part_id)))
         .scalars()
@@ -386,6 +496,23 @@ async def repoint_part(db: AsyncSession, source_id: int, target_id: int) -> None
     source, target = parts.get(source_id), parts.get(target_id)
     if source is None or target is None:
         return
+    defaults = (await default_options(db, [target.product_id])).get(target.product_id, {})
+    merged_items: dict[int, LineConfig] = {}
+    for item_id, cfg in (await _item_configs(db, target.product_id)).items():
+        if source_id not in cfg.counts and target_id not in cfg.counts:
+            continue
+        chosen = set({**defaults, **cfg.choices}.values())
+        standard = _per_under(target, target.variant_option_id, chosen)
+        merged = min(
+            MAX_COUNT,
+            cfg.counts.get(target_id, standard)
+            + cfg.counts.get(source_id, _per_under(source, source.variant_option_id, chosen)),
+        )
+        counts = {pid: n for pid, n in cfg.counts.items() if pid not in (source_id, target_id)}
+        if merged != standard:
+            counts[target_id] = merged
+        merged_items[item_id] = LineConfig(dict(cfg.choices), counts)
+    await _apply_item_configs(db, target.product_id, merged_items)
     line_ids = sorted(
         set(
             (
@@ -400,7 +527,6 @@ async def repoint_part(db: AsyncSession, source_id: int, target_id: int) -> None
     if not line_ids:
         return
     configs = await load_line_configs(db, line_ids)
-    defaults = (await default_options(db, [target.product_id])).get(target.product_id, {})
     modes = dict((await db.execute(select(ProjectLine.id, ProjectLine.mode).where(ProjectLine.id.in_(line_ids)))).all())
     await db.execute(
         delete(ProjectLinePartCount).where(

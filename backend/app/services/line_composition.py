@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.models.finished_stock import StockItemChoice, StockItemPartCount
 from backend.app.models.line_config import ProjectLineChoice, ProjectLinePartCount
 from backend.app.models.product import ProductPart
 from backend.app.models.product_variant import ProductVariantGroup
@@ -101,29 +102,37 @@ def config_key(mode: str, choices: Mapping[int, int], counts: Mapping[int, int])
     return f"{choices_part}|{counts_part}" if counts else choices_part
 
 
-async def load_line_configs(db: AsyncSession, line_ids: Sequence[int]) -> dict[int, LineConfig]:
-    """Every line's choices and counts — two statements per chunk, whatever the page size."""
-    ids = list(dict.fromkeys(line_ids))
-    out: dict[int, LineConfig] = {lid: LineConfig() for lid in ids}
+async def _load_configs(
+    db: AsyncSession, choice_model, count_model, owner: str, ids: Sequence[int]
+) -> dict[int, LineConfig]:
+    """Choices and counts of a set of configuration holders — two statements per chunk."""
+    ids = list(dict.fromkeys(ids))
+    out: dict[int, LineConfig] = {oid: LineConfig() for oid in ids}
     for start in range(0, len(ids), _CHUNK):
         chunk = ids[start : start + _CHUNK]
-        for line_id, group_id, option_id in (
+        choice_owner, count_owner = getattr(choice_model, owner), getattr(count_model, owner)
+        for owner_id, group_id, option_id in (
             await db.execute(
-                select(ProjectLineChoice.line_id, ProjectLineChoice.group_id, ProjectLineChoice.option_id).where(
-                    ProjectLineChoice.line_id.in_(chunk)
-                )
+                select(choice_owner, choice_model.group_id, choice_model.option_id).where(choice_owner.in_(chunk))
             )
         ).all():
-            out[line_id].choices[group_id] = option_id
-        for line_id, part_id, qty in (
-            await db.execute(
-                select(ProjectLinePartCount.line_id, ProjectLinePartCount.part_id, ProjectLinePartCount.qty).where(
-                    ProjectLinePartCount.line_id.in_(chunk)
-                )
-            )
+            out[owner_id].choices[group_id] = option_id
+        for owner_id, part_id, qty in (
+            await db.execute(select(count_owner, count_model.part_id, count_model.qty).where(count_owner.in_(chunk)))
         ).all():
-            out[line_id].counts[part_id] = qty
+            out[owner_id].counts[part_id] = qty
     return out
+
+
+async def load_line_configs(db: AsyncSession, line_ids: Sequence[int]) -> dict[int, LineConfig]:
+    """Every line's choices and counts — two statements per chunk, whatever the page size."""
+    return await _load_configs(db, ProjectLineChoice, ProjectLinePartCount, "line_id", line_ids)
+
+
+async def load_item_configs(db: AsyncSession, item_ids: Sequence[int]) -> dict[int, LineConfig]:
+    """Every stock position's choices and counts (spec workshop-finished-goods, rule 2) —
+    the same shape as a line's; a position is always a ``product`` configuration."""
+    return await _load_configs(db, StockItemChoice, StockItemPartCount, "item_id", item_ids)
 
 
 async def default_options(db: AsyncSession, product_ids: Iterable[int]) -> dict[int, dict[int, int]]:
@@ -159,6 +168,23 @@ async def compositions_for_lines(
             defaults.get(line.product_id, {}),
         )
         for line in lines
+    }
+
+
+async def compositions_for_items(
+    db: AsyncSession, items: Sequence, parts_by_product: Mapping[int, Sequence[ProductPart]]
+) -> dict[int, Composition]:
+    """``item_id → composition`` for many stock positions — three statements, whatever the count."""
+    configs = await load_item_configs(db, [item.id for item in items])
+    defaults = await default_options(db, {item.product_id for item in items})
+    return {
+        item.id: line_composition(
+            parts_by_product.get(item.product_id, []),
+            "product",
+            configs.get(item.id, LineConfig()),
+            defaults.get(item.product_id, {}),
+        )
+        for item in items
     }
 
 

@@ -1093,7 +1093,10 @@ async def update_part(
             raise HTTPException(status_code=422, detail="That option does not belong to this product")
     if "variant_option_id" in data.model_fields_set:
         # Saved order lines keep the kit they had (spec workshop-product-variants).
-        await line_config.freeze_binding(db, part, data.variant_option_id)
+        try:
+            await line_config.freeze_binding(db, part, data.variant_option_id)
+        except line_config.LineConfigError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from e
     # A PURCHASED part IS its name — ``name_key`` is derived from it (there is no
     # 3MF object to key off), so a rename that left the key behind made the two
     # disagree for good and let a second "M4 screw" be created beside the first.
@@ -1138,8 +1141,12 @@ async def delete_part(
     # Same story for the stock ledger, whose FK is the same kind of cascade —
     # and ``part_stock`` is its only writer, so the deletion goes through it.
     await part_stock.delete_for_part(db, part_id)
-    # Lines that changed this part's count lose that row (spec workshop-product-variants).
-    await line_config.forget_part(db, part_id)
+    # Lines and stock positions that changed this part's count lose that row
+    # (spec workshop-product-variants; workshop-finished-goods, rule 14).
+    try:
+        await line_config.forget_part(db, part_id)
+    except line_config.LineConfigError as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
     await db.delete(part)
     return {"message": "Part deleted"}
 
@@ -1166,8 +1173,11 @@ async def merge_part(
         await part_stock.repoint(db, from_part_id=source.id, to_part_id=target.id)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
-    # A line's changed count of the source now names the target.
-    await line_config.repoint_part(db, source.id, target.id)
+    # A line's (and a stock position's) changed count of the source now names the target.
+    try:
+        await line_config.repoint_part(db, source.id, target.id)
+    except line_config.LineConfigError as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
     # The source row goes away, so its procurement rows go with it — the same
     # FK-cascade reason as ``delete_part``, and deliberately NOT a transfer of
     # the acquired counts onto the target: PostgreSQL's cascade would drop them

@@ -5,7 +5,7 @@ from pathlib import Path
 
 APP = Path(__file__).resolve().parents[2] / "app"
 ALLOWED = {APP / "services" / "line_config.py", APP / "models" / "line_config.py"}
-MODELS = {"ProjectLineChoice", "ProjectLinePartCount"}
+MODELS = {"ProjectLineChoice", "ProjectLinePartCount", "StockItemChoice", "StockItemPartCount"}
 
 
 def _writes(tree: ast.AST) -> list[int]:
