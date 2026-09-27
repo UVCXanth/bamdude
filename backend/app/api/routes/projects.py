@@ -129,6 +129,7 @@ from backend.app.services import (
     part_stock,
     product_delete,
     queue_rebalance,
+    stock_issues,
 )
 from backend.app.services.archive_defects import DefectsWrite, record_defects
 from backend.app.services.archive_write_scope import archive_write_scope
@@ -1224,6 +1225,8 @@ async def delete_project(
         await part_stock.detach_line(db, line.id)
         await line_config.forget_line(db, line.id)
     await finished_stock.detach_project(db, project_id)
+    # Its issues stay with the customer (spec workshop-order-issue, rule 14).
+    await stock_issues.detach_project(db, project_id)
     # Read before the un-filing: after the UPDATE below, no archive names this
     # order any more and there is nothing left to look them up by.
     unfiled = (await db.execute(select(PrintArchive).where(PrintArchive.project_id == project_id))).scalars().all()

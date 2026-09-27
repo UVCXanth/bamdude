@@ -35,7 +35,7 @@ from backend.app.schemas.auth import (
     UserSlim,
     UserUpdate,
 )
-from backend.app.services import finished_stock, order_journal, part_stock
+from backend.app.services import finished_stock, order_journal, part_stock, stock_issues
 from backend.app.services.email_service import (
     create_welcome_email_from_template,
     generate_secure_password,
@@ -528,6 +528,7 @@ async def delete_user(
     # Both stock ledgers keep their rows and lose the performer (spec workshop-finished-goods, rule 12).
     await part_stock.detach_user(db, user_id)
     await finished_stock.detach_user(db, user_id)
+    await stock_issues.detach_user(db, user_id)
 
     await db.delete(user)
     await db.commit()
