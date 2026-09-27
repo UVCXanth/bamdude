@@ -27,10 +27,12 @@ class ProductVariantGroup(Base):
     name: Mapped[str] = mapped_column(String(128))
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     # NULL only between the group's insert and its first option's; the routes
-    # keep it pointing at one of the group's own options.
-    default_option_id: Mapped[int | None] = mapped_column(
-        ForeignKey("product_variant_options.id", ondelete="SET NULL", use_alter=True), nullable=True
-    )
+    # keep it pointing at one of the group's own options (the standard option
+    # cannot be deleted, a deleted group takes its options). Deliberately NO
+    # foreign key, as in m188: one would close a group ↔ option cycle, which
+    # the portable backup's DDL keeps out of its checked set, and a fresh
+    # install would carry a constraint a migrated one does not.
+    default_option_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     options: Mapped[list["ProductVariantOption"]] = relationship(
         back_populates="group",
