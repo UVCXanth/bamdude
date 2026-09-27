@@ -39,7 +39,12 @@ const OWNER: Record<string, string> = {
   // The Stock tab's two questions (pass 8, final-review fix wave) — one owner
   // each, for the same reason as every other key here.
   'stock-summary': 'hooks/useStock.ts',
-  'stock-movements': 'hooks/useStock.ts',
+  // Finished goods (spec workshop-finished-goods): the positions, one position,
+  // a dialog's lookup and the journal of both ledgers.
+  'stock-items': 'hooks/useFinishedStock.ts',
+  'stock-item': 'hooks/useFinishedStock.ts',
+  'stock-lookup': 'hooks/useFinishedStock.ts',
+  'stock-journal': 'hooks/useFinishedStock.ts',
 };
 
 /** The invalidation helper is allowed to spell any key out; it observes none.
