@@ -415,9 +415,16 @@ async def lookup_stock_item(
         item = await finished_stock.item_for(db, product_id, choices, create=False)
     except finished_stock.FinishedStockError as e:
         _raise(e)
+    shelf = await part_stock.balances(db, product_id)
     if item is not None:
         row = (await finished_stock_views.items_out(db, [item]))[0]
-        return StockLookupOut(item=row, configuration=row.configuration, can_assemble=row.can_assemble)
+        kit = await finished_stock.item_composition(db, item)
+        return StockLookupOut(
+            item=row,
+            configuration=row.configuration,
+            can_assemble=row.can_assemble,
+            parts=finished_stock_views.parts_out(kit, shelf),
+        )
     try:
         _key, new_choices, new_counts = await line_config.resolve(db, product_id, choices, {})
     except line_config.LineConfigError as e:
@@ -429,7 +436,8 @@ async def lookup_stock_item(
     return StockLookupOut(
         item=None,
         configuration=configuration_out(groups, list(parts), LineConfig(new_choices, new_counts), defaults),
-        can_assemble=part_stock.kits_of(await part_stock.balances(db, product_id), kit),
+        can_assemble=part_stock.kits_of(shelf, kit),
+        parts=finished_stock_views.parts_out(kit, shelf),
     )
 
 

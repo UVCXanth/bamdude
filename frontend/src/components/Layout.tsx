@@ -72,7 +72,7 @@ export const defaultNavItems: NavItem[] = [
     { id: 'orders', to: '/projects', labelKey: 'projects.tabs.orders', match: /^\/projects(\/|$)/, badge: 'activeOrders' },
     { id: 'products', to: '/products', labelKey: 'projects.tabs.products', match: /^\/products(\/|$)/, badge: 'draftProducts' },
     { id: 'customers', to: '/customers', labelKey: 'projects.tabs.customers', match: /^\/customers(\/|$)/ },
-    { id: 'stock', to: '/stock', labelKey: 'projects.tabs.stock', match: /^\/stock(\/|$)/ },
+    { id: 'stock', to: '/stock', labelKey: 'projects.tabs.stock', match: /^\/stock(\/|$)/, badge: 'stockBelowMin' },
   ] },
   { id: 'files', to: '/files', icon: FolderOpen, labelKey: 'nav.files', group: 'workshop' },
   { id: 'makerworld', to: '/makerworld', icon: MakerWorldIcon, labelKey: 'nav.makerworld', group: 'workshop' },
@@ -347,6 +347,7 @@ export function Layout() {
   const workshopBadges = {
     activeOrders: navBadges?.active_orders ?? 0,
     draftProducts: navBadges?.draft_products ?? 0,
+    stockBelowMin: navBadges?.stock_below_min ?? 0,
   };
 
   // Check if any printer with pending queue items needs plate clearing

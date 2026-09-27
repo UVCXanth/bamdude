@@ -2766,6 +2766,13 @@ export const STOCK_REASONS = [
 export type StockReason = (typeof STOCK_REASONS)[number];
 
 /**
+ * The finished-goods movement kinds — the closed set of
+ * `backend/app/models/finished_stock.py::MOVEMENT_KINDS`, each with a
+ * `stock.journal.kind.*` label in both locales.
+ */
+export const STOCK_ITEM_KINDS = ['receipt', 'stocktake', 'assembled', 'reserve', 'release', 'issue'] as const;
+
+/**
  * Every `note` the BACKEND writes — a closed set of tokens, never a sentence.
  *
  * ⚠️ **Source of truth: `backend/app/services/part_stock.py::NOTE_TOKENS`.**
@@ -2910,27 +2917,6 @@ export interface StockFigures {
   incomplete: number;
 }
 
-/** A ledger row as the farm journal shows it — the product page's row plus
- *  the product it belongs to. */
-export interface StockMovementRow extends StockMovement {
-  product_id: number;
-  product_name: string;
-}
-
-export interface StockMovementsPage {
-  items: StockMovementRow[];
-  /** The id to continue from; null when the ledger is exhausted. */
-  next_before_id: number | null;
-}
-
-export interface StockMovementsParams {
-  product_id?: number;
-  part_id?: number;
-  reason?: string;
-  before_id?: number | null;
-  limit?: number;
-}
-
 /** Rows per journal page — the request's `limit` and the hook's page size. */
 export const STOCK_JOURNAL_PAGE = 50;
 
@@ -3024,6 +3010,8 @@ export interface StockLookup {
   item: StockItem | null;
   configuration: LineConfiguration;
   can_assemble: number;
+  /** The configuration's printed parts — per unit and on the free shelf. */
+  parts: StockItemPart[];
 }
 
 export type StockMoveKind = 'receipt' | 'stocktake' | 'reserve' | 'release' | 'issue';
@@ -11626,16 +11614,6 @@ export const api = {
   },
   /** The Stock tab's tiles — the whole shelf, whatever the list is filtered by. */
   getStockFigures: () => request<StockFigures>('/stock/figures'),
-  /** One keyset page of the farm journal, newest first. */
-  getStockMovements: (params: StockMovementsParams = {}) => {
-    const search = new URLSearchParams();
-    if (params.product_id != null) search.set('product_id', String(params.product_id));
-    if (params.part_id != null) search.set('part_id', String(params.part_id));
-    if (params.reason) search.set('reason', params.reason);
-    if (params.before_id != null) search.set('before_id', String(params.before_id));
-    search.set('limit', String(params.limit ?? STOCK_JOURNAL_PAGE));
-    return request<StockMovementsPage>(`/stock/movements?${search.toString()}`);
-  },
   // Finished goods (spec workshop-finished-goods, rules 16–22).
   getStockItems: (params: StockItemsParams) => {
     const qs = new URLSearchParams();

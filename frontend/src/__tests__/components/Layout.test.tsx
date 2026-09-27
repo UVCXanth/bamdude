@@ -435,6 +435,16 @@ describe('Layout', () => {
       expect(await screen.findByTitle('Draft products')).toHaveTextContent('4');
     });
 
+    it('shows the below-minimum count on Stock', async () => {
+      server.use(
+        http.get('/api/v1/projects/nav-badges', () =>
+          HttpResponse.json({ active_orders: 0, draft_products: 0, stock_below_min: 2 }),
+        ),
+      );
+      render(<Layout />);
+      expect(await screen.findByTitle('Positions below minimum')).toHaveTextContent('2');
+    });
+
     it('a failed count leaves the entry and no badge', async () => {
       let asked = 0;
       server.use(

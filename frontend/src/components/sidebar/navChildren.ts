@@ -1,5 +1,5 @@
 /** A badge a sidebar child may carry; the number comes from `useWorkshopBadges`. */
-export type NavBadgeKind = 'activeOrders' | 'draftProducts';
+export type NavBadgeKind = 'activeOrders' | 'draftProducts' | 'stockBelowMin';
 
 /**
  * A child of a sidebar item (spec workshop-nav, rule 1). No icon of its own;

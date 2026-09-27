@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
-import { Loader2, Warehouse } from 'lucide-react';
-import type { StockItemsMode, StockItemsParams, StockListItem, StockListParams } from '../../api/client';
+import { ArrowDownToLine, Loader2, Warehouse, Wrench } from 'lucide-react';
+import type { StockItem, StockItemsMode, StockItemsParams, StockListItem, StockListParams } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { Button } from '../../components/Button';
 import { ListPageHeader } from '../../components/ListPageHeader';
@@ -13,6 +13,8 @@ import { AdjustStockDialog } from '../../components/products/AdjustStockDialog';
 import { FinishedGoodsTable } from '../../components/stock/FinishedGoodsTable';
 import type { FinishedAction } from '../../components/stock/FinishedGoodsTable';
 import { FinishedTiles } from '../../components/stock/FinishedTiles';
+import { StockDialogs } from '../../components/stock/StockDialogs';
+import type { StockDialogState } from '../../components/stock/StockDialogs';
 import { StockJournal } from '../../components/stock/StockJournal';
 import { StockProductsTable } from '../../components/stock/StockProductsTable';
 import { StockTiles } from '../../components/stock/StockTiles';
@@ -39,6 +41,9 @@ const MODES: StockItemsMode[] = ['tracked', 'low', 'reserved', 'all'];
  */
 export function StockPage() {
   const { t } = useTranslation();
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission('projects:update');
+  const [dialog, setDialog] = useState<StockDialogState>(null);
   const [params, setParams] = useSearchParams();
   const raw = params.get('tab');
   const tab: StockTab = (TABS as readonly string[]).includes(raw ?? '') ? (raw as StockTab) : 'finished';
@@ -61,7 +66,20 @@ export function StockPage() {
         title={t('stock.page.title')}
         subtitle={t('stock.page.intro')}
         icon={<Warehouse className="w-6 h-6 text-bambu-green" />}
-      />
+      >
+        {canEdit && (
+          <>
+            <Button variant="secondary" onClick={() => setDialog({ kind: 'assemble' })}>
+              <Wrench className="w-4 h-4" />
+              {t('stock.finished.assembleOpen')}
+            </Button>
+            <Button onClick={() => setDialog({ kind: 'receipt' })}>
+              <ArrowDownToLine className="w-4 h-4" />
+              {t('stock.finished.action.receipt')}
+            </Button>
+          </>
+        )}
+      </ListPageHeader>
 
       <div role="tablist" className="flex gap-1 border-b border-bambu-dark-tertiary mb-4">
         {TABS.map((key) => (
@@ -80,15 +98,17 @@ export function StockPage() {
         ))}
       </div>
 
-      {tab === 'finished' && <FinishedTab />}
+      {tab === 'finished' && <FinishedTab onDialog={setDialog} />}
       {tab === 'parts' && <PartsTab />}
       {tab === 'journal' && <StockJournal />}
+
+      <StockDialogs dialog={dialog} onClose={() => setDialog(null)} />
     </div>
   );
 }
 
 /** Finished goods: positions on record, under the minimum, reserved, or all (rule 24). */
-function FinishedTab() {
+function FinishedTab({ onDialog }: { onDialog: (dialog: StockDialogState) => void }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { hasPermission } = useAuth();
@@ -113,9 +133,9 @@ function FinishedTab() {
     if (data && !isPlaceholderData) clampToLastPage(data.meta.last_page);
   }, [data, isPlaceholderData, clampToLastPage]);
 
-  const onAction = (kind: FinishedAction, item: { id: number }) => {
-    // The movement dialogs arrive with the position page; «open» is the one action here.
+  const onAction = (kind: FinishedAction, item: StockItem) => {
     if (kind === 'open') navigate(`/stock/${item.id}`);
+    else onDialog({ kind, item });
   };
 
   const total = data?.meta.total ?? 0;

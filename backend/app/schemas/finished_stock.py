@@ -87,6 +87,8 @@ class StockLookupOut(BaseModel):
     item: StockItemOut | None = None
     configuration: LineConfigurationOut
     can_assemble: int = 0
+    #: The configuration's printed parts — per unit and on the free shelf.
+    parts: list[StockItemPartOut] = []
 
 
 StockMoveKind = Literal["receipt", "stocktake", "reserve", "release", "issue"]

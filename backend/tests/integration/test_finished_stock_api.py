@@ -178,6 +178,12 @@ async def test_lookup_of_a_configuration_without_a_position(committing_client, f
     assert body["item"] is None
     assert body["configuration"]["choices"][0]["option_name"] == "angled"
     assert body["can_assemble"] == 1
+    # The assembly dialog draws the kit from the answer: part, per unit, on the shelf.
+    assert [(p["name"], p["per"], p["on_shelf"]) for p in body["parts"]] == [("flask", 1, 4), ("angled", 1, 1)]
+    standard = await _move(committing_client, kind="receipt", product_id=farm["pipe"].id, qty=1)
+    known = (await committing_client.get("/api/v1/stock/items/lookup", params={"product_id": farm["pipe"].id})).json()
+    assert known["item"]["id"] == standard["id"]
+    assert [(p["name"], p["on_shelf"]) for p in known["parts"]] == [("flask", 4), ("straight", 3)]
     bad = await committing_client.get(
         "/api/v1/stock/items/lookup", params={"product_id": farm["pipe"].id, "options": "999999"}
     )

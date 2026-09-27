@@ -42,6 +42,14 @@ def below_min(item: StockItem) -> bool:
     return item.min_qty > 0 and item.on_hand - item.reserved < item.min_qty
 
 
+def parts_out(kit, shelf) -> list[StockItemPartOut]:
+    """The kit's printed parts with what one unit takes and what the free shelf holds."""
+    return [
+        StockItemPartOut(part_id=part.id, name=part.name, per=per, on_shelf=shelf.get(part.id, 0))
+        for part, per in counted(kit)
+    ]
+
+
 async def _parts_by_product(db: AsyncSession, product_ids: Sequence[int]) -> dict[int, list[ProductPart]]:
     out: dict[int, list[ProductPart]] = {pid: [] for pid in product_ids}
     if not product_ids:
@@ -166,11 +174,7 @@ async def item_detail(db: AsyncSession, item: StockItem) -> StockItemDetail:
         for line_id, qty in sorted(groups, key=lambda g: (g[0] is not None, g[0] or 0))
         if qty
     ]
-    shelf = ctx.balances.get(item.product_id, {})
-    parts = [
-        StockItemPartOut(part_id=part.id, name=part.name, per=per, on_shelf=shelf.get(part.id, 0))
-        for part, per in counted(ctx.composition(item))
-    ]
+    parts = parts_out(ctx.composition(item), ctx.balances.get(item.product_id, {}))
     return StockItemDetail(
         **ctx.out(item).model_dump(),
         reservations=reservations,
