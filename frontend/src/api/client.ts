@@ -2555,6 +2555,8 @@ export interface VariantOption {
   lines_count: number;
   /** Parts bound to it. */
   parts_count: number;
+  /** Finished-goods positions whose configuration chose it. */
+  stock_count: number;
 }
 
 /** A choice an order makes once per unit — «Хвіст: прямий / кутовий». */

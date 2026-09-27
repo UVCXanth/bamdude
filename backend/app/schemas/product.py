@@ -331,6 +331,8 @@ class VariantOptionOut(BaseModel):
     #: would be refused over, so the card can grey the button out beforehand.
     lines_count: int = 0
     parts_count: int = 0
+    #: Finished-goods positions whose configuration chose it (spec workshop-finished-goods, rule 14).
+    stock_count: int = 0
 
 
 class VariantGroupOut(BaseModel):

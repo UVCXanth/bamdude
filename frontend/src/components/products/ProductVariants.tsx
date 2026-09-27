@@ -125,6 +125,7 @@ export function ProductVariants({ product, canEdit }: { product: Product; canEdi
   const optionRefusal = (group: VariantGroup, option: VariantOption): string | null => {
     if (option.id === group.default_option_id) return t('products.variants.isStandard');
     if (option.lines_count > 0) return t('products.variants.chosenInLines', { count: option.lines_count });
+    if ((option.stock_count ?? 0) > 0) return t('products.variants.heldByStock', { count: option.stock_count });
     if (option.parts_count > 0) return t('products.variants.hasParts', { count: option.parts_count });
     return null;
   };
@@ -132,7 +133,9 @@ export function ProductVariants({ product, canEdit }: { product: Product; canEdi
     // A line holds exactly one choice per group, so the options' counts sum to its lines.
     const lines = group.options.reduce((sum, o) => sum + o.lines_count, 0);
     const parts = group.options.reduce((sum, o) => sum + o.parts_count, 0);
+    const stock = group.options.reduce((sum, o) => sum + (o.stock_count ?? 0), 0);
     if (lines > 0) return t('products.variants.chosenInLines', { count: lines });
+    if (stock > 0) return t('products.variants.heldByStock', { count: stock });
     if (parts > 0) return t('products.variants.hasParts', { count: parts });
     return null;
   };

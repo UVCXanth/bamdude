@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.finished_stock import MOVEMENT_KINDS, StockItem, StockItemMovement
@@ -275,6 +275,21 @@ async def set_params(db: AsyncSession, item: StockItem, fields: Mapping[str, obj
         location = fields["location"]
         locked.location = (location.strip() or None) if isinstance(location, str) else None
     await db.flush()
+
+
+async def delete_for_product(db: AsyncSession, product_id: int) -> None:
+    """A deleted product takes its EMPTY positions, their configuration and history
+    with it (SQLite runs no FK actions); one that still holds goods or a
+    reservation is refused (spec rule 15) — stock is not deleted by a catalogue edit."""
+    items = (await db.execute(select(StockItem).where(StockItem.product_id == product_id))).scalars().all()
+    if any(item.on_hand or item.reserved for item in items):
+        raise FinishedStockError("The product has finished goods in stock")
+    ids = [item.id for item in items]
+    if not ids:
+        return
+    await db.execute(delete(StockItemMovement).where(StockItemMovement.item_id.in_(ids)))
+    await line_config.forget_items(db, ids)
+    await db.execute(delete(StockItem).where(StockItem.id.in_(ids)))
 
 
 async def detach_user(db: AsyncSession, user_id: int) -> None:

@@ -86,6 +86,25 @@ describe('ProductVariants', () => {
     expect(screen.getByTestId('variant-option-11-delete')).toBeDisabled();
   });
 
+  it('disables deleting an option a stock position holds, and says why', () => {
+    const held = {
+      ...product,
+      variant_groups: [
+        {
+          ...product.variant_groups[0],
+          options: [
+            product.variant_groups[0].options[0],
+            { ...product.variant_groups[0].options[1], lines_count: 0, stock_count: 2 },
+          ],
+        },
+      ],
+    } as unknown as Product;
+    render(<ProductVariants product={held} canEdit />);
+    const remove = screen.getByTestId('variant-option-12-delete');
+    expect(remove).toBeDisabled();
+    expect(remove).toHaveAttribute('title', 'Held by 2 stock positions');
+  });
+
   it('renames an option on blur', async () => {
     const update = vi.spyOn(api, 'updateVariantOption').mockResolvedValue(product);
     render(<ProductVariants product={product} canEdit />);

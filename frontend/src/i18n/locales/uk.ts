@@ -6368,6 +6368,10 @@ export default {
       hasParts_few: 'До неї прив’язано {{count}} деталі',
       hasParts_many: 'До неї прив’язано {{count}} деталей',
       hasParts_other: 'До неї прив’язано {{count}} деталі',
+      heldByStock_one: 'Її тримає {{count}} позиція складу',
+      heldByStock_few: 'Її тримають {{count}} позиції складу',
+      heldByStock_many: 'Її тримають {{count}} позицій складу',
+      heldByStock_other: 'Її тримають {{count}} позиції складу',
       isStandard: 'Стандартну опцію не можна видалити — спершу зробіть стандартною іншу',
     },
     plates: {

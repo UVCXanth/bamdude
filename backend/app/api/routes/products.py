@@ -37,6 +37,7 @@ from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.i18n.api_errors import json_error
+from backend.app.models.finished_stock import StockItemChoice
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.line_config import ProjectLineChoice
 from backend.app.models.product import (
@@ -89,7 +90,7 @@ from backend.app.schemas.product import (
     VariantOptionOut,
     VariantOptionUpdate,
 )
-from backend.app.services import line_config, part_stock, product_delete, product_facets
+from backend.app.services import finished_stock, line_config, part_stock, product_delete, product_facets
 from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.line_composition import composition, default_options, standard_composition
 from backend.app.services.list_paging import (
@@ -317,7 +318,17 @@ async def _variant_groups_out(db: AsyncSession, product_id: int) -> list[Variant
     option_ids = [o.id for g in groups for o in g.options]
     lines: dict[int, int] = {}
     parts: dict[int, int] = {}
+    stock: dict[int, int] = {}
     if option_ids:
+        stock = dict(
+            (
+                await db.execute(
+                    select(StockItemChoice.option_id, func.count())
+                    .where(StockItemChoice.option_id.in_(option_ids))
+                    .group_by(StockItemChoice.option_id)
+                )
+            ).all()
+        )
         lines = dict(
             (
                 await db.execute(
@@ -349,6 +360,7 @@ async def _variant_groups_out(db: AsyncSession, product_id: int) -> list[Variant
                     position=o.position,
                     lines_count=lines.get(o.id, 0),
                     parts_count=parts.get(o.id, 0),
+                    stock_count=stock.get(o.id, 0),
                 )
                 for o in g.options
             ],
@@ -872,7 +884,10 @@ async def delete_product(
     product = await _get(db, product_id)
     if await _lines_count(db, product_id):
         raise HTTPException(status_code=409, detail="Product is used by an order line; remove the lines first")
-    await product_delete.delete_product(db, product)
+    try:
+        await product_delete.delete_product(db, product)
+    except finished_stock.FinishedStockError as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
     return {"message": "Product deleted"}
 
 
@@ -1340,6 +1355,11 @@ async def delete_variant_group(
     )
     if lines:
         raise HTTPException(status_code=409, detail=f"Group chosen in {lines} order lines")
+    held = await db.scalar(
+        select(func.count(func.distinct(StockItemChoice.item_id))).where(StockItemChoice.group_id == group.id)
+    )
+    if held:
+        raise HTTPException(status_code=409, detail=f"Group held by {held} stock positions")
     bound = await _bound_parts(db, [o.id for o in group.options])
     if bound:
         raise HTTPException(status_code=409, detail=f"{bound} parts are bound to this group's options")
@@ -1416,6 +1436,9 @@ async def delete_variant_option(
     lines = await db.scalar(select(func.count()).where(ProjectLineChoice.option_id == option.id))
     if lines:
         raise HTTPException(status_code=409, detail=f"Option chosen in {lines} order lines")
+    held = await db.scalar(select(func.count()).where(StockItemChoice.option_id == option.id))
+    if held:
+        raise HTTPException(status_code=409, detail=f"Option held by {held} stock positions")
     bound = await _bound_parts(db, [option.id])
     if bound:
         raise HTTPException(status_code=409, detail=f"{bound} parts are bound to this option")

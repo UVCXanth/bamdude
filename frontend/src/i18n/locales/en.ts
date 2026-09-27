@@ -6271,6 +6271,8 @@ export default {
       chosenInLines_other: 'Chosen in {{count}} order lines',
       hasParts_one: '{{count}} part is bound to it',
       hasParts_other: '{{count}} parts are bound to it',
+      heldByStock_one: 'Held by {{count}} stock position',
+      heldByStock_other: 'Held by {{count}} stock positions',
       isStandard: 'The standard option cannot be deleted — make another one standard first',
     },
     plates: {
