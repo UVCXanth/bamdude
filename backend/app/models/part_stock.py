@@ -72,6 +72,10 @@ class ProductPartStockMovement(Base):
     #: order-less completion path: a second event for the same archive writes
     #: nothing because the ledger already names it.
     archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True)
+    #: The finished-goods position assembled parts went into (spec workshop-finished-goods, rule 5).
+    stock_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stock_items.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: NULL for the completion handler, which writes with no user (Decision 7).
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

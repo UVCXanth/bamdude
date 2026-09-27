@@ -54,6 +54,17 @@ add here while the branch is unreleased:
   figures do not change. ``product_variant_groups.default_option_id`` carries
   no FK here — a circular one needs a table rebuild on SQLite — and the routes
   keep it pointing at one of the group's own options.
+
+- **WS-09 (spec workshop-finished-goods) — finished goods.** ``stock_items``
+  (AUTOINCREMENT — the code ``SK-0003`` is derived from the id): one position per
+  product configuration, ``UNIQUE(product_id, config_key)``, the balance as the
+  columns ``on_hand`` / ``reserved`` with CHECKs (never below zero, reserved never
+  above on hand), a location and a minimum. ``stock_item_choices`` /
+  ``stock_item_part_counts`` — the position's configuration, the same shape as
+  an order line's and written by the same writer. ``stock_item_movements``
+  (AUTOINCREMENT) — the history the columns always equal the sum of.
+  ``product_part_stock_movements.stock_item_id`` — the position assembled parts
+  went into. New tables only; nothing is seeded.
 """
 
 from backend.app.migrations.helpers import add_column, column_exists, table_exists
@@ -230,6 +241,91 @@ async def upgrade(conn):
             )
         await conn.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_project_line_part_counts_part_id ON project_line_part_counts (part_id)"
+        )
+
+    # spec workshop-finished-goods (WS-09): finished goods, one position per configuration.
+    if await table_exists(conn, "products"):
+        if not await table_exists(conn, "stock_items"):
+            await conn.exec_driver_sql(
+                f"""
+                CREATE TABLE stock_items (
+                    id {pk},
+                    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                    config_key VARCHAR(512) NOT NULL DEFAULT '',
+                    on_hand INTEGER NOT NULL DEFAULT 0,
+                    reserved INTEGER NOT NULL DEFAULT 0,
+                    location VARCHAR(64),
+                    min_qty INTEGER NOT NULL DEFAULT 0,
+                    created_at {ts} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT uq_stock_items_product_config UNIQUE (product_id, config_key),
+                    CONSTRAINT ck_stock_items_on_hand CHECK (on_hand >= 0),
+                    CONSTRAINT ck_stock_items_reserved CHECK (reserved >= 0),
+                    CONSTRAINT ck_stock_items_reserved_le_on_hand CHECK (reserved <= on_hand)
+                )
+                """
+            )
+        await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_stock_items_product_id ON stock_items (product_id)")
+        if not await table_exists(conn, "stock_item_choices"):
+            await conn.exec_driver_sql(
+                """
+                CREATE TABLE stock_item_choices (
+                    item_id INTEGER NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+                    group_id INTEGER NOT NULL REFERENCES product_variant_groups(id) ON DELETE CASCADE,
+                    option_id INTEGER NOT NULL REFERENCES product_variant_options(id),
+                    PRIMARY KEY (item_id, group_id)
+                )
+                """
+            )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_stock_item_choices_option_id ON stock_item_choices (option_id)"
+        )
+        if not await table_exists(conn, "stock_item_part_counts"):
+            await conn.exec_driver_sql(
+                """
+                CREATE TABLE stock_item_part_counts (
+                    item_id INTEGER NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+                    part_id INTEGER NOT NULL REFERENCES product_parts(id) ON DELETE CASCADE,
+                    qty INTEGER NOT NULL,
+                    PRIMARY KEY (item_id, part_id)
+                )
+                """
+            )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_stock_item_part_counts_part_id ON stock_item_part_counts (part_id)"
+        )
+        if not await table_exists(conn, "stock_item_movements"):
+            await conn.exec_driver_sql(
+                f"""
+                CREATE TABLE stock_item_movements (
+                    id {pk},
+                    item_id INTEGER NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+                    kind VARCHAR(16) NOT NULL,
+                    delta_on_hand INTEGER NOT NULL DEFAULT 0,
+                    delta_reserved INTEGER NOT NULL DEFAULT 0,
+                    note TEXT,
+                    customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+                    project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+                    project_line_id INTEGER REFERENCES project_lines(id) ON DELETE SET NULL,
+                    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    created_at {ts} NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_stock_item_movements_item_created ON stock_item_movements (item_id, created_at)"
+        )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_stock_item_movements_created_id ON stock_item_movements (created_at, id)"
+        )
+    if await table_exists(conn, "product_part_stock_movements"):
+        await add_column(
+            conn,
+            "product_part_stock_movements",
+            "stock_item_id INTEGER REFERENCES stock_items(id) ON DELETE SET NULL",
+        )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_product_part_stock_movements_stock_item_id"
+            " ON product_part_stock_movements (stock_item_id)"
         )
 
 

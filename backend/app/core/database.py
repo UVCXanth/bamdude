@@ -292,6 +292,7 @@ def import_all_models() -> None:
         external_link,
         filament_calibration,
         filament_sku_settings,
+        finished_stock,
         firmware,
         git_backup,
         group,

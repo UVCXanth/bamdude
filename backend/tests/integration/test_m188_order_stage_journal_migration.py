@@ -3,6 +3,7 @@
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from backend.app.migrations import m188_order_stage_journal as m188
@@ -160,3 +161,27 @@ async def test_the_variant_and_line_configuration_schema(engine):
             "project_line_part_counts",
         ):
             assert (await conn.execute(text(f"SELECT COUNT(*) FROM {table}"))).scalar() == 0
+
+
+@pytest.mark.asyncio
+async def test_the_finished_goods_schema(engine):
+    # spec workshop-finished-goods, rules 1–5.
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE products (id INTEGER PRIMARY KEY, name VARCHAR(255))"))
+        await conn.execute(text("CREATE TABLE product_parts (id INTEGER PRIMARY KEY, product_id INTEGER)"))
+        await conn.execute(text("CREATE TABLE project_lines (id INTEGER PRIMARY KEY, product_id INTEGER)"))
+        await conn.execute(
+            text("CREATE TABLE product_part_stock_movements (id INTEGER PRIMARY KEY, product_part_id INTEGER)")
+        )
+    await _run(engine)
+    await _run(engine)  # idempotent
+    async with engine.connect() as conn:
+        cols = {r[1] for r in (await conn.execute(text("PRAGMA table_info(product_part_stock_movements)"))).all()}
+        assert "stock_item_id" in cols
+        for table in ("stock_items", "stock_item_choices", "stock_item_part_counts", "stock_item_movements"):
+            assert (await conn.execute(text(f"SELECT COUNT(*) FROM {table}"))).scalar() == 0
+        await conn.execute(text("INSERT INTO stock_items (product_id, config_key) VALUES (1, '')"))
+        with pytest.raises(IntegrityError):
+            await conn.execute(text("INSERT INTO stock_items (product_id, config_key) VALUES (1, '')"))
+        with pytest.raises(IntegrityError):
+            await conn.execute(text("UPDATE stock_items SET reserved = 5 WHERE product_id = 1"))
