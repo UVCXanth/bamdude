@@ -1027,7 +1027,7 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
         {/* Plate carousel (spec 5): arrows and a counter, no dots - a
             twelve-plate MakerWorld file would drown the card in them. z-20
             keeps them under the regen overlay's z-30. The counter sits
-            below the top-left selection checkbox: tags own top-right, the gallery and notes buttons own
+            right of the top-left selection checkbox: tags own top-right, the gallery and notes buttons own
             bottom-left, the actions trigger owns bottom-right. */}
         {slices.length > 1 && (
           <>
@@ -1050,7 +1050,7 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
             <span
               data-testid="plate-counter"
               title={plate ? t('fileManager.plateOf', { index: plate.index, count: slices.length }) : undefined}
-              className="absolute top-9 left-2 z-20 px-1.5 py-0.5 rounded bg-black/60 text-[11px] text-white tabular-nums"
+              className="absolute top-2 left-9 z-20 px-1.5 py-0.5 rounded bg-black/60 text-[11px] text-white tabular-nums"
             >
               {current + 1}/{slices.length}
             </span>
@@ -1074,7 +1074,7 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
             renders. Provenance (MakerWorld) ships as the orange ``MW``
             chip inside FileTagBadges; the click-to-open-original action
             lives in the three-dots menu. */}
-        <div className="absolute top-2 right-2 flex items-center gap-1">
+        <div className={`absolute top-2 right-2 flex items-center gap-1 ${slices.length > 1 ? 'max-w-[calc(100%-6rem)]' : ''}`}>
           <FileTagBadges tags={file.file_tags} compact />
         </div>
         {/* Plate-gallery overlay — sits directly above the notes button.
