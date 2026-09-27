@@ -88,6 +88,11 @@ export const ORDER_VIEW_KEYS = [
   'stock-items',
   'stock-item',
   'stock-lookup',
+  // spec workshop-order-issue: the issue dialog's numbers, the «take from stock»
+  // offers and a customer's issues move with every assemble, receipt, issue and take.
+  'project-fulfilment',
+  'project-stock-offers',
+  'customer-issues',
 ] as const;
 
 /**

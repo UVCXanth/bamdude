@@ -1816,6 +1816,14 @@ export interface ProjectLine {
    *  and kits off the free-parts one (spec workshop-add-to-order, rule 14). */
   from_finished: number;
   from_kit_units: number;
+  /** The line's stock counters (spec workshop-order-issue, rule 23): assembled from its
+   *  kits, received from its prints, issued to the customer, and on the shelf under the
+   *  order now. A parts line sums its parts. Anything but zero in the first three means
+   *  the line's stock has MOVED: its stock numbers are only added to from then on. */
+  assembled: number;
+  received: number;
+  issued: number;
+  held: number;
   /** Printed-and-stock coverage, capped at this line's quantity. */
   covered_units: number;
   progress: number;
@@ -1984,6 +1992,8 @@ export interface OrderListItem {
    * `ordered` beside it stay literal: one is prints, the other is the shelf.
    */
   from_stock_units: number;
+  /** Units (a parts line: parts) issued to the customer — «issued X of Y» beside `ordered`. */
+  issued_units: number;
   /** One entry per line, in line order. The id is what the card's cover URL is
    *  built from, so a line whose product HAS a cover shows it and one that has
    *  none keeps its place as a placeholder. */
@@ -3014,6 +3024,136 @@ export interface BatchLinesResult {
   results: LineIntake[];
 }
 
+// ---------- issuing an order in batches (spec workshop-order-issue) ----------
+
+/** Who takes the goods — copied into the issue as text. */
+export interface FulfilmentRecipient {
+  name: string | null;
+  phone: string | null;
+  delivery_method: string | null;
+  delivery_details: string | null;
+}
+
+/** One part of a parts line in the issue dialog. */
+export interface FulfilmentPartState {
+  part_id: number;
+  name: string;
+  wanted: number;
+  can_receive: number;
+  /** On the shelf under the order now. */
+  held: number;
+  issued: number;
+}
+
+/** What a line can assemble, receive and issue now — `order_fulfilment.state`, the
+ *  same arithmetic the POST checks against. */
+export interface FulfilmentLineState {
+  line_id: number;
+  product_name: string;
+  mode: LineMode;
+  ordered: number;
+  from_finished: number;
+  kits_reserved: number;
+  can_assemble: number;
+  can_receive: number;
+  held: number;
+  issued: number;
+  parts: FulfilmentPartState[];
+}
+
+/** `GET /projects/{id}/fulfilment`. */
+export interface FulfilmentState {
+  lines: FulfilmentLineState[];
+  ordered: number;
+  issued: number;
+  held: number;
+  fully_issued: boolean;
+  /** The order's contact, else the customer's main contact. */
+  recipient: FulfilmentRecipient;
+}
+
+export interface FulfilmentPartBody {
+  part_id: number;
+  receive: number;
+  issue: number;
+}
+
+export interface FulfilmentLineBody {
+  line_id: number;
+  assemble?: number;
+  receive?: number;
+  issue?: number;
+  parts?: FulfilmentPartBody[];
+}
+
+/** `POST /projects/{id}/fulfilment` — one «Виконати». */
+export interface FulfilmentBody {
+  lines: FulfilmentLineBody[];
+  recipient: FulfilmentRecipient;
+  waybill: string | null;
+  note: string | null;
+  complete: boolean;
+}
+
+export interface FulfilmentResult {
+  order: Order;
+  /** The issue this batch opened; null when it issued nothing. */
+  issue_id: number | null;
+}
+
+/** `GET /projects/{id}/stock-offers` — what the shelves could give for what nobody
+ *  printed, is printing or queued. */
+export interface StockOffer {
+  line_id: number;
+  product_name: string;
+  from_finished: number;
+  kits: number;
+}
+
+/** `POST /projects/{id}/take-stock` — what the banner SHOWED per line; omitted, the
+ *  current offers. The answer says what each line asked and got. */
+export interface TakeStockBody {
+  lines?: { line_id: number; from_finished: number; kits: number }[];
+}
+
+export interface TakeStockResult {
+  order: Order;
+  results: LineIntake[];
+}
+
+/** One issue on a customer's page (spec rule 22). */
+export interface StockIssueRow {
+  id: number;
+  created_at: string;
+  /** null — a manual issue, without an order. */
+  project_id: number | null;
+  project_code: string | null;
+  customer_id: number | null;
+  customer_name: string;
+  units: number;
+  recipient_name: string | null;
+  recipient_phone: string | null;
+  delivery_method: string | null;
+  delivery_details: string | null;
+  waybill: string | null;
+  note: string | null;
+  created_by_name: string | null;
+}
+
+export interface StockIssuePage {
+  items: StockIssueRow[];
+  meta: PaginationMeta;
+}
+
+/** `PATCH /stock-issues/{id}` — the waybill (at most 24 characters) and the note. */
+export interface StockIssueUpdate {
+  waybill?: string | null;
+  note?: string | null;
+}
+
+/** The most a waybill number may be — `models/stock_issue.py::WAYBILL_MAX`. */
+export const WAYBILL_MAX = 24;
+
 /** A printed part of a catalogue product — the dialog's «parts of a product» tab. */
 export interface ProductPartRow {
   part_id: number;
@@ -3151,6 +3291,9 @@ export interface StockMoveBody {
   note?: string;
   customer_id?: number;
   from_reserve?: boolean;
+  /** An issue: the waybill, and who takes the goods (absent — the customer's main contact). */
+  waybill?: string | null;
+  recipient?: FulfilmentRecipient;
 }
 
 export interface StockAssembleBody {
@@ -11569,6 +11712,20 @@ export const api = {
   /** What each line would take from stock (spec workshop-add-to-order, rule 10). */
   suggestStock: (items: StockSuggestItem[]) =>
     request<{ items: StockSuggestion[] }>('/stock/suggest', { method: 'POST', body: JSON.stringify({ items }) }),
+  /** What each line of the order can assemble, receive and issue now. */
+  getFulfilment: (orderId: number) => request<FulfilmentState>(`/projects/${orderId}/fulfilment`),
+  /** One batch of the issue dialog; a refusal is the server's sentence and nothing is written. */
+  fulfilOrder: (orderId: number, body: FulfilmentBody) =>
+    request<FulfilmentResult>(`/projects/${orderId}/fulfilment`, { method: 'POST', body: JSON.stringify(body) }),
+  getStockOffers: (orderId: number) => request<StockOffer[]>(`/projects/${orderId}/stock-offers`),
+  takeStock: (orderId: number, body: TakeStockBody = {}) =>
+    request<TakeStockResult>(`/projects/${orderId}/take-stock`, { method: 'POST', body: JSON.stringify(body) }),
+  getCustomerIssues: (customerId: number, params: { page: number; per_page: number }) =>
+    request<StockIssuePage>(
+      `/customers/${customerId}/issues?${new URLSearchParams({ page: String(params.page), per_page: String(params.per_page) })}`,
+    ),
+  updateStockIssue: (id: number, body: StockIssueUpdate) =>
+    request<StockIssueRow>(`/stock-issues/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   /** Many lines in one transaction; a refused line refuses the batch. */
   addOrderLines: (orderId: number, lines: BatchLine[]) =>
     request<BatchLinesResult>(`/projects/${orderId}/lines/batch`, { method: 'POST', body: JSON.stringify({ lines }) }),
