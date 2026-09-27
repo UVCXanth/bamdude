@@ -6,7 +6,7 @@ import type { BatchLine, BatchLinesResult } from '../../../api/client';
 import { useToast } from '../../../contexts/ToastContext';
 import { useSearchBox } from '../../../hooks/useSearchBox';
 import { useStockSuggest } from '../../../hooks/useStockSuggest';
-import { invalidateOrderViews, invalidateStock } from '../../../utils/queryInvalidation';
+import { invalidateOrderViews } from '../../../utils/queryInvalidation';
 import { Button } from '../../Button';
 import { Modal } from '../../Modal';
 import { Select } from '../../Select';
@@ -79,8 +79,8 @@ export function AddToOrderDialog({
   const add = useMutation({
     mutationFn: (id: number) => api.addOrderLines(id, lines),
     onSuccess: (result, id) => {
+      // Both shelves' keys are order views (`ORDER_VIEW_KEYS`), each once.
       invalidateOrderViews(qc, { orderId: id });
-      invalidateStock(qc);
       showToast(t('orders.add.added', { count: result.results.length }));
       const short = shortfalls(result);
       if (short.length > 0) {

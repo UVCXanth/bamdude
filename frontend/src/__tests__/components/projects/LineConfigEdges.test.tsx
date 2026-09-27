@@ -11,7 +11,6 @@ import { api } from '../../../api/client';
 import type { Order, Product, ProjectLine } from '../../../api/client';
 import { LineConfigDialog } from '../../../components/projects/LineConfigDialog';
 import { OrderLinesTable } from '../../../components/projects/OrderLinesTable';
-import { AddLineRow } from '../../../components/projects/AddLineRow';
 
 const product = {
   id: 7,
@@ -46,6 +45,8 @@ const line = {
   sort_order: 0,
   units_printed: 0,
   from_stock_units: 1,
+  from_kit_units: 1,
+  from_finished: 0,
   covered_units: 1,
   progress: 0.25,
   archive_ids: [],
@@ -96,23 +97,6 @@ describe('kits offered from the shelf', () => {
     vi.spyOn(api, 'getProducts').mockResolvedValue([{ id: 7, code: 'PR-0007', name: 'Pipe', is_active: true }] as never);
     vi.spyOn(api, 'getProduct').mockResolvedValue(product);
     vi.spyOn(api, 'getProductStock').mockResolvedValue({ kits_available: 5, balances: [], movements: [] });
-  });
-
-  it('are the chosen configuration’s when adding a line', async () => {
-    const kits = vi.spyOn(api, 'getConfigurationKits').mockResolvedValue({ kits_available: 2 });
-    render(
-      <table>
-        <tbody>
-          <AddLineRow orderId={1} />
-        </tbody>
-      </table>,
-    );
-    fireEvent.click(await screen.findByRole('button', { name: 'PR-0007 · Pipe' }));
-    fireEvent.change(screen.getByLabelText(/quantity/i), { target: { value: '9' } });
-    expect(((await screen.findByTestId('add-line-from-stock')) as HTMLInputElement).value).toBe('5');
-    fireEvent.change(await screen.findByLabelText('Хвіст'), { target: { value: '12' } });
-    await waitFor(() => expect(kits).toHaveBeenCalledWith(7, { options: [12], counts: {} }));
-    await waitFor(() => expect((screen.getByTestId('add-line-from-stock') as HTMLInputElement).value).toBe('2'));
   });
 
   it('are the line’s own configuration’s when editing it', async () => {

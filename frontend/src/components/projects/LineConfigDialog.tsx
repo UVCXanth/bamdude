@@ -154,6 +154,10 @@ export function LineConfigDialog({
     if (impact.reserved_before > 0 || impact.reserved_after > 0) {
       bits.push(t('orders.lineConfig.impactReserve', { before: impact.reserved_before, after: impact.reserved_after }));
     }
+    // Ready units move to the new configuration's position — as many as it has free.
+    if (impact.finished_before > 0 || impact.finished_after > 0) {
+      bits.push(t('orders.lineConfig.impactReady', { before: impact.finished_before, after: impact.finished_after }));
+    }
     return bits.length ? bits.join(' · ') : t('orders.lineConfig.impactNone');
   };
 

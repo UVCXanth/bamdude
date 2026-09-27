@@ -310,4 +310,28 @@ describe('ProductPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Add to catalogue' }));
     await waitFor(() => expect(patched).toHaveBeenCalledWith({ origin: 'catalog' }));
   });
+
+  it('adds a catalog product to an order it asks for', async () => {
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue({ items: [], meta: { total: 0, current_page: 1, per_page: 24, last_page: 1 }, categories: [], uncategorized: 0 });
+    vi.spyOn(api, 'getProductCategories').mockResolvedValue([]);
+    vi.spyOn(api, 'getProductFacets').mockResolvedValue({ materials: [], colors: [], models: [] });
+    const orders = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue({
+      items: [],
+      meta: { total: 0, current_page: 1, per_page: 20, last_page: 1 },
+      totals: { active: 0, completed: 0, cancelled: 0, all: 0, stages: {} },
+    } as never);
+    mountAt();
+    fireEvent.click(await screen.findByRole('button', { name: 'Add to order' }));
+    expect(await screen.findByRole('dialog', { name: 'Add to order' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Order')).toBeInTheDocument();
+    await waitFor(() => expect(orders).toHaveBeenCalledWith({ status: 'active', page: 1, per_page: 20 }));
+    expect(screen.getByRole('button', { name: 'Add lines (1)' })).toBeDisabled();
+  });
+
+  it('offers no «Add to order» for a one-off product', async () => {
+    vi.spyOn(api, 'getProduct').mockResolvedValue({ ...product, id: 9, origin: 'adhoc_job' } as never);
+    mountAt(9);
+    expect(await screen.findByText(/one-off product/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add to order' })).not.toBeInTheDocument();
+  });
 });

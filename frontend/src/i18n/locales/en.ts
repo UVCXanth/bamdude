@@ -5416,10 +5416,8 @@ export default {
       checking: 'Checking what this changes…',
       impactSurplus: '{{printed}} printed, {{queued}} queued will become surplus',
       impactReserve: 'reserve {{before}} → {{after}}',
+      impactReady: 'ready {{before}} → {{after}}',
       impactNone: 'Nothing printed or queued is affected.',
-      mode: 'What to add',
-      modeProduct: 'Product',
-      modeParts: 'Parts of the product',
     },
     tiles: {
       active: 'Active',
@@ -5679,9 +5677,8 @@ export default {
       delete: 'Delete line',
       confirmDeleteTitle: 'Delete this line?',
       confirmDelete: 'Prints filed under this line stay in the order, unfiled.',
-      add: 'Add',
-      addLine: 'Add line',
-      empty: 'No lines yet — add the first one below.',
+      addToOrder: 'Add to order',
+      empty: 'No lines yet — add them with “Add to order”.',
     },
     parts: {
       name: 'Part',
@@ -5804,6 +5801,11 @@ export default {
       empty: 'No activity yet.',
       showMore: 'Show {{count}} more',
       showLess: 'Show less',
+      stock: {
+        ready: '{{count}} ready from stock',
+        kits_one: '{{count}} kit from stock',
+        kits_other: '{{count}} kits from stock',
+      },
       events: {
         print_started: 'Print started',
         print_completed: 'Print completed',
@@ -5858,6 +5860,7 @@ export default {
         material: 'material',
         note: 'note',
         from_stock: 'from stock',
+        from_finished: 'ready from stock',
       },
     },
     notes: {
@@ -6258,6 +6261,7 @@ export default {
     },
     header: {
       breadcrumb: 'Products',
+      addToOrder: 'Add to order',
       inCatalog: 'In catalog',
       hidden: 'Not in the catalog',
       designer: 'Designer',
@@ -6474,10 +6478,13 @@ export default {
       nothing: 'Nothing to bank — this surplus is already on the shelf.',
     },
     line: {
-      label: 'From stock',
-      available: '{{n}} available',
+      readyLabel: 'Ready units from stock',
+      kitsLabel: 'Kits from stock',
+      pick: 'Pick from stock',
+      finishedActiveOnly: 'Only an active order takes ready units from stock',
       clamped: 'Only {{n}} could be reserved — the shelf had no more.',
-      reserved: 'from stock {{n}}',
+      clampedFinished: 'Only {{n}} ready units could be reserved — the shelf had no more.',
+      split: 'from stock: ready {{ready}} · kits {{kits}}',
     },
     card: {
       kits_one: '{{count}} kit in stock',

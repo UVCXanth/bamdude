@@ -76,6 +76,16 @@ export function journalText(event: TimelineEvent, t: TFunction): string | null {
       return t('orders.timeline.events.fields_changed', { fields: fieldList(m.fields, t) });
     case 'responsible_changed':
       return t('orders.timeline.events.responsible_changed', { from: person(m.from, t), to: person(m.to, t) });
+    case 'line_added': {
+      // What the line took off each shelf rides on the same entry (spec
+      // workshop-add-to-order, rule 11) — said only when it took something.
+      const bits = [t('orders.timeline.events.line_added', { product: named(m.product), quantity: text(m.quantity) })];
+      const ready = Number(m.from_finished) || 0;
+      const kits = Number(m.from_stock) || 0;
+      if (ready > 0) bits.push(t('orders.timeline.stock.ready', { count: ready }));
+      if (kits > 0) bits.push(t('orders.timeline.stock.kits', { count: kits }));
+      return bits.join(', ');
+    }
     case 'line_changed': {
       const changes = m.changes && typeof m.changes === 'object' ? Object.keys(m.changes) : [];
       return t('orders.timeline.events.line_changed', { product: named(m.product), fields: fieldList(changes, t) });

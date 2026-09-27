@@ -79,6 +79,8 @@ const order = {
       sort_order: 1,
       units_printed: 4,
       from_stock_units: 0,
+      from_finished: 0,
+      from_kit_units: 0,
       covered_units: 4,
       progress: 1,
       archive_ids: [],
@@ -95,6 +97,8 @@ const order = {
       sort_order: 0,
       units_printed: 1,
       from_stock_units: 2,
+      from_finished: 0,
+      from_kit_units: 2,
       covered_units: 2,
       progress: 1,
       archive_ids: [],
@@ -128,19 +132,6 @@ describe('OrderLinesTable', () => {
     await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
     expect(patch).toHaveBeenCalledWith(1, 10, { sort_order: 1 });
     expect(patch).toHaveBeenCalledWith(1, 11, { sort_order: 0 });
-  });
-
-  it('adds a line with the picked product and an uppercased material', async () => {
-    vi.spyOn(api, 'getProducts').mockResolvedValue([{ id: 3, code: 'PR-0003', name: 'Cap', is_active: true }] as never);
-    const add = vi.spyOn(api, 'addOrderLine').mockResolvedValue(order);
-    render(<OrderLinesTable order={order} canEdit />);
-    fireEvent.click(await screen.findByRole('button', { name: 'PR-0003 · Cap' }));
-    fireEvent.change(screen.getByLabelText(/material/i), { target: { value: 'petg' } });
-    fireEvent.blur(screen.getByLabelText(/material/i));
-    fireEvent.click(screen.getByRole('button', { name: /add line/i }));
-    await waitFor(() =>
-      expect(add).toHaveBeenCalledWith(1, { product_id: 3, quantity: 1, material: 'PETG', color: null, note: null }),
-    );
   });
 
   it('refetches the order when only half of a swap lands', async () => {
@@ -271,7 +262,7 @@ describe('OrderLinesTable', () => {
     it('shows what a line already takes off the shelf, and nothing for a line that takes none', () => {
       render(<OrderLinesTable order={order} canEdit />);
 
-      expect(screen.getByTestId('line-10-from-stock-shown')).toHaveTextContent('from stock 2');
+      expect(screen.getByTestId('line-10-from-stock-shown')).toHaveTextContent('from stock: ready 0 · kits 2');
       // ⚠️ Not "from stock 0" and not a bare 0 either — line 11 reserves
       // nothing, so the row says nothing.
       expect(screen.queryByTestId('line-11-from-stock-shown')).not.toBeInTheDocument();
@@ -309,8 +300,7 @@ describe('OrderLinesTable', () => {
 
       fireEvent.click(screen.getByTestId('line-10-edit'));
       await screen.findByTestId('line-10-from-stock');
-      // Scoped to the row: the add-line row at the bottom carries a note box of
-      // its own, so a page-wide query finds two.
+      // Scoped to the row: every other row's fields are not this one's.
       const row = screen.getByTestId('line-10-save').closest('tr') as HTMLElement;
       fireEvent.change(within(row).getByLabelText(/note/i), { target: { value: 'urgent' } });
       fireEvent.click(screen.getByTestId('line-10-save'));
@@ -412,7 +402,7 @@ describe('OrderLinesTable', () => {
       vi.spyOn(api, 'getProductStock').mockResolvedValue(stock as never);
       const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue({
         ...order,
-        lines: order.lines.map((l) => (l.id === 11 ? { ...l, from_stock_units: 1 } : l)),
+        lines: order.lines.map((l) => (l.id === 11 ? { ...l, from_stock_units: 1, from_kit_units: 1 } : l)),
       } as never);
       render(<OrderLinesTable order={order} canEdit />);
 
@@ -457,7 +447,7 @@ describe('OrderLinesTable', () => {
       // one back — the shelf emptied between the row opening and Save.
       const saved = {
         ...order,
-        lines: order.lines.map((l) => (l.id === 11 ? { ...l, from_stock_units: 1 } : l)),
+        lines: order.lines.map((l) => (l.id === 11 ? { ...l, from_stock_units: 1, from_kit_units: 1 } : l)),
       } as unknown as typeof order;
       vi.spyOn(api, 'updateOrderLine').mockResolvedValue(saved);
       render(<OrderLinesTable order={order} canEdit />);
@@ -468,5 +458,91 @@ describe('OrderLinesTable', () => {
 
       expect(await screen.findByText(/only 1 could be reserved/i)).toBeInTheDocument();
     });
+  });
+});
+
+describe('OrderLinesTable · add to order and ready units', () => {
+  const ready = {
+    ...order,
+    lines: order.lines.map((l) => (l.id === 10 ? { ...l, from_finished: 2, from_kit_units: 0, from_stock_units: 2 } : l)),
+  } as unknown as Order;
+  const stock = { kits_available: 1, balances: [], movements: [] };
+  const suggestion = {
+    product_id: 1,
+    finished_free: 3,
+    kits_free: 1,
+    from_finished: 2,
+    from_kits: 0,
+    to_print: 0,
+    position_id: 4,
+    position_code: 'SK-0004',
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(api, 'getProductStock').mockResolvedValue(stock as never);
+  });
+
+  it('opens «Add to order» for this order instead of an add-line row', async () => {
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue({ items: [], meta: { total: 0, current_page: 1, per_page: 24, last_page: 1 }, categories: [], uncategorized: 0 });
+    vi.spyOn(api, 'getProductCategories').mockResolvedValue([]);
+    vi.spyOn(api, 'getProductFacets').mockResolvedValue({ materials: [], colors: [], models: [] });
+    render(<OrderLinesTable order={order} canEdit />);
+    expect(screen.queryByRole('button', { name: /add line/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Add to order' }));
+    expect(await screen.findByRole('dialog', { name: 'Add to order' })).toBeInTheDocument();
+    // The order is this one — nothing to choose.
+    expect(screen.queryByLabelText('Order')).not.toBeInTheDocument();
+  });
+
+  it('says how much of a line comes off each shelf', () => {
+    render(<OrderLinesTable order={ready} canEdit />);
+    expect(screen.getByTestId('line-10-from-stock-shown')).toHaveTextContent('from stock: ready 2 · kits 0');
+  });
+
+  it('edits ready units beside kits, within what is free plus what the line holds', async () => {
+    vi.spyOn(api, 'suggestStock').mockResolvedValue({ items: [suggestion] });
+    render(<OrderLinesTable order={ready} canEdit />);
+    fireEvent.click(screen.getByTestId('line-10-edit'));
+    const box = (await screen.findByTestId('line-10-from-finished')) as HTMLInputElement;
+    expect(box.value).toBe('2');
+    await waitFor(() => expect(box.max).toBe('2'));
+  });
+
+  it('«Pick from stock» asks the server for this line and fills both boxes', async () => {
+    const suggest = vi
+      .spyOn(api, 'suggestStock')
+      .mockResolvedValue({ items: [{ ...suggestion, from_finished: 1, from_kits: 1 }] });
+    const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(ready);
+    render(<OrderLinesTable order={ready} canEdit />);
+    fireEvent.click(screen.getByTestId('line-10-edit'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Pick from stock' }));
+    await waitFor(() =>
+      expect(suggest).toHaveBeenLastCalledWith([{ product_id: 1, options: [], quantity: 2, line_id: 10 }]),
+    );
+    await waitFor(() => expect(screen.getByTestId('line-10-from-finished')).toHaveValue(1));
+    expect(screen.getByTestId('line-10-from-stock')).toHaveValue(1);
+    fireEvent.click(screen.getByTestId('line-10-save'));
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 10, { from_stock_units: 1, from_finished: 1 }));
+  });
+
+  it('sends the ready units only when they moved', async () => {
+    vi.spyOn(api, 'suggestStock').mockResolvedValue({ items: [suggestion] });
+    const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(ready);
+    render(<OrderLinesTable order={ready} canEdit />);
+    fireEvent.click(screen.getByTestId('line-10-edit'));
+    await screen.findByTestId('line-10-from-finished');
+    const row = screen.getByTestId('line-10-save').closest('tr') as HTMLElement;
+    fireEvent.change(within(row).getByLabelText(/note/i), { target: { value: 'urgent' } });
+    fireEvent.click(screen.getByTestId('line-10-save'));
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 10, { note: 'urgent' }));
+  });
+
+  it('an order that is not active keeps its ready units and says why', async () => {
+    render(<OrderLinesTable order={{ ...ready, status: 'completed' } as Order} canEdit />);
+    fireEvent.click(screen.getByTestId('line-10-edit'));
+    expect(await screen.findByTestId('line-10-from-finished')).toBeDisabled();
+    expect(screen.getByText('Only an active order takes ready units from stock')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Pick from stock' })).not.toBeInTheDocument();
   });
 });

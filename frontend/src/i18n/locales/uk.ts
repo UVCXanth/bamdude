@@ -5457,10 +5457,8 @@ export default {
       checking: 'Перевіряю, що це змінить…',
       impactSurplus: '{{printed}} надруковано, {{queued}} у черзі стануть лишком',
       impactReserve: 'резерв {{before}} → {{after}}',
+      impactReady: 'готових {{before}} → {{after}}',
       impactNone: 'Надрукованого й запланованого це не зачіпає.',
-      mode: 'Що додати',
-      modeProduct: 'Виріб',
-      modeParts: 'Деталі з виробу',
     },
     tiles: {
       active: 'Активні',
@@ -5740,9 +5738,8 @@ export default {
       delete: 'Видалити позицію',
       confirmDeleteTitle: 'Видалити цю позицію?',
       confirmDelete: 'Друки, підшиті до цієї позиції, залишаться в замовленні без прив’язки.',
-      add: 'Додати',
-      addLine: 'Додати позицію',
-      empty: 'Позицій ще немає — додайте першу нижче.',
+      addToOrder: 'Додати в замовлення',
+      empty: 'Позицій ще немає — додайте їх кнопкою «Додати в замовлення».',
     },
     parts: {
       name: 'Деталь',
@@ -5875,6 +5872,10 @@ export default {
       empty: 'Активності ще немає.',
       showMore: 'Показати ще {{count}}',
       showLess: 'Згорнути',
+      stock: {
+        ready: 'готових {{count}} зі складу',
+        kits: 'комплектів {{count}} зі складу',
+      },
       events: {
         print_started: 'Друк почато',
         print_completed: 'Друк завершено',
@@ -5929,6 +5930,7 @@ export default {
         material: 'матеріал',
         note: 'нотатка',
         from_stock: 'зі складу',
+        from_finished: 'готових зі складу',
       },
     },
     notes: {
@@ -6359,6 +6361,7 @@ export default {
     },
     header: {
       breadcrumb: 'Вироби',
+      addToOrder: 'Додати в замовлення',
       inCatalog: 'У каталозі',
       hidden: 'Не в каталозі',
       designer: 'Автор моделі',
@@ -6588,10 +6591,13 @@ export default {
       nothing: 'Нічого списувати — цей надлишок уже на полиці.',
     },
     line: {
-      label: 'Зі складу',
-      available: 'доступно {{n}}',
+      readyLabel: 'Готових зі складу',
+      kitsLabel: 'Комплектів зі складу',
+      pick: 'Підібрати зі складу',
+      finishedActiveOnly: 'Готові зі складу бере лише активне замовлення',
       clamped: 'Вдалося зарезервувати лише {{n}} — на полиці більше не було.',
-      reserved: 'зі складу {{n}}',
+      clampedFinished: 'Вдалося зарезервувати лише {{n}} готових — на полиці більше не було.',
+      split: 'зі складу: готових {{ready}} · компл. {{kits}}',
     },
     card: {
       kits_one: '{{count}} комплект у залишку',

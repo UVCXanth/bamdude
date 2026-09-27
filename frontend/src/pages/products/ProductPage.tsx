@@ -18,6 +18,7 @@ import { LinkedFiles } from '../../components/products/LinkedFiles';
 import { ProductOrders } from '../../components/products/ProductOrders';
 import { ProductCardDialog } from '../../components/products/ProductCardDialog';
 import { ConfirmModal } from '../../components/ConfirmModal';
+import { AddToOrderDialog } from '../../components/projects/add-to-order/AddToOrderDialog';
 import { invalidateAfterDelete, invalidateOrderViews, invalidateProductCatalog } from '../../utils/queryInvalidation';
 import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 import { useProductDetail } from '../../hooks/useProductDetail';
@@ -46,6 +47,7 @@ export function ProductPage() {
 
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [adding, setAdding] = useState(false);
 
   // The shared hook owns this query's options — including the refresh toast.
   // A second `useQuery` on the same key anywhere (the card dialog that opens
@@ -182,6 +184,9 @@ export function ProductPage() {
         onDuplicate={() => duplicate.mutate()}
         onDelete={() => setDeleting(true)}
         onToggleActive={(next) => toggleActive.mutate(next)}
+        // A one-off product is added with its plate, from the order (spec
+        // workshop-add-to-order, rule 25) — the button is the catalog's.
+        onAddToOrder={product.origin === 'catalog' && canEdit ? () => setAdding(true) : undefined}
       />
 
       {product.origin !== 'catalog' && (
@@ -229,6 +234,8 @@ export function ProductPage() {
       </div>
 
       {editing && <ProductCardDialog product={product} onClose={() => setEditing(false)} />}
+
+      {adding && <AddToOrderDialog preselectProductId={product.id} onClose={() => setAdding(false)} />}
 
       {deleting && (
         <ConfirmModal

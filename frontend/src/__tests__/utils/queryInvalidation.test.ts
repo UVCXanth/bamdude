@@ -131,6 +131,8 @@ describe('invalidateOrderViews', () => {
       'product-stock',
       'product',
       'products',
+      // spec workshop-add-to-order: one configuration's free kits.
+      'product-kits',
       // stock tab (2026-09-10)
       'stock-summary',
       // finished goods (WS-09): the journal shows the parts rows an order moves,

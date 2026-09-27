@@ -73,6 +73,9 @@ export const ORDER_VIEW_KEYS = [
   'product-stock',
   'product',
   'products',
+  // spec workshop-add-to-order: the free kits of ONE configuration (the line
+  // editor's ceiling) move with every reservation a line takes or hands back.
+  'product-kits',
   // stock tab (2026-09-10): the farm-wide shelf and its journal move with the
   // same mutations that move a product's shelf — a reservation, a release, a
   // bank, an order deleted — and with the print completions the socket

@@ -1,17 +1,18 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, ChevronRight, ChevronUp, Check, Pencil, SlidersHorizontal, Trash2, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, ChevronUp, Check, ListPlus, Pencil, SlidersHorizontal, Trash2, X } from 'lucide-react';
 import { api } from '../../api/client';
-import type { Order, ProjectLine, ProjectLineUpdate } from '../../api/client';
+import type { Order, ProjectLine, ProjectLineUpdate, StockSuggestItem } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { useProductStock } from '../../hooks/useProductStock';
 import { useConfigurationKits } from '../../hooks/useConfigurationKits';
 import { ConfirmModal } from '../ConfirmModal';
 import { ProgressBar } from './ProgressBar';
 import { LinePartsTable } from './LinePartsTable';
-import { AddLineRow } from './AddLineRow';
+import { AddToOrderDialog } from './add-to-order/AddToOrderDialog';
+import { Button } from '../Button';
 import { LineConfigDialog } from './LineConfigDialog';
 import { lineConfigLabel } from './lineConfigLabel';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
@@ -33,6 +34,8 @@ interface Draft {
   note: string;
   /** Kits this line takes off the shelf (pass 8, Decision 4). */
   fromStock: number;
+  /** Ready units off the finished-goods shelf (spec workshop-add-to-order, rule 13). */
+  fromFinished: number;
 }
 
 function draftOf(line: ProjectLine): Draft {
@@ -43,8 +46,27 @@ function draftOf(line: ProjectLine): Draft {
     material: line.material ?? '',
     color: line.color ?? '',
     note: line.note ?? '',
-    fromStock: line.from_stock_units,
+    // ⚠️ The KITS, not `from_stock_units`: in the figures that is every unit
+    // from stock, ready units included (rule 14); the request field of the same
+    // name is kits alone.
+    fromStock: line.from_kit_units,
+    fromFinished: line.from_finished,
   };
+}
+
+/** The line as `/stock/suggest` asks about it — its own reservation counts as free for it. */
+function suggestItemFor(line: ProjectLine, quantity: number): StockSuggestItem {
+  const config = line.configuration;
+  const item: StockSuggestItem = {
+    product_id: line.product_id,
+    options: config ? config.choices.map((c) => c.option_id) : [],
+    quantity,
+    line_id: line.id,
+  };
+  if (config && config.changed_parts.length > 0) {
+    item.part_counts = Object.fromEntries(config.changed_parts.map((p) => [p.part_id, p.qty]));
+  }
+  return item;
 }
 
 /**
@@ -76,7 +98,9 @@ function changedFields(line: ProjectLine, draft: Draft): ProjectLineUpdate {
   // (release + reserve in one server transaction) — so restating the current
   // value would burn a rewrite, and with it the ledger rows that record one,
   // on every save that touched a note.
-  if (draft.fromStock !== line.from_stock_units) patch.from_stock_units = draft.fromStock;
+  if (draft.fromStock !== line.from_kit_units) patch.from_stock_units = draft.fromStock;
+  // The same rule for the ready units: absent leaves them alone.
+  if (draft.fromFinished !== line.from_finished) patch.from_finished = draft.fromFinished;
   return patch;
 }
 
@@ -112,6 +136,9 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [deleting, setDeleting] = useState<ProjectLine | null>(null);
   const [configuring, setConfiguring] = useState<ProjectLine | null>(null);
+  const [adding, setAdding] = useState(false);
+  // Only an active order takes ready units (spec workshop-add-to-order, rule 7).
+  const orderActive = order.status === 'active';
 
   // `sort_order` is the authority and `id` only breaks its ties, so two lines
   // that share a position still come out in a stable order rather than
@@ -126,8 +153,8 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
 
   // The shelf of the product being edited. `null` while nothing is open, which
   // in TanStack v5 is a DISABLED query — pending, not fetching, asking nothing.
-  // The hook owns the key so this and the add-line row below cannot end up
-  // fighting over one query's options; see `useProductStock`.
+  // The hook owns the key so this and the product page cannot end up fighting
+  // over one query's options; see `useProductStock`.
   const { data: editStock } = useProductStock(draft ? draft.productId : null);
   // A configured line holds its own kit, not the product's standard one.
   const editedLine = draft ? order.lines.find((l) => l.id === draft.id) : undefined;
@@ -145,6 +172,26 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
       : null,
   );
   const editFreeKits = (nonStandard ? editKits?.kits_available : editStock?.kits_available) ?? 0;
+  // Ready units free in the line's own position, its own reservation included —
+  // asked of the ONE picking function, as «Pick from stock» is.
+  const takesFinished = editedLine != null && editedLine.mode !== 'parts' && orderActive;
+  const { data: editSuggest } = useQuery({
+    queryKey: ['stock-suggest', 'line', editedLine?.id, editedLine?.config_key],
+    queryFn: () => api.suggestStock([suggestItemFor(editedLine as ProjectLine, (editedLine as ProjectLine).quantity)]),
+    enabled: takesFinished,
+  });
+  const editFreeFinished = editSuggest?.items[0]?.finished_free ?? editedLine?.from_finished ?? 0;
+
+  const pick = useMutation({
+    mutationFn: ({ line, quantity }: { line: ProjectLine; quantity: number }) =>
+      api.suggestStock([suggestItemFor(line, quantity)]),
+    onSuccess: (answer, { line }) => {
+      const s = answer.items[0];
+      if (!s) return;
+      setDraft((d) => (d && d.id === line.id ? { ...d, fromFinished: s.from_finished, fromStock: s.from_kits } : d));
+    },
+    onError: (e: Error) => showToast(e.message, 'error'),
+  });
 
   const save = useMutation({
     mutationFn: ({ lineId, data }: { lineId: number; data: ProjectLineUpdate }) =>
@@ -158,13 +205,19 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
       // time here: two `invalidateQueries` for one key is two refetches of the
       // same product page, which is what the scoped copy used to cost.
       invalidate();
+      if (data.from_finished != null) {
+        const line = saved.lines.find((l) => l.id === lineId);
+        if (line && line.from_finished < data.from_finished) {
+          showToast(t('stock.line.clampedFinished', { n: line.from_finished }), 'warning');
+        }
+      }
       if (data.from_stock_units != null) {
         // What was ACTUALLY reserved can be less than what was asked — the
         // shelf may have emptied since the row was opened. The row is closing,
         // so the honest number is said rather than shown.
         const line = saved.lines.find((l) => l.id === lineId);
-        if (line && line.from_stock_units < data.from_stock_units) {
-          showToast(t('stock.line.clamped', { n: line.from_stock_units }), 'warning');
+        if (line && line.from_kit_units < data.from_stock_units) {
+          showToast(t('stock.line.clamped', { n: line.from_kit_units }), 'warning');
         }
       }
       setDraft(null);
@@ -223,11 +276,19 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
       return next;
     });
 
-  const busy = save.isPending || swap.isPending || remove.isPending;
+  const busy = save.isPending || swap.isPending || remove.isPending || pick.isPending;
 
   return (
     <section className="space-y-3">
-      <h2 className="text-lg font-medium text-white">{t('orders.lines.title')}</h2>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-lg font-medium text-white">{t('orders.lines.title')}</h2>
+        {canEdit && (
+          <Button size="sm" onClick={() => setAdding(true)}>
+            <ListPlus className="w-4 h-4" />
+            {t('orders.lines.addToOrder')}
+          </Button>
+        )}
+      </div>
 
       <div className="overflow-x-auto rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary">
         <table className="w-full text-sm">
@@ -287,8 +348,15 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                           // the server clamps it away anyway (Ruling 16), and a
                           // box left showing five while three go back on the
                           // shelf is the display disagreeing with the write.
+                          // Kits go back first, then ready units (spec rule 6).
                           const quantity = Math.max(1, Number(e.target.value) || 1);
-                          setDraft({ ...editing, quantity, fromStock: Math.min(editing.fromStock, quantity) });
+                          const fromFinished = Math.min(editing.fromFinished, quantity);
+                          setDraft({
+                            ...editing,
+                            quantity,
+                            fromFinished,
+                            fromStock: Math.min(editing.fromStock, quantity - fromFinished),
+                          });
                         }}
                         className={`${FIELD_CLASS} w-20`}
                       />
@@ -306,44 +374,96 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                     {editing
                       ? (() => {
                           if (line.mode === 'parts') return null;
-                          const pool = editFreeKits + line.from_stock_units;
-                          if (pool <= 0) return null;
+                          const pool = editFreeKits + line.from_kit_units;
+                          // Ready units come first; kits fit under what is left
+                          // (spec workshop-add-to-order, rule 6).
+                          const kitsRoom = Math.max(0, editing.quantity - editing.fromFinished);
+                          const finishedMax = Math.min(editFreeFinished, editing.quantity);
+                          const showFinished = !orderActive
+                            ? line.from_finished > 0 || editing.fromFinished > 0
+                            : editFreeFinished > 0 || line.from_finished > 0;
                           return (
-                            <div className="mt-1">
-                              <label className="block text-xs text-bambu-gray" htmlFor={`line-${line.id}-from-stock`}>
-                                {t('stock.line.label')}
-                              </label>
-                              <input
-                                id={`line-${line.id}-from-stock`}
-                                data-testid={`line-${line.id}-from-stock`}
-                                type="number"
-                                min={0}
-                                max={Math.min(pool, editing.quantity)}
-                                value={editing.fromStock}
-                                // ⚠️ **The DRAFT is clamped, not the display**
-                                // (finding I2). While the ceiling was applied
-                                // only to `value`, the box showed 2 and the
-                                // draft held the 7 that was typed: the save sent
-                                // 7, the server clamped it back to 2, and an
-                                // edit that changed nothing but a note burned a
-                                // release-and-retake on the ledger — while
-                                // warning about a clamp the operator never saw.
-                                // `changedFields` still sends the field only
-                                // when it MOVED.
-                                onChange={(e) =>
-                                  setDraft({
-                                    ...editing,
-                                    fromStock: Math.min(Math.max(0, Number(e.target.value) || 0), editing.quantity, pool),
-                                  })
-                                }
-                                className={`${FIELD_CLASS} w-20`}
-                              />
+                            <div className="mt-1 space-y-1">
+                              {showFinished && (
+                                <div>
+                                  <label
+                                    className="block text-xs text-bambu-gray"
+                                    htmlFor={`line-${line.id}-from-finished`}
+                                  >
+                                    {t('stock.line.readyLabel')}
+                                  </label>
+                                  <input
+                                    id={`line-${line.id}-from-finished`}
+                                    data-testid={`line-${line.id}-from-finished`}
+                                    type="number"
+                                    min={0}
+                                    max={finishedMax}
+                                    value={editing.fromFinished}
+                                    disabled={!orderActive}
+                                    title={!orderActive ? t('stock.line.finishedActiveOnly') : undefined}
+                                    onChange={(e) => {
+                                      const fromFinished = Math.min(Math.max(0, Number(e.target.value) || 0), finishedMax);
+                                      setDraft({
+                                        ...editing,
+                                        fromFinished,
+                                        fromStock: Math.min(editing.fromStock, editing.quantity - fromFinished),
+                                      });
+                                    }}
+                                    className={`${FIELD_CLASS} w-20 disabled:opacity-50`}
+                                  />
+                                  {!orderActive && (
+                                    <p className="text-xs text-bambu-gray">{t('stock.line.finishedActiveOnly')}</p>
+                                  )}
+                                </div>
+                              )}
+                              {pool > 0 && (
+                                <div>
+                                  <label className="block text-xs text-bambu-gray" htmlFor={`line-${line.id}-from-stock`}>
+                                    {t('stock.line.kitsLabel')}
+                                  </label>
+                                  <input
+                                    id={`line-${line.id}-from-stock`}
+                                    data-testid={`line-${line.id}-from-stock`}
+                                    type="number"
+                                    min={0}
+                                    max={Math.min(pool, kitsRoom)}
+                                    value={editing.fromStock}
+                                    // ⚠️ **The DRAFT is clamped, not the display**
+                                    // (finding I2). While the ceiling was applied
+                                    // only to `value`, the box showed 2 and the
+                                    // draft held the 7 that was typed: the save sent
+                                    // 7, the server clamped it back to 2, and an
+                                    // edit that changed nothing but a note burned a
+                                    // release-and-retake on the ledger — while
+                                    // warning about a clamp the operator never saw.
+                                    // `changedFields` still sends the field only
+                                    // when it MOVED.
+                                    onChange={(e) =>
+                                      setDraft({
+                                        ...editing,
+                                        fromStock: Math.min(Math.max(0, Number(e.target.value) || 0), kitsRoom, pool),
+                                      })
+                                    }
+                                    className={`${FIELD_CLASS} w-20`}
+                                  />
+                                </div>
+                              )}
+                              {orderActive && (
+                                <button
+                                  type="button"
+                                  onClick={() => pick.mutate({ line, quantity: editing.quantity })}
+                                  disabled={busy}
+                                  className="text-xs text-bambu-green hover:underline disabled:opacity-50"
+                                >
+                                  {t('stock.line.pick')}
+                                </button>
+                              )}
                             </div>
                           );
                         })()
-                      : line.from_stock_units > 0 && (
+                      : (line.from_finished > 0 || line.from_kit_units > 0) && (
                           <p className="text-xs text-bambu-gray" data-testid={`line-${line.id}-from-stock-shown`}>
-                            {t('stock.line.reserved', { n: line.from_stock_units })}
+                            {t('stock.line.split', { ready: line.from_finished, kits: line.from_kit_units })}
                           </p>
                         )}
                   </td>
@@ -511,10 +631,13 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
               ];
             })}
 
-            {canEdit && <AddLineRow orderId={order.id} />}
           </tbody>
         </table>
       </div>
+
+      {adding && (
+        <AddToOrderDialog orderId={order.id} orderActive={orderActive} onClose={() => setAdding(false)} />
+      )}
 
       {configuring && (
         <LineConfigDialog orderId={order.id} line={configuring} onClose={() => setConfiguring(null)} />

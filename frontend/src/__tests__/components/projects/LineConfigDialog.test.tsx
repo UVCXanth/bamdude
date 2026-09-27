@@ -12,7 +12,6 @@ import { api } from '../../../api/client';
 import type { Order, Product, ProjectLine } from '../../../api/client';
 import { LineConfigDialog } from '../../../components/projects/LineConfigDialog';
 import { lineConfigLabel } from '../../../components/projects/lineConfigLabel';
-import { AddLineRow } from '../../../components/projects/AddLineRow';
 
 const t = i18n.t.bind(i18n);
 
@@ -118,6 +117,19 @@ describe('LineConfigDialog', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
+  it('shows the ready units a change would move to the new position', async () => {
+    vi.spyOn(api, 'previewLineConfiguration').mockResolvedValue({
+      reserved_before: 2,
+      reserved_after: 1,
+      finished_before: 2,
+      finished_after: 0,
+      dropping: [],
+    });
+    render(<LineConfigDialog orderId={9} line={line} onClose={() => {}} />);
+    fireEvent.change(await screen.findByLabelText('Хвіст'), { target: { value: '12' } });
+    expect(await screen.findByText('reserve 2 → 1 · ready 2 → 0')).toBeInTheDocument();
+  });
+
   it('resets to the standard options and counts', async () => {
     vi.spyOn(api, 'previewLineConfiguration').mockResolvedValue({ reserved_before: 0, reserved_after: 0, finished_before: 0, finished_after: 0, dropping: [] });
     const save = vi.spyOn(api, 'setLineConfiguration').mockResolvedValue({ id: 9, lines: [] } as unknown as Order);
@@ -156,67 +168,5 @@ describe('LineConfigDialog', () => {
     await screen.findByText('Nothing printed or queued is affected.');
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(9, 21, { choices: { 3: 11 }, part_counts: { 5: 2, 6: 0 } }));
-  });
-});
-
-describe('AddLineRow · parts of the product', () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-    vi.spyOn(api, 'getProducts').mockResolvedValue([{ id: 7, code: 'PR-0007', name: 'Pipe', is_active: true }] as never);
-    vi.spyOn(api, 'getProduct').mockResolvedValue(product);
-    vi.spyOn(api, 'getProductStock').mockResolvedValue({ kits_available: 3, balances: [], movements: [] });
-  });
-
-  it('sends the wanted part counts and never a reservation', async () => {
-    const add = vi.spyOn(api, 'addOrderLine').mockResolvedValue({ id: 1, lines: [] } as unknown as Order);
-    render(
-      <table>
-        <tbody>
-          <AddLineRow orderId={1} />
-        </tbody>
-      </table>,
-    );
-    fireEvent.click(await screen.findByRole('button', { name: 'PR-0007 · Pipe' }));
-    fireEvent.click(screen.getByLabelText('Parts of the product'));
-    fireEvent.change(await screen.findByLabelText('Колба — needed'), { target: { value: '3' } });
-    expect(screen.queryByTestId('add-line-from-stock')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /add line/i }));
-    await waitFor(() =>
-      expect(add).toHaveBeenCalledWith(1, {
-        product_id: 7,
-        mode: 'parts',
-        part_counts: { 5: 3 },
-        material: null,
-        color: null,
-        note: null,
-      }),
-    );
-  });
-
-  it('sends the chosen option for a product with variants', async () => {
-    const add = vi.spyOn(api, 'addOrderLine').mockResolvedValue({ id: 1, lines: [] } as unknown as Order);
-    // The shelf offer follows the chosen option's kit.
-    vi.spyOn(api, 'getConfigurationKits').mockResolvedValue({ kits_available: 3 });
-    render(
-      <table>
-        <tbody>
-          <AddLineRow orderId={1} />
-        </tbody>
-      </table>,
-    );
-    fireEvent.click(await screen.findByRole('button', { name: 'PR-0007 · Pipe' }));
-    fireEvent.change(await screen.findByLabelText('Хвіст'), { target: { value: '12' } });
-    fireEvent.change(await screen.findByTestId('add-line-from-stock'), { target: { value: '0' } });
-    fireEvent.click(screen.getByRole('button', { name: /add line/i }));
-    await waitFor(() =>
-      expect(add).toHaveBeenCalledWith(1, {
-        product_id: 7,
-        quantity: 1,
-        material: null,
-        color: null,
-        note: null,
-        choices: { 3: 12 },
-      }),
-    );
   });
 });

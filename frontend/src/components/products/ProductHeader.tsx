@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, Copy, Download, ExternalLink, Loader2, Pencil, RefreshCw, Trash2 } from 'lucide-react';
+import { ChevronRight, Copy, Download, ExternalLink, ListPlus, Loader2, Pencil, RefreshCw, Trash2 } from 'lucide-react';
 import { api, ApiError } from '../../api/client';
 import type { Product } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
@@ -17,6 +17,8 @@ interface ProductHeaderProps {
   onDuplicate: () => void;
   onDelete: () => void;
   onToggleActive: (next: boolean) => void;
+  /** «Add to order» — passed only for a catalog product the viewer may add lines with. */
+  onAddToOrder?: () => void;
 }
 
 /** One provenance field, rendered only when the product carries it. */
@@ -48,7 +50,14 @@ function Fact({ label, value }: { label: string; value: string }) {
  * left alone, and they arrive as CODES because only this layer knows which
  * language the operator reads.
  */
-export function ProductHeader({ product, onEdit, onDuplicate, onDelete, onToggleActive }: ProductHeaderProps) {
+export function ProductHeader({
+  product,
+  onEdit,
+  onDuplicate,
+  onDelete,
+  onToggleActive,
+  onAddToOrder,
+}: ProductHeaderProps) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const { showToast } = useToast();
@@ -168,6 +177,12 @@ export function ProductHeader({ product, onEdit, onDuplicate, onDelete, onToggle
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
+          {onAddToOrder && (
+            <Button onClick={onAddToOrder}>
+              <ListPlus className="w-4 h-4" />
+              {t('products.header.addToOrder')}
+            </Button>
+          )}
           {canEdit && (
             <Button variant="secondary" onClick={onEdit}>
               <Pencil className="w-4 h-4" />
