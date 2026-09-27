@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
-import type { StockFigures, StockListPage, StockMovementsPage } from '../../../api/client';
+import type { StockFigures, StockItem, StockItemsPage, StockListPage, StockMovementsPage } from '../../../api/client';
 import { StockPage } from '../../../pages/stock/StockPage';
 
 const lamp = {
@@ -38,6 +38,14 @@ const page2: StockMovementsPage = {
   next_before_id: null,
 };
 
+const position: StockItem = {
+  id: 3, code: 'SK-0003', product: { id: 1, name: 'Lamp', sku: null, has_cover: false },
+  configuration: { choices: [], changed_parts: [] }, location: null,
+  on_hand: 4, reserved: 1, available: 3, min_qty: 0, below_min: false, can_assemble: 0,
+};
+const itemsOf = (items: StockItem[]): StockItemsPage =>
+  ({ items, meta: { total: items.length, current_page: 1, per_page: 24, last_page: 1 } });
+
 afterEach(() => {
   window.history.pushState({}, '', '/');
 });
@@ -46,11 +54,16 @@ describe('StockPage', () => {
   let getPage: ReturnType<typeof vi.spyOn>;
   let getMovements: ReturnType<typeof vi.spyOn>;
   let getProducts: ReturnType<typeof vi.spyOn>;
+  let getItems: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     vi.restoreAllMocks();
     localStorage.clear();
-    window.history.pushState({}, '', '/stock');
+    // The parts tab is the one these tests grew up on; the finished tab and the
+    // journal set their own URL.
+    window.history.pushState({}, '', '/stock?tab=parts');
+    getItems = vi.spyOn(api, 'getStockItems').mockResolvedValue(itemsOf([position]));
+    vi.spyOn(api, 'getStockItemsSummary').mockResolvedValue({ on_hand: 4, reserved: 1, available: 3, tracked: 1, below_min: 0 });
     getPage = vi.spyOn(api, 'getStockPaged').mockResolvedValue(pageOf([lamp, vase]));
     vi.spyOn(api, 'getStockFigures').mockResolvedValue(figures);
     getMovements = vi.spyOn(api, 'getStockMovements').mockImplementation(async (params) =>
@@ -71,6 +84,46 @@ describe('StockPage', () => {
     expect(within(row).getByTestId('stock-reserved-1')).toHaveTextContent('2');
     expect(within(screen.getByTestId('stock-row-2')).getByText(/not in the catalog/i)).toBeInTheDocument();
     expect(getPage).toHaveBeenLastCalledWith({ sort_by: 'kits-desc', page: 1, per_page: 24 });
+  });
+
+  it('opens on the finished goods, asking for the positions on record', async () => {
+    window.history.pushState({}, '', '/stock');
+    render(<StockPage />);
+    expect(await screen.findByTestId('finished-row-3')).toBeInTheDocument();
+    expect(getItems).toHaveBeenLastCalledWith({ mode: 'tracked', sort_by: 'product-asc', page: 1, per_page: 24 });
+    expect(screen.getByRole('tab', { name: 'Finished goods' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByTestId('finished-tile-on-hand')).toHaveTextContent('4');
+    expect(getPage).not.toHaveBeenCalled();
+  });
+
+  it('keeps the mode in the URL and asks the server for it', async () => {
+    window.history.pushState({}, '', '/stock');
+    render(<StockPage />);
+    await screen.findByTestId('finished-row-3');
+    fireEvent.click(screen.getByRole('button', { name: 'Below minimum' }));
+    await waitFor(() => expect(getItems).toHaveBeenLastCalledWith(expect.objectContaining({ mode: 'low' })));
+    expect(window.location.search).toContain('mode=low');
+  });
+
+  it('shows the free parts and the journal on their own tabs', async () => {
+    render(<StockPage />);
+    expect(await screen.findByTestId('stock-row-1')).toBeInTheDocument();
+    expect(getItems).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('stock-movement-9')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Movements' }));
+    expect(await screen.findByTestId('stock-movement-9')).toBeInTheDocument();
+    expect(screen.queryByTestId('stock-row-1')).not.toBeInTheDocument();
+  });
+
+  it('a tab switch starts the new tab clean — no page, search or sort carried over', async () => {
+    window.history.pushState({}, '', '/stock?q=lamp&page=2&sort=code-desc');
+    render(<StockPage />);
+    await screen.findByTestId('finished-row-3');
+    fireEvent.click(screen.getByRole('tab', { name: 'Free parts' }));
+    await waitFor(() => expect(window.location.search).toBe('?tab=parts'));
+    await waitFor(() => expect(getPage).toHaveBeenLastCalledWith({ sort_by: 'kits-desc', page: 1, per_page: 24 }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Finished goods' }));
+    await waitFor(() => expect(window.location.search).toBe(''));
   });
 
   it('draws no section tabs — the sidebar carries them', async () => {
@@ -112,7 +165,7 @@ describe('StockPage', () => {
 
   it('a search that matches nothing offers a reset', async () => {
     getPage.mockResolvedValue(pageOf([]));
-    window.history.pushState({}, '', '/stock?q=zzz');
+    window.history.pushState({}, '', '/stock?tab=parts&q=zzz');
     render(<StockPage />);
     fireEvent.click(await screen.findByRole('button', { name: 'Reset' }));
     await waitFor(() => expect(window.location.search).not.toContain('q='));
@@ -120,7 +173,7 @@ describe('StockPage', () => {
 
   it('a bookmark past the last page is clamped', async () => {
     getPage.mockResolvedValue({ items: [lamp], meta: { total: 1, current_page: 5, per_page: 24, last_page: 1 } } as StockListPage);
-    window.history.pushState({}, '', '/stock?page=5');
+    window.history.pushState({}, '', '/stock?tab=parts&page=5');
     render(<StockPage />);
     await waitFor(() => expect(window.location.search).not.toContain('page=5'));
   });
@@ -145,6 +198,7 @@ describe('StockPage', () => {
   });
 
   it('renders the journal and loads the older page with the cursor', async () => {
+    window.history.pushState({}, '', '/stock?tab=journal');
     render(<StockPage />);
     expect(await screen.findByTestId('stock-movement-9')).toBeInTheDocument();
     expect(getMovements).toHaveBeenLastCalledWith({ before_id: null, limit: 50 });
@@ -155,6 +209,7 @@ describe('StockPage', () => {
   });
 
   it('re-queries the journal when a reason is picked', async () => {
+    window.history.pushState({}, '', '/stock?tab=journal');
     render(<StockPage />);
     await screen.findByTestId('stock-movement-9');
     getMovements.mockResolvedValueOnce({ items: [], next_before_id: null });
@@ -166,12 +221,14 @@ describe('StockPage', () => {
   });
 
   it('shows the unfiltered empty state when the ledger has nothing yet', async () => {
+    window.history.pushState({}, '', '/stock?tab=journal');
     getMovements.mockResolvedValue({ items: [], next_before_id: null });
     render(<StockPage />);
     expect(await screen.findByText('Nothing has moved yet.')).toBeInTheDocument();
   });
 
   it('re-queries the journal when a product is picked, from the catalog rather than the (filtered) summary', async () => {
+    window.history.pushState({}, '', '/stock?tab=journal');
     render(<StockPage />);
     await screen.findByTestId('stock-movement-9');
     // The catalog list backing the filter is asked for WITHOUT an origin

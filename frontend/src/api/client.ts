@@ -2069,6 +2069,8 @@ export interface ProjectsNavBadges {
   active_orders: number;
   /** Active catalog products still in draft (spec workshop-product-catalog, rule 18). */
   draft_products: number;
+  /** Finished-goods positions whose free quantity is under their minimum (spec workshop-finished-goods, rule 22). */
+  stock_below_min?: number;
 }
 /** One category of the catalog's panel — how many products it holds under the list's filters. */
 export interface ProductCategoryCount {
@@ -2931,6 +2933,168 @@ export interface StockMovementsParams {
 
 /** Rows per journal page — the request's `limit` and the hook's page size. */
 export const STOCK_JOURNAL_PAGE = 50;
+
+// ---- finished goods (spec workshop-finished-goods, rules 16–22) ----
+
+/** The list's modes: on record (any stock, reservation or minimum), under the minimum, reserved, every position. */
+export type StockItemsMode = 'tracked' | 'low' | 'reserved' | 'all';
+
+export interface StockProductRef {
+  id: number;
+  name: string;
+  sku: string | null;
+  has_cover: boolean;
+}
+
+/**
+ * One finished-goods position — a product in one configuration. Every figure
+ * is the server's: `available` is `on_hand − reserved`, `below_min` its
+ * comparison with the minimum, `can_assemble` the kits the free-parts shelf
+ * holds for exactly this configuration.
+ */
+export interface StockItem {
+  id: number;
+  /** `SK-0003` — derived from the id on the server, never built here. */
+  code: string;
+  product: StockProductRef;
+  /** The same shape as an order line's — `lineConfigLabel` captions both. */
+  configuration: LineConfiguration;
+  /** Null — «not assigned». */
+  location: string | null;
+  on_hand: number;
+  reserved: number;
+  available: number;
+  min_qty: number;
+  below_min: boolean;
+  can_assemble: number;
+}
+
+export interface StockItemsPage {
+  items: StockItem[];
+  meta: PaginationMeta;
+}
+
+export interface StockItemsParams extends PagedListParams {
+  mode?: StockItemsMode;
+  product_id?: number;
+}
+
+/** `GET /stock/items/summary` — the whole farm, never the list's filters. */
+export interface StockItemsSummary {
+  on_hand: number;
+  reserved: number;
+  available: number;
+  tracked: number;
+  below_min: number;
+}
+
+/** A reservation group; `project_line_id` null — held without an order. */
+export interface StockReservationGroup {
+  project_line_id: number | null;
+  project_id: number | null;
+  project_code: string | null;
+  qty: number;
+}
+
+export interface StockItemSibling {
+  id: number;
+  code: string;
+  configuration: LineConfiguration;
+  on_hand: number;
+  available: number;
+}
+
+/** A part of the position's kit: how many one unit takes and how many the free shelf holds. */
+export interface StockItemPart {
+  part_id: number;
+  name: string;
+  per: number;
+  on_shelf: number;
+}
+
+export interface StockItemDetail extends StockItem {
+  reservations: StockReservationGroup[];
+  siblings: StockItemSibling[];
+  parts: StockItemPart[];
+}
+
+/** What a dialog shows for a product and its options before anything moves. */
+export interface StockLookup {
+  /** Null — this configuration has no position yet. */
+  item: StockItem | null;
+  configuration: LineConfiguration;
+  can_assemble: number;
+}
+
+export type StockMoveKind = 'receipt' | 'stocktake' | 'reserve' | 'release' | 'issue';
+
+/** `POST /stock/moves` — a position by id, or a product and its chosen options. */
+export interface StockMoveBody {
+  kind: StockMoveKind;
+  item_id?: number;
+  product_id?: number;
+  options?: number[];
+  qty?: number;
+  /** Інвентаризація — the counted quantity; the movement is the difference. */
+  counted?: number;
+  note?: string;
+  customer_id?: number;
+  from_reserve?: boolean;
+}
+
+export interface StockAssembleBody {
+  item_id?: number;
+  product_id?: number;
+  options?: number[];
+  qty: number;
+  note?: string;
+}
+
+export interface StockItemParamsBody {
+  location?: string | null;
+  min_qty?: number;
+}
+
+export type StockJournalBook = 'both' | 'finished' | 'parts';
+
+/**
+ * One movement of either ledger. A finished row carries `delta_on_hand` /
+ * `delta_reserved` and `item`; a parts row carries `delta` and `part_name`
+ * (and `item` when the parts went into a position). `note` is a token for what
+ * the server wrote and the operator's words otherwise, as on the parts ledger.
+ */
+export interface StockJournalRow {
+  book: 'finished' | 'parts';
+  id: number;
+  created_at: string;
+  product_id: number | null;
+  product_name: string | null;
+  item: { id: number; code: string; configuration: LineConfiguration } | null;
+  part_name: string | null;
+  kind: string;
+  delta: number;
+  delta_on_hand: number;
+  delta_reserved: number;
+  note: string | null;
+  customer: { id: number; name: string } | null;
+  project: { id: number; code: string; name: string | null } | null;
+  user: { id: number; username: string } | null;
+}
+
+export interface StockJournalPage {
+  items: StockJournalRow[];
+  /** Set only when the page came back full — a short page is the end. */
+  next_cursor: string | null;
+}
+
+export interface StockJournalParams {
+  book?: StockJournalBook;
+  product_id?: number;
+  item_id?: number;
+  kind?: string;
+  cursor?: string | null;
+  limit?: number;
+}
 
 /** `POST /projects/{id}/bank-surplus`. `nothing_to_bank` is not "`moved` is
  *  empty" restated — it is the answer to a second press, which is a success. */
@@ -11471,6 +11635,39 @@ export const api = {
     if (params.before_id != null) search.set('before_id', String(params.before_id));
     search.set('limit', String(params.limit ?? STOCK_JOURNAL_PAGE));
     return request<StockMovementsPage>(`/stock/movements?${search.toString()}`);
+  },
+  // Finished goods (spec workshop-finished-goods, rules 16–22).
+  getStockItems: (params: StockItemsParams) => {
+    const qs = new URLSearchParams();
+    if (params.mode) qs.set('mode', params.mode);
+    if (params.product_id != null) qs.set('product_id', String(params.product_id));
+    return request<StockItemsPage>(`/stock/items?${pagedSearchParams(qs, params)}`);
+  },
+  getStockItemsSummary: () => request<StockItemsSummary>('/stock/items/summary'),
+  getStockItem: (id: number) => request<StockItemDetail>(`/stock/items/${id}`),
+  /** A product and its chosen options → the position (or none yet) and what the shelf can assemble. */
+  lookupStockItem: (productId: number, options: number[] = []) => {
+    const qs = new URLSearchParams({ product_id: String(productId) });
+    if (options.length) qs.set('options', options.join(','));
+    return request<StockLookup>(`/stock/items/lookup?${qs.toString()}`);
+  },
+  /** One movement; the refusal is the server's own sentence in `ApiError.message`. */
+  moveStock: (body: StockMoveBody) =>
+    request<StockItem>('/stock/moves', { method: 'POST', body: JSON.stringify(body) }),
+  assembleStock: (body: StockAssembleBody) =>
+    request<StockItem>('/stock/assemble', { method: 'POST', body: JSON.stringify(body) }),
+  updateStockItem: (id: number, body: StockItemParamsBody) =>
+    request<StockItem>(`/stock/items/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  /** One keyset page of both ledgers, newest first. */
+  getStockJournal: (params: StockJournalParams = {}) => {
+    const qs = new URLSearchParams();
+    if (params.book && params.book !== 'both') qs.set('book', params.book);
+    if (params.product_id != null) qs.set('product_id', String(params.product_id));
+    if (params.item_id != null) qs.set('item_id', String(params.item_id));
+    if (params.kind) qs.set('kind', params.kind);
+    if (params.cursor) qs.set('cursor', params.cursor);
+    qs.set('limit', String(params.limit ?? STOCK_JOURNAL_PAGE));
+    return request<StockJournalPage>(`/stock/journal?${qs.toString()}`);
   },
 
   getProductPlates: (id: number) => request<PlateRecipe[]>(`/products/${id}/plates`),

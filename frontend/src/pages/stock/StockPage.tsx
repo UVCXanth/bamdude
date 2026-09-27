@@ -1,33 +1,213 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { useNavigate, useSearchParams } from 'react-router';
 import { Loader2, Warehouse } from 'lucide-react';
-import type { StockListItem, StockListParams } from '../../api/client';
+import type { StockItemsMode, StockItemsParams, StockListItem, StockListParams } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { Button } from '../../components/Button';
 import { ListPageHeader } from '../../components/ListPageHeader';
 import { ListSearchBox } from '../../components/ListSearchBox';
 import { PaginationBar } from '../../components/PaginationBar';
 import { AdjustStockDialog } from '../../components/products/AdjustStockDialog';
+import { FinishedGoodsTable } from '../../components/stock/FinishedGoodsTable';
+import type { FinishedAction } from '../../components/stock/FinishedGoodsTable';
+import { FinishedTiles } from '../../components/stock/FinishedTiles';
 import { StockJournal } from '../../components/stock/StockJournal';
 import { StockProductsTable } from '../../components/stock/StockProductsTable';
 import { StockTiles } from '../../components/stock/StockTiles';
 import { useListUrlState } from '../../hooks/useListUrlState';
 import { parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
 import { useSearchBox } from '../../hooks/useSearchBox';
+import { useStockItems } from '../../hooks/useFinishedStock';
 import { useStockPage } from '../../hooks/useStock';
 
+const TABS = ['finished', 'parts', 'journal'] as const;
+type StockTab = (typeof TABS)[number];
+const MODES: StockItemsMode[] = ['tracked', 'low', 'reserved', 'all'];
+
 /**
- * The fourth root of the Projects section: the farm-wide shelf.
+ * The fourth root of the Projects section: the farm's stock (spec
+ * workshop-finished-goods, rule 23) — finished goods first, then the free
+ * parts shelf, then the journal of both.
  *
- * The list is one page from the server, like every list of the section (spec
- * workshop-lists, rules 9, 17): search, «only with stock», sort and page live
- * in the URL; the page size is the viewer's preference. The tiles above are the
- * whole shelf, never the list's filters. Data before status: with a page on
- * screen a failed refetch leaves it there and the hook's `refreshToast`
- * reports it once; with nothing yet, a spinner or the sentence.
+ * The tab is a PLACE and lives in the URL; each tab keeps its own search,
+ * sort, page and filters there too, and a tab switch starts the new tab clean
+ * — the sort keys of one tab mean nothing on another. Every list is one page
+ * from the server (spec workshop-lists, rules 9, 17); the tiles are each tab's
+ * own and summarise the whole farm, never the list's filters.
  */
 export function StockPage() {
+  const { t } = useTranslation();
+  const [params, setParams] = useSearchParams();
+  const raw = params.get('tab');
+  const tab: StockTab = (TABS as readonly string[]).includes(raw ?? '') ? (raw as StockTab) : 'finished';
+
+  const switchTab = (next: StockTab) => {
+    if (next === tab) return;
+    // One write, nothing carried over: the default tab is the clean URL.
+    setParams(next === 'finished' ? {} : { tab: next }, { replace: true });
+  };
+
+  const label: Record<StockTab, string> = {
+    finished: t('stock.tabs.finished'),
+    parts: t('stock.tabs.parts'),
+    journal: t('stock.tabs.journal'),
+  };
+
+  return (
+    <div className="p-4">
+      <ListPageHeader
+        title={t('stock.page.title')}
+        subtitle={t('stock.page.intro')}
+        icon={<Warehouse className="w-6 h-6 text-bambu-green" />}
+      />
+
+      <div role="tablist" className="flex gap-1 border-b border-bambu-dark-tertiary mb-4">
+        {TABS.map((key) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={tab === key}
+            onClick={() => switchTab(key)}
+            className={`px-4 py-2 text-sm border-b-2 -mb-px transition-colors ${
+              tab === key ? 'border-bambu-green text-white' : 'border-transparent text-bambu-gray hover:text-white'
+            }`}
+          >
+            {label[key]}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'finished' && <FinishedTab />}
+      {tab === 'parts' && <PartsTab />}
+      {tab === 'journal' && <StockJournal />}
+    </div>
+  );
+}
+
+/** Finished goods: positions on record, under the minimum, reserved, or all (rule 24). */
+function FinishedTab() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission('projects:update');
+
+  const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
+    defaults: { sort: 'product-asc', extra: { mode: 'tracked' } },
+  });
+  const mode: StockItemsMode = (MODES as string[]).includes(extra.mode) ? (extra.mode as StockItemsMode) : 'tracked';
+  const { typed, setTyped, forget } = useSearchBox(q, setQ);
+  const [perPage, setPerPage] = usePersistedState<number>('bamdude-stock-items-perPage', 24, parsePageSize);
+
+  const params: StockItemsParams = {
+    mode,
+    ...(q ? { q } : {}),
+    sort_by: sort,
+    page,
+    ...(perPage === -1 ? { all: true } : { per_page: perPage }),
+  };
+  const { data, isError, isPlaceholderData } = useStockItems(params);
+  useEffect(() => {
+    if (data && !isPlaceholderData) clampToLastPage(data.meta.last_page);
+  }, [data, isPlaceholderData, clampToLastPage]);
+
+  const onAction = (kind: FinishedAction, item: { id: number }) => {
+    // The movement dialogs arrive with the position page; «open» is the one action here.
+    if (kind === 'open') navigate(`/stock/${item.id}`);
+  };
+
+  const total = data?.meta.total ?? 0;
+  const filtered = q !== '' || mode !== 'tracked';
+
+  return (
+    <>
+      <FinishedTiles />
+
+      <div className="flex items-center gap-3 flex-wrap mb-4">
+        <div className="flex rounded-lg border border-bambu-dark-tertiary overflow-hidden" role="group" aria-label={t('stock.finished.modeLabel')}>
+          {MODES.map((key) => (
+            <button
+              key={key}
+              type="button"
+              aria-pressed={mode === key}
+              onClick={() => setExtra('mode', key)}
+              className={`px-3 py-1.5 text-sm transition-colors ${
+                mode === key ? 'bg-bambu-dark-tertiary text-white' : 'text-bambu-gray hover:text-white'
+              }`}
+            >
+              {t(`stock.finished.mode.${key}`)}
+            </button>
+          ))}
+        </div>
+        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('stock.finished.search')} />
+      </div>
+
+      {!data ? (
+        isError ? (
+          <p className="text-sm text-red-500" data-testid="finished-error">{t('stock.page.error')}</p>
+        ) : (
+          <p className="flex items-center gap-2 text-sm text-bambu-gray"><Loader2 className="w-4 h-4 animate-spin" />{t('common.loading')}</p>
+        )
+      ) : total === 0 ? (
+        filtered ? (
+          <div className="flex items-center gap-3 text-sm text-bambu-gray" data-testid="finished-empty">
+            <span>{t('stock.finished.emptyFiltered')}</span>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                forget();
+                resetFilters();
+              }}
+            >
+              {t('list.empty.reset')}
+            </Button>
+          </div>
+        ) : (
+          <p className="text-sm text-bambu-gray" data-testid="finished-empty">{t('stock.finished.empty')}</p>
+        )
+      ) : (
+        <div
+          data-testid="list-body"
+          aria-busy={isPlaceholderData}
+          className={`transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
+        >
+          <FinishedGoodsTable
+            items={data.items}
+            sort={sort}
+            onSortChange={setSort}
+            canEdit={canEdit}
+            onAction={onAction}
+            footer={
+              <PaginationBar
+                page={data.meta.current_page}
+                totalPages={data.meta.last_page}
+                perPage={perPage}
+                total={total}
+                onPageChange={setPage}
+                onPerPageChange={(n) => {
+                  setPerPage(n);
+                  setPage(1);
+                }}
+                items={t('stock.finished.items', { count: total })}
+                variant="card"
+              />
+            }
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * The free-parts shelf — the tab as it was before finished goods, unchanged:
+ * search, «only with stock», sort and page in the URL; the page size is the
+ * viewer's preference. Data before status: with a page on screen a failed
+ * refetch leaves it there and the hook's `refreshToast` reports it once.
+ */
+function PartsTab() {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
@@ -62,13 +242,7 @@ export function StockPage() {
   const filtered = q !== '' || !onlyWithStock;
 
   return (
-    <div className="p-4">
-      <ListPageHeader
-        title={t('stock.page.title')}
-        subtitle={t('stock.page.intro')}
-        icon={<Warehouse className="w-6 h-6 text-bambu-green" />}
-      />
-
+    <>
       <StockTiles />
 
       <div className="flex items-center gap-3 flex-wrap mb-4">
@@ -139,10 +313,6 @@ export function StockPage() {
         </div>
       )}
 
-      <div className="mt-8">
-        <StockJournal />
-      </div>
-
       {adjusting && (
         <AdjustStockDialog
           productId={adjusting.id}
@@ -154,6 +324,6 @@ export function StockPage() {
           }}
         />
       )}
-    </div>
+    </>
   );
 }

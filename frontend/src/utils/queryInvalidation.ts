@@ -151,6 +151,32 @@ export function invalidateOrderCandidates(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: ['order-candidates'] });
 }
 
+/**
+ * Every cache a stock movement can move (spec workshop-finished-goods, rule 26).
+ *
+ * A finished-goods move changes the positions, their tiles, the journal and
+ * the sidebar badge; an assembly also takes parts off the free shelf, so the
+ * parts list, the product page's shelf and its kits move with it. One list,
+ * every prefix — a dialog does not get to have an opinion about which views it
+ * touched, and TanStack refetches only the mounted ones.
+ */
+export const STOCK_KEYS: readonly (readonly string[])[] = [
+  ['stock-items'],
+  ['stock-item'],
+  ['stock-lookup'],
+  ['stock-journal'],
+  ['stock-summary'],
+  ['stock-movements'],
+  ['product-stock'],
+  ['product-kits'],
+  ['product'],
+  ['projects', 'nav-badges'],
+];
+
+export function invalidateStock(qc: QueryClient): void {
+  for (const key of STOCK_KEYS) qc.invalidateQueries({ queryKey: [...key] });
+}
+
 type DeletedKind = 'order' | 'product' | 'customer';
 
 /** The list keys each kind of deletion leaves behind. */
