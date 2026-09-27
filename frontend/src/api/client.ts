@@ -3068,6 +3068,11 @@ export interface FulfilmentState {
   issued: number;
   held: number;
   fully_issued: boolean;
+  /** What a batch could assemble, receive and issue now, over the whole order — the
+   *  banner's numbers, never summed here. */
+  can_assemble: number;
+  can_receive: number;
+  can_issue: number;
   /** The order's contact, else the customer's main contact. */
   recipient: FulfilmentRecipient;
 }

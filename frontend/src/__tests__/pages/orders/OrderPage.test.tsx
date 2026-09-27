@@ -91,6 +91,38 @@ const order = {
   },
 };
 
+const fulfilmentState = {
+  lines: [
+    {
+      line_id: 10,
+      product_name: 'Flask',
+      mode: 'product' as const,
+      ordered: 2,
+      from_finished: 0,
+      kits_reserved: 0,
+      can_assemble: 0,
+      can_receive: 2,
+      held: 0,
+      issued: 0,
+      parts: [],
+    },
+  ],
+  ordered: 2,
+  issued: 0,
+  held: 0,
+  fully_issued: false,
+  can_assemble: 0,
+  can_receive: 2,
+  can_issue: 2,
+  recipient: { name: null, phone: null, delivery_method: null, delivery_details: null },
+};
+
+/** «Mark completed» on the banner opens the issue dialog, ticked to close; «Execute» sends it. */
+async function completeThroughDialog() {
+  fireEvent.click(await screen.findByTestId('close-suggestion-complete'));
+  fireEvent.click(await screen.findByRole('button', { name: 'Execute' }));
+}
+
 afterEach(() => {
   window.history.pushState({}, '', '/');
 });
@@ -132,6 +164,11 @@ describe('OrderPage', () => {
       lines: [],
       totals: { prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null },
     });
+    // An order completes through the issue dialog (spec workshop-order-issue, rule 28):
+    // the line's two printed units can be received and issued in one batch.
+    vi.spyOn(api, 'getFulfilment').mockResolvedValue(fulfilmentState);
+    vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
+    vi.spyOn(api, 'fulfilOrder').mockResolvedValue({ order: { ...order, status: 'completed' } as never, issue_id: 1 });
   });
 
   it('offers a read-only viewer no way to change a line', async () => {
@@ -198,8 +235,25 @@ describe('OrderPage', () => {
     const banner = await screen.findByTestId('close-suggestion');
     expect(within(banner).getByText(/all lines are covered/i)).toBeInTheDocument();
 
-    fireEvent.click(await screen.findByTestId('close-suggestion-complete'));
-    await waitFor(() => expect(update).toHaveBeenCalledWith(1, { status: 'completed' }));
+    await completeThroughDialog();
+    await waitFor(() =>
+      expect(api.fulfilOrder).toHaveBeenCalledWith(1, expect.objectContaining({ complete: true, lines: [{ line_id: 10, assemble: 0, receive: 2, issue: 2 }] })),
+    );
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('opens the issue dialog from the header instead of closing the order at once', async () => {
+    vi.spyOn(api, 'getOrder').mockResolvedValue(order as never);
+    const update = vi.spyOn(api, 'updateOrder').mockResolvedValue({ ...order, status: 'completed' } as never);
+    window.history.pushState({}, '', '/projects/1');
+    render(
+      <Routes>
+        <Route path="/projects/:id" element={<OrderPage />} />
+      </Routes>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Mark completed' }));
+    expect(await screen.findByRole('dialog', { name: 'Stock & issue' })).toBeInTheDocument();
+    expect(update).not.toHaveBeenCalled();
   });
 
   it('keeps the banner away while work is left', async () => {
@@ -255,7 +309,7 @@ describe('OrderPage', () => {
     expect(await screen.findByRole('heading', { name: 'Ten flasks' })).toBeInTheDocument();
 
     // Closing the order invalidates ['project', id]; the refetch it fires fails.
-    fireEvent.click(await screen.findByTestId('close-suggestion-complete'));
+    await completeThroughDialog();
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
 
     expect(screen.getByRole('heading', { name: 'Ten flasks' })).toBeInTheDocument();
@@ -284,7 +338,7 @@ describe('OrderPage', () => {
     expect(await screen.findByRole('heading', { name: 'Ten flasks' })).toBeInTheDocument();
     await waitFor(() => expect(probeFetch).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(await screen.findByTestId('close-suggestion-complete'));
+    await completeThroughDialog();
     await waitFor(() => expect(probeFetch).toHaveBeenCalledTimes(2));
   });
   it('says once that it could not refresh, and keeps the order on screen', async () => {
@@ -314,7 +368,7 @@ describe('OrderPage', () => {
 
     expect(await screen.findByRole('heading', { name: 'Ten flasks' })).toBeInTheDocument();
 
-    fireEvent.click(await screen.findByTestId('close-suggestion-complete'));
+    await completeThroughDialog();
 
     expect(await screen.findByText(/could not refresh/i)).toBeInTheDocument();
     // The stale order is still there — the toast is the whole of the damage.

@@ -1283,6 +1283,9 @@ async def get_fulfilment(
         issued=state.issued,
         held=state.held,
         fully_issued=state.fully_issued,
+        can_assemble=state.can_assemble,
+        can_receive=state.can_receive,
+        can_issue=state.can_issue,
         recipient=_recipient_out(recipient),
     )
 

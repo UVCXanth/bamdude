@@ -21,6 +21,8 @@ import { OrderTimeline } from './OrderTimeline';
 import { OrderNotes } from './OrderNotes';
 import { OrderAttachments } from './OrderAttachments';
 import { DuplicateOrderModal } from './DuplicateOrderModal';
+import { FulfilmentDialog } from './fulfilment/FulfilmentDialog';
+import type { FulfilmentMode } from './fulfilment/fulfilmentState';
 import { ConfirmModal } from '../ConfirmModal';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
 import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
@@ -58,6 +60,8 @@ export function OrderView({
   const [deleting, setDeleting] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
   const [planDraftChanged, setPlanDraftChanged] = useState(false);
+  // The issue dialog, and how it opens (spec workshop-order-issue, rules 26–28).
+  const [fulfilling, setFulfilling] = useState<{ mode: FulfilmentMode; complete: boolean } | null>(null);
 
   useEffect(() => setPlanDraftChanged(false), [id]);
 
@@ -70,6 +74,14 @@ export function OrderView({
 
   // Only an active order can still be simulated forward — a completed or
   // cancelled one has nothing left to schedule.
+  // What the order could assemble, receive and issue now — the header button, the
+  // banner's counts. Only an active order has anything to issue.
+  const fulfilment = useQuery({
+    queryKey: ['project-fulfilment', id],
+    queryFn: () => api.getFulfilment(id),
+    enabled: Number.isFinite(id) && order?.status === 'active' && hasPermission('projects:update'),
+  });
+
   const forecast = useQuery({
     queryKey: ['order-forecast', id],
     queryFn: () => api.getOrderForecast(id),
@@ -183,7 +195,17 @@ export function OrderView({
             onEdit={() => setEditing(true)}
             onDuplicate={() => setDuplicating(true)}
             onDelete={() => setDeleting(true)}
-            onSetStatus={(status) => setStatus.mutate(status)}
+            // An order completes only fully issued (rule 12): «Mark completed» is the
+            // issue dialog prefilled with everything and ticked to close.
+            onSetStatus={(status) =>
+              status === 'completed' ? setFulfilling({ mode: 'all', complete: true }) : setStatus.mutate(status)
+            }
+            fulfilment={
+              fulfilment.data &&
+              (fulfilment.data.can_issue > 0 || fulfilment.data.can_receive > 0 || fulfilment.data.can_assemble > 0)
+                ? { onOpen: () => setFulfilling({ mode: 'all', complete: false }), primary: order.stage === 'qc' }
+                : undefined
+            }
             onBankSurplus={() => bankSurplus.mutate()}
             bankingSurplus={bankSurplus.isPending}
             embedded={embedded}
@@ -194,7 +216,13 @@ export function OrderView({
 
       <OrderStageStepper order={order} canEdit={canEdit} />
 
-      {canEdit && <CloseSuggestionBanner order={order} onComplete={() => setStatus.mutate('completed')} />}
+      {canEdit && (
+        <CloseSuggestionBanner
+          order={order}
+          state={fulfilment.data}
+          onFulfil={(mode, complete) => setFulfilling({ mode, complete })}
+        />
+      )}
 
       <OrderFigures
         figures={order.figures}
@@ -221,6 +249,15 @@ export function OrderView({
       {editing && <OrderModal order={order} onClose={() => setEditing(false)} />}
 
       {duplicating && <DuplicateOrderModal order={order} onClose={() => setDuplicating(false)} />}
+
+      {fulfilling && (
+        <FulfilmentDialog
+          orderId={order.id}
+          mode={fulfilling.mode}
+          complete={fulfilling.complete}
+          onClose={() => setFulfilling(null)}
+        />
+      )}
 
       {deleting && (
         <ConfirmModal

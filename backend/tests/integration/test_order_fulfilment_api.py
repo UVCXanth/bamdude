@@ -94,6 +94,8 @@ async def test_the_dialog_reads_the_orders_state_and_its_recipient(committing_cl
         }
     ]
     assert (body["ordered"], body["issued"], body["held"], body["fully_issued"]) == (10, 0, 2, False)
+    # The order's own totals, so the banner never adds the rows up (WS-01).
+    assert (body["can_assemble"], body["can_receive"], body["can_issue"]) == (3, 5, 10)
     assert body["recipient"] == {
         "name": "Ivan",
         "phone": "+380501112233",

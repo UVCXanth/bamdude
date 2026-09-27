@@ -33,3 +33,26 @@ describe('the order journal · stock of a line', () => {
     );
   });
 });
+
+describe('the order journal · stock and issue', () => {
+  it('says what was assembled, received, issued and taken', () => {
+    expect(journalText(event('kits_assembled', { line_id: 1, product: 'Pipe', units: 3 }), t)).toBe(
+      'Pipe: 3 kits assembled for the order',
+    );
+    expect(journalText(event('goods_received', { line_id: 1, product: 'Pipe', units: 5 }), t)).toBe(
+      'Pipe: received into stock — 5',
+    );
+    expect(
+      journalText(event('goods_received', { line_id: 2, product: 'Lamp', parts: [['shade', 2], ['base', 1]] }), t),
+    ).toBe('Lamp: received into stock — shade × 2, base × 1');
+    expect(journalText(event('goods_issued', { issue_id: 7, units: 4, waybill: '2045' }), t)).toBe(
+      'Issued to the customer — 4, waybill 2045',
+    );
+    expect(journalText(event('goods_issued', { issue_id: 7, units: 4, waybill: null }), t)).toBe(
+      'Issued to the customer — 4',
+    );
+    expect(journalText(event('stock_taken', { line_id: 1, product: 'Pipe', from_finished: 2, kits: 3 }), t)).toBe(
+      'Taken from stock for Pipe, 2 ready from stock, 3 kits from stock',
+    );
+  });
+});

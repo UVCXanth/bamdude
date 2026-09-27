@@ -158,3 +158,12 @@ describe('OrdersTable', () => {
     expect(onSort).toHaveBeenLastCalledWith('stage-asc');
   });
 });
+
+describe('OrdersTable · issued', () => {
+  it('says how much went out of each active order', () => {
+    render(
+      <OrdersTable orders={[row({ id: 1, name: 'A', issued_units: 3 })]} {...noSort} />,
+    );
+    expect(screen.getByTestId('order-1-issued')).toHaveTextContent('Issued 3 of 10');
+  });
+});

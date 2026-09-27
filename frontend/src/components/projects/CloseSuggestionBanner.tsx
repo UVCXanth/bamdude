@@ -1,26 +1,32 @@
 import { useTranslation } from 'react-i18next';
 import { CheckCircle2 } from 'lucide-react';
-import type { Order } from '../../api/client';
+import type { FulfilmentState, Order } from '../../api/client';
+import type { FulfilmentMode } from './fulfilment/fulfilmentState';
 import { Button } from '../Button';
 
 interface CloseSuggestionBannerProps {
   order: Order;
-  onComplete: () => void;
+  /** The order's issue state — the numbers the buttons carry; absent while it loads. */
+  state?: FulfilmentState;
+  /** Open the issue dialog: to receive only, or to issue everything — `complete` ticks «Close the order». */
+  onFulfil: (mode: FulfilmentMode, complete: boolean) => void;
 }
 
 /**
- * "Everything is printed — close the order?"
+ * "Everything is covered — receive, issue, close?"
  *
  * A SUGGESTION and never an action: nothing here closes the order on its own.
- * `all_printed` says the prints are in, not that the parcel went out, and an
- * order that closed itself the moment the last plate came off the bed would
- * have to be reopened by hand on every job that still needs assembly, QC or
- * packing. So the banner asks, once, and the operator answers.
+ * `all_printed` says the prints are in, not that the parcel went out. Every
+ * button opens the issue dialog (spec workshop-order-issue, rules 26 and 28):
+ * receiving the printed units, issuing what is on the shelf, or «mark
+ * completed» — which, since an order closes only when everything is issued,
+ * is the dialog prefilled with everything and ticked to close.
  *
- * `all_printed` is the server's own verdict (design decision 8) — this
- * component never compares `printed` with `ordered` to second-guess it.
+ * `all_printed` is the server's own verdict (design decision 8), and the
+ * counts are the server's totals (`can_receive`, `can_issue`) — this component
+ * never adds lines up.
  */
-export function CloseSuggestionBanner({ order, onComplete }: CloseSuggestionBannerProps) {
+export function CloseSuggestionBanner({ order, state, onFulfil }: CloseSuggestionBannerProps) {
   const { t } = useTranslation();
 
   // A closed order has nothing to suggest: `completed` is already there, and
@@ -37,11 +43,28 @@ export function CloseSuggestionBanner({ order, onComplete }: CloseSuggestionBann
         <div className="min-w-0">
           <p className="text-white font-medium">{t('orders.close.title')}</p>
           <p className="text-sm text-bambu-gray">{t('orders.close.body')}</p>
+          {state && (
+            <p className="text-sm text-bambu-gray tabular-nums" data-testid="close-suggestion-issued">
+              {t('orders.close.issuedLine', { issued: state.issued, ordered: state.ordered, held: state.held })}
+            </p>
+          )}
         </div>
       </div>
-      <Button data-testid="close-suggestion-complete" onClick={onComplete}>
-        {t('orders.close.action')}
-      </Button>
+      <div className="flex items-center gap-2 flex-wrap">
+        {state && state.can_receive > 0 && (
+          <Button variant="secondary" data-testid="close-suggestion-receive" onClick={() => onFulfil('receive', false)}>
+            {t('orders.close.receive', { count: state.can_receive })}
+          </Button>
+        )}
+        {state && state.can_issue > 0 && (
+          <Button variant="secondary" data-testid="close-suggestion-issue" onClick={() => onFulfil('all', false)}>
+            {t('orders.close.issue', { count: state.can_issue })}
+          </Button>
+        )}
+        <Button data-testid="close-suggestion-complete" onClick={() => onFulfil('all', true)}>
+          {t('orders.close.action')}
+        </Button>
+      </div>
     </div>
   );
 }

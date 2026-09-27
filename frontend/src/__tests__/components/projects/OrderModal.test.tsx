@@ -35,6 +35,17 @@ describe('OrderModal', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.spyOn(api, 'getCustomers').mockResolvedValue([{ id: 2, name: 'ACME', figures: {} }] as never);
+    vi.spyOn(api, 'getFulfilment').mockResolvedValue({
+      lines: [],
+      ordered: 10,
+      issued: 0,
+      held: 0,
+      fully_issued: false,
+      can_assemble: 0,
+      can_receive: 0,
+      can_issue: 0,
+      recipient: { name: null, phone: null, delivery_method: null, delivery_details: null },
+    });
   });
 
   it('shows the stored due date and sends no due_date when the field is untouched', async () => {
@@ -50,5 +61,45 @@ describe('OrderModal', () => {
     // in particular no `due_date`, which a raw-datetime-vs-trimmed-date
     // comparison would have flagged as "changed".
     await waitFor(() => expect(update).toHaveBeenCalledWith(5, {}));
+  });
+});
+
+describe('OrderModal · completing', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(api, 'getCustomers').mockResolvedValue([{ id: 2, name: 'ACME', figures: {} }] as never);
+  });
+
+  it('offers «Completed» only once everything is issued, and says why', async () => {
+    vi.spyOn(api, 'getFulfilment').mockResolvedValue({
+      lines: [],
+      ordered: 10,
+      issued: 0,
+      held: 0,
+      fully_issued: false,
+      can_assemble: 0,
+      can_receive: 0,
+      can_issue: 0,
+      recipient: { name: null, phone: null, delivery_method: null, delivery_details: null },
+    });
+    render(<OrderModal order={order} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Completed' })).toBeDisabled());
+    expect(screen.getByText('An order completes through «Stock & issue» once everything is issued')).toBeInTheDocument();
+  });
+
+  it('lets a fully issued order be completed here', async () => {
+    vi.spyOn(api, 'getFulfilment').mockResolvedValue({ ...{
+      lines: [],
+      ordered: 10,
+      issued: 0,
+      held: 0,
+      fully_issued: false,
+      can_assemble: 0,
+      can_receive: 0,
+      can_issue: 0,
+      recipient: { name: null, phone: null, delivery_method: null, delivery_details: null },
+    }, fully_issued: true });
+    render(<OrderModal order={order} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Completed' })).toBeEnabled());
   });
 });

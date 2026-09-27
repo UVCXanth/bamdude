@@ -4,10 +4,10 @@ import { useTranslation } from 'react-i18next';
 import { DndContext, KeyboardSensor, PointerSensor, useDroppable, useSensor, useSensors } from '@dnd-kit/core';
 import type { Announcements, DragEndEvent } from '@dnd-kit/core';
 import { api } from '../../../api/client';
-import type { OrderBoard, OrderBoardColumn, OrderViewFilters } from '../../../api/client';
+import type { OrderBoardColumn, OrderViewFilters } from '../../../api/client';
 import { useAuth } from '../../../contexts/AuthContext';
 import { Button } from '../../Button';
-import { ConfirmModal } from '../../ConfirmModal';
+import { FulfilmentDialog } from '../fulfilment/FulfilmentDialog';
 import { BoardCard } from './BoardCard';
 import { BOARD_COLUMNS, boardKeyboardCoordinates } from './boardDrop';
 import type { BoardColumnKey } from './boardDrop';
@@ -46,7 +46,7 @@ export function OrdersBoard({ filters, onOpenList, onReset }: OrdersBoardProps) 
     // The previous board stays while a new search or filter is asked — no flash of empty columns.
     placeholderData: keepPreviousData,
   });
-  const { drop, confirming, completing, confirm, cancel } = useBoardActions();
+  const { drop, fulfilling, closeFulfilment } = useBoardActions();
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: boardKeyboardCoordinates }),
@@ -72,8 +72,6 @@ export function OrdersBoard({ filters, onOpenList, onReset }: OrdersBoardProps) 
     const from = active.data.current?.from as BoardColumnKey | undefined;
     if (over && from) drop(Number(active.id), from, over.id as BoardColumnKey);
   };
-
-  const confirmingOrder = confirming != null && data ? findOrder(data, confirming) : undefined;
 
   // A failed read with nothing to show is said out loud: four empty columns would read as «no orders».
   if (isError && !data) return <p className="text-sm text-red-500">{t('orders.board.loadFailed')}</p>;
@@ -114,25 +112,10 @@ export function OrdersBoard({ filters, onOpenList, onReset }: OrdersBoardProps) 
         </div>
       </DndContext>
 
-      {confirming != null && (
-        <ConfirmModal
-          title={t('orders.board.completeTitle')}
-          message={t('orders.board.completeBody', { code: confirmingOrder?.code ?? '', name: confirmingOrder?.name ?? '' })}
-          isLoading={completing}
-          onConfirm={confirm}
-          onCancel={cancel}
-        />
-      )}
+      {/* A drop onto «done» is the issue dialog, ticked to close (spec workshop-order-issue, rule 28). */}
+      {fulfilling != null && <FulfilmentDialog orderId={fulfilling} complete onClose={closeFulfilment} />}
     </>
   );
-}
-
-function findOrder(board: OrderBoard, id: number) {
-  for (const key of BOARD_COLUMNS) {
-    const found = board[key].items.find((o) => o.id === id);
-    if (found) return found;
-  }
-  return undefined;
 }
 
 interface BoardColumnProps {

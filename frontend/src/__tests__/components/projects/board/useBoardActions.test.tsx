@@ -26,27 +26,18 @@ describe('useBoardActions', () => {
     act(() => result.current.drop(5, 'prep', 'qc'));
     await waitFor(() => expect(stage).toHaveBeenCalledWith(5, 'qc'));
     expect(update).not.toHaveBeenCalled();
-    expect(result.current.confirming).toBeNull();
+    expect(result.current.fulfilling).toBeNull();
   });
-  it('a drop into «done» asks first and completes only on confirm', async () => {
+  it('a drop into «done» opens the issue dialog and writes nothing itself', () => {
     const stage = vi.spyOn(api, 'setOrderStage').mockResolvedValue({} as never);
     const update = vi.spyOn(api, 'updateOrder').mockResolvedValue({} as never);
     const { result } = renderHook(() => useBoardActions(), { wrapper });
     act(() => result.current.drop(5, 'qc', 'done'));
-    expect(result.current.confirming).toBe(5);
+    expect(result.current.fulfilling).toBe(5);
     expect(update).not.toHaveBeenCalled();
-    act(() => result.current.confirm());
-    await waitFor(() => expect(update).toHaveBeenCalledWith(5, { status: 'completed' }));
-    await waitFor(() => expect(result.current.confirming).toBeNull());
     expect(stage).not.toHaveBeenCalled();
-  });
-  it('cancel clears the question and sends nothing', () => {
-    const update = vi.spyOn(api, 'updateOrder').mockResolvedValue({} as never);
-    const { result } = renderHook(() => useBoardActions(), { wrapper });
-    act(() => result.current.drop(5, 'printing', 'done'));
-    act(() => result.current.cancel());
-    expect(result.current.confirming).toBeNull();
-    expect(update).not.toHaveBeenCalled();
+    act(() => result.current.closeFulfilment());
+    expect(result.current.fulfilling).toBeNull();
   });
   it('a drop into its own column, or of a completed card, sends nothing', () => {
     const stage = vi.spyOn(api, 'setOrderStage').mockResolvedValue({} as never);
@@ -56,6 +47,6 @@ describe('useBoardActions', () => {
     act(() => result.current.drop(5, 'done', 'prep'));
     expect(stage).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
-    expect(result.current.confirming).toBeNull();
+    expect(result.current.fulfilling).toBeNull();
   });
 });

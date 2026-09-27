@@ -121,6 +121,15 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
   // before `/auth/me` answers. An edit starts from the order's own value.
   const { user } = useAuth();
   const { data: assignees = [] } = useQuery({ queryKey: ['order-assignees'], queryFn: api.getOrderAssignees });
+  // An active order completes only fully issued (spec workshop-order-issue, rule 12): the
+  // option stays offered but closed until the issue state says so.
+  const activeId = order && order.status === 'active' ? order.id : null;
+  const { data: fulfilment } = useQuery({
+    queryKey: ['project-fulfilment', activeId],
+    queryFn: () => api.getFulfilment(activeId as number),
+    enabled: activeId != null,
+  });
+  const completeRefused = activeId != null && !fulfilment?.fully_issued;
   const responsibleFieldId = useId();
   const initialResponsibleId = order ? (order.responsible_id ?? null) : null;
   const [responsibleChoice, setResponsibleChoice] = useState<number | null | undefined>(
@@ -400,11 +409,14 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
                   disabled={mutation.isPending}
                 >
                   {(['active', 'completed', 'cancelled'] as const).map((s) => (
-                    <option key={s} value={s}>
+                    <option key={s} value={s} disabled={s === 'completed' && completeRefused}>
                       {t(`orders.status.${s}`)}
                     </option>
                   ))}
                 </Select>
+                {completeRefused && (
+                  <p className="mt-1 text-xs text-bambu-gray">{t('orders.modal.completeHint')}</p>
+                )}
               </div>
             )}
           </div>

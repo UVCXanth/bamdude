@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Copy,
   ExternalLink,
+  PackageCheck,
   PackagePlus,
   Pencil,
   RotateCcw,
@@ -33,6 +34,9 @@ interface OrderHeaderProps {
    *  toast — it is the one that knows which products the order is for. */
   onBankSurplus: () => void;
   bankingSurplus: boolean;
+  /** «Stock & issue…» — offered when the order has something to assemble, receive or
+   *  issue (spec workshop-order-issue, rule 26); the primary action on the QC stage. */
+  fulfilment?: { onOpen: () => void; primary: boolean };
   /** Drawn inside another page (the orders workspace): no breadcrumb back to the list the
    *  viewer is already in, and an h2 — the page has its own h1. */
   embedded?: boolean;
@@ -68,6 +72,7 @@ export function OrderHeader({
   onSetStatus,
   onBankSurplus,
   bankingSurplus,
+  fulfilment,
   embedded = false,
 }: OrderHeaderProps) {
   const { t } = useTranslation();
@@ -210,6 +215,16 @@ export function OrderHeader({
             >
               <PackagePlus className="w-4 h-4" />
               {t('stock.bank.action')}
+            </Button>
+          )}
+          {hasPermission('projects:update') && order.status === 'active' && fulfilment && (
+            <Button
+              variant={fulfilment.primary ? 'primary' : 'secondary'}
+              data-testid="order-fulfilment"
+              onClick={fulfilment.onOpen}
+            >
+              <PackageCheck className="w-4 h-4" />
+              {t('orders.header.fulfil')}
             </Button>
           )}
           {hasPermission('projects:update') && order.status === 'active' && (

@@ -192,3 +192,34 @@ describe('OrderHeader · code and contact person', () => {
     expect(screen.queryByText(/contact:/)).not.toBeInTheDocument();
   });
 });
+
+describe('OrderHeader · stock & issue', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    auth.granted = null;
+    vi.spyOn(api, 'getSettings').mockResolvedValue({ currency: 'USD' } as never);
+  });
+
+  it('offers the issue dialog when there is something to do, and opens it', () => {
+    const onOpen = vi.fn();
+    render(
+      <OrderHeader
+        order={{ ...orderWith(0), status: 'active' } as Order}
+        onEdit={noop}
+        onDuplicate={noop}
+        onDelete={noop}
+        onSetStatus={noop}
+        onBankSurplus={noop}
+        bankingSurplus={false}
+        fulfilment={{ onOpen, primary: true }}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('order-fulfilment'));
+    expect(onOpen).toHaveBeenCalled();
+  });
+
+  it('draws no such button when there is nothing to do', () => {
+    mount({ ...orderWith(0), status: 'active' } as Order);
+    expect(screen.queryByTestId('order-fulfilment')).not.toBeInTheDocument();
+  });
+});

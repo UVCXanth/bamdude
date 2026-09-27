@@ -8,6 +8,7 @@ import type { OrderListItem, OrderStage, OrderViewFilters, ProjectStatus } from 
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { OrderModal } from '../../components/projects/OrderModal';
+import { useFulfilmentDoor } from '../../components/projects/fulfilment/useFulfilmentDoor';
 import { FilamentStrip } from '../../components/projects/FilamentStrip';
 import { OrdersTiles } from '../../components/projects/OrdersTiles';
 import { OrderStatusTabs, OrdersListView } from '../../components/projects/OrdersListView';
@@ -145,6 +146,7 @@ export function OrdersPage() {
   // set is a prefix. See `utils/queryInvalidation.ts`.
   const invalidate = () => invalidateOrderViews(queryClient);
 
+  const { openFulfilment, fulfilmentDialog } = useFulfilmentDoor();
   const setStatus = useMutation({
     mutationFn: ({ id, status }: { id: number; status: ProjectStatus }) => api.updateOrder(id, { status }),
     onSuccess: invalidate,
@@ -304,7 +306,7 @@ export function OrdersPage() {
           groupByCustomer={groupByCustomer}
           onEdit={setEditing}
           onDuplicate={(o) => duplicate.mutate(o.id)}
-          onSetStatus={(o, status) => setStatus.mutate({ id: o.id, status })}
+          onSetStatus={(o, status) => (status === 'completed' ? openFulfilment(o.id) : setStatus.mutate({ id: o.id, status }))}
           onDelete={setDeleting}
         />
       )}
@@ -336,6 +338,8 @@ export function OrdersPage() {
       {view === 'deadlines' && (
         <OrdersDeadlines filters={viewFilters} week={week} onWeek={(n) => setExtra('week', String(n), { keepPage: true })} />
       )}
+
+      {fulfilmentDialog}
 
       {editing && (
         <OrderModal order={editing === 'new' ? null : editing} defaultCustomerId={customerId} onClose={() => setEditing(null)} />

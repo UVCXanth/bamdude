@@ -199,6 +199,12 @@ export function OrderCard({ order, onEdit, onDuplicate, onSetStatus, onDelete }:
             </p>
           )}
 
+          {order.status === 'active' && order.ordered > 0 && (
+            <p className="text-xs text-bambu-gray" data-testid={`order-${order.id}-issued`}>
+              {t('orders.card.issued', { issued: order.issued_units, ordered: order.ordered })}
+            </p>
+          )}
+
           {order.remaining > 0 && (
             <p className="text-xs text-bambu-gray" data-testid={`order-${order.id}-remaining`}>
               {t('orders.card.remaining', { count: order.remaining })}

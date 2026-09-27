@@ -75,6 +75,11 @@ class OrderState:
     issued: int
     held: int
     fully_issued: bool
+    #: The order's totals of what a batch could do now — the banner's numbers, so no
+    #: reader adds the rows up (a parts line counts its parts).
+    can_assemble: int = 0
+    can_receive: int = 0
+    can_issue: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +185,11 @@ async def state(db: AsyncSession, project: Project) -> OrderState:
         issued=sum(row.issued for row in lines),
         held=sum(row.held for row in lines),
         fully_issued=all(row.fully_issued for row in lines),
+        can_assemble=sum(row.can_assemble for row in lines),
+        can_receive=sum(row.can_receive + sum(p.can_receive for p in row.parts) for row in lines),
+        can_issue=sum(
+            row.held + row.can_assemble + row.can_receive + sum(p.can_receive for p in row.parts) for row in lines
+        ),
     )
 
 

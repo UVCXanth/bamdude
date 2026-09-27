@@ -12,6 +12,7 @@ export const ORDER_JOURNAL_KINDS = [
   'prints_filed', 'prints_unfiled', 'defects_recorded',
   'queue_items_filed', 'plan_enqueued', 'line_rebalanced',
   'surplus_banked', 'procurement_updated',
+  'kits_assembled', 'goods_received', 'goods_issued', 'stock_taken',
   'attachment_added', 'attachment_removed', 'cover_changed',
 ] as const;
 
@@ -89,6 +90,28 @@ export function journalText(event: TimelineEvent, t: TFunction): string | null {
     case 'line_changed': {
       const changes = m.changes && typeof m.changes === 'object' ? Object.keys(m.changes) : [];
       return t('orders.timeline.events.line_changed', { product: named(m.product), fields: fieldList(changes, t) });
+    }
+    case 'goods_received': {
+      // A parts line receives part by part: `parts` is `[[name, n], …]` (spec workshop-order-issue, rule 24).
+      const units = Array.isArray(m.parts)
+        ? m.parts
+            .filter((pair): pair is [unknown, unknown] => Array.isArray(pair) && pair.length === 2)
+            .map(([name, n]) => `${named(name)} × ${text(n)}`)
+            .join(', ')
+        : text(m.units);
+      return t('orders.timeline.events.goods_received', { product: named(m.product), units });
+    }
+    case 'goods_issued': {
+      const said = t('orders.timeline.events.goods_issued', { units: text(m.units) });
+      return m.waybill ? `${said}${t('orders.timeline.stock.waybill', { waybill: text(m.waybill) })}` : said;
+    }
+    case 'stock_taken': {
+      const bits = [t('orders.timeline.events.stock_taken', { product: named(m.product) })];
+      const ready = Number(m.from_finished) || 0;
+      const kits = Number(m.kits) || 0;
+      if (ready > 0) bits.push(t('orders.timeline.stock.ready', { count: ready }));
+      if (kits > 0) bits.push(t('orders.timeline.stock.kits', { count: kits }));
+      return bits.join(', ');
     }
     case 'line_configured':
       return t('orders.timeline.events.line_configured', { product: named(m.product), config: configText(m.to, t) });

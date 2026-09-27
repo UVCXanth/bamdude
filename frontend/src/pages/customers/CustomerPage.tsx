@@ -12,6 +12,7 @@ import { OrderStatusTabs, OrdersListView } from '../../components/projects/Order
 import { ORDER_TABS, ORDERS_DEFAULT_SORT } from '../../components/projects/orderList';
 import { useOrderSortOptions } from '../../hooks/useOrderSortOptions';
 import { OrderModal } from '../../components/projects/OrderModal';
+import { useFulfilmentDoor } from '../../components/projects/fulfilment/useFulfilmentDoor';
 import { CustomerModal } from '../../components/customers/CustomerModal';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
@@ -127,6 +128,7 @@ export function CustomerPage() {
     onError: (e: Error) => showToast(e.message, 'error'),
   });
 
+  const { openFulfilment, fulfilmentDialog } = useFulfilmentDoor();
   const setOrderStatus = useMutation({
     mutationFn: ({ orderId, status }: { orderId: number; status: ProjectStatus }) =>
       api.updateOrder(orderId, { status }),
@@ -290,13 +292,17 @@ export function CustomerPage() {
             }}
             onEdit={setEditingOrder}
             onDuplicate={(o) => duplicateOrder.mutate(o.id)}
-            onSetStatus={(o, status) => setOrderStatus.mutate({ orderId: o.id, status })}
+            onSetStatus={(o, status) =>
+              status === 'completed' ? openFulfilment(o.id) : setOrderStatus.mutate({ orderId: o.id, status })
+            }
             onDelete={setDeletingOrder}
           />
         )}
       </section>
 
       {editingCustomer && <CustomerModal customer={customer} onClose={() => setEditingCustomer(false)} />}
+
+      {fulfilmentDialog}
 
       {editingOrder && (
         <OrderModal

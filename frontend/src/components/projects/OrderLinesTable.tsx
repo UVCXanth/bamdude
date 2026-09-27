@@ -38,6 +38,13 @@ interface Draft {
   fromFinished: number;
 }
 
+/** Has the line's stock moved — assembled, received or issued (spec workshop-order-issue,
+ *  rule 13)? From then on its stock numbers are only added to, through «take from stock»,
+ *  its configuration stays, and its quantity stays above what is issued and held. */
+function stockMoved(line: ProjectLine): boolean {
+  return line.assembled > 0 || line.received > 0 || line.issued > 0;
+}
+
 function draftOf(line: ProjectLine): Draft {
   return {
     id: line.id,
@@ -314,6 +321,8 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
 
             {lines.map((line, index) => {
               const editing = draft?.id === line.id ? draft : null;
+              const moved = stockMoved(line);
+              const quantityFloor = moved ? Math.max(1, line.issued + line.held) : 1;
               const open = expanded.has(line.id);
               return [
                 <tr key={line.id} data-line={line.id} className="border-t border-bambu-dark-tertiary text-white">
@@ -338,10 +347,17 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                     {editing && line.mode !== 'parts' ? (
                       <input
                         type="number"
-                        min={1}
+                        min={quantityFloor}
                         aria-label={t('orders.lines.quantity')}
                         value={editing.quantity}
                         onChange={(e) => {
+                          if (moved) {
+                            // Moved stock is not rewritten: the quantity alone changes, never
+                            // below what went out and what waits on the shelf; the server fits
+                            // the kits under it.
+                            setDraft({ ...editing, quantity: Math.max(quantityFloor, Number(e.target.value) || quantityFloor) });
+                            return;
+                          }
                           // ⚠️ Lowering the quantity lowers the reservation with
                           // it. A line for two units holding five kits is not a
                           // reservation, it is stock taken out of circulation —
@@ -377,6 +393,9 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                     {editing
                       ? (() => {
                           if (line.mode === 'parts') return null;
+                          if (moved) {
+                            return <p className="mt-1 text-xs text-bambu-gray">{t('orders.lines.moved')}</p>;
+                          }
                           const pool = editFreeKits + line.from_kit_units;
                           // Ready units come first; kits fit under what is left
                           // (spec workshop-add-to-order, rule 6).
@@ -515,6 +534,11 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                     <p className="text-xs text-bambu-gray mt-1 tabular-nums" data-testid={`line-${line.id}-coverage-sources`}>
                       {t('orders.lines.coverageSources', { printed: line.units_printed, stock: line.from_stock_units })}
                     </p>
+                    {(line.issued > 0 || line.held > 0) && (
+                      <p className="text-xs text-bambu-gray mt-1 tabular-nums" data-testid={`line-${line.id}-issued`}>
+                        {t('orders.lines.issuedHeld', { issued: line.issued, ordered: line.quantity, held: line.held })}
+                      </p>
+                    )}
                     {(line.prints_in_progress > 0 || line.prints_queued > 0) && (
                       <p className="text-xs text-bambu-gray mt-1" data-testid={`line-${line.id}-live`}>
                         {t('orders.lines.live', { printing: line.prints_in_progress, queued: line.prints_queued })}
@@ -576,11 +600,13 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                             data-testid={`line-${line.id}-configure`}
                             onClick={() => setConfiguring(line)}
                             // Its kits shipped; the server refuses (409) — reopen the order first.
-                            disabled={order.status === 'completed'}
+                            disabled={order.status === 'completed' || moved}
                             title={
                               order.status === 'completed'
                                 ? t('orders.lineConfig.completed')
-                                : t('orders.lineConfig.configure')
+                                : moved
+                                  ? t('orders.lines.moved')
+                                  : t('orders.lineConfig.configure')
                             }
                             aria-label={t('orders.lineConfig.configure')}
                             className={ICON_BUTTON_CLASS}

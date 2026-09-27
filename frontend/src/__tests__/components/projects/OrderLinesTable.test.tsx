@@ -577,3 +577,43 @@ describe('OrderLinesTable · add to order and ready units', () => {
     expect(await screen.findByText('Only 1 ready unit could be reserved — the shelf had no more.')).toBeInTheDocument();
   });
 });
+
+describe('OrderLinesTable · a line whose stock has moved', () => {
+  // 6 ordered: 2 issued, 2 held on the shelf for the order (spec workshop-order-issue, rule 13).
+  const moved = {
+    ...order,
+    lines: order.lines.map((l) =>
+      l.id === 10
+        ? { ...l, quantity: 6, assembled: 1, received: 1, issued: 2, held: 2, from_finished: 2, from_kit_units: 2 }
+        : l,
+    ),
+  } as unknown as Order;
+  const MOVED = "This line's stock has moved — take more from stock instead";
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(api, 'getProductStock').mockResolvedValue({ kits_available: 1, balances: [], movements: [] } as never);
+  });
+
+  it('says what went out and what waits on the shelf', () => {
+    render(<OrderLinesTable order={moved} canEdit />);
+    expect(screen.getByTestId('line-10-issued')).toHaveTextContent('Issued 2 of 6 · on the shelf for the order 2');
+    expect(screen.queryByTestId('line-11-issued')).not.toBeInTheDocument();
+  });
+
+  it('keeps its configuration and its stock numbers, and its quantity above what went out', async () => {
+    const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(moved);
+    render(<OrderLinesTable order={moved} canEdit />);
+    expect(screen.getByTestId('line-10-configure')).toBeDisabled();
+    expect(screen.getByTestId('line-10-configure')).toHaveAttribute('title', MOVED);
+    fireEvent.click(screen.getByTestId('line-10-edit'));
+    expect(screen.queryByTestId('line-10-from-finished')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('line-10-from-stock')).not.toBeInTheDocument();
+    expect(screen.getByText(MOVED)).toBeInTheDocument();
+    const quantity = screen.getByLabelText('Quantity');
+    expect(quantity).toHaveAttribute('min', '4');
+    fireEvent.change(quantity, { target: { value: '8' } });
+    fireEvent.click(screen.getByTestId('line-10-save'));
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 10, { quantity: 8 }));
+  });
+});

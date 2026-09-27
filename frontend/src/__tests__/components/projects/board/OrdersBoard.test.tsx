@@ -123,18 +123,28 @@ describe('OrdersBoard', () => {
     expect(await screen.findByText('Could not load the board.')).toBeInTheDocument();
     expect(screen.queryByTestId('board-total-prep')).not.toBeInTheDocument();
   });
-  it('a completed-card drop asks first; the confirmation completes the order', async () => {
+  it('a drop onto «done» opens the issue dialog instead of closing the order', async () => {
     vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
     const update = vi.spyOn(api, 'updateOrder').mockResolvedValue({} as never);
+    const state = vi.spyOn(api, 'getFulfilment').mockResolvedValue({
+      lines: [],
+      ordered: 0,
+      issued: 0,
+      held: 0,
+      fully_issued: true,
+      can_assemble: 0,
+      can_receive: 0,
+      can_issue: 0,
+      recipient: { name: null, phone: null, delivery_method: null, delivery_details: null },
+    });
+    vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
     stubColumnGeometry();
     render(<OrdersBoard filters={{}} onOpenList={() => {}} />);
     const handle = await screen.findByRole('button', { name: 'Move OR-0002' });
     await keyboardDrag(handle, ['ArrowRight', 'ArrowRight']); // printing → qc → done
-    expect(await screen.findByText('Mark the order completed?')).toBeInTheDocument();
-    expect(screen.getByText('OR-0002 «Lamp» will be marked completed; it can be reopened from its menu.')).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'Stock & issue' })).toBeInTheDocument();
+    await waitFor(() => expect(state).toHaveBeenCalledWith(2));
     expect(update).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
-    await waitFor(() => expect(update).toHaveBeenCalledWith(2, { status: 'completed' }));
   });
   it('moves a card to the next column from the keyboard', async () => {
     vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());

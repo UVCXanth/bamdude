@@ -49,6 +49,9 @@ const state: FulfilmentState = {
   issued: 0,
   held: 2,
   fully_issued: false,
+  can_assemble: 3,
+  can_receive: 9,
+  can_issue: 14,
   recipient: { name: 'Ivan', phone: '+380501112233', delivery_method: 'Nova Poshta', delivery_details: 'Branch 5' },
 };
 

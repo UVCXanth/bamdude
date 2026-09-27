@@ -857,6 +857,10 @@ class FulfilmentStateOut(BaseModel):
     issued: int
     held: int
     fully_issued: bool
+    #: What a batch could assemble, receive and issue now, over the whole order.
+    can_assemble: int = 0
+    can_receive: int = 0
+    can_issue: int = 0
     #: The order's contact person, else the customer's main contact (rule 18).
     recipient: RecipientOut
 

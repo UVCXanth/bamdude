@@ -138,3 +138,17 @@ describe('OrderCard', () => {
     });
   });
 });
+
+describe('OrderCard · issued', () => {
+  it('says how much went out of an active order', () => {
+    render(<OrderCard order={{ ...base, issued_units: 4 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    expect(screen.getByTestId('order-1-issued')).toHaveTextContent('Issued 4 of 10');
+  });
+
+  it('says nothing of it for a closed order', () => {
+    render(
+      <OrderCard order={{ ...base, status: 'completed', stage: 'done', issued_units: 10 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />,
+    );
+    expect(screen.queryByTestId('order-1-issued')).not.toBeInTheDocument();
+  });
+});

@@ -211,15 +211,15 @@ describe('CustomerPage', () => {
       .mockResolvedValueOnce(customer as never)
       .mockRejectedValue(new Error('Gateway timeout'));
     vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
-    vi.spyOn(api, 'updateOrder').mockResolvedValue({ ...orders[0], status: 'completed' } as never);
+    vi.spyOn(api, 'updateOrder').mockResolvedValue({ ...orders[0], status: 'cancelled' } as never);
 
     mountAt();
 
     expect(await screen.findByRole('heading', { name: 'ACME' })).toBeInTheDocument();
 
-    // Marking the order completed invalidates ['customer', id]; that refetch fails.
+    // Cancelling the order invalidates ['customer', id]; that refetch fails.
     fireEvent.click(await screen.findByRole('button', { name: /actions/i }));
-    fireEvent.click(await screen.findByText(/mark completed/i));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Cancel' }));
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
 
     expect(screen.getByRole('heading', { name: 'ACME' })).toBeInTheDocument();
@@ -235,7 +235,7 @@ describe('CustomerPage', () => {
       .mockResolvedValueOnce(customer as never)
       .mockRejectedValue(new Error('Gateway timeout'));
     vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
-    vi.spyOn(api, 'updateOrder').mockResolvedValue({ ...orders[0], status: 'completed' } as never);
+    vi.spyOn(api, 'updateOrder').mockResolvedValue({ ...orders[0], status: 'cancelled' } as never);
 
     window.history.pushState({}, '', '/customers/1');
     render(
@@ -248,11 +248,35 @@ describe('CustomerPage', () => {
 
     expect(await screen.findByRole('heading', { name: 'ACME' })).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: /actions/i }));
-    fireEvent.click(await screen.findByText(/mark completed/i));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Cancel' }));
 
     expect(await screen.findByText(/could not refresh/i)).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'ACME' })).toBeInTheDocument();
     expect(screen.getAllByText(/could not refresh/i)).toHaveLength(1);
+  });
+
+  it('opens the issue dialog from «Mark completed» instead of closing the order', async () => {
+    vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
+    const update = vi.spyOn(api, 'updateOrder').mockResolvedValue({} as never);
+    vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
+    vi.spyOn(api, 'getFulfilment').mockResolvedValue({
+      lines: [],
+      ordered: 0,
+      issued: 0,
+      held: 0,
+      fully_issued: true,
+      can_assemble: 0,
+      can_receive: 0,
+      can_issue: 0,
+      recipient: { name: null, phone: null, delivery_method: null, delivery_details: null },
+    });
+    mountAt();
+    expect(await screen.findByRole('heading', { name: 'ACME' })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /actions/i }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Mark completed' }));
+    expect(await screen.findByRole('dialog', { name: 'Stock & issue' })).toBeInTheDocument();
+    expect(update).not.toHaveBeenCalled();
   });
 
   it('forgets the deleted customer, so a Back inside staleTime cannot render it', async () => {

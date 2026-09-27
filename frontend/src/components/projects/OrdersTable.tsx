@@ -90,7 +90,14 @@ export function OrdersTable({
                   <td className="p-2 text-right tabular-nums" data-testid={`order-${o.id}-printing`}>{o.prints_in_progress}</td>
                   <td className="p-2 text-right tabular-nums" data-testid={`order-${o.id}-queued`}>{o.prints_queued}</td>
                   <td className="p-2 text-right tabular-nums">{o.remaining}</td>
-                  <td className="p-2 min-w-[8rem]"><ProgressBar value={o.covered_units} max={o.ordered} progress={o.progress} testId={`order-${o.id}-table-progress`} /></td>
+                  <td className="p-2 min-w-[8rem]">
+                    <ProgressBar value={o.covered_units} max={o.ordered} progress={o.progress} testId={`order-${o.id}-table-progress`} />
+                    {o.status === 'active' && o.ordered > 0 && (
+                      <div className="text-xs text-bambu-gray mt-1 tabular-nums" data-testid={`order-${o.id}-issued`}>
+                        {t('orders.card.issued', { issued: o.issued_units, ordered: o.ordered })}
+                      </div>
+                    )}
+                  </td>
                   <td data-testid={`order-${o.id}-due`} className={`p-2 text-xs ${isOverdue(o) ? 'text-red-500' : 'text-bambu-gray'}`}>{o.due_date ? new Date(o.due_date).toLocaleDateString() : ''}</td>
                   <td className="p-2 text-xs whitespace-nowrap" data-testid={`order-${o.id}-ready`}>
                     {forecastError ? (
