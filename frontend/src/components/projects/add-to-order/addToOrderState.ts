@@ -26,7 +26,8 @@ export interface ProductPick {
 export type ProductPicks = Map<number, ProductPick>;
 /** Part id → how many to order; parts of one product become ONE line. */
 export type PartPicks = Map<number, { productId: number; qty: number }>;
-export type PlatePick = { fileId: number; plateIndex: number; copies: number } | null;
+/** The one-off tab's pick: the file stays picked while its plate is not chosen yet. */
+export type PlatePick = { fileId: number; filename: string; plateIndex: number | null; copies: number } | null;
 
 /** The server's cap on a line's quantity (`schemas/project.MAX_QTY`). */
 export const MAX_LINE_QTY = 1_000_000;
@@ -112,6 +113,32 @@ export function productUnits(picks: ProductPicks): number {
   let units = 0;
   for (const pick of picks.values()) units += pick.qty;
   return units;
+}
+
+/** The server's cap on one part's count (`line_config.MAX_COUNT`). */
+export const MAX_PART_COUNT = 9999;
+
+/** Parts of one product are ONE `parts` line (spec rule 21), products in the order first ticked. */
+export function partsLines(picks: PartPicks): BatchLine[] {
+  const byProduct = new Map<number, Record<number, number>>();
+  for (const [partId, { productId, qty }] of picks) {
+    const counts = byProduct.get(productId) ?? {};
+    counts[partId] = qty;
+    byProduct.set(productId, counts);
+  }
+  return [...byProduct].map(([productId, counts]) => ({ kind: 'parts', product_id: productId, part_counts: counts }));
+}
+
+export function partUnits(picks: PartPicks): number {
+  let units = 0;
+  for (const pick of picks.values()) units += pick.qty;
+  return units;
+}
+
+/** The plate line, once a plate is chosen; stock is kits only, picked by the server (rule 11). */
+export function plateLines(pick: PlatePick): BatchLine[] {
+  if (!pick || pick.plateIndex == null) return [];
+  return [{ kind: 'plate', library_file_id: pick.fileId, plate_index: pick.plateIndex, copies: pick.copies }];
 }
 
 /** A line whose shelf gave less than was asked — the shelf moved (rule 23). */

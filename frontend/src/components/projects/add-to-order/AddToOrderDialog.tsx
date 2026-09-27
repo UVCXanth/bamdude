@@ -10,9 +10,20 @@ import { invalidateOrderViews, invalidateStock } from '../../../utils/queryInval
 import { Button } from '../../Button';
 import { Modal } from '../../Modal';
 import { Select } from '../../Select';
+import { PartsTab } from './PartsTab';
+import { PlateTab } from './PlateTab';
 import { ProductsTab } from './ProductsTab';
-import { newProductPick, productLines, productUnits, shortfalls, suggestItems } from './addToOrderState';
-import type { ProductPicks } from './addToOrderState';
+import {
+  newProductPick,
+  partUnits,
+  partsLines,
+  plateLines,
+  productLines,
+  productUnits,
+  shortfalls,
+  suggestItems,
+} from './addToOrderState';
+import type { PartPicks, PlatePick, ProductPicks } from './addToOrderState';
 
 type Tab = 'products' | 'parts' | 'plate';
 const TABS: Tab[] = ['products', 'parts', 'plate'];
@@ -49,6 +60,8 @@ export function AddToOrderDialog({
   const [products, setProducts] = useState<ProductPicks>(() =>
     preselectProductId != null ? new Map([[preselectProductId, newProductPick()]]) : new Map(),
   );
+  const [parts, setParts] = useState<PartPicks>(() => new Map());
+  const [plate, setPlate] = useState<PlatePick>(null);
 
   const targetId = orderId ?? chosenOrder;
   // A chosen order came from the active list; a given one says what it is.
@@ -56,7 +69,12 @@ export function AddToOrderDialog({
   const items = useMemo(() => suggestItems(products), [products]);
   const { byProduct } = useStockSuggest(items, takesStock);
 
-  const lines: BatchLine[] = productLines(products, byProduct, takesStock);
+  // Everything picked on every tab goes in ONE batch — one transaction, so a
+  // refused line adds nothing (spec rule 11).
+  const productBatch = productLines(products, byProduct, takesStock);
+  const partsBatch = partsLines(parts);
+  const plateBatch = plateLines(plate);
+  const lines: BatchLine[] = [...productBatch, ...partsBatch, ...plateBatch];
 
   const add = useMutation({
     mutationFn: (id: number) => api.addOrderLines(id, lines),
@@ -86,8 +104,29 @@ export function AddToOrderDialog({
     onError: (err: Error) => showToast(err.message, 'error'),
   });
 
-  const units = productUnits(products);
   const canSubmit = targetId != null && lines.length > 0 && !add.isPending;
+  const summaries = [
+    products.size > 0 && t('orders.add.summary.products', { count: products.size, units: productUnits(products) }),
+    parts.size > 0 && t('orders.add.summary.parts', { count: parts.size, units: partUnits(parts) }),
+    plateBatch.length > 0 && t('orders.add.summary.plate'),
+  ].filter((s): s is string => Boolean(s));
+  // One kind picked names that kind, several are «lines», nothing yet follows the tab.
+  const kind: Tab | 'lines' =
+    summaries.length > 1
+      ? 'lines'
+      : productBatch.length > 0
+        ? 'products'
+        : partsBatch.length > 0
+          ? 'parts'
+          : plateBatch.length > 0
+            ? 'plate'
+            : tab;
+  const submitLabel =
+    kind === 'parts'
+      ? t('orders.add.submit.parts')
+      : kind === 'plate'
+        ? t('orders.add.submit.plate')
+        : t('orders.add.submit.products', { count: lines.length });
 
   return (
     <Modal
@@ -96,14 +135,16 @@ export function AddToOrderDialog({
       size="6xl"
       footer={
         <>
-          <span className="mr-auto text-sm text-bambu-gray">
-            {products.size > 0 && t('orders.add.summary.products', { count: products.size, units })}
+          <span className="mr-auto flex flex-wrap gap-x-4 text-sm text-bambu-gray">
+            {summaries.map((s) => (
+              <span key={s}>{s}</span>
+            ))}
           </span>
           <Button variant="secondary" onClick={onClose}>
             {t('common.cancel')}
           </Button>
           <Button onClick={() => targetId != null && add.mutate(targetId)} disabled={!canSubmit}>
-            {t('orders.add.submit.products', { count: lines.length })}
+            {submitLabel}
           </Button>
         </>
       }
@@ -130,6 +171,8 @@ export function AddToOrderDialog({
           {tab === 'products' && (
             <ProductsTab picks={products} onPicksChange={setProducts} takesStock={takesStock} suggestions={byProduct} />
           )}
+          {tab === 'parts' && <PartsTab picks={parts} onPicksChange={setParts} />}
+          {tab === 'plate' && <PlateTab pick={plate} onPickChange={setPlate} />}
         </div>
       </div>
     </Modal>

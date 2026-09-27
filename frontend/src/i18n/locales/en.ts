@@ -5351,8 +5351,10 @@ export default {
       summary: {
         products_one: 'Selected: {{count}} product · {{units}} pcs',
         products_other: 'Selected: {{count}} products · {{units}} pcs',
+        parts: 'Selected parts: {{count}} · {{units}} pcs',
+        plate: 'A one-off product will be made from the plate',
       },
-      submit: { products: 'Add lines ({{count}})' },
+      submit: { products: 'Add lines ({{count}})', parts: 'Add parts', plate: 'Create and add' },
       stock: {
         title: 'From stock',
         ready: 'ready',
@@ -5380,6 +5382,19 @@ export default {
       added_other: 'Added {{count}} lines',
       clamped: 'The stock changed while you were choosing — less was taken: {{detail}}',
       clampedLine: '{{name}}: ready {{gotFinished}} of {{askedFinished}}, kits {{gotKits}} of {{askedKits}}',
+      parts: { search: 'Search parts…', qty: 'Pieces', variant: '{{group}}: {{option}}', none: 'No parts match', noun: 'parts' },
+      plate: {
+        search: 'Search files…',
+        noFiles: 'No files match',
+        noun: 'files',
+        pickFile: 'Pick a file on the left',
+        sliceFirst: 'Slice it first — the file has no plates yet',
+        plates: 'Plates',
+        plate: 'Plate {{n}}',
+        objects_one: '{{count}} object',
+        objects_other: '{{count}} objects',
+        copies: 'Copies of the plate',
+      },
     },
     // spec workshop-product-variants: a line's configuration.
     lineConfig: {

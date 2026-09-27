@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../../../utils';
 import { api, ApiError } from '../../../../api/client';
 import { AddToOrderDialog } from '../../../../components/projects/add-to-order/AddToOrderDialog';
-import { lamp, pageOf, pipe, pipeDetail, suggestion } from './fixtures';
+import { filesPage, lamp, libraryFile, pageOf, part, partsPage, pipe, pipeDetail, plate, suggestion } from './fixtures';
 
 const orders = {
   items: [
@@ -115,5 +115,28 @@ describe('AddToOrderDialog', () => {
     expect(submit).toBeEnabled();
     fireEvent.click(submit);
     await waitFor(() => expect(add).toHaveBeenCalledWith(6, expect.any(Array)));
+  });
+  it('three kinds of lines, picked on three tabs, go in one batch', async () => {
+    vi.spyOn(api, 'getProductParts').mockResolvedValue(partsPage([part({})]));
+    vi.spyOn(api, 'getLibraryFilesPaged').mockResolvedValue(filesPage([libraryFile(31, 'flask.gcode.3mf')]) as never);
+    vi.spyOn(api, 'getLibraryFilePlates').mockResolvedValue({ file_id: 31, filename: 'flask.gcode.3mf', plates: [plate(1)], is_multi_plate: false });
+    render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
+    await tick(1);
+    fireEvent.click(screen.getByRole('tab', { name: 'Parts of a product' }));
+    fireEvent.click(within(await screen.findByTestId('add-part-11')).getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('tab', { name: 'One-off from a file' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'flask.gcode.3mf' }));
+    fireEvent.click(await screen.findByRole('radio', { name: /Plate 1/ }));
+    expect(screen.getByText('Selected: 1 product · 1 pcs')).toBeInTheDocument();
+    expect(screen.getByText('Selected parts: 1 · 1 pcs')).toBeInTheDocument();
+    expect(screen.getByText('A one-off product will be made from the plate')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Add lines (3)' }));
+    await waitFor(() =>
+      expect(add).toHaveBeenCalledWith(5, [
+        expect.objectContaining({ kind: 'product', product_id: 1 }),
+        { kind: 'parts', product_id: 1, part_counts: { 11: 1 } },
+        { kind: 'plate', library_file_id: 31, plate_index: 1, copies: 1 },
+      ]),
+    );
   });
 });

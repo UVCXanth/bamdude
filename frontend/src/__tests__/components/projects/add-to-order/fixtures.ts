@@ -1,4 +1,10 @@
-import type { ProductListItem, ProductListPage, StockSuggestion } from '../../../../api/client';
+import type {
+  LibraryFileListItem,
+  ProductListItem,
+  ProductListPage,
+  ProductPartRow,
+  StockSuggestion,
+} from '../../../../api/client';
 
 const row = (over: Partial<ProductListItem>): ProductListItem => ({
   id: 1,
@@ -84,5 +90,41 @@ export const suggestion = (over: Partial<StockSuggestion>): StockSuggestion => (
   to_print: 1,
   position_id: 5,
   position_code: 'SK-0005',
+  ...over,
+});
+
+
+export const part = (over: Partial<ProductPartRow>): ProductPartRow => ({
+  part_id: 11,
+  name: 'Tail',
+  variant: null,
+  product: { id: 1, code: 'PR-0001', name: 'Pipe', sku: 'PP-1' },
+  models: ['P1S'],
+  ...over,
+});
+
+export const partsPage = (items: ProductPartRow[], total = items.length) => ({
+  items,
+  meta: { total, current_page: 1, per_page: 24, last_page: Math.max(1, Math.ceil(total / 24)) },
+});
+
+export const libraryFile = (id: number, filename: string) =>
+  ({ id, filename, folder_id: null, file_type: 'gcode', print_name: null }) as unknown as LibraryFileListItem;
+
+export const filesPage = (items: LibraryFileListItem[]) => ({
+  items,
+  meta: { total: items.length, current_page: 1, per_page: 24, last_page: 1 },
+});
+
+export const plate = (index: number, over: Record<string, unknown> = {}) => ({
+  index,
+  name: null,
+  objects: ['a', 'b', 'c'],
+  object_count: 3,
+  has_thumbnail: false,
+  thumbnail_url: null,
+  print_time_seconds: 5400,
+  filament_used_grams: 12,
+  filaments: [],
   ...over,
 });
