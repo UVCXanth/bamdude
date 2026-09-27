@@ -1,6 +1,6 @@
 """Loader for the mirrored BambuStudio per-model printer config JSONs.
 
-BamDude ships **byte-for-byte** copies of BambuStudio's
+BamDude ships parsed-JSON-equivalent copies of BambuStudio's
 ``resources/printers/<code>.json`` under ``backend/app/data/printers/`` (see the
 README there). Each file is keyed by firmware version; the ``"00.00.00.00"``
 block is the base / default config, and its ``print`` sub-object carries the
@@ -8,9 +8,9 @@ per-model DEVICE capability flags (``support_*_calibration``,
 ``support_bed_leveling``, chamber, camera, …).
 
 Reading capabilities from these files keeps per-model knowledge in **data**, not
-hardcoded Python — and, because the copies are verbatim, re-syncing is a folder
-re-copy + ``git diff`` against a fresh BambuStudio checkout (byte-identical
-unless BS actually changed something). See CLAUDE.md → "Bambu Studio printer
+hardcoded Python. Re-sync from a chosen BS Git ref and compare parsed JSON;
+the shared reference working tree may be on an older tag, and our pre-commit
+hook may normalize final newlines. See CLAUDE.md → "Bambu Studio printer
 configs" and the folder README.
 
 Only device-capability reads live here; the tri-state print-calibration matrix
@@ -351,9 +351,8 @@ def supports_timelapse(model: str | None, firmware_version: str | None = None) -
     ⚠️ **Read from the config rather than defaulted.** BS initialises its own
     ``is_support_timelapse`` to FALSE and fills it from the live push, so a
     printer that has not sent that field yet would have its timelapse refused
-    outright. All fifteen shipped configs say ``true``, so the config is both
-    the honest answer and the one that does not take a working feature away in
-    the seconds before the first push. A live report still wins over this.
+    outright. The fifteen earlier model configs say ``true``; the new N8 config
+    does not specify this flag. A live report still wins over the config.
     """
     flags = get_device_support_flags(model, firmware_version)
     value = flags.get("support_timelapse")

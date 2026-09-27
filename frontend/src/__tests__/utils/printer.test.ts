@@ -93,6 +93,7 @@ describe('normalizeModelName', () => {
     expect(normalizeModelName('Bambu Lab X1 Carbon')).toBe('X1C');
     expect(normalizeModelName('Bambu Lab P1S')).toBe('P1S');
     expect(normalizeModelName('Bambu Lab A1 mini')).toBe('A1 Mini');
+    expect(normalizeModelName('Bambu Lab N8')).toBe('N8');
   });
 
   it('resolves an internal code FIRST, or the long-name map would never see it', () => {
@@ -100,6 +101,7 @@ describe('normalizeModelName', () => {
     // chain returns it unchanged — truthy — and the code map is never reached.
     expect(normalizeModelName('C12')).toBe('P1S');
     expect(normalizeModelName('N6')).toBe('X2D');
+    expect(normalizeModelName('N8')).toBe('N8');
   });
 
   // The frontend map is a superset of the backend's `PRINTER_MODEL_ID_MAP`

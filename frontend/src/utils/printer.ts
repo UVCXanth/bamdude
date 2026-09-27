@@ -63,6 +63,8 @@ const MODEL_DISPLAY_MAP: Record<string, string> = {
   'C13': 'X1E',
   // X2 Series
   'N6': 'X2D',
+  // Newly mirrored model; identity only until capabilities are verified.
+  'N8': 'N8',
   // A2 Series
   'N9': 'A2L',
   // P Series (BS configs: P1P=C11, P1S=C12, P2S=N7)
@@ -119,6 +121,7 @@ const MODEL_LONG_NAME_MAP: Record<string, string> = {
   'Bambu Lab H2S': 'H2S',
   'Bambu Lab X2D': 'X2D',
   'Bambu Lab A2L': 'A2L',
+  'Bambu Lab N8': 'N8',
 };
 
 /**

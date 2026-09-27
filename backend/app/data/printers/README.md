@@ -1,19 +1,23 @@
 # Bambu Lab printer configs (mirrored from BambuStudio)
 
-Copies of BambuStudio's `resources/printers/<code>.json`, one
-per printer model. They are the data-driven source of truth for **per-model
-device capabilities** — so this knowledge lives in data, not hardcoded Python.
+The full JSON catalog from BambuStudio's `resources/printers/`: one file per
+printer model, plus `filaments_blacklist.json`. All fields are mirrored, not
+only `compatible_machine`. These files are the data-driven source of truth for
+per-model device capabilities and G-code model compatibility.
 
 - **Source:** BambuStudio `resources/printers/` @ tag **`v02.08.04.57`**
   (commit `f977235e6`, checked 2026-09-27; `origin/master` has the same tree).
-- **Consumed by:** `backend/app/utils/printer_configs.py` (loader + the
-  device-calibration availability resolver).
+- **Consumed by:** `backend/app/utils/printer_configs.py` (loader and capability
+  resolvers) and `backend/app/utils/model_compatibility.py`.
 - **Local BS checkout** (not in this repo): `D:/Development/bamdude/references/BambuStudio/`.
 
 ## What's inside each file
 
-Keyed by **firmware version**; `"00.00.00.00"` is the base / default block. Its
-`print` sub-object carries the capability flags we read:
+Each model JSON is keyed by **firmware version**; `"00.00.00.00"` is the base /
+default block. The complete model description includes its display name,
+internal ID, serial prefixes, subseries, supported modes, images, and
+`compatible_machine` when present. Its `print` sub-object carries capability
+flags, including:
 
 | Field | Used for |
 |-------|----------|
@@ -41,45 +45,55 @@ file using each JSON's own `display_name` / `model_id`, so it is independent of
 > still keys off each JSON's own `display_name`/`model_id`, so it stays
 > independent of that map regardless.
 
+`N8` first appears in the mirrored `v02.08.04.57` catalog. Its name and code
+are recognized; hardware behavior is not inferred from its sparse config.
+
 ## Re-sync protocol (when BS ships new firmware/features)
 
 **Which tag to mirror:** whichever is newest at the moment you check — public
-release or beta. BS tags both on the same line (`v02.07.01.62` was the public
-release; `v02.08.00.50` and `v02.08.01.55` are betas after it), and the printer
-configs have so far been identical across them. If a beta ever *does* change a
-config, that is worth a line in the audit note before mirroring it: a flag a beta
-turns on can still be reverted before release.
+release or beta. BS tags both; review any beta-only config change in the audit
+note before mirroring it, since a flag enabled in a beta can still be reverted.
 
-1. `git -C D:/Development/bamdude/references/BambuStudio fetch --tags`, then check the newest tag
-   **and** whether `origin/master` is ahead of it (BS ships config changes on
-   master before tagging).
-2. Re-copy from `D:/Development/bamdude/references/BambuStudio/resources/printers/` into `backend/app/data/printers/`.
-3. **Compare parsed JSON, not bytes.** Review any real diff (new `support_*`
-   flags, new models) and wire it up in `printer_configs.py` + the calibration UI.
-4. Bump the tag/commit noted above.
+1. Fetch tags in the reference repo, then check the newest tag **and** whether
+   `origin/master` is ahead of it. The reference working tree may still be on
+   an older detached tag; do not copy from that working tree without checking.
+2. List `resources/printers/*.json` at the chosen ref with `git ls-tree`.
+   Copy **every** model JSON and `filaments_blacklist.json` from that ref's Git
+   objects (`git show <ref>:resources/printers/<name>`), including newly added
+   files. Identify removed files rather than silently keeping stale models.
+3. Compare the parsed JSON of **every** mirrored file with the chosen ref, and
+   review the full field-level diff against the previous mirror: names, IDs,
+   serial prefixes, firmware overrides, capabilities, compatibility, and
+   blacklist rules. New models need identity mapping in backend and frontend;
+   do not guess unadvertised hardware capabilities.
+4. Run the loader and model-identity tests, update the BS audit note, then bump
+   the source tag/commit above. Preserve any intentional newline normalization.
 
-> ⚠️ **`git diff` alone will show all fifteen files as changed, always.** Our
+> ⚠️ **A byte diff can show all model files as changed.** Our
 > pre-commit `end-of-file-fixer` appends a trailing newline that BS's copies do
-> not have — one byte per file, no content difference. "Byte-for-byte" above is
-> true of the content and not of the last byte. Verified 2026-08-10: all fifteen
-> parse to identical JSON against `v02.08.01.55`. Use:
+> not have — one byte per file, no content difference. On 2026-09-27, all 16
+> model JSONs plus the blacklist parsed identically to `v02.08.04.57`. Run this
+> Python snippet from the BamDude repo root to verify a mirror:
 >
-> ```bash
-> python - <<'EOF'
-> import json, io, os
-> ours, bs = 'backend/app/data/printers', 'D:/Development/bamdude/references/BambuStudio/resources/printers'
-> for f in sorted(os.listdir(ours)):
->     if not f.endswith('.json') or f == 'filaments_blacklist.json':
+> ```python
+> import json, subprocess
+> from pathlib import Path
+> ref = 'D:/Development/bamdude/references/BambuStudio'
+> tag = 'v02.08.04.57'
+> local = Path('backend/app/data/printers')
+> paths = subprocess.check_output(['git', '-C', ref, 'ls-tree', '-r', '--name-only', tag, 'resources/printers'], text=True).splitlines()
+> names = {Path(p).name for p in paths if p.endswith('.json')}
+> assert names == {p.name for p in local.glob('*.json')}
+> for path in paths:
+>     if not path.endswith('.json'):
 >         continue
->     a = json.load(io.open(f'{ours}/{f}', encoding='utf-8'))
->     b = json.load(io.open(f'{bs}/{f}', encoding='utf-8'))
->     if a != b:
->         print('CONTENT DIFF:', f)
-> EOF
+>     upstream = json.loads(subprocess.check_output(['git', '-C', ref, 'show', f'{tag}:{path}']))
+>     assert json.loads((local / Path(path).name).read_text(encoding='utf-8')) == upstream, path
 > ```
 
 ## License
 
-These are verbatim files from BambuStudio (AGPL-3.0). We mirror them as
-factual per-model configuration for interoperability; see the project's
+These are BambuStudio files (AGPL-3.0), with possible trailing-newline
+normalization. We mirror them as factual per-model configuration for
+interoperability; see the project's
 `CONTRIBUTING` / attribution notes.

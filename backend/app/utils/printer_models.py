@@ -24,6 +24,7 @@ PRINTER_MODEL_MAP = {
     "Bambu Lab H2S": "H2S",
     "Bambu Lab X2D": "X2D",
     "Bambu Lab A2L": "A2L",
+    "Bambu Lab N8": "N8",
 }
 
 # Map from printer_model_id (internal codes in slice_info.config) to short names
@@ -44,6 +45,9 @@ PRINTER_MODEL_ID_MAP = {
     "N7": "P2S",  # SSDP/MQTT internal code for P2S
     # X2 series
     "N6": "X2D",
+    # New model in the mirrored BS printer catalog; no hardware capabilities
+    # are inferred from the name alone.
+    "N8": "N8",
     # A2 series (A2L is single-FDM + integrated cutter/plotter — single nozzle)
     "N9": "A2L",
     # A1 series
