@@ -38,6 +38,7 @@
 
 ### Changed
 
+- **Auto Queue now checks the model you selected before adding a print.** A file sliced for P1P can be aimed explicitly at a compatible P1S even when automatic compatible-printer fallback is off. The preview now checks that P1S target, so the form no longer reports a missing P1P printer or blocks a valid submission. Automatic fallback remains controlled by its existing setting.
 - **Sensor settings now use one section.** Zigbee and Home Assistant sensors appear together in the existing Sensors panel under Smart plugs, with one Add sensor button and filters for source and place. A Home Assistant entity used by several printers or spool-storage locations has one card with separate readings, alerts and actions for each binding; hidden card readings remain manageable here. Pairing, history, reporting, storage defaults and print holds keep their existing controls. Adding a Zigbee sensor directly to spool storage now saves the sensor and first binding together, so a failed target cannot leave an unbound sensor behind.
 - **New API keys start with `bd_`.** The `bb_` they used to start with came
   from Bambuddy, the project BamDude grew out of. Keys you already have keep

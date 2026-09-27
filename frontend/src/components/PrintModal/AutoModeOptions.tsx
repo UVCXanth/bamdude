@@ -193,7 +193,7 @@ export function AutoModeOptions({ options, onChange, printers, slicedForModel, m
           })}
           {plate.status === 'ok' && <>
             <p className="text-bambu-gray">{t('filamentRouting.compatibilityHint')}</p>
-            {plate.groups.length === 0 && !preview.advisory_unavailable && <p className="text-amber-300">{t('filamentRouting.noPrinters', { model: plate.model ?? '—' })}</p>}
+            {plate.groups.length === 0 && !preview.advisory_unavailable && <p className="text-amber-300">{t('filamentRouting.noPrinters', { model: plate.target_model ?? plate.model ?? '—' })}</p>}
             {plate.groups.map(group => <div key={group.key} className="rounded border border-bambu-dark-tertiary p-2 space-y-1">
               <p className="text-white">{group.model} · {t('filamentRouting.nozzles', { count: group.nozzles })} · {t(`filamentRouting.ams_${group.ams}`)}</p>
               <p className={group.compatible ? 'text-bambu-green' : 'text-amber-300'}>

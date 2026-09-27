@@ -28,7 +28,7 @@ from backend.app.services.filament_routing import resolve_filament_routing
 from backend.app.services.printer_location_service import load_tree, subtree_ids
 from backend.app.services.printer_manager import printer_manager
 from backend.app.utils.model_compatibility import model_compatibility
-from backend.app.utils.printer_models import is_dual_nozzle_model
+from backend.app.utils.printer_models import is_dual_nozzle_model, normalize_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -188,12 +188,16 @@ async def routing_preview(db, data, user):
             resolve_source_path(archive, library), plate, archive_plate_id=archive.plate_index if archive else None
         )
         req = await enrich_family_filament_types(db, req)
+        target_model = normalize_model_name(data.target_model) or req.model
         groups = {}
         if req.status == "ok":
             for printer, queue in printers:
                 model = printer_manager.effective_model_for(printer.id, printer.model)
+                target_verdict = model_compatibility(target_model, model)
+                if target_verdict != "exact" and not (allow_compatible and target_verdict == "compatible"):
+                    continue
                 verdict = model_compatibility(req.model, model)
-                if verdict != "exact" and not (allow_compatible and verdict == "compatible"):
+                if verdict not in ("exact", "compatible"):
                     continue
                 snapshot = snapshots.get(printer.id)
                 if snapshot is None:
@@ -249,6 +253,7 @@ async def routing_preview(db, data, user):
                 "status": req.status,
                 "reason": routing_detail(req.reason) if req.reason else None,
                 "model": req.model,
+                "target_model": target_model,
                 "filaments": list(req.used_filaments),
                 "groups": sorted(groups.values(), key=lambda g: g["key"]),
             }

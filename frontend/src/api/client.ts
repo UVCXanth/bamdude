@@ -2066,7 +2066,7 @@ export interface PlanRow {
  * be invisible in the plan block. The block offers these as a file switch on
  * the row, preselects the one whose `printer_model` matches the printer being
  * sent to, and can split the row's count across them: the auto-queue routes an
- * item by `target_model`, so a file only ever reaches its own printers.
+ * item by `target_model`, including an explicitly chosen compatible model.
  *
  * ⚠️ The figures are **per print**, like a row's. There is deliberately no
  * count: the counted yield is identical by construction, so the row's count is
@@ -5100,6 +5100,7 @@ export interface RoutingPreview {
     status: 'ok' | 'unavailable';
     reason: { code: string; message: string } | null;
     model: string | null;
+    target_model?: string | null;
     filaments: { slot_id: number; type: string; color: string | null; nozzle_id: number | null; used_grams: number }[];
     groups: { key: string; model: string; nozzles: number; ams: 'present' | 'absent' | 'unknown';
       total: number; compatible: number; unknown: number; incompatible: number; ready: number;
@@ -9992,7 +9993,7 @@ export const api = {
     return request<AutoQueueItem[]>(`/auto-queue/${qs ? `?${qs}` : ''}`, { signal: options?.signal });
   },
   previewAutoQueueRouting: (data: { archive_id?: number; library_file_id?: number; plate_ids: number[];
-    target_location_id?: number | null; feed_policy?: FeedPolicy; force_color_match: boolean;
+    target_model?: string | null; target_location_id?: number | null; feed_policy?: FeedPolicy; force_color_match: boolean;
     allow_base_material_match: boolean;
     filament_overrides?: AutoQueueFilamentOverride[] }) =>
     request<RoutingPreview>('/auto-queue/routing-preview', { method: 'POST', body: JSON.stringify(data) }),

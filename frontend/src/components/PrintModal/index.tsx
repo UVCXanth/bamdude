@@ -405,6 +405,7 @@ export function PrintModal({
     archive_id: isArchiveSource ? archiveId : undefined,
     library_file_id: isLibraryFile ? libraryFileId : undefined,
     plate_ids: selectedPlates.size ? [...selectedPlates].sort((a, b) => a - b) : [0],
+    target_model: autoModeOptions.target_model,
     target_location_id: autoModeOptions.target_location_id,
     feed_policy: autoModeOptions.feed_policy ?? 'auto',
     force_color_match: autoModeOptions.force_color_match,
