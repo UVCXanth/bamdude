@@ -23,7 +23,7 @@ may hold the old ones in its identity map).
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from sqlalchemy import delete, insert, select
@@ -94,6 +94,31 @@ async def _product(db: AsyncSession, product_id: int) -> Product:
         )
     ).scalar_one()
     return product
+
+
+async def load_products(db: AsyncSession, product_ids: Iterable[int]) -> dict[int, Product]:
+    """Products with their parts and groups (with options) — one statement for any number."""
+    ids = sorted(set(product_ids))
+    if not ids:
+        return {}
+    rows = await db.execute(
+        select(Product)
+        .options(
+            selectinload(Product.parts),
+            selectinload(Product.variant_groups).selectinload(ProductVariantGroup.options),
+        )
+        .where(Product.id.in_(ids))
+        .execution_options(populate_existing=True)
+    )
+    return {product.id: product for product in rows.scalars()}
+
+
+def resolve_on(
+    product: Product, choices: Mapping[int, int], counts: Mapping[int, int] | None = None
+) -> tuple[str, dict[int, int], dict[int, int]]:
+    """:func:`resolve` over a loaded product — the key and the choices and counts to store; pure."""
+    new_choices, new_counts = _validate(product, "product", choices, counts or {})
+    return config_key("product", new_choices, new_counts), new_choices, new_counts
 
 
 def _defaults(product: Product) -> dict[int, int]:
@@ -198,9 +223,7 @@ async def resolve(
 ) -> tuple[str, dict[int, int], dict[int, int]]:
     """The key a stock position of this configuration has, and the choices and
     counts to store — validated exactly as an order line's; writes nothing."""
-    product = await _product(db, product_id)
-    new_choices, new_counts = _validate(product, "product", choices, counts or {})
-    return config_key("product", new_choices, new_counts), new_choices, new_counts
+    return resolve_on(await _product(db, product_id), choices, counts)
 
 
 async def seed_item(

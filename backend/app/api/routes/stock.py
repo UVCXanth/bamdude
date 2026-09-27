@@ -5,6 +5,7 @@ readers — one grouped query per question for the whole page, the pass-6
 discipline — and nothing here writes (``inv-stock-ledger-single-writer``).
 """
 
+from dataclasses import asdict
 from typing import Literal, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -33,6 +34,9 @@ from backend.app.schemas.finished_stock import (
     StockLookupOut,
     StockMoveIn,
     StockMoveOut,
+    StockSuggestIn,
+    StockSuggestLineOut,
+    StockSuggestOut,
 )
 from backend.app.schemas.listing import StockFigures, StockListPage
 from backend.app.schemas.product import StockBalanceOut
@@ -45,7 +49,14 @@ from backend.app.schemas.stock import (
     StockReservationOut,
     StockSummaryOut,
 )
-from backend.app.services import finished_stock, finished_stock_views, line_config, part_stock, stock_journal
+from backend.app.services import (
+    finished_stock,
+    finished_stock_views,
+    line_config,
+    part_stock,
+    stock_journal,
+    stock_pick,
+)
 from backend.app.services.configuration_views import configuration_out, groups_by_product
 from backend.app.services.entity_codes import id_from_query
 from backend.app.services.line_composition import (
@@ -449,6 +460,55 @@ async def lookup_stock_item(
         can_assemble=part_stock.kits_of(shelf, kit),
         parts=finished_stock_views.parts_out(kit, shelf),
     )
+
+
+async def _choices_for_items(db: AsyncSession, items: list[tuple[int, list[int]]]) -> list[dict[int, int]]:
+    """``{group: option}`` for every item's options — one statement for the whole list."""
+    wanted = sorted({option_id for _pid, options in items for option_id in options})
+    rows = (
+        {
+            option_id: (group_id, product_id)
+            for option_id, group_id, product_id in (
+                await db.execute(
+                    select(ProductVariantOption.id, ProductVariantOption.group_id, ProductVariantGroup.product_id)
+                    .join(ProductVariantGroup, ProductVariantGroup.id == ProductVariantOption.group_id)
+                    .where(ProductVariantOption.id.in_(wanted))
+                )
+            ).all()
+        }
+        if wanted
+        else {}
+    )
+    out = []
+    for product_id, options in items:
+        if any(rows.get(option_id, (None, None))[1] != product_id for option_id in options):
+            raise HTTPException(status_code=422, detail="That option does not belong to this product")
+        choices = {rows[option_id][0]: option_id for option_id in set(options)}
+        if len(choices) < len(set(options)):
+            raise HTTPException(status_code=422, detail="Pick one option per group")
+        out.append(choices)
+    return out
+
+
+@router.post("/suggest", response_model=StockSuggestOut)
+async def suggest_stock(
+    data: StockSuggestIn,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """What each line would take from stock — ready units of its configuration first,
+    then kits of free parts, the rest to print (spec workshop-add-to-order, rules 5, 10).
+    Writes nothing."""
+    choices = await _choices_for_items(db, [(item.product_id, item.options) for item in data.items])
+    requests = [
+        stock_pick.PickRequest(item.product_id, chosen, item.part_counts, item.quantity, item.line_id)
+        for item, chosen in zip(data.items, choices, strict=True)
+    ]
+    try:
+        answers = await stock_pick.suggest(db, requests)
+    except stock_pick.StockPickError as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
+    return StockSuggestOut(items=[StockSuggestLineOut(**asdict(answer)) for answer in answers])
 
 
 @router.get("/journal", response_model=StockJournalPage)

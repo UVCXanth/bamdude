@@ -49,6 +49,36 @@ class StockMoveOut(StockItemOut):
     moved: bool = True
 
 
+class StockSuggestLineIn(BaseModel):
+    """One line the dialog asks about (spec workshop-add-to-order, rule 10). ``line_id``
+    names an existing line whose own reservation counts as free for it."""
+
+    product_id: int
+    options: list[int] = Field(default_factory=list)
+    part_counts: dict[int, int] = Field(default_factory=dict)
+    quantity: int = Field(ge=1, le=MAX_QTY)
+    line_id: int | None = None
+
+
+class StockSuggestIn(BaseModel):
+    items: list[StockSuggestLineIn] = Field(min_length=1, max_length=100)
+
+
+class StockSuggestLineOut(BaseModel):
+    product_id: int
+    finished_free: int
+    kits_free: int
+    from_finished: int
+    from_kits: int
+    to_print: int
+    position_id: int | None = None
+    position_code: str | None = None
+
+
+class StockSuggestOut(BaseModel):
+    items: list[StockSuggestLineOut]
+
+
 class StockItemsPage(BaseModel):
     items: list[StockItemOut]
     meta: PaginationMeta

@@ -259,7 +259,8 @@ async def held_for_line(db: AsyncSession, line_id: int) -> int:
     return int(total or 0)
 
 
-async def _held_by_item(db: AsyncSession, line_id: int) -> dict[int, int]:
+async def held_by_item(db: AsyncSession, line_id: int) -> dict[int, int]:
+    """``item_id → units`` the line still holds there."""
     rows = await db.execute(
         select(StockItemMovement.item_id, func.sum(StockItemMovement.delta_reserved))
         .where(StockItemMovement.project_line_id == line_id)
@@ -273,7 +274,7 @@ async def release_for_line(db: AsyncSession, line: ProjectLine, *, actor: User |
     order deleted, a reservation rewritten). Read off the ledger, so it finds the
     old position after a configuration change as well. Returns the units released."""
     back = 0
-    for item_id, held in sorted((await _held_by_item(db, line.id)).items()):
+    for item_id, held in sorted((await held_by_item(db, line.id)).items()):
         item = await lock_item(db, item_id)
         await _record(db, item, "release", 0, -held, note=None, actor=actor, line=line, d_line=-held)
         back += held
@@ -310,7 +311,7 @@ async def issue_for_line(
     """The order completed: everything the line holds leaves with it, to its
     customer (spec rule 8). ``from_finished`` stays — the units were the line's."""
     out = 0
-    for item_id, held in sorted((await _held_by_item(db, line.id)).items()):
+    for item_id, held in sorted((await held_by_item(db, line.id)).items()):
         item = await lock_item(db, item_id)
         await _record(db, item, "issue", -held, -held, note=None, customer_id=customer_id, actor=actor, line=line)
         out += held
