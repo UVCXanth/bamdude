@@ -121,6 +121,9 @@ from backend.app.schemas.project import (
     RebalanceOut,
     RecipientOut,
     StockMovedOut,
+    StockOfferOut,
+    TakeStockIn,
+    TakeStockOut,
     TimelineEvent,
 )
 from backend.app.services import (
@@ -137,6 +140,7 @@ from backend.app.services import (
     product_delete,
     queue_rebalance,
     stock_issues,
+    stock_offers,
 )
 from backend.app.services.archive_defects import DefectsWrite, record_defects
 from backend.app.services.archive_write_scope import archive_write_scope
@@ -1323,6 +1327,41 @@ async def fulfil_order(
     except part_stock.PartStockError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     return FulfilmentOut(order=await _response(db, project.id), issue_id=issue.id if issue is not None else None)
+
+
+@router.get("/{project_id}/stock-offers", response_model=list[StockOfferOut])
+async def get_stock_offers(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """What the shelves could cover of what this order has not printed, is not printing
+    and has not queued (spec workshop-order-issue, rule 17) — an active order only."""
+    project = await _get_project(db, project_id)
+    return [StockOfferOut(**asdict(offer)) for offer in await stock_offers.offers(db, project)]
+
+
+@router.post("/{project_id}/take-stock", response_model=TakeStockOut)
+async def take_stock(
+    project_id: int,
+    request: Request,
+    data: TakeStockIn | None = Body(default=None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Take the offers — the numbers the banner showed, clamped to the offer now and to
+    the shelf; the answer says what each line asked and got (rule 20)."""
+    project = await _get_project(db, project_id)
+    shown = None
+    if data is not None and data.lines is not None:
+        shown = {row.line_id: (row.from_finished, row.kits) for row in data.lines}
+    try:
+        taken = await stock_offers.take(db, project, shown, actor=await acting_user(request, db, current_user))
+    except (stock_offers.StockOfferError, finished_stock.FinishedStockError) as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
+    except part_stock.PartStockError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return TakeStockOut(order=await _response(db, project.id), results=[LineIntakeOut(**asdict(t)) for t in taken])
 
 
 @router.delete("/{project_id}")

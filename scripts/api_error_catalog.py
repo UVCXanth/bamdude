@@ -66,6 +66,7 @@ FORWARDED_EXCEPTIONS = frozenset(
         "LineIntakeError",
         "StockIssueError",
         "FulfilmentError",
+        "StockOfferError",
         "InvalidFilenameError",
         "DispatchEnqueueRejected",
         "SlicerTimeoutError",

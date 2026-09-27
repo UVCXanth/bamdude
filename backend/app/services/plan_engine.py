@@ -27,6 +27,7 @@ was free. No new setting is added by this pass.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -546,6 +547,20 @@ def _totals(lines: list[LinePlan], price_per_gram: float | None) -> PlanTotals:
     return totals
 
 
+def unplanned_units(figs: LineFigures, queued: Mapping[int, int]) -> int:
+    """Whole units of the line nobody has printed, is printing or has queued — the part
+    «take from stock» may cover (spec workshop-order-issue, rule 17). The plan's own
+    ``outstanding`` per counted part (see :func:`plan_lines`), in units: the most any
+    part still lacks, rounded up. ``queued`` is the line's ``part_id → parts queued``."""
+    units = 0
+    for pf in figs.parts:
+        if pf.per <= 0:
+            continue
+        lacking = max(0, pf.remaining - pf.in_progress - queued.get(pf.part_id, 0))
+        units = max(units, -(-lacking // pf.per))
+    return units
+
+
 def plan_lines(
     ctx: OrderContext,
     figures: dict[int, LineFigures],
@@ -891,4 +906,5 @@ __all__ = [
     "plate_recipe_index",
     "queued_yield_by_line",
     "recipes_for_row",
+    "unplanned_units",
 ]

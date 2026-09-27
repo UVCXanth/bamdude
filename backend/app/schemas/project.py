@@ -865,3 +865,31 @@ class FulfilmentOut(BaseModel):
     order: ProjectResponse
     #: The issue this batch opened; None when it issued nothing.
     issue_id: int | None = None
+
+
+# ---------- «take from stock» (spec workshop-order-issue, rules 17, 20) ----------
+
+
+class StockOfferOut(BaseModel):
+    line_id: int
+    product_name: str
+    from_finished: int
+    kits: int
+
+
+class TakeStockLineIn(BaseModel):
+    """What the banner SHOWED for a line — the take is clamped to it and to the shelf."""
+
+    line_id: int
+    from_finished: int = Field(default=0, ge=0, le=MAX_QTY)
+    kits: int = Field(default=0, ge=0, le=MAX_QTY)
+
+
+class TakeStockIn(BaseModel):
+    #: None or absent: take the current offers.
+    lines: list[TakeStockLineIn] | None = Field(default=None, max_length=500)
+
+
+class TakeStockOut(BaseModel):
+    order: ProjectResponse
+    results: list[LineIntakeOut]
