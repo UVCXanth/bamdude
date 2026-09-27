@@ -97,6 +97,36 @@ class CategoryCount(BaseModel):
     count: int
 
 
+class ProductPartVariantOut(BaseModel):
+    group: str
+    option: str
+
+
+class ProductPartProductOut(BaseModel):
+    id: int
+    code: str
+    name: str
+    sku: str | None = None
+
+
+class ProductPartRow(BaseModel):
+    """A printed part of a catalogue product — the add-to-order dialog's «parts» tab
+    (spec workshop-add-to-order, rule 16)."""
+
+    part_id: int
+    name: str
+    #: The option the part is bound to, when it is — «angled tail» belongs to «Tail: angled».
+    variant: ProductPartVariantOut | None = None
+    product: ProductPartProductOut
+    #: The product's printer models (stored facets).
+    models: list[str] = []
+
+
+class ProductPartsPage(BaseModel):
+    items: list[ProductPartRow]
+    meta: PaginationMeta
+
+
 class ProductListPage(BaseModel):
     items: list[ProductListItem]
     meta: PaginationMeta

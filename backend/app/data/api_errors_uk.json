@@ -535,6 +535,7 @@
   "Only admins can enable advanced authentication": "Лише адміністратори можуть увімкнути розширену автентифікацію",
   "Only admins can list other users' tokens": "Лише адміністратори можуть переглядати токени інших користувачів",
   "Only admins can reset user passwords": "Лише адміністратори можуть скидати паролі користувачів",
+  "Only an active order takes finished goods from stock": "Готові вироби зі складу бере лише активне замовлення",
   "Only catalogue products are kept in stock": "На складі тримають лише вироби з каталогу",
   "Only failed or cancelled items can be retried, current status: '{}'": "Повторити можна лише невдалі або скасовані елементи, поточний статус: «{}»",
   "Only pending items can be grouped into a batch": "Обʼєднати в пакет можна лише елементи в очікуванні",

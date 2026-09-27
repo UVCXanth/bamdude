@@ -435,6 +435,14 @@ class ProductListItem(BaseModel):
     # thinks in. On the LIST too, and read there for every product in one
     # aggregated query: a per-product read would be an N+1 behind the catalog.
     kits_available: int = 0
+    #: Ready units free across the product's finished-goods positions (spec
+    #: workshop-add-to-order, rule 15) — one grouped read per page.
+    finished_available: int = 0
+    #: The product's plate materials, colours and printer models (stored facets,
+    #: files outside the trash only), sorted — the add-to-order dialog's selects and chips.
+    materials: list[str] = []
+    colors: list[str] = []
+    models: list[str] = []
     # ``catalog`` | ``adhoc_job`` | ``adhoc_plate`` (models.product.ProductOrigin).
     origin: str = "catalog"
     origin_file_id: int | None = None

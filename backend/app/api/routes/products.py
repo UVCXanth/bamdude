@@ -37,7 +37,7 @@ from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.i18n.api_errors import json_error
-from backend.app.models.finished_stock import StockItemChoice
+from backend.app.models.finished_stock import StockItem, StockItemChoice
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.line_config import ProjectLineChoice
 from backend.app.models.product import (
@@ -55,7 +55,15 @@ from backend.app.models.product_category import ProductCategory
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption, variant_key
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
-from backend.app.schemas.listing import CategoryCount, ProductFacetsOut, ProductListPage
+from backend.app.schemas.listing import (
+    CategoryCount,
+    ProductFacetsOut,
+    ProductListPage,
+    ProductPartProductOut,
+    ProductPartRow,
+    ProductPartsPage,
+    ProductPartVariantOut,
+)
 from backend.app.schemas.product import (
     AttachmentOrderRequest,
     CoverPickRequest,
@@ -651,6 +659,8 @@ async def list_products(
     # per-row query for it would be an N+1 nobody notices until the catalog grows.
     stock = await part_stock.balances_for_products(db, [p.id for p in products])
     defaults = await default_options(db, [p.id for p in products])
+    finished = await _finished_available(db, [p.id for p in products])
+    facets = await _facets_by_product(db, [p.id for p in products])
     items = [
         ProductListItem(
             id=p.id,
@@ -666,6 +676,10 @@ async def list_products(
             kits_available=part_stock.kits_of(
                 stock.get(p.id, {}), standard_composition(list(p.parts), set(defaults.get(p.id, {}).values()))
             ),
+            finished_available=finished.get(p.id, 0),
+            materials=facets.get(p.id, {}).get("material", []),
+            colors=facets.get(p.id, {}).get("color", []),
+            models=facets.get(p.id, {}).get("model", []),
             origin=p.origin,
             origin_file_id=p.origin_file_id,
             origin_plate_index=p.origin_plate_index,
@@ -684,6 +698,106 @@ async def list_products(
         meta=page_meta(total, page, per_page, all),
         categories=categories,
         uncategorized=uncategorized,
+    )
+
+
+async def _finished_available(db: AsyncSession, product_ids: list[int]) -> dict[int, int]:
+    """Free ready units per product, over every position — one grouped read."""
+    if not product_ids:
+        return {}
+    rows = await db.execute(
+        select(StockItem.product_id, func.sum(StockItem.on_hand - StockItem.reserved))
+        .where(StockItem.product_id.in_(product_ids))
+        .group_by(StockItem.product_id)
+    )
+    return {product_id: int(n or 0) for product_id, n in rows.all()}
+
+
+async def _facets_by_product(db: AsyncSession, product_ids: list[int]) -> dict[int, dict[str, list[str]]]:
+    """``product → kind → sorted values`` of the stored facets, files outside the trash — one read."""
+    if not product_ids:
+        return {}
+    rows = await db.execute(
+        select(ProductFacet.product_id, ProductFacet.kind, ProductFacet.value)
+        .join(LibraryFile, LibraryFile.id == ProductFacet.library_file_id)
+        .where(ProductFacet.product_id.in_(product_ids), LibraryFile.deleted_at.is_(None))
+        .distinct()
+    )
+    out: dict[int, dict[str, set[str]]] = {}
+    for product_id, kind, value in rows.all():
+        out.setdefault(product_id, {}).setdefault(kind, set()).add(value)
+    return {pid: {kind: sorted(values) for kind, values in kinds.items()} for pid, kinds in out.items()}
+
+
+_PART_SORT = SortSpec(
+    sql={"part": (func.lower(ProductPart.name), False), "product": (func.lower(Product.name), False)},
+    default="product-asc",
+)
+
+
+def _part_word_matches(word: str):
+    """One search word against a part: its name, its product's name, SKU or code."""
+    needle = like_contains(word)
+    fields = [
+        ProductPart.name.ilike(needle, escape="\\"),
+        Product.name.ilike(needle, escape="\\"),
+        Product.sku.ilike(needle, escape="\\"),
+    ]
+    if (product_id := id_from_query("product", word)) is not None:
+        fields.append(Product.id == product_id)
+    return or_(*fields)
+
+
+@router.get("/parts", response_model=ProductPartsPage)
+async def list_product_parts(
+    q: str | None = Query(None, max_length=200),
+    model: str | None = Query(None, max_length=64),
+    sort_by: str | None = Query(None, description="'<part|product>-<asc|desc>'; unknown → product-asc"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(24, ge=1, le=200),
+    all: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """Printed parts of active catalogue products, searched, filtered and paged in SQL —
+    the add-to-order dialog's «parts of a product» tab (spec workshop-add-to-order, rule 16).
+    Declared above ``/{product_id}``."""
+    query = (
+        select(ProductPart, Product, ProductVariantGroup.name, ProductVariantOption.name)
+        .join(Product, Product.id == ProductPart.product_id)
+        .outerjoin(ProductVariantOption, ProductVariantOption.id == ProductPart.variant_option_id)
+        .outerjoin(ProductVariantGroup, ProductVariantGroup.id == ProductVariantOption.group_id)
+        .where(
+            ProductPart.kind == "printed",
+            Product.origin == ProductOrigin.CATALOG.value,
+            Product.is_active.is_(True),
+        )
+    )
+    for word in (q or "").split():
+        query = query.where(_part_word_matches(word))
+    if model and model.strip():
+        query = query.where(_has_facet("model", model))
+    total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    key, direction, _computed = resolve_sort(_PART_SORT, sort_by)
+    query = apply_sql_sort(query, _PART_SORT, key, direction, ProductPart.id)
+    if not all:
+        query = query.limit(per_page).offset((page - 1) * per_page)
+    rows = (await db.execute(query)).all()
+    facets = await _facets_by_product(db, sorted({product.id for _part, product, _g, _o in rows}))
+    return ProductPartsPage(
+        items=[
+            ProductPartRow(
+                part_id=part.id,
+                name=part.name,
+                variant=ProductPartVariantOut(group=group, option=option) if option is not None else None,
+                product=ProductPartProductOut(
+                    id=product.id, code=code_for("product", product.id), name=product.name, sku=product.sku
+                ),
+                models=facets.get(product.id, {}).get("model", []),
+            )
+            for part, product, group, option in rows
+        ],
+        meta=page_meta(total, page, per_page, all),
     )
 
 
