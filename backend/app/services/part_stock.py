@@ -105,6 +105,8 @@ NOTE_COUNTED_BY_OPERATOR = "counted_by_operator"
 # Defects recorded after the print was credited: the shelf is brought back to
 # ``printed − defective`` by a ``manual`` movement carrying the archive's id.
 NOTE_DEFECTS_RECORDED = "defects_recorded"
+# Parts taken off the shelf into a finished-goods position (spec workshop-finished-goods, rule 10).
+NOTE_ASSEMBLED = "assembled"
 
 NOTE_TOKENS = (
     NOTE_ORDER_CANCELLED,
@@ -115,6 +117,7 @@ NOTE_TOKENS = (
     NOTE_UNFILED_FROM_ORDER,
     NOTE_COUNTED_BY_OPERATOR,
     NOTE_DEFECTS_RECORDED,
+    NOTE_ASSEMBLED,
 )
 
 #: The one archive status a print may be credited from. Spelled here rather
@@ -130,6 +133,7 @@ REASONS = (
     "reserved_for_order",
     "reservation_released",
     "manual",
+    "assembled",
 )
 
 #: Which way a reason is allowed to point. Banking a surplus, counting an
@@ -143,6 +147,7 @@ _REQUIRED_SIGN = {
     "unfiled_print": 1,
     "reservation_released": 1,
     "reserved_for_order": -1,
+    "assembled": -1,  # into a finished-goods position
     "manual": 0,  # either
 }
 
@@ -325,6 +330,7 @@ async def move(
     archive_id: int | None = None,
     note: str | None = None,
     created_by: int | None = None,
+    stock_item_id: int | None = None,
 ) -> ProductPartStockMovement | None:
     """Write one movement and return it, or ``None`` when nothing moved.
 
@@ -393,6 +399,7 @@ async def move(
         archive_id=archive_id,
         note=note,
         created_by=created_by,
+        stock_item_id=stock_item_id,
     )
     db.add(movement)
     await db.flush()
@@ -1324,3 +1331,10 @@ async def repoint(db: AsyncSession, *, from_part_id: int, to_part_id: int) -> in
         .values(product_part_id=to_part_id)
     )
     return result.rowcount or 0
+
+
+async def detach_user(db: AsyncSession, user_id: int) -> None:
+    """A deleted user leaves the rows, not a dangling id (SQLite runs no FK actions)."""
+    await db.execute(
+        update(ProductPartStockMovement).where(ProductPartStockMovement.created_by == user_id).values(created_by=None)
+    )

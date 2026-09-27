@@ -6390,6 +6390,7 @@ export default {
       reserved_for_order: 'Reserved for an order',
       reservation_released: 'Reservation released',
       manual: 'Hand correction',
+      assembled: 'Assembled into products',
     },
     note: {
       order_cancelled: 'the order was cancelled',
@@ -6400,6 +6401,7 @@ export default {
       unfiled_from_order: 'taken back out of its order',
       counted_by_operator: 'counted by the operator',
       defects_recorded: 'defects recorded after the print was counted',
+      assembled: 'assembled into a stock position',
     },
     adjust: {
       open: 'Adjust',

@@ -2756,6 +2756,7 @@ export const STOCK_REASONS = [
   'reserved_for_order',
   'reservation_released',
   'manual',
+  'assembled',
 ] as const;
 
 export type StockReason = (typeof STOCK_REASONS)[number];
@@ -2781,6 +2782,7 @@ export const STOCK_NOTE_TOKENS = [
   'unfiled_from_order',
   'counted_by_operator',
   'defects_recorded',
+  'assembled',
 ] as const;
 
 export type StockNoteToken = (typeof STOCK_NOTE_TOKENS)[number];

@@ -22,9 +22,10 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.finished_stock import MOVEMENT_KINDS, StockItem, StockItemMovement
-from backend.app.models.product import Product, ProductOrigin
+from backend.app.models.product import Product, ProductOrigin, ProductPart
 from backend.app.models.user import User
-from backend.app.services import line_config
+from backend.app.services import line_config, part_stock
+from backend.app.services.line_composition import Composition, compositions_for_items, counted
 
 
 class FinishedStockError(Exception):
@@ -205,6 +206,61 @@ async def issue(
     if qty > available:
         raise FinishedStockError(f"Only {available} available")
     return await _record(db, item, "issue", -qty, 0, note=note, customer_id=customer_id, actor=actor)
+
+
+async def item_composition(db: AsyncSession, item: StockItem) -> Composition:
+    """The position's kit, through the one reader (``line_composition``)."""
+    parts = (
+        (
+            await db.execute(
+                select(ProductPart)
+                .where(ProductPart.product_id == item.product_id)
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return (await compositions_for_items(db, [item], {item.product_id: list(parts)}))[item.id]
+
+
+async def can_assemble_item(db: AsyncSession, item: StockItem) -> int:
+    """Whole units of the position's kit the free-parts shelf can make — 0 when a
+    printed part of the kit has no shelf at all (the product does not count it)."""
+    return part_stock.kits_of(await part_stock.balances(db, item.product_id), await item_composition(db, item))
+
+
+async def assemble(
+    db: AsyncSession, item: StockItem, qty: int, *, note: str | None = None, actor: User | None = None
+) -> StockItemMovement:
+    """Зібрати з деталей — one transaction for both ledgers (spec rule 10).
+
+    Every printed part of the position's kit leaves the shelf (``per × qty``,
+    reason ``assembled``, the position named on the row), then the position grows
+    by ``qty``. Purchased parts are not on a shelf and are not written off. More
+    than the shelf can make is refused before anything is written.
+    """
+    _at_least_one(qty)
+    locked = await lock_item(db, item.id)
+    comp = await item_composition(db, locked)
+    kit = counted(comp)
+    # The shelf decision spans several parts: lock them all, in id order, before reading.
+    await part_stock.lock_parts(db, [part for part, _per in kit])
+    most = part_stock.kits_of(await part_stock.balances(db, locked.product_id), comp)
+    if qty > most:
+        raise FinishedStockError(f"Only {most} can be assembled from the free parts")
+    actor_id = actor.id if actor else None
+    for part, per in kit:
+        await part_stock.move(
+            db,
+            part_id=part.id,
+            delta=-per * qty,
+            reason="assembled",
+            note=part_stock.NOTE_ASSEMBLED,
+            created_by=actor_id,
+            stock_item_id=item.id,
+        )
+    return await _record(db, item, "assembled", qty, 0, note=note, actor=actor)
 
 
 async def set_params(db: AsyncSession, item: StockItem, fields: Mapping[str, object]) -> None:

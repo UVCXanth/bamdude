@@ -32,6 +32,7 @@ from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
+from backend.app.models.finished_stock import utcnow
 
 #: Why a movement happened. The set is closed: a reason outside it is a caller
 #: bug, and :func:`~backend.app.services.part_stock.move` raises rather than
@@ -41,6 +42,7 @@ REASON_UNFILED_PRINT = "unfiled_print"
 REASON_RESERVED_FOR_ORDER = "reserved_for_order"
 REASON_RESERVATION_RELEASED = "reservation_released"
 REASON_MANUAL = "manual"
+REASON_ASSEMBLED = "assembled"
 
 
 class ProductPartStockMovement(Base):
@@ -79,4 +81,7 @@ class ProductPartStockMovement(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: NULL for the completion handler, which writes with no user (Decision 7).
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # Python UTC, like the finished-goods ledger (spec workshop-finished-goods, rule 13): the
+    # server default is local time on a PostgreSQL whose zone is not UTC, and the one
+    # stock journal merges both ledgers by this column.
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, server_default=func.now())

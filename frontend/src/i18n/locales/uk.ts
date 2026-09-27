@@ -6490,6 +6490,7 @@ export default {
       reserved_for_order: 'Зарезервовано під замовлення',
       reservation_released: 'Резерв знято',
       manual: 'Ручна правка',
+      assembled: 'Зібрано у вироби',
     },
     note: {
       order_cancelled: 'замовлення скасовано',
@@ -6500,6 +6501,7 @@ export default {
       unfiled_from_order: 'вилучено із замовлення',
       counted_by_operator: 'зараховано оператором',
       defects_recorded: 'брак записано після зарахування друку',
+      assembled: 'зібрано в позицію складу',
     },
     adjust: {
       open: 'Коригувати',

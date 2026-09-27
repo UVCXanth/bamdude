@@ -35,7 +35,7 @@ from backend.app.schemas.auth import (
     UserSlim,
     UserUpdate,
 )
-from backend.app.services import order_journal
+from backend.app.services import finished_stock, order_journal, part_stock
 from backend.app.services.email_service import (
     create_welcome_email_from_template,
     generate_secure_password,
@@ -439,8 +439,6 @@ async def delete_user(
         # print to inherit that rowid then finds its credit already standing and
         # is silently never counted into stock. The movements themselves stay:
         # the parts are on a shelf whatever happened to the print history.
-        from backend.app.services import part_stock
-
         _doomed_archive_ids = (
             (await db.execute(select(PrintArchive.id).where(PrintArchive.created_by_id == user_id))).scalars().all()
         )
@@ -527,6 +525,9 @@ async def delete_user(
         .values(responsible_id=None, updated_at=Project.updated_at)
     )
     await order_journal.detach_user(db, user_id)
+    # Both stock ledgers keep their rows and lose the performer (spec workshop-finished-goods, rule 12).
+    await part_stock.detach_user(db, user_id)
+    await finished_stock.detach_user(db, user_id)
 
     await db.delete(user)
     await db.commit()

@@ -407,6 +407,7 @@ describe('ProductStock', () => {
       'unfiled_from_order',
       'counted_by_operator',
       'defects_recorded',
+      'assembled',
     ]);
     expect([...STOCK_REASONS]).toEqual([
       'surplus_banked',
@@ -414,6 +415,7 @@ describe('ProductStock', () => {
       'reserved_for_order',
       'reservation_released',
       'manual',
+      'assembled',
     ]);
 
     for (const bundle of [en, uk]) {

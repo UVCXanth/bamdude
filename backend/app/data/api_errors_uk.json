@@ -541,6 +541,7 @@
   "Only skipped items can be unskipped, current status: '{}'": "Скасувати пропуск можна лише для пропущених елементів, поточний статус: «{}»",
   "Only the 'process' slot is supported": "Підтримується лише слот «process»",
   "Only {} available": "Доступно лише {}",
+  "Only {} can be assembled from the free parts": "З вільних деталей можна зібрати лише {}",
   "Only {} reserved without an order": "Без замовлення зарезервовано лише {}",
   "Option chosen in {} order lines": "Опцію обрано в позиціях замовлень: {}",
   "Options and counts must be numbers": "Опції й кількості мають бути числами",
