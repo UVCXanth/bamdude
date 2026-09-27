@@ -12,6 +12,7 @@ import { invalidateOrderViews } from '../../utils/queryInvalidation';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { Select } from '../Select';
+import { useFulfilment } from '../../hooks/useFulfilment';
 
 /** Same nine presets as the old project colour picker — deliberately the only
  *  part of that modal carried over into this one. */
@@ -124,11 +125,7 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
   // An active order completes only fully issued (spec workshop-order-issue, rule 12): the
   // option stays offered but closed until the issue state says so.
   const activeId = order && order.status === 'active' ? order.id : null;
-  const { data: fulfilment } = useQuery({
-    queryKey: ['project-fulfilment', activeId],
-    queryFn: () => api.getFulfilment(activeId as number),
-    enabled: activeId != null,
-  });
+  const { data: fulfilment } = useFulfilment(activeId);
   const completeRefused = activeId != null && !fulfilment?.fully_issued;
   const responsibleFieldId = useId();
   const initialResponsibleId = order ? (order.responsible_id ?? null) : null;

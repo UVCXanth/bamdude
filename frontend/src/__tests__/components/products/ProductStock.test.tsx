@@ -417,6 +417,10 @@ describe('ProductStock', () => {
       'reservation_released',
       'manual',
       'assembled',
+      'made_for_order',
+      'held_for_order',
+      'hold_released',
+      'issued_for_order',
     ]);
 
     for (const bundle of [en, uk]) {

@@ -5344,6 +5344,15 @@ export default {
     tiles: { failed: 'Could not load' },
   },
   orders: {
+    // spec workshop-order-issue, rule 17: «take from stock» on the order card.
+    take: {
+      title: 'In stock for this order',
+      body: 'Take it and print less.',
+      offer: '«{{product}}» — {{ready}} ready + {{kits}} kits',
+      action: 'Take from stock',
+      taken: 'Taken from stock',
+      clamped: 'The shelf changed: {{detail}}',
+    },
     // spec workshop-order-issue: the «Stock & issue» dialog.
     fulfil: {
       title: 'Stock & issue',
@@ -5982,6 +5991,21 @@ export default {
   // status words from `orders.status.*` and its own figure-tile labels from
   // `customers.table.*` — the same counts under the same names in both places.
   customers: {
+    // spec workshop-order-issue, rule 22: a customer's issues.
+    issues: {
+      title: 'Issues',
+      empty: 'No issues yet.',
+      date: 'Date',
+      order: 'Order',
+      noOrder: 'without an order',
+      units: 'Units',
+      recipient: 'Recipient',
+      method: 'Delivery',
+      waybill: 'Waybill no.',
+      by: 'Issued by',
+      editWaybill: 'Edit the waybill',
+      items: 'issues',
+    },
     list: {
       title: 'Customers',
       subtitle: 'Contacts, agreements and order history',
@@ -6497,6 +6521,10 @@ export default {
       reservation_released: 'Reservation released',
       manual: 'Hand correction',
       assembled: 'Assembled into products',
+      made_for_order: 'Made for an order',
+      held_for_order: 'Held for an order',
+      hold_released: 'Released from an order',
+      issued_for_order: 'Issued with an order',
     },
     note: {
       order_cancelled: 'the order was cancelled',
@@ -6595,6 +6623,7 @@ export default {
       difference: 'Change:',
       noChange: 'no change',
       customer: 'Customer',
+      customerRequired: 'An issue names its customer.',
       fromReserve: 'From the reservation',
       note: 'Note',
       stocktakeNoteHint: 'Needed when the count is lower',
@@ -6648,6 +6677,7 @@ export default {
         receipt: 'Receipt',
         stocktake: 'Stocktake',
         assembled: 'Assembled',
+        produced: 'Made for an order',
         reserve: 'Reserved',
         release: 'Reservation released',
         issue: 'Issued',

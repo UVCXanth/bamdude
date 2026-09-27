@@ -141,6 +141,9 @@ describe('invalidateOrderViews', () => {
       'stock-items',
       'stock-item',
       'stock-lookup',
+      'project-fulfilment',
+      'project-stock-offers',
+      'customer-issues',
     ]);
   });
 

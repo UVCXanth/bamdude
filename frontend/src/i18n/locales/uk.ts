@@ -5371,6 +5371,15 @@ export default {
     tiles: { failed: 'Не вдалося завантажити' },
   },
   orders: {
+    // spec workshop-order-issue, rule 17: «взяти зі складу» на картці замовлення.
+    take: {
+      title: 'На складі є для цього замовлення',
+      body: 'Узяти і друкувати менше.',
+      offer: '«{{product}}» — {{ready}} готових + {{kits}} компл.',
+      action: 'Взяти зі складу',
+      taken: 'Взято зі складу',
+      clamped: 'Склад змінився: {{detail}}',
+    },
     // spec workshop-order-issue: вікно «Склад і видача».
     fulfil: {
       title: 'Склад і видача',
@@ -6057,6 +6066,21 @@ export default {
   // status words from `orders.status.*` and its own figure-tile labels from
   // `customers.table.*` — the same counts under the same names in both places.
   customers: {
+    // spec workshop-order-issue, rule 22: видачі замовника.
+    issues: {
+      title: 'Видачі',
+      empty: 'Видач ще не було.',
+      date: 'Дата',
+      order: 'Замовлення',
+      noOrder: 'без замовлення',
+      units: 'Одиниць',
+      recipient: 'Одержувач',
+      method: 'Доставка',
+      waybill: 'Номер ТТН',
+      by: 'Видав',
+      editWaybill: 'Змінити ТТН',
+      items: 'видач',
+    },
     list: {
       title: 'Замовники',
       subtitle: 'Контакти, домовленості та історія замовлень',
@@ -6613,6 +6637,10 @@ export default {
       reservation_released: 'Резерв знято',
       manual: 'Ручна правка',
       assembled: 'Зібрано у вироби',
+      made_for_order: 'Виготовлено під замовлення',
+      held_for_order: 'Відкладено під замовлення',
+      hold_released: 'Знято з-під замовлення',
+      issued_for_order: 'Видано за замовленням',
     },
     note: {
       order_cancelled: 'замовлення скасовано',
@@ -6719,6 +6747,7 @@ export default {
       difference: 'Зміна:',
       noChange: 'без змін',
       customer: 'Замовник',
+      customerRequired: 'Видача називає замовника.',
       fromReserve: 'З резерву',
       note: 'Примітка',
       stocktakeNoteHint: 'Обовʼязкова, коли фактично менше',
@@ -6772,6 +6801,7 @@ export default {
         receipt: 'Надходження',
         stocktake: 'Інвентаризація',
         assembled: 'Зібрано',
+        produced: 'Виготовлено під замовлення',
         reserve: 'Зарезервовано',
         release: 'Резерв знято',
         issue: 'Видано',

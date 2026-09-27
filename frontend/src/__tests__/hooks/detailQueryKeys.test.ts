@@ -45,6 +45,11 @@ const OWNER: Record<string, string> = {
   'stock-item': 'hooks/useFinishedStock.ts',
   'stock-lookup': 'hooks/useFinishedStock.ts',
   'stock-journal': 'hooks/useFinishedStock.ts',
+  // Issuing an order (spec workshop-order-issue): the issue dialog, the order page's
+  // header and banner, and the order form all read one order's state.
+  'project-fulfilment': 'hooks/useFulfilment.ts',
+  'project-stock-offers': 'hooks/useFulfilment.ts',
+  'customer-issues': 'hooks/useFulfilment.ts',
 };
 
 /** The invalidation helper is allowed to spell any key out; it observes none.

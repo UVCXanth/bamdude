@@ -12,6 +12,7 @@ import { OrderStatusTabs, OrdersListView } from '../../components/projects/Order
 import { ORDER_TABS, ORDERS_DEFAULT_SORT } from '../../components/projects/orderList';
 import { useOrderSortOptions } from '../../hooks/useOrderSortOptions';
 import { OrderModal } from '../../components/projects/OrderModal';
+import { CustomerIssues } from '../../components/customers/CustomerIssues';
 import { useFulfilmentDoor } from '../../components/projects/fulfilment/useFulfilmentDoor';
 import { CustomerModal } from '../../components/customers/CustomerModal';
 import { ConfirmModal } from '../../components/ConfirmModal';
@@ -301,6 +302,8 @@ export function CustomerPage() {
       </section>
 
       {editingCustomer && <CustomerModal customer={customer} onClose={() => setEditingCustomer(false)} />}
+
+      <CustomerIssues customerId={customer.id} canEdit={hasPermission('projects:update')} />
 
       {fulfilmentDialog}
 

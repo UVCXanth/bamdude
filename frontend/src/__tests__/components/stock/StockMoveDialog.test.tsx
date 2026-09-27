@@ -55,16 +55,39 @@ describe('StockMoveDialog', () => {
     await waitFor(() => expect(move).toHaveBeenCalledWith({ kind: 'stocktake', item_id: 5, counted: 7 }));
   });
 
-  it('an issue names the customer and whether it comes out of the reservation', async () => {
+  it('an issue names its customer, takes the main contact as the recipient and sends the waybill', async () => {
+    vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([{ id: 1, name: 'Nova Poshta', position: 0, contacts_count: 1 }]);
+    vi.spyOn(api, 'getCustomer').mockResolvedValue({
+      id: 9,
+      name: 'ACME',
+      contacts: [
+        { id: 1, name: 'Ivan', phone: '+380', delivery_method_name: 'Nova Poshta', delivery_details: 'Branch 5' },
+        { id: 2, name: 'Olena', phone: null, delivery_method_name: null, delivery_details: null },
+      ],
+    } as never);
     render(<StockMoveDialog kind="issue" item={pipeItem} onClose={() => {}} />);
     fireEvent.change(screen.getByLabelText('Quantity'), { target: { value: '1' } });
+    // An issue is an issue TO somebody (spec workshop-order-issue, rule 16).
+    expect(screen.getByTestId('stock-move-submit')).toBeDisabled();
     const customer = screen.getByLabelText('Customer');
     await screen.findByRole('option', { name: 'CU-0009 · ACME' });
     fireEvent.change(customer, { target: { value: '9' } });
+    await waitFor(() => expect(screen.getByLabelText('Recipient name')).toHaveValue('Ivan'));
+    expect(screen.getByLabelText('Delivery method')).toHaveValue('Nova Poshta');
+    expect(screen.getByLabelText('Waybill no.')).toHaveAttribute('maxLength', '24');
+    fireEvent.change(screen.getByLabelText('Waybill no.'), { target: { value: '2045' } });
     fireEvent.click(screen.getByLabelText('From the reservation'));
     fireEvent.click(screen.getByTestId('stock-move-submit'));
     await waitFor(() =>
-      expect(move).toHaveBeenCalledWith({ kind: 'issue', item_id: 5, qty: 1, customer_id: 9, from_reserve: true }),
+      expect(move).toHaveBeenCalledWith({
+        kind: 'issue',
+        item_id: 5,
+        qty: 1,
+        customer_id: 9,
+        from_reserve: true,
+        recipient: { name: 'Ivan', phone: '+380', delivery_method: 'Nova Poshta', delivery_details: 'Branch 5' },
+        waybill: '2045',
+      }),
     );
   });
 

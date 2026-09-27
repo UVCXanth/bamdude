@@ -168,6 +168,7 @@ describe('OrderPage', () => {
     // the line's two printed units can be received and issued in one batch.
     vi.spyOn(api, 'getFulfilment').mockResolvedValue(fulfilmentState);
     vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
+    vi.spyOn(api, 'getStockOffers').mockResolvedValue([]);
     vi.spyOn(api, 'fulfilOrder').mockResolvedValue({ order: { ...order, status: 'completed' } as never, issue_id: 1 });
   });
 

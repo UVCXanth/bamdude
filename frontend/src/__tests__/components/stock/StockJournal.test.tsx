@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
-import { api } from '../../../api/client';
+import { api, STOCK_ITEM_KINDS, STOCK_REASONS } from '../../../api/client';
+import en from '../../../i18n/locales/en';
+import uk from '../../../i18n/locales/uk';
 import type { StockJournalPage } from '../../../api/client';
 import { StockJournal } from '../../../components/stock/StockJournal';
 
@@ -89,5 +91,17 @@ describe('StockJournal', () => {
     await screen.findByTestId('journal-row-finished-4');
     expect(get).toHaveBeenLastCalledWith({ book: 'both', item_id: 5, cursor: null, limit: 50 });
     expect(screen.queryByLabelText('Product')).not.toBeInTheDocument();
+  });
+});
+
+describe('the stock journal · every kind and reason has a label', () => {
+  it('names each movement of both books in both languages', () => {
+    // The backend's closed lists — models/finished_stock.py::MOVEMENT_KINDS and
+    // services/part_stock.py::REASONS (spec workshop-order-issue, rules 5–6).
+    expect([...STOCK_ITEM_KINDS]).toEqual(['receipt', 'stocktake', 'assembled', 'produced', 'reserve', 'release', 'issue']);
+    for (const bundle of [en, uk]) {
+      for (const kind of STOCK_ITEM_KINDS) expect(bundle.stock.journal.kind[kind]).toBeTruthy();
+      for (const reason of STOCK_REASONS) expect(bundle.stock.reason[reason]).toBeTruthy();
+    }
   });
 });

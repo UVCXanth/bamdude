@@ -2789,6 +2789,11 @@ export const STOCK_REASONS = [
   'reservation_released',
   'manual',
   'assembled',
+  // spec workshop-order-issue, rule 6: what belongs to an order, in zero-sum pairs.
+  'made_for_order',
+  'held_for_order',
+  'hold_released',
+  'issued_for_order',
 ] as const;
 
 export type StockReason = (typeof STOCK_REASONS)[number];
@@ -2798,7 +2803,7 @@ export type StockReason = (typeof STOCK_REASONS)[number];
  * `backend/app/models/finished_stock.py::MOVEMENT_KINDS`, each with a
  * `stock.journal.kind.*` label in both locales.
  */
-export const STOCK_ITEM_KINDS = ['receipt', 'stocktake', 'assembled', 'reserve', 'release', 'issue'] as const;
+export const STOCK_ITEM_KINDS = ['receipt', 'stocktake', 'assembled', 'produced', 'reserve', 'release', 'issue'] as const;
 
 /**
  * Every `note` the BACKEND writes — a closed set of tokens, never a sentence.

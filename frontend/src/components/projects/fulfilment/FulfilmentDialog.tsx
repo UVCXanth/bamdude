@@ -1,14 +1,14 @@
 import { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WAYBILL_MAX } from '../../../api/client';
 import type { FulfilmentLineState, FulfilmentRecipient, FulfilmentResult, FulfilmentState } from '../../../api/client';
 import { useToast } from '../../../contexts/ToastContext';
-import { useDeliveryMethods } from '../../../hooks/useDeliveryMethods';
+import { useFulfilment } from '../../../hooks/useFulfilment';
 import { invalidateOrderViews } from '../../../utils/queryInvalidation';
 import { Button } from '../../Button';
 import { Modal } from '../../Modal';
-import { Select } from '../../Select';
+import { RecipientFields } from './RecipientFields';
 import { clampDraft, completesOrder, draftFrom, issueCeiling, issuingUnits, requestFrom } from './fulfilmentState';
 import type { Draft, FulfilmentMode, LineDraft } from './fulfilmentState';
 
@@ -42,10 +42,7 @@ export function FulfilmentDialog({
   onDone?: (result: FulfilmentResult) => void;
 }) {
   const { t } = useTranslation();
-  const { data: state, isLoading } = useQuery({
-    queryKey: ['project-fulfilment', orderId],
-    queryFn: () => api.getFulfilment(orderId),
-  });
+  const { data: state, isLoading } = useFulfilment(orderId);
   return (
     <Modal onClose={onClose} title={t('orders.fulfil.title')} size="6xl">
       {isLoading || !state ? (
@@ -82,7 +79,6 @@ function FulfilmentForm({
   const { t } = useTranslation();
   const qc = useQueryClient();
   const { showToast } = useToast();
-  const { data: methods = [] } = useDeliveryMethods();
   const [draft, setDraft] = useState<Draft>(() => draftFrom(state, mode));
   const [recipient, setRecipient] = useState<FulfilmentRecipient>(state.recipient);
   const [waybill, setWaybill] = useState('');
@@ -116,10 +112,6 @@ function FulfilmentForm({
     onError: (err: Error) => setError(err.message),
   });
 
-  const methodNames = methods.map((m) => m.name);
-  if (recipient.delivery_method && !methodNames.includes(recipient.delivery_method)) {
-    methodNames.unshift(recipient.delivery_method);
-  }
   const canSubmit = (lines.length > 0 || closing) && !fulfil.isPending;
 
   return (
@@ -152,49 +144,7 @@ function FulfilmentForm({
 
       <fieldset className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <legend className="text-sm text-bambu-gray mb-1">{t('orders.fulfil.recipient')}</legend>
-        <label className="text-sm space-y-1">
-          <span className="text-bambu-gray">{t('orders.fulfil.recipientName')}</span>
-          <input
-            value={recipient.name ?? ''}
-            onChange={(e) => setRecipient({ ...recipient, name: e.target.value || null })}
-            aria-label={t('orders.fulfil.recipientName')}
-            className={FIELD_CLS}
-          />
-        </label>
-        <label className="text-sm space-y-1">
-          <span className="text-bambu-gray">{t('orders.fulfil.phone')}</span>
-          <input
-            value={recipient.phone ?? ''}
-            onChange={(e) => setRecipient({ ...recipient, phone: e.target.value || null })}
-            aria-label={t('orders.fulfil.phone')}
-            className={FIELD_CLS}
-          />
-        </label>
-        <label className="text-sm space-y-1">
-          <span className="text-bambu-gray">{t('orders.fulfil.deliveryMethod')}</span>
-          <Select
-            value={recipient.delivery_method ?? ''}
-            onChange={(e) => setRecipient({ ...recipient, delivery_method: e.target.value || null })}
-            aria-label={t('orders.fulfil.deliveryMethod')}
-            className="w-full"
-          >
-            <option value="">{t('orders.fulfil.noMethod')}</option>
-            {methodNames.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </Select>
-        </label>
-        <label className="text-sm space-y-1">
-          <span className="text-bambu-gray">{t('orders.fulfil.deliveryDetails')}</span>
-          <input
-            value={recipient.delivery_details ?? ''}
-            onChange={(e) => setRecipient({ ...recipient, delivery_details: e.target.value || null })}
-            aria-label={t('orders.fulfil.deliveryDetails')}
-            className={FIELD_CLS}
-          />
-        </label>
+        <RecipientFields value={recipient} onChange={setRecipient} />
         <label className="text-sm space-y-1">
           <span className="text-bambu-gray">{t('orders.fulfil.waybill')}</span>
           <input

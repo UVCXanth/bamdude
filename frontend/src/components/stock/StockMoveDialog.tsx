@@ -1,19 +1,30 @@
 import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { api, STOCK_MAX_QTY as MAX_QTY } from '../../api/client';
-import type { StockItem, StockMoveBody, StockMoveKind } from '../../api/client';
+import { api, STOCK_MAX_QTY as MAX_QTY, WAYBILL_MAX } from '../../api/client';
+import type { CustomerContact, FulfilmentRecipient, StockItem, StockMoveBody, StockMoveKind } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { useStockLookup } from '../../hooks/useFinishedStock';
 import { invalidateStock } from '../../utils/queryInvalidation';
 import { Button } from '../Button';
 import { Modal } from '../Modal';
 import { CustomerPicker } from '../pickers/CustomerPicker';
+import { RecipientFields } from '../projects/fulfilment/RecipientFields';
 import { signed } from '../products/stockMovementHelpers';
 import { StockLookupNote, StockPositionHeader, StockProductChoice } from './StockProductChoice';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none';
+
+/** A contact as the recipient an issue starts from (spec workshop-order-issue, rule 16). */
+function recipientOf(contact: CustomerContact | undefined): FulfilmentRecipient {
+  return {
+    name: contact?.name ?? null,
+    phone: contact?.phone ?? null,
+    delivery_method: contact?.delivery_method_name ?? null,
+    delivery_details: contact?.delivery_details ?? null,
+  };
+}
 
 /** A receipt and a stocktake create the position when the configuration has none. */
 const CREATES: ReadonlySet<StockMoveKind> = new Set(['receipt', 'stocktake']);
@@ -49,6 +60,19 @@ export function StockMoveDialog({
   const [note, setNote] = useState('');
   const [customerId, setCustomerId] = useState<number | null>(null);
   const [fromReserve, setFromReserve] = useState(false);
+  const [waybill, setWaybill] = useState('');
+  // The recipient starts as the customer's main contact; an edit belongs to the customer it
+  // was made for, so picking another customer starts from THAT one's contact again.
+  const [recipientEdit, setRecipientEdit] = useState<{ customerId: number; value: FulfilmentRecipient } | null>(null);
+  const { data: customer } = useQuery({
+    queryKey: ['customer-recipient', customerId],
+    queryFn: () => api.getCustomer(customerId as number),
+    enabled: kind === 'issue' && customerId != null,
+  });
+  const recipient =
+    recipientEdit && recipientEdit.customerId === customerId
+      ? recipientEdit.value
+      : recipientOf(customer?.id === customerId ? customer?.contacts[0] : undefined);
 
   const options = Object.values(choices);
   const { data: lookup } = useStockLookup(item ? null : productId, options);
@@ -88,7 +112,14 @@ export function StockMoveDialog({
       ...(item ? { item_id: item.id } : { product_id: productId as number, options }),
       ...(kind === 'stocktake' ? { counted: countedValue } : { qty: qtyValue }),
       ...(note.trim() ? { note: note.trim() } : {}),
-      ...(kind === 'issue' ? { ...(customerId != null ? { customer_id: customerId } : {}), from_reserve: fromReserve } : {}),
+      ...(kind === 'issue'
+        ? {
+            ...(customerId != null ? { customer_id: customerId } : {}),
+            from_reserve: fromReserve,
+            recipient,
+            waybill: waybill.trim() || null,
+          }
+        : {}),
     };
     move.mutate(body);
   };
@@ -158,7 +189,28 @@ export function StockMoveDialog({
                 {t('stock.move.customer')}
               </label>
               <CustomerPicker id="stock-move-customer" value={customerId} onChange={setCustomerId} />
+              {customerId == null && (
+                <p className="text-xs text-bambu-gray mt-1">{t('stock.move.customerRequired')}</p>
+              )}
             </div>
+            {customerId != null && (
+              <div className="grid grid-cols-1 gap-2">
+                <RecipientFields
+                  value={recipient}
+                  onChange={(value) => setRecipientEdit({ customerId, value })}
+                />
+                <label className="text-sm space-y-1">
+                  <span className="text-bambu-gray">{t('orders.fulfil.waybill')}</span>
+                  <input
+                    value={waybill}
+                    maxLength={WAYBILL_MAX}
+                    onChange={(e) => setWaybill(e.target.value)}
+                    aria-label={t('orders.fulfil.waybill')}
+                    className={FIELD_CLASS}
+                  />
+                </label>
+              </div>
+            )}
             <label className="flex items-center gap-2 text-sm text-bambu-gray">
               <input type="checkbox" checked={fromReserve} onChange={(e) => setFromReserve(e.target.checked)} />
               {t('stock.move.fromReserve')}
@@ -189,7 +241,7 @@ export function StockMoveDialog({
         <Button
           type="button"
           onClick={submit}
-          disabled={!amountValid || !targetValid || move.isPending}
+          disabled={!amountValid || !targetValid || move.isPending || (kind === 'issue' && customerId == null)}
           className="flex-1"
           data-testid="stock-move-submit"
         >

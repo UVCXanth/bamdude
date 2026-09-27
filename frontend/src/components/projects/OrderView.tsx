@@ -22,6 +22,8 @@ import { OrderNotes } from './OrderNotes';
 import { OrderAttachments } from './OrderAttachments';
 import { DuplicateOrderModal } from './DuplicateOrderModal';
 import { FulfilmentDialog } from './fulfilment/FulfilmentDialog';
+import { TakeStockBanner } from './TakeStockBanner';
+import { useFulfilment } from '../../hooks/useFulfilment';
 import type { FulfilmentMode } from './fulfilment/fulfilmentState';
 import { ConfirmModal } from '../ConfirmModal';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
@@ -76,11 +78,10 @@ export function OrderView({
   // cancelled one has nothing left to schedule.
   // What the order could assemble, receive and issue now — the header button, the
   // banner's counts. Only an active order has anything to issue.
-  const fulfilment = useQuery({
-    queryKey: ['project-fulfilment', id],
-    queryFn: () => api.getFulfilment(id),
-    enabled: Number.isFinite(id) && order?.status === 'active' && hasPermission('projects:update'),
-  });
+  const fulfilment = useFulfilment(
+    Number.isFinite(id) ? id : null,
+    order?.status === 'active' && hasPermission('projects:update'),
+  );
 
   const forecast = useQuery({
     queryKey: ['order-forecast', id],
@@ -223,6 +224,8 @@ export function OrderView({
           onFulfil={(mode, complete) => setFulfilling({ mode, complete })}
         />
       )}
+
+      {canEdit && order.status === 'active' && <TakeStockBanner orderId={order.id} />}
 
       <OrderFigures
         figures={order.figures}
