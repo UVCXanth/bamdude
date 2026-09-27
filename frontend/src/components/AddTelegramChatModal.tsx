@@ -176,6 +176,8 @@ export function AddTelegramChatModal({ chat, providerId, onClose }: AddTelegramC
     sensor_back_in_range: 'notifications.sensorBackInRange',
     sensor_silent: 'notifications.sensorSilent',
     sensor_speaking_again: 'notifications.sensorSpeakingAgain',
+    ha_sensor_alert: 'notifications.haSensorAlert',
+    location_ha_sensor_alert: 'notifications.locationHaSensorAlert',
     plate_not_empty: 'notifications.plateNotEmpty',
     bed_cooled: 'notifications.bedCooledLabel',
     first_layer_complete: 'notifications.firstLayerCompleteLabel',

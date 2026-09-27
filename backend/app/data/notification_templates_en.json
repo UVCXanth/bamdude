@@ -234,6 +234,16 @@
     "title_template": "Sensor Recovered",
     "body_template": "{location} — {sensor} is reporting again"
   },
+  "ha_sensor_alert": {
+    "name": "Printer HA Sensor Alert",
+    "title_template": "Printer Sensor Alert",
+    "body_template": "{printer}: {sensor} reports {state}"
+  },
+  "location_ha_sensor_alert": {
+    "name": "Storage HA Sensor Alert",
+    "title_template": "Storage Sensor Alert",
+    "body_template": "{location}: {sensor} reports {state}"
+  },
   "filament_deficit": {
     "name": "Filament Will Run Out",
     "title_template": "Filament Will Run Out",

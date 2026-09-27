@@ -3092,6 +3092,8 @@ export interface AppSettings {
   session_max_hours: number;
   // Stock forecasting (upstream #1184): global floor applied on top of each SKU's lead time
   forecast_global_lead_time_days: number;
+  location_sensor_poll_interval: number;
+  location_sensor_alert_defaults: string;
   // User email notifications toggle
   user_notifications_enabled: boolean;
   // Default sidebar order (admin-set for all users)
@@ -4485,6 +4487,149 @@ export interface HATestConnectionResult {
   error: string | null;
 }
 
+// A Home Assistant entity bound to a printer for display on its card (#1148, #448).
+// Read-only: unlike a SmartPlug there is nothing here to switch.
+export interface PrinterHASensor {
+  id: number;
+  printer_id: number;
+  name: string;
+  entity_id: string;
+  kind: 'binary' | 'numeric';
+  device_class: string | null;  // HA's own class: "door", "temperature", ...
+  unit: string | null;  // numeric sensors only
+  // What counts as needing attention. Binary sensors use alert_state, numeric
+  // ones the thresholds; all null means the sensor is display-only.
+  alert_state: 'on' | 'off' | null;
+  alert_above: number | null;
+  alert_below: number | null;
+  block_print: boolean;  // hold the printer's queue while alerting
+  notify_on_alert: boolean;
+  show_on_printer_card: boolean;
+  sort_order: number;
+  last_state: string | null;
+  last_changed: string | null;
+  last_checked: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PrinterHASensorReading {
+  id: number;
+  name: string;
+  entity_id: string;
+  kind: 'binary' | 'numeric';
+  device_class: string | null;
+  unit: string | null;
+  state: string | null;  // null when unreadable or not yet polled
+  value: number | null;  // numeric sensors only
+  alerting: boolean;
+  block_print: boolean;
+  reachable: boolean;
+  last_changed: string | null;
+}
+
+export interface PrinterHASensorCreate {
+  printer_id: number;
+  name: string;
+  entity_id: string;
+  kind: 'binary' | 'numeric';
+  device_class?: string | null;
+  unit?: string | null;
+  alert_state?: 'on' | 'off' | null;
+  alert_above?: number | null;
+  alert_below?: number | null;
+  block_print?: boolean;
+  notify_on_alert?: boolean;
+  show_on_printer_card?: boolean;
+  sort_order?: number;
+}
+
+export type PrinterHASensorUpdate = Partial<Omit<PrinterHASensorCreate, 'printer_id'>>;
+
+export interface LocationHASensor {
+  id: number;
+  location_id: number;
+  name: string;
+  entity_id: string;
+  kind: 'binary' | 'numeric';
+  device_class: string | null;
+  unit: string | null;
+  alert_state: 'on' | 'off' | null;
+  alert_above: number | null;
+  alert_below: number | null;
+  notify_on_alert: boolean;
+  show_on_card: boolean;
+  sort_order: number;
+  last_state: string | null;
+  last_changed: string | null;
+  last_checked: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LocationHASensorReading {
+  id: number;
+  name: string;
+  entity_id: string;
+  kind: 'binary' | 'numeric';
+  device_class: string | null;
+  unit: string | null;
+  state: string | null;
+  value: number | null;
+  alerting: boolean;
+  reachable: boolean;
+  alert_state: string | null;
+  alert_above: number | null;
+  alert_below: number | null;
+  last_changed: string | null;
+  show_on_card: boolean;
+}
+
+export interface HASensorHistoryPoint {
+  id: number;
+  revision: number;
+  entity_id: string;
+  kind: 'binary' | 'numeric';
+  unit: string | null;
+  state: string;
+  value: number | null;
+  observed_at: string;
+}
+
+export interface LocationSensorPrimary {
+  location_id: number;
+  category: 'temperature' | 'humidity' | 'battery';
+  source: 'ha' | 'zigbee';
+  binding_id: number;
+}
+
+export interface LocationHASensorCreate {
+  location_id: number;
+  name: string;
+  entity_id: string;
+  kind: 'binary' | 'numeric';
+  device_class?: string | null;
+  unit?: string | null;
+  alert_state?: 'on' | 'off' | null;
+  alert_above?: number | null;
+  alert_below?: number | null;
+  notify_on_alert?: boolean;
+  show_on_card?: boolean;
+  sort_order?: number;
+}
+
+export type LocationHASensorUpdate = Partial<Omit<LocationHASensorCreate, 'location_id'>>;
+
+// An entity offered by the binding picker.
+export interface HADisplayEntity {
+  entity_id: string;
+  friendly_name: string;
+  state: string | null;
+  domain: string;  // "binary_sensor" | "sensor"
+  device_class: string | null;
+  unit_of_measurement: string | null;
+}
+
 export interface SmartPlugEnergy {
   power: number | null;  // Current watts
   voltage: number | null;  // Volts
@@ -5206,6 +5351,8 @@ export interface NotificationProvider {
   on_sensor_threshold: boolean;
   /** A sensor stopped or resumed reporting. */
   on_sensor_silent: boolean;
+  on_ha_sensor_alert: boolean;
+  on_location_ha_sensor_alert: boolean;
   // Build plate detection
   on_plate_not_empty: boolean;
   // Bed cooled
@@ -5281,6 +5428,8 @@ export interface NotificationProviderCreate {
   on_sensor_threshold?: boolean;
   /** A sensor stopped or resumed reporting. */
   on_sensor_silent?: boolean;
+  on_ha_sensor_alert?: boolean;
+  on_location_ha_sensor_alert?: boolean;
   // Build plate detection
   on_plate_not_empty?: boolean;
   // Bed cooled
@@ -5349,6 +5498,8 @@ export interface NotificationProviderUpdate {
   on_sensor_threshold?: boolean;
   /** A sensor stopped or resumed reporting. */
   on_sensor_silent?: boolean;
+  on_ha_sensor_alert?: boolean;
+  on_location_ha_sensor_alert?: boolean;
   // Build plate detection
   on_plate_not_empty?: boolean;
   // Bed cooled
@@ -9625,6 +9776,46 @@ export const api = {
   },
   getHASensorEntities: () =>
     request<HASensorEntity[]>('/smart-plugs/ha/sensors'),
+
+  // Home Assistant sensors bound to a printer (#1148, #448)
+  getHASensors: (printerId?: number) =>
+    request<PrinterHASensor[]>(`/ha-sensors/${printerId ? `?printer_id=${printerId}` : ''}`),
+  getHASensorReadings: (printerId: number) =>
+    request<PrinterHASensorReading[]>(`/ha-sensors/by-printer/${printerId}/readings`),
+  getHASensorHistory: (sensorId: number, hours = 24) =>
+    request<HASensorHistoryPoint[]>(`/ha-sensors/${sensorId}/history?hours=${hours}`),
+  getBindableHAEntities: (search?: string) => {
+    const params = search ? `?search=${encodeURIComponent(search)}` : '';
+    return request<HADisplayEntity[]>(`/ha-sensors/entities${params}`);
+  },
+  createHASensor: (data: PrinterHASensorCreate) =>
+    request<PrinterHASensor>('/ha-sensors/', { method: 'POST', body: JSON.stringify(data) }),
+  updateHASensor: (id: number, data: PrinterHASensorUpdate) =>
+    request<PrinterHASensor>(`/ha-sensors/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteHASensor: (id: number) =>
+    request<{ message: string }>(`/ha-sensors/${id}`, { method: 'DELETE' }),
+
+  getLocationHASensors: (locationId?: number) =>
+    request<LocationHASensor[]>(`/location-ha-sensors/${locationId ? `?location_id=${locationId}` : ''}`),
+  getLocationSensorPrimary: () => request<LocationSensorPrimary[]>('/location-ha-sensors/primary'),
+  setLocationSensorPrimary: (data: LocationSensorPrimary) =>
+    request<LocationSensorPrimary>('/location-ha-sensors/primary', { method: 'PUT', body: JSON.stringify(data) }),
+  getLocationHASensorReadings: (locationId: number, showOnCard = true) =>
+    request<LocationHASensorReading[]>(
+      `/location-ha-sensors/by-location/${locationId}/readings?show_on_card=${showOnCard}`
+    ),
+  getLocationHASensorHistory: (sensorId: number, hours = 24) =>
+    request<HASensorHistoryPoint[]>(`/location-ha-sensors/${sensorId}/history?hours=${hours}`),
+  getBindableLocationHAEntities: (search?: string) => {
+    const params = search ? `?search=${encodeURIComponent(search)}` : '';
+    return request<HADisplayEntity[]>(`/location-ha-sensors/entities${params}`);
+  },
+  createLocationHASensor: (data: LocationHASensorCreate) =>
+    request<LocationHASensor>('/location-ha-sensors/', { method: 'POST', body: JSON.stringify(data) }),
+  updateLocationHASensor: (id: number, data: LocationHASensorUpdate) =>
+    request<LocationHASensor>(`/location-ha-sensors/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteLocationHASensor: (id: number) =>
+    request<{ message: string }>(`/location-ha-sensors/${id}`, { method: 'DELETE' }),
 
   // REST smart plug
   testRESTConnection: (url: string, method: string = 'GET', headers?: string | null) =>

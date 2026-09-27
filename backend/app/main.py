@@ -39,6 +39,7 @@ from backend.app.api.routes import (
     firmware,
     git_backup,
     groups,
+    ha_sensors,
     hms as hms_routes,
     inbox,
     inventory,
@@ -52,6 +53,7 @@ from backend.app.api.routes import (
     library_trash,
     local_backup,
     local_presets,
+    location_ha_sensors,
     macros,
     maintenance,
     makerworld,
@@ -110,8 +112,10 @@ from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch, delete_internal_by_name
 from backend.app.services.bambu_mqtt import HMS_SEVERITY_NOTIFY_THRESHOLD, PrinterState
 from backend.app.services.git_backup import git_backup_service
+from backend.app.services.ha_sensor_manager import ha_sensor_manager
 from backend.app.services.hms_catalogue import device_of as hms_device_of
 from backend.app.services.local_backup import local_backup_service
+from backend.app.services.location_ha_sensor_manager import location_ha_sensor_manager
 from backend.app.services.mqtt_relay import mqtt_relay
 from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
 from backend.app.services.notification_service import notification_service
@@ -1924,7 +1928,13 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     try:
         printer_info = printer_manager.get_printer(printer_id)
         if printer_info:
-            await mqtt_relay.on_printer_status(printer_id, state, printer_info.name, printer_info.serial_number)
+            await mqtt_relay.on_printer_status(
+                printer_id,
+                state,
+                printer_info.name,
+                printer_info.serial_number,
+                awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
+            )
     except Exception:
         pass  # Don't fail status callback if MQTT fails
 
@@ -10799,6 +10809,8 @@ async def lifespan(app: FastAPI):
 
     # Start the smart plug scheduler for time-based on/off
     smart_plug_manager.start_scheduler()
+    ha_sensor_manager.start()
+    location_ha_sensor_manager.start()
 
     # Resume any pending auto-offs that were interrupted by restart
     await smart_plug_manager.resume_pending_auto_offs()
@@ -11044,6 +11056,8 @@ async def lifespan(app: FastAPI):
     stock_forecast_alerts.stop()
     await background_dispatch.stop()
     smart_plug_manager.stop_scheduler()
+    await ha_sensor_manager.stop()
+    await location_ha_sensor_manager.stop()
     try:
         from backend.app.services.zigbee.coordinator import zigbee_coordinator
         from backend.app.services.zigbee.poller import zigbee_poller
@@ -11845,6 +11859,8 @@ app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
 app.include_router(makerworld.router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
 app.include_router(zigbee.router, prefix=app_settings.api_prefix)
+app.include_router(ha_sensors.router, prefix=app_settings.api_prefix)
+app.include_router(location_ha_sensors.router, prefix=app_settings.api_prefix)
 app.include_router(print_queue.router, prefix=app_settings.api_prefix)
 app.include_router(print_options_preferences.router, prefix=app_settings.api_prefix)
 app.include_router(auto_queue.router, prefix=app_settings.api_prefix)

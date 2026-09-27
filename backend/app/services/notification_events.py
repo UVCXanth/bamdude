@@ -79,6 +79,8 @@ EVENT_CATALOG: dict[str, EventMeta] = {
     "sensor_silent": _e("warning", "sensors"),
     "sensor_back_in_range": _e("info", "sensors"),
     "sensor_speaking_again": _e("info", "sensors"),
+    "ha_sensor_alert": _e("warning", "sensors"),
+    "location_ha_sensor_alert": _e("warning", "sensors"),
 }
 
 # Events shown only inside BamDude — never offered to Telegram / email / push

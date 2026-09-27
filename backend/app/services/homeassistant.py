@@ -1,6 +1,8 @@
 """Service for communicating with Home Assistant via REST API."""
 
+import asyncio
 import logging
+import math
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -19,6 +21,7 @@ class HomeAssistantService:
         self.timeout = timeout
         self.base_url: str = ""
         self.token: str = ""
+        self._config_generation = 0
 
     def configure(self, url: str, token: str):
         """Configure HA connection settings.
@@ -43,8 +46,12 @@ class HomeAssistantService:
                 logger.warning("Refusing unsafe Home Assistant URL: %s", exc)
                 url = ""
 
-        self.base_url = url.rstrip("/") if url else ""
-        self.token = token or ""
+        base_url = url.rstrip("/") if url else ""
+        token = token or ""
+        if (base_url, token) != (self.base_url, self.token):
+            self._config_generation += 1
+        self.base_url = base_url
+        self.token = token
 
     def _headers(self) -> dict:
         return {
@@ -208,17 +215,18 @@ class HomeAssistantService:
 
     @staticmethod
     def _validate_url(url: str) -> str | None:
-        """Validate HA URL scheme and block dangerous destinations."""
+        """Apply the same LAN URL policy as saved HA settings."""
+        from backend.app.api.routes._url_safety import assert_safe_lan_service_url
+
         try:
-            parsed = urlparse(url)
+            assert_safe_lan_service_url(url, label="Home Assistant URL")
         except ValueError:
             return None
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        parsed = urlparse(url)
+        if not parsed.hostname:
             return None
-        blocked = ("169.254.169.254", "metadata.google.internal", "0.0.0.0")  # nosec B104
-        if parsed.hostname.lower() in blocked or (parsed.hostname or "").startswith("169.254."):
-            return None
-        return f"{parsed.scheme}://{parsed.hostname}" + (f":{parsed.port}" if parsed.port else "") + (parsed.path or "")
+        host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+        return f"{parsed.scheme.lower()}://{host}" + (f":{parsed.port}" if parsed.port else "") + (parsed.path or "")
 
     async def test_connection(self, url: str, token: str) -> dict:
         """Test connection to Home Assistant.
@@ -363,6 +371,80 @@ class HomeAssistantService:
         except Exception as e:
             logger.warning("Failed to list HA sensor entities: %s", e)
             return []
+
+    async def list_display_entities(self, url: str, token: str, search: str | None = None) -> list[dict]:
+        """Discover binary entities and numeric HA sensors, including unitless ones."""
+        safe_url = self._validate_url(url)
+        if safe_url is None:
+            raise ValueError("Invalid Home Assistant URL")
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(
+                f"{safe_url.rstrip('/')}/api/states", headers={"Authorization": f"Bearer {token}"}
+            )
+            response.raise_for_status()
+            entities = []
+            search_lower = search.strip().lower() if search else ""
+            for entity in response.json():
+                entity_id = entity.get("entity_id", "")
+                domain = entity_id.split(".", 1)[0]
+                if domain not in ("binary_sensor", "sensor"):
+                    continue
+                attrs = entity.get("attributes") or {}
+                unit = attrs.get("unit_of_measurement")
+                state = entity.get("state")
+                if domain == "sensor" and not unit and as_float(state) is None:
+                    continue
+                name = attrs.get("friendly_name") or entity_id
+                if search_lower and search_lower not in entity_id.lower() and search_lower not in name.lower():
+                    continue
+                entities.append(
+                    {
+                        "entity_id": entity_id,
+                        "friendly_name": name,
+                        "state": state,
+                        "domain": domain,
+                        "device_class": attrs.get("device_class"),
+                        "unit_of_measurement": unit,
+                    }
+                )
+            return sorted(entities, key=lambda item: item["friendly_name"].lower())
+
+    async def fetch_states(self, entity_ids: list[str]) -> dict[str, dict | None]:
+        """Fetch only bound entities with bounded concurrency and config isolation."""
+        unique_ids = list(dict.fromkeys(entity_ids))
+        if not unique_ids:
+            return {}
+        base_url, token, generation = self.base_url, self.token, self._config_generation
+        if not base_url or not token:
+            return dict.fromkeys(unique_ids)
+        semaphore = asyncio.Semaphore(8)
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+
+            async def fetch_one(entity_id: str) -> tuple[str, dict | None]:
+                async with semaphore:
+                    try:
+                        response = await client.get(
+                            f"{base_url}/api/states/{entity_id}", headers={"Authorization": f"Bearer {token}"}
+                        )
+                        response.raise_for_status()
+                        return entity_id, response.json()
+                    except httpx.HTTPError as exc:
+                        logger.debug("HA state read failed for %s: %s", entity_id, exc)
+                        return entity_id, None
+
+            results = await asyncio.gather(*(fetch_one(entity_id) for entity_id in unique_ids))
+        if generation != self._config_generation:
+            return dict.fromkeys(unique_ids)
+        return dict(results)
+
+
+def as_float(value) -> float | None:
+    """Only finite HA numeric states are readings or alert operands."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 # Singleton instance

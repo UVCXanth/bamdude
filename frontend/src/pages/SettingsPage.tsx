@@ -19,6 +19,7 @@ import { LdapUserPicker } from '../components/LdapUserPicker';
 import { ZigbeeCoordinatorCard } from '../components/zigbee/ZigbeeCoordinatorCard';
 import { DryingSchedulesCard } from '../components/settings/DryingSchedulesCard';
 import { SensorsSection } from '../components/zigbee/SensorsSection';
+import { HASensorsSettings } from '../components/HASensorsSettings';
 import { SmartPlugCard } from '../components/SmartPlugCard';
 import { AddSmartPlugModal } from '../components/AddSmartPlugModal';
 import { NotificationProviderCard } from '../components/NotificationProviderCard';
@@ -4840,6 +4841,7 @@ export function SettingsPage() {
           )}
 
           <SensorsSection adoptDevice={adoptSensorDevice} onAdoptHandled={() => setAdoptSensorDevice(null)} />
+          <HASensorsSettings />
         </div>
       )}
       {/* ══════ /SMART PLUGS TAB ══════ */}

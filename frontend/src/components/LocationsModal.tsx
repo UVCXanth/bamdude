@@ -14,14 +14,15 @@ interface LocationsModalProps {
   open: boolean;
   onClose: () => void;
   onPickLocation?: (locationId: number) => void;
+  startCreating?: boolean;
 }
 
-export function LocationsModal({ open, onClose, onPickLocation }: LocationsModalProps) {
+export function LocationsModal({ open, onClose, onPickLocation, startCreating = false }: LocationsModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
 
-  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(startCreating);
   const [editing, setEditing] = useState<StorageLocation | null>(null);
   const [name, setName] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<StorageLocation | null>(null);
@@ -47,12 +48,13 @@ export function LocationsModal({ open, onClose, onPickLocation }: LocationsModal
       }
       return api.createLocation({ name: trimmed });
     },
-    onSuccess: () => {
+    onSuccess: (location) => {
       showToast(t(editing ? 'locations.updated' : 'locations.created'), 'success');
       setEditorOpen(false);
       setEditing(null);
       setName('');
       invalidate();
+      if (startCreating && onPickLocation) onPickLocation(location.id);
     },
     onError: (err: Error) => {
       showToast(err.message || t('locations.saveFailed'), 'error');

@@ -703,6 +703,14 @@ async def update_sensor_binding(
     if binding is None or binding.sensor_id != sensor_id:
         raise HTTPException(status_code=404, detail="No such sensor binding.")
     await _validate_binding_target(db, payload)
+    if binding.storage_location_id != payload.storage_location_id:
+        from backend.app.models.location_sensor_primary import LocationSensorPrimary
+
+        await db.execute(
+            delete(LocationSensorPrimary).where(
+                LocationSensorPrimary.source == "zigbee", LocationSensorPrimary.binding_id == binding_id
+            )
+        )
     for key, value in payload.model_dump().items():
         setattr(binding, key, value)
     try:
@@ -727,6 +735,13 @@ async def delete_sensor_binding(
     binding = await db.get(SmartSensorBinding, binding_id)
     if binding is None or binding.sensor_id != sensor_id:
         raise HTTPException(status_code=404, detail="No such sensor binding.")
+    from backend.app.models.location_sensor_primary import LocationSensorPrimary
+
+    await db.execute(
+        delete(LocationSensorPrimary).where(
+            LocationSensorPrimary.source == "zigbee", LocationSensorPrimary.binding_id == binding_id
+        )
+    )
     await db.delete(binding)
     await db.flush()
     await _sync_legacy_targets(db, await db.get(SmartSensor, sensor_id))
@@ -1088,8 +1103,18 @@ async def drop_sensor(
     sensor = await db.get(SmartSensor, sensor_id)
     if sensor is None:
         raise HTTPException(status_code=404, detail="No such sensor.")
+    from backend.app.models.location_sensor_primary import LocationSensorPrimary
     from backend.app.models.smart_sensor_history import SmartSensorHistory
     from backend.app.models.smart_sensor_threshold import SmartSensorThreshold
+
+    await db.execute(
+        delete(LocationSensorPrimary).where(
+            LocationSensorPrimary.source == "zigbee",
+            LocationSensorPrimary.binding_id.in_(
+                select(SmartSensorBinding.id).where(SmartSensorBinding.sensor_id == sensor_id)
+            ),
+        )
+    )
 
     # SQLite does not enforce the declared cascades. The adopted device is the
     # owner of both history and default rules, so explicit unadopt removes them.

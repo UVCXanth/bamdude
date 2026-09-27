@@ -165,6 +165,9 @@ class AutoQueueScheduler:
 
             # 1. Busy set — see ``busy_printer_ids`` for why "any pending row" is part of it.
             busy_printers = await busy_printer_ids(db)
+            from backend.app.services.ha_sensor_manager import ha_sensor_manager
+
+            interlocked_printers = set(await ha_sensor_manager.blocked_printers(db))
 
             # 2. Fetch pending auto items in scheduling order
             pending = await self._fetch_pending(db, sjf)
@@ -197,6 +200,7 @@ class AutoQueueScheduler:
                         cache=requirements_cache,
                         prefer_lowest=prefer_lowest,
                         offline_feeds=offline_feeds,
+                        interlocked_printers=interlocked_printers,
                     )
                     printer, reason = eligible
                     if printer is None:

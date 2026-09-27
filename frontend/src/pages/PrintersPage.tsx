@@ -231,6 +231,7 @@ interface EmbeddedCameraSelection {
   name: string;
 }
 import { PrinterConditions } from '../components/zigbee/PrinterConditions';
+import { PrinterHASensorRow } from '../components/PrinterHASensorRow';
 import { AirductModal } from '../components/AirductModal';
 import { TemperatureModal } from '../components/TemperatureModal';
 import { MotionModal } from '../components/MotionModal';
@@ -6426,6 +6427,7 @@ function PrinterCard({
             room would claim the enclosure reads what the room reads. Expanded
             only, like the plug row above it. */}
         {viewMode === 'expanded' && <PrinterConditions printerId={printer.id} />}
+        {viewMode === 'expanded' && <PrinterHASensorRow printerId={printer.id} />}
 
         {/* Archive summary — counter line mirrors QueueCard footer, links
             to the archive filtered by this printer. Sits above the action

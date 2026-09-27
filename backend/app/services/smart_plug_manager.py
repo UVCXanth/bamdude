@@ -364,7 +364,12 @@ class SmartPlugManager:
         """Called when a print starts - turn on plug if configured."""
         plugs = await self._get_plugs_for_printer(printer_id, db)
 
+        needs_refresh = False
         for plug in plugs:
+            if needs_refresh:
+                # Rollback expires instances already loaded in this session.
+                await db.refresh(plug)
+                needs_refresh = False
             if not plug.enabled:
                 logger.debug("Smart plug '%s' is disabled, skipping auto-on", plug.name)
                 continue
@@ -380,16 +385,23 @@ class SmartPlugManager:
                 continue
 
             # Turn on the plug
-            logger.info("Print started on printer %s, turning on plug '%s'", printer_id, plug.name)
-            service = await self.get_service_for_plug(plug, db)
-            success = await service.turn_on(plug)
-
-            if success:
-                # Update last state and reset auto_off_executed
-                plug.last_state = "ON"
-                plug.last_checked = datetime.now(timezone.utc)
-                plug.auto_off_executed = False  # Reset flag when turning on
-                await db.commit()
+            plug_name = plug.name
+            logger.info("Print started on printer %s, turning on plug '%s'", printer_id, plug_name)
+            try:
+                service = await self.get_service_for_plug(plug, db)
+                success = await service.turn_on(plug)
+                if success:
+                    plug.last_state = "ON"
+                    plug.last_checked = datetime.now(timezone.utc)
+                    plug.auto_off_executed = False
+                    await db.commit()
+            except Exception:
+                # A failed service or DB transaction must not suppress the
+                # other plugs linked to this printer. Rollback clears a failed
+                # session before the next device is resolved.
+                await db.rollback()
+                needs_refresh = True
+                logger.exception("Failed to turn on plug '%s' for printer %s", plug_name, printer_id)
 
     async def on_print_complete(self, printer_id: int, status: str, db: AsyncSession):
         """Called when a print completes - schedule turn off if configured.

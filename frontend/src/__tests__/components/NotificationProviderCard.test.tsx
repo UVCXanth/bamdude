@@ -85,6 +85,8 @@ const createMockProvider = (
   on_scheduled_drying_failed: false,
   on_sensor_threshold: false,
   on_sensor_silent: false,
+  on_ha_sensor_alert: false,
+  on_location_ha_sensor_alert: false,
   on_stock_reorder_alert: false,
   on_stock_break_alert: false,
   progress_min_duration_minutes: null,

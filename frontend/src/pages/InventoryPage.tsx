@@ -34,6 +34,7 @@ import { LabelTemplatePickerModal } from '../components/LabelTemplatePickerModal
 import { BulkEditSpoolsModal } from '../components/BulkEditSpoolsModal';
 import { LocationsModal } from '../components/LocationsModal';
 import { StorageLocationConditions } from '../components/zigbee/StorageLocationConditions';
+import { StorageConditionCell } from '../components/StorageConditionCell';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { resolveSpoolColorName } from '../utils/colors';
@@ -188,6 +189,9 @@ const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: 'slicer_filament', label: 'Slicer Filament', visible: false },
   { id: 'location', label: 'Location', visible: true },
   { id: 'storage_location', label: 'Storage Location', visible: false },
+  { id: 'temperature', label: 'Temperature', visible: false },
+  { id: 'humidity', label: 'Humidity', visible: false },
+  { id: 'battery', label: 'Battery', visible: false },
   { id: 'purchase_location', label: 'Purchase Location', visible: false },
   { id: 'label_weight', label: 'Label', visible: true },
   { id: 'net', label: 'Net', visible: true },
@@ -360,6 +364,9 @@ const columnHeaders: Record<string, (t: TFn) => string> = {
   slicer_filament: (t) => t('inventory.columns.slicer_filament'),
   location: (t) => t('inventory.columns.location'),
   storage_location: (t) => t('inventory.storageLocation'),
+  temperature: (t) => t('inventory.temperature'),
+  humidity: (t) => t('inventory.humidity'),
+  battery: (t) => t('inventory.battery'),
   purchase_location: (t) => t('inventory.purchaseLocation'),
   label_weight: (t) => t('inventory.columns.label_weight'),
   net: (t) => t('inventory.columns.net'),
@@ -461,11 +468,20 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
   storage_location: ({ spool }) => {
     if (!spool.storage_location) return <span className="text-sm text-bambu-gray">-</span>;
     return (
-      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400">
-        {spool.storage_location}
+      <span className="inline-flex flex-wrap items-center gap-1">
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400">
+          {spool.storage_location}
+        </span>
+        {spool.location_id != null && <StorageLocationConditions locationId={spool.location_id} />}
       </span>
     );
   },
+  temperature: ({ spool }) => spool.location_id != null
+    ? <StorageConditionCell locationId={spool.location_id} category="temperature" /> : '—',
+  humidity: ({ spool }) => spool.location_id != null
+    ? <StorageConditionCell locationId={spool.location_id} category="humidity" /> : '—',
+  battery: ({ spool }) => spool.location_id != null
+    ? <StorageConditionCell locationId={spool.location_id} category="battery" /> : '—',
   purchase_location: ({ spool }) => {
     if (!spool.purchase_location) return <span className="text-sm text-bambu-gray">-</span>;
     return (
@@ -3407,6 +3423,10 @@ function SpoolCard({
             {spool.note}
           </div>
         )}
+        {spool.location_id != null && <div className="flex flex-wrap items-center gap-2 text-xs text-bambu-gray">
+          <MapPin className="w-3 h-3" />{spool.storage_location}
+          <StorageLocationConditions locationId={spool.location_id} />
+        </div>}
       </div>
     </div>
   );

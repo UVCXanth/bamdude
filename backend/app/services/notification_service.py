@@ -1242,7 +1242,8 @@ class NotificationService:
         elif response.status_code == 401:
             return False, "Home Assistant authentication failed - check your token"
         else:
-            return False, f"HTTP {response.status_code}: {response.text[:200]}"
+            logger.debug("Home Assistant notification failed with HTTP %s", response.status_code)
+            return False, f"HTTP {response.status_code} from the configured Home Assistant endpoint"
 
     async def _send_to_provider(
         self,
@@ -2747,6 +2748,26 @@ class NotificationService:
             printer_id=printer_id,
             variables=variables,
         )
+
+    async def on_ha_sensor_alert(
+        self, printer_id: int, printer_name: str, sensor_name: str, state: str, db: AsyncSession
+    ):
+        providers = await self._get_providers_for_event(db, "on_ha_sensor_alert", printer_id=printer_id)
+        if not providers:
+            return
+        variables = {"printer": printer_name, "sensor": sensor_name, "state": state}
+        title, message = await self._build_message_from_template(db, "ha_sensor_alert", variables)
+        await self._send_to_providers(
+            providers, title, message, db, "ha_sensor_alert", printer_id=printer_id, variables=variables
+        )
+
+    async def on_location_ha_sensor_alert(self, location_name: str, sensor_name: str, state: str, db: AsyncSession):
+        providers = await self._get_providers_for_event(db, "on_location_ha_sensor_alert", unscoped_only=True)
+        if not providers:
+            return
+        variables = {"location": location_name, "sensor": sensor_name, "state": state}
+        title, message = await self._build_message_from_template(db, "location_ha_sensor_alert", variables)
+        await self._send_to_providers(providers, title, message, db, "location_ha_sensor_alert", variables=variables)
 
     async def on_bed_cooled(
         self,

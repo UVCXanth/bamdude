@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+### Added
+
+- **Home Assistant sensors can now watch printers and spool storage.** Bind numeric or binary entities to printers or storage locations, set per-binding alert rules and notifications, and inspect retained history. An optional printer rule holds queued starts while alerting; unavailable or stale HA readings release the hold. The same HA entity can serve several printers or locations independently.
+- **Zigbee and HA readings now meet in the storage catalog.** A Zigbee device can have several printer, room and spool-storage bindings with independent limits. Storage locations show both sources and let operators choose a primary temperature, humidity or battery reading for the compact inventory display. Optional columns and spool-card readings show the conditions where a spool is stored.
+- **External MQTT subscribers receive retained plate-clear state.** The relay publishes a dedicated gate topic and includes the gate in printer status, refreshing it after reconnect; its status also exposes current left auxiliary and exhaust fan telemetry when the printer reports it.
+
 ### Security
 
 - **An API key limited to some printers now stays with those printers.** The

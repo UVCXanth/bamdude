@@ -329,4 +329,16 @@ DEFAULT_TEMPLATES = [
         "title_template": "Sensor Recovered",
         "body_template": "{location} — {sensor} is reporting again",
     },
+    {
+        "event_type": "ha_sensor_alert",
+        "name": "Printer HA Sensor Alert",
+        "title_template": "Printer Sensor Alert",
+        "body_template": "{printer}: {sensor} reports {state}",
+    },
+    {
+        "event_type": "location_ha_sensor_alert",
+        "name": "Storage HA Sensor Alert",
+        "title_template": "Storage Sensor Alert",
+        "body_template": "{location}: {sensor} reports {state}",
+    },
 ]

@@ -948,6 +948,16 @@ async def delete_printer(
 
     if not await lock_sensor_target(db, "printers", printer_id):
         raise HTTPException(404, "Printer not found")
+    from backend.app.models.ha_sensor_history import HASensorHistory
+    from backend.app.models.printer_ha_sensor import PrinterHASensor
+
+    await db.execute(
+        sql_delete(HASensorHistory).where(
+            HASensorHistory.printer_sensor_id.in_(
+                select(PrinterHASensor.id).where(PrinterHASensor.printer_id == printer_id)
+            )
+        )
+    )
     for model in PRINTER_CASCADE_MODELS:
         await db.execute(sql_delete(model).where(model.printer_id == printer_id))
 
@@ -1004,6 +1014,7 @@ def _printer_cascade_models() -> tuple[type, ...]:
     from backend.app.models.firmware import FirmwareBatchItem
     from backend.app.models.hms_mute import HMSMutedEntry
     from backend.app.models.print_usage_event import PrintUsageEvent
+    from backend.app.models.printer_ha_sensor import PrinterHASensor
     from backend.app.models.printer_setting_audit import PrinterSettingAudit
     from backend.app.models.spool_assignment import SpoolAssignment
     from backend.app.models.spool_k_profile import SpoolKProfile
@@ -1022,6 +1033,7 @@ def _printer_cascade_models() -> tuple[type, ...]:
         HMSMutedEntry,
         PrintUsageEvent,
         PrinterSettingAudit,
+        PrinterHASensor,
         SpoolAssignment,
         SpoolKProfile,
         SpoolmanKProfile,

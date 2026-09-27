@@ -834,6 +834,7 @@ class PrinterManager:
         hitting ``POST /printers/{id}/clear-plate`` directly) is covered
         without each call site having to remember to broadcast.
         """
+        changed = (printer_id in self._awaiting_plate_clear) != awaiting
         if awaiting:
             self._awaiting_plate_clear.add(printer_id)
         else:
@@ -844,7 +845,7 @@ class PrinterManager:
         # tests that instantiate ``PrinterManager()`` without attaching a
         # loop).
         if self._loop and self._loop.is_running():
-            self._schedule_async(self._persist_awaiting_plate_clear(printer_id, awaiting))
+            self._schedule_async(self._persist_awaiting_plate_clear(printer_id, awaiting, publish=changed))
             self._schedule_async(self._broadcast_status_change(printer_id))
 
     async def arm_awaiting_plate_clear(self, printer_id: int, archive_id: int) -> str | None:
@@ -875,9 +876,20 @@ class PrinterManager:
 
     def confirm_awaiting_plate_clear_released(self, printer_id: int) -> None:
         """Publish an already-committed release without another DB write."""
+        changed = printer_id in self._awaiting_plate_clear
         self._awaiting_plate_clear.discard(printer_id)
         if self._loop and self._loop.is_running():
             self._schedule_async(self._broadcast_status_change(printer_id))
+            if changed:
+                self._schedule_async(self._emit_plate_clear_state(printer_id, False))
+
+    async def _emit_plate_clear_state(self, printer_id: int, awaiting: bool) -> None:
+        info = self.get_printer(printer_id)
+        if info is None:
+            return
+        from backend.app.services.mqtt_relay import mqtt_relay
+
+        await mqtt_relay.on_plate_clear_state(printer_id, info.name, info.serial_number, awaiting)
 
     async def _broadcast_status_change(self, printer_id: int) -> None:
         """Emit a ``printer_status`` WebSocket update for this printer (#1128).
@@ -916,7 +928,7 @@ class PrinterManager:
                 e,
             )
 
-    async def _persist_awaiting_plate_clear(self, printer_id: int, awaiting: bool) -> None:
+    async def _persist_awaiting_plate_clear(self, printer_id: int, awaiting: bool, publish: bool = False) -> None:
         """Best-effort DB write for the awaiting-plate-clear flag. Swallows errors
         (connection issues shouldn't break the in-memory scheduler gate)."""
         try:
@@ -931,6 +943,8 @@ class PrinterManager:
                         printer.awaiting_plate_clear_archive_id = None
                         printer.awaiting_plate_clear_token = None
                     await db.commit()
+            if publish and printer is not None:
+                await self._emit_plate_clear_state(printer_id, awaiting)
         except Exception as e:  # pragma: no cover — persistence is best-effort
             logger.warning("Failed to persist awaiting_plate_clear for printer %s: %s", printer_id, e)
 
@@ -974,6 +988,9 @@ class PrinterManager:
             result = await db.execute(select(Printer.id).where(Printer.awaiting_plate_clear.is_(True)))
             ids = [row[0] for row in result.all()]
         self._awaiting_plate_clear = set(ids)
+        from backend.app.services.mqtt_relay import mqtt_relay
+
+        mqtt_relay.publish_plate_clear_snapshot()
         if ids:
             logger.info("Restored awaiting_plate_clear gate for %d printer(s): %s", len(ids), ids)
 

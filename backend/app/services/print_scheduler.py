@@ -402,6 +402,9 @@ class PrintScheduler:
             # PrintQueueItem and also catches external / direct prints that
             # don't have a corresponding item row.
             busy_printers = await active_claim_printer_ids(db)
+            from backend.app.services.ha_sensor_manager import ha_sensor_manager
+
+            ha_interlocks = await ha_sensor_manager.blocked_printers(db)
             # Why each printer sits out this pass — a claim and an obstruction
             # are opposite facts, and the summary below must not call a printer
             # this pass just dispatched to "not available" (upstream #3018).
@@ -479,6 +482,14 @@ class PrintScheduler:
                 # Get printer_id from queue
                 printer_id = item.queue.printer_id if item.queue else None
                 if not printer_id:
+                    continue
+
+                # Hold only this printer's pending work; a reachable HA sensor
+                # in its configured alert state is an operator-defined gate.
+                if printer_id in ha_interlocks:
+                    if set_wait_reason(item, "ha_sensor", f"Sensor alert: {ha_interlocks[printer_id]}"):
+                        await db.commit()
+                    skip_reasons["ha_sensor"] = skip_reasons.get("ha_sensor", 0) + 1
                     continue
 
                 # ⚠️ A timelapse that was asked for and has nowhere to go PAUSES
@@ -2570,6 +2581,15 @@ class PrintScheduler:
         # them, and this barrier must preserve that existing behavior.
         now = datetime.now(timezone.utc)
         async with queue_claim_scope(db, item.queue_id):
+            from backend.app.services.ha_sensor_manager import ha_sensor_manager
+
+            # Recheck at the final claim: the sensor may have alerted while
+            # archive/routing preparation was running outside the queue lock.
+            ha_interlocks = await ha_sensor_manager.blocked_printers(db)
+            if printer.id in ha_interlocks:
+                await db.rollback()
+                logger.info("Queue item %s: HA sensor alert on printer %s", item.id, printer.id)
+                return
             try:
                 require_scheduler_claim(await read_queue_occupancy(db, item.queue_id, for_update=True))
             except PrinterOccupancyConflict as exc:

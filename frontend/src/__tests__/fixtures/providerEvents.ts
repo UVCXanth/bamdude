@@ -48,4 +48,6 @@ export const PROVIDER_EVENTS: ProviderEventInfo[] = [
   { flag: 'on_stock_reorder_alert', event_types: ['stock_reorder_alert'], group: 'inventory', severity: 'warning', default: false },
   { flag: 'on_sensor_threshold', event_types: ['sensor_above_max', 'sensor_below_min', 'sensor_back_in_range'], group: 'sensors', severity: 'error', default: false },
   { flag: 'on_sensor_silent', event_types: ['sensor_silent', 'sensor_speaking_again'], group: 'sensors', severity: 'warning', default: false },
+  { flag: 'on_ha_sensor_alert', event_types: ['ha_sensor_alert'], group: 'sensors', severity: 'warning', default: false },
+  { flag: 'on_location_ha_sensor_alert', event_types: ['location_ha_sensor_alert'], group: 'sensors', severity: 'warning', default: false },
 ];

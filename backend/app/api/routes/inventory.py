@@ -582,6 +582,7 @@ async def list_locations(
     result = await db.execute(select(Location).order_by(Location.name))
     locations = list(result.scalars().all())
     counts = await _spool_counts_for_locations(db, locations, settings)
+    from backend.app.models.location_ha_sensor import LocationHASensor
     from backend.app.models.smart_sensor_binding import SmartSensorBinding
 
     sensor_counts = dict(
@@ -593,6 +594,10 @@ async def list_locations(
             )
         ).all()
     )
+    for storage_id, count in (
+        await db.execute(select(LocationHASensor.location_id, func.count()).group_by(LocationHASensor.location_id))
+    ).all():
+        sensor_counts[storage_id] = sensor_counts.get(storage_id, 0) + count
     return [_location_to_response(loc, counts.get(loc.id, 0), sensor_counts.get(loc.id, 0)) for loc in locations]
 
 
@@ -681,6 +686,13 @@ async def update_location(
             .where(SmartSensorBinding.storage_location_id == location_id)
         )
     ).scalar_one()
+    from backend.app.models.location_ha_sensor import LocationHASensor
+
+    sensor_count += (
+        await db.execute(
+            select(func.count()).select_from(LocationHASensor).where(LocationHASensor.location_id == location_id)
+        )
+    ).scalar_one()
     await ws_manager.broadcast({"type": "inventory_changed"})
     return _location_to_response(location, counts.get(location.id, 0), sensor_count)
 
@@ -713,6 +725,13 @@ async def delete_location(
             select(func.count())
             .select_from(SmartSensorBinding)
             .where(SmartSensorBinding.storage_location_id == location_id)
+        )
+    ).scalar_one()
+    from backend.app.models.location_ha_sensor import LocationHASensor
+
+    sensor_count += (
+        await db.execute(
+            select(func.count()).select_from(LocationHASensor).where(LocationHASensor.location_id == location_id)
         )
     ).scalar_one()
     if sensor_count:

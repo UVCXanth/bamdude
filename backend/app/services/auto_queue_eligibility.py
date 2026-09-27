@@ -311,6 +311,7 @@ async def find_eligible_printer(
     cache: PrintRequirementsCache | None = None,
     prefer_lowest: bool = False,
     offline_feeds=None,
+    interlocked_printers: set[int] | None = None,
 ) -> EligiblePrinter:
     """The best printer for ``item`` now, or why there is none.
 
@@ -373,7 +374,9 @@ async def find_eligible_printer(
             # sentences and the operator cannot tell which channel disagreed.
             reasons.append(f"{printer.name}: " + routing_detail(result.reason, **result.params)["message"])
             continue
-        ready = scheduler._is_printer_idle(printer.id, require_plate_clear)
+        ready = scheduler._is_printer_idle(printer.id, require_plate_clear) and printer.id not in (
+            interlocked_printers or ()
+        )
         candidates.append(
             (ready, verdict == "exact", result.plan.color_matches, -printer.id, printer, result.plan, snapshot)
         )

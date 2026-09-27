@@ -234,6 +234,16 @@
     "title_template": "Датчик у нормі",
     "body_template": "{location} — {sensor} знову говорить"
   },
+  "ha_sensor_alert": {
+    "name": "Тривога датчика принтера HA",
+    "title_template": "Тривога датчика принтера",
+    "body_template": "{printer}: {sensor} показує {state}"
+  },
+  "location_ha_sensor_alert": {
+    "name": "Тривога датчика зберігання HA",
+    "title_template": "Тривога датчика зберігання",
+    "body_template": "{location}: {sensor} показує {state}"
+  },
   "filament_deficit": {
     "name": "Філаменту не вистачить",
     "title_template": "Філаменту не вистачить",
