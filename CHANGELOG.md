@@ -38,6 +38,7 @@
 
 ### Changed
 
+- **Multi-plate library cards keep their selection checkbox clear.** The plate counter now sits below the checkbox, so it no longer covers the checkmark or blocks selecting the file.
 - **Large multi-plate exports stay usable in the preview dialog.** Plate lists now scroll within a bounded panel, leaving room for the selected plate's 3D or G-code preview in both normal and fullscreen mode. Files with many plates no longer hide the last plates or push the preview below the dialog.
 - **An external-folder scan no longer fails when a file already exists in the library.** The scanner skips the duplicate, completes the job and records the skipped count in its log. Previously this path raised `KeyError: 'skipped_duplicates'` and left the scan marked failed.
 - **Auto Queue now checks the model you selected before adding a print.** A file sliced for P1P can be aimed explicitly at a compatible P1S even when automatic compatible-printer fallback is off. The preview now checks that P1S target, so the form no longer reports a missing P1P printer or blocks a valid submission. Automatic fallback remains controlled by its existing setting.

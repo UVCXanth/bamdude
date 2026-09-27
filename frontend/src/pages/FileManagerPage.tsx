@@ -1027,7 +1027,7 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
         {/* Plate carousel (spec 5): arrows and a counter, no dots - a
             twelve-plate MakerWorld file would drown the card in them. z-20
             keeps them under the regen overlay's z-30. The counter sits
-            top-left: tags own top-right, the gallery and notes buttons own
+            below the top-left selection checkbox: tags own top-right, the gallery and notes buttons own
             bottom-left, the actions trigger owns bottom-right. */}
         {slices.length > 1 && (
           <>
@@ -1050,7 +1050,7 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
             <span
               data-testid="plate-counter"
               title={plate ? t('fileManager.plateOf', { index: plate.index, count: slices.length }) : undefined}
-              className="absolute top-2 left-2 z-20 px-1.5 py-0.5 rounded bg-black/60 text-[11px] text-white tabular-nums"
+              className="absolute top-9 left-2 z-20 px-1.5 py-0.5 rounded bg-black/60 text-[11px] text-white tabular-nums"
             >
               {current + 1}/{slices.length}
             </span>
