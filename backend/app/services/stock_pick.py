@@ -11,21 +11,26 @@ the products with their parts and groups in one read, the positions of every
 (product, configuration) in one, the free-parts balances of every product in
 one. A request naming an existing ``line_id`` also counts what that line already
 holds as free for it — the line may keep its own reservation when it is
-rewritten (the writers release before they take).
+rewritten (the writers release before they take) — and what it already issued
+(a reactivated order's line counts its shipped units as its own); the named
+lines are read together, a fixed handful of statements for any number of them.
 """
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models.product import ProductOrigin
+from backend.app.models.finished_stock import StockItemMovement
+from backend.app.models.product import Product, ProductOrigin
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import finished_stock, line_config, part_stock
 from backend.app.services.entity_codes import code_for
-from backend.app.services.line_composition import composition, counted
+from backend.app.services.line_composition import Composition, composition, compositions_for_lines, counted
 
 
 class StockPickError(Exception):
@@ -59,24 +64,54 @@ class Suggestion:
     position_code: str | None
 
 
-async def _line_back(
-    db: AsyncSession, line_id: int, product_id: int, key: str, shelf: dict[int, int]
-) -> tuple[int, dict[int, int]]:
-    """What an existing line holds that it may keep: its ready units in this
-    position, and its reserved kits put back on its product's shelf."""
-    line = await db.get(ProjectLine, line_id)
-    if line is None or line.product_id != product_id:
-        return 0, shelf
-    held = 0
-    position = await finished_stock.position_for_key(db, product_id, key)
-    if position is not None:
-        held = (await finished_stock.held_by_item(db, line.id)).get(position.id, 0)
-    kits = await part_stock.reserved_units_for_line(db, line)
-    if kits:
-        shelf = dict(shelf)
-        for part, per in counted(await part_stock.line_composition_of(db, line)):
-            shelf[part.id] = shelf.get(part.id, 0) + kits * per
-    return held, shelf
+@dataclass(frozen=True, slots=True)
+class _LineBack:
+    """What an existing line may keep: its ready units by position, the ones it
+    already issued (a reactivated order's — they stay the line's, rule 1), and
+    its reserved kits with the composition they are counted in."""
+
+    product_id: int
+    held_by_item: dict[int, int]
+    issued: int
+    kits: int
+    kit: Composition
+
+
+async def _lines_back(
+    db: AsyncSession, line_ids: Sequence[int], products: Mapping[int, Product]
+) -> dict[int, _LineBack]:
+    """Every named line's :class:`_LineBack` — a fixed number of statements for any
+    number of lines (final review M1): the lines, their holdings by position, their
+    compositions and their kits, each in one read."""
+    if not line_ids:
+        return {}
+    lines = (await db.execute(select(ProjectLine).where(ProjectLine.id.in_(line_ids)))).scalars().all()
+    held: dict[int, dict[int, int]] = defaultdict(dict)
+    rows = await db.execute(
+        select(StockItemMovement.project_line_id, StockItemMovement.item_id, func.sum(StockItemMovement.delta_reserved))
+        .where(StockItemMovement.project_line_id.in_(line_ids))
+        .group_by(StockItemMovement.project_line_id, StockItemMovement.item_id)
+    )
+    for line_id, item_id, units in rows.all():
+        if units:
+            held[line_id][item_id] = int(units)
+    parts_by_product = {pid: list(product.parts) for pid, product in products.items()}
+    kits_of_line = {
+        line_id: counted(comp) for line_id, comp in (await compositions_for_lines(db, lines, parts_by_product)).items()
+    }
+    kits = await part_stock.reserved_units_by_line(
+        db, [line.id for line in lines], {lid: {part.id: per for part, per in kit} for lid, kit in kits_of_line.items()}
+    )
+    return {
+        line.id: _LineBack(
+            product_id=line.product_id,
+            held_by_item=held.get(line.id, {}),
+            issued=max(0, (line.from_finished or 0) - sum(held.get(line.id, {}).values())),
+            kits=kits.get(line.id, 0),
+            kit=kits_of_line.get(line.id, []),
+        )
+        for line in lines
+    }
 
 
 async def suggest(db: AsyncSession, requests: Sequence[PickRequest]) -> list[Suggestion]:
@@ -99,14 +134,20 @@ async def suggest(db: AsyncSession, requests: Sequence[PickRequest]) -> list[Sug
     ]
     positions = await finished_stock.free_by_keys(db, catalogue)
     balances = await part_stock.balances_for_products(db, sorted(products))
+    backs = await _lines_back(db, sorted({r.line_id for r in requests if r.line_id is not None}), products)
     out: list[Suggestion] = []
     for request, product, key, choices, counts in resolved:
         item = positions.get((product.id, key))
         finished_free = item.on_hand - item.reserved if item is not None else 0
         shelf = balances.get(product.id, {})
-        if request.line_id is not None:
-            held, shelf = await _line_back(db, request.line_id, product.id, key, shelf)
-            finished_free += held
+        back = backs.get(request.line_id) if request.line_id is not None else None
+        if back is not None and back.product_id == product.id:
+            # What the line holds in THIS position, plus what it already issued, is its own.
+            finished_free += (back.held_by_item.get(item.id, 0) if item is not None else 0) + back.issued
+            if back.kits:
+                shelf = dict(shelf)
+                for part, per in back.kit:
+                    shelf[part.id] = shelf.get(part.id, 0) + back.kits * per
         defaults = {g.id: g.default_option_id for g in product.variant_groups if g.default_option_id is not None}
         kit = composition(list(product.parts), "product", set({**defaults, **choices}.values()), counts)
         kits_free = part_stock.kits_of(shelf, kit)

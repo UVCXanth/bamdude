@@ -269,10 +269,43 @@ async def held_by_item(db: AsyncSession, line_id: int) -> dict[int, int]:
     return {item_id: int(n) for item_id, n in rows.all() if n}
 
 
+async def lock_line(db: AsyncSession, line: ProjectLine) -> None:
+    """The line row, locked and read fresh before any door reads what it holds
+    (final review M3): two transactions releasing one line — two PATCHes, a
+    cancel beside a delete — would both read the same holding and hand it back
+    twice. Pending changes to the line are flushed first, so the fresh read
+    (``populate_existing``) keeps them."""
+    await db.flush()
+    await take_write_lock(db, ProjectLine.__table__, line.id)
+    await db.execute(
+        select(ProjectLine).where(ProjectLine.id == line.id).with_for_update().execution_options(populate_existing=True)
+    )
+
+
+async def lock_positions_for_lines(db: AsyncSession, line_ids: Iterable[int]) -> None:
+    """Every position these lines hold, locked in ascending id order before any
+    line is handled (final review M4): two orders closing at once over shared
+    positions must not lock them in opposite orders — a deadlock on PostgreSQL."""
+    ids = sorted(set(line_ids))
+    if not ids:
+        return
+    item_ids = (
+        await db.execute(
+            select(StockItemMovement.item_id)
+            .where(StockItemMovement.project_line_id.in_(ids))
+            .group_by(StockItemMovement.item_id)
+            .having(func.sum(StockItemMovement.delta_reserved) != 0)
+        )
+    ).scalars()
+    for item_id in sorted(item_ids):
+        await lock_item(db, item_id)
+
+
 async def release_for_line(db: AsyncSession, line: ProjectLine, *, actor: User | None = None) -> int:
     """What the line still holds goes back to the shelf (order cancelled, line or
     order deleted, a reservation rewritten). Read off the ledger, so it finds the
     old position after a configuration change as well. Returns the units released."""
+    await lock_line(db, line)
     back = 0
     for item_id, held in sorted((await held_by_item(db, line.id)).items()):
         item = await lock_item(db, item_id)
@@ -282,14 +315,18 @@ async def release_for_line(db: AsyncSession, line: ProjectLine, *, actor: User |
 
 
 async def reserve_for_line(db: AsyncSession, line: ProjectLine, units: int, *, actor: User | None = None) -> int:
-    """Rewrite the line's finished reservation (spec rule 4): release what it holds,
-    then take ``min(units, quantity, free)`` in the position of the line's
-    configuration. A parts line, a product outside the catalogue or a
-    configuration without a position take nothing. Returns the units taken."""
+    """Rewrite the line's ready units (spec rule 4) — ``units`` is the line's TOTAL,
+    issued ones included (rule 1): release what it holds, then take on top of what
+    it already issued, ``min(units − issued, quantity − issued, free)`` in the
+    position of the line's configuration. A reactivated order's line therefore
+    never takes more for asking for fewer (final review I2), and never gives back
+    what shipped. A parts line, a product outside the catalogue or a configuration
+    without a position take nothing. Returns the units taken."""
     if units < 0:
         raise ValueError(f"cannot reserve {units} units for line {line.id}; a reservation is never negative")
     await release_for_line(db, line, actor=actor)
-    if line.mode != "product" or units == 0:
+    issued = line.from_finished  # what is left after the release is what shipped
+    if line.mode != "product" or units <= issued:
         return 0
     origin = await db.scalar(select(Product.origin).where(Product.id == line.product_id))
     if origin != ProductOrigin.CATALOG.value:
@@ -298,7 +335,7 @@ async def reserve_for_line(db: AsyncSession, line: ProjectLine, units: int, *, a
     if found is None:
         return 0
     item = await lock_item(db, found.id)
-    take = min(units, line.quantity, item.on_hand - item.reserved)
+    take = min(units - issued, line.quantity - issued, item.on_hand - item.reserved)
     if take <= 0:
         return 0
     await _record(db, item, "reserve", 0, take, note=None, actor=actor, line=line, d_line=take)
@@ -310,6 +347,7 @@ async def issue_for_line(
 ) -> int:
     """The order completed: everything the line holds leaves with it, to its
     customer (spec rule 8). ``from_finished`` stays — the units were the line's."""
+    await lock_line(db, line)
     out = 0
     for item_id, held in sorted((await held_by_item(db, line.id)).items()):
         item = await lock_item(db, item_id)
@@ -318,18 +356,17 @@ async def issue_for_line(
     return out
 
 
-async def move_for_line(
-    db: AsyncSession, line: ProjectLine, old_key: str, *, actor: User | None = None
-) -> tuple[int, int]:
+async def move_for_line(db: AsyncSession, line: ProjectLine, *, actor: User | None = None) -> tuple[int, int]:
     """The line's configuration changed (``line.config_key`` is already the new
     one): give back in the old position, take in the new one what it has.
-    Returns ``(held before, held after)``. ``old_key`` names what was left for
-    the caller's journal — the release reads the ledger, not the key."""
-    del old_key
+    Returns ``(held before, held after)``; the release reads the ledger, so it
+    needs no old key."""
+    await lock_line(db, line)
     before = await held_for_line(db, line.id)
     if before == 0:
         return 0, 0
-    return before, await reserve_for_line(db, line, before, actor=actor)
+    # The line's total: what it issued (a reactivated order) plus what it holds.
+    return before, await reserve_for_line(db, line, line.from_finished, actor=actor)
 
 
 async def free_by_keys(db: AsyncSession, pairs: Iterable[tuple[int, str]]) -> dict[tuple[int, str], StockItem]:

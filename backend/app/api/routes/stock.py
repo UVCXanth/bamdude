@@ -463,7 +463,14 @@ async def lookup_stock_item(
 
 
 async def _choices_for_items(db: AsyncSession, items: list[tuple[int, list[int]]]) -> list[dict[int, int]]:
-    """``{group: option}`` for every item's options — one statement for the whole list."""
+    """``{group: option}`` for every item's options — one statement for the whole list.
+
+    The products are looked up first (final review M2): an unknown product is a
+    404 whatever options came with it, not a 422 about options it cannot have."""
+    product_ids = sorted({pid for pid, _options in items})
+    known = set((await db.execute(select(Product.id).where(Product.id.in_(product_ids)))).scalars())
+    if len(known) < len(product_ids):
+        raise HTTPException(status_code=404, detail="Product not found")
     wanted = sorted({option_id for _pid, options in items for option_id in options})
     rows = (
         {

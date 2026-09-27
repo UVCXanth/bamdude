@@ -188,6 +188,11 @@ async def test_the_finished_goods_schema(engine):
         # WS-10: the finished units a line took off the shelf (spec workshop-add-to-order, rule 1).
         line_cols = {r[1] for r in (await conn.execute(text("PRAGMA table_info(project_lines)"))).all()}
         assert "from_finished" in line_cols
+        # Final review M5: the CHECK carries the model's name on an upgraded install too.
+        table_sql = (
+            await conn.execute(text("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'project_lines'"))
+        ).scalar()
+        assert "ck_project_lines_from_finished" in table_sql
         await conn.execute(text("INSERT INTO project_lines (id, product_id) VALUES (1, 1)"))
         assert (await conn.execute(text("SELECT from_finished FROM project_lines WHERE id = 1"))).scalar() == 0
         with pytest.raises(IntegrityError):

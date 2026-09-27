@@ -100,4 +100,13 @@ describe('the products tab of «Add to order»', () => {
     expect(within(row).queryByLabelText('Ready units')).not.toBeInTheDocument();
     expect(suggest).not.toHaveBeenCalled();
   });
+
+  it('says so when the stock could not be asked', async () => {
+    // Final review M11: a failed proposal is said, not left as «of —».
+    suggest.mockRejectedValue(new Error('boom'));
+    render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
+    const row = await screen.findByTestId('add-product-1');
+    fireEvent.click(within(row).getByRole('checkbox'));
+    expect(await within(row).findByText('Could not read the stock')).toBeInTheDocument();
+  });
 });

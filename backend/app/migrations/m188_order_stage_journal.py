@@ -218,7 +218,13 @@ async def upgrade(conn):
         await add_column(conn, "project_lines", "mode VARCHAR(8) NOT NULL DEFAULT 'product'")
         await add_column(conn, "project_lines", "config_key VARCHAR(512) NOT NULL DEFAULT ''")
         # WS-10 (spec workshop-add-to-order, rule 1).
-        await add_column(conn, "project_lines", "from_finished INTEGER NOT NULL DEFAULT 0 CHECK (from_finished >= 0)")
+        # Named as the model names it, so fresh, upgraded and imported installs agree.
+        await add_column(
+            conn,
+            "project_lines",
+            "from_finished INTEGER NOT NULL DEFAULT 0 "
+            "CONSTRAINT ck_project_lines_from_finished CHECK (from_finished >= 0)",
+        )
         if not await table_exists(conn, "project_line_choices"):
             await conn.exec_driver_sql(
                 """

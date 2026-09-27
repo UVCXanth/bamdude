@@ -184,3 +184,89 @@ async def test_patch_rewrites_the_ready_units_and_only_on_an_active_order(commit
     r = await committing_client.patch(url, json={"from_finished": 1})
     assert r.status_code == 409
     assert r.json()["detail"] == "Only an active order takes finished goods from stock"
+
+
+@pytest.mark.asyncio
+async def test_a_reactivated_order_edits_its_ready_units_as_a_total(committing_client, db_session, farm):
+    """Final review I2: after completion the line's ready units were ISSUED — they stay
+    counted (issued included) but no longer held. Editing them on the reactivated order
+    treats the number as the line's total, so asking for fewer takes nothing more."""
+    order, _ = await _order(db_session)
+    line = await _add(committing_client, order, farm["pipe"].id, quantity=2)
+    assert line["from_finished"] == 2
+    await _set_status(committing_client, order, "completed")
+    await _set_status(committing_client, order, "active")
+    standard = await _standard(db_session, farm)
+    await finished_stock.receive(db_session, standard, 5)
+    await db_session.commit()
+    url = f"/api/v1/projects/{order.id}/lines/{line['id']}"
+    r = await committing_client.patch(url, json={"from_finished": 1})
+    assert r.status_code == 200, r.text
+    assert (await _line(committing_client, order, line["id"]))["from_finished"] == 2
+    assert (await _standard(db_session, farm)).reserved == 0
+    assert (await committing_client.patch(url, json={"quantity": 3, "from_finished": 3})).status_code == 200
+    assert (await _line(committing_client, order, line["id"]))["from_finished"] == 3
+    assert (await _standard(db_session, farm)).reserved == 1
+
+
+@pytest.mark.asyncio
+async def test_lowering_the_quantity_with_kits_fits_the_ready_units_too(committing_client, db_session, farm):
+    """Final review I3: a quantity drop sent together with a kits number still fits the
+    ready units under the new quantity."""
+    order, _ = await _order(db_session)
+    line = await _add(committing_client, order, farm["pipe"].id)
+    url = f"/api/v1/projects/{order.id}/lines/{line['id']}"
+    r = await committing_client.patch(url, json={"quantity": 1, "from_stock_units": 0})
+    assert r.status_code == 200, r.text
+    after = await _line(committing_client, order, line["id"])
+    assert (after["from_finished"], after["from_kit_units"], after["from_stock_units"]) == (1, 0, 1)
+    assert (await _standard(db_session, farm)).reserved == 1
+
+
+@pytest.mark.asyncio
+async def test_a_line_lowered_under_what_it_shipped_is_covered_not_overcovered(committing_client, db_session, farm):
+    """Final review M9, ruled: the line keeps reporting the raw reading (what the shelves
+    gave up — Finding C1), and its coverage is what the quantity caps."""
+    order, _ = await _order(db_session)
+    line = await _add(committing_client, order, farm["pipe"].id, quantity=2)
+    await _set_status(committing_client, order, "completed")
+    url = f"/api/v1/projects/{order.id}/lines/{line['id']}"
+    assert (await committing_client.patch(url, json={"quantity": 1})).status_code == 200
+    after = await _line(committing_client, order, line["id"])
+    assert (after["from_finished"], after["from_stock_units"]) == (2, 2)  # shipped is shipped
+    assert after["covered_units"] == 1 and after["progress"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_a_new_parts_line_refuses_ready_units_as_its_patch_does(committing_client, db_session, farm):
+    """Final review M8: creation and PATCH agree — a parts line takes nothing from stock."""
+    order, _ = await _order(db_session)
+    part = farm["parts"]["flask"]
+    body = {"product_id": farm["pipe"].id, "mode": "parts", "part_counts": {str(part.id): 1}, "from_finished": 1}
+    r = await committing_client.post(f"/api/v1/projects/{order.id}/lines", json=body)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == "A parts line takes nothing from the shelf"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["completed", "cancelled"])
+async def test_closing_an_order_locks_its_positions_in_one_order(
+    committing_client, db_session, farm, monkeypatch, status
+):
+    """Final review M4: completion and cancel lock every position the order's lines hold
+    in ascending id order, before any line is handled — two orders sharing positions
+    cannot lock them in opposite orders (a PostgreSQL deadlock)."""
+    order, _ = await _order(db_session)
+    await _add(committing_client, order, farm["lamp"].id, quantity=1)  # the later position
+    await _add(committing_client, order, farm["pipe"].id, quantity=2)  # the earlier one
+    seen: list[int] = []
+    original = finished_stock.lock_item
+
+    async def recording(db, item_id):
+        if item_id not in seen:
+            seen.append(item_id)
+        return await original(db, item_id)
+
+    monkeypatch.setattr(finished_stock, "lock_item", recording)
+    await _set_status(committing_client, order, status)
+    assert len(seen) == 2 and seen == sorted(seen)

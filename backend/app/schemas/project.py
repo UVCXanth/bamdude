@@ -94,10 +94,6 @@ class ProjectLineCreate(BaseModel):
         return _normalize_material(v)
 
 
-#: The fields of :class:`ProjectLineCreate` that are not ``project_lines`` columns.
-LINE_CREATE_NOT_COLUMNS = {"from_stock_units", "from_finished", "choices", "part_counts"}
-
-
 class LineConfigurationIn(BaseModel):
     """``PUT /projects/{id}/lines/{line_id}/configuration`` (rule 20).
 

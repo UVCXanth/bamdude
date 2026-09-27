@@ -208,7 +208,7 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
       if (data.from_finished != null) {
         const line = saved.lines.find((l) => l.id === lineId);
         if (line && line.from_finished < data.from_finished) {
-          showToast(t('stock.line.clampedFinished', { n: line.from_finished }), 'warning');
+          showToast(t('stock.line.clampedFinished', { count: line.from_finished }), 'warning');
         }
       }
       if (data.from_stock_units != null) {
@@ -350,12 +350,15 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                           // shelf is the display disagreeing with the write.
                           // Kits go back first, then ready units (spec rule 6).
                           const quantity = Math.max(1, Number(e.target.value) || 1);
-                          const fromFinished = Math.min(editing.fromFinished, quantity);
+                          // ⚠️ Only an ACTIVE order's ready units shrink with it: a
+                          // completed one shipped them, and a PATCH naming them there
+                          // is refused (final review I3).
+                          const fromFinished = orderActive ? Math.min(editing.fromFinished, quantity) : editing.fromFinished;
                           setDraft({
                             ...editing,
                             quantity,
                             fromFinished,
-                            fromStock: Math.min(editing.fromStock, quantity - fromFinished),
+                            fromStock: Math.min(editing.fromStock, Math.max(0, quantity - fromFinished)),
                           });
                         }}
                         className={`${FIELD_CLASS} w-20`}

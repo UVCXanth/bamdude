@@ -545,4 +545,35 @@ describe('OrderLinesTable · add to order and ready units', () => {
     expect(screen.getByText('Only an active order takes ready units from stock')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Pick from stock' })).not.toBeInTheDocument();
   });
+
+  it('lowers the quantity of a completed order without touching its ready units', async () => {
+    // Final review I3: the shipped units are not the draft's to shrink — the PATCH
+    // would be refused («only an active order takes finished goods»).
+    const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(ready);
+    render(<OrderLinesTable order={{ ...ready, status: 'completed' } as Order} canEdit />);
+    fireEvent.click(screen.getByTestId('line-10-edit'));
+    const row = screen.getByTestId('line-10-save').closest('tr') as HTMLElement;
+    fireEvent.change(within(row).getByLabelText(/quantity/i), { target: { value: '1' } });
+    fireEvent.click(screen.getByTestId('line-10-save'));
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 10, { quantity: 1 }));
+  });
+
+  it('says one ready unit, not «1 ready units», when the shelf gave less', async () => {
+    // Final review M12.
+    vi.spyOn(api, 'suggestStock').mockResolvedValue({ items: [suggestion] });
+    const saved = {
+      ...ready,
+      lines: ready.lines.map((l) => (l.id === 10 ? { ...l, from_finished: 1, from_stock_units: 1 } : l)),
+    } as unknown as Order;
+    vi.spyOn(api, 'updateOrderLine').mockResolvedValue(saved);
+    const narrow = {
+      ...ready,
+      lines: ready.lines.map((l) => (l.id === 10 ? { ...l, from_finished: 0, from_stock_units: 0 } : l)),
+    } as unknown as Order;
+    render(<OrderLinesTable order={narrow} canEdit />);
+    fireEvent.click(screen.getByTestId('line-10-edit'));
+    fireEvent.change(await screen.findByTestId('line-10-from-finished'), { target: { value: '2' } });
+    fireEvent.click(screen.getByTestId('line-10-save'));
+    expect(await screen.findByText('Only 1 ready unit could be reserved — the shelf had no more.')).toBeInTheDocument();
+  });
 });

@@ -5367,6 +5367,7 @@ export default {
         pick: 'pick',
         toPrint: 'to print: {{n}}',
         listed: 'ready {{ready}} · kits {{kits}}',
+        failed: 'Could not read the stock',
       },
       pick: 'Pick',
       configuration: 'Configuration',
@@ -5381,7 +5382,9 @@ export default {
       added_one: 'Added {{count}} line',
       added_other: 'Added {{count}} lines',
       clamped: 'The stock changed while you were choosing — less was taken: {{detail}}',
-      clampedLine: '{{name}}: ready {{gotFinished}} of {{askedFinished}}, kits {{gotKits}} of {{askedKits}}',
+      clampedLine: '{{name}}: {{what}}',
+      clampedReady: 'ready {{got}} of {{asked}}',
+      clampedKits: 'kits {{got}} of {{asked}}',
       parts: { search: 'Search parts…', qty: 'Pieces', variant: '{{group}}: {{option}}', none: 'No parts match', noun: 'parts' },
       plate: {
         search: 'Search files…',
@@ -6483,7 +6486,8 @@ export default {
       pick: 'Pick from stock',
       finishedActiveOnly: 'Only an active order takes ready units from stock',
       clamped: 'Only {{n}} could be reserved — the shelf had no more.',
-      clampedFinished: 'Only {{n}} ready units could be reserved — the shelf had no more.',
+      clampedFinished_one: 'Only {{count}} ready unit could be reserved — the shelf had no more.',
+      clampedFinished_other: 'Only {{count}} ready units could be reserved — the shelf had no more.',
       split: 'from stock: ready {{ready}} · kits {{kits}}',
     },
     card: {

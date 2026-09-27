@@ -69,7 +69,6 @@ from backend.app.schemas.listing import (
 from backend.app.schemas.order_from_files import OrderFromFilesRequest
 from backend.app.schemas.order_queue import OrderQueueOut, OrderQueuePrinting
 from backend.app.schemas.project import (
-    LINE_CREATE_NOT_COLUMNS,
     PROJECT_PRIORITIES,
     PROJECT_STAGES,
     PROJECT_STATUSES,
@@ -869,25 +868,10 @@ _PARTS_LINE_NO_STOCK = "A parts line takes nothing from the shelf"
 
 
 def _check_line_create(data: ProjectLineCreate) -> None:
-    """A parts line has no kits, so nothing to take off the shelf (rule 16)."""
-    if data.mode == "parts" and data.from_stock_units:
+    """A parts line has no kits and no ready units, so nothing to take off a shelf
+    (rule 16) — the same answer its PATCH gives."""
+    if data.mode == "parts" and (data.from_stock_units or data.from_finished):
         raise HTTPException(status_code=422, detail=_PARTS_LINE_NO_STOCK)
-
-
-def _line_row(data: ProjectLineCreate, sort_order: int) -> ProjectLine:
-    row = ProjectLine(sort_order=sort_order, **data.model_dump(exclude=LINE_CREATE_NOT_COLUMNS))
-    if row.mode == "parts":
-        # A parts line is one set of parts for good (rule 15).
-        row.quantity = 1
-    return row
-
-
-async def _seed(db: AsyncSession, line: ProjectLine, data: ProjectLineCreate) -> None:
-    """The new line's configuration, through the one writer."""
-    try:
-        await line_config.seed_line(db, line, choices=data.choices, counts=data.part_counts)
-    except line_config.LineConfigError as e:
-        raise HTTPException(status_code=e.status, detail=str(e)) from e
 
 
 async def _release(db: AsyncSession, line: ProjectLine, note: str) -> None:
@@ -1151,6 +1135,7 @@ async def update_project(
         # The ready units leave with the order, to its customer (spec
         # workshop-add-to-order, rule 8). The kits need nothing: completing
         # consumes them (Ruling 25). WS-11's batch issue will take this place.
+        await finished_stock.lock_positions_for_lines(db, [line.id for line in lines])
         for line in lines:
             await finished_stock.issue_for_line(db, line, customer_id=project.customer_id, actor=current_user)
     changed = [label for column, label in _JOURNAL_FIELDS.items() if getattr(project, column) != before[column]]
@@ -1174,6 +1159,7 @@ async def update_project(
         # again would be this route deciding, minutes or months later, that
         # this order still outranks whoever is holding them now. The operator
         # re-enters the number in the line dialog, which asks the shelf afresh.
+        await finished_stock.lock_positions_for_lines(db, [line.id for line in lines])
         for line in lines:
             await _release(db, line, part_stock.NOTE_ORDER_CANCELLED)
     return await _response(db, project.id)
@@ -1221,6 +1207,8 @@ async def delete_project(
     # The same answer decides the un-filing credit below (Ruling 32), which is
     # why it is one variable and not two reads of the status.
     still_owns_its_stock = not _consumed_its_stock(project.status)
+    if still_owns_its_stock:
+        await finished_stock.lock_positions_for_lines(db, [line.id for line in project.lines])
     for line in list(project.lines):
         if still_owns_its_stock:
             await _release(db, line, part_stock.NOTE_PROJECT_DELETED)
@@ -1385,7 +1373,13 @@ async def update_line(
         setattr(line, field_name, getattr(data, field_name))
     if wants_finished:
         # Ready units first (rule 6); the kits below are fitted into what is left.
+        # The number is the line's total, issued units included (rule 1).
         await finished_stock.reserve_for_line(db, line, min(data.from_finished, line.quantity), actor=current_user)
+    elif line.from_finished > line.quantity and await finished_stock.held_for_line(db, line.id):
+        # The quantity came down under the ready units the line still holds: they
+        # are fitted too, whether or not a kits number came with it (final review
+        # I3). Only downwards — a quantity going up does not help itself to more.
+        await finished_stock.reserve_for_line(db, line, line.quantity, actor=current_user)
     if data.from_stock_units is not None:
         # ⚠️ The fourth reservation door, and the one that is deliberately NOT
         # gated on :func:`_consumed_its_stock` (Ruling 33). Cancelling, deleting
@@ -1401,21 +1395,17 @@ async def update_line(
         # again, in this same transaction. Editing 3 → 3 must therefore still
         # end at 3, which is why the release comes first — the product's
         # balance already has this line's own kits subtracted from it.
-        held = await finished_stock.held_for_line(db, line.id)
-        await _reserve(db, line, min(data.from_stock_units, max(0, line.quantity - held)), current_user)
+        # Fitted under the line's ready units — held and issued alike (rule 6).
+        await _reserve(db, line, min(data.from_stock_units, max(0, line.quantity - line.from_finished)), current_user)
     else:
         # Ruling 16, now over both shelves (spec workshop-add-to-order, rule 6): what
-        # the line holds never exceeds its quantity. The quantity came down, or the
-        # ready units grew, past it: the KITS go back first, then the ready units.
-        # Only ever downwards — a quantity going up does not help itself to more.
-        held = await finished_stock.held_for_line(db, line.id)
+        # the line takes never exceeds its quantity. The quantity came down, or the
+        # ready units grew, past it: the KITS go back first — the ready units were
+        # fitted above. Only ever downwards.
         kits = await part_stock.reserved_units_for_line(db, line)
-        if held + kits > line.quantity:
-            fitted = max(0, line.quantity - held)
-            if kits > fitted:
-                await _reserve(db, line, fitted, current_user)
-            if held > line.quantity:
-                await finished_stock.reserve_for_line(db, line, line.quantity, actor=current_user)
+        fitted = max(0, line.quantity - line.from_finished)
+        if kits > fitted:
+            await _reserve(db, line, fitted, current_user)
     changes = {name: [before[name], getattr(line, name)] for name in tracked if getattr(line, name) != before[name]}
     stock_after = await part_stock.reserved_units_for_line(db, line)
     if stock_after != stock_before:
@@ -1492,7 +1482,7 @@ async def configure_line(
     if line.config_key != old_key and finished_before:
         # The ready units follow the line into the position of its new configuration
         # (spec workshop-add-to-order, rule 8), in this same transaction.
-        before, after = await finished_stock.move_for_line(db, line, old_key, actor=current_user)
+        before, after = await finished_stock.move_for_line(db, line, actor=current_user)
         product = await db.get(Product, line.product_id)
         await order_journal.record(
             db,

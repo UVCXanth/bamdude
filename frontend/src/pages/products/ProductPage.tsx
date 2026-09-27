@@ -235,7 +235,9 @@ export function ProductPage() {
 
       {editing && <ProductCardDialog product={product} onClose={() => setEditing(false)} />}
 
-      {adding && <AddToOrderDialog preselectProductId={product.id} onClose={() => setAdding(false)} />}
+      {adding && (
+        <AddToOrderDialog preselectProduct={{ id: product.id, code: product.code }} onClose={() => setAdding(false)} />
+      )}
 
       {deleting && (
         <ConfirmModal

@@ -11576,8 +11576,6 @@ export const api = {
     if (params.model) qs.set('model', params.model);
     return request<ProductPartsPage>(`/products/parts?${pagedSearchParams(qs, params)}`);
   },
-  addOrderLine: (orderId: number, data: ProjectLineCreate) =>
-    request<Order>(`/projects/${orderId}/lines`, { method: 'POST', body: JSON.stringify(data) }),
   updateOrderLine: (orderId: number, lineId: number, data: ProjectLineUpdate) =>
     request<Order>(`/projects/${orderId}/lines/${lineId}`, {
       method: 'PATCH',

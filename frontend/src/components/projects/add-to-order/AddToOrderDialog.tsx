@@ -21,9 +21,10 @@ import {
   productLines,
   productUnits,
   shortfalls,
+  shownForLines,
   suggestItems,
 } from './addToOrderState';
-import type { PartPicks, PlatePick, ProductPicks } from './addToOrderState';
+import type { PartPicks, PlatePick, ProductPicks, Shown } from './addToOrderState';
 
 type Tab = 'products' | 'parts' | 'plate';
 const TABS: Tab[] = ['products', 'parts', 'plate'];
@@ -36,19 +37,21 @@ const ORDER_PAGE = 20;
  * nothing.
  *
  * Opened from an order card it adds to that order (`orderId`); opened from a
- * product page it asks which ACTIVE order first. `orderActive` is false for a
+ * product page it asks which ACTIVE order first, and opens on that product —
+ * searched for by its code, so it is on the page to edit, not merely ticked
+ * somewhere off it (final review I4). `orderActive` is false for a
  * completed or cancelled order, which takes nothing from stock (rule 7).
  */
 export function AddToOrderDialog({
   orderId,
   orderActive = true,
-  preselectProductId,
+  preselectProduct,
   onClose,
   onAdded,
 }: {
   orderId?: number;
   orderActive?: boolean;
-  preselectProductId?: number;
+  preselectProduct?: { id: number; code: string };
   onClose: () => void;
   onAdded?: (result: BatchLinesResult) => void;
 }) {
@@ -58,7 +61,7 @@ export function AddToOrderDialog({
   const [tab, setTab] = useState<Tab>('products');
   const [chosenOrder, setChosenOrder] = useState<number | null>(null);
   const [products, setProducts] = useState<ProductPicks>(() =>
-    preselectProductId != null ? new Map([[preselectProductId, newProductPick()]]) : new Map(),
+    preselectProduct ? new Map([[preselectProduct.id, newProductPick()]]) : new Map(),
   );
   const [parts, setParts] = useState<PartPicks>(() => new Map());
   const [plate, setPlate] = useState<PlatePick>(null);
@@ -67,7 +70,7 @@ export function AddToOrderDialog({
   // A chosen order came from the active list; a given one says what it is.
   const takesStock = orderId != null ? orderActive : true;
   const items = useMemo(() => suggestItems(products), [products]);
-  const { byProduct } = useStockSuggest(items, takesStock);
+  const { byProduct, failed } = useStockSuggest(items, takesStock);
 
   // Everything picked on every tab goes in ONE batch — one transaction, so a
   // refused line adds nothing (spec rule 11).
@@ -77,23 +80,26 @@ export function AddToOrderDialog({
   const lines: BatchLine[] = [...productBatch, ...partsBatch, ...plateBatch];
 
   const add = useMutation({
-    mutationFn: (id: number) => api.addOrderLines(id, lines),
-    onSuccess: (result, id) => {
+    // `shown` rides with the request: what the rows showed when «Add» was pressed.
+    mutationFn: ({ id }: { id: number; shown: Shown[] }) => api.addOrderLines(id, lines),
+    onSuccess: (result, { id, shown }) => {
       // Both shelves' keys are order views (`ORDER_VIEW_KEYS`), each once.
       invalidateOrderViews(qc, { orderId: id });
       showToast(t('orders.add.added', { count: result.results.length }));
-      const short = shortfalls(result);
+      const short = shortfalls(result, shown);
       if (short.length > 0) {
+        // Each line names only the shelf that gave less.
         const detail = short
-          .map((s) =>
-            t('orders.add.clampedLine', {
-              name: s.name,
-              gotFinished: s.gotFinished,
-              askedFinished: s.askedFinished,
-              gotKits: s.gotKits,
-              askedKits: s.askedKits,
-            }),
-          )
+          .map((s) => {
+            const what = [
+              s.gotFinished < s.askedFinished &&
+                t('orders.add.clampedReady', { got: s.gotFinished, asked: s.askedFinished }),
+              s.gotKits < s.askedKits && t('orders.add.clampedKits', { got: s.gotKits, asked: s.askedKits }),
+            ]
+              .filter(Boolean)
+              .join(', ');
+            return t('orders.add.clampedLine', { name: s.name, what });
+          })
           .join('; ');
         showToast(t('orders.add.clamped', { detail }), 'warning');
       }
@@ -143,7 +149,12 @@ export function AddToOrderDialog({
           <Button variant="secondary" onClick={onClose}>
             {t('common.cancel')}
           </Button>
-          <Button onClick={() => targetId != null && add.mutate(targetId)} disabled={!canSubmit}>
+          <Button
+            onClick={() =>
+              targetId != null && add.mutate({ id: targetId, shown: shownForLines(products, byProduct, takesStock) })
+            }
+            disabled={!canSubmit}
+          >
             {submitLabel}
           </Button>
         </>
@@ -169,7 +180,14 @@ export function AddToOrderDialog({
         </div>
         <div role="tabpanel">
           {tab === 'products' && (
-            <ProductsTab picks={products} onPicksChange={setProducts} takesStock={takesStock} suggestions={byProduct} />
+            <ProductsTab
+              picks={products}
+              onPicksChange={setProducts}
+              takesStock={takesStock}
+              suggestions={byProduct}
+              suggestFailed={failed}
+              initialQuery={preselectProduct?.code}
+            />
           )}
           {tab === 'parts' && <PartsTab picks={parts} onPicksChange={setParts} />}
           {tab === 'plate' && <PlateTab pick={plate} onPickChange={setPlate} />}

@@ -1,6 +1,10 @@
 """What an order line would take from stock — the server's proposal (spec workshop-add-to-order, rules 5, 10)."""
 
+from contextlib import contextmanager
+
 import pytest
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 
 from backend.app.models.product import Product, ProductPart
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
@@ -156,3 +160,50 @@ async def test_refusals(committing_client, farm):
     assert (await committing_client.post("/api/v1/stock/suggest", json={"items": []})).status_code == 422
     body = {"items": [{"product_id": farm["pipe"].id, "quantity": 0}]}
     assert (await committing_client.post("/api/v1/stock/suggest", json=body)).status_code == 422
+
+
+@contextmanager
+def _statements():
+    seen: list[str] = []
+
+    def _record(_conn, _cursor, statement, _parameters, _context, _executemany):
+        seen.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", _record)
+    try:
+        yield seen
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record)
+
+
+@pytest.mark.asyncio
+async def test_existing_lines_cost_a_fixed_number_of_statements(committing_client, db_session, farm):
+    """Final review M1: naming lines (line_id) does not add statements per line."""
+    order = Project(name="O")
+    db_session.add(order)
+    await db_session.flush()
+    lines = []
+    for _ in range(3):
+        line = ProjectLine(project_id=order.id, product_id=farm["pipe"].id, quantity=1)
+        db_session.add(line)
+        await db_session.flush()
+        await line_config.seed_line(db_session, line, choices=None, counts=None)
+        lines.append(line)
+    await db_session.commit()
+
+    async def cost(ids):
+        items = [{"product_id": farm["pipe"].id, "quantity": 1, "line_id": i} for i in ids]
+        with _statements() as seen:
+            await _suggest(committing_client, items)
+        return len(seen)
+
+    await cost([lines[0].id])  # warm-up: the first request of a client fills caches of its own
+    assert await cost([lines[0].id]) == await cost([line.id for line in lines])
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_product_is_404_even_with_options(committing_client, farm):
+    """Final review M2: the product is looked up before its options are judged."""
+    body = {"items": [{"product_id": 999999, "options": [farm["straight"].id], "quantity": 1}]}
+    r = await committing_client.post("/api/v1/stock/suggest", json=body)
+    assert r.status_code == 404 and r.json()["detail"] == "Product not found"

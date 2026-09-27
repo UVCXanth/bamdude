@@ -88,7 +88,9 @@ describe('AddToOrderDialog', () => {
       results: [{ line_id: 40, asked_finished: 2, got_finished: 1, asked_kits: 0, got_kits: 0 }],
     });
     render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
-    await tick(1);
+    const row = await tick(1);
+    fireEvent.change(within(row).getByLabelText('Quantity'), { target: { value: '6' } });
+    await waitFor(() => expect(within(row).getByLabelText('Ready units')).toHaveValue(2));
     fireEvent.click(screen.getByRole('button', { name: 'Add lines (1)' }));
     expect(await screen.findByText(/Pipe: ready 1 of 2/)).toBeInTheDocument();
   });
@@ -106,8 +108,11 @@ describe('AddToOrderDialog', () => {
 
   it('from a product page: the product is ticked and an active order is chosen first', async () => {
     const getOrders = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(orders as never);
-    render(<AddToOrderDialog preselectProductId={1} onClose={() => {}} />);
+    render(<AddToOrderDialog preselectProduct={{ id: 1, code: 'PR-0001' }} onClose={() => {}} />);
     expect(within(await screen.findByTestId('add-product-1')).getByRole('checkbox')).toBeChecked();
+    // Final review I4: the product is found, not merely ticked somewhere off the page.
+    expect(api.getProductsPaged).toHaveBeenLastCalledWith({ page: 1, per_page: 24, active: true, q: 'PR-0001' });
+    expect(screen.getByLabelText('Search products…')).toHaveValue('PR-0001');
     expect(getOrders).toHaveBeenLastCalledWith({ status: 'active', page: 1, per_page: 20 });
     const submit = screen.getByRole('button', { name: 'Add lines (1)' });
     expect(submit).toBeDisabled();
@@ -138,5 +143,21 @@ describe('AddToOrderDialog', () => {
         { kind: 'plate', library_file_id: 31, plate_index: 1, copies: 1 },
       ]),
     );
+  });
+
+  it('warns an auto row that got less than the proposal it showed', async () => {
+    // Final review I1: for «auto» the server picks again at confirmation, so its
+    // asked equals its got — the warning compares with what the dialog showed.
+    add.mockResolvedValue({
+      order: { id: 5, lines: [{ id: 40, product_name: 'Pipe' }] } as never,
+      results: [{ line_id: 40, asked_finished: 0, got_finished: 0, asked_kits: 5, got_kits: 5 }],
+    });
+    render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
+    const row = await tick(1);
+    fireEvent.change(within(row).getByLabelText('Quantity'), { target: { value: '6' } });
+    await waitFor(() => expect(within(row).getByLabelText('Ready units')).toHaveValue(2));
+    fireEvent.click(screen.getByRole('button', { name: 'Add lines (1)' }));
+    expect(await screen.findByText(/Pipe: ready 0 of 2/)).toBeInTheDocument();
+    expect(screen.queryByText(/kits 5 of/)).not.toBeInTheDocument();
   });
 });

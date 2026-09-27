@@ -150,18 +150,36 @@ export interface Shortfall {
   gotKits: number;
 }
 
-/** Named by the order's own lines — the one answer that knows a plate line's product too. */
-export function shortfalls(result: BatchLinesResult): Shortfall[] {
+/** What the dialog showed for a line when «Add» was pressed; `undefined` where it showed nothing. */
+export type Shown = { finished: number; kits: number } | undefined;
+
+/**
+ * Named by the order's own lines — the one answer that knows a plate line's
+ * product too. ⚠️ For an «auto» row the server picks again at confirmation, so
+ * its `asked` always equals its `got` (final review I1): the comparison is with
+ * what the dialog SHOWED (`shown`, in the order of the lines sent), and with the
+ * server's `asked` only where the dialog showed nothing.
+ */
+export function shortfalls(result: BatchLinesResult, shown: Shown[] = []): Shortfall[] {
   const names = new Map((result.order.lines ?? []).map((line) => [line.id, line.product_name]));
   return result.results
-    .filter((r) => r.got_finished < r.asked_finished || r.got_kits < r.asked_kits)
-    .map((r) => ({
+    .map((r, i) => ({
       name: names.get(r.line_id) ?? `#${r.line_id}`,
-      askedFinished: r.asked_finished,
+      askedFinished: shown[i]?.finished ?? r.asked_finished,
       gotFinished: r.got_finished,
-      askedKits: r.asked_kits,
+      askedKits: shown[i]?.kits ?? r.asked_kits,
       gotKits: r.got_kits,
-    }));
+    }))
+    .filter((s) => s.gotFinished < s.askedFinished || s.gotKits < s.askedKits);
+}
+
+/** What each product line shows, in the order the batch sends them (see {@link shortfalls}). */
+export function shownForLines(picks: ProductPicks, suggestions: Map<number, StockSuggestion>, takesStock: boolean): Shown[] {
+  return [...picks].map(([productId, pick]) => {
+    if (!takesStock) return undefined;
+    const shown = shownStock(pick, suggestions.get(productId));
+    return { finished: shown.fromFinished, kits: shown.fromKits };
+  });
 }
 
 function clamp(value: number, cap: number): number {

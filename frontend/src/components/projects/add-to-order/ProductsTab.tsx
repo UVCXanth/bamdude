@@ -29,15 +29,21 @@ export function ProductsTab({
   onPicksChange,
   takesStock,
   suggestions,
+  suggestFailed = false,
+  initialQuery = '',
 }: {
   picks: ProductPicks;
   onPicksChange: (next: ProductPicks) => void;
   /** Only an active order takes stock (rule 7) — otherwise there is no stock column. */
   takesStock: boolean;
   suggestions: Map<number, StockSuggestion>;
+  /** The last `/stock/suggest` failed — the picked rows say so. */
+  suggestFailed?: boolean;
+  /** Opens already searched — the product page opens on its own product. */
+  initialQuery?: string;
 }) {
   const { t } = useTranslation();
-  const [q, setQState] = useState('');
+  const [q, setQState] = useState(initialQuery);
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(PAGE_SIZE);
   const [category, setCategory] = useState('');
@@ -141,6 +147,7 @@ export function ProductsTab({
                 product={product}
                 pick={picks.get(product.id)}
                 suggestion={suggestions.get(product.id)}
+                suggestFailed={suggestFailed}
                 takesStock={takesStock}
                 onChange={(pick) => update(product.id, pick)}
               />
@@ -175,12 +182,14 @@ function ProductRow({
   product,
   pick,
   suggestion,
+  suggestFailed,
   takesStock,
   onChange,
 }: {
   product: ProductListItem;
   pick: ProductPick | undefined;
   suggestion: StockSuggestion | undefined;
+  suggestFailed: boolean;
   takesStock: boolean;
   onChange: (pick: ProductPick | null) => void;
 }) {
@@ -240,7 +249,7 @@ function ProductRow({
       {takesStock && (
         <td className="p-2">
           {pick ? (
-            <StockCell pick={pick} suggestion={suggestion} onChange={onChange} />
+            <StockCell pick={pick} suggestion={suggestion} failed={suggestFailed} onChange={onChange} />
           ) : (
             <span className="text-bambu-gray whitespace-nowrap">
               {t('orders.add.stock.listed', { ready: product.finished_available, kits: product.kits_available })}
@@ -324,10 +333,12 @@ function PickedConfiguration({
 function StockCell({
   pick,
   suggestion,
+  failed,
   onChange,
 }: {
   pick: ProductPick;
   suggestion: StockSuggestion | undefined;
+  failed: boolean;
   onChange: (pick: ProductPick) => void;
 }) {
   const { t } = useTranslation();
@@ -352,6 +363,7 @@ function StockCell({
       {field('fromFinished', t('orders.add.stock.readyLabel'), t('orders.add.stock.ready'), suggestion?.finished_free)}
       {field('fromKits', t('orders.add.stock.kitsLabel'), t('orders.add.stock.kits'), suggestion?.kits_free)}
       <span className="flex items-center gap-2">
+        {failed && !suggestion && <span className="text-red-400">{t('orders.add.stock.failed')}</span>}
         {pick.auto ? (
           suggestion && (
             <span className="text-bambu-gray">{t(nothing ? 'orders.add.stock.none' : 'orders.add.stock.auto')}</span>

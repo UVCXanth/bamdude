@@ -39,6 +39,7 @@ vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
 
 const product = {
   id: 1,
+  code: 'PR-0001',
   name: 'Flask',
   is_active: true,
   cover_image_filename: null,
@@ -324,6 +325,10 @@ describe('ProductPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Add to order' }));
     expect(await screen.findByRole('dialog', { name: 'Add to order' })).toBeInTheDocument();
     expect(screen.getByLabelText('Order')).toBeInTheDocument();
+    // Final review I4: the dialog opens on this product, found by its code.
+    await waitFor(() =>
+      expect(api.getProductsPaged).toHaveBeenLastCalledWith({ page: 1, per_page: 24, active: true, q: 'PR-0001' }),
+    );
     await waitFor(() => expect(orders).toHaveBeenCalledWith({ status: 'active', page: 1, per_page: 20 }));
     expect(screen.getByRole('button', { name: 'Add lines (1)' })).toBeDisabled();
   });

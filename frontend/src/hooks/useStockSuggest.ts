@@ -34,5 +34,6 @@ export function useStockSuggest(items: StockSuggestItem[], enabled: boolean) {
     () => new Map<number, StockSuggestion>((query.data?.items ?? []).map((s) => [s.product_id, s])),
     [query.data],
   );
-  return { byProduct, pending: enabled && (asked !== key || query.isFetching) };
+  // A failed proposal is said by the rows (final review M11), never left as «of —».
+  return { byProduct, pending: enabled && (asked !== key || query.isFetching), failed: query.isError };
 }
