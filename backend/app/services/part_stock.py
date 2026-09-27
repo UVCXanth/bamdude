@@ -64,7 +64,7 @@ from backend.app.core.database import take_write_lock
 from backend.app.models.archive import PrintArchive
 from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.product import Product, ProductPart, ProductPlate
-from backend.app.models.project_line import ProjectLine
+from backend.app.models.project_line import ProjectLine, ProjectLinePartStock
 from backend.app.services.archive_parts import load_rows
 from backend.app.services.line_composition import (
     Composition,
@@ -351,6 +351,7 @@ async def move(
     note: str | None = None,
     created_by: int | None = None,
     stock_item_id: int | None = None,
+    stock_issue_id: int | None = None,
 ) -> ProductPartStockMovement | None:
     """Write one movement and return it, or ``None`` when nothing moved.
 
@@ -420,6 +421,7 @@ async def move(
         note=note,
         created_by=created_by,
         stock_item_id=stock_item_id,
+        stock_issue_id=stock_issue_id,
     )
     db.add(movement)
     await db.flush()
@@ -807,6 +809,172 @@ async def reserved_units_for_line(db: AsyncSession, line: ProjectLine) -> int:
         return 0
     held = await reserved_units_by_line(db, [line.id], {line.id: {part.id: per for part, per in kit}})
     return held.get(line.id, 0)
+
+
+# ---------- order-bound doors (spec workshop-order-issue, rules 6, 7, 9) ----------
+#
+# What belongs to an order never reaches the free balance: every door writes a
+# ZERO-SUM pair, so the balance other orders reserve against stays what it was.
+# Assembling the line's reserved kits turns the reservation into a write-off
+# (``reservation_released`` + ``assembled``); a parts line's printed parts go on
+# the shelf held for the order (``made_for_order`` + ``held_for_order``) and
+# leave it to the customer (``hold_released`` + ``issued_for_order``); cancel or
+# delete lifts the hold alone (``hold_released`` — the parts become free). A
+# parts line's counters live in ``project_line_part_stock``, which only this
+# module writes (``tests/unit/test_line_part_stock_has_one_writer.py``).
+
+
+def part_held(row: ProjectLinePartStock) -> int:
+    """What a parts line still holds of one part on the shelf (spec rule 7)."""
+    return row.received - row.issued - row.returned
+
+
+async def line_part_stock(db: AsyncSession, line_ids: Sequence[int]) -> dict[int, dict[int, ProjectLinePartStock]]:
+    """``line_id → {part_id → counters}`` for many parts lines — one statement."""
+    ids = sorted(set(line_ids))
+    if not ids:
+        return {}
+    out: dict[int, dict[int, ProjectLinePartStock]] = defaultdict(dict)
+    for start in range(0, len(ids), IN_CHUNK):
+        rows = await db.execute(
+            select(ProjectLinePartStock)
+            .where(ProjectLinePartStock.line_id.in_(ids[start : start + IN_CHUNK]))
+            .execution_options(populate_existing=True)
+        )
+        for row in rows.scalars():
+            out[row.line_id][row.part_id] = row
+    return dict(out)
+
+
+async def _counter(db: AsyncSession, line_id: int, part_id: int) -> ProjectLinePartStock:
+    row = await db.get(ProjectLinePartStock, (line_id, part_id))
+    if row is None:
+        row = ProjectLinePartStock(line_id=line_id, part_id=part_id)
+        db.add(row)
+        await db.flush()
+    return row
+
+
+async def _locked_parts(db: AsyncSession, part_ids: Sequence[int]) -> list[ProductPart]:
+    parts = sorted(
+        (await db.execute(select(ProductPart).where(ProductPart.id.in_(sorted(set(part_ids)))))).scalars().all(),
+        key=lambda p: p.id,
+    )
+    await lock_parts(db, parts)
+    return parts
+
+
+async def convert_reserved_kits(
+    db: AsyncSession, line: ProjectLine, kits: int, *, stock_item_id: int, created_by: int | None
+) -> None:
+    """``kits`` of the line's reserved kits assembled into finished units (spec rule 6):
+    the reservation becomes a write-off — the free balance does not move twice.
+    Called only by ``finished_stock.assemble_for_line``, which grows the position."""
+    if kits <= 0:
+        return
+    kit = sorted(counted(await line_composition_of(db, line)), key=lambda e: e[0].id)
+    await lock_parts(db, [part for part, _per in kit])
+    live = await reserved_units_for_line(db, line)
+    if kits > live:
+        raise PartStockError(f"Only {live} reserved kits to assemble")
+    for part, per in kit:
+        common = {"project_line_id": line.id, "created_by": created_by, "stock_item_id": stock_item_id}
+        await move(db, part_id=part.id, delta=kits * per, reason="reservation_released", **common)
+        await move(db, part_id=part.id, delta=-kits * per, reason="assembled", **common)
+
+
+async def receive_parts_for_line(
+    db: AsyncSession, line: ProjectLine, counts: Mapping[int, int], *, created_by: int | None
+) -> None:
+    """A parts line's printed parts put on the shelf under its order (spec rule 6)."""
+    wanted = {pid: n for pid, n in counts.items() if n > 0}
+    if not wanted:
+        return
+    for part in await _locked_parts(db, list(wanted)):
+        n = wanted[part.id]
+        common = {"project_line_id": line.id, "created_by": created_by}
+        await move(db, part_id=part.id, delta=n, reason="made_for_order", **common)
+        await move(db, part_id=part.id, delta=-n, reason="held_for_order", **common)
+        row = await _counter(db, line.id, part.id)
+        row.received += n
+    await db.flush()
+
+
+async def issue_parts_for_line(
+    db: AsyncSession,
+    line: ProjectLine,
+    counts: Mapping[int, int],
+    *,
+    stock_issue_id: int,
+    created_by: int | None,
+) -> None:
+    """A parts line's parts handed to the customer under an issue — no more than it holds."""
+    wanted = {pid: n for pid, n in counts.items() if n > 0}
+    if not wanted:
+        return
+    parts = await _locked_parts(db, list(wanted))
+    rows = (await line_part_stock(db, [line.id])).get(line.id, {})
+    for part in parts:
+        held = part_held(rows[part.id]) if part.id in rows else 0
+        if wanted[part.id] > held:
+            raise PartStockError(f"Only {held} of {part.name} on the shelf for this order")
+    for part in parts:
+        n = wanted[part.id]
+        common = {"project_line_id": line.id, "created_by": created_by, "stock_issue_id": stock_issue_id}
+        await move(db, part_id=part.id, delta=n, reason="hold_released", **common)
+        await move(db, part_id=part.id, delta=-n, reason="issued_for_order", **common)
+        rows[part.id].issued += n
+    await db.flush()
+
+
+async def return_parts_for_line(db: AsyncSession, line: ProjectLine, *, created_by: int | None) -> dict[int, int]:
+    """Cancel or delete: what a parts line still holds becomes free stock (spec rule 14).
+    Returns ``part_id → parts given back``."""
+    rows = (await line_part_stock(db, [line.id])).get(line.id, {})
+    holding = {pid: part_held(row) for pid, row in rows.items() if part_held(row) > 0}
+    if not holding:
+        return {}
+    await _locked_parts(db, list(holding))
+    rows = (await line_part_stock(db, [line.id])).get(line.id, {})  # fresh, under the locks
+    back: dict[int, int] = {}
+    for part_id in sorted(rows):
+        held = part_held(rows[part_id])
+        if held <= 0:
+            continue
+        await move(
+            db, part_id=part_id, delta=held, reason="hold_released", project_line_id=line.id, created_by=created_by
+        )
+        rows[part_id].returned += held
+        back[part_id] = held
+    await db.flush()
+    return back
+
+
+async def add_kits_for_line(db: AsyncSession, line: ProjectLine, kits: int, *, created_by: int | None) -> int:
+    """«Взяти зі складу» (spec rule 17): MORE kits for the line — never a release first,
+    never past the line's quantity, never more than the shelf makes. Returns the kits taken."""
+    if kits <= 0 or line.mode == "parts":
+        return 0
+    kit = sorted(counted(await line_composition_of(db, line)), key=lambda e: e[0].id)
+    if not kit:
+        return 0
+    await lock_parts(db, [part for part, _per in kit])
+    room = line.quantity - (line.from_finished or 0) - (line.assembled or 0) - await reserved_units_for_line(db, line)
+    take = min(kits, room, kits_of(await balances(db, line.product_id), kit))
+    if take <= 0:
+        return 0
+    taken = take
+    for part, per in kit:
+        movement = await move(
+            db,
+            part_id=part.id,
+            delta=-take * per,
+            reason="reserved_for_order",
+            project_line_id=line.id,
+            created_by=created_by,
+        )
+        taken = min(taken, 0 if movement is None else -movement.delta // per)
+    return taken
 
 
 async def detach_line(db: AsyncSession, line_id: int) -> int:

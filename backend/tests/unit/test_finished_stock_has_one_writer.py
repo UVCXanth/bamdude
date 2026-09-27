@@ -8,6 +8,9 @@ ALLOWED = {APP / "services" / "finished_stock.py", APP / "models" / "finished_st
 MODELS = {"StockItem", "StockItemMovement"}
 #: The balance and the position's parameters — no other module sets them.
 COLUMNS = {"on_hand", "reserved", "min_qty", "from_finished", "assembled", "received", "issued", "returned"}
+#: A parts line's counters share these names; services/part_stock.py writes those (WS-11, rule 9).
+PART_COUNTERS = {"received", "issued", "returned"}
+PART_WRITER = APP / "services" / "part_stock.py"
 
 
 #: The order line's column the writer keeps (spec workshop-add-to-order, rule 1).
@@ -21,7 +24,7 @@ def _sets_a_column(name: str | None, keywords: set[str | None], args: list[ast.e
     return name == "setattr" and len(args) >= 2 and isinstance(args[1], ast.Constant) and args[1].value in COLUMNS
 
 
-def _writes(tree: ast.AST) -> list[int]:
+def _writes(tree: ast.AST, *, columns: set[str] = COLUMNS) -> list[int]:
     hits = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
@@ -39,7 +42,7 @@ def _writes(tree: ast.AST) -> list[int]:
         elif isinstance(node, (ast.Assign, ast.AugAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for target in targets:
-                if isinstance(target, ast.Attribute) and target.attr in COLUMNS:
+                if isinstance(target, ast.Attribute) and target.attr in columns:
                     hits.append(node.lineno)
     return sorted(hits)
 
@@ -49,7 +52,8 @@ def test_nothing_but_the_writer_writes_finished_goods():
     for path in APP.rglob("*.py"):
         if path in ALLOWED or "migrations" in path.parts:
             continue
-        for line in _writes(ast.parse(path.read_text(encoding="utf-8"))):
+        columns = COLUMNS - PART_COUNTERS if path == PART_WRITER else COLUMNS
+        for line in _writes(ast.parse(path.read_text(encoding="utf-8")), columns=columns):
             offenders.append(f"{path.relative_to(APP)}:{line}")
     assert offenders == []
 
