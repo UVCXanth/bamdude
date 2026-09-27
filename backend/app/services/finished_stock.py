@@ -18,9 +18,9 @@ forwards verbatim (translated at the boundary) with its HTTP status.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import take_write_lock
@@ -195,7 +195,7 @@ async def reserve(
 
 
 async def unassigned_reserved(db: AsyncSession, item: StockItem) -> int:
-    """The reservation held without an order line — all of it until WS-10 adds line reservations."""
+    """The reservation held without an order line: the column minus what order lines hold (WS-10)."""
     by_lines = await db.scalar(
         select(func.coalesce(func.sum(StockItemMovement.delta_reserved), 0)).where(
             StockItemMovement.item_id == item.id, StockItemMovement.project_line_id.is_not(None)
@@ -239,6 +239,122 @@ async def issue(
     if qty > available:
         raise FinishedStockError(f"Only {available} available")
     return await _record(db, item, "issue", -qty, 0, note=note, customer_id=customer_id, actor=actor)
+
+
+# ---------- order lines (spec workshop-add-to-order, rules 1–9) ----------
+
+
+async def position_for_key(db: AsyncSession, product_id: int, key: str) -> StockItem | None:
+    """The finished-goods position of a (product, configuration key) — an order line's by its ``config_key``."""
+    return await _find_item(db, product_id, key)
+
+
+async def held_for_line(db: AsyncSession, line_id: int) -> int:
+    """Units the line still holds in reserve, in whatever position — Σ ``delta_reserved`` of its movements."""
+    total = await db.scalar(
+        select(func.coalesce(func.sum(StockItemMovement.delta_reserved), 0)).where(
+            StockItemMovement.project_line_id == line_id
+        )
+    )
+    return int(total or 0)
+
+
+async def _held_by_item(db: AsyncSession, line_id: int) -> dict[int, int]:
+    rows = await db.execute(
+        select(StockItemMovement.item_id, func.sum(StockItemMovement.delta_reserved))
+        .where(StockItemMovement.project_line_id == line_id)
+        .group_by(StockItemMovement.item_id)
+    )
+    return {item_id: int(n) for item_id, n in rows.all() if n}
+
+
+async def release_for_line(db: AsyncSession, line: ProjectLine, *, actor: User | None = None) -> int:
+    """What the line still holds goes back to the shelf (order cancelled, line or
+    order deleted, a reservation rewritten). Read off the ledger, so it finds the
+    old position after a configuration change as well. Returns the units released."""
+    back = 0
+    for item_id, held in sorted((await _held_by_item(db, line.id)).items()):
+        item = await lock_item(db, item_id)
+        await _record(db, item, "release", 0, -held, note=None, actor=actor, line=line, d_line=-held)
+        back += held
+    return back
+
+
+async def reserve_for_line(db: AsyncSession, line: ProjectLine, units: int, *, actor: User | None = None) -> int:
+    """Rewrite the line's finished reservation (spec rule 4): release what it holds,
+    then take ``min(units, quantity, free)`` in the position of the line's
+    configuration. A parts line, a product outside the catalogue or a
+    configuration without a position take nothing. Returns the units taken."""
+    if units < 0:
+        raise ValueError(f"cannot reserve {units} units for line {line.id}; a reservation is never negative")
+    await release_for_line(db, line, actor=actor)
+    if line.mode != "product" or units == 0:
+        return 0
+    origin = await db.scalar(select(Product.origin).where(Product.id == line.product_id))
+    if origin != ProductOrigin.CATALOG.value:
+        return 0
+    found = await position_for_key(db, line.product_id, line.config_key)
+    if found is None:
+        return 0
+    item = await lock_item(db, found.id)
+    take = min(units, line.quantity, item.on_hand - item.reserved)
+    if take <= 0:
+        return 0
+    await _record(db, item, "reserve", 0, take, note=None, actor=actor, line=line, d_line=take)
+    return take
+
+
+async def issue_for_line(
+    db: AsyncSession, line: ProjectLine, *, customer_id: int | None, actor: User | None = None
+) -> int:
+    """The order completed: everything the line holds leaves with it, to its
+    customer (spec rule 8). ``from_finished`` stays — the units were the line's."""
+    out = 0
+    for item_id, held in sorted((await _held_by_item(db, line.id)).items()):
+        item = await lock_item(db, item_id)
+        await _record(db, item, "issue", -held, -held, note=None, customer_id=customer_id, actor=actor, line=line)
+        out += held
+    return out
+
+
+async def move_for_line(
+    db: AsyncSession, line: ProjectLine, old_key: str, *, actor: User | None = None
+) -> tuple[int, int]:
+    """The line's configuration changed (``line.config_key`` is already the new
+    one): give back in the old position, take in the new one what it has.
+    Returns ``(held before, held after)``. ``old_key`` names what was left for
+    the caller's journal — the release reads the ledger, not the key."""
+    del old_key
+    before = await held_for_line(db, line.id)
+    if before == 0:
+        return 0, 0
+    return before, await reserve_for_line(db, line, before, actor=actor)
+
+
+async def free_by_keys(db: AsyncSession, pairs: Iterable[tuple[int, str]]) -> dict[tuple[int, str], StockItem]:
+    """The positions of these (product, configuration key) pairs — one statement."""
+    wanted = sorted(set(pairs))
+    if not wanted:
+        return {}
+    rows = await db.execute(select(StockItem).where(tuple_(StockItem.product_id, StockItem.config_key).in_(wanted)))
+    return {(item.product_id, item.config_key): item for item in rows.scalars()}
+
+
+async def detach_line(db: AsyncSession, line_id: int) -> None:
+    """A deleted line leaves its rows without its id (SQLite runs no FK actions).
+    Called after the release, so the rows' reservations already cancel out."""
+    await db.execute(
+        update(StockItemMovement).where(StockItemMovement.project_line_id == line_id).values(project_line_id=None)
+    )
+
+
+async def detach_project(db: AsyncSession, project_id: int) -> None:
+    """A deleted order leaves its rows without its ids."""
+    await db.execute(
+        update(StockItemMovement)
+        .where(StockItemMovement.project_id == project_id)
+        .values(project_id=None, project_line_id=None)
+    )
 
 
 async def item_composition(db: AsyncSession, item: StockItem) -> Composition:
