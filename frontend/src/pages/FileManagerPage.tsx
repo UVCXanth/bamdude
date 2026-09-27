@@ -1979,6 +1979,10 @@ export function FileManagerPage() {
         showToast(t('fileManager.toast.scanSkippedDeletions'), 'warning');
         return;
       }
+      if (state.warnings) {
+        showToast(t('fileManager.toast.scanWarnings', { count: state.warnings }), 'warning');
+        return;
+      }
       showToast(t('fileManager.toast.folderScanned', { added: state.added, removed: state.removed }), 'success');
     },
     [showToast, t]

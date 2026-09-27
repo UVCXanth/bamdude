@@ -740,3 +740,12 @@ def test_the_lifespan_starts_it_and_awaits_it_on_shutdown():
     source = inspect.getsource(main.lifespan)
     assert "start_library_objects_backfill()" in source
     assert "await stop_library_objects_backfill()" in source
+
+
+def test_old_backfill_cannot_overwrite_a_complete_worker_snapshot():
+    from backend.app.services.library_file_preparation import EXTRACTION_KEY, EXTRACTION_VERSION
+    from backend.app.services.library_objects_backfill import _merged_metadata
+
+    current = {EXTRACTION_KEY: {"version": EXTRACTION_VERSION, "hash": "fresh"}, "plates": [{"index": 1}]}
+    stale = {"plates": [{"index": 1}, {"index": 2}]}
+    assert _merged_metadata(current, stale) is None

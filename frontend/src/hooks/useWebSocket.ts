@@ -769,6 +769,7 @@ export function useWebSocket() {
       case 'library_file_added':
         debouncedInvalidate('library-files');
         debouncedInvalidate('library-stats');
+        debouncedInvalidate('product-files');
         break;
 
       // A scan of an external folder is now a background job, so its progress
@@ -790,6 +791,10 @@ export function useWebSocket() {
         debouncedInvalidate('library-files');
         debouncedInvalidate('library-folders');
         debouncedInvalidate('library-stats');
+        debouncedInvalidate('library-file-card');
+        debouncedInvalidate('library-file-plates');
+        debouncedInvalidate('library-file-filaments');
+        debouncedInvalidate('product-files');
         break;
 
       case 'library_file_notes_changed': {

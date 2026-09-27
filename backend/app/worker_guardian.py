@@ -19,6 +19,7 @@ _PREVIEW_MODULES = {
     "backend.app.preview_render",
     "backend.app.analysis_service",
     "backend.app.analysis_child",
+    "backend.app.library_file_service",
 }
 _CAMERA_MODULE = "backend.app.camera_worker"
 _PREVIEW_BOOTSTRAP_LIMIT = 16384

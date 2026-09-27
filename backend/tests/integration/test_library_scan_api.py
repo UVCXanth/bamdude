@@ -233,7 +233,7 @@ class TestAFailureReachesTheTabs:
 
 
 async def test_duplicate_on_mount_finishes_scan_without_creating_a_second_row(
-    db_session, external_folder, tmp_path, caplog
+    db_session, external_folder, tmp_path, caplog, library_worker
 ):
     mount = tmp_path / "mount"
     mount.mkdir()

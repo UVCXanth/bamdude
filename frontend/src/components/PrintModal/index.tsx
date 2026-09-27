@@ -1080,12 +1080,17 @@ export function PrintModal({
     setPerPrinterConfigs
   );
 
-  // Auto-select first plate when plates load (single or multi-plate)
+  // Keep a library selection valid when an external file is replaced in place
+  // and its refreshed plate list is shorter or has different real indices.
   useEffect(() => {
-    if (platesData?.plates && platesData.plates.length >= 1 && selectedPlates.size === 0) {
-      setSelectedPlates(new Set([platesData.plates[0].index]));
-    }
-  }, [platesData, selectedPlates.size]);
+    if (!platesData?.plates?.length) return;
+    const available = new Set(platesData.plates.map(plate => plate.index));
+    setSelectedPlates(current => {
+      const valid = isLibraryFile ? new Set([...current].filter(index => available.has(index))) : current;
+      if (valid.size === current.size && valid.size > 0) return current;
+      return valid.size ? valid : new Set([platesData.plates[0].index]);
+    });
+  }, [platesData, isLibraryFile, selectedPlates.size]);
 
   // --- Which ORDER this print is filed under -------------------------------
   // ⚠️ The dialog asks only when nobody has already answered. A caller that

@@ -1,16 +1,12 @@
-"""An external folder's scan judges a 3MF by its contents too (upstream #2993).
+"""The external scan shares local preparation and refreshes legacy 3MF rows.
 
-Every other door into the library records ``has_sliced_gcode`` when it parses a
-3MF (m137). The external-folder scan parsed the file for its thumbnail and
-metadata and never asked, so a sliced ``Foo.3mf`` on a NAS was filed as a
-source project — no Print button — while the same bytes uploaded were not.
-
-Rows the scan already wrote are put right by the next scan of their folder:
-m137 cannot reach them (it ran before they existed), and a migration is the
-wrong place to walk a mount that may be slow or absent.
+The next explicit scan repairs older rows without a migration that walks a
+mount which may be slow or absent.
 """
 
 from __future__ import annotations
+
+import zipfile
 
 import pytest
 from sqlalchemy import select
@@ -21,7 +17,53 @@ from backend.app.models.library_scan import LibraryScanJob
 from backend.app.services.library_scan import run_scan
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration, pytest.mark.usefixtures("library_worker")]
+
+
+def make_plates(path, indices):
+    with zipfile.ZipFile(path, "w") as archive:
+        for index in indices:
+            archive.writestr(f"Metadata/plate_{index}.gcode", "M73 L1\nG1 E2\n")
+
+
+async def test_multi_plate_refresh_replaces_cached_snapshot_without_changing_identity(db_session, mount):
+    root, folder = mount
+    source = root / "01 Allied units_PETG_.gcode.3mf"
+    make_plates(source, range(1, 33))
+    await _scan(db_session, folder)
+    row = await _row(db_session, source.name)
+    identity = row.id
+    assert len(row.file_metadata["plates"]) == 32
+    assert row.file_metadata["is_multi_plate"] is True
+
+    make_plates(source, [2, 7])
+    await _scan(db_session, folder)
+    await db_session.refresh(row)
+    assert row.id == identity
+    assert [plate["index"] for plate in row.file_metadata["plates"]] == [2, 7]
+
+    make_plates(source, [1])
+    await _scan(db_session, folder)
+    await db_session.refresh(row)
+    assert row.id == identity
+    assert [plate["index"] for plate in row.file_metadata["plates"]] == [1]
+    assert row.file_metadata["is_multi_plate"] is False
+
+
+async def test_failed_refresh_keeps_last_good_metadata(db_session, mount):
+    root, folder = mount
+    source = root / "model.gcode.3mf"
+    make_plates(source, [1, 2])
+    await _scan(db_session, folder)
+    row = await _row(db_session, source.name)
+    before = dict(row.file_metadata)
+    source.write_bytes(b"incomplete copy")
+
+    await _scan(db_session, folder)
+    await db_session.refresh(row)
+    assert row.file_metadata == before
+    assert row.file_hash == before["_library_extraction"]["hash"]
+
 
 _PLATE = {1: [{"id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": "1"}]}
 

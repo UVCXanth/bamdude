@@ -748,20 +748,18 @@ class VirtualPrinterInstance:
             return None
 
         try:
-            import hashlib
             import uuid
 
             from backend.app.api.routes.library import (
+                _publish_prepared_thumbnail,
                 get_library_files_dir,
-                get_library_thumbnails_dir,
                 to_relative_path,
             )
             from backend.app.models.library import LibraryFile
-            from backend.app.services.archive import ThreeMFParser
+            from backend.app.services.library_file_runtime import get_library_file_runtime
             from backend.app.services.library_helpers import (
                 detect_file_type,
                 skip_objects_supported_from_metadata,
-                sliced_gcode_in_3mf,
                 sync_system_tags,
             )
             from backend.app.services.library_ingest import find_reusable_row
@@ -780,20 +778,11 @@ class VirtualPrinterInstance:
                 # canonical sliced shape (``{stem}.gcode.3mf``).
                 detected_source_type: str | None = None
                 lower = filename.lower()
-                if (
-                    lower.endswith(".3mf")
-                    and not lower.endswith(".gcode.3mf")
-                    and sliced_gcode_in_3mf(file_path) is True
-                ):
-                    filename = f"{filename[:-4]}.gcode.3mf"
-                    detected_source_type = "sliced"
-
                 # On-disk extension follows the (possibly promoted) filename
                 # so a row with ``filename = "X.gcode.3mf"`` keeps a
                 # ``{uuid}.gcode.3mf`` copy on disk — matches the regular
                 # library upload path.
-                ext = ".gcode.3mf" if filename.lower().endswith(".gcode.3mf") else file_path.suffix.lower()
-                file_type = detect_file_type(filename)
+                ext = file_path.suffix.lower()
 
                 library_files_dir = get_library_files_dir()
                 unique_filename = f"{uuid.uuid4().hex}{ext}"
@@ -804,66 +793,21 @@ class VirtualPrinterInstance:
                 import shutil
 
                 shutil.copy2(str(file_path), str(dest_path))
-
-                sha256_hash = hashlib.sha256()
-                with open(dest_path, "rb") as f:
-                    for block in iter(lambda: f.read(4096), b""):
-                        sha256_hash.update(block)
-                file_hash = sha256_hash.hexdigest()
-
-                metadata = None
-                thumbnail_path = None
-
-                try:
-                    parser = ThreeMFParser(str(dest_path))
-                    raw_metadata = parser.parse()
-
-                    thumbnail_data = raw_metadata.get("_thumbnail_data")
-                    thumbnail_ext = raw_metadata.get("_thumbnail_ext", ".png")
-
-                    if thumbnail_data:
-                        thumbnails_dir = get_library_thumbnails_dir()
-                        thumb_filename = f"{uuid.uuid4().hex}{thumbnail_ext}"
-                        thumb_path = (
-                            thumbnails_dir / thumb_filename
-                        )  # SEC-PATH-OK: thumb_filename = uuid4().hex + a hardcoded .png extension
-                        with open(thumb_path, "wb") as f:
-                            f.write(thumbnail_data)
-                        thumbnail_path = str(thumb_path)
-
-                    def clean_metadata(obj):
-                        if isinstance(obj, dict):
-                            return {
-                                k: clean_metadata(v)
-                                for k, v in obj.items()
-                                if not isinstance(v, bytes) and k not in ("_thumbnail_data", "_thumbnail_ext")
-                            }
-                        elif isinstance(obj, list):
-                            return [clean_metadata(i) for i in obj if not isinstance(i, bytes)]
-                        elif isinstance(obj, bytes):
-                            return None
-                        return obj
-
-                    metadata = clean_metadata(raw_metadata)
-
-                    # Per-plate cache (matches the regular library upload path
-                    # in routes/library.py::upload_file). Without this, VP-saved
-                    # library entries miss the gallery on the file-manager UI
-                    # because ``is_multi_plate`` is unset.
-                    try:
-                        import zipfile as _zf
-
-                        from backend.app.services.archive import parse_plates_from_3mf
-
-                        with _zf.ZipFile(str(dest_path), "r") as _zfh:
-                            plates_payload = parse_plates_from_3mf(_zfh)
-                        if plates_payload and metadata is not None:
-                            metadata["plates"] = plates_payload
-                            metadata["is_multi_plate"] = len(plates_payload) > 1
-                    except Exception as _pe:
-                        logger.debug("[VP %s] per-plate parse failed (non-critical): %s", self.name, _pe)
-                except Exception as e:
-                    logger.warning("[VP %s] Failed to parse 3MF metadata: %s", self.name, e)
+                prepared = await get_library_file_runtime().prepare(dest_path, root=dest_path.parent, filename=filename)
+                if (
+                    lower.endswith(".3mf")
+                    and not lower.endswith(".gcode.3mf")
+                    and prepared.metadata.get("has_sliced_gcode")
+                ):
+                    filename = f"{filename[:-4]}.gcode.3mf"
+                    renamed = dest_path.with_suffix(".gcode.3mf")
+                    dest_path.rename(renamed)
+                    dest_path = renamed
+                    detected_source_type = "sliced"
+                file_type = detect_file_type(filename)
+                file_hash = prepared.digest
+                metadata = prepared.metadata
+                thumbnail_path = await _publish_prepared_thumbnail(prepared)
 
                 library_file = LibraryFile(
                     folder_id=self.target_folder_id,
@@ -873,7 +817,7 @@ class VirtualPrinterInstance:
                     skip_objects_supported=skip_objects_supported_from_metadata(metadata),
                     file_size=file_path.stat().st_size,
                     file_hash=file_hash,
-                    thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
+                    thumbnail_path=thumbnail_path,
                     file_metadata=metadata,
                     source_type=detected_source_type,
                 )

@@ -92,12 +92,10 @@ from backend.app.services.design_settings import (
 )
 from backend.app.services.filament_requirements import annotate_rack_groups
 from backend.app.services.library_helpers import (
-    SLICED_GCODE_META_KEY,
     detect_file_type,
     folder_activity_at,
     skip_objects_supported_from_metadata,
     sliced_by_content,
-    sliced_gcode_in_3mf,
     sync_system_tags,
 )
 from backend.app.services.library_ingest import IngestResult, find_reusable_row
@@ -298,6 +296,22 @@ def _without_print_name(metadata: dict | None) -> dict | None:
     if not metadata or "print_name" not in metadata:
         return metadata
     return {k: v for k, v in metadata.items() if k != "print_name"}
+
+
+async def _prepare_library_source(file_path: Path, filename: str):
+    """One file worker contract for managed and mounted library arrivals."""
+    from backend.app.services.library_file_runtime import get_library_file_runtime
+
+    return await get_library_file_runtime().prepare(file_path, root=file_path.parent, filename=filename)
+
+
+async def _publish_prepared_thumbnail(prepared) -> str | None:
+    if not prepared.thumbnail:
+        return None
+    extension = prepared.thumbnail_ext if prepared.thumbnail_ext in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
+    destination = get_library_thumbnails_dir() / f"{uuid.uuid4().hex}{extension}"
+    await asyncio.to_thread(destination.write_bytes, prepared.thumbnail)
+    return to_relative_path(destination)
 
 
 def get_library_dir() -> Path:
@@ -585,14 +599,15 @@ async def save_3mf_bytes_to_library(
         if existing_by_url is not None:
             return IngestResult(file=existing_by_url, outcome="deduped", superseded_name=filename)
 
-    ext = os.path.splitext(filename)[1].lower()
     file_type = detect_file_type(filename)
 
     file_path, is_external_upload = _resolve_upload_destination(folder, filename)
     with open(file_path, "wb") as f:
         f.write(content)
 
-    file_hash = calculate_file_hash(file_path)
+    from backend.app.services.library_file_runtime import get_library_file_runtime
+
+    file_hash = (await get_library_file_runtime().hash(file_path, root=file_path.parent))["digest"]
 
     # The content decision, before any row is built. ``find_reusable_row`` is the
     # one place that answers it; this function used to answer it itself, as a
@@ -617,59 +632,9 @@ async def save_3mf_bytes_to_library(
             await db.refresh(existing)
         return IngestResult(file=existing, outcome="restored", superseded_name=filename)
 
-    metadata: dict = {}
-    thumbnail_path: str | None = None
-    thumbnails_dir = get_library_thumbnails_dir()
-
-    if ext == ".3mf":
-        try:
-            parser = ThreeMFParser(str(file_path))
-            raw_metadata = parser.parse()
-            thumbnail_data = raw_metadata.get("_thumbnail_data")
-            thumbnail_ext = raw_metadata.get("_thumbnail_ext", ".png")
-            if thumbnail_data:
-                thumb_filename = f"{uuid.uuid4().hex}{thumbnail_ext}"
-                thumb_path = (
-                    thumbnails_dir / thumb_filename
-                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                with open(thumb_path, "wb") as f:
-                    f.write(thumbnail_data)
-                thumbnail_path = str(thumb_path)
-            metadata = _clean_3mf_metadata(raw_metadata)
-            # Content decides whether this container is sliced; the tag rule
-            # prefers it over the filename. Unset when unreadable, which reads
-            # as unknown rather than as a claim. See sliced_gcode_in_3mf.
-            _sliced = sliced_gcode_in_3mf(file_path)
-            if _sliced is not None:
-                metadata[SLICED_GCODE_META_KEY] = _sliced
-            try:
-                import zipfile as _zf
-
-                from backend.app.services.archive import parse_plates_from_3mf
-
-                with _zf.ZipFile(str(file_path), "r") as _zfh:
-                    plates_payload = parse_plates_from_3mf(_zfh)
-                if plates_payload:
-                    metadata["plates"] = plates_payload
-                    metadata["is_multi_plate"] = len(plates_payload) > 1
-            except Exception as _pe:
-                logger.debug("Per-plate parse for save_3mf failed (non-critical): %s", _pe)
-        except Exception as e:
-            logger.warning("Failed to parse 3MF (save_3mf %s): %s", filename, e)
-
-    elif ext == ".gcode":
-        try:
-            thumbnail_data = extract_gcode_thumbnail(file_path)
-            if thumbnail_data:
-                thumb_filename = f"{uuid.uuid4().hex}.png"
-                thumb_path = (
-                    thumbnails_dir / thumb_filename
-                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                with open(thumb_path, "wb") as f:
-                    f.write(thumbnail_data)
-                thumbnail_path = str(thumb_path)
-        except Exception as e:
-            logger.warning("Failed to extract gcode thumbnail (save_3mf %s): %s", filename, e)
+    prepared = await _prepare_library_source(file_path, filename)
+    metadata: dict = prepared.metadata
+    thumbnail_path = await _publish_prepared_thumbnail(prepared)
 
     if extra_metadata:
         metadata = {**metadata, **extra_metadata}
@@ -688,7 +653,7 @@ async def save_3mf_bytes_to_library(
         skip_objects_supported=skip_objects_supported_from_metadata(metadata or None),
         file_size=len(content),
         file_hash=file_hash,
-        thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
+        thumbnail_path=thumbnail_path,
         file_metadata=_without_print_name(metadata) or None,
         created_by_id=created_by_id,
         swap_compatible=swap_compatible,
@@ -3032,25 +2997,9 @@ async def slice_and_persist(
     await db.commit()  # release destination lookup before file preparation
     await preview_disk(out_path.write_bytes, sliced_bytes)
 
-    # Extract thumbnail from the produced 3MF so the library card shows a
-    # preview. Failures here aren't fatal — the file is still useful.
-    thumbnail_relative: str | None = None
-    parsed_metadata: dict = {}
-    try:
-        parser = ThreeMFParser(str(out_path))
-        parsed = await preview_disk(parser.parse)
-        thumb_data = parsed.get("_thumbnail_data")
-        thumb_ext = parsed.get("_thumbnail_ext", ".png")
-        if thumb_data:
-            thumb_filename = f"{uuid.uuid4().hex}{thumb_ext}"
-            thumb_path = get_library_thumbnails_dir() / thumb_filename
-            thumb_path.write_bytes(thumb_data)
-            thumbnail_relative = to_relative_path(thumb_path)
-        cleaned = _clean_3mf_metadata(parsed)
-        if isinstance(cleaned, dict):
-            parsed_metadata = cleaned
-    except Exception as exc:
-        logger.warning("Failed to parse sliced 3MF metadata for %s: %s", out_filename, exc)
+    prepared = await _prepare_library_source(out_path, out_filename)
+    thumbnail_relative = await _publish_prepared_thumbnail(prepared)
+    parsed_metadata = prepared.metadata
 
     # Drop the embedded ``print_name`` (see _without_print_name) so the sliced
     # row's display falls back to its ".gcode.3mf" filename instead of the
@@ -3072,7 +3021,7 @@ async def slice_and_persist(
     # bytes, so this path produces duplicates readily. ``find_reusable_row`` is
     # the one place that decides; an existing row is returned as-is, keeping its
     # name, folder and print history.
-    sliced_hash = await preview_disk(lambda: hashlib.sha256(sliced_bytes).hexdigest())
+    sliced_hash = prepared.digest
     reusable = await find_reusable_row(db, content_hash=sliced_hash)
     if reusable is not None:
         existing, present = reusable
@@ -3517,8 +3466,9 @@ async def store_library_upload(
     with open(file_path, "wb") as f:
         f.write(content)
 
-    # Calculate hash
-    file_hash = calculate_file_hash(file_path)
+    from backend.app.services.library_file_runtime import get_library_file_runtime
+
+    file_hash = (await get_library_file_runtime().hash(file_path, root=file_path.parent))["digest"]
 
     # The content decision, before any row is built. Only active rows count — a
     # trashed sibling was deleted by the user and must not pin a fresh upload to
@@ -3542,80 +3492,9 @@ async def store_library_upload(
         await db.refresh(existing)
         return IngestResult(file=existing, outcome="restored", superseded_name=filename)
 
-    # Extract metadata and thumbnail
-    metadata = {}
-    thumbnail_path = None
-    thumbnails_dir = get_library_thumbnails_dir()
-
-    if ext == ".3mf":
-        try:
-            parser = ThreeMFParser(str(file_path))
-            raw_metadata = parser.parse()
-
-            # Extract thumbnail before cleaning metadata
-            thumbnail_data = raw_metadata.get("_thumbnail_data")
-            thumbnail_ext = raw_metadata.get("_thumbnail_ext", ".png")
-
-            # Save thumbnail if extracted
-            if thumbnail_data:
-                thumb_filename = f"{uuid.uuid4().hex}{thumbnail_ext}"
-                thumb_path = (
-                    thumbnails_dir / thumb_filename
-                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                with open(thumb_path, "wb") as f:
-                    f.write(thumbnail_data)
-                thumbnail_path = str(thumb_path)
-
-            metadata = _clean_3mf_metadata(raw_metadata)
-
-            # Whether this container actually holds sliced G-code, decided
-            # by looking inside it. ``compute_file_tags`` prefers this over
-            # the filename, so a model named ``*.gcode.3mf`` no longer gets
-            # a Print affordance it cannot honour — the printer answers
-            # that thirty seconds later as "unable to parse the 3mf file".
-            # Unset when unreadable: unknown, not a claim.
-            _sliced = sliced_gcode_in_3mf(file_path)
-            if _sliced is not None:
-                metadata[SLICED_GCODE_META_KEY] = _sliced
-
-            # Populate per-plate cache so the gallery / list endpoint
-            # doesn't need to reopen the ZIP on every read. ``plates``
-            # carries the full per-plate breakdown; ``is_multi_plate``
-            # is a tiny top-level boolean that the file-list response
-            # uses to gate gallery rendering on the frontend.
-            try:
-                import zipfile as _zf
-
-                from backend.app.services.archive import parse_plates_from_3mf
-
-                with _zf.ZipFile(str(file_path), "r") as _zfh:
-                    plates_payload = parse_plates_from_3mf(_zfh)
-                if plates_payload:
-                    metadata["plates"] = plates_payload
-                    metadata["is_multi_plate"] = len(plates_payload) > 1
-            except Exception as _pe:
-                logger.debug("Per-plate parse for upload failed (non-critical): %s", _pe)
-        except Exception as e:
-            logger.warning("Failed to parse 3MF: %s", e)
-
-    elif ext == ".gcode":
-        # Extract embedded thumbnail from gcode
-        try:
-            thumbnail_data = extract_gcode_thumbnail(file_path)
-            if thumbnail_data:
-                thumb_filename = f"{uuid.uuid4().hex}.png"
-                thumb_path = (
-                    thumbnails_dir / thumb_filename
-                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                with open(thumb_path, "wb") as f:
-                    f.write(thumbnail_data)
-                thumbnail_path = str(thumb_path)
-        except Exception as e:
-            logger.warning("Failed to extract gcode thumbnail: %s", e)
-
-    elif ext.lower() in IMAGE_EXTENSIONS:
-        # For image files, create a thumbnail from the image itself
-        thumbnail_path = create_image_thumbnail(file_path, thumbnails_dir)
+    prepared = await _prepare_library_source(file_path, filename)
+    metadata = prepared.metadata
+    thumbnail_path = await _publish_prepared_thumbnail(prepared)
 
     # Detect swap mode compatibility from filename. Covers both the
     # singular ".swap." suffix (older / custom tooling) and the ".swaps."
@@ -3637,7 +3516,7 @@ async def store_library_upload(
         skip_objects_supported=skip_objects_supported_from_metadata(metadata if metadata else None),
         file_size=len(content),
         file_hash=file_hash,
-        thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
+        thumbnail_path=thumbnail_path,
         file_metadata=_without_print_name(metadata) if metadata else None,
         created_by_id=created_by_id,
         swap_compatible=swap_compatible,
@@ -3928,8 +3807,9 @@ async def extract_zip_file(
                     with open(file_path, "wb") as f:
                         f.write(file_content)
 
-                    # Calculate hash
-                    file_hash = calculate_file_hash(file_path)
+                    from backend.app.services.library_file_runtime import get_library_file_runtime
+
+                    file_hash = (await get_library_file_runtime().hash(file_path, root=file_path.parent))["digest"]
 
                     # A ZIP of models routinely carries a plate the library
                     # already holds. ``find_reusable_row`` is the one place that
@@ -3946,70 +3826,9 @@ async def extract_zip_file(
                         folders_created += new_folder_count
                         continue
 
-                    # Extract metadata and thumbnail for 3MF files
-                    metadata = {}
-                    thumbnail_path = None
-                    thumbnails_dir = get_library_thumbnails_dir()
-
-                    if ext == ".3mf":
-                        try:
-                            parser = ThreeMFParser(str(file_path))
-                            raw_metadata = parser.parse()
-
-                            thumbnail_data = raw_metadata.get("_thumbnail_data")
-                            thumbnail_ext = raw_metadata.get("_thumbnail_ext", ".png")
-
-                            if thumbnail_data:
-                                thumb_filename = f"{uuid.uuid4().hex}{thumbnail_ext}"
-                                thumb_path = (
-                                    thumbnails_dir / thumb_filename
-                                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                                with open(thumb_path, "wb") as f:
-                                    f.write(thumbnail_data)
-                                thumbnail_path = str(thumb_path)
-
-                            metadata = _clean_3mf_metadata(raw_metadata)
-
-                            # Content decides whether this container is sliced;
-                            # the tag rule prefers it over the filename. Unset
-                            # when unreadable, which reads as unknown rather
-                            # than as a claim. See sliced_gcode_in_3mf.
-                            _sliced = sliced_gcode_in_3mf(file_path)
-                            if _sliced is not None:
-                                metadata[SLICED_GCODE_META_KEY] = _sliced
-
-                            # Per-plate cache (same as upload_file path).
-                            try:
-                                import zipfile as _zf
-
-                                from backend.app.services.archive import parse_plates_from_3mf
-
-                                with _zf.ZipFile(str(file_path), "r") as _zfh:
-                                    plates_payload = parse_plates_from_3mf(_zfh)
-                                if plates_payload:
-                                    metadata["plates"] = plates_payload
-                                    metadata["is_multi_plate"] = len(plates_payload) > 1
-                            except Exception as _pe:
-                                logger.debug("Per-plate parse for ZIP-extracted 3MF failed (non-critical): %s", _pe)
-                        except Exception as e:
-                            logger.warning("Failed to parse 3MF from ZIP: %s", e)
-
-                    elif ext == ".gcode":
-                        try:
-                            thumbnail_data = extract_gcode_thumbnail(file_path)
-                            if thumbnail_data:
-                                thumb_filename = f"{uuid.uuid4().hex}.png"
-                                thumb_path = (
-                                    thumbnails_dir / thumb_filename
-                                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                                with open(thumb_path, "wb") as f:
-                                    f.write(thumbnail_data)
-                                thumbnail_path = str(thumb_path)
-                        except Exception as e:
-                            logger.warning("Failed to extract gcode thumbnail from ZIP: %s", e)
-
-                    elif ext.lower() in IMAGE_EXTENSIONS:
-                        thumbnail_path = create_image_thumbnail(file_path, thumbnails_dir)
+                    prepared = await _prepare_library_source(file_path, filename)
+                    metadata = prepared.metadata
+                    thumbnail_path = await _publish_prepared_thumbnail(prepared)
 
                     # Create database entry (store relative paths for portability)
                     library_file = LibraryFile(
@@ -4020,7 +3839,7 @@ async def extract_zip_file(
                         skip_objects_supported=skip_objects_supported_from_metadata(metadata if metadata else None),
                         file_size=len(file_content),
                         file_hash=file_hash,
-                        thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
+                        thumbnail_path=thumbnail_path,
                         file_metadata=_without_print_name(metadata) if metadata else None,
                         created_by_id=upload_user_id,
                     )

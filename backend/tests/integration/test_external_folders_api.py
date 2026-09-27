@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -17,11 +18,13 @@ class TestExternalFolderCreation:
         ext_dir = tmp_path / "nas_share"
         ext_dir.mkdir()
         # Add some test files
-        (ext_dir / "benchy.3mf").write_bytes(b"fake3mf")
+        with zipfile.ZipFile(ext_dir / "benchy.3mf", "w") as archive:
+            archive.writestr("Metadata/plate_1.gcode", "G1 X10 Y10")
         (ext_dir / "bracket.stl").write_bytes(b"fakestl")
         (ext_dir / "print.gcode").write_text("G28\nG1 X10 Y10")
         (ext_dir / "readme.txt").write_text("not a print file")
-        (ext_dir / ".hidden.3mf").write_bytes(b"hidden")
+        with zipfile.ZipFile(ext_dir / ".hidden.3mf", "w") as archive:
+            archive.writestr("Metadata/plate_1.gcode", "G1 X20 Y20")
         return ext_dir
 
     @pytest.fixture
@@ -160,11 +163,13 @@ class TestExternalFolderScan:
         """Create a temporary directory with test files."""
         ext_dir = tmp_path / "prints"
         ext_dir.mkdir()
-        (ext_dir / "benchy.3mf").write_bytes(b"fake3mf")
+        with zipfile.ZipFile(ext_dir / "benchy.3mf", "w") as archive:
+            archive.writestr("Metadata/plate_1.gcode", "G1 X10 Y10")
         (ext_dir / "bracket.stl").write_bytes(b"fakestl")
         (ext_dir / "print.gcode").write_text("G28\nG1 X10 Y10")
         (ext_dir / "readme.txt").write_text("not a print file")
-        (ext_dir / ".hidden.3mf").write_bytes(b"hidden")
+        with zipfile.ZipFile(ext_dir / ".hidden.3mf", "w") as archive:
+            archive.writestr("Metadata/plate_1.gcode", "G1 X20 Y20")
         sub = ext_dir / "subfolder"
         sub.mkdir()
         (sub / "nested.stl").write_bytes(b"nested")

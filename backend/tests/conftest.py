@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import tempfile
+import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -1020,3 +1021,77 @@ def a_direct_capture():
         return await capture_staged(plan_capture(archive=archive, library_file=source))
 
     return capture
+
+
+@pytest.fixture(autouse=True)
+def inprocess_library_worker():
+    """ASGI tests omit lifespan; supply the file-worker port in process."""
+    from backend.app.library_file_service import _walk
+    from backend.app.services import library_file_runtime
+    from backend.app.services.library_file_preparation import hash_file, prepare_file
+
+    class TestWorker:
+        def __init__(self):
+            self.walks = {}
+
+        def health(self):
+            return {"state": "unavailable", "reason": "test_adapter"}
+
+        async def prepare(self, path, *, root, filename=None):
+            return await asyncio.to_thread(prepare_file, path, root=root, display_filename=filename)
+
+        async def hash(self, path, *, root):
+            return await asyncio.to_thread(hash_file, path, root=root)
+
+        async def walk_start(self, root, show_hidden):
+            token = uuid.uuid4().hex
+            self.walks[token] = _walk(root, show_hidden)
+            return token
+
+        async def walk_next(self, root, token):
+            def page():
+                entries = []
+                for _ in range(32):
+                    try:
+                        entries.append(next(self.walks[token]))
+                    except StopIteration:
+                        return {"entries": entries, "done": True}
+                return {"entries": entries, "done": False}
+
+            result = await asyncio.to_thread(page)
+            if result["done"]:
+                self.walks.pop(token)
+            return result
+
+        async def walk_end(self, root, token):
+            self.walks.pop(token, None)
+
+        async def present(self, root, paths):
+            return await asyncio.to_thread(lambda: [Path(path).exists() for path in paths])
+
+    previous = library_file_runtime.runtime
+    library_file_runtime.runtime = TestWorker()
+    try:
+        yield
+    finally:
+        library_file_runtime.runtime = previous
+
+
+@pytest.fixture
+async def library_worker(tmp_path, inprocess_library_worker):
+    """Exercise scan/ingest integration against the real local worker process."""
+    from backend.app.services import library_file_runtime
+    from backend.app.services.library_file_runtime import LibraryFileRuntime
+    from backend.app.services.local_worker_broker import LocalWorkerBroker
+
+    broker = LocalWorkerBroker(tmp_path / ".cache" / "preview-service")
+    await broker.start()
+    runtime = LibraryFileRuntime(tmp_path, broker)
+    library_file_runtime.runtime = runtime
+    try:
+        await runtime.start()
+        yield runtime
+    finally:
+        library_file_runtime.runtime = None
+        await runtime.stop()
+        await broker.stop()

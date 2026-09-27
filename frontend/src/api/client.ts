@@ -12586,6 +12586,7 @@ export interface CameraWorkerHealth {
 export interface SystemInfo {
   preview?: PreviewHealth;
   analysis_worker?: { state: 'ready' | 'unavailable'; reason: string | null };
+  library_file_worker?: { state: 'ready' | 'unavailable'; reason: string | null };
   camera_worker?: CameraWorkerHealth;
   app: {
     version: string;

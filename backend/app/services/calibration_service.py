@@ -14,7 +14,6 @@ re-sels before each non-cali print as belt-and-suspenders sync.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import uuid
@@ -241,8 +240,9 @@ async def _persist_calibration_slice_to_library(
 
     Returns the new ``LibraryFile.id``.
     """
-    from backend.app.api.routes.library import get_library_files_dir, to_relative_path
+    from backend.app.api.routes.library import _publish_prepared_thumbnail, get_library_files_dir, to_relative_path
     from backend.app.models.library import LibraryFile
+    from backend.app.services.library_file_runtime import get_library_file_runtime
     from backend.app.services.library_helpers import skip_objects_supported_from_metadata, sync_system_tags
     from backend.app.services.library_ingest import find_reusable_row
 
@@ -251,10 +251,10 @@ async def _persist_calibration_slice_to_library(
         get_library_files_dir() / unique_name
     )  # SEC-PATH-OK: unique_name = uuid4().hex + a fixed .gcode.3mf suffix (server-generated)
     out_path.write_bytes(content)
+    prepared = await get_library_file_runtime().prepare(out_path, root=out_path.parent, filename=filename)
+    thumbnail_path = await _publish_prepared_thumbnail(prepared)
 
-    metadata: dict = {
-        "calibration_internal": True,
-    }
+    metadata: dict = {**prepared.metadata, "calibration_internal": True}
     if print_time_seconds is not None:
         metadata["print_time_seconds"] = print_time_seconds
     if filament_used_g is not None:
@@ -262,7 +262,7 @@ async def _persist_calibration_slice_to_library(
     if filament_used_mm is not None:
         metadata["filament_used_mm"] = filament_used_mm
 
-    content_hash = hashlib.sha256(content).hexdigest()
+    content_hash = prepared.digest
 
     new_file = LibraryFile(
         folder_id=None,
@@ -272,7 +272,7 @@ async def _persist_calibration_slice_to_library(
         skip_objects_supported=skip_objects_supported_from_metadata(metadata),
         file_size=len(content),
         file_hash=content_hash,
-        thumbnail_path=None,
+        thumbnail_path=thumbnail_path,
         file_metadata=metadata,
         source_type="sliced",
         created_by_id=user_id,
