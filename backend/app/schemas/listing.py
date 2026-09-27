@@ -172,3 +172,5 @@ class ProjectsNavBadges(BaseModel):
     active_orders: int
     # Active catalog products still in draft (spec workshop-product-catalog, rule 18).
     draft_products: int = 0
+    # Finished-goods positions whose free quantity is under their minimum (spec workshop-finished-goods, rule 19).
+    stock_below_min: int = 0

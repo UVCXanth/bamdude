@@ -34,11 +34,11 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.customer import Customer, CustomerContact
+from backend.app.models.finished_stock import StockItem
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate
-from backend.app.models.product_variant import ProductVariantGroup
 from backend.app.models.project import Project, ProjectEvent
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
@@ -77,8 +77,6 @@ from backend.app.schemas.project import (
     BatchAddArchives,
     BatchAddQueueItems,
     DroppedPartOut,
-    LineChangedPartOut,
-    LineChoiceOut,
     LineConfigurationImpact,
     LineConfigurationIn,
     LineConfigurationOut,
@@ -127,10 +125,11 @@ from backend.app.services import (
 from backend.app.services.archive_defects import DefectsWrite, record_defects
 from backend.app.services.archive_write_scope import archive_write_scope
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
+from backend.app.services.configuration_views import configuration_out, groups_by_product
 from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.filament_intake import require_source_requirements
 from backend.app.services.filament_requirements import PrintRequirementsCache
-from backend.app.services.line_composition import LineConfig, composition, standard_per
+from backend.app.services.line_composition import LineConfig
 from backend.app.services.list_paging import (
     SortSpec,
     apply_sql_sort,
@@ -216,55 +215,17 @@ async def _configurations(db: AsyncSession, ctx) -> dict[int, LineConfigurationO
     One read of the order's groups; choices, standards and parts come off the
     context the figures were computed from, so the caption and the kit agree.
     """
-    product_ids = sorted({line.product_id for line in ctx.lines})
-    groups_by_product: dict[int, list[ProductVariantGroup]] = {}
-    if product_ids:
-        for group in (
-            await db.execute(
-                select(ProductVariantGroup)
-                .options(selectinload(ProductVariantGroup.options))
-                .where(ProductVariantGroup.product_id.in_(product_ids))
-                .order_by(ProductVariantGroup.position, ProductVariantGroup.id)
-            )
-        ).scalars():
-            groups_by_product.setdefault(group.product_id, []).append(group)
-    out: dict[int, LineConfigurationOut] = {}
-    for line in ctx.lines:
-        cfg = ctx.config_by_line.get(line.id, LineConfig())
-        parts = sorted(ctx.parts_by_product.get(line.product_id, []), key=lambda p: (p.sort_order or 0, p.id))
-        if line.mode == "parts":
-            out[line.id] = LineConfigurationOut(
-                changed_parts=[
-                    LineChangedPartOut(part_id=p.id, name=p.name, qty=cfg.counts[p.id], standard_qty=standard_per(p))
-                    for p in parts
-                    if p.id in cfg.counts
-                ]
-            )
-            continue
-        chosen = {**ctx.defaults_by_product.get(line.product_id, {}), **cfg.choices}
-        choices: list[LineChoiceOut] = []
-        for group in groups_by_product.get(line.product_id, []):
-            option = next((o for o in group.options if o.id == chosen.get(group.id)), None)
-            if option is not None:
-                choices.append(
-                    LineChoiceOut(
-                        group_id=group.id,
-                        group_name=group.name,
-                        option_id=option.id,
-                        option_name=option.name,
-                        is_default=option.id == group.default_option_id,
-                    )
-                )
-        base = {p.id: per for p, per in composition(parts, "product", set(chosen.values()), {})}
-        out[line.id] = LineConfigurationOut(
-            choices=choices,
-            changed_parts=[
-                LineChangedPartOut(part_id=p.id, name=p.name, qty=cfg.counts[p.id], standard_qty=base.get(p.id, 0))
-                for p in parts
-                if p.id in cfg.counts
-            ],
+    groups = await groups_by_product(db, {line.product_id for line in ctx.lines})
+    return {
+        line.id: configuration_out(
+            groups.get(line.product_id, []),
+            ctx.parts_by_product.get(line.product_id, []),
+            ctx.config_by_line.get(line.id, LineConfig()),
+            ctx.defaults_by_product.get(line.product_id, {}),
+            line.mode,
         )
-    return out
+        for line in ctx.lines
+    }
 
 
 async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
@@ -703,7 +664,15 @@ async def projects_nav_badges(
         )
         or 0
     )
-    return ProjectsNavBadges(active_orders=active, draft_products=drafts)
+    below_min = (
+        await db.scalar(
+            select(func.count(StockItem.id)).where(
+                StockItem.min_qty > 0, StockItem.on_hand - StockItem.reserved < StockItem.min_qty
+            )
+        )
+        or 0
+    )
+    return ProjectsNavBadges(active_orders=active, draft_products=drafts, stock_below_min=below_min)
 
 
 _BOARD_LIMIT = 50

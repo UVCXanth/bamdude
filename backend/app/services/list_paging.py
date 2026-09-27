@@ -60,6 +60,13 @@ def resolve_sort(spec: SortSpec, sort_by: str | None) -> tuple[str, str, bool]:
     return key, direction, key in spec.computed
 
 
+def like_contains(word: str) -> str:
+    """A LIKE pattern for ``word`` anywhere — its own ``%`` and ``_`` taken literally
+    (pair it with ``escape="\\"``)."""
+    escaped = word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def apply_sql_sort(query, spec: SortSpec, key: str, direction: str, id_column):
     """ORDER BY the key's column, NULLs last where the spec says so, then ``id`` ascending."""
     column, nulls_last = spec.sql[key]

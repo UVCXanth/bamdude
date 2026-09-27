@@ -96,6 +96,7 @@ from backend.app.services.line_composition import composition, default_options, 
 from backend.app.services.list_paging import (
     SortSpec,
     apply_sql_sort,
+    like_contains,
     page_meta,
     resolve_sort,
     slice_page,
@@ -471,18 +472,12 @@ _PRODUCT_COMPUTED = {
 }
 
 
-def _contains(word: str) -> str:
-    """A LIKE pattern for ``word`` anywhere — its own ``%`` and ``_`` taken literally."""
-    escaped = word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"%{escaped}%"
-
-
 def _word_matches(word: str):
     """One search word against every field of a product (spec workshop-product-catalog, rule 8).
 
     A trashed file is not searched — neither its name nor its facets: the product
     page does not show it either (owner, 2026-09-27)."""
-    needle = _contains(word)
+    needle = like_contains(word)
 
     def like(column):
         return column.ilike(needle, escape="\\")

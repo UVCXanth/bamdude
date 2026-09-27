@@ -5,18 +5,34 @@ readers — one grouped query per question for the whole page, the pass-6
 discipline — and nothing here writes (``inv-stock-ledger-single-writer``).
 """
 
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from typing import Literal, NoReturn
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
-from backend.app.models.product import Product
+from backend.app.models.customer import Customer
+from backend.app.models.finished_stock import StockItem, StockItemChoice
+from backend.app.models.product import Product, ProductPart
+from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
+from backend.app.schemas.finished_stock import (
+    StockAssembleIn,
+    StockItemDetail,
+    StockItemOut,
+    StockItemParamsIn,
+    StockItemsPage,
+    StockItemsSummary,
+    StockJournalPage,
+    StockLookupOut,
+    StockMoveIn,
+)
 from backend.app.schemas.listing import StockFigures, StockListPage
 from backend.app.schemas.product import StockBalanceOut
 from backend.app.schemas.stock import (
@@ -28,8 +44,12 @@ from backend.app.schemas.stock import (
     StockReservationOut,
     StockSummaryOut,
 )
-from backend.app.services import part_stock
+from backend.app.services import finished_stock, finished_stock_views, line_config, part_stock, stock_journal
+from backend.app.services.configuration_views import configuration_out, groups_by_product
+from backend.app.services.entity_codes import id_from_query
 from backend.app.services.line_composition import (
+    LineConfig,
+    composition,
     default_options,
     line_composition,
     load_line_configs,
@@ -37,7 +57,15 @@ from backend.app.services.line_composition import (
     standard_composition,
     standard_per,
 )
-from backend.app.services.list_paging import SortSpec, page_meta, resolve_sort, slice_page, sort_computed
+from backend.app.services.list_paging import (
+    SortSpec,
+    apply_sql_sort,
+    like_contains,
+    page_meta,
+    resolve_sort,
+    slice_page,
+    sort_computed,
+)
 from backend.app.services.stock_views import movement_out, orders_of_lines
 
 router = APIRouter(prefix="/stock", tags=["stock"])
@@ -216,3 +244,292 @@ async def stock_movements(
         for movement, _part_name, pid, pname in rows
     ]
     return StockMovementsPageOut(items=items, next_before_id=items[-1].id if len(items) == limit else None)
+
+
+# ---------- finished goods (spec workshop-finished-goods, rules 16–21) ----------
+
+_ITEM_SORT = SortSpec(
+    sql={
+        "product": (func.lower(Product.name), False),
+        "code": (StockItem.id, False),
+        "location": (func.lower(StockItem.location), True),
+        "on_hand": (StockItem.on_hand, False),
+        "reserved": (StockItem.reserved, False),
+        "available": (StockItem.on_hand - StockItem.reserved, False),
+        "min": (StockItem.min_qty, False),
+    },
+    default="product-asc",
+)
+_BELOW_MIN = and_(StockItem.min_qty > 0, StockItem.on_hand - StockItem.reserved < StockItem.min_qty)
+_TRACKED = or_(StockItem.on_hand > 0, StockItem.reserved > 0, StockItem.min_qty > 0)
+_MODES = {"tracked": _TRACKED, "low": _BELOW_MIN, "reserved": StockItem.reserved > 0, "all": None}
+
+
+def _item_word_matches(word: str):
+    """One search word against a position: product name, SKU, location, the
+    name of a chosen option, or the position's code."""
+    needle = like_contains(word)
+
+    def like(column):
+        return column.ilike(needle, escape="\\")
+
+    fields = [
+        like(Product.name),
+        like(Product.sku),
+        like(StockItem.location),
+        exists().where(
+            StockItemChoice.item_id == StockItem.id,
+            ProductVariantOption.id == StockItemChoice.option_id,
+            like(ProductVariantOption.name),
+        ),
+    ]
+    if (item_id := id_from_query("stock_item", word)) is not None:
+        fields.append(StockItem.id == item_id)
+    return or_(*fields)
+
+
+def _raise(e: Exception) -> NoReturn:
+    raise HTTPException(status_code=getattr(e, "status", 409), detail=str(e)) from e
+
+
+async def _choices_from_options(db: AsyncSession, product_id: int, options: list[int]) -> dict[int, int]:
+    """``{group: option}`` for the picked options — a foreign one is 422."""
+    if not options:
+        return {}
+    rows = dict(
+        (
+            await db.execute(
+                select(ProductVariantOption.id, ProductVariantOption.group_id)
+                .join(ProductVariantGroup, ProductVariantGroup.id == ProductVariantOption.group_id)
+                .where(ProductVariantOption.id.in_(options), ProductVariantGroup.product_id == product_id)
+            )
+        ).all()
+    )
+    if any(option_id not in rows for option_id in options):
+        raise HTTPException(status_code=422, detail="That option does not belong to this product")
+    return {rows[option_id]: option_id for option_id in options}
+
+
+def _parse_options(options: str | None) -> list[int]:
+    try:
+        return [int(item) for item in (options or "").split(",") if item.strip()]
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail="Options and counts must be numbers") from e
+
+
+async def _item_or_404(db: AsyncSession, item_id: int) -> StockItem:
+    item = await db.get(StockItem, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Stock position not found")
+    return item
+
+
+async def _resolve_item(
+    db: AsyncSession, *, item_id: int | None, product_id: int | None, options: list[int], create: bool
+) -> StockItem:
+    if item_id is not None:
+        return await _item_or_404(db, item_id)
+    if product_id is None:
+        raise HTTPException(status_code=422, detail="Name a stock position or a product")
+    choices = await _choices_from_options(db, product_id, options)
+    try:
+        item = await finished_stock.item_for(db, product_id, choices, create=create)
+    except finished_stock.FinishedStockError as e:
+        _raise(e)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Stock position not found")
+    return item
+
+
+async def _fresh_out(db: AsyncSession, item: StockItem) -> StockItemOut:
+    await db.flush()
+    await db.refresh(item)
+    return (await finished_stock_views.items_out(db, [item]))[0]
+
+
+@router.get("/items", response_model=StockItemsPage)
+async def list_stock_items(
+    mode: Literal["tracked", "low", "reserved", "all"] = Query("tracked"),
+    q: str | None = Query(None, max_length=200),
+    product_id: int | None = Query(None),
+    sort_by: str | None = Query(None, description="'<key>-<asc|desc>'; unknown → product-asc"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(24, ge=1, le=200),
+    all: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """The finished-goods positions — filtered, searched, sorted and paged in SQL."""
+    query = select(StockItem).join(Product, Product.id == StockItem.product_id)
+    if _MODES[mode] is not None:
+        query = query.where(_MODES[mode])
+    if product_id is not None:
+        query = query.where(StockItem.product_id == product_id)
+    for word in (q or "").split():
+        query = query.where(_item_word_matches(word))
+    total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    key, direction, _computed = resolve_sort(_ITEM_SORT, sort_by)
+    query = apply_sql_sort(query, _ITEM_SORT, key, direction, StockItem.id)
+    if not all:
+        query = query.limit(per_page).offset((page - 1) * per_page)
+    items = (await db.execute(query)).scalars().all()
+    return StockItemsPage(
+        items=await finished_stock_views.items_out(db, items), meta=page_meta(total, page, per_page, all)
+    )
+
+
+@router.get("/items/summary", response_model=StockItemsSummary)
+async def stock_items_summary(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """The finished-goods tiles — the whole farm, never the list's filters."""
+    on_hand, reserved = (
+        await db.execute(
+            select(func.coalesce(func.sum(StockItem.on_hand), 0), func.coalesce(func.sum(StockItem.reserved), 0))
+        )
+    ).one()
+    tracked = await db.scalar(select(func.count(StockItem.id)).where(_TRACKED)) or 0
+    low = await db.scalar(select(func.count(StockItem.id)).where(_BELOW_MIN)) or 0
+    return StockItemsSummary(
+        on_hand=int(on_hand),
+        reserved=int(reserved),
+        available=int(on_hand) - int(reserved),
+        tracked=tracked,
+        below_min=low,
+    )
+
+
+@router.get("/items/lookup", response_model=StockLookupOut)
+async def lookup_stock_item(
+    product_id: int = Query(...),
+    options: str | None = Query(
+        None, description="Chosen option ids, comma-separated; other groups take their standard"
+    ),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """What a dialog shows for a product and its options before anything moves."""
+    choices = await _choices_from_options(db, product_id, _parse_options(options))
+    try:
+        item = await finished_stock.item_for(db, product_id, choices, create=False)
+    except finished_stock.FinishedStockError as e:
+        _raise(e)
+    if item is not None:
+        row = (await finished_stock_views.items_out(db, [item]))[0]
+        return StockLookupOut(item=row, configuration=row.configuration, can_assemble=row.can_assemble)
+    try:
+        _key, new_choices, new_counts = await line_config.resolve(db, product_id, choices, {})
+    except line_config.LineConfigError as e:
+        _raise(e)
+    parts = (await db.execute(select(ProductPart).where(ProductPart.product_id == product_id))).scalars().all()
+    groups = (await groups_by_product(db, [product_id])).get(product_id, [])
+    defaults = (await default_options(db, [product_id])).get(product_id, {})
+    kit = composition(list(parts), "product", set({**defaults, **new_choices}.values()), new_counts)
+    return StockLookupOut(
+        item=None,
+        configuration=configuration_out(groups, list(parts), LineConfig(new_choices, new_counts), defaults),
+        can_assemble=part_stock.kits_of(await part_stock.balances(db, product_id), kit),
+    )
+
+
+@router.get("/journal", response_model=StockJournalPage)
+async def get_stock_journal(
+    book: Literal["both", "finished", "parts"] = Query("both"),
+    product_id: int | None = Query(None),
+    item_id: int | None = Query(None),
+    kind: str | None = Query(None, max_length=32),
+    cursor: str | None = Query(None, max_length=100),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """Both stock ledgers as one feed, newest first, one keyset page at a time."""
+    try:
+        return await stock_journal.journal(
+            db, book=book, product_id=product_id, item_id=item_id, kind=kind, cursor=cursor, limit=limit
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail="Unreadable journal cursor") from e
+
+
+@router.get("/items/{item_id}", response_model=StockItemDetail)
+async def get_stock_item(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    return await finished_stock_views.item_detail(db, await _item_or_404(db, item_id))
+
+
+@router.patch("/items/{item_id}", response_model=StockItemOut)
+async def update_stock_item(
+    item_id: int,
+    data: StockItemParamsIn,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Комірка й мінімум — parameters of the position, not stock."""
+    item = await _item_or_404(db, item_id)
+    try:
+        await finished_stock.set_params(db, item, {k: getattr(data, k) for k in data.model_fields_set})
+    except finished_stock.FinishedStockError as e:
+        _raise(e)
+    return await _fresh_out(db, item)
+
+
+@router.post("/moves", response_model=StockItemOut)
+async def move_stock(
+    data: StockMoveIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """One movement of a position: receipt, stocktake, reserve, release or issue."""
+    item = await _resolve_item(
+        db,
+        item_id=data.item_id,
+        product_id=data.product_id,
+        options=data.options,
+        create=data.kind in ("receipt", "stocktake"),
+    )
+    if data.customer_id is not None and await db.get(Customer, data.customer_id) is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    qty = data.qty if data.qty is not None else 0
+    try:
+        if data.kind == "receipt":
+            await finished_stock.receive(db, item, qty, note=data.note, actor=current_user)
+        elif data.kind == "stocktake":
+            counted = data.counted if data.counted is not None else -1
+            await finished_stock.stocktake(db, item, counted, note=data.note, actor=current_user)
+        elif data.kind == "reserve":
+            await finished_stock.reserve(db, item, qty, note=data.note, actor=current_user)
+        elif data.kind == "release":
+            await finished_stock.release(db, item, qty, note=data.note, actor=current_user)
+        else:
+            await finished_stock.issue(
+                db,
+                item,
+                qty,
+                from_reserve=data.from_reserve,
+                customer_id=data.customer_id,
+                note=data.note,
+                actor=current_user,
+            )
+    except finished_stock.FinishedStockError as e:
+        _raise(e)
+    return await _fresh_out(db, item)
+
+
+@router.post("/assemble", response_model=StockItemOut)
+async def assemble_stock(
+    data: StockAssembleIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Зібрати з деталей — the kit's parts leave the shelf, the position grows."""
+    item = await _resolve_item(db, item_id=data.item_id, product_id=data.product_id, options=data.options, create=True)
+    try:
+        await finished_stock.assemble(db, item, data.qty, note=data.note, actor=current_user)
+    except (finished_stock.FinishedStockError, part_stock.PartStockError) as e:
+        _raise(e)
+    return await _fresh_out(db, item)
