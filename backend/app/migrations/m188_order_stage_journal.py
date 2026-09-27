@@ -63,6 +63,9 @@ add here while the branch is unreleased:
   ``stock_item_part_counts`` — the position's configuration, the same shape as
   an order line's and written by the same writer. ``stock_item_movements``
   (AUTOINCREMENT) — the history the columns always equal the sum of.
+  ``project_lines.from_finished`` (WS-10, spec workshop-add-to-order) — finished
+  units a line took off the finished-goods shelf, issued ones included; written
+  only by ``services/finished_stock.py`` with the movement that explains it.
   ``product_part_stock_movements.stock_item_id`` — the position assembled parts
   went into. New tables only; nothing is seeded.
 """
@@ -214,6 +217,8 @@ async def upgrade(conn):
     if await table_exists(conn, "project_lines"):
         await add_column(conn, "project_lines", "mode VARCHAR(8) NOT NULL DEFAULT 'product'")
         await add_column(conn, "project_lines", "config_key VARCHAR(512) NOT NULL DEFAULT ''")
+        # WS-10 (spec workshop-add-to-order, rule 1).
+        await add_column(conn, "project_lines", "from_finished INTEGER NOT NULL DEFAULT 0 CHECK (from_finished >= 0)")
         if not await table_exists(conn, "project_line_choices"):
             await conn.exec_driver_sql(
                 """

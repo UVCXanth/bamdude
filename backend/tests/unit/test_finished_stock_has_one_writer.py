@@ -7,7 +7,7 @@ APP = Path(__file__).resolve().parents[2] / "app"
 ALLOWED = {APP / "services" / "finished_stock.py", APP / "models" / "finished_stock.py"}
 MODELS = {"StockItem", "StockItemMovement"}
 #: The balance and the position's parameters — no other module sets them.
-COLUMNS = {"on_hand", "reserved", "min_qty"}
+COLUMNS = {"on_hand", "reserved", "min_qty", "from_finished"}
 
 
 def _writes(tree: ast.AST) -> list[int]:
@@ -41,5 +41,8 @@ def test_nothing_but_the_writer_writes_finished_goods():
 
 
 def test_the_scan_sees_a_writer_when_there_is_one():
-    tree = ast.parse("db.add(StockItemMovement(item_id=1))\nawait db.execute(delete(StockItem))\nitem.on_hand += 1\n")
-    assert _writes(tree) == [1, 2, 3]
+    tree = ast.parse(
+        "db.add(StockItemMovement(item_id=1))\nawait db.execute(delete(StockItem))\nitem.on_hand += 1\n"
+        "line.from_finished = 2\n"
+    )
+    assert _writes(tree) == [1, 2, 3, 4]

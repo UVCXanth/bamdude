@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.database import take_write_lock
 from backend.app.models.finished_stock import MOVEMENT_KINDS, StockItem, StockItemMovement
 from backend.app.models.product import Product, ProductOrigin, ProductPart
+from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
 from backend.app.services import line_config, part_stock
 from backend.app.services.line_composition import Composition, compositions_for_items, counted
@@ -114,13 +115,20 @@ async def _record(
     note: str | None,
     customer_id: int | None = None,
     actor: User | None = None,
+    line: ProjectLine | None = None,
+    d_line: int = 0,
 ) -> StockItemMovement:
-    """Write one movement and move the columns by it — the only place both happen."""
+    """Write one movement and move the columns by it — the only place both happen.
+
+    Under an order ``line`` the movement names the line and its order, and the
+    line's ``from_finished`` moves by ``d_line`` in the same flush (spec
+    workshop-add-to-order, rule 1): a reserve adds, a release takes back, an
+    issue leaves it — the units stay the line's."""
     if kind not in MOVEMENT_KINDS:
         raise ValueError(f"unknown finished-goods movement {kind!r}")
     locked = await lock_item(db, item.id)
     on_hand, reserved = locked.on_hand + d_on_hand, locked.reserved + d_reserved
-    if on_hand < 0 or reserved < 0 or reserved > on_hand:
+    if on_hand < 0 or reserved < 0 or reserved > on_hand or (line is not None and line.from_finished + d_line < 0):
         # The callers decide under the same lock, so this is a backstop, not a path.
         raise FinishedStockError("Stock never goes below zero")
     move = StockItemMovement(
@@ -131,9 +139,13 @@ async def _record(
         note=(note or "").strip() or None,
         customer_id=customer_id,
         created_by=actor.id if actor else None,
+        project_id=line.project_id if line is not None else None,
+        project_line_id=line.id if line is not None else None,
     )
     db.add(move)
     locked.on_hand, locked.reserved = on_hand, reserved
+    if line is not None:
+        line.from_finished += d_line
     await db.flush()
     return move
 

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -14,6 +14,7 @@ class ProjectLine(Base):
     and never matched."""
 
     __tablename__ = "project_lines"
+    __table_args__ = (CheckConstraint("from_finished >= 0", name="ck_project_lines_from_finished"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
@@ -28,6 +29,11 @@ class ProjectLine(Base):
     # ``config_key`` is written only by services/line_config.py.
     mode: Mapped[str] = mapped_column(String(8), nullable=False, default="product", server_default="product")
     config_key: Mapped[str] = mapped_column(String(512), nullable=False, default="", server_default="")
+    # spec workshop-add-to-order, rule 1: finished units this line took off the
+    # finished-goods shelf, issued ones included (an issue does not lower it —
+    # a completed order stays covered). Written only by services/finished_stock.py,
+    # in the same flush as the movement that explains it.
+    from_finished: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

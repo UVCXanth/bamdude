@@ -185,3 +185,10 @@ async def test_the_finished_goods_schema(engine):
             await conn.execute(text("INSERT INTO stock_items (product_id, config_key) VALUES (1, '')"))
         with pytest.raises(IntegrityError):
             await conn.execute(text("UPDATE stock_items SET reserved = 5 WHERE product_id = 1"))
+        # WS-10: the finished units a line took off the shelf (spec workshop-add-to-order, rule 1).
+        line_cols = {r[1] for r in (await conn.execute(text("PRAGMA table_info(project_lines)"))).all()}
+        assert "from_finished" in line_cols
+        await conn.execute(text("INSERT INTO project_lines (id, product_id) VALUES (1, 1)"))
+        assert (await conn.execute(text("SELECT from_finished FROM project_lines WHERE id = 1"))).scalar() == 0
+        with pytest.raises(IntegrityError):
+            await conn.execute(text("UPDATE project_lines SET from_finished = -1 WHERE id = 1"))
