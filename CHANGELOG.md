@@ -96,11 +96,29 @@
   «pick» brings the proposal back. If the stock moved while you were choosing,
   the line takes what is left and you are told how much. A line now shows how
   many ready units and kits it takes, and editing it has «Pick from stock».
-  Completing an order ships its ready units to the customer; cancelling it,
-  deleting a line or the order puts them back; changing a line's configuration
-  moves them to the new configuration's position, as far as it has free. Only
-  an active order takes ready units. The order's activity log says what each
-  new line took from stock.
+  Cancelling an order, deleting a line or the order puts them back; changing a
+  line's configuration moves them to the new configuration's position, as far
+  as it has free. Only an active order takes ready units. The order's activity
+  log says what each new line took from stock.
+- **An order is issued to its customer in batches.** «Stock & issue» on the
+  order assembles the kits it reserved, receives its printed units onto the
+  shelf under the order and issues what the customer takes now — part of it
+  or all, as many times as needed; an order of loose parts is received and
+  issued part by part. Each issue records who took the goods, the delivery
+  and an optional waybill number (up to 24 characters, which can be added
+  later) and shows on the customer's page with the order it came from; a
+  manual issue on the Stock page now names its customer the same way. An
+  order is completed only once everything it ordered has been issued —
+  «Mark completed», the order's menu and a drop onto «done» on the board all
+  open the issue dialog, and kits nobody assembled go back on the shelf. Once
+  a line's stock has moved, its ready units and kits are only added to:
+  «Take from stock» on the order offers what the shelves hold for the part
+  nobody has printed, is printing or has queued yet. Its configuration stays,
+  and its quantity cannot go below what is issued and held; cancelling gives
+  the shelf back everything still held, and such an order is duplicated
+  rather than reopened. Lines, cards and the orders table say how much went
+  out, and the activity log says what was assembled, received, issued and
+  taken.
 - **An order's Queue section shows everything the order has in the queue.**
   It used to list only jobs already on a printer's queue, so work the order
   plan had just queued counted in the «In queue» tile but was nowhere in the
