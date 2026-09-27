@@ -302,8 +302,8 @@ async def write_batch(
     batch: list[_Prepared],
     folder_ids: dict[str, int],
     counters: dict[str, int],
-) -> list[tuple[int, str]]:
-    """Persist one batch and return the rows that were created.
+) -> tuple[list[tuple[int, str]], int]:
+    """Persist one batch and return created rows and skipped duplicates.
 
     ⚠️ The session is opened here and closed on the way out. Everything this
     needs was worked out before it was called, so the write lock is held for the
@@ -319,6 +319,7 @@ async def write_batch(
     from backend.app.services.library_ingest import find_reusable_row
 
     created: list[tuple[int, str]] = []
+    skipped_duplicates = 0
     #: Ids of the rows this batch actually rewrote — the ones whose bytes moved
     #: on disk, so a product that owns plates off them has to be reconciled.
     refreshed: list[int] = []
@@ -355,7 +356,7 @@ async def write_batch(
                 # The library already holds these bytes. Counted rather than
                 # silent: a scan is also how people browse a mount, and a
                 # skipped file reads as a scan that missed something.
-                counters["skipped_duplicates"] += 1
+                skipped_duplicates += 1
                 continue
 
             db_file = LibraryFile(
@@ -404,7 +405,7 @@ async def write_batch(
 
         await db.commit()
 
-    return created
+    return created, skipped_duplicates
 
 
 async def ensure_folders(
@@ -699,9 +700,10 @@ async def run_scan(job_id: int) -> None:
         last_progress = 0.0
 
         async def flush(force: bool = False) -> None:
-            nonlocal batch, last_progress
+            nonlocal batch, last_progress, skipped_duplicates
             if batch and (force or len(batch) >= BATCH_SIZE):
-                created = await write_batch(batch, folder_ids, counters)
+                created, skipped_in_batch = await write_batch(batch, folder_ids, counters)
+                skipped_duplicates += skipped_in_batch
                 batch = []
                 for file_id, filename in created:
                     # Best effort: a socket problem must never fail a scan whose
