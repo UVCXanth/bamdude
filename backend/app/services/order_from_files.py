@@ -15,10 +15,10 @@ from math import gcd
 from pathlib import Path
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.core.database import take_write_lock
 from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate, product_files
 from backend.app.models.project import Project
@@ -293,10 +293,18 @@ async def _plate_product(db: AsyncSession, library_file_id: int, plate_index: in
 async def find_or_create_plate_product(db: AsyncSession, *, file: LibraryFile, plate_index: int, stem: str) -> Product:
     """The ``adhoc_plate`` product for (file, plate), created on first use.
 
-    Two dialogs can race to create the same one: the partial unique index makes
-    the second INSERT fail, the SAVEPOINT rolls just that back, and the loser
-    re-reads the winner's row.
+    Two dialogs can race to create the same one. The creation is serialised on
+    the FILE row — SQLite's write lock taken before the second look
+    (``take_write_lock``), ``FOR UPDATE`` on PostgreSQL — and the loser finds
+    the winner's row on that look; the partial unique index stays as the
+    backstop. ⚠️ Not a SAVEPOINT: on SQLite the RELEASE of the outermost one is
+    a COMMIT, and this is often a request's first write (WS-09 review).
     """
+    existing = await _plate_product(db, file.id, plate_index)
+    if existing is not None:
+        return existing
+    await take_write_lock(db, LibraryFile.__table__, file.id)
+    await db.execute(select(LibraryFile.id).where(LibraryFile.id == file.id).with_for_update())
     existing = await _plate_product(db, file.id, plate_index)
     if existing is not None:
         return existing
@@ -306,17 +314,33 @@ async def find_or_create_plate_product(db: AsyncSession, *, file: LibraryFile, p
         origin_file_id=file.id,
         origin_plate_index=plate_index,
     )
-    try:
-        async with db.begin_nested():
-            db.add(product)
-            await db.flush()
-    except IntegrityError:
-        winner = await _plate_product(db, file.id, plate_index)
-        if winner is None:  # pragma: no cover — the index just fired, so the row exists
-            raise
-        return winner
+    db.add(product)
+    await db.flush()
     await _link(db, file.id, product.id)
     return product
+
+
+def _normalise_plate(file: LibraryFile, plate_index: int) -> int:
+    """The plate index as the sync numbers plates: a single-plate file (or one
+    without plate metadata) is plate 0 whatever the caller said, so the slicer's
+    ``1`` and the sync's ``0`` never make two products for one plate."""
+    wanted = wanted_plate_indices(file.file_metadata)
+    if wanted == {0}:
+        return 0
+    if plate_index in wanted:
+        return plate_index
+    raise PlateNotFound(plate_index)
+
+
+async def plate_product_for(db: AsyncSession, library_file_id: int, plate_index: int) -> Product:
+    """The one-off product of a file's plate — the add-to-order dialog's third tab
+    (spec workshop-add-to-order, rule 11): the same checks and the same product the
+    print dialog's «order from plates» reaches."""
+    file = (await _active_files(db, [library_file_id]))[0]
+    if not is_plan_eligible(file.file_type):
+        raise NotPlannable(file.id)
+    idx = _normalise_plate(file, plate_index)
+    return await find_or_create_plate_product(db, file=file, plate_index=idx, stem=file_stem(file.filename))
 
 
 async def create_plates_order(
@@ -331,15 +355,9 @@ async def create_plates_order(
     file = files[0]
     if not is_plan_eligible(file.file_type):
         raise NotPlannable(file.id)
-    wanted = wanted_plate_indices(file.file_metadata)
     copies_by_plate: dict[int, int] = {}
     for plate_index, copies in plates:
-        if wanted == {0}:
-            idx = 0  # a single-plate file: whatever the dialog said, it is the whole file
-        elif plate_index in wanted:
-            idx = plate_index
-        else:
-            raise PlateNotFound(plate_index)
+        idx = _normalise_plate(file, plate_index)
         if idx in copies_by_plate:
             raise DuplicatePlate(plate_index)
         copies_by_plate[idx] = copies

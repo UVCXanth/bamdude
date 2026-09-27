@@ -76,10 +76,16 @@ from backend.app.schemas.project import (
     BankSurplusResponse,
     BatchAddArchives,
     BatchAddQueueItems,
+    BatchLinesIn,
+    BatchLinesOut,
+    BatchPartsLineIn,
+    BatchProductLineIn,
+    BatchStockIn,
     DroppedPartOut,
     LineConfigurationImpact,
     LineConfigurationIn,
     LineConfigurationOut,
+    LineIntakeOut,
     LinePlanOut,
     LineProductOut,
     OrderAssigneeOut,
@@ -115,7 +121,9 @@ from backend.app.services import (
     archive_parts,
     farm_forecast,
     filament_needs,
+    finished_stock,
     line_config,
+    line_intake,
     order_from_files,
     order_journal,
     part_stock,
@@ -259,6 +267,8 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
             sort_order=line.sort_order,
             units_printed=figs[line.id].units_printed,
             from_stock_units=figs[line.id].from_stock_units,
+            from_finished=figs[line.id].from_finished,
+            from_kit_units=figs[line.id].from_kit_units,
             covered_units=figs[line.id].covered_units,
             progress=figs[line.id].progress,
             parts=[
@@ -912,8 +922,9 @@ async def create_project(
 ):
     await _check_customer(db, data.customer_id)
     await _check_contact(db, data.contact_id, data.customer_id)
-    # The names go into the journal's «line added» snapshots below.
-    names = {line.product_id: (await _check_product(db, line.product_id)).name for line in data.lines}
+    # Every product exists before the order does: a refused line creates nothing.
+    for line in data.lines:
+        await _check_product(db, line.product_id)
     for line in data.lines:
         _check_line_create(line)
     if "responsible_id" in data.model_fields_set:
@@ -924,39 +935,17 @@ async def create_project(
         # belongs to whoever created it.
         responsible_id = current_user.id if current_user else None
     project = Project(**data.model_dump(exclude={"lines", "responsible_id"}), responsible_id=responsible_id)
-    # Appended BEFORE the flush: on a pending row the collection is created
-    # empty without a query, and the cascade fills in ``project_id``. Touching
-    # it after the flush would be a lazy load, which async SQLAlchemy refuses.
-    # ``from_stock_units`` is dropped from the dump because it is NOT a column
-    # (pass 8, Decision 4): it becomes ledger movements below, once the rows
-    # have ids to name.
-    wanted: list[tuple[ProjectLine, int]] = []
-    for i, line in enumerate(data.lines):
-        row = _line_row(line, i)
-        project.lines.append(row)
-        wanted.append((row, line.from_stock_units))
+    # Set BEFORE the flush: on a pending row the collection starts empty without a
+    # query, and the intake below appends to it — touching it after the flush would
+    # be a lazy load, which async SQLAlchemy refuses.
+    project.lines = []
     db.add(project)
     await db.flush()
-    # The configuration before the reservation: the kit it reserves is the line's own.
-    for (row, _units), line in zip(wanted, data.lines, strict=True):
-        await _seed(db, row, line)
-    # An order created WITH its lines reserves exactly as a line added later
-    # does — otherwise the same dialog would silently mean nothing on the one
-    # path that creates most lines.
-    for row, units in wanted:
-        if units:
-            await _reserve(db, row, units, current_user)
     await order_journal.record(db, project.id, "order_created", {"source": "manual"}, actor=current_user)
-    for row, units in wanted:
-        # What the LEDGER took — the shelf may hold fewer kits than were asked for.
-        from_stock = await part_stock.reserved_units_for_line(db, row) if units else 0
-        await order_journal.record(
-            db,
-            project.id,
-            "line_added",
-            {"line_id": row.id, "product": names[row.product_id], "quantity": row.quantity, "from_stock": from_stock},
-            actor=current_user,
-        )
+    # An order created WITH its lines takes the same road as a line added later
+    # (spec workshop-add-to-order, rule 12) — configuration, stock and journal —
+    # so the same dialog never means something else on the path that creates most lines.
+    await _intake(db, project, [_spec_of(line) for line in data.lines], current_user)
     return await _response(db, project.id)
 
 
@@ -1278,6 +1267,62 @@ async def delete_project(
 # ---------- lines ----------
 
 
+def _spec_of(data: ProjectLineCreate) -> BatchProductLineIn | BatchPartsLineIn:
+    """The batch shape of a single-line request: its numbers are the operator's.
+
+    ``model_construct`` on purpose: ``ProjectLineCreate`` was already validated by
+    its own rules, and re-validating it under the batch's would change what the
+    old route accepts (a parts line with no counts is ``line_config``'s 422 to give)."""
+    common = {"material": data.material, "color": data.color, "note": data.note, "product_id": data.product_id}
+    if data.mode == "parts":
+        return BatchPartsLineIn.model_construct(kind="parts", part_counts=data.part_counts, **common)
+    return BatchProductLineIn.model_construct(
+        kind="product",
+        quantity=data.quantity,
+        choices=data.choices,
+        part_counts=data.part_counts,
+        stock=BatchStockIn.model_construct(from_finished=data.from_finished, from_kits=data.from_stock_units),
+        **common,
+    )
+
+
+async def _intake(db: AsyncSession, project: Project, specs, actor: User | None) -> list[line_intake.Intake]:
+    try:
+        return await line_intake.add_lines(db, project, specs, actor=actor)
+    except line_intake.LineIntakeError as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
+    except (part_stock.PartStockError, finished_stock.FinishedStockError) as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+
+@router.post("/{project_id}/lines/batch", response_model=BatchLinesOut)
+async def add_lines_batch(
+    project_id: int,
+    data: BatchLinesIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Add many lines in one transaction (spec workshop-add-to-order, rule 11): products
+    with their configuration and stock, parts of a product, one-offs from a file plate.
+    Any refused line refuses the whole batch. The stock is taken as far as the shelf
+    goes; ``results`` says what each line asked and got."""
+    project = await _get_project(db, project_id)
+    intakes = await _intake(db, project, data.lines, current_user)
+    return BatchLinesOut(
+        order=await _response(db, project.id),
+        results=[
+            LineIntakeOut(
+                line_id=i.line.id,
+                asked_finished=i.asked_finished,
+                got_finished=i.got_finished,
+                asked_kits=i.asked_kits,
+                got_kits=i.got_kits,
+            )
+            for i in intakes
+        ],
+    )
+
+
 @router.post("/{project_id}/lines", response_model=ProjectResponse)
 async def add_line(
     project_id: int,
@@ -1286,25 +1331,8 @@ async def add_line(
     current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     project = await _get_project(db, project_id)
-    product = await _check_product(db, data.product_id)
     _check_line_create(data)
-    line = _line_row(data, max((ln.sort_order for ln in project.lines), default=-1) + 1)
-    project.lines.append(line)
-    # Flushed first so the movements — and the journal — have a line id to name.
-    await db.flush()
-    await _seed(db, line, data)
-    from_stock = 0
-    if data.from_stock_units:
-        await _reserve(db, line, data.from_stock_units, current_user)
-        # What the LEDGER took — the shelf may hold fewer kits than were asked for.
-        from_stock = await part_stock.reserved_units_for_line(db, line)
-    await order_journal.record(
-        db,
-        project.id,
-        "line_added",
-        {"line_id": line.id, "product": product.name, "quantity": line.quantity, "from_stock": from_stock},
-        actor=current_user,
-    )
+    await _intake(db, project, [_spec_of(data)], current_user)
     return await _response(db, project.id)
 
 

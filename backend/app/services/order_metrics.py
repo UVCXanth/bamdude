@@ -168,6 +168,11 @@ class LineFigures:
     mode: str = "product"
     units_printed: int = 0
     from_stock_units: int = 0
+    #: The split of ``from_stock_units`` (spec workshop-add-to-order, rule 14): ready
+    #: units the line took off the finished-goods shelf (the ``project_lines`` column)
+    #: and kits off the free-parts one (the ledger reading).
+    from_finished: int = 0
+    from_kit_units: int = 0
     #: Units this line has covered with printed kits and its allocated stock.
     #: Unlike both sources, it can never cover more than the line asks for.
     covered_units: int = 0
@@ -466,9 +471,11 @@ def _new_line_figures(
         quantity=sum(per for _part, per in printed) if line.mode == "parts" else line.quantity,
         material=line.material,
         mode=line.mode,
-        from_stock_units=from_stock_units,
+        from_stock_units=from_stock_units + line.from_finished,
+        from_finished=line.from_finished,
+        from_kit_units=from_stock_units,
     )
-    to_print = max(0, line.quantity - from_stock_units)
+    to_print = max(0, line.quantity - figs.from_stock_units)
     for part, per in printed:
         figs.parts.append(
             PartFigures(

@@ -11,11 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from backend.app.schemas.archive import PaginationMeta
-from backend.app.schemas.project import LineConfigurationOut
-
-#: The most one request may move or set. Far above any shelf, far below the
-#: INTEGER a PostgreSQL column overflows at — a typo is refused, never a 500.
-MAX_QTY = 1_000_000
+from backend.app.schemas.project import MAX_QTY, LineConfigurationOut
 
 
 class StockProductRef(BaseModel):

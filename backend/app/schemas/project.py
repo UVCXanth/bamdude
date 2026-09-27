@@ -1,11 +1,17 @@
 """Order (project) schemas — spec §Data model / §API."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
+
+#: The most one request may put on a line or move on a shelf. Far above any
+#: shelf, far below the INTEGER a PostgreSQL column overflows at — a typo is
+#: refused, never a 500. ``schemas/finished_stock.py`` and the frontend's
+#: ``STOCK_MAX_QTY`` read this one.
+MAX_QTY = 1_000_000
 
 PROJECT_STATUSES = ("active", "completed", "cancelled")
 PROJECT_PRIORITIES = ("low", "normal", "high", "urgent")
@@ -69,6 +75,9 @@ class ProjectLineCreate(BaseModel):
     #: :class:`ProjectLineResponse` is what was actually reserved, which is
     #: less when the shelf emptied between rendering the dialog and pressing OK.
     from_stock_units: int = Field(default=0, ge=0)
+    #: Ready units to take off the finished-goods shelf (spec workshop-add-to-order,
+    #: rule 12) — clamped like the kits, and like them not a column of the dump.
+    from_finished: int = Field(default=0, ge=0)
     #: spec workshop-product-variants, rules 15–17 and 20: set at creation and
     #: never changed. ``choices`` is ``{group_id: option_id}`` (a group left
     #: out takes its standard option); ``part_counts`` is ``{part_id: qty}`` —
@@ -86,7 +95,7 @@ class ProjectLineCreate(BaseModel):
 
 
 #: The fields of :class:`ProjectLineCreate` that are not ``project_lines`` columns.
-LINE_CREATE_NOT_COLUMNS = {"from_stock_units", "choices", "part_counts"}
+LINE_CREATE_NOT_COLUMNS = {"from_stock_units", "from_finished", "choices", "part_counts"}
 
 
 class LineConfigurationIn(BaseModel):
@@ -289,6 +298,10 @@ class ProjectLineResponse(BaseModel):
     # dialog asked for. ``units_printed`` stays prints only; "done" is the two
     # added, which is what ``progress`` already is.
     from_stock_units: int = 0
+    #: The split of ``from_stock_units`` (spec workshop-add-to-order, rule 14):
+    #: ready units off the finished-goods shelf and kits off the free-parts one.
+    from_finished: int = 0
+    from_kit_units: int = 0
     #: Capped printed-plus-stock coverage for this line.  A production surplus
     #: stays visible in ``units_printed`` but cannot overfill this number.
     covered_units: int
@@ -686,3 +699,74 @@ class LineProductOut(BaseModel):
 # reference so the class can live here, at the end, where the parallel passes'
 # edits to this file cannot collide with it.
 ProjectListResponse.model_rebuild()
+
+
+# ---------- add to order: the batch (spec workshop-add-to-order, rules 11–12) ----------
+
+
+class BatchStockIn(BaseModel):
+    """The operator's own numbers — taken as far as the shelf goes, never refused."""
+
+    from_finished: int = Field(default=0, ge=0, le=MAX_QTY)
+    from_kits: int = Field(default=0, ge=0, le=MAX_QTY)
+
+
+class _BatchLineBase(BaseModel):
+    material: str | None = Field(default=None, max_length=50)
+    color: str | None = Field(default=None, max_length=64)
+    note: str | None = None
+
+    @field_validator("material")
+    @classmethod
+    def _mat(cls, v: str | None) -> str | None:
+        return _normalize_material(v)
+
+
+class BatchProductLineIn(_BatchLineBase):
+    """Kits of a product in a configuration; ``stock`` — the server's proposal or the operator's numbers."""
+
+    kind: Literal["product"]
+    product_id: int
+    quantity: int = Field(default=1, ge=1, le=MAX_QTY)
+    choices: dict[int, int] = Field(default_factory=dict)
+    part_counts: dict[int, int] = Field(default_factory=dict)
+    stock: Literal["auto"] | BatchStockIn = "auto"
+
+
+class BatchPartsLineIn(_BatchLineBase):
+    """Some parts of a product — one «parts» line (quantity 1, nothing from stock)."""
+
+    kind: Literal["parts"]
+    product_id: int
+    part_counts: dict[int, int] = Field(min_length=1)
+
+
+class BatchPlateLineIn(_BatchLineBase):
+    """A one-off product from a library file's plate, ``copies`` of it."""
+
+    kind: Literal["plate"]
+    library_file_id: int
+    plate_index: int = Field(default=0, ge=0)
+    copies: int = Field(default=1, ge=1, le=MAX_QTY)
+
+
+BatchLine = Annotated[BatchProductLineIn | BatchPartsLineIn | BatchPlateLineIn, Field(discriminator="kind")]
+
+
+class BatchLinesIn(BaseModel):
+    lines: list[BatchLine] = Field(min_length=1, max_length=100)
+
+
+class LineIntakeOut(BaseModel):
+    """What a line asked of the shelf and what it got — less when the shelf moved."""
+
+    line_id: int
+    asked_finished: int = 0
+    got_finished: int = 0
+    asked_kits: int = 0
+    got_kits: int = 0
+
+
+class BatchLinesOut(BaseModel):
+    order: ProjectResponse
+    results: list[LineIntakeOut]
