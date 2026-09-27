@@ -31,6 +31,10 @@ const base: ProductListItem = {
   plates_count: 1,
   lines_count: 0,
   kits_available: 0,
+  finished_available: 0,
+  materials: [],
+  colors: [],
+  models: [],
 };
 
 const noop = () => {};

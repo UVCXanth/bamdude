@@ -5344,6 +5344,43 @@ export default {
     tiles: { failed: 'Could not load' },
   },
   orders: {
+    // spec workshop-add-to-order: the «Add to order» dialog.
+    add: {
+      title: 'Add to order',
+      tabs: { products: 'Products', parts: 'Parts of a product', plate: 'One-off from a file' },
+      summary: {
+        products_one: 'Selected: {{count}} product · {{units}} pcs',
+        products_other: 'Selected: {{count}} products · {{units}} pcs',
+      },
+      submit: { products: 'Add lines ({{count}})' },
+      stock: {
+        title: 'From stock',
+        ready: 'ready',
+        kits: 'kits',
+        readyLabel: 'Ready units',
+        kitsLabel: 'Kits',
+        of: 'of {{n}}',
+        auto: 'picked automatically',
+        none: 'nothing in stock — all to print',
+        pick: 'pick',
+        toPrint: 'to print: {{n}}',
+        listed: 'ready {{ready}} · kits {{kits}}',
+      },
+      pick: 'Pick',
+      configuration: 'Configuration',
+      materialColor: 'Material and colour',
+      noVariants: 'no variants',
+      noProducts: 'No products match',
+      productsNoun: 'products',
+      searchProducts: 'Search products…',
+      order: 'Order',
+      findOrder: 'Find an order…',
+      chooseOrder: 'Choose an active order',
+      added_one: 'Added {{count}} line',
+      added_other: 'Added {{count}} lines',
+      clamped: 'The stock changed while you were choosing — less was taken: {{detail}}',
+      clampedLine: '{{name}}: ready {{gotFinished}} of {{askedFinished}}, kits {{gotKits}} of {{askedKits}}',
+    },
     // spec workshop-product-variants: a line's configuration.
     lineConfig: {
       standard: 'standard',

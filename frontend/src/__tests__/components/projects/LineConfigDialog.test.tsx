@@ -100,6 +100,8 @@ describe('LineConfigDialog', () => {
     const preview = vi.spyOn(api, 'previewLineConfiguration').mockResolvedValue({
       reserved_before: 4,
       reserved_after: 2,
+      finished_before: 0,
+      finished_after: 0,
       dropping: [{ part_id: 6, name: 'straight tail', per_before: 1, per_after: 0, printed: 3, queued: 1 }],
     });
     const save = vi.spyOn(api, 'setLineConfiguration').mockResolvedValue({ id: 9, lines: [] } as unknown as Order);
@@ -117,7 +119,7 @@ describe('LineConfigDialog', () => {
   });
 
   it('resets to the standard options and counts', async () => {
-    vi.spyOn(api, 'previewLineConfiguration').mockResolvedValue({ reserved_before: 0, reserved_after: 0, dropping: [] });
+    vi.spyOn(api, 'previewLineConfiguration').mockResolvedValue({ reserved_before: 0, reserved_after: 0, finished_before: 0, finished_after: 0, dropping: [] });
     const save = vi.spyOn(api, 'setLineConfiguration').mockResolvedValue({ id: 9, lines: [] } as unknown as Order);
     const angled = {
       ...line,
@@ -146,7 +148,7 @@ describe('LineConfigDialog', () => {
   });
 
   it('keeps a changed count that differs from the configuration', async () => {
-    vi.spyOn(api, 'previewLineConfiguration').mockResolvedValue({ reserved_before: 0, reserved_after: 0, dropping: [] });
+    vi.spyOn(api, 'previewLineConfiguration').mockResolvedValue({ reserved_before: 0, reserved_after: 0, finished_before: 0, finished_after: 0, dropping: [] });
     const save = vi.spyOn(api, 'setLineConfiguration').mockResolvedValue({ id: 9, lines: [] } as unknown as Order);
     render(<LineConfigDialog orderId={9} line={line} onClose={() => {}} />);
     fireEvent.change(await screen.findByLabelText('Колба — per unit'), { target: { value: '2' } });

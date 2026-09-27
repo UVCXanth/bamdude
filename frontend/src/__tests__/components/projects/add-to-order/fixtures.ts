@@ -1,0 +1,88 @@
+import type { ProductListItem, ProductListPage, StockSuggestion } from '../../../../api/client';
+
+const row = (over: Partial<ProductListItem>): ProductListItem => ({
+  id: 1,
+  code: 'PR-0001',
+  name: 'Pipe',
+  is_active: true,
+  sku: 'PP-1',
+  version: null,
+  category: { id: 7, name: 'Pipes' },
+  status: 'ready',
+  origin: 'catalog',
+  origin_file_id: null,
+  origin_plate_index: null,
+  cover_image_filename: null,
+  has_cover: false,
+  parts_count: 3,
+  plates_count: 1,
+  lines_count: 0,
+  kits_available: 3,
+  finished_available: 2,
+  materials: ['PETG'],
+  colors: ['BLACK'],
+  models: ['P1S'],
+  ...over,
+});
+
+export const pipe = row({});
+export const lamp = row({
+  id: 2,
+  code: 'PR-0002',
+  name: 'Lamp',
+  sku: null,
+  status: 'draft',
+  kits_available: 1,
+  finished_available: 0,
+  materials: ['PLA'],
+  colors: [],
+  models: ['X1C'],
+});
+export const vase = row({ id: 3, code: 'PR-0003', name: 'Vase', sku: null, kits_available: 0, finished_available: 0 });
+
+export const pageOf = (items: ProductListItem[], total: number, page = 1): ProductListPage => ({
+  items,
+  meta: { total, current_page: page, per_page: 24, last_page: Math.max(1, Math.ceil(total / 24)) },
+  categories: [],
+  uncategorized: 0,
+});
+
+/** The Pipe's detail: one group, Tail, straight (standard) or angled. */
+export const pipeDetail = {
+  ...pipe,
+  description: null,
+  notes: null,
+  designer: null,
+  license: null,
+  source_url: null,
+  design_id: null,
+  attachments: [],
+  parts: [],
+  library_file_ids: [],
+  library_folder_ids: [],
+  units_printed_total: 0,
+  variant_groups: [
+    {
+      id: 10,
+      name: 'Tail',
+      position: 0,
+      default_option_id: 100,
+      options: [
+        { id: 100, name: 'straight', position: 0, lines_count: 0, parts_count: 1, stock_count: 0 },
+        { id: 101, name: 'angled', position: 1, lines_count: 0, parts_count: 1, stock_count: 0 },
+      ],
+    },
+  ],
+};
+
+export const suggestion = (over: Partial<StockSuggestion>): StockSuggestion => ({
+  product_id: 1,
+  finished_free: 2,
+  kits_free: 3,
+  from_finished: 2,
+  from_kits: 3,
+  to_print: 1,
+  position_id: 5,
+  position_code: 'SK-0005',
+  ...over,
+});

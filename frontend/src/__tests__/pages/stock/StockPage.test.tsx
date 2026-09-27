@@ -55,8 +55,8 @@ describe('StockPage', () => {
     getJournal = vi.spyOn(api, 'getStockJournal').mockResolvedValue({ items: [], next_cursor: null });
     vi.spyOn(api, 'getSettings').mockResolvedValue({ date_format: 'system' } as never);
     getProducts = vi.spyOn(api, 'getProducts').mockResolvedValue([
-      { id: 1, code: 'PR-0001', name: 'Lamp', is_active: true, sku: null, version: null, category: null, status: 'ready', origin: 'catalog', origin_file_id: null, origin_plate_index: null, cover_image_filename: null, has_cover: false, parts_count: 2, plates_count: 1, lines_count: 0, kits_available: 3 },
-      { id: 2, code: 'PR-0002', name: 'Old vase', is_active: false, sku: null, version: null, category: null, status: 'ready', origin: 'catalog', origin_file_id: null, origin_plate_index: null, cover_image_filename: null, has_cover: false, parts_count: 1, plates_count: 1, lines_count: 0, kits_available: 0 },
+      { id: 1, code: 'PR-0001', name: 'Lamp', is_active: true, sku: null, version: null, category: null, status: 'ready', origin: 'catalog', origin_file_id: null, origin_plate_index: null, cover_image_filename: null, has_cover: false, parts_count: 2, plates_count: 1, lines_count: 0, kits_available: 3, finished_available: 0, materials: [], colors: [], models: [] },
+      { id: 2, code: 'PR-0002', name: 'Old vase', is_active: false, sku: null, version: null, category: null, status: 'ready', origin: 'catalog', origin_file_id: null, origin_plate_index: null, cover_image_filename: null, has_cover: false, parts_count: 1, plates_count: 1, lines_count: 0, kits_available: 0, finished_available: 0, materials: [], colors: [], models: [] },
     ]);
   });
 

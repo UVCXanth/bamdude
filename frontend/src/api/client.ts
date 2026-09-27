@@ -1790,6 +1790,9 @@ export interface DroppedPart {
 export interface LineConfigurationImpact {
   reserved_before: number;
   reserved_after: number;
+  /** Ready units the line holds and would hold in the new configuration's position. */
+  finished_before: number;
+  finished_after: number;
   dropping: DroppedPart[];
 }
 
@@ -1809,6 +1812,10 @@ export interface ProjectLine {
    *  kits_available)` — and not what the dialog asked for. `units_printed`
    *  stays prints only; "done" is the two added, which is what `progress` is. */
   from_stock_units: number;
+  /** The split of `from_stock_units`: ready units off the finished-goods shelf
+   *  and kits off the free-parts one (spec workshop-add-to-order, rule 14). */
+  from_finished: number;
+  from_kit_units: number;
   /** Printed-and-stock coverage, capped at this line's quantity. */
   covered_units: number;
   progress: number;
@@ -1833,6 +1840,8 @@ export interface ProjectLineCreate {
   /** Kits to reserve off the product's free stock. Omitted means zero, and the
    *  dialog omits it rather than sending a 0 nobody typed. */
   from_stock_units?: number;
+  /** Ready units off the finished-goods shelf; omitted means zero. */
+  from_finished?: number;
   /** Omitted means `product`. A parts line has quantity 1 and no stock. */
   mode?: LineMode;
   /** `{group_id: option_id}`; a group left out takes its standard option. */
@@ -1851,6 +1860,9 @@ export interface ProjectLineUpdate {
    *  has a meaningful "don't touch it", which is why the line editor sends it
    *  only when the operator moved the box. */
   from_stock_units?: number | null;
+  /** Ready units — absent leaves them alone, a number rewrites them; only an
+   *  ACTIVE order takes them (409 otherwise). */
+  from_finished?: number | null;
 }
 
 /** A purchased part rolled up across every line of the order. */
@@ -2713,6 +2725,12 @@ export interface ProductListItem {
    *  counted parts of `balance / qty_per_unit`, floored. Carried by the LIST
    *  response at no extra request, so the card reads it directly. */
   kits_available: number;
+  /** Free ready units over every finished-goods position of the product. */
+  finished_available: number;
+  /** The product's plate materials, colours and printer models (stored facets). */
+  materials: string[];
+  colors: string[];
+  models: string[];
 }
 
 export interface Product extends ProductListItem {
@@ -2919,6 +2937,99 @@ export interface StockFigures {
 
 /** Rows per journal page — the request's `limit` and the hook's page size. */
 export const STOCK_JOURNAL_PAGE = 50;
+
+// ---- add to order (spec workshop-add-to-order) ----
+
+/** One line the add-to-order dialog asks about — `line_id` names an existing
+ *  line whose own reservation counts as free for it («pick from stock»). */
+export interface StockSuggestItem {
+  product_id: number;
+  options?: number[];
+  part_counts?: Record<number, number>;
+  quantity: number;
+  line_id?: number;
+}
+
+/** The server's proposal for a line: ready units of ITS configuration first,
+ *  then kits of free parts, the rest to print. */
+export interface StockSuggestion {
+  product_id: number;
+  finished_free: number;
+  kits_free: number;
+  from_finished: number;
+  from_kits: number;
+  to_print: number;
+  position_id: number | null;
+  position_code: string | null;
+}
+
+/** The operator's own numbers — taken as far as the shelf goes, never refused. */
+export interface BatchStock {
+  from_finished: number;
+  from_kits: number;
+}
+
+export type BatchLine =
+  | {
+      kind: 'product';
+      product_id: number;
+      quantity: number;
+      choices?: Record<number, number>;
+      part_counts?: Record<number, number>;
+      material?: string | null;
+      color?: string | null;
+      note?: string | null;
+      stock: 'auto' | BatchStock;
+    }
+  | {
+      kind: 'parts';
+      product_id: number;
+      part_counts: Record<number, number>;
+      material?: string | null;
+      color?: string | null;
+      note?: string | null;
+    }
+  | {
+      kind: 'plate';
+      library_file_id: number;
+      plate_index: number;
+      copies: number;
+      material?: string | null;
+      color?: string | null;
+      note?: string | null;
+    };
+
+/** What a line asked of the shelf and what it got — less when the shelf moved. */
+export interface LineIntake {
+  line_id: number;
+  asked_finished: number;
+  got_finished: number;
+  asked_kits: number;
+  got_kits: number;
+}
+
+export interface BatchLinesResult {
+  order: Order;
+  results: LineIntake[];
+}
+
+/** A printed part of a catalogue product — the dialog's «parts of a product» tab. */
+export interface ProductPartRow {
+  part_id: number;
+  name: string;
+  variant: { group: string; option: string } | null;
+  product: { id: number; code: string; name: string; sku: string | null };
+  models: string[];
+}
+
+export interface ProductPartsPage {
+  items: ProductPartRow[];
+  meta: PaginationMeta;
+}
+
+export interface ProductPartsParams extends PagedListParams {
+  model?: string;
+}
 
 // ---- finished goods (spec workshop-finished-goods, rules 16–22) ----
 
@@ -11454,6 +11565,17 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ ...data, dry_run: true }),
     }),
+  /** What each line would take from stock (spec workshop-add-to-order, rule 10). */
+  suggestStock: (items: StockSuggestItem[]) =>
+    request<{ items: StockSuggestion[] }>('/stock/suggest', { method: 'POST', body: JSON.stringify({ items }) }),
+  /** Many lines in one transaction; a refused line refuses the batch. */
+  addOrderLines: (orderId: number, lines: BatchLine[]) =>
+    request<BatchLinesResult>(`/projects/${orderId}/lines/batch`, { method: 'POST', body: JSON.stringify({ lines }) }),
+  getProductParts: (params: ProductPartsParams) => {
+    const qs = new URLSearchParams();
+    if (params.model) qs.set('model', params.model);
+    return request<ProductPartsPage>(`/products/parts?${pagedSearchParams(qs, params)}`);
+  },
   addOrderLine: (orderId: number, data: ProjectLineCreate) =>
     request<Order>(`/projects/${orderId}/lines`, { method: 'POST', body: JSON.stringify(data) }),
   updateOrderLine: (orderId: number, lineId: number, data: ProjectLineUpdate) =>
