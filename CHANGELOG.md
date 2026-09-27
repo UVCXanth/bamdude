@@ -72,6 +72,19 @@
   filament needs and the matching of prints to lines all follow each line's
   own configuration; copying a product or an order, and a product's export
   file, carry it.
+- **Finished goods are kept in stock.** The Stock page opens on finished goods:
+  one position per product configuration (`SK-…`), with its location, a
+  minimum and what is on hand, reserved and available — a position whose free
+  quantity drops under its minimum is marked, and the sidebar counts them.
+  Receipts, stocktakes (you enter what you counted, the difference is
+  recorded), reservations, issues to a customer and assembly from the free
+  parts on the shelf each leave a line in the journal with who did it;
+  assembly takes the kit's printed parts off the shelf in the same step, and
+  the list says how many of each position the shelf could still make. The
+  free-parts shelf and the journal of both ledgers are tabs of their own, and
+  every position has a page with its reservations, the product's other
+  configurations and the parts its kit needs. A product or a variant option
+  that finished goods are kept under cannot be deleted.
 - **An order's Queue section shows everything the order has in the queue.**
   It used to list only jobs already on a printer's queue, so work the order
   plan had just queued counted in the «In queue» tile but was nowhere in the
