@@ -11,6 +11,8 @@ and an API key's owner is the identity the provider is built for.
 
 from __future__ import annotations
 
+import io
+import zipfile
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
@@ -25,6 +27,15 @@ from backend.app.models.user import User
 from backend.app.services.model_providers import makerworld_provider, registry
 from backend.app.services.model_providers.base import ModelProvider, ProviderUnavailableError
 from backend.app.services.model_providers.makerworld.service import MakerWorldService
+
+
+def _sample_3mf() -> bytes:
+    """A real (tiny) 3MF archive — the library opens every 3MF as a ZIP."""
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("Metadata/plate_1.gcode", "G1 X10 Y10")
+    return output.getvalue()
+
 
 pytestmark = pytest.mark.asyncio
 
@@ -58,7 +69,7 @@ class _FakeMakerWorld(MakerWorldService):
         return {"name": "benchy.3mf", "url": "https://makerworld.bblmw.com/signed/f.3mf"}
 
     async def download_3mf(self, signed_url):
-        return b"PK\x03\x04not-a-real-3mf", "f.3mf"
+        return _sample_3mf(), "f.3mf"
 
     async def fetch_thumbnail(self, url):
         return b"\x89PNG\r\n\x1a\nfake", "image/png"

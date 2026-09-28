@@ -124,7 +124,7 @@ class TestTheEndOfAPrintAsksThePlugItself:
 
         from backend.app import main
 
-        archive = SimpleNamespace(energy_start_kwh=1.0, energy_kwh=None, energy_cost=None)
+        archive = SimpleNamespace(energy_start_kwh=1.0, energy_kwh=None, energy_cost=None, extra_data=None)
         db = SimpleNamespace(get=AsyncMock(return_value=archive), commit=AsyncMock())
 
         @asynccontextmanager

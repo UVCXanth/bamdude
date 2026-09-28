@@ -1159,7 +1159,7 @@ async def _build_printer_status(
             id=printer_id,
             name=printer.name,
             connected=False,
-            effective_model=printer_manager.effective_model_for(printer_id, printer.model),
+            effective_model=effective_model_for_state(printer.model or printer_manager.get_model(printer_id), None),
             # What the model is known to have, even with nobody home. The helper
             # answers from the mirrored config here and opens on the card,
             # because "no card reported" and "no card" are different things.
@@ -1476,7 +1476,9 @@ async def _build_printer_status(
         id=printer_id,
         name=printer.name,
         connected=state.connected,
-        effective_model=printer_manager.effective_model_for(printer_id, printer.model),
+        # From the state this answer already read — one read, the same one every
+        # other field of the status comes from.
+        effective_model=effective_model_for_state(printer.model or printer_manager.get_model(printer_id), state),
         state=state.state,
         current_print=state.current_print,
         subtask_name=state.subtask_name,

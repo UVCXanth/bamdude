@@ -1356,8 +1356,14 @@ class PrinterManager:
         return self._models.get(printer_id)
 
     def effective_model_for(self, printer_id: int, model: str | None = None) -> str | None:
-        """Model for file compatibility; physical model stays in the printer row."""
-        return effective_model_for_state(model or self.get_model(printer_id), self.get_status(printer_id))
+        """Model for file compatibility; physical model stays in the printer row.
+
+        Reads the state through ``peek_status`` — a read, never ``get_status``'s
+        staleness check, whose side effects the monitor and the forecast must not
+        trigger (the TV snapshot reaches this through the farm forecast).
+        """
+        state, _received_at, _stale = self.peek_status(printer_id)
+        return effective_model_for_state(model or self.get_model(printer_id), state)
 
     def get_drying_targets(self, printer_id: int) -> dict[int, dict] | None:
         """Get cached active drying target params keyed by AMS id.

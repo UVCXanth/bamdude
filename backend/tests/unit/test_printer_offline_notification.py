@@ -57,6 +57,10 @@ def _state(connected: bool, state: str = "IDLE") -> SimpleNamespace:
         store_to_sdcard=False,
         timelapse=False,
         ipcam=False,
+        # The upgrade kit's two flags joined the key with the model compatibility
+        # routing: installing the kit changes which files the printer takes.
+        upgrade_kit_supported=None,
+        upgrade_kit_installed=None,
         firmware_version="",
         mc_print_sub_stage=0,
         firmware_consistency_request=False,

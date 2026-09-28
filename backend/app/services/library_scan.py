@@ -109,7 +109,7 @@ async def prepare_via_service(
     from backend.app.services.library_file_preparation import EXTRACTION_VERSION, SCANNABLE_EXTENSIONS
     from backend.app.services.library_file_runtime import get_library_file_runtime
 
-    path = Path(dirpath) / filename
+    path = Path(dirpath) / filename  # SEC-PATH-OK: a name walk_next(root) listed; prepare_file keeps root
     if path.suffix.lower() not in SCANNABLE_EXTENSIONS:
         return None
     runtime = get_library_file_runtime()
@@ -683,7 +683,7 @@ async def run_scan(job_id: int) -> None:
                     rel = ""
                 counters["files_seen"] += 1
                 total += 1
-                candidate_path = str(Path(dirpath) / filename)
+                candidate_path = str(Path(dirpath) / filename)  # SEC-PATH-OK: dirpath/name come from walk_next(root)
                 found_paths.add(candidate_path)
                 try:
                     prepared = await prepare_via_service(
