@@ -2554,10 +2554,15 @@ export interface ProductPart {
   sourcing_url: string | null;
   remarks: string | null;
   sort_order: number;
+  /** «Не рахувати» — not a part of the product at all (a test cube, an object of another
+   *  plate): no shelf, no need, and no line may want it. Only with `qty_per_unit = 0`; a
+   *  zero without it is a part out of the kit, with a shelf (spec
+   *  workshop-order-issue-followups, rule 34). */
+  ignored: boolean;
   /** What is on the shelf for this part (pass 8) — a SUM over the ledger, never
    *  a column, poured in by every route that answers with a part. `0` for a
    *  part that holds no stock and for one that is not counted at all (purchased,
-   *  or `qty_per_unit = 0`); the two read alike here on purpose, because both
+   *  or marked «не рахувати»); the two read alike here on purpose, because both
    *  mean "nothing to take".
    *
    *  ⚠️ **Not what the stock SECTION reads.** «Вільний залишок» asks
@@ -2623,6 +2628,8 @@ export interface ProductPartCreate {
   kind: ProductPartKind;
   name: string;
   qty_per_unit?: number;
+  /** «Не рахувати» — only with a zero (the server answers 422 otherwise). */
+  ignored?: boolean;
   unit_price?: number | null;
   sourcing_url?: string | null;
   remarks?: string | null;
@@ -2636,6 +2643,8 @@ export interface ProductPartUpdate {
   remarks?: string | null;
   sort_order?: number;
   variant_option_id?: number | null;
+  /** «Не рахувати» — 422 on a part in the kit, 409 while it holds stock or is ordered. */
+  ignored?: boolean;
 }
 
 export interface PlateYieldEntry {

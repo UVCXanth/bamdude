@@ -6456,6 +6456,8 @@ export default {
       name: 'Деталь',
       perUnit: 'На виріб',
       notCounted: 'не рахується',
+      outOfKit: 'поза комплектом',
+      ignore: 'Не рахувати',
       fromFile: 'з файлу',
       aliases: 'Також відома як',
       addAlias: '+ назва',

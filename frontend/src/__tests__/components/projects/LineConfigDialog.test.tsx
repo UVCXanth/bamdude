@@ -22,6 +22,8 @@ const product = {
     { id: 5, kind: 'printed', name: 'Колба', qty_per_unit: 1, sort_order: 0, variant_option_id: null },
     { id: 6, kind: 'printed', name: 'straight tail', qty_per_unit: 1, sort_order: 1, variant_option_id: 11 },
     { id: 8, kind: 'printed', name: 'angled tail', qty_per_unit: 1, sort_order: 2, variant_option_id: 12 },
+    // «Не рахувати» (spec workshop-order-issue-followups, rule 34): never offered to a line.
+    { id: 9, kind: 'printed', name: 'test cube', qty_per_unit: 0, sort_order: 3, variant_option_id: null, ignored: true },
   ],
   variant_groups: [
     {
@@ -83,6 +85,12 @@ describe('LineConfigDialog', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.spyOn(api, 'getProduct').mockResolvedValue(product);
+  });
+
+  it('never offers a part marked not counted', async () => {
+    render(<LineConfigDialog orderId={9} line={line} onClose={() => {}} />);
+    expect(await screen.findByText('Колба')).toBeInTheDocument();
+    expect(screen.queryByText('test cube')).not.toBeInTheDocument();
   });
 
   it('shows a choice per group and each part with its per-unit count', async () => {

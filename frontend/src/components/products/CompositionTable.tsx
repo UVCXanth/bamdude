@@ -29,11 +29,12 @@ interface CompositionTableProps {
 /**
  * What one unit of the product is made of.
  *
- * ⚠️ **`qty_per_unit = 0` is a value, not a blank.** It means "this object
- * turns up on the plates but is not part of the product" — a spare, a test
- * cube, a jig — and the migration produced plenty of them from old targets. It
- * is therefore rendered WITH a hint saying so, never as an empty box that
- * invites an operator to "fix" a row that was already correct.
+ * ⚠️ **`qty_per_unit = 0` is a value, not a blank.** It means the part is out
+ * of the kit — still a part, with a shelf (a spare). «Не рахувати» (`ignored`,
+ * the box beside the zero) is what says an object on the plate is not a part at
+ * all — a test cube, a jig (spec workshop-order-issue-followups, rule 34). Both
+ * render WITH a hint, never as an empty box that invites an operator to "fix" a
+ * row that was already correct.
  *
  * ⚠️ **Aliases exist only on printed parts.** The server answers 400 to an
  * alias POST on a purchased one, because a purchased part is matched by nothing
@@ -215,7 +216,21 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
           className={`${FIELD_CLASS} w-20 text-right tabular-nums`}
         />
         {part.qty_per_unit === 0 && (
-          <span className="text-xs text-amber-400">{t('products.composition.notCounted')}</span>
+          <span className={`text-xs ${part.ignored ? 'text-amber-400' : 'text-bambu-gray'}`}>
+            {t(part.ignored ? 'products.composition.notCounted' : 'products.composition.outOfKit')}
+          </span>
+        )}
+        {part.qty_per_unit === 0 && part.kind === 'printed' && canEdit && (
+          <label className="flex items-center gap-1 text-xs text-bambu-gray">
+            <input
+              type="checkbox"
+              checked={part.ignored}
+              aria-label={t('products.composition.ignore')}
+              onChange={(e) => save.mutate({ partId: part.id, data: { ignored: e.target.checked } })}
+              className="accent-bambu-green"
+            />
+            {t('products.composition.ignore')}
+          </label>
         )}
       </div>
     </td>

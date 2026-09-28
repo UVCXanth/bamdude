@@ -130,7 +130,8 @@ export function LineConfigDialog({
   });
 
   const chosenSet = new Set(Object.values({ ...defaultsOf(product), ...choices }));
-  const parts = [...(product?.parts ?? [])].sort(byOrder);
+  // «Не рахувати» is not a part a line can want (spec workshop-order-issue-followups, rule 34).
+  const parts = [...(product?.parts ?? [])].filter((p) => !p.ignored).sort(byOrder);
 
   /** A count back at what the options give is no longer a change. */
   const setCount = (part: ProductPart, qty: number | null) =>

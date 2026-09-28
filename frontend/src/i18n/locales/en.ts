@@ -6353,6 +6353,8 @@ export default {
       name: 'Part',
       perUnit: 'Per unit',
       notCounted: 'not counted',
+      outOfKit: 'out of kit',
+      ignore: 'Not counted',
       fromFile: 'from file',
       aliases: 'Also known as',
       addAlias: '+ alias',

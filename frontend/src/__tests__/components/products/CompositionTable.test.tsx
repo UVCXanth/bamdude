@@ -43,6 +43,7 @@ const product = {
       name: 'cube',
       name_key: 'cube',
       qty_per_unit: 0,
+      ignored: true,
       aliases: ['cube'],
       auto: true,
       unit_price: null,
@@ -63,6 +64,20 @@ const product = {
       remarks: null,
       sort_order: 2,
     },
+    {
+      id: 4,
+      kind: 'printed',
+      name: 'handle',
+      name_key: 'handle',
+      qty_per_unit: 0,
+      ignored: false,
+      aliases: ['handle'],
+      auto: false,
+      unit_price: null,
+      sourcing_url: null,
+      remarks: null,
+      sort_order: 3,
+    },
   ],
 } as unknown as Product;
 
@@ -75,6 +90,27 @@ describe('CompositionTable', () => {
     render(<CompositionTable product={product} canEdit />);
     expect(screen.getByTestId('part-2-row').textContent).toMatch(/not counted/i);
     expect(screen.getAllByText(/from file/i)).toHaveLength(2);
+  });
+
+  // spec workshop-order-issue-followups, rule 34.
+  it('a zero is out of the kit; the mark says it is not counted, and the box sets it', async () => {
+    const save = vi.spyOn(api, 'updateProductPart').mockResolvedValue({ ...product.parts[3], ignored: true });
+    render(<CompositionTable product={product} canEdit />);
+    const cubeRow = screen.getByTestId('part-2-row');
+    expect(within(cubeRow).getByText('not counted')).toBeInTheDocument();
+    expect(within(cubeRow).getByRole('checkbox', { name: 'Not counted' })).toBeChecked();
+    const handleRow = screen.getByTestId('part-4-row');
+    expect(within(handleRow).getByText('out of kit')).toBeInTheDocument();
+    fireEvent.click(within(handleRow).getByRole('checkbox', { name: 'Not counted' }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(7, 4, { ignored: true }));
+    expect(within(screen.getByTestId('part-1-row')).queryByRole('checkbox', { name: 'Not counted' })).toBeNull();
+    expect(within(screen.getByTestId('part-3-row')).queryByRole('checkbox', { name: 'Not counted' })).toBeNull();
+  });
+
+  it('a viewer sees the hints and no box', () => {
+    render(<CompositionTable product={product} canEdit={false} />);
+    expect(within(screen.getByTestId('part-4-row')).getByText('out of kit')).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Not counted' })).toBeNull();
   });
 
   it('adds and removes aliases through the alias endpoints', async () => {
