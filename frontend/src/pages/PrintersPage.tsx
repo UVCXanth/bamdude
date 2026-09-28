@@ -71,6 +71,7 @@ import {
   AirVent,
   Download,
   ScanSearch,
+  Check,
   CheckCircle,
   XCircle,
   User,
@@ -94,7 +95,7 @@ import {
 import { SelectionBox } from '../components/SelectionBox';
 
 import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router';
-import { api, discoveryApi, firmwareApi, macrosApi, withStreamToken, DEFAULT_BACKUP_COMPATIBILITY } from '../api/client';
+import { api, discoveryApi, firmwareApi, macrosApi, withMediaToken, DEFAULT_BACKUP_COMPATIBILITY } from '../api/client';
 import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
 import { PauseChip } from '../components/PauseChip';
 import { formatDateOnly, formatETA, formatDuration, formatTimeOnly, parseUTCDate } from '../utils/date';
@@ -173,7 +174,8 @@ import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/ConnectionDiagnostic';
 import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, getEmptySlotKind, resolveSlotNozzleDiameter, resolveSlotNozzleFlow, amsSideBadge, formatSlotLabel } from '../utils/amsHelpers';
 import { FeedDirectionModal } from '../components/FeedDirectionModal';
-import { getPrinterImage, getWifiStrength, hasDoorSensor, mapModelCode } from '../utils/printer';
+import { getPrinterImage, getWifiStrength, hasDoorSensor, isPrinterCurrentlyDispatchable, mapModelCode } from '../utils/printer';
+import { modelCompatibility } from '../utils/modelCompatibility';
 import { OpenMonitorButton } from '../features/monitor/OpenMonitorButton';
 import { useMonitorTarget } from '../features/monitor/useMonitorTarget';
 import { useProgressiveListLength } from '../hooks/useProgressiveListLength';
@@ -187,7 +189,7 @@ import {
 } from '../utils/printerCardPrefs';
 import { resolveDryingPresetKey, type DryingPreset } from '../utils/dryingPresets';
 import { dryingBlockedKey } from '../utils/dryingBlockers';
-import { ALL_WEEKDAYS, DRYING_SCHEDULES_KEY, SCHEDULED_DRYINGS_KEY, WEEKDAY_BITS, WEEKDAY_NAMES, computeStartAfter, type DryingStartMode } from '../utils/scheduledDrying';
+import { ALL_WEEKDAYS, DRYING_SCHEDULES_KEY, SCHEDULED_DRYINGS_KEY, WEEKDAY_BITS, WEEKDAY_NAMES, computeStartAfter, farmZoneDiffers, type DryingStartMode } from '../utils/scheduledDrying';
 import { ScheduledDryingStrip } from '../components/ScheduledDryingStrip';
 
 // AMS drying popover dimensions — w-[240px] on the popover, estimated height
@@ -195,7 +197,7 @@ import { ScheduledDryingStrip } from '../components/ScheduledDryingStrip';
 // toggle + buttons. Over-estimating is fine (flip-above kicks in slightly
 // earlier); under-estimating leaves the popover clipped off the bottom (#1447).
 const DRYING_POPOVER_WIDTH = 240;
-const DRYING_POPOVER_ESTIMATED_HEIGHT = 320;
+const DRYING_POPOVER_ESTIMATED_HEIGHT = 460;
 // How long to wait after a drying command is acked before declaring that the AMS
 // never actually started (#2533). Generous: a unit runs its own pre-checks first.
 const DRY_START_CONFIRM_MS = 30_000;
@@ -220,6 +222,7 @@ import { parseIdList } from '../components/settings/staggerGroupIds';
 import { LocationConditions } from '../components/zigbee/LocationConditions';
 import { LocationCameras } from '../components/LocationCameras';
 import { openCameraWindow, printerSource, type CameraSourceKind } from '../utils/cameraSource';
+import { rememberCameraViewMode, storedCameraViewMode, type CameraViewMode } from '../utils/cameraViewMode';
 
 /** What the one floating camera window is currently showing. */
 interface EmbeddedCameraSelection {
@@ -228,6 +231,7 @@ interface EmbeddedCameraSelection {
   name: string;
 }
 import { PrinterConditions } from '../components/zigbee/PrinterConditions';
+import { PrinterHASensorRow } from '../components/PrinterHASensorRow';
 import { AirductModal } from '../components/AirductModal';
 import { TemperatureModal } from '../components/TemperatureModal';
 import { MotionModal } from '../components/MotionModal';
@@ -247,6 +251,32 @@ import { invalidateQueueViews } from '../utils/queryInvalidation';
 function formatKValue(k: number | null | undefined): string {
   const value = k ?? 0.020;
   return value.toFixed(3);
+}
+
+// The K-profile value on the slot card itself, not only inside the hover card
+// (upstream 8d1daab2). `k` arrives already resolved for this slot
+// (utils/kprofile_lookup, both status shapers) and gated on the slot being
+// loaded; falsy means no calibration is known for it. formatKValue()'s 0.020
+// default is captioned in the hover card but would read as a measured K on
+// this permanent, uncaptioned line, so an uncalibrated slot shows nothing. A
+// ternary, not `k && <div/>`: a firmware-reported 0 would make that expression
+// the number 0, and React renders numbers.
+//
+// `reserve` holds the row open on slots without a value whenever another slot
+// on the same card has one, so every fill bar stays on one line.
+function KValueLine({ k, reserve }: { k: number | null | undefined; reserve: boolean }) {
+  const { t } = useTranslation();
+  const className = 'text-[length:var(--pc-t8,8px)] text-bambu-gray tabular-nums leading-none truncate';
+  if (!k) {
+    return reserve ? <div className={className} aria-hidden="true">&nbsp;</div> : null;
+  }
+  // Short label with the full name on the title: a spelled-out "K Factor"
+  // clipped the value itself at the narrowest slot width.
+  return (
+    <div className={className} title={t('ams.kFactor')}>
+      {t('ams.kFactorShort')} {formatKValue(k)}
+    </div>
+  );
 }
 
 // Nozzle side indicators (Bambu Lab style - square badge with L/R)
@@ -689,7 +719,12 @@ function NozzleRackCard({ slots, filamentInfo, cardSize = 2 }: { slots: import('
   );
 
   return (
-    <div className="text-center px-2.5 py-1.5 bg-bambu-dark rounded-lg flex-[2_1_190px] flex flex-col justify-center">
+    // Sized to its contents rather than growing (upstream d0e217f6): the six
+    // chips are fixed-size, so any extra width is dead space taken from the
+    // temperature cards beside it — flex-1 with a 0 basis, which wrap their
+    // values ("220° / 220°") as soon as they lose it. Shrink stays enabled so
+    // the card still gives way on a narrow printer card instead of overflowing.
+    <div className="text-center px-2.5 py-1.5 bg-bambu-dark rounded-lg flex-[0_1_auto] flex flex-col justify-center">
       <p className="text-[length:var(--pc-t9,9px)] text-bambu-gray mb-1">{t('printers.nozzleRack')}</p>
       <div className="flex gap-[3px] justify-center">
         {rackSlots.map((slot, i) => {
@@ -699,18 +734,33 @@ function NozzleRackCard({ slots, filamentInfo, cardSize = 2 }: { slots: import('
 
           return (
             <NozzleSlotHoverCard key={slot.id >= 0 ? slot.id : `empty-${i}`} slot={slot} index={i} filamentName={slot.filament_id ? filamentInfo?.[slot.filament_id]?.name : undefined}>
-              <div
-                className={`${rackChipClass(cardSize)} rounded flex items-center justify-center cursor-default transition-colors border-b-2 ${
-                  isEmpty
-                    ? 'bg-bambu-dark-tertiary/20 border-bambu-dark-tertiary/20'
-                    : 'bg-bambu-dark-tertiary/40 border-bambu-dark-tertiary/40'
-                }`}
-                style={filamentBg ? { backgroundColor: filamentBg } : undefined}
-              >
-                <span className={`font-semibold ${isEmpty ? 'text-bambu-gray/30' : lightBg ? 'text-black/80' : 'text-white'}`}
-                      style={filamentBg && !lightBg ? { textShadow: '0 1px 3px rgba(0,0,0,0.9)' } : undefined}
+              <div className="flex flex-col items-center gap-0.5">
+                <div
+                  className={`${rackChipClass(cardSize)} rounded flex items-center justify-center cursor-default transition-colors border-b-2 ${
+                    isEmpty
+                      ? 'bg-bambu-dark-tertiary/20 border-bambu-dark-tertiary/20'
+                      : 'bg-bambu-dark-tertiary/40 border-bambu-dark-tertiary/40'
+                  }`}
+                  style={filamentBg ? { backgroundColor: filamentBg } : undefined}
                 >
-                  {isEmpty ? '-' : (slot.nozzle_diameter || '?')}
+                  <span
+                    data-rack-diameter
+                    className={`font-semibold ${isEmpty ? 'text-bambu-gray/30' : lightBg ? 'text-black/80' : 'text-white'}`}
+                    style={filamentBg && !lightBg ? { textShadow: '0 1px 3px rgba(0,0,0,0.9)' } : undefined}
+                  >
+                    {isEmpty ? '-' : (slot.nozzle_diameter || '?')}
+                  </span>
+                </div>
+                {/* Physical rack position (upstream d0e217f6), so "the nozzle in
+                    R4" — the print dialog's rack picker names positions the same
+                    way — can be acted on without counting chips. Positional: an
+                    empty slot keeps its number. Below the chip, not in it: the
+                    chip already carries the diameter over the filament colour. */}
+                <span
+                  data-rack-position
+                  className="text-[length:var(--pc-t8,8px)] leading-none tabular-nums text-bambu-gray/70"
+                >
+                  {i + 1}
                 </span>
               </div>
             </NozzleSlotHoverCard>
@@ -971,7 +1021,7 @@ export function CoverImage({ url, printName, paused }: { url: string | null; pri
   const cacheBustedUrl = useMemo(() => {
     if (!url) return null;
     const sep = url.includes('?') ? '&' : '?';
-    return withStreamToken(`${url}${sep}v=${encodeURIComponent(printName || Date.now().toString())}`);
+    return withMediaToken(`${url}${sep}v=${encodeURIComponent(printName || Date.now().toString())}`);
   }, [url, printName]);
 
   // Re-evaluate load state when the image URL changes, and ⚠️ ASK THE ELEMENT
@@ -1580,11 +1630,18 @@ function AiDetectionBadge({ printerId }: { printerId: number }) {
   if (data.monitored_printers && !data.monitored_printers.includes(printerId)) return null;
 
   const live = data.per_printer?.[String(printerId)];
-  const klass = live?.class ?? null;
+  // ⚠️ A watched print with no verdict is never "Idle", and never "Safe": the
+  // last poll produced nothing (`error`) or nothing has come back yet — any
+  // other class the server might send reads as the latter (upstream #2952).
+  const klass = !live
+    ? null
+    : ['failure', 'warning', 'safe', 'error'].includes(live.class)
+      ? live.class
+      : 'unknown';
   const look =
     klass === 'failure'
       ? 'bg-status-error/20 text-status-error'
-      : klass === 'warning'
+      : klass === 'warning' || klass === 'error'
         ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
         : klass === 'safe'
           ? 'bg-status-ok/20 text-status-ok'
@@ -1596,14 +1653,28 @@ function AiDetectionBadge({ printerId }: { printerId: number }) {
         ? t('printers.ai.warning')
         : klass === 'safe'
           ? t('printers.ai.safe')
-          : t('printers.ai.idle');
+          : klass === 'error'
+            ? t('printers.ai.error')
+            : klass === 'unknown'
+              ? t('printers.ai.unknown')
+              : t('printers.ai.idle');
+  // No score is quoted without a verdict: 0.000 beside "not checking" reads as
+  // a reassuring measurement rather than the absence of one.
+  const title =
+    klass === 'error'
+      ? t('printers.ai.errorTitle', { reason: live?.error || t('printers.ai.errorNoReason') })
+      : klass === 'unknown'
+        ? t('printers.ai.unknownTitle')
+        : live
+          ? t('printers.ai.scoreTitle', { score: live.score })
+          : t('printers.ai.idleTitle');
 
   return (
     <button
       type="button"
       onClick={() => navigate('/settings?tab=printing#failure-detection')}
       className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs transition-opacity hover:opacity-80 ${look}`}
-      title={live ? t('printers.ai.scoreTitle', { score: live.score }) : t('printers.ai.idleTitle')}
+      title={title}
     >
       <Sparkles className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)]" />
       {label}
@@ -1821,6 +1892,7 @@ function PrinterCard({
   timeFormat = 'system',
   dateFormat = 'system',
   cameraViewMode = 'window',
+  onCameraViewModeChange,
   onOpenEmbeddedCamera,
   checkPrinterFirmware = true,
   useSlicerApi = false,
@@ -1857,7 +1929,9 @@ function PrinterCard({
   onUnassignSpool?: (printerId: number, amsId: number, trayId: number) => void;
   timeFormat?: 'system' | '12h' | '24h';
   dateFormat?: 'system' | 'us' | 'eu' | 'iso';
-  cameraViewMode?: 'window' | 'embedded';
+  cameraViewMode?: CameraViewMode;
+  /** This browser's camera mode was picked on the camera button's caret (audit D9 b). */
+  onCameraViewModeChange?: (mode: CameraViewMode) => void;
   onOpenEmbeddedCamera?: (printerId: number, printerName: string) => void;
   checkPrinterFirmware?: boolean;
   // Master "Server-side slicing" toggle from Settings. When off, the Filament
@@ -1968,6 +2042,33 @@ function PrinterCard({
     });
     setDryingPopoverPos({ top: pos.top + window.scrollY, left: pos.left + window.scrollX, viewportTop: pos.top });
   }, []);
+  // The flame opens the popover in every state but screen-only: a unit that is
+  // drying or blocked right now can still be scheduled — only "Now" is off then.
+  const openDryingPopover = (ams: AMSUnit, trigger: HTMLElement) => {
+    const firstTray = ams.tray.find(tr => tr.tray_type);
+    const filType = resolveDryingPresetKey(firstTray?.tray_type, dryingPresets);
+    // Only reachable if a custom preset set dropped PLA itself.
+    const preset = dryingPresets[filType] ?? DRYING_PRESETS['PLA'];
+    const moduleType = ams.module_type as 'n3f' | 'n3s';
+    setDryingFilament(filType);
+    setDryingTemp(preset[moduleType] || preset.n3f);
+    setDryingDuration(moduleType === 'n3s' ? preset.n3s_hours : preset.n3f_hours);
+    setDryingRotateTray(false);
+    // Drying now: plan the next cycle on a schedule. Blocked now: go as soon as it can.
+    setDryingMode(ams.dry_time > 0 ? 'repeat' : ams.dry_sf_reason?.length ? 'when_free' : 'now');
+    setDryingPopoverModuleType(ams.module_type);
+    setDryingPopoverAmsId(ams.id);
+    dryingTriggerRef.current = trigger;
+    placeDryingPopover(trigger);
+  };
+  const dryingButtonTitle = (ams: AMSUnit) =>
+    status?.drying_screen_only
+      ? t('printers.drying.screenOnly')
+      : ams.dry_time > 0
+        ? t('printers.drying.scheduleNext')
+        : ams.dry_sf_reason?.length
+          ? t(dryingBlockedKey(ams.dry_sf_reason))
+          : t('printers.drying.start');
   useEffect(() => {
     if (dryingPopoverAmsId === null) return;
     const onResize = () => {
@@ -2066,6 +2167,23 @@ function PrinterCard({
     queryFn: ({ signal }) => api.getPrinterStatus(printer.id, signal),
     refetchInterval: query => farmStatusPollInterval(30_000, query), // Fallback polling, WebSocket handles real-time
   });
+  const { data: modelMatrix } = useQuery({
+    queryKey: ['modelCompatibility'],
+    queryFn: api.getModelCompatibility,
+    staleTime: 60 * 60 * 1000,
+  });
+
+  // Opens this printer's camera the way asked — the icon passes the browser's
+  // remembered mode, the caret the mode just picked.
+  const openCamera = (mode: CameraViewMode) => {
+    if (mode === 'embedded' && onOpenEmbeddedCamera) {
+      onOpenEmbeddedCamera(printer.id, printer.name);
+    } else {
+      // Same helper the location header's camera buttons use, so the two
+      // cannot drift apart over the window's geometry.
+      openCameraWindow(printerSource(printer.id));
+    }
+  };
 
   // Check if any macros match this printer (for showing/hiding Macros menu item)
   const { data: allMacros } = useQuery({
@@ -2203,6 +2321,13 @@ function PrinterCard({
     }
   }, [status?.ams]);
   const amsData = (status?.ams && status.ams.length > 0) ? status.ams : cachedAmsData.current;
+  // The K line exists only on slots with a known calibration. The AMS units and
+  // the external spools are flex siblings in one row, so when any slot on the
+  // card shows a value the others reserve its height — otherwise their fill
+  // bars sit a line above their neighbours'. A card with no value anywhere
+  // keeps its old height.
+  const anySlotHasKValue = amsData.some(unit => unit.tray.some(tray => tray.k))
+    || (status?.vt_tray ?? []).some(tray => tray.k);
 
   // Cache tray_now to prevent flickering when undefined values come in
   // Valid tray IDs: 0-253 for AMS, 254 for external spool
@@ -2337,7 +2462,6 @@ function PrinterCard({
     && (status?.state === 'FINISH' || status?.state === 'FAILED')
     && hasAutoDispatchableQueue;
   const showClearPlateButton = shouldShowClearPlateButton({
-    connected: status?.connected,
     needsPlateClear,
     isPrintingOrPaused,
     greenClearCtaVisible,
@@ -3141,7 +3265,14 @@ function PrinterCard({
     }
   };
 
-  const canDrop = isConnected && status?.state !== 'RUNNING' && status?.state !== 'PAUSE' && hasPermission('printers:control');
+  // A dropped file goes through the Schedule dialog into this printer's queue,
+  // so a printer that is printing, paused or offline is no reason to refuse it
+  // — the item only waits its turn (upstream #2849). What the drop performs is
+  // an upload and a queue add, so those are the permissions it asks for; it
+  // never touches printers:control, which it used to check.
+  const canDrop = hasPermission('library:upload') && hasPermission('queue:create');
+  // Wording only: whether the queued job would start at once or wait.
+  const dropWouldQueue = !isPrinterCurrentlyDispatchable(status);
 
   const handleCardDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
@@ -3203,7 +3334,7 @@ function PrinterCard({
             showToast(t('printers.dropNoSlicedForModel', { filename: candidate.name }), 'error');
             continue;
           }
-          if (mapModelCode(printer.model) && slicedFor.toLowerCase() !== mapModelCode(printer.model).toLowerCase()) {
+          if (modelCompatibility(slicedFor, status?.effective_model || printer.model, modelMatrix?.models) === 'incompatible') {
             if (result.outcome === 'created') await api.deleteLibraryFile(result.id).catch(() => {});
             showToast(t('printers.incompatibleFile', { slicedFor, printerModel: mapModelCode(printer.model) }), 'error');
             continue;
@@ -3325,12 +3456,18 @@ function PrinterCard({
             ) : canDrop ? (
               <>
                 <PrinterIcon className="w-8 h-8 mx-auto mb-2 text-bambu-green" />
-                <p className="text-sm font-medium text-bambu-green">{t('printers.dropToPrint', 'Drop to print')}</p>
+                <p className="text-sm font-medium text-bambu-green">
+                  {dropWouldQueue ? t('printers.dropToQueue') : t('printers.dropToPrint')}
+                </p>
               </>
             ) : (
               <>
                 <X className="w-8 h-8 mx-auto mb-2 text-red-600 dark:text-red-400" />
-                <p className="text-sm font-medium text-red-700 dark:text-red-400">{t('printers.cannotPrint', 'Printer busy')}</p>
+                <p className="text-sm font-medium text-red-700 dark:text-red-400">
+                  {!hasPermission('library:upload')
+                    ? t('fileManager.noPermissionUpload')
+                    : t('fileManager.noPermissionAddToQueue')}
+                </p>
               </>
             )}
           </div>
@@ -4195,23 +4332,37 @@ function PrinterCard({
               <>
                 {/* Current Print or Idle Placeholder */}
                 <div className="mb-4 p-3 bg-bambu-dark rounded-lg relative">
-                  {/* Skip Objects button - top right corner, always visible */}
+                  {/* Skip Objects button - top right corner, always visible.
+                      A running print always has at least one object, so a count of
+                      0 means "not loaded yet" (a restart mid-print), not "nothing to
+                      skip" — and support is unknown then too. Disabling on 0 killed
+                      the only control that opens the modal, whose fetch is what
+                      rebuilds the list (upstream cfecfa36). Exactly one object is
+                      the real nothing-to-skip case. */}
+                  {(() => {
+                    const objectCount = status.printable_objects_count ?? 0;
+                    const printing = status.state === 'RUNNING' || status.state === 'PAUSE';
+                    const canSkipObjects =
+                      printing
+                      && hasPermission('printers:control')
+                      && (objectCount === 0 || (objectCount >= 2 && (status.skip_objects_supported ?? false)));
+                    return (
                   <button
                     onClick={() => setShowSkipObjectsModal(true)}
-                    disabled={!(status.state === 'RUNNING' || status.state === 'PAUSE') || (status.printable_objects_count ?? 0) < 2 || !(status.skip_objects_supported ?? false) || !hasPermission('printers:control')}
+                    disabled={!canSkipObjects}
                     className={`absolute top-2 right-2 p-1.5 rounded transition-colors z-10 ${
-                      (status.state === 'RUNNING' || status.state === 'PAUSE') && (status.printable_objects_count ?? 0) >= 2 && (status.skip_objects_supported ?? false) && hasPermission('printers:control')
+                      canSkipObjects
                         ? 'text-bambu-gray hover:text-white hover:bg-white/10'
                         : 'text-bambu-gray/30 cursor-not-allowed'
                     }`}
                     title={
                       !hasPermission('printers:control')
                         ? t('printers.permission.noControl')
-                        : !(status.state === 'RUNNING' || status.state === 'PAUSE')
+                        : !printing
                           ? t('printers.skipObjects.onlyWhilePrinting')
-                          : (status.printable_objects_count ?? 0) >= 2
-                            ? t('printers.skipObjects.tooltip')
-                            : t('printers.skipObjects.requiresMultiple')
+                          : objectCount === 1
+                            ? t('printers.skipObjects.requiresMultiple')
+                            : t('printers.skipObjects.tooltip')
                     }
                   >
                     <SkipObjectsIcon className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
@@ -4222,6 +4373,8 @@ function PrinterCard({
                       </span>
                     )}
                   </button>
+                    );
+                  })()}
                   <div className="flex gap-3">
                     {/* Cover Image */}
                     <CoverImage
@@ -4314,7 +4467,7 @@ function PrinterCard({
                 </div>
 
                 {/* Queue Widget - always visible when there are pending items */}
-                <PrinterQueueWidget printerId={printer.id} printerModel={printer.model} printerState={status.state} awaitingPlateClear={status.awaiting_plate_clear} repeatAvailable={repeatAvailable} requirePlateClear={printer.require_plate_clear} />
+                <PrinterQueueWidget printerId={printer.id} printerModel={status.effective_model || printer.model} printerState={status.state} awaitingPlateClear={status.awaiting_plate_clear} repeatAvailable={repeatAvailable} requirePlateClear={printer.require_plate_clear} />
               </>
             )}
 
@@ -4904,37 +5057,24 @@ function PrinterCard({
                                       commanded: it stays disabled and says why (#2533). */}
                                   {(status.supports_drying || !!status.drying_screen_only) && (ams.module_type === 'n3f' || ams.module_type === 'n3s') && hasPermission('printers:control') && (
                                     <button
-                                      disabled={!!status.drying_screen_only || !!(ams.dry_sf_reason?.length && ams.dry_time === 0)}
+                                      disabled={!!status.drying_screen_only}
                                       onClick={(e) => {
-                                        if (ams.dry_time > 0) {
-                                          stopDryingMutation.mutate(ams.id);
-                                        } else if (dryingPopoverAmsId === ams.id) {
+                                        if (dryingPopoverAmsId === ams.id) {
                                           setDryingPopoverAmsId(null);
                                         } else {
-                                          const firstTray = ams.tray.find(t => t.tray_type);
-                                          const filType = resolveDryingPresetKey(firstTray?.tray_type, dryingPresets);
-                                          // Only reachable if a custom preset set dropped PLA itself.
-                                          const preset = dryingPresets[filType] ?? DRYING_PRESETS['PLA'];
-                                          const moduleType = ams.module_type as 'n3f' | 'n3s';
-                                          setDryingFilament(filType);
-                                          setDryingTemp(preset[moduleType] || preset.n3f);
-                                          setDryingDuration(moduleType === 'n3s' ? preset.n3s_hours : preset.n3f_hours);
-                                          setDryingRotateTray(false);
-                                          setDryingMode('now');
-                                          setDryingPopoverModuleType(ams.module_type);
-                                          setDryingPopoverAmsId(ams.id);
-                                          dryingTriggerRef.current = e.currentTarget as HTMLElement;
-                                          placeDryingPopover(e.currentTarget as HTMLElement);
+                                          openDryingPopover(ams, e.currentTarget as HTMLElement);
                                         }
                                       }}
                                       className={`flex items-center gap-0.5 px-1 py-0.5 rounded text-[length:var(--pc-t9,9px)] transition-colors ${
                                         ams.dry_time > 0
                                           ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
-                                          : status.drying_screen_only || ams.dry_sf_reason?.length
+                                          : status.drying_screen_only
                                             ? 'bg-bambu-dark-tertiary/30 text-bambu-gray/50 cursor-not-allowed'
-                                            : 'bg-bambu-dark-tertiary/50 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary'
+                                            : ams.dry_sf_reason?.length
+                                              ? 'bg-bambu-dark-tertiary/30 text-bambu-gray/50 hover:text-white'
+                                              : 'bg-bambu-dark-tertiary/50 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary'
                                       }`}
-                                      title={status.drying_screen_only ? t('printers.drying.screenOnly') : ams.dry_time > 0 ? t('printers.drying.stop') : ams.dry_sf_reason?.length ? t(dryingBlockedKey(ams.dry_sf_reason)) : t('printers.drying.start')}
+                                      title={dryingButtonTitle(ams)}
                                     >
                                       <Flame className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)]" />
                                     </button>
@@ -5056,7 +5196,7 @@ function PrinterCard({
                                     || tray.tray_sub_brands
                                     || tray.tray_type,
                                   colorName: resolveMultiColorName(trayActual ? (trayActual.cols ?? null) : tray.cols)
-                                    ?? getColorName((trayActual?.tray_color ?? tray.tray_color) || ''),
+                                    ?? getColorName((trayActual?.tray_color ?? tray.tray_color) || '', tray.tray_sub_brands),
                                   colorHex: (trayActual?.tray_color ?? tray.tray_color) || null,
                                   kFactor: formatKValue(tray.k),
                                   fillLevel: effectiveFill,
@@ -5121,6 +5261,7 @@ function PrinterCard({
                                     >
                                       {tray?.tray_type || (emptyKind === 'reset' ? t('printers.ams.slotUnconfigured') : '-')}
                                     </div>
+                                    <KValueLine k={filamentData ? tray?.k : null} reserve={anySlotHasKValue} />
                                     {/* Fill bar */}
                                     <div className="mt-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
                                       {effectiveFill !== null && effectiveFill >= 0 && !isEmpty && tray && (
@@ -5156,7 +5297,7 @@ function PrinterCard({
                                               : { amsId: ams.id, slotId: slotIdx }
                                           );
                                         }}
-                                        className="absolute -top-1 -right-1 w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10 hover:bg-bambu-dark-tertiary"
+                                        className="absolute -top-1 -right-1 w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-full flex items-center justify-center can-hover:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity z-10 hover:bg-bambu-dark-tertiary"
                                         title={t('printers.slotOptions')}
                                       >
                                         <MoreVertical className="w-[var(--pc-i25,0.625rem)] h-[var(--pc-i25,0.625rem)] text-bambu-gray" />
@@ -5261,7 +5402,15 @@ function PrinterCard({
                                                 id: spoolmanSpool.id,
                                                 material: spoolmanSpool.material,
                                                 brand: spoolmanSpool.brand ?? null,
-                                                color_name: spoolmanSpool.color_name ?? null,
+                                                // A synthesized name is the spool's subtype, not a colour: it must
+                                                // not outrank the catalogue answer on the card.
+                                                color_name: spoolmanSpool.color_name_is_synthesized ? null : (spoolmanSpool.color_name ?? null),
+                                                // The spool's own swatch (upstream #2967). Spoolman carries the
+                                                // extra stops but no effect field, so those rolls gradient and never shimmer.
+                                                subtype: spoolmanSpool.subtype ?? null,
+                                                rgba: spoolmanSpool.rgba ?? null,
+                                                extra_colors: spoolmanSpool.extra_colors ?? null,
+                                                effect_type: spoolmanSpool.effect_type ?? null,
                                                 remainingWeightGrams: spoolmanSpool.label_weight
                                                   ? Math.max(0, Math.round(spoolmanSpool.label_weight - spoolmanSpool.weight_used))
                                                   : undefined,
@@ -5294,6 +5443,11 @@ function PrinterCard({
                                               material: assignment.spool.material,
                                               brand: assignment.spool.brand,
                                               color_name: assignment.spool.color_name,
+                                              // The spool's own swatch (upstream #2967).
+                                              subtype: assignment.spool.subtype ?? null,
+                                              rgba: assignment.spool.rgba ?? null,
+                                              extra_colors: assignment.spool.extra_colors ?? null,
+                                              effect_type: assignment.spool.effect_type ?? null,
                                               remainingWeightGrams: Math.max(0, Math.round(assignment.spool.label_weight - assignment.spool.weight_used)),
                                               displayName: formatSpoolDisplayName(assignment.spool, effectiveSpoolTemplate),
                                             } : null,
@@ -5429,7 +5583,7 @@ function PrinterCard({
                             || tray.tray_sub_brands
                             || tray.tray_type,
                           colorName: resolveMultiColorName(htTrayActual ? (htTrayActual.cols ?? null) : tray.cols)
-                            ?? getColorName((htTrayActual?.tray_color ?? tray.tray_color) || ''),
+                            ?? getColorName((htTrayActual?.tray_color ?? tray.tray_color) || '', tray.tray_sub_brands),
                           colorHex: (htTrayActual?.tray_color ?? tray.tray_color) || null,
                           kFactor: formatKValue(tray.k),
                           fillLevel: htEffectiveFill,
@@ -5494,6 +5648,7 @@ function PrinterCard({
                             >
                               {tray?.tray_type || (emptyKind === 'reset' ? t('printers.ams.slotUnconfigured') : '-')}
                             </div>
+                            <KValueLine k={filamentData ? tray?.k : null} reserve={anySlotHasKValue} />
                             {/* Fill bar */}
                             <div className="mt-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
                               {htEffectiveFill !== null && htEffectiveFill >= 0 && !isEmpty && (
@@ -5541,25 +5696,10 @@ function PrinterCard({
                                   <button
                                     disabled={!!status.drying_screen_only}
                                     onClick={(e) => {
-                                      if (ams.dry_time > 0) {
-                                        stopDryingMutation.mutate(ams.id);
-                                      } else if (dryingPopoverAmsId === ams.id) {
+                                      if (dryingPopoverAmsId === ams.id) {
                                         setDryingPopoverAmsId(null);
                                       } else {
-                                        const firstTray = ams.tray.find(t => t.tray_type);
-                                        const filType = resolveDryingPresetKey(firstTray?.tray_type, dryingPresets);
-                                        // Only reachable if a custom preset set dropped PLA itself.
-                                        const preset = dryingPresets[filType] ?? DRYING_PRESETS['PLA'];
-                                        const moduleType = ams.module_type as 'n3f' | 'n3s';
-                                        setDryingFilament(filType);
-                                        setDryingTemp(preset[moduleType] || preset.n3f);
-                                        setDryingDuration(moduleType === 'n3s' ? preset.n3s_hours : preset.n3f_hours);
-                                        setDryingRotateTray(false);
-                                        setDryingMode('now');
-                                        setDryingPopoverModuleType(ams.module_type);
-                                        setDryingPopoverAmsId(ams.id);
-                                        dryingTriggerRef.current = e.currentTarget as HTMLElement;
-                                        placeDryingPopover(e.currentTarget as HTMLElement);
+                                        openDryingPopover(ams, e.currentTarget as HTMLElement);
                                       }
                                     }}
                                     className={`flex items-center gap-0.5 px-1 py-0.5 rounded text-[length:var(--pc-t9,9px)] transition-colors ${
@@ -5569,7 +5709,7 @@ function PrinterCard({
                                           ? 'bg-bambu-dark-tertiary/30 text-bambu-gray/50 cursor-not-allowed'
                                           : 'bg-bambu-dark-tertiary/50 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary'
                                     }`}
-                                    title={status.drying_screen_only ? t('printers.drying.screenOnly') : ams.dry_time > 0 ? t('printers.drying.stop') : t('printers.drying.start')}
+                                    title={dryingButtonTitle(ams)}
                                   >
                                     <Flame className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)]" />
                                   </button>
@@ -5623,7 +5763,7 @@ function PrinterCard({
                                           : { amsId: ams.id, slotId: htSlotId }
                                       );
                                     }}
-                                    className="absolute -top-1 -right-1 w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10 hover:bg-bambu-dark-tertiary"
+                                    className="absolute -top-1 -right-1 w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-full flex items-center justify-center can-hover:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity z-10 hover:bg-bambu-dark-tertiary"
                                     title={t('printers.slotOptions')}
                                   >
                                     <MoreVertical className="w-[var(--pc-i25,0.625rem)] h-[var(--pc-i25,0.625rem)] text-bambu-gray" />
@@ -5685,7 +5825,15 @@ function PrinterCard({
                                             id: spoolmanSpool.id,
                                             material: spoolmanSpool.material,
                                             brand: spoolmanSpool.brand ?? null,
-                                            color_name: spoolmanSpool.color_name ?? null,
+                                                // A synthesized name is the spool's subtype, not a colour: it must
+                                                // not outrank the catalogue answer on the card.
+                                                color_name: spoolmanSpool.color_name_is_synthesized ? null : (spoolmanSpool.color_name ?? null),
+                                                // The spool's own swatch (upstream #2967). Spoolman carries the
+                                                // extra stops but no effect field, so those rolls gradient and never shimmer.
+                                                subtype: spoolmanSpool.subtype ?? null,
+                                                rgba: spoolmanSpool.rgba ?? null,
+                                                extra_colors: spoolmanSpool.extra_colors ?? null,
+                                                effect_type: spoolmanSpool.effect_type ?? null,
                                             remainingWeightGrams: spoolmanSpool.label_weight
                                               ? Math.max(0, Math.round(spoolmanSpool.label_weight - spoolmanSpool.weight_used))
                                               : undefined,
@@ -5718,6 +5866,11 @@ function PrinterCard({
                                           material: assignment.spool.material,
                                           brand: assignment.spool.brand,
                                           color_name: assignment.spool.color_name,
+                                          // The spool's own swatch (upstream #2967).
+                                          subtype: assignment.spool.subtype ?? null,
+                                          rgba: assignment.spool.rgba ?? null,
+                                          extra_colors: assignment.spool.extra_colors ?? null,
+                                          effect_type: assignment.spool.effect_type ?? null,
                                           remainingWeightGrams: Math.max(0, Math.round(assignment.spool.label_weight - assignment.spool.weight_used)),
                                           displayName: formatSpoolDisplayName(assignment.spool, effectiveSpoolTemplate),
                                         } : null,
@@ -5872,7 +6025,7 @@ function PrinterCard({
                                   || extTray.tray_sub_brands
                                   || extTray.tray_type
                                   || 'Unknown',
-                                colorName: resolveMultiColorName(extTray.cols) ?? getColorName(extTray.tray_color || ''),
+                                colorName: resolveMultiColorName(extTray.cols) ?? getColorName(extTray.tray_color || '', extTray.tray_sub_brands),
                                 colorHex: extTray.tray_color || null,
                                 kFactor: formatKValue(extTray.k),
                                 fillLevel: extEffectiveFill,
@@ -5896,6 +6049,7 @@ function PrinterCard({
                                   <div className={`text-[length:var(--pc-t9,9px)] font-bold truncate ${isEmpty ? 'text-white/40' : 'text-white'}`}>
                                     {extTray.tray_type || '-'}
                                   </div>
+                                  <KValueLine k={isEmpty ? null : extTray.k} reserve={anySlotHasKValue} />
                                   <div className="mt-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
                                     {extEffectiveFill !== null && extEffectiveFill >= 0 && !isEmpty && (
                                       <div
@@ -5928,7 +6082,7 @@ function PrinterCard({
                                             : { amsId: 255, slotId: slotTrayId }
                                         );
                                       }}
-                                      className="absolute -top-1 -right-1 w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10 hover:bg-bambu-dark-tertiary"
+                                      className="absolute -top-1 -right-1 w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-full flex items-center justify-center can-hover:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity z-10 hover:bg-bambu-dark-tertiary"
                                       title={t('printers.slotOptions')}
                                     >
                                       <MoreVertical className="w-[var(--pc-i25,0.625rem)] h-[var(--pc-i25,0.625rem)] text-bambu-gray" />
@@ -6006,7 +6160,15 @@ function PrinterCard({
                                               id: spoolmanSpool.id,
                                               material: spoolmanSpool.material,
                                               brand: spoolmanSpool.brand ?? null,
-                                              color_name: spoolmanSpool.color_name ?? null,
+                                                // A synthesized name is the spool's subtype, not a colour: it must
+                                                // not outrank the catalogue answer on the card.
+                                                color_name: spoolmanSpool.color_name_is_synthesized ? null : (spoolmanSpool.color_name ?? null),
+                                                // The spool's own swatch (upstream #2967). Spoolman carries the
+                                                // extra stops but no effect field, so those rolls gradient and never shimmer.
+                                                subtype: spoolmanSpool.subtype ?? null,
+                                                rgba: spoolmanSpool.rgba ?? null,
+                                                extra_colors: spoolmanSpool.extra_colors ?? null,
+                                                effect_type: spoolmanSpool.effect_type ?? null,
                                               remainingWeightGrams: spoolmanSpool.label_weight
                                                 ? Math.max(0, Math.round(spoolmanSpool.label_weight - spoolmanSpool.weight_used))
                                                 : undefined,
@@ -6039,6 +6201,11 @@ function PrinterCard({
                                             material: assignment.spool.material,
                                             brand: assignment.spool.brand,
                                             color_name: assignment.spool.color_name,
+                                            // The spool's own swatch (upstream #2967).
+                                            subtype: assignment.spool.subtype ?? null,
+                                            rgba: assignment.spool.rgba ?? null,
+                                            extra_colors: assignment.spool.extra_colors ?? null,
+                                            effect_type: assignment.spool.effect_type ?? null,
                                             remainingWeightGrams: Math.max(0, Math.round(assignment.spool.label_weight - assignment.spool.weight_used)),
                                             displayName: formatSpoolDisplayName(assignment.spool, effectiveSpoolTemplate),
                                           } : null,
@@ -6111,6 +6278,12 @@ function PrinterCard({
             {viewMode === 'expanded' && <ScheduledDryingStrip printerId={printer.id} />}
           </>
         )}
+
+        {/* The plate gate outlives the power (upstream #2864): with Auto Power
+            Off a finished printer is off with its gate still up, and clearing
+            sends nothing to the printer. The live-status body above renders
+            nothing without a connection, so the answer gets its own slot. */}
+        {printer.is_active !== false && !status?.connected && plateClearButtons}
 
         {/* Smart Plug Controls - hidden in compact mode */}
         {smartPlug && viewMode === 'expanded' && (
@@ -6254,6 +6427,7 @@ function PrinterCard({
             room would claim the enclosure reads what the room reads. Expanded
             only, like the plug row above it. */}
         {viewMode === 'expanded' && <PrinterConditions printerId={printer.id} />}
+        {viewMode === 'expanded' && <PrinterHASensorRow printerId={printer.id} />}
 
         {/* Archive summary — counter line mirrors QueueCard footer, links
             to the archive filtered by this printer. Sits above the action
@@ -6286,24 +6460,47 @@ function PrinterCard({
               >
                 <ChamberLight on={status?.chamber_light ?? false} className={`w-[var(--pc-i5,1.25rem)] h-[var(--pc-i5,1.25rem)] ${status?.chamber_light ? 'text-yellow-400' : ''}`} />
               </Button>
-              {/* Camera Button */}
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => {
-                  if (cameraViewMode === 'embedded' && onOpenEmbeddedCamera) {
-                    onOpenEmbeddedCamera(printer.id, printer.name);
-                  } else {
-                    // Same helper the location header's camera buttons use, so
-                    // the two cannot drift apart over the window's geometry.
-                    openCameraWindow(printerSource(printer.id));
-                  }
-                }}
-                disabled={!status?.connected || !hasPermission('camera:view')}
-                title={!hasPermission('camera:view') ? t('printers.permission.noCamera') : (cameraViewMode === 'embedded' ? t('printers.openCameraOverlay') : t('printers.openCameraWindow'))}
-              >
-                <Video className="w-[var(--pc-i5,1.25rem)] h-[var(--pc-i5,1.25rem)]" />
-              </Button>
+              {/* Camera: the icon opens it the way this browser last chose;
+                  the caret offers both and remembers the pick (audit D9 b). */}
+              <div className="inline-flex rounded-md">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => openCamera(cameraViewMode)}
+                  disabled={!status?.connected || !hasPermission('camera:view')}
+                  title={!hasPermission('camera:view') ? t('printers.permission.noCamera') : (cameraViewMode === 'embedded' ? t('printers.openCameraOverlay') : t('printers.openCameraWindow'))}
+                  className="!rounded-r-none !border-r-0"
+                >
+                  <Video className="w-[var(--pc-i5,1.25rem)] h-[var(--pc-i5,1.25rem)]" />
+                </Button>
+                <CardActionMenu
+                  label={t('printers.cameraViewModeMenu')}
+                  title={t('printers.cameraViewModeMenu')}
+                  disabled={!status?.connected || !hasPermission('camera:view')}
+                  width="max-content"
+                  estimatedHeight={96}
+                  triggerClassName="inline-flex items-center justify-center font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-bambu-dark disabled:opacity-50 disabled:cursor-not-allowed border border-bambu-dark-tertiary bg-bambu-dark-tertiary hover:bg-bambu-gray-dark text-white focus:ring-bambu-gray text-sm min-h-[44px] md:min-h-0 py-1.5 px-1.5 rounded-r-lg"
+                  icon={<ChevronDown className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)]" />}
+                >
+                  {(close) => (
+                    <>
+                      {(['window', 'embedded'] as const).map((mode) => (
+                        <CardActionMenuItem
+                          key={mode}
+                          onSelect={() => {
+                            close();
+                            onCameraViewModeChange?.(mode);
+                            openCamera(mode);
+                          }}
+                        >
+                          <Check className={`w-4 h-4 ${cameraViewMode === mode ? 'text-bambu-green' : 'invisible'}`} />
+                          {mode === 'window' ? t('settings.newWindow') : t('settings.embeddedOverlay')}
+                        </CardActionMenuItem>
+                      ))}
+                    </>
+                  )}
+                </CardActionMenu>
+              </div>
               {/* Split button: main part toggles detection, chevron opens modal */}
               <div className={`inline-flex rounded-md ${printer.plate_detection_enabled ? 'ring-1 ring-green-500' : ''}`}>
                 <Button
@@ -6410,8 +6607,8 @@ function PrinterCard({
             }
             // Check printer compatibility if sliced_for_model is available in metadata
             const slicedFor = (uploadedFile.metadata as Record<string, unknown>)?.sliced_for_model as string | undefined;
-            const printerModel = mapModelCode(printer.model);
-            if (slicedFor && printerModel && slicedFor.toLowerCase() !== printerModel.toLowerCase()) {
+            const printerModel = status?.effective_model || mapModelCode(printer.model);
+            if (slicedFor && modelCompatibility(slicedFor, printerModel, modelMatrix?.models) === 'incompatible') {
               if (uploadedFile.outcome === 'created') api.deleteLibraryFile(uploadedFile.id).catch(() => {});
               return t('printers.incompatibleFile', 'This file was sliced for {{slicedFor}}, but this printer is a {{printerModel}}', { slicedFor, printerModel });
             }
@@ -6593,7 +6790,7 @@ function PrinterCard({
                       {/* Delete button */}
                       <button
                         onClick={() => handleDeleteRef(ref.index)}
-                        className="absolute top-1 right-1 p-0.5 bg-red-500/80 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                        className="absolute top-1 right-1 p-0.5 bg-red-500/80 rounded can-hover:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
                         title={t('printers.plateDetection.deleteReference')}
                       >
                         <X className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] text-white" />
@@ -7253,6 +7450,14 @@ function PrinterCard({
         // option in that case so we don't send a command the printer will refuse.
         const targetAms = amsData.find(a => a.id === dryingPopoverAmsId);
         const anyTrayLoaded = targetAms?.tray?.some(tr => tr.state === 11) ?? false;
+        // Why "Now" cannot run on this unit right now; the other modes wait for it.
+        const nowBlocked = !targetAms
+          ? null
+          : targetAms.dry_time > 0
+            ? t('printers.drying.dryingNow')
+            : targetAms.dry_sf_reason?.length
+              ? t(dryingBlockedKey(targetAms.dry_sf_reason))
+              : null;
         // Portalled into body: the coordinates are document-relative, outside
         // the card's content-visibility clipping. Inside the card, the popover
         // opened off its edge and was invisible.
@@ -7284,7 +7489,9 @@ function PrinterCard({
               {/* Header */}
               <div className="shrink-0 flex items-center gap-2 px-3 py-2.5 border-b border-bambu-dark-tertiary">
                 <Flame className="w-[var(--pc-i35,0.875rem)] h-[var(--pc-i35,0.875rem)] text-amber-600 dark:text-amber-400" />
-                <span className="text-xs text-white font-medium">{t('printers.drying.start')}</span>
+                <span className="text-xs text-white font-medium">
+                  {dryingMode === 'now' ? t('printers.drying.start') : t('printers.drying.scheduleTitle')}
+                </span>
               </div>
               {/* Body */}
               <div className="px-3 py-2.5 space-y-2.5 overflow-y-auto min-h-0">
@@ -7377,17 +7584,22 @@ function PrinterCard({
                         key={mode}
                         type="button"
                         aria-pressed={dryingMode === mode}
+                        disabled={mode === 'now' && !!nowBlocked}
+                        title={mode === 'now' && nowBlocked ? nowBlocked : undefined}
                         onClick={() => setDryingMode(mode)}
                         className={`px-1.5 py-0.5 rounded text-[length:var(--pc-t10,10px)] border transition-colors ${
                           dryingMode === mode
                             ? 'border-amber-500/60 bg-amber-500/15 text-amber-600 dark:text-amber-400'
                             : 'border-bambu-dark-tertiary text-bambu-gray hover:text-white'
-                        }`}
+                        } disabled:opacity-40 disabled:cursor-not-allowed`}
                       >
                         {t(`printers.drying.mode.${mode}`)}
                       </button>
                     ))}
                   </div>
+                  {nowBlocked && (
+                    <p className="mt-1 text-[length:var(--pc-t9,9px)] text-amber-600 dark:text-amber-400">{nowBlocked}</p>
+                  )}
                   {dryingMode === 'delay' && (
                     <div className="flex items-center justify-between mt-2">
                       <label htmlFor="drying-delay-hours" className="text-[length:var(--pc-t10,10px)] text-bambu-gray">{t('printers.drying.delayHours')}</label>
@@ -7416,7 +7628,6 @@ function PrinterCard({
                   )}
                   {dryingMode === 'repeat' && (() => {
                     const serverTz = dryingSchedules?.server_timezone;
-                    const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
                     return (
                       <div className="mt-2 space-y-2">
                         <div className="flex items-center justify-between gap-2">
@@ -7456,7 +7667,7 @@ function PrinterCard({
                             className="px-1.5 py-0.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-[length:var(--pc-t11,11px)] focus:outline-none focus:border-amber-500/50"
                           />
                         </div>
-                        {serverTz && serverTz !== browserTz && (
+                        {farmZoneDiffers(serverTz) && (
                           <p className="text-[length:var(--pc-t9,9px)] text-bambu-gray/70">{t('printers.drying.farmTime', { tz: serverTz })}</p>
                         )}
                       </div>
@@ -7515,6 +7726,7 @@ function PrinterCard({
                     startDryingMutation.isPending
                     || scheduleDryingMutation.isPending
                     || createDryingRuleMutation.isPending
+                    || (dryingMode === 'now' && !!nowBlocked)
                     // An empty "At time" would otherwise go out as "when free".
                     || (dryingMode === 'at' && !dryingAt)
                     || (dryingMode === 'repeat' && (!dryingRepeatTime || dryingWeekdays === 0))
@@ -9233,12 +9445,16 @@ export function PrintersPage() {
     return DRYING_PRESETS;
   }, [settings?.drying_presets]);
 
-  // Close embedded cameras if mode changes to 'window'
-  useEffect(() => {
-    if (settings?.camera_view_mode === 'window' && embeddedCamera !== null) {
-      setEmbeddedCamera(null);
-    }
-  }, [settings?.camera_view_mode, embeddedCamera]);
+  // How this browser opens a camera: its own pick on a camera button's caret,
+  // else the farm default from Settings (audit D9 b). No effect closes an open
+  // overlay when the default is "window" any more — with the choice made per
+  // click, that would shut what the operator just opened on purpose.
+  const [pickedCameraViewMode, setPickedCameraViewMode] = useState<CameraViewMode | null>(storedCameraViewMode);
+  const cameraViewMode: CameraViewMode = pickedCameraViewMode ?? settings?.camera_view_mode ?? 'window';
+  const chooseCameraViewMode = useCallback((mode: CameraViewMode) => {
+    rememberCameraViewMode(mode);
+    setPickedCameraViewMode(mode);
+  }, []);
 
   // Fetch all smart plugs to know which printers have them
   const { data: smartPlugs } = useQuery({
@@ -10162,7 +10378,8 @@ export function PrintersPage() {
       } : undefined}
       timeFormat={settings?.time_format || 'system'}
       dateFormat={settings?.date_format || 'system'}
-      cameraViewMode={settings?.camera_view_mode || 'window'}
+      cameraViewMode={cameraViewMode}
+      onCameraViewModeChange={chooseCameraViewMode}
       onOpenEmbeddedCamera={(id, name) => setEmbeddedCamera({ kind: 'printer', id, name })}
       checkPrinterFirmware={settings?.check_printer_firmware !== false}
       useSlicerApi={settings?.use_slicer_api ?? false}
@@ -10319,7 +10536,7 @@ export function PrintersPage() {
                   <LocationCameras
                     locationId={group.locationId}
                     onOpenEmbedded={
-                      settings?.camera_view_mode === 'embedded'
+                      cameraViewMode === 'embedded'
                         ? (id, name) => setEmbeddedCamera({ kind: 'camera', id, name })
                         : undefined
                     }
@@ -10458,7 +10675,8 @@ export function PrintersPage() {
               } : undefined}
               timeFormat={settings?.time_format || 'system'}
               dateFormat={settings?.date_format || 'system'}
-              cameraViewMode={settings?.camera_view_mode || 'window'}
+              cameraViewMode={cameraViewMode}
+              onCameraViewModeChange={chooseCameraViewMode}
               onOpenEmbeddedCamera={(id, name) => setEmbeddedCamera({ kind: 'printer', id, name })}
               checkPrinterFirmware={settings?.check_printer_firmware !== false}
               useSlicerApi={settings?.use_slicer_api ?? false}

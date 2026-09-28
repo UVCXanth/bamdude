@@ -22,6 +22,7 @@ import pytest
 
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.printer_queue import PrinterQueue
+from backend.app.models.settings import Settings
 from backend.app.services.auto_queue_eligibility import printers_for_item
 
 
@@ -65,3 +66,22 @@ async def test_a_model_nobody_owns_still_matches_nothing(db_session, printer_fac
 
     assert printers == []
     assert normalized == "A1 Mini"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_compatible_fallback_is_off_by_default_then_exact_first(db_session, printer_factory):
+    compatible = await _printer_with_queue(db_session, printer_factory, model="P1S", serial="COMPAT01")
+    item = AutoQueueItem(target_model="P1P")
+
+    printers, _, _ = await printers_for_item(db_session, item)
+    assert printers == []
+
+    db_session.add(Settings(key="auto_queue_compatible_models", value="true"))
+    await db_session.commit()
+    printers, _, _ = await printers_for_item(db_session, item)
+    assert [p.id for p in printers] == [compatible.id]
+
+    exact = await _printer_with_queue(db_session, printer_factory, model="P1P", serial="EXACT01")
+    printers, _, _ = await printers_for_item(db_session, item)
+    assert [p.id for p in printers] == [exact.id, compatible.id]

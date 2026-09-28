@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import { Clock, Layers, ListTodo, Package } from 'lucide-react';
-import { api, withStreamToken } from '../../api/client';
+import { api, withMediaToken } from '../../api/client';
 import type { AutoQueueItem, OrderQueuePrinting, PrintQueueItem } from '../../api/client';
 import { farmPollInterval, farmStatusPollInterval } from '../../api/farmReadBudget';
 import { useOrderDetail } from '../../hooks/useOrderDetail';
@@ -271,7 +271,7 @@ function CurrentPrintInfoCard({ print, timeFormat, lineName }: CurrentPrintInfoC
       <div className="flex items-start gap-3">
         {thumbnail ? (
           <img
-            src={withStreamToken(thumbnail)}
+            src={withMediaToken(thumbnail)}
             alt=""
             className="w-20 h-20 rounded-lg object-contain flex-shrink-0 bg-bambu-dark-tertiary"
           />

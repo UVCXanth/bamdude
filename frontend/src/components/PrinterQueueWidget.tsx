@@ -10,6 +10,7 @@ import { formatRelativeTime } from '../utils/date';
 import { usePlateDefects } from '../hooks/usePlateDefects';
 import { PlateDefectsRow } from './PlateDefectsRow';
 import { usePrinterQueueRows } from '../hooks/FarmQueueScope';
+import { ModelCompatChip } from './ModelCompatChip';
 
 interface PrinterQueueWidgetProps {
   printerId: number;
@@ -22,7 +23,7 @@ interface PrinterQueueWidgetProps {
   requirePlateClear?: boolean;
 }
 
-export function PrinterQueueWidget({ printerId, printerState, awaitingPlateClear, repeatAvailable, requirePlateClear = true }: PrinterQueueWidgetProps) {
+export function PrinterQueueWidget({ printerId, printerModel, printerState, awaitingPlateClear, repeatAvailable, requirePlateClear = true }: PrinterQueueWidgetProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const { hasPermission } = useAuth();
@@ -94,6 +95,7 @@ export function PrinterQueueWidget({ printerId, printerState, awaitingPlateClear
             <p className="text-sm text-white truncate">
               {displayItem?.archive_name || displayItem?.library_file_name || `File #${displayItem?.archive_id || displayItem?.library_file_id}`}
             </p>
+            <ModelCompatChip fileModel={displayItem?.sliced_for_model} targetModel={printerModel} />
           </div>
           {totalPending > 1 && (
             <span className="text-xs px-1.5 py-0.5 bg-yellow-100 dark:bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 rounded flex-shrink-0">
@@ -154,6 +156,7 @@ export function PrinterQueueWidget({ printerId, printerState, awaitingPlateClear
             <p className="text-sm text-white truncate">
               {nextItem?.archive_name || nextItem?.library_file_name || `File #${nextItem?.archive_id || nextItem?.library_file_id}`}
             </p>
+            <ModelCompatChip fileModel={nextItem?.sliced_for_model} targetModel={printerModel} />
           </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">

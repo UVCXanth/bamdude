@@ -467,15 +467,18 @@ export function SpoolFormModal({
     const name = filament.name || '';
     const subtype = material && name.startsWith(material) ? name.slice(material.length).trim() : name;
     const rawHex = (filament.color_hex ?? '').replace('#', '').toUpperCase();
-    // Guard against short/malformed hex values — must be exactly 6 hex chars
-    const colorHex = /^[0-9A-F]{6}$/.test(rawHex) ? rawHex : '808080';
+    // Guard against short/malformed hex values — 6 chars (RRGGBB), or 8 when the
+    // filament is translucent and carries its own alpha (#2912). Rejecting 8
+    // prefilled a clear filament picked from the Spoolman catalogue as 808080FF.
+    const colorHex = /^[0-9A-F]{6}(?:[0-9A-F]{2})?$/.test(rawHex) ? rawHex : '808080';
+    const prefillRgba = colorHex.length === 8 ? colorHex : `${colorHex}FF`;
     setFormData(prev => ({
       ...prev,
       spoolman_filament_id: filament.id,
       material,
       subtype,
       brand: filament.vendor?.name || '',
-      rgba: `${colorHex}FF`,
+      rgba: prefillRgba,
       color_name: filament.color_name || '',
       label_weight: filament.weight ?? prev.label_weight,
     }));
@@ -1079,10 +1082,14 @@ export function SpoolFormModal({
       <div className="flex gap-2 p-4 border-t border-bambu-dark-tertiary flex-shrink-0">
         {isEditing && (
           <div className="flex gap-2 mr-auto">
+            {/* Either identifier counts as "tagged": a Bambu Lab spool is linked by
+                its 32-char tray UUID and has no tag_uid — in Spoolman mode that is
+                every Bambu spool, since the tag is split by length. The payload
+                clears both fields in both inventory modes (upstream #3109). */}
             <Button
               variant="secondary"
               onClick={() => deleteTagMutation.mutate()}
-              disabled={isPending || !spool?.tag_uid}
+              disabled={isPending || !(spool?.tag_uid || spool?.tray_uuid)}
             >
               <Tag className="w-4 h-4" />
               {t('inventory.clearRfid', 'Clear RFID Tag')}

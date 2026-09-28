@@ -36,6 +36,7 @@ class MQTTRelayService:
         self._broker = ""
         self._port = 1883
         self._last_printer_status: dict[int, float] = {}  # printer_id -> last publish timestamp
+        self._last_status_payload: dict[int, dict] = {}
         self._smart_plug_service = None  # Lazy import to avoid circular dependency
         self._settings: dict = {}  # Store settings for smart plug service
         self._disconnection_event: threading.Event | None = None
@@ -169,6 +170,7 @@ class MQTTRelayService:
             logger.info("MQTT relay connected successfully")
             # Publish online status
             self._publish_status("online")
+            self.publish_plate_clear_snapshot()
         else:
             self.connected = False
             logger.error("MQTT relay connection failed: %s", reason_code)
@@ -244,7 +246,15 @@ class MQTTRelayService:
     # Printer Events
     # =========================================================================
 
-    async def on_printer_status(self, printer_id: int, state: Any, printer_name: str, printer_serial: str):
+    async def on_printer_status(
+        self,
+        printer_id: int,
+        state: Any,
+        printer_name: str,
+        printer_serial: str,
+        awaiting_plate_clear: bool = False,
+        force: bool = False,
+    ):
         """Publish printer status change (throttled to 1 update/sec per printer)."""
         if not self.enabled or not self.connected:
             return
@@ -252,7 +262,7 @@ class MQTTRelayService:
         # Throttle status updates to avoid flooding MQTT broker
         now = time.time()
         last_publish = self._last_printer_status.get(printer_id, 0)
-        if now - last_publish < self.STATUS_THROTTLE_SECONDS:
+        if not force and now - last_publish < self.STATUS_THROTTLE_SECONDS:
             return  # Skip this update, too soon since last publish
         self._last_printer_status[printer_id] = now
 
@@ -279,13 +289,58 @@ class MQTTRelayService:
             "big_fan1_speed": state.big_fan1_speed,
             "big_fan2_speed": state.big_fan2_speed,
             "heatbreak_fan_speed": state.heatbreak_fan_speed,
+            "left_aux_fan_speed": (getattr(state, "airduct_parts", {}) or {}).get(10, {}).get("state"),
+            "exhaust_fan_present": (3 in state.airduct_parts) if getattr(state, "airduct_parts", None) else None,
+            "awaiting_plate_clear": awaiting_plate_clear,
         }
+
+        self._last_status_payload[printer_id] = payload
 
         self._publish(
             f"{self.topic_prefix}/printers/{printer_serial}/status",
             payload,
             retain=True,
         )
+
+    async def on_plate_clear_state(self, printer_id: int, printer_name: str, printer_serial: str, awaiting: bool):
+        if not self.enabled or not self.connected:
+            return
+        self._publish(
+            f"{self.topic_prefix}/printers/{printer_serial}/plate_clear",
+            {
+                "printer_id": printer_id,
+                "printer_name": printer_name,
+                "printer_serial": printer_serial,
+                "awaiting": awaiting,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+            retain=True,
+        )
+        status = self._last_status_payload.get(printer_id)
+        if status is not None:
+            status = {**status, "awaiting_plate_clear": awaiting, "timestamp": datetime.now(timezone.utc).isoformat()}
+            self._last_status_payload[printer_id] = status
+            self._publish(f"{self.topic_prefix}/printers/{printer_serial}/status", status, retain=True)
+
+    def publish_plate_clear_snapshot(self):
+        """Republish retained gate states after startup/reconnect, including offline printers."""
+        if not self.enabled or not self.connected:
+            return
+        from backend.app.services.printer_manager import printer_manager
+
+        for printer_id, info in list(printer_manager._printer_info.items()):
+            awaiting = printer_manager.is_awaiting_plate_clear(printer_id)
+            self._publish(
+                f"{self.topic_prefix}/printers/{info.serial_number}/plate_clear",
+                {
+                    "printer_id": printer_id,
+                    "printer_name": info.name,
+                    "printer_serial": info.serial_number,
+                    "awaiting": awaiting,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+                retain=True,
+            )
 
     async def on_printer_online(self, printer_id: int, printer_name: str, printer_serial: str):
         """Publish printer came online event."""

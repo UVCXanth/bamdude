@@ -3,13 +3,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '../../api/client';
-import type { SensorThreshold, SensorThresholdInput, ZigbeeSensor } from '../../api/client';
+import type { BindingThreshold, SensorThreshold, SensorThresholdInput, ZigbeeSensor } from '../../api/client';
 import { Modal } from '../Modal';
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
   sensor: ZigbeeSensor;
+  bindingId?: number;
+  bindingName?: string;
 }
 
 interface Row {
@@ -19,25 +21,27 @@ interface Row {
   max: string;
   deadband: string;
   enabled: boolean;
+  custom: boolean;
 }
 
-function toRows(sensor: ZigbeeSensor, configured: SensorThreshold[]): Row[] {
+function toRows(sensor: ZigbeeSensor, configured: (SensorThreshold | BindingThreshold)[]): Row[] {
   // The UNION of what the sensor measures and what is already configured.
   // Without it a sensor off the mesh shows an empty dialog and its own limits
   // become invisible and unremovable — its `measurements` are empty precisely
   // because it is absent.
   const byKind = new Map<string, Row>();
   for (const [kind, reading] of Object.entries(sensor.measurements)) {
-    byKind.set(kind, { kind, unit: reading.unit, min: '', max: '', deadband: '', enabled: true });
+    byKind.set(kind, { kind, unit: reading.unit, min: '', max: '', deadband: '', enabled: true, custom: false });
   }
   for (const row of configured) {
     byKind.set(row.kind, {
       kind: row.kind,
-      unit: row.unit,
+      unit: 'unit' in row ? row.unit : sensor.measurements[row.kind]?.unit ?? '',
       min: row.min_value == null ? '' : String(row.min_value),
       max: row.max_value == null ? '' : String(row.max_value),
       deadband: row.deadband ? String(row.deadband) : '',
       enabled: row.enabled,
+      custom: 'custom' in row ? row.custom : true,
     });
   }
   return [...byKind.values()];
@@ -58,16 +62,17 @@ function toPayload(rows: Row[]): SensorThresholdInput[] {
 }
 
 /** What counts as wrong for this sensor, one row per quantity. */
-export function SensorThresholdsModal({ isOpen, onClose, sensor }: Props) {
+export function SensorThresholdsModal({ isOpen, onClose, sensor, bindingId, bindingName }: Props) {
   const { t } = useTranslation();
   const headingId = useId();
   const queryClient = useQueryClient();
   const [rows, setRows] = useState<Row[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const { data } = useQuery({
-    queryKey: ['sensor-thresholds', sensor.id],
-    queryFn: () => api.getSensorThresholds(sensor.id),
+  const { data } = useQuery<{ thresholds: (SensorThreshold | BindingThreshold)[] }>({
+    queryKey: ['sensor-thresholds', sensor.id, bindingId],
+    queryFn: async () => bindingId == null ? await api.getSensorThresholds(sensor.id)
+      : await api.getZigbeeBindingThresholds(sensor.id, bindingId),
     enabled: isOpen,
   });
 
@@ -76,7 +81,17 @@ export function SensorThresholdsModal({ isOpen, onClose, sensor }: Props) {
   }, [sensor, data]);
 
   const save = useMutation({
-    mutationFn: () => api.putSensorThresholds(sensor.id, toPayload(rows)),
+    mutationFn: async () => { if (bindingId == null) {
+      await api.putSensorThresholds(sensor.id, toPayload(rows));
+    } else {
+      await api.putZigbeeBindingThresholds(sensor.id, bindingId, rows
+        .filter((row) => !row.custom || row.min.trim() !== '' || row.max.trim() !== '')
+        .map((row) => ({ kind: row.kind, custom: row.custom,
+          min_value: row.custom && row.min.trim() !== '' ? Number(row.min) : null,
+          max_value: row.custom && row.max.trim() !== '' ? Number(row.max) : null,
+          deadband: row.custom && row.deadband.trim() !== '' ? Number(row.deadband) : 0,
+          enabled: row.enabled })));
+    } },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sensor-thresholds', sensor.id] });
       setError(null);
@@ -100,7 +115,7 @@ export function SensorThresholdsModal({ isOpen, onClose, sensor }: Props) {
           <h2 id={headingId} className="text-lg font-semibold text-white">
             {t('settings.zigbee.thresholds.title')}
           </h2>
-          <p className="text-sm text-bambu-gray">{sensor.name}</p>
+          <p className="text-sm text-bambu-gray">{bindingName || sensor.name}</p>
         </div>
       }
       size="2xl"
@@ -113,6 +128,12 @@ export function SensorThresholdsModal({ isOpen, onClose, sensor }: Props) {
           return (
             <div key={row.kind} className="flex items-center gap-3 flex-wrap">
               <span className="text-white w-32">{name}</span>
+              {bindingId != null && <label className="flex items-center gap-1 text-sm text-bambu-gray">
+                <input type="checkbox" checked={!row.custom}
+                  onChange={(event) => set(row.kind, 'custom', !event.target.checked)} />
+                {t('settings.zigbee.thresholds.inherit')}
+              </label>}
+              {(!bindingId || row.custom) && <>
               <Field
                 label={`${name} ${t('settings.zigbee.thresholds.min')}`}
                 value={row.min}
@@ -131,6 +152,7 @@ export function SensorThresholdsModal({ isOpen, onClose, sensor }: Props) {
                 unit={row.unit}
                 onChange={(v) => set(row.kind, 'deadband', v)}
               />
+              </>}
             </div>
           );
         })}

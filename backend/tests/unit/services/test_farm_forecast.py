@@ -13,6 +13,7 @@ from backend.app.services.farm_forecast import (
     QueuedRow,
     StagedJob,
     StaggerPolicy,
+    _earliest,
     _initial_state,
     forecast_orders,
     simulate_farm,
@@ -93,6 +94,21 @@ def _plan(order_id, rows):
 
 def _one(snapshot, plan, order_id=7, ordered=None):
     return forecast_orders(snapshot, {order_id: plan}, ordered or [order_id], {order_id}, NOW)[order_id]
+
+
+def test_compatible_forecast_uses_one_lane_and_ready_exact_first():
+    state = _initial_state(
+        FarmSnapshot(
+            printers=[_machine(1, "P1P"), _machine(2, "P1S")],
+            staged=[],
+            allow_compatible=True,
+        )
+    )
+    assert _earliest(state.machines, "p1p", allow_compatible=True).printer_id == 1
+    state.machines[0].free_at = H
+    assert _earliest(state.machines, "p1p", allow_compatible=True).printer_id == 2
+    state.machines[1].free_at = H * 2
+    assert _earliest(state.machines, "p1p", allow_compatible=False).printer_id == 1
 
 
 def test_one_printer_runs_the_jobs_serially():

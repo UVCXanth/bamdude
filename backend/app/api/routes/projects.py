@@ -27,7 +27,7 @@ from backend.app.api.routes.auto_queue import _to_response as auto_queue_row_res
 from backend.app.api.routes.library import _library_file_visible as library_file_visible
 from backend.app.api.routes.print_queue import _enrich_response as queue_row_response, queue_item_load_options
 from backend.app.core.api_key_scope import key_printer_scope
-from backend.app.core.auth import RequireCameraStreamToken, RequirePermission, acting_user
+from backend.app.core.auth import RequirePermission, acting_user, require_media_permission
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -2454,14 +2454,15 @@ async def upload_project_cover_image(
 async def get_project_cover_image(
     project_id: int,
     db: AsyncSession = Depends(get_db),
-    _=RequireCameraStreamToken,
+    _=Depends(require_media_permission(Permission.PROJECTS_READ)),
 ):
     """Stream the project's cover image (#1155).
 
     Browsers can't attach ``Authorization: Bearer ...`` to ``<img src>``
-    requests, so this route accepts the same ``?token=`` stream
-    credential as ``/archives/{id}/thumbnail``. The frontend wraps URLs
-    via ``withStreamToken``.
+    requests, so this route takes a media token in ``?token=`` (or the
+    ordinary headers) under ``projects:read`` — audit D9 a2; it used to take
+    the camera stream token, which cost ``camera:view``. The frontend wraps
+    URLs via ``withMediaToken``.
     """
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()

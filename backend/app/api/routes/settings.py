@@ -107,6 +107,7 @@ async def get_settings(
                 "prefer_lowest_filament",
                 "queue_shortest_first",
                 "auto_queue_rebalance_models",
+                "auto_queue_compatible_models",
                 "auto_order_for_batches",
                 "queue_drying_enabled",
                 "queue_drying_block",
@@ -166,6 +167,7 @@ async def get_settings(
                 "stagger_concurrent",
                 "stagger_interval_minutes",
                 "forecast_global_lead_time_days",
+                "location_sensor_poll_interval",
                 "forecast_upload_seconds",
                 "forecast_plate_clear_minutes",
                 "firmware_batch_concurrency",
@@ -471,6 +473,41 @@ async def get_spoolman_settings(
         "spoolman_disable_weight_sync": spoolman_disable_weight_sync,
         "spoolman_report_partial_usage": spoolman_report_partial_usage,
         "auto_add_unknown_rfid": auto_add_unknown_rfid,
+    }
+
+
+@router.get("/spoolman/mode-switch-preview")
+async def spoolman_mode_switch_preview(
+    enable: bool,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
+):
+    """What switching the inventory mode would take away (audit D4, upstream #2812).
+
+    The switch below clears every slot assignment of the mode being left — the
+    live tables hold only the active mode, so no reader can be answered by a row
+    of the other one. The settings page asks first with this: how many
+    assignments go, and which printers are printing now (their filament reaches
+    neither inventory). Asking for the mode already on takes nothing.
+    """
+    from sqlalchemy import func, select
+
+    from backend.app.models.printer import Printer
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+    from backend.app.services.printer_manager import printer_manager
+
+    current = (await get_setting(db, "spoolman_enabled") or "false").lower() == "true"
+    if enable == current:
+        return {"assignments": 0, "printing": []}
+    cleared = SpoolAssignment if enable else SpoolmanSlotAssignment
+    assignments = await db.scalar(select(func.count()).select_from(cleared))
+    printers = (
+        await db.execute(select(Printer.id, Printer.name).where(Printer.archived.is_(False)).order_by(Printer.name))
+    ).all()
+    return {
+        "assignments": int(assignments or 0),
+        "printing": [name for printer_id, name in printers if printer_manager.is_print_active(printer_id)],
     }
 
 

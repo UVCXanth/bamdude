@@ -1,3 +1,5 @@
+import type { PrinterStatus } from '../api/client';
+
 export function getPrinterImage(model: string | null | undefined): string {
   if (!model) return '/img/printers/default.png';
   const m = model.toLowerCase().replace(/\s+/g, '');
@@ -61,6 +63,8 @@ const MODEL_DISPLAY_MAP: Record<string, string> = {
   'C13': 'X1E',
   // X2 Series
   'N6': 'X2D',
+  // Newly mirrored model; identity only until capabilities are verified.
+  'N8': 'N8',
   // A2 Series
   'N9': 'A2L',
   // P Series (BS configs: P1P=C11, P1S=C12, P2S=N7)
@@ -117,6 +121,7 @@ const MODEL_LONG_NAME_MAP: Record<string, string> = {
   'Bambu Lab H2S': 'H2S',
   'Bambu Lab X2D': 'X2D',
   'Bambu Lab A2L': 'A2L',
+  'Bambu Lab N8': 'N8',
 };
 
 /**
@@ -140,49 +145,16 @@ const MODEL_LONG_NAME_MAP: Record<string, string> = {
  * seen is not a reason to lose the operator's answer.
  */
 export function normalizeModelName(model: string | null | undefined): string {
-  const byCode = mapModelCode(model);
+  if (!model?.trim()) return '';
+  const compare = (value: string) => value.toUpperCase().replace(/[\s-]/g, '');
+  const raw = model.trim();
+  const code = Object.entries(MODEL_DISPLAY_MAP).find(([spelling]) => compare(spelling) === compare(raw));
+  const byCode = code?.[1] || mapModelCode(raw);
   if (!byCode) return '';
-  const byName = MODEL_LONG_NAME_MAP[byCode];
+  const byName = Object.entries(MODEL_LONG_NAME_MAP)
+    .find(([spelling]) => compare(spelling) === compare(byCode))?.[1];
   if (byName) return byName;
-  return byCode.replace(/^Bambu Lab\s+/, '').trim() || byCode;
-}
-
-/**
- * Models that run each other's G-code. The frontend mirror of the backend's
- * `GCODE_COMPAT_FAMILIES` (`backend/app/utils/printer_models.py`) — one row,
- * and it stays one row until Bambu says otherwise.
- */
-const GCODE_COMPAT_FAMILIES: readonly ReadonlySet<string>[] = [
-  new Set(['X1', 'X1C', 'X1E', 'P1P', 'P1S']),
-];
-
-/**
- * May a file sliced for one model be sent to a printer of another?
- *
- * The mirror of the backend's `is_gcode_compatible`, and it has to be the
- * mirror rather than a plain `!==`: a job queued to a chosen printer is
- * resolved with `exact_model=False`, so the machine accepts an X1C plate on a
- * P1S. A stricter answer here would refuse, in the dialog, a print the printer
- * would have taken — and a refusal about the TARGET carries no override.
- *
- * ⚠️ Unknown metadata on either side answers YES. Only what the 3MF declares
- * can be validated, and a file without `sliced_for_model` predates the field.
- *
- * Both sides are normalised the same way, and by `normalizeModelName` rather
- * than by the backend's narrower code-map-only `_norm`: it also resolves the
- * long marketing spelling a `Printer.model` column carries, which the backend
- * has already applied by the time it compares.
- */
-export function isGcodeCompatible(
-  slicedForModel: string | null | undefined,
-  targetModel: string | null | undefined,
-): boolean {
-  if (!slicedForModel || !targetModel) return true;
-  const key = (model: string) => normalizeModelName(model).toUpperCase().replace(/[\s-]/g, '');
-  const a = key(slicedForModel);
-  const b = key(targetModel);
-  if (a === b) return true;
-  return GCODE_COMPAT_FAMILIES.some((family) => family.has(a) && family.has(b));
+  return byCode.replace(/^Bambu Lab\s+/i, '').trim() || byCode;
 }
 
 export function getWifiStrength(rssi: number): { labelKey: string; color: string; bars: number } {
@@ -203,3 +175,17 @@ export function getWifiStrength(rssi: number): { labelKey: string; color: string
 // itself from the printer's own reported limits, which is the better answer;
 // a flat number there would be a step backwards.
 export const MAX_CHAMBER_TEMP_C = 65;
+
+/**
+ * True when a job queued for this printer would start now rather than wait.
+ *
+ * Wording only — it tells the printer card whether a dropped file will print
+ * or wait in the queue (upstream #2849). The scheduler decides for real
+ * (``print_scheduler._is_printer_idle``): connected, idle, plate cleared.
+ * Drying is not counted: it holds the queue only when the farm asks it to.
+ */
+export function isPrinterCurrentlyDispatchable(status: PrinterStatus | undefined): boolean {
+  if (!status?.connected) return false;
+  if (status.awaiting_plate_clear) return false;
+  return ['IDLE', 'FINISH', 'FAILED'].includes(status.state ?? '');
+}

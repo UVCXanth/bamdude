@@ -497,12 +497,14 @@ class FirmwareCheckService:
         return version
 
     async def get_available_versions(self, model: str) -> list[FirmwareVersion]:
-        """All installable firmware versions for a model, newest first.
+        """Announced and locally stored firmware versions, newest first.
 
         The online list (wiki + download page) merged with versions held only in
         the local firmware store. A store-only version (the vendor removed it
         from the site) is flagged ``cached=True`` so the UI can mark it and the
         operator can still roll back to a version they already downloaded.
+        Wiki-only versions can lack a download URL; callers that upload a file
+        must filter those out unless the version is already stored locally.
         """
         online = await self._get_available_versions_online(model)
         seen = {v.version for v in online}

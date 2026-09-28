@@ -24,9 +24,11 @@ Identity rewriting at cache time:
 
   - ``upgrade_state.sn`` (and any other nested dict's ``sn`` matching the
     real serial) → VP serial
-  - ``net.info[*].ip`` little-endian uint32 → VP bind IP. BambuStudio reads
-    this as the FTP destination IP. Without this the slicer FTPs straight
-    to the real printer and bypasses BamDude.
+  - ``net.info[*].ip`` little-endian uint32 → the address a slicer reaches
+    BamDude on. BambuStudio reads this as the FTP destination IP. Without
+    this the slicer FTPs straight to the real printer and bypasses BamDude.
+    Normally the VP bind IP; ``VIRTUAL_PRINTER_ADVERTISE_ADDRESS`` overrides it
+    for NAT'd deployments (see ``ADVERTISE_ADDRESS_ENV``).
   - ``ipcam.rtsp_url`` is left unchanged: BambuStudio overrides the URL
     host with the device IP it bound to (the VP), so the slicer hits the
     VP's own RTSPS proxy on port 322.
@@ -39,6 +41,7 @@ import copy
 import ipaddress
 import json
 import logging
+import os
 import socket
 from typing import TYPE_CHECKING
 
@@ -129,6 +132,47 @@ def _resolve_target_to_ipv4(target: str) -> str | None:
         if sockaddr and isinstance(sockaddr[0], str):
             return sockaddr[0]
     return None
+
+
+# Opt-in override for the address written into ``net.info[].ip`` (upstream
+# #2930). Needed only where the address a slicer uses to reach BamDude is not
+# one of this host's own interfaces — Docker bridge networking, where the bind
+# address is a container-private IP like 172.24.0.2 and a slicer that follows
+# it opens an FTP connection to nothing. Host and macvlan networking need
+# nothing set here.
+#
+# An environment variable rather than reading the VP's "Network Interface
+# Override" (``remote_interface_ip``): that field feeds SSDP and the cert SANs
+# only, and reading it here would silently move the upload destination on
+# every install that has it set — the multi-NIC, VLAN and Tailscale setups
+# tuned by hand. Unset, this changes nothing. The FTP side has the same kind
+# of switch in ``VIRTUAL_PRINTER_PASV_ADDRESS``.
+ADVERTISE_ADDRESS_ENV = "VIRTUAL_PRINTER_ADVERTISE_ADDRESS"
+
+
+def _resolve_advertise_override(vp_name: str) -> str:
+    """The validated ``net.info[].ip`` override from the environment, or "".
+
+    Validated once, at construction: a typo produces one warning instead of one
+    per refresh tick, and an unusable value falls back to the bind address
+    instead of leaving the rewrite unarmed — unarmed puts the REAL printer's IP
+    back in front of the slicer (#1429), so a typo must not reopen that leak.
+    ``0.0.0.0`` counts as unset: a bind address, never a destination.
+    """
+    raw = os.environ.get(ADVERTISE_ADDRESS_ENV, "").strip()
+    if not raw or raw == "0.0.0.0":  # nosec B104
+        return ""
+    try:
+        _ip_to_uint32_le(raw)
+    except ValueError:
+        logger.warning(
+            "[%s] %s=%r is not a dotted-quad IPv4 — ignoring it, using the VP bind address instead",
+            vp_name,
+            ADVERTISE_ADDRESS_ENV,
+            raw,
+        )
+        return ""
+    return raw
 
 
 def _ip_to_uint32_le(ip_str: str) -> int:
@@ -272,6 +316,9 @@ class MQTTBridge:
         # line per tick forever. Cleared once arming succeeds so a regression
         # re-logs. #1429 follow-up: makes silent early-returns visible.
         self._not_armed_reason: str | None = None
+        # NAT escape hatch for ``net.info[].ip``, resolved once — the process
+        # environment cannot change without a restart. "" = use the bind address.
+        self._advertise_address = _resolve_advertise_override(vp_name)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._refresh_task: asyncio.Task | None = None
         self._stopping = False
@@ -355,8 +402,15 @@ class MQTTBridge:
         # a name or an IPv6 address (#1429 follow-up).
         configured_target = getattr(client, "ip_address", None)
         target_ip = _resolve_target_to_ipv4(configured_target) if configured_target else None
-        vp_ip = getattr(self._mqtt_server, "bind_address", None)
-        vp_ip_source = "bind_address"
+        # The override first (NAT'd deployments), then the bind address, then —
+        # below, when that is empty / 0.0.0.0 — the host interface in the
+        # printer's subnet.
+        if self._advertise_address:
+            vp_ip = self._advertise_address
+            vp_ip_source = ADVERTISE_ADDRESS_ENV
+        else:
+            vp_ip = getattr(self._mqtt_server, "bind_address", None)
+            vp_ip_source = "bind_address"
         if not configured_target:
             _log_not_armed("printer client has no ip_address yet")
         elif target_ip is None:
@@ -378,7 +432,8 @@ class MQTTBridge:
             if not vp_ip or vp_ip in ("0.0.0.0", "", None):  # nosec B104
                 _log_not_armed(
                     f"no host interface shares a subnet with printer IP {target_ip} "
-                    "(and VP bind_address is 0.0.0.0/empty)"
+                    f"(and VP bind_address is 0.0.0.0/empty) — set {ADVERTISE_ADDRESS_ENV} "
+                    "to the address slicers reach BamDude on if this host is NAT'd"
                 )
             else:
                 try:

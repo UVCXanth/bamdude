@@ -4,6 +4,7 @@ import { PrinterLocationSelect } from '../PrinterLocationSelect';
 import { Sparkles } from 'lucide-react';
 import type { AutoQueueFilamentOverride, FeedPolicy, Printer, RoutingPreview } from '../../api/client';
 import type { AutoModeOptionsState } from './types';
+import { modelCompatibility, type ModelCompatibilityMatrix } from '../../utils/modelCompatibility';
 import { Select } from '../Select';
 
 interface AutoModeOptionsProps {
@@ -12,6 +13,7 @@ interface AutoModeOptionsProps {
   printers: Printer[] | undefined;
   /** Suggested model from the sliced 3MF — pre-selects when target_model is null. */
   slicedForModel?: string | null;
+  modelMatrix?: ModelCompatibilityMatrix;
   /** The target came from the file, not the operator — show it, do not offer it. */
   locked?: boolean;
   preview?: RoutingPreview;
@@ -28,19 +30,11 @@ interface AutoModeOptionsProps {
  * to any matching idle printer; backend auto-extracts target_model and
  * required filaments from the 3MF when target_model is left empty.
  */
-export function AutoModeOptions({ options, onChange, printers, slicedForModel, locked = false,
+export function AutoModeOptions({ options, onChange, printers, slicedForModel, modelMatrix, locked = false,
   preview, loading, failed, onRetry, overrides = [], onOverridesChange }: AutoModeOptionsProps) {
   const { t } = useTranslation();
 
-  // ⚠️ A file sliced for one model must not offer another as its target.
-  // The auto-queue router filters on target_model at dispatch, so picking a
-  // model the file cannot run on does not fail — it produces an item that waits
-  // for a printer that will never take it, with nothing on screen saying why.
-  // When the file's own model is known, that is the only honest option; the
-  // empty "detect from the file" entry above already means the same thing.
-  //
-  // A file sliced for a model this farm does not own leaves the list empty, and
-  // that is the truthful answer rather than a menu of wrong ones.
+  // The file's model can target exact or explicitly compatible machines.
   const availableModels = useMemo(() => {
     const models = new Set<string>();
     (printers ?? []).forEach((p) => {
@@ -48,8 +42,8 @@ export function AutoModeOptions({ options, onChange, printers, slicedForModel, l
     });
     const all = [...models].sort();
     if (!slicedForModel) return all;
-    return all.filter((m) => m.toLowerCase() === slicedForModel.toLowerCase());
-  }, [printers, slicedForModel]);
+    return all.filter((m) => ['exact', 'compatible'].includes(modelCompatibility(slicedForModel, m, modelMatrix)));
+  }, [printers, slicedForModel, modelMatrix]);
 
 
   return (
@@ -199,7 +193,7 @@ export function AutoModeOptions({ options, onChange, printers, slicedForModel, l
           })}
           {plate.status === 'ok' && <>
             <p className="text-bambu-gray">{t('filamentRouting.compatibilityHint')}</p>
-            {plate.groups.length === 0 && !preview.advisory_unavailable && <p className="text-amber-300">{t('filamentRouting.noPrinters', { model: plate.model ?? '—' })}</p>}
+            {plate.groups.length === 0 && !preview.advisory_unavailable && <p className="text-amber-300">{t('filamentRouting.noPrinters', { model: plate.target_model ?? plate.model ?? '—' })}</p>}
             {plate.groups.map(group => <div key={group.key} className="rounded border border-bambu-dark-tertiary p-2 space-y-1">
               <p className="text-white">{group.model} · {t('filamentRouting.nozzles', { count: group.nozzles })} · {t(`filamentRouting.ams_${group.ams}`)}</p>
               <p className={group.compatible ? 'text-bambu-green' : 'text-amber-300'}>

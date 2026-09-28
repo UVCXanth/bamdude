@@ -453,6 +453,30 @@ class TestRoutingIsNotDispatching:
         placed = (await db_session.execute(select(PrintQueueItem))).scalars().one()
         assert placed.queue_id == ready_q.id, "a printer that can start now should win the tie"
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_ha_interlock_prefers_another_ready_printer(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
+        held, _ = await _make_printer_with_queue(db_session, printer_factory, name="held", model="A1MINI")
+        ready, ready_q = await _make_printer_with_queue(db_session, printer_factory, name="ready", model="A1MINI")
+        db_session.add(routing_item(target_model="A1MINI", status="pending", position=1))
+        await db_session.commit()
+
+        p_elig, p_sched = _patch_printer_manager({held.id, ready.id})
+        with (
+            p_elig,
+            p_sched,
+            patch(
+                "backend.app.services.ha_sensor_manager.ha_sensor_manager.blocked_printers",
+                new=AsyncMock(return_value={held.id: "door open"}),
+            ),
+        ):
+            await scheduler.tick()
+
+        placed = (await db_session.execute(select(PrintQueueItem))).scalars().one()
+        assert placed.queue_id == ready_q.id
+
 
 class TestRequirePreviousSuccessRoutesAround:
     """The distributor tier reads the gate differently from the per-printer one,

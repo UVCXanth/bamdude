@@ -32,6 +32,14 @@
 /* Enable class-based dark mode for Tailwind v4 */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* Hover-capable pointer only (upstream #2865).  Tailwind v4 compiles `hover:`
+   AND `group-hover:` inside `@media (hover: hover)`, so on a touch-only device a
+   control written as `opacity-0 group-hover:opacity-100` stays invisible for
+   good.  The HIDING half hangs on this variant instead: with no hover-capable
+   pointer the control keeps its own opacity.  A viewport-width check missed an
+   iPad in landscape, which is touch-only at 1024px. */
+@custom-variant can-hover (@media (hover: hover) and (pointer: fine));
+
 /* Restore the pointer cursor on interactive controls.
 
    Tailwind v3's Preflight set `button { cursor: pointer }`; v4 dropped it to
@@ -480,6 +488,15 @@ body {
   color: var(--text-primary);
 }
 
+/* Same, for the hover variant (upstream #1909).  Tailwind compiles
+   `hover:text-white` to `.hover\:text-white:hover`, a selector the rule above
+   never matches, so every `text-bambu-gray hover:text-white` control turned
+   literally white on hover and vanished against a light theme.  Unlayered, like
+   the rule above, so it outranks Tailwind's `@layer utilities` output. */
+.hover\:text-white:hover {
+  color: var(--text-primary);
+}
+
 /* Smooth transitions for theme changes */
 .bg-bambu-dark,
 .bg-bambu-dark-secondary,
@@ -714,4 +731,29 @@ body {
     max-height: none;
     background: none;
   }
+}
+
+/* Per-slot filament colour swatch in the slice dialog (upstream 4f10d155).
+   A native <input type="color"> paints its value inside a fixed inner padding
+   and its own border, so at 16px the colour reads as a dot in a pale ring
+   rather than a round swatch. These reset both. */
+.slice-colour-swatch {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  overflow: hidden;
+}
+
+.slice-colour-swatch::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.slice-colour-swatch::-webkit-color-swatch {
+  border: none;
+  border-radius: 999px;
+}
+
+.slice-colour-swatch::-moz-color-swatch {
+  border: none;
+  border-radius: 999px;
 }

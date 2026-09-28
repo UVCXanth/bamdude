@@ -146,6 +146,9 @@ describe('autoFeasibility reads the preview three-valued', () => {
   it('distinguishes an absent model from failed telemetry', () => {
     expect(autoFeasibility(preview([]))).toEqual({ state: 'no_target', model: 'X1C' });
     expect(autoFeasibility(preview([], { advisoryUnavailable: true })).state).toBe('unknown');
+    const selected = preview([]);
+    selected.plates[0].target_model = 'P1S';
+    expect(autoFeasibility(selected)).toEqual({ state: 'no_target', model: 'P1S' });
   });
 
   it('checks every plate: a missing target is not rescued by another compatible plate', () => {

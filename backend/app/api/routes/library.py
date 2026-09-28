@@ -24,7 +24,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
 from backend.app.core.auth import (
-    RequireCameraStreamToken,
+    require_media_ownership_permission,
     require_ownership_permission,
     require_permission,
 )
@@ -85,17 +85,18 @@ from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.services import order_from_files
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.design_settings import (
+    DesignOverride,
     apply_design_overrides,
     extract_design_process_overrides,
     overrides_from_config,
 )
 from backend.app.services.entity_codes import code_for
+from backend.app.services.filament_requirements import annotate_rack_groups
 from backend.app.services.library_helpers import (
-    SLICED_GCODE_META_KEY,
     detect_file_type,
     folder_activity_at,
     skip_objects_supported_from_metadata,
-    sliced_gcode_in_3mf,
+    sliced_by_content,
     sync_system_tags,
 )
 from backend.app.services.library_ingest import IngestResult, find_reusable_row
@@ -117,7 +118,12 @@ from backend.app.services.product_sync import (
     purge_folder_product_links,
     sync_product_for_file,
 )
-from backend.app.services.slice_output_check import missing_start_gcode_message, start_gcode_is_missing
+from backend.app.services.slice_output_check import (
+    missing_start_gcode_message,
+    start_gcode_is_missing,
+    unresolved_filament_message,
+    unresolved_filament_slots,
+)
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.services.threemf_card import CARD_PICTURE_CATEGORIES, ThreeMFCardParser, content_type_for
@@ -136,6 +142,7 @@ from backend.app.utils.threemf_tools import (
     extract_embedded_presets_from_3mf,
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
+    sanitize_project_settings_sentinels,
     supports_enabled_in_config,
 )
 
@@ -151,6 +158,8 @@ def _library_file_visible(
     library_file: LibraryFile | None,
     user: User | None,
     can_read_all: bool,
+    *,
+    include_trashed: bool = False,
 ) -> bool:
     """Is this row visible to the caller?
 
@@ -159,7 +168,11 @@ def _library_file_visible(
     one decision: the raising half below is this predicate plus the raise, and
     nothing else, so the two cannot drift.
     """
-    if library_file is None or getattr(library_file, "deleted_at", None) is not None:
+    if library_file is None:
+        return False
+    # ``include_trashed``: the trash list shows each deleted file with its
+    # picture — past this check only, never past the ownership rule.
+    if getattr(library_file, "deleted_at", None) is not None and not include_trashed:
         return False
     if can_read_all:
         return True
@@ -173,6 +186,8 @@ def _ensure_library_file_visible(
     library_file: LibraryFile | None,
     user: User | None,
     can_read_all: bool,
+    *,
+    include_trashed: bool = False,
 ) -> LibraryFile:
     """Per-file visibility gate for ownership-scoped LIBRARY reads (#1726-adjacent).
 
@@ -186,9 +201,19 @@ def _ensure_library_file_visible(
     """
     # ``library_file is None`` is restated only to narrow the return type — the
     # predicate already answers False for it.
-    if library_file is None or not _library_file_visible(library_file, user, can_read_all):
+    if library_file is None or not _library_file_visible(
+        library_file, user, can_read_all, include_trashed=include_trashed
+    ):
         raise HTTPException(404, "File not found")
     return library_file
+
+
+# The pictures of a library file (audit D9 a2): a media token in the URL — an
+# ``<img>`` cannot send a header — or the ordinary headers, and either way the
+# same ownership rule as every other library read.
+_LIBRARY_MEDIA_READ = Depends(
+    require_media_ownership_permission(Permission.LIBRARY_READ_ALL, Permission.LIBRARY_READ_OWN)
+)
 
 
 def _product_refs(products: list[Product]) -> list[ProductRef]:
@@ -273,6 +298,22 @@ def _without_print_name(metadata: dict | None) -> dict | None:
     if not metadata or "print_name" not in metadata:
         return metadata
     return {k: v for k, v in metadata.items() if k != "print_name"}
+
+
+async def _prepare_library_source(file_path: Path, filename: str):
+    """One file worker contract for managed and mounted library arrivals."""
+    from backend.app.services.library_file_runtime import get_library_file_runtime
+
+    return await get_library_file_runtime().prepare(file_path, root=file_path.parent, filename=filename)
+
+
+async def _publish_prepared_thumbnail(prepared) -> str | None:
+    if not prepared.thumbnail:
+        return None
+    extension = prepared.thumbnail_ext if prepared.thumbnail_ext in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
+    destination = get_library_thumbnails_dir() / f"{uuid.uuid4().hex}{extension}"
+    await asyncio.to_thread(destination.write_bytes, prepared.thumbnail)
+    return to_relative_path(destination)
 
 
 def get_library_dir() -> Path:
@@ -560,14 +601,15 @@ async def save_3mf_bytes_to_library(
         if existing_by_url is not None:
             return IngestResult(file=existing_by_url, outcome="deduped", superseded_name=filename)
 
-    ext = os.path.splitext(filename)[1].lower()
     file_type = detect_file_type(filename)
 
     file_path, is_external_upload = _resolve_upload_destination(folder, filename)
     with open(file_path, "wb") as f:
         f.write(content)
 
-    file_hash = calculate_file_hash(file_path)
+    from backend.app.services.library_file_runtime import get_library_file_runtime
+
+    file_hash = (await get_library_file_runtime().hash(file_path, root=file_path.parent))["digest"]
 
     # The content decision, before any row is built. ``find_reusable_row`` is the
     # one place that answers it; this function used to answer it itself, as a
@@ -592,59 +634,9 @@ async def save_3mf_bytes_to_library(
             await db.refresh(existing)
         return IngestResult(file=existing, outcome="restored", superseded_name=filename)
 
-    metadata: dict = {}
-    thumbnail_path: str | None = None
-    thumbnails_dir = get_library_thumbnails_dir()
-
-    if ext == ".3mf":
-        try:
-            parser = ThreeMFParser(str(file_path))
-            raw_metadata = parser.parse()
-            thumbnail_data = raw_metadata.get("_thumbnail_data")
-            thumbnail_ext = raw_metadata.get("_thumbnail_ext", ".png")
-            if thumbnail_data:
-                thumb_filename = f"{uuid.uuid4().hex}{thumbnail_ext}"
-                thumb_path = (
-                    thumbnails_dir / thumb_filename
-                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                with open(thumb_path, "wb") as f:
-                    f.write(thumbnail_data)
-                thumbnail_path = str(thumb_path)
-            metadata = _clean_3mf_metadata(raw_metadata)
-            # Content decides whether this container is sliced; the tag rule
-            # prefers it over the filename. Unset when unreadable, which reads
-            # as unknown rather than as a claim. See sliced_gcode_in_3mf.
-            _sliced = sliced_gcode_in_3mf(file_path)
-            if _sliced is not None:
-                metadata[SLICED_GCODE_META_KEY] = _sliced
-            try:
-                import zipfile as _zf
-
-                from backend.app.services.archive import parse_plates_from_3mf
-
-                with _zf.ZipFile(str(file_path), "r") as _zfh:
-                    plates_payload = parse_plates_from_3mf(_zfh)
-                if plates_payload:
-                    metadata["plates"] = plates_payload
-                    metadata["is_multi_plate"] = len(plates_payload) > 1
-            except Exception as _pe:
-                logger.debug("Per-plate parse for save_3mf failed (non-critical): %s", _pe)
-        except Exception as e:
-            logger.warning("Failed to parse 3MF (save_3mf %s): %s", filename, e)
-
-    elif ext == ".gcode":
-        try:
-            thumbnail_data = extract_gcode_thumbnail(file_path)
-            if thumbnail_data:
-                thumb_filename = f"{uuid.uuid4().hex}.png"
-                thumb_path = (
-                    thumbnails_dir / thumb_filename
-                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                with open(thumb_path, "wb") as f:
-                    f.write(thumbnail_data)
-                thumbnail_path = str(thumb_path)
-        except Exception as e:
-            logger.warning("Failed to extract gcode thumbnail (save_3mf %s): %s", filename, e)
+    prepared = await _prepare_library_source(file_path, filename)
+    metadata: dict = prepared.metadata
+    thumbnail_path = await _publish_prepared_thumbnail(prepared)
 
     if extra_metadata:
         metadata = {**metadata, **extra_metadata}
@@ -663,7 +655,7 @@ async def save_3mf_bytes_to_library(
         skip_objects_supported=skip_objects_supported_from_metadata(metadata or None),
         file_size=len(content),
         file_hash=file_hash,
-        thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
+        thumbnail_path=thumbnail_path,
         file_metadata=_without_print_name(metadata) or None,
         created_by_id=created_by_id,
         swap_compatible=swap_compatible,
@@ -2146,84 +2138,86 @@ async def list_files(
 # archive route both call into them.
 
 
-# Keys in ``Metadata/project_settings.config`` that BambuStudio writes ``"-1"``
-# to when the user wants the value inherited from the parent process preset.
-# The CLI's ``StaticPrintConfig`` validator runs against the embedded settings
-# *before* ``--load-settings`` overrides apply, so a sentinel ``"-1"`` trips
-# the field's lower-bound range check and the CLI exits non-zero before our
-# profile triplet is ever consulted (upstream Bambuddy #1201 — MakerWorld P2S
-# models).
-#
-# Allowlisted (rather than "strip every '-1' value") because some fields
-# legitimately accept negative numbers (z_offset, translation values, etc.)
-# and a blanket strip would silently corrupt those.
-#
-# Add new entries here as more reports surface — the slicer's error message
-# names the offending field directly (``<field>: -1 not in range [...]``).
-_PROJECT_SETTINGS_SENTINEL_KEYS = frozenset(
-    {
-        # Reported in upstream #1201 (MakerWorld P2S 3MFs).
-        "raft_first_layer_expansion",
-        "tree_support_wall_count",
-        # Cited in the strip-experiment comment block inside
-        # ``_run_slicer_with_fallback`` as a known sentinel case from earlier
-        # reports.
-        "prime_tower_brim_width",
-    }
-)
+def _source_plate_colours(model_bytes: bytes) -> list[str]:
+    """Per-slot colours the source 3MF was designed with, or ``[]``.
 
-
-def _sanitize_project_settings_sentinels(zip_bytes: bytes) -> bytes:
-    """Strip ``"-1"`` inherit-from-parent sentinels from the 3MF's
-    ``Metadata/project_settings.config`` so the slicer CLI's range validator
-    accepts the file (upstream #1201).
-
-    Removes only allowlisted keys (see ``_PROJECT_SETTINGS_SENTINEL_KEYS``)
-    when their value is exactly ``"-1"``. The rest of the config — and every
-    other entry in the zip — is preserved byte-for-byte. Unlike a
-    full-strip-every-config approach (cautioned against in the comment block
-    inside ``_run_slicer_with_fallback``) this leaves ``StaticPrintConfig``
-    initialisation intact: the file is still present, still parses, and the
-    slicer falls back to the supplied ``--load-settings`` value for the
-    removed key.
-
-    Returns the original bytes unchanged when no sanitisation is needed
-    (input isn't a valid zip, no ``project_settings.config``, no allowlisted
-    sentinels present, malformed JSON, non-dict root, or any other parse
-    failure) so the caller can pass the result on without further checks.
+    Read from ``project_settings.config`` rather than ``slice_info.config``:
+    the latter records the colour the file was LAST SLICED with, which for a
+    source that never carried one is the slicer's own #00AE42 — the exact
+    value #2977 is about, so it would be a circular fallback. STL and
+    mesh-only 3MF sources have no project settings and yield ``[]``.
     """
     from io import BytesIO
 
     try:
-        with zipfile.ZipFile(BytesIO(zip_bytes), "r") as zin:
-            if "Metadata/project_settings.config" not in zin.namelist():
-                return zip_bytes
-            try:
-                config = json.loads(zin.read("Metadata/project_settings.config").decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                return zip_bytes
-            if not isinstance(config, dict):
-                return zip_bytes
-            removed = [key for key in _PROJECT_SETTINGS_SENTINEL_KEYS if config.get(key) == "-1"]
-            if not removed:
-                return zip_bytes
-            for key in removed:
-                config.pop(key, None)
-            patched = json.dumps(config)
-            logger.info(
-                "3MF sanitiser: removed sentinel '-1' for keys %s — slicer will use --load-settings defaults",
-                sorted(removed),
-            )
-            dst = BytesIO()
-            with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
-                for item in zin.infolist():
-                    if item.filename == "Metadata/project_settings.config":
-                        zout.writestr(item, patched)
-                    else:
-                        zout.writestr(item, zin.read(item.filename))
-            return dst.getvalue()
-    except (zipfile.BadZipFile, OSError):
-        return zip_bytes
+        with zipfile.ZipFile(BytesIO(model_bytes), "r") as zf:
+            return [str(f.get("color") or "") for f in extract_project_filaments_from_3mf(zf)]
+    except (zipfile.BadZipFile, OSError, ValueError):
+        return []
+
+
+def _preset_default_colour(profile: dict) -> str:
+    """A filament preset's own ``default_filament_colour``, or ``""``.
+
+    OrcaSlicer's third-party vendor profiles carry it; Bambu Studio's bundled
+    BBL filament profiles carry it nowhere, which is why it is one link in the
+    chain and never the whole fix. Read here and rewritten as
+    ``filament_colour`` because the CLI does not read it itself (measured:
+    Bambu Studio consumes it in the GUI when a project is created).
+    """
+    raw = profile.get("default_filament_colour")
+    if isinstance(raw, list):
+        raw = raw[0] if raw else None
+    return raw.strip() if isinstance(raw, str) else ""
+
+
+def _patch_filament_colours(
+    filament_jsons: list[str],
+    requested: list[str],
+    model_bytes: bytes,
+) -> list[str]:
+    """Write ``filament_colour`` onto each resolved filament profile (upstream 4f10d155, #2977).
+
+    Per slot, first non-empty of: the caller's explicit colour (the slice
+    dialog's per-slot control), the preset's own ``default_filament_colour``,
+    the colour the source 3MF's plate was designed with. All three empty leaves
+    the slot untouched rather than guessing — the slicer's default is then still
+    wrong, but it is the same wrong value the file would have had anyway.
+
+    ⚠️ This records a colour; it decides no routing. A job printed in another
+    colour than the one recorded is ranked lower by the dispatcher, never
+    refused, unless the job itself forces colour matching.
+
+    Returns a new list; a profile that is not parseable JSON is passed through
+    unchanged — a colour is not worth failing a slice that would succeed.
+    """
+    source_colours = _source_plate_colours(model_bytes) if filament_jsons else []
+    patched: list[str] = []
+    for i, raw in enumerate(filament_jsons):
+        try:
+            profile = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("Filament colour skipped for slot %d: profile is not valid JSON", i + 1)
+            patched.append(raw)
+            continue
+        if not isinstance(profile, dict):
+            patched.append(raw)
+            continue
+        colour = (
+            (requested[i].strip() if i < len(requested) and requested[i] else "")
+            or _preset_default_colour(profile)
+            or (source_colours[i].strip() if i < len(source_colours) and source_colours[i] else "")
+        )
+        if not colour:
+            patched.append(raw)
+            continue
+        # One-element array: the shape the CLI uses for every other
+        # per-filament field, and the one a ``--load-filaments`` profile is
+        # parsed as. A bare string passes the JSON parser but not the config
+        # deserialiser.
+        profile["filament_colour"] = [colour]
+        patched.append(json.dumps(profile))
+    return patched
 
 
 def _patch_process_bed_type(process_json: str, bed_type: str) -> str:
@@ -2265,8 +2259,40 @@ _SOURCE_PROCESS_SUPPORT_KEYS_TO_PRESERVE = (
 )
 
 
-def _patch_process_support_settings(process_json: str, source_3mf_bytes: bytes) -> str:
+def _declined_source_keys(offered: list[DesignOverride], requested: list[str] | None) -> set[str]:
+    """Settings the file offered and the caller left unticked (upstream b1f5ec96, #2942).
+
+    The slice dialog lists what the designer changed and applies only the keys
+    that are switched on, so the answer to "which of these does this slice
+    want" is already in the request. This reads the other half — the ones on
+    offer and turned down — which the support carry-over must not put back.
+
+    ``requested`` of ``None`` is a caller that predates the per-key choice (or
+    an API consumer that never sends it — Slicer Pipelines) and so cannot have
+    declined anything; an empty list is one that was shown the file's settings
+    and took none. Collapsing the two is what made an emptied list
+    indistinguishable from an old client, and only one of them means no.
+    """
+    if requested is None:
+        return set()
+    return {override.key for override in offered} - set(requested)
+
+
+def _patch_process_support_settings(
+    process_json: str,
+    source_3mf_bytes: bytes,
+    declined: set[str] | frozenset[str] = frozenset(),
+) -> str:
     """Overlay the source 3MF's support configuration onto the process JSON.
+
+    ``declined`` names keys the caller offered the user as the file's own
+    (#2622) and that the user unticked, which this carry must then not
+    reinstate behind their back (#2942). Empty for a source that offers nothing
+    — an OrcaSlicer export carries no ``different_settings_to_system``, so
+    there is nothing to tick and #1881's carry still applies — and for a client
+    that predates the per-key ticks. BamDude's dialog pre-ticks the designer's
+    intent, so by default a file with supports on still switches them on; only
+    an explicit untick stands this down.
 
     Only fires on 3MF sources — STL / STEP don't carry ``project_settings.
     config``. Silently no-ops when the source doesn't have the config, has
@@ -2309,7 +2335,11 @@ def _patch_process_support_settings(process_json: str, source_3mf_bytes: bytes) 
     if not supports_enabled_in_config(src_cfg):
         return process_json
 
-    carried = {key: src_cfg[key] for key in _SOURCE_PROCESS_SUPPORT_KEYS_TO_PRESERVE if key in src_cfg}
+    carried = {
+        key: src_cfg[key] for key in _SOURCE_PROCESS_SUPPORT_KEYS_TO_PRESERVE if key in src_cfg and key not in declined
+    }
+    if not carried:
+        return process_json
     process_cfg.update(carried)
     # Logged because this is the one layer of the process JSON the user cannot
     # see coming: the slice dialog shows the picked preset's values, so a
@@ -2514,6 +2544,11 @@ async def _run_slicer_with_fallback(
         assert ref is not None, "schema validator guarantees filament list is non-None"
         filament_jsons.append(await resolve_preset_ref(db, user, ref, "filament"))
 
+    # Give every slot its colour before anything else touches the list, so the
+    # unused-slot substitution below propagates a complete profile rather than
+    # one that still has to be patched afterwards (upstream 4f10d155, #2977).
+    filament_jsons = _patch_filament_colours(filament_jsons, request.filament_colours, model_bytes)
+
     # Bed-type override (upstream Bambuddy #1337): patch
     # ``curr_bed_type`` onto the resolved process JSON so the slicer's
     # config pass picks up the user's pick instead of whatever the
@@ -2571,7 +2606,7 @@ async def _run_slicer_with_fallback(
         # keeps the config present, just removes the offending keys; the
         # supplied --load-settings (and the fallback's embedded values for
         # keys we didn't touch) still drive the slice.
-        primary_bytes = _sanitize_project_settings_sentinels(primary_bytes)
+        primary_bytes = sanitize_project_settings_sentinels(primary_bytes)
 
         # #1881: preserve the source 3MF's support configuration on top of
         # the picked process preset. Bambu's shipped process presets set
@@ -2580,7 +2615,16 @@ async def _run_slicer_with_fallback(
         # without patching, the source's `enable_support: 1` + support-slot
         # assignments get discarded and the slice comes out single-material
         # with a PVA slot loaded but never used.
-        presets["process"] = _patch_process_support_settings(presets["process"], primary_bytes)
+        #
+        # Bounded by the dialog's ticks (#2942): the designer's settings are read
+        # once, the keys the user was offered and left unticked are declined,
+        # and the carry stands down for those. A source that offers no per-key
+        # choice, or a caller that sends no list, keeps the carry whole.
+        design_offered = extract_design_process_overrides(primary_bytes)
+        declined_from_file = _declined_source_keys(design_offered, request.design_overrides)
+        presets["process"] = _patch_process_support_settings(
+            presets["process"], primary_bytes, declined=declined_from_file
+        )
 
         # Carry the designer's own process tweaks onto the picked preset (#2622).
         # BambuStudio records exactly which keys deviate from the system preset,
@@ -2593,7 +2637,7 @@ async def _run_slicer_with_fallback(
         if request.design_overrides:
             presets["process"] = apply_design_overrides(
                 presets["process"],
-                extract_design_process_overrides(primary_bytes),
+                design_offered,
                 request.design_overrides,
             )
 
@@ -2851,6 +2895,20 @@ async def _run_slicer_with_fallback(
         )
         raise HTTPException(status_code=502, detail=missing_start_gcode_message(request.printer_preset.id))
 
+    # A filament preset the sidecar's bundle cannot resolve is not an error
+    # there — the CLI inherits nothing and slices with its own defaults, so a
+    # PETG pick comes back as PLA at 200 C (upstream 4f10d155). Warned rather
+    # than refused: the file prints, and the user may have meant a profile
+    # their sidecar image predates. Skipped on the embedded-settings path,
+    # which sends no filament profiles for the bundle to resolve.
+    if not used_embedded_settings:
+        unresolved = unresolved_filament_slots(result.content, export_3mf=bool(request.export_3mf))
+        if unresolved:
+            logger.warning(
+                "%s",
+                unresolved_filament_message(unresolved, [ref.id for ref in request.filament_presets]),
+            )
+
     return result, used_embedded_settings
 
 
@@ -2941,25 +2999,9 @@ async def slice_and_persist(
     await db.commit()  # release destination lookup before file preparation
     await preview_disk(out_path.write_bytes, sliced_bytes)
 
-    # Extract thumbnail from the produced 3MF so the library card shows a
-    # preview. Failures here aren't fatal — the file is still useful.
-    thumbnail_relative: str | None = None
-    parsed_metadata: dict = {}
-    try:
-        parser = ThreeMFParser(str(out_path))
-        parsed = await preview_disk(parser.parse)
-        thumb_data = parsed.get("_thumbnail_data")
-        thumb_ext = parsed.get("_thumbnail_ext", ".png")
-        if thumb_data:
-            thumb_filename = f"{uuid.uuid4().hex}{thumb_ext}"
-            thumb_path = get_library_thumbnails_dir() / thumb_filename
-            thumb_path.write_bytes(thumb_data)
-            thumbnail_relative = to_relative_path(thumb_path)
-        cleaned = _clean_3mf_metadata(parsed)
-        if isinstance(cleaned, dict):
-            parsed_metadata = cleaned
-    except Exception as exc:
-        logger.warning("Failed to parse sliced 3MF metadata for %s: %s", out_filename, exc)
+    prepared = await _prepare_library_source(out_path, out_filename)
+    thumbnail_relative = await _publish_prepared_thumbnail(prepared)
+    parsed_metadata = prepared.metadata
 
     # Drop the embedded ``print_name`` (see _without_print_name) so the sliced
     # row's display falls back to its ".gcode.3mf" filename instead of the
@@ -2981,7 +3023,7 @@ async def slice_and_persist(
     # bytes, so this path produces duplicates readily. ``find_reusable_row`` is
     # the one place that decides; an existing row is returned as-is, keeping its
     # name, folder and print history.
-    sliced_hash = await preview_disk(lambda: hashlib.sha256(sliced_bytes).hexdigest())
+    sliced_hash = prepared.digest
     reusable = await find_reusable_row(db, content_hash=sliced_hash)
     if reusable is not None:
         existing, present = reusable
@@ -3426,8 +3468,9 @@ async def store_library_upload(
     with open(file_path, "wb") as f:
         f.write(content)
 
-    # Calculate hash
-    file_hash = calculate_file_hash(file_path)
+    from backend.app.services.library_file_runtime import get_library_file_runtime
+
+    file_hash = (await get_library_file_runtime().hash(file_path, root=file_path.parent))["digest"]
 
     # The content decision, before any row is built. Only active rows count — a
     # trashed sibling was deleted by the user and must not pin a fresh upload to
@@ -3451,80 +3494,9 @@ async def store_library_upload(
         await db.refresh(existing)
         return IngestResult(file=existing, outcome="restored", superseded_name=filename)
 
-    # Extract metadata and thumbnail
-    metadata = {}
-    thumbnail_path = None
-    thumbnails_dir = get_library_thumbnails_dir()
-
-    if ext == ".3mf":
-        try:
-            parser = ThreeMFParser(str(file_path))
-            raw_metadata = parser.parse()
-
-            # Extract thumbnail before cleaning metadata
-            thumbnail_data = raw_metadata.get("_thumbnail_data")
-            thumbnail_ext = raw_metadata.get("_thumbnail_ext", ".png")
-
-            # Save thumbnail if extracted
-            if thumbnail_data:
-                thumb_filename = f"{uuid.uuid4().hex}{thumbnail_ext}"
-                thumb_path = (
-                    thumbnails_dir / thumb_filename
-                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                with open(thumb_path, "wb") as f:
-                    f.write(thumbnail_data)
-                thumbnail_path = str(thumb_path)
-
-            metadata = _clean_3mf_metadata(raw_metadata)
-
-            # Whether this container actually holds sliced G-code, decided
-            # by looking inside it. ``compute_file_tags`` prefers this over
-            # the filename, so a model named ``*.gcode.3mf`` no longer gets
-            # a Print affordance it cannot honour — the printer answers
-            # that thirty seconds later as "unable to parse the 3mf file".
-            # Unset when unreadable: unknown, not a claim.
-            _sliced = sliced_gcode_in_3mf(file_path)
-            if _sliced is not None:
-                metadata[SLICED_GCODE_META_KEY] = _sliced
-
-            # Populate per-plate cache so the gallery / list endpoint
-            # doesn't need to reopen the ZIP on every read. ``plates``
-            # carries the full per-plate breakdown; ``is_multi_plate``
-            # is a tiny top-level boolean that the file-list response
-            # uses to gate gallery rendering on the frontend.
-            try:
-                import zipfile as _zf
-
-                from backend.app.services.archive import parse_plates_from_3mf
-
-                with _zf.ZipFile(str(file_path), "r") as _zfh:
-                    plates_payload = parse_plates_from_3mf(_zfh)
-                if plates_payload:
-                    metadata["plates"] = plates_payload
-                    metadata["is_multi_plate"] = len(plates_payload) > 1
-            except Exception as _pe:
-                logger.debug("Per-plate parse for upload failed (non-critical): %s", _pe)
-        except Exception as e:
-            logger.warning("Failed to parse 3MF: %s", e)
-
-    elif ext == ".gcode":
-        # Extract embedded thumbnail from gcode
-        try:
-            thumbnail_data = extract_gcode_thumbnail(file_path)
-            if thumbnail_data:
-                thumb_filename = f"{uuid.uuid4().hex}.png"
-                thumb_path = (
-                    thumbnails_dir / thumb_filename
-                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                with open(thumb_path, "wb") as f:
-                    f.write(thumbnail_data)
-                thumbnail_path = str(thumb_path)
-        except Exception as e:
-            logger.warning("Failed to extract gcode thumbnail: %s", e)
-
-    elif ext.lower() in IMAGE_EXTENSIONS:
-        # For image files, create a thumbnail from the image itself
-        thumbnail_path = create_image_thumbnail(file_path, thumbnails_dir)
+    prepared = await _prepare_library_source(file_path, filename)
+    metadata = prepared.metadata
+    thumbnail_path = await _publish_prepared_thumbnail(prepared)
 
     # Detect swap mode compatibility from filename. Covers both the
     # singular ".swap." suffix (older / custom tooling) and the ".swaps."
@@ -3546,7 +3518,7 @@ async def store_library_upload(
         skip_objects_supported=skip_objects_supported_from_metadata(metadata if metadata else None),
         file_size=len(content),
         file_hash=file_hash,
-        thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
+        thumbnail_path=thumbnail_path,
         file_metadata=_without_print_name(metadata) if metadata else None,
         created_by_id=created_by_id,
         swap_compatible=swap_compatible,
@@ -3837,8 +3809,9 @@ async def extract_zip_file(
                     with open(file_path, "wb") as f:
                         f.write(file_content)
 
-                    # Calculate hash
-                    file_hash = calculate_file_hash(file_path)
+                    from backend.app.services.library_file_runtime import get_library_file_runtime
+
+                    file_hash = (await get_library_file_runtime().hash(file_path, root=file_path.parent))["digest"]
 
                     # A ZIP of models routinely carries a plate the library
                     # already holds. ``find_reusable_row`` is the one place that
@@ -3855,70 +3828,9 @@ async def extract_zip_file(
                         folders_created += new_folder_count
                         continue
 
-                    # Extract metadata and thumbnail for 3MF files
-                    metadata = {}
-                    thumbnail_path = None
-                    thumbnails_dir = get_library_thumbnails_dir()
-
-                    if ext == ".3mf":
-                        try:
-                            parser = ThreeMFParser(str(file_path))
-                            raw_metadata = parser.parse()
-
-                            thumbnail_data = raw_metadata.get("_thumbnail_data")
-                            thumbnail_ext = raw_metadata.get("_thumbnail_ext", ".png")
-
-                            if thumbnail_data:
-                                thumb_filename = f"{uuid.uuid4().hex}{thumbnail_ext}"
-                                thumb_path = (
-                                    thumbnails_dir / thumb_filename
-                                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                                with open(thumb_path, "wb") as f:
-                                    f.write(thumbnail_data)
-                                thumbnail_path = str(thumb_path)
-
-                            metadata = _clean_3mf_metadata(raw_metadata)
-
-                            # Content decides whether this container is sliced;
-                            # the tag rule prefers it over the filename. Unset
-                            # when unreadable, which reads as unknown rather
-                            # than as a claim. See sliced_gcode_in_3mf.
-                            _sliced = sliced_gcode_in_3mf(file_path)
-                            if _sliced is not None:
-                                metadata[SLICED_GCODE_META_KEY] = _sliced
-
-                            # Per-plate cache (same as upload_file path).
-                            try:
-                                import zipfile as _zf
-
-                                from backend.app.services.archive import parse_plates_from_3mf
-
-                                with _zf.ZipFile(str(file_path), "r") as _zfh:
-                                    plates_payload = parse_plates_from_3mf(_zfh)
-                                if plates_payload:
-                                    metadata["plates"] = plates_payload
-                                    metadata["is_multi_plate"] = len(plates_payload) > 1
-                            except Exception as _pe:
-                                logger.debug("Per-plate parse for ZIP-extracted 3MF failed (non-critical): %s", _pe)
-                        except Exception as e:
-                            logger.warning("Failed to parse 3MF from ZIP: %s", e)
-
-                    elif ext == ".gcode":
-                        try:
-                            thumbnail_data = extract_gcode_thumbnail(file_path)
-                            if thumbnail_data:
-                                thumb_filename = f"{uuid.uuid4().hex}.png"
-                                thumb_path = (
-                                    thumbnails_dir / thumb_filename
-                                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
-                                with open(thumb_path, "wb") as f:
-                                    f.write(thumbnail_data)
-                                thumbnail_path = str(thumb_path)
-                        except Exception as e:
-                            logger.warning("Failed to extract gcode thumbnail from ZIP: %s", e)
-
-                    elif ext.lower() in IMAGE_EXTENSIONS:
-                        thumbnail_path = create_image_thumbnail(file_path, thumbnails_dir)
+                    prepared = await _prepare_library_source(file_path, filename)
+                    metadata = prepared.metadata
+                    thumbnail_path = await _publish_prepared_thumbnail(prepared)
 
                     # Create database entry (store relative paths for portability)
                     library_file = LibraryFile(
@@ -3929,7 +3841,7 @@ async def extract_zip_file(
                         skip_objects_supported=skip_objects_supported_from_metadata(metadata if metadata else None),
                         file_size=len(file_content),
                         file_hash=file_hash,
-                        thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
+                        thumbnail_path=thumbnail_path,
                         file_metadata=_without_print_name(metadata) if metadata else None,
                         created_by_id=upload_user_id,
                     )
@@ -4293,10 +4205,10 @@ async def get_library_file_plate_objects(
 #
 # Two serving routes, split by what a browser would DO with the bytes:
 #
-# * ``card-file`` is the ``<img src>`` surface. It takes a camera stream token —
-#   which is long-lived and also reaches a TV or a Home Assistant card — so it
-#   hands out PICTURES and nothing else. A bill of materials is a document about
-#   somebody's business and has no reason to sit behind a kiosk credential.
+# * ``card-file`` is the ``<img src>`` surface. It takes a media token in the
+#   URL (audit D9 a2; the camera stream token before) and hands out PICTURES and
+#   nothing else — a credential that rides in a URL ends up in logs and history,
+#   and a bill of materials is a document about somebody's business.
 # * ``card-download`` is the bearer surface for everything else, under the same
 #   ownership permission as ``/card`` itself.
 #
@@ -4571,28 +4483,23 @@ async def get_library_file_card_file(
     file_id: int,
     zip_path: str,
     db: AsyncSession = Depends(get_db),
-    _=RequireCameraStreamToken,
+    auth_result: tuple[User | None, bool] = _LIBRARY_MEDIA_READ,
 ):
     """A PICTURE out of the card's auxiliaries, for an ``<img src>``.
 
-    Pictures only (``CARD_PICTURE_CATEGORIES``): a camera stream token is
-    long-lived and also lives in a kiosk or a Home Assistant card, so a bill of
-    materials or an assembly PDF is not served here just because it happens to
-    be in the same ZIP — those go through ``card-download`` and a bearer token.
-    The products route makes the same split for the same reason.
+    Pictures only (``CARD_PICTURE_CATEGORIES``): a bill of materials or an
+    assembly PDF is not served here just because it happens to be in the same
+    ZIP — those go through ``card-download`` and a bearer token. The products
+    route makes the same split for the same reason.
 
-    Token-gated because an ``<img>`` cannot carry an Authorization header — and
-    ``/card-file/`` is in ``main.py``'s ``PUBLIC_API_PATTERNS`` so the request
-    reaches this gate at all.
-
-    ⚠️ **Stream-token-ONLY by design, exactly like the plate-thumbnail route.**
-    It carries no ownership check, and that is not an oversight: the same is
-    true of every ``<img>`` surface in BamDude, because the credential a browser
-    can put in a URL is the only one it has. ``/card`` and ``card-download``
-    beside it ARE ownership-scoped — the split is deliberate, and the price of
-    it is that pictures, and nothing but pictures, sit behind the kiosk
-    credential.
+    Media token or headers (audit D9 a2) because an ``<img>`` cannot carry an
+    Authorization header — ``/card-file/`` is in ``main.py``'s
+    ``PUBLIC_API_PATTERNS`` so the request reaches this gate at all. It used to
+    take the camera stream token, which checked no ownership; the media token
+    names its user, so this is now owner-scoped like ``/card`` beside it.
     """
+    user, can_read_all = auth_result
+    _ensure_library_file_visible(await db.get(LibraryFile, file_id), user, can_read_all)
     data, media_type, _name = await _card_member(db, file_id, zip_path, categories=CARD_PICTURE_CATEGORIES)
     if not media_type.startswith("image/"):
         # A picture folder is a folder, not a promise. Whatever a designer put in
@@ -4656,19 +4563,18 @@ async def get_library_file_plate_thumbnail(
     plate_index: int,
     view: str = "plate",
     db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = _LIBRARY_MEDIA_READ,
 ):
     """Get the thumbnail image for a specific plate from a library file.
 
     ``view=top`` serves the top-down render the object-preview markers are
-    positioned against.
+    positioned against. Media token or headers, owner-scoped (audit D9 a2).
     """
     from starlette.responses import Response
 
+    user, can_read_all = auth_result
     result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
-    lib_file = result.scalar_one_or_none()
-
-    if not lib_file:
-        raise HTTPException(status_code=404, detail="File not found")
+    lib_file = _ensure_library_file_visible(result.scalar_one_or_none(), user, can_read_all)
 
     file_path = Path(app_settings.base_dir) / lib_file.file_path
     if not file_path.exists():
@@ -5006,6 +4912,11 @@ async def get_library_file_filament_requirements(
                 for filament in filaments:
                     filament["nozzle_id"] = nozzle_mapping.get(filament["slot_id"])
 
+            # Nozzle-rack machines (upstream #1784): the print dialog offers a
+            # rack position per filament group, which needs the group table as
+            # well as the carriage above.
+            annotate_rack_groups(filaments, file_path, plate_id)
+
             # The slicer's Filament Track Switch inputs for the print
             # dialog's inlet recommendation. A separate block, read by the
             # dialog only — nothing that matches or dispatches reads it.
@@ -5039,7 +4950,8 @@ async def print_library_file(
     The actual send/start work is handled asynchronously by background
     dispatch so the UI can continue immediately.
 
-    Only sliced files (.gcode or .gcode.3mf) can be printed.
+    Only sliced files can be printed: ``.gcode``, ``.gcode.3mf``, or a 3MF that
+    holds sliced G-code whatever it is called (upstream #2993).
     """
     from backend.app.models.printer import Printer
     from backend.app.services.background_dispatch import DispatchEnqueueRejected, background_dispatch
@@ -5063,15 +4975,18 @@ async def print_library_file(
     except InvalidFilenameError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Validate file is sliced
-    if not is_sliced_file(lib_file.filename):
-        raise HTTPException(
-            status_code=400,
-            detail="Not a sliced file. Only .gcode or .gcode.3mf files can be printed.",
-        )
-
     # Get the full file path
     file_path = Path(app_settings.base_dir) / lib_file.file_path
+
+    # Validate file is sliced — by name, or by what the 3MF holds: the file
+    # manager offers Print for a sliced ``Foo.3mf`` (its tag follows the content).
+    if not is_sliced_file(lib_file.filename) and not await sliced_by_content(
+        lib_file.filename, file_path, file_metadata=lib_file.file_metadata
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed.",
+        )
 
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
@@ -5138,6 +5053,7 @@ async def print_library_file(
             library_file_id=file_id,
             plate_id=body.plate_id,
             ams_mapping=body.ams_mapping,
+            nozzle_rack_choice=body.nozzle_rack_choice,
             bed_levelling=body.bed_levelling,
             flow_cali=body.flow_cali,
             layer_inspect=body.layer_inspect,
@@ -5607,13 +5523,18 @@ async def download_library_file_for_slicer(
 
 
 @router.get("/files/{file_id}/thumbnail")
-async def get_thumbnail(file_id: int, db: AsyncSession = Depends(get_db)):
-    """Get a file's thumbnail."""
-    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
-    file = result.scalar_one_or_none()
+async def get_thumbnail(
+    file_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = _LIBRARY_MEDIA_READ,
+):
+    """Get a file's thumbnail — media token or headers, owner-scoped (audit D9 a2).
 
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
+    A trashed file keeps its picture for the trash list, to whoever may see it.
+    """
+    user, can_read_all = auth_result
+    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
+    file = _ensure_library_file_visible(result.scalar_one_or_none(), user, can_read_all, include_trashed=True)
 
     abs_thumb_path = to_absolute_path(file.thumbnail_path)
     if not abs_thumb_path or not abs_thumb_path.exists():

@@ -10,6 +10,8 @@ listing endpoint.
 
 from __future__ import annotations
 
+import io
+import zipfile
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,6 +23,13 @@ from backend.app.services.model_providers import makerworld_provider
 from backend.app.services.model_providers.base import ProviderResourceRef
 from backend.app.services.model_providers.makerworld.errors import MakerWorldUnavailableError
 from backend.app.services.model_providers.makerworld.service import MakerWorldService
+
+
+def _sample_3mf() -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("Metadata/plate_1.gcode", "G1 X10 Y10")
+    return output.getvalue()
 
 
 def _canonical_url(model_id: int, profile_id: int | None = None) -> str:
@@ -320,7 +329,7 @@ class TestImport:
     """End-to-end of POST /makerworld/import — mocks the service but exercises
     real DB writes, real ``save_3mf_bytes_to_library``, real folder auto-creation."""
 
-    _FAKE_3MF_BYTES = b"PK\x03\x04not-a-real-3mf"
+    _FAKE_3MF_BYTES = _sample_3mf()
 
     @pytest.mark.asyncio
     async def test_returns_existing_on_source_url_match(self, async_client, db_session):
@@ -1108,7 +1117,7 @@ class TestApiKeyCloudOwner:
         svc = _fake_service(
             get_design=_default_design(),
             get_profile_download=_default_manifest(),
-            download_3mf=(b"PK\x03\x04fake-3mf", "benchy.3mf"),
+            download_3mf=(_sample_3mf(), "benchy.3mf"),
         )
 
         del async_client.headers["Authorization"]
@@ -1142,7 +1151,7 @@ class TestApiKeyCloudOwner:
         svc = _fake_service(
             get_design=_default_design(),
             get_profile_download=_default_manifest(),
-            download_3mf=(b"PK\x03\x04fake-3mf", "benchy.3mf"),
+            download_3mf=(_sample_3mf(), "benchy.3mf"),
         )
 
         del async_client.headers["Authorization"]

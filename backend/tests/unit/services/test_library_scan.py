@@ -10,133 +10,101 @@ library nobody touched.
 from __future__ import annotations
 
 import asyncio
-import threading
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from backend.app.services import library_scan
-from backend.app.services.library_scan import BATCH_SIZE, EMPTY_WALK_GUARD, _Known, collect_tree
-
-
-@pytest.mark.asyncio
-async def test_the_walk_runs_in_a_thread(tmp_path, monkeypatch):
-    """⚠️ The reason the WebSocket dropped. Every readdir on a network share is a
-    round trip, and on the event loop it stalls every other request in the
-    process — which is what made the browser ask for a fresh token, which is the
-    request the user actually saw fail.
-    """
-    seen: dict[str, str] = {}
-
-    def spy(root, show_hidden):
-        seen["thread"] = threading.current_thread().name
-        return []
-
-    monkeypatch.setattr(library_scan, "_walk_sync", spy)
-    await collect_tree(tmp_path, False)
-
-    assert seen["thread"] != threading.main_thread().name
+from backend.app.services.library_scan import BATCH_SIZE, EMPTY_WALK_GUARD, _Known
 
 
 @pytest.mark.asyncio
 async def test_hidden_files_and_directories_are_skipped_unless_asked_for(tmp_path):
+    from backend.app.library_file_service import _walk
+
     (tmp_path / "visible.3mf").write_bytes(b"x")
     (tmp_path / ".hidden.3mf").write_bytes(b"x")
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "buried.3mf").write_bytes(b"x")
-
-    tree = await collect_tree(tmp_path, show_hidden=False)
-    files = [name for _, names in tree for name in names]
-    assert files == ["visible.3mf"]
-
-    tree = await collect_tree(tmp_path, show_hidden=True)
-    files = sorted(name for _, names in tree for name in names)
-    assert ".hidden.3mf" in files and "buried.3mf" in files
+    visible = [entry.get("name") for entry in _walk(tmp_path, False)]
+    all_names = [entry.get("name") for entry in _walk(tmp_path, True)]
+    assert "visible.3mf" in visible
+    assert ".hidden.3mf" not in visible
+    assert ".hidden.3mf" in all_names and "buried.3mf" in all_names
 
 
 @pytest.mark.asyncio
 async def test_preparing_a_file_opens_no_session(tmp_path, monkeypatch):
-    """⚠️ The whole fix in one assertion. Hashing reads the file over the
-    network and the 3MF parser unzips it; either with a transaction open is the
-    bug this module exists to remove.
-    """
-    opened = []
-
     from backend.app.core import database
 
+    opened = []
     real = database.async_session
-
-    def watched(*args, **kwargs):
-        opened.append(1)
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(database, "async_session", watched)
-
-    target = tmp_path / "part.stl"
-    target.write_bytes(b"solid\n")
-    prepared = await library_scan.prepare(str(tmp_path), "part.stl", tmp_path, None, "")
-
-    assert prepared is not None
-    assert prepared.intent == "create"
-    assert opened == [], "preparing a file must not touch the database"
-
-
-@pytest.mark.asyncio
-async def test_a_file_outside_the_scannable_set_is_ignored(tmp_path):
-    (tmp_path / "notes.txt").write_text("hi")
-    assert await library_scan.prepare(str(tmp_path), "notes.txt", tmp_path, None, "") is None
-
-
-@pytest.mark.asyncio
-async def test_markdown_is_scannable_because_a_readme_must_survive_a_rescan(tmp_path):
-    """⚠️ This is #2520 and it is easy to "tidy away". Markdown is in the
-    scannable set so an external folder's README keeps its row; drop it and the
-    scan reads that row as a file no longer on disk and purges it on every pass
-    while the file sits there untouched.
-    """
-    (tmp_path / "README.md").write_text("hi")
-    assert await library_scan.prepare(str(tmp_path), "README.md", tmp_path, None, "") is not None
-
-
-@pytest.mark.asyncio
-async def test_a_known_file_that_has_not_moved_is_not_re_hashed(tmp_path, monkeypatch):
-    """A mount that has not changed must cost no reads at all — that is what
-    makes hashing mounts affordable in the first place.
-    """
+    monkeypatch.setattr(database, "async_session", lambda *a, **kw: opened.append(1) or real(*a, **kw))
     target = tmp_path / "part.stl"
     target.write_bytes(b"solid\n")
     stat = target.stat()
+    prepared = await library_scan.prepare_via_service(
+        str(tmp_path), target.name, tmp_path, None, "", stat.st_size, stat.st_mtime_ns
+    )
+    assert prepared is not None and prepared.intent == "create"
+    assert opened == []
 
-    from backend.app.api.routes import library as routes
 
+@pytest.mark.asyncio
+async def test_scannable_extensions_include_markdown_but_not_txt(tmp_path):
+    (tmp_path / "notes.txt").write_text("hi")
+    (tmp_path / "README.md").write_text("hi")
+    for name, expected in (("notes.txt", False), ("README.md", True)):
+        stat = (tmp_path / name).stat()
+        result = await library_scan.prepare_via_service(
+            str(tmp_path), name, tmp_path, None, "", stat.st_size, stat.st_mtime_ns
+        )
+        assert (result is not None) is expected
+
+
+@pytest.mark.asyncio
+async def test_a_known_complete_file_that_has_not_moved_is_not_re_read(tmp_path, monkeypatch):
+    from backend.app.api.routes.library import _mtime_to_utc
+    from backend.app.services.library_file_preparation import EXTRACTION_VERSION
+    from backend.app.services.library_file_runtime import get_library_file_runtime
+
+    target = tmp_path / "part.stl"
+    target.write_bytes(b"solid\n")
+    stat = target.stat()
     known = _Known(
         id=1,
         file_hash="deadbeef",
         file_size=stat.st_size,
-        fs_modified_at=routes._mtime_to_utc(stat.st_mtime),
+        fs_modified_at=_mtime_to_utc(stat.st_mtime),
+        extraction_version=EXTRACTION_VERSION,
+        extraction_hash="deadbeef",
     )
-
-    hashed = []
-    monkeypatch.setattr(routes, "calculate_file_hash", lambda p: hashed.append(p) or "x")
-
-    prepared = await library_scan.prepare(str(tmp_path), "part.stl", tmp_path, known, "")
-
-    assert prepared is not None
-    assert prepared.intent == "refresh"
-    assert prepared.new_hash is None
-    assert hashed == [], "an unchanged file was re-read"
+    worker = get_library_file_runtime()
+    monkeypatch.setattr(worker, "hash", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("re-read")))
+    prepared = await library_scan.prepare_via_service(
+        str(tmp_path), target.name, tmp_path, known, "", stat.st_size, stat.st_mtime_ns
+    )
+    assert prepared is None
 
 
 @pytest.mark.asyncio
-async def test_a_known_file_that_changed_is_re_hashed(tmp_path):
+async def test_a_known_changed_file_is_prepared_again(tmp_path):
     target = tmp_path / "part.stl"
     target.write_bytes(b"solid\n")
-
-    known = _Known(id=1, file_hash="stale", file_size=999, fs_modified_at=datetime(2020, 1, 1))
-    prepared = await library_scan.prepare(str(tmp_path), "part.stl", tmp_path, known, "")
-
-    assert prepared is not None
+    stat = target.stat()
+    known = _Known(
+        id=1,
+        file_hash="stale",
+        file_size=999,
+        fs_modified_at=datetime(2020, 1, 1),
+        extraction_version=1,
+        extraction_hash="stale",
+    )
+    prepared = await library_scan.prepare_via_service(
+        str(tmp_path), target.name, tmp_path, known, "", stat.st_size, stat.st_mtime_ns
+    )
+    assert prepared is not None and prepared.metadata_complete
     assert prepared.new_hash and prepared.new_hash != "stale"
 
 

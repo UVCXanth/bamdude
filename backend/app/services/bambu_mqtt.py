@@ -149,15 +149,16 @@ _AMS_MODULE_PREFIXES = ("ams/", "n3f/", "n3s/")
 # somebody else's command.
 #
 # We counted from 0, which is inside nobody's range and outside our own: a reply
-# with ``sequence_id`` 5 could equally be ours or the screen's. The one place
-# that needed the answer hardcoded a literal — ``project_file`` pins "20000" so
-# a slicer-launched print can be told from ours — and 20000 is exactly
-# ``STUDIO_START_SEQ_ID``. This generalises that single case into the rule it
-# was always an instance of.
+# with ``sequence_id`` 5 could equally be ours or the screen's. ``project_file``
+# pins "20000", which is exactly ``STUDIO_START_SEQ_ID`` — the band is that pin
+# generalised.
 #
-# 20000 itself stays reserved for that pin: the counter starts there and every
-# command pre-increments, so no ordinary command can be mistaken for the
-# project_file we sent.
+# ⚠️ The band says "a studio-style sender", never "BamDude": slicers count up
+# from the same 20000 (measured: Orca 20000 then 20001, Studio 20009/20010), so
+# our own ``project_file`` is recognised by the job it carried, not by its
+# sequence id — see ``BambuMQTTClient._project_file_key`` (upstream 89ea3376).
+# 20000 itself stays reserved for the pin: the counter starts there and every
+# command pre-increments.
 #
 # ⚠️ BS does NOT wrap — ``m_sequence_id`` is a static int incremented forever,
 # so after 10 000 commands its own replies stop passing ``is_studio_cmd``. That
@@ -259,11 +260,15 @@ def is_successful_project_file(print_data: object) -> bool:
 
     ⚠️ Missing ``result`` is success, not failure: the slicer's own send, as it
     arrives on the request topic, has no result field at all.
+
+    ⚠️ Compared without case: an X1 echoes ``"success"``, an H2S ``"SUCCESS"``
+    (upstream 5dd7bd21), and BambuStudio lower-cases the result before it
+    compares. Compared as-is, every H2S echo read as a refusal.
     """
     return (
         isinstance(print_data, dict)
         and print_data.get("command") == "project_file"
-        and print_data.get("result", "success") == "success"
+        and str(print_data.get("result", "success")).lower() == "success"
     )
 
 
@@ -297,6 +302,33 @@ def normalize_am_unit_id(ams_id: int) -> int:
     through untouched.
     """
     return A2L_LITE_NORMALIZED_AMS_ID if ams_id == A2L_LITE_PHYSICAL_AMS_ID else ams_id
+
+
+def wire_tray_color(tray_color: str | None) -> str:
+    """Normalise a colour to the form AMS firmware actually parses: UPPERCASE hex.
+
+    P1S firmware 01.10.00.00 parses every lowercase hex letter in ``tray_color``
+    as a zero, and does it silently: the command response echoes the value that
+    was sent and reports ``result: "success"``, so only the next AMS push shows
+    what was really stored (upstream #2987, a spool's lowercase ``rgba`` sent
+    verbatim):
+
+        sent 09ff00ff  ->  AMS reports 09000000
+        sent ff5100ff  ->  AMS reports 00510000
+        sent 090000FF  ->  AMS reports 090000FF
+
+    Not cosmetic: the auto-unlink sweep compares the tray against its assigned
+    spool, so the slot we just wrote no longer matched and the assignment was
+    deleted seconds after it was made — and Configure Slot, which seeds itself
+    from the tray, wrote the mangled colour back. BambuStudio formats the colour
+    with ``%02X``.
+
+    Applied at the one place the command is built, not in each caller: a caller
+    that forgets is exactly how this arrived. A leading ``#`` is stripped (the
+    wire carries bare hex) and a blank stays blank — nothing is padded, widened
+    or given an invented alpha.
+    """
+    return (tray_color or "").strip().lstrip("#").upper()
 
 
 def _fts_global_slot(value: object) -> int:
@@ -389,10 +421,11 @@ def decode_filam_bak_groups(value: object) -> list[list[int]] | None:
 # physical ID, so a rack position is never mistakable for the nozzle on the
 # other carriage.
 #
-# ⚠️ Extruder indices are a DIFFERENT NAMESPACE that happens to overlap these
-# low numbers — index 1 means the rack, physical ID 1 means the fixed hotend.
-# Nothing below may pass a value from one namespace to the other untranslated;
-# doing exactly that is what the upstream bug was.
+# ⚠️ Extruder indices are a DIFFERENT NAMESPACE from these wire IDs. The fixed
+# hotend is extruder 1 and physical ID 1; the rack carriage is extruder 0, but
+# on the wire it is whichever dock (16-21) is live, never 0. Nothing below may
+# pass an extruder index to the wire untranslated; doing exactly that is what
+# the upstream #2800 bug was.
 # AMS ``dry_status`` phases in which a reported ``dry_time`` of 0 is NOT the end
 # of a cycle — shared with the AMS temperature alarm, so it lives in the leaf
 # ``utils/ams_drying`` (why it is not BS's ``AmsIsDrying()`` is written there).
@@ -404,19 +437,38 @@ _RACK_NOZZLE_IDS = frozenset(range(16, 22))
 # physical nozzle ID per filament slot, -1 for slots the plate does not print.
 _RACK_WIRE_SLOTS = 32
 
-# The two carriages, as extruder indices in the form the queue stores (already
-# translated through the file's physical_extruder_map). Settled on hardware:
-# the same sliced mixed-nozzle plate dispatched as [17, -1, -1, 1] printed the
-# rack nozzle several millimetres above the bed, and as [1, -1, -1, 17] printed
-# correctly on both nozzles start to finish.
-_FIXED_EXTRUDER_ID = 0
-_RACK_EXTRUDER_ID = 1
+# The two carriages, as MQTT extruder indices — the form the queue stores
+# (``extract_slot_extruders_from_3mf`` already translates the slicer's numbering
+# through the file's ``physical_extruder_map``, [1, 0] on every H2).
+#
+# The rack is extruder 0, the fixed hotend extruder 1. Three sources agree:
+#
+#   - BambuStudio (``DevNozzleSystem`` / ``DevMappingNozzle``): rack nozzles sit
+#     on the right extruder, MAIN = 0; rack control checks MAIN's nozzle; the
+#     nozzle being swapped in maps to MAIN; docks display as "R1".."R6". The H2C
+#     preset gives the slicer's right extruder six nozzles and its left one.
+#   - upstream's measurement on an H2C (``45dc139c``, 2026-08-14):
+#     ``ams_extruder_map {'0': 1, '1': 0, '2': 0}``, and BambuStudio's own
+#     dispatch sent extruder 1's filament to nozzle 1 and extruder 0's to rack
+#     positions 16 and 18 — a print that completed;
+#   - the fixed hotend's wire ID is 1, and physical nozzle id N sits on
+#     extruder N.
+#
+# ⚠️ These stood the other way round here until 2026-09-26, which dispatched a
+# two-nozzle plate to the carriage that had not been levelled — its first
+# layer in mid-air — and named a dock for a fixed-only plate. That value came
+# from the #2800 A/B ([17, -1, -1, 1] printed in mid-air, [1, -1, -1, 17]
+# printed correctly): the A/B measured which WIRE worked, and the indices were
+# only inferred from it by pairing it with what the then-buggy 3MF reader
+# produced. The wire result stands; the inference did not. An earlier audit
+# here mislabelled upstream's correction and never took it.
+_FIXED_EXTRUDER_ID = 1
+_RACK_EXTRUDER_ID = 0
 
-# The fixed hotend's physical ID, which is NOT its extruder index. The same
-# hardware A/B ruled the index out: [0, -1, -1, 17] was rejected by the printer
-# outright. Native BambuStudio captures of a mixed plate agree — [1, 17, ...],
-# and [17, 1, ...] once the filament slot order is swapped, so the fixed side
-# is 1 whichever slot it lands in.
+# The fixed hotend's wire ID. Native BambuStudio captures of a mixed plate:
+# [1, 17, ...], and [17, 1, ...] once the filament slot order is swapped, so the
+# fixed side is 1 whichever slot it lands in. The #2800 A/B's [0, -1, -1, 17]
+# was rejected by the printer outright.
 _FIXED_NOZZLE_ID = 1
 
 
@@ -496,6 +548,213 @@ def resolve_rack_nozzle_mapping(
             # a physical nozzle by an index that does not identify one.
             return None
     return wire
+
+
+# A rack position as the operator counts it (and as the printer card and
+# BambuStudio both label it, "R1".."R6") is 1-based; the dock's physical nozzle
+# id is 15 higher. Measured by upstream on an H2C (3954d3a7, 2026-08-14): a
+# plate dispatched picking R1 and R2 sent 16 and 17, the same plate picking R1
+# and R3 sent 16 and 18.
+_RACK_POSITION_BASE = 15
+RACK_POSITIONS = tuple(range(1, len(_RACK_NOZZLE_IDS) + 1))
+
+# The rack carriage's own ``nozzle.info`` entry -- the nozzle it is holding right
+# now. Physical id 1 is the fixed hotend (``_FIXED_NOZZLE_ID``), so the other
+# carriage entry is 0: MQTT extruder 0, the rack side (``_RACK_EXTRUDER_ID``).
+_RACK_CARRIAGE_NOZZLE_ID = 0
+
+
+def rack_position_to_nozzle_id(position: int) -> int | None:
+    """Physical nozzle id for a 1-based rack position, or None if out of range."""
+    if not isinstance(position, int) or isinstance(position, bool):
+        return None
+    if position not in RACK_POSITIONS:
+        return None
+    return _RACK_POSITION_BASE + position
+
+
+def _rack_slot_is_eligible(slot: dict, diameter: str, volume_type: str) -> bool:
+    """Whether a live rack slot can print a group wanting this nozzle.
+
+    Mirrors the filter BambuStudio applies in its own picker: the position has
+    to hold a nozzle at all, and that nozzle has to match the slice's diameter
+    and flow type. A mismatch here is not cosmetic -- it is the printer being
+    asked to lay down a 0.4 extrusion through a 0.2 orifice.
+    """
+    if not isinstance(slot, dict):
+        return False
+    slot_diameter = str(slot.get("diameter") or "").strip()
+    slot_type = str(slot.get("type") or "").strip()
+    if not slot_diameter and not slot_type:
+        return False  # empty position
+
+    # "0.40" and "0.4" are the same nozzle spelled two ways -- the 3MF pads,
+    # the printer does not.
+    try:
+        if round(float(slot_diameter), 2) != round(float(diameter), 2):
+            return False
+    except (TypeError, ValueError):
+        return False
+
+    # Flow type: the printer reports a code ("HS", "HH01"), the slice reports a
+    # name ("Standard", "High Flow"). Compared only when both are stated, so a
+    # printer that omits the code is not thereby ruled ineligible.
+    wanted = volume_type.strip().lower()
+    if wanted and slot_type:
+        is_high_flow = slot_type.upper().startswith("HH")
+        if wanted.startswith("high flow") != is_high_flow:
+            return False
+    return True
+
+
+def _rack_by_position(rack_slots: list[dict]) -> dict[int, dict]:
+    """Live rack contents keyed by 1-based position, mounted nozzle included.
+
+    The firmware omits a rack id entirely while that nozzle is picked up onto
+    the carriage (#943) -- it does not send an empty placeholder. Taking the
+    omission at face value would rule the nozzle ineligible for the very print
+    that wants it, and it is the single most likely position to be picked,
+    because it is the one the last print left mounted.
+
+    The absent id is recoverable only when exactly one is missing: rack ids are
+    fixed at 16..21, so a single gap alongside a loaded carriage is that
+    carriage's nozzle. Two or more gaps are genuinely ambiguous -- an operator
+    with four nozzles in six positions looks the same -- so those stay absent
+    and the caller treats them as empty.
+
+    Measured by upstream on an H2C: ``IDs: [16, 1, 21, 19, 18, 0, 20]`` -- both
+    carriages present, rack id 17 the lone gap.
+    """
+    by_position: dict[int, dict] = {}
+    carriage: dict | None = None
+    for slot in rack_slots or []:
+        if not isinstance(slot, dict) or not isinstance(slot.get("id"), int):
+            continue
+        if slot["id"] == _RACK_CARRIAGE_NOZZLE_ID:
+            carriage = slot
+            continue
+        position = slot["id"] - _RACK_POSITION_BASE
+        if position in RACK_POSITIONS:
+            by_position[position] = slot
+
+    missing = [position for position in RACK_POSITIONS if position not in by_position]
+    if len(missing) == 1 and carriage is not None and (carriage.get("diameter") or carriage.get("type")):
+        by_position[missing[0]] = carriage
+    return by_position
+
+
+def resolve_rack_plan_mapping(
+    slot_groups: list[int],
+    groups: dict[int, dict],
+    choice: dict[int, int],
+    rack_slots: list[dict],
+) -> tuple[list[int] | None, str | None]:
+    """Build a physical ``nozzle_mapping`` from a rack plan and a position pick.
+
+    The multi-hotend counterpart to :func:`resolve_rack_nozzle_mapping`. That
+    one can only name the single live dock, so a plate wanting a different
+    hotend per group is unresolvable to it. Here each group carries its own
+    position, which is the operator's choice (upstream #1784) -- the 3MF states
+    it nowhere, proven by dispatching one plate twice with different picks and
+    diffing the two files down to float noise.
+
+    ``choice`` may be partial or empty; groups it does not name are assigned
+    from the live rack, preferring a position already loaded with the group's
+    own filament colour and otherwise taking the lowest eligible one.
+
+    Returns ``(wire, None)`` on success, or ``(None, reason)`` where *reason*
+    is a sentence naming what could not be satisfied. The caller decides what
+    to do with a failure, and the two cases differ: a stale *explicit* pick
+    stops the print, while a failed auto-assignment degrades to the #2800 path,
+    exactly as before this existed.
+
+    Total by construction, like its sibling: nothing here raises.
+    """
+    if not isinstance(slot_groups, list) or not slot_groups:
+        return None, "the plate lists no filament slots"
+    if len(slot_groups) > _RACK_WIRE_SLOTS:
+        return None, f"the plate needs {len(slot_groups)} filament slots and the printer takes {_RACK_WIRE_SLOTS}"
+
+    by_position = _rack_by_position(rack_slots)
+
+    # Assign every rack-bound group a position before building the wire, so a
+    # group can never be handed one an earlier group already took. Explicit
+    # picks are placed first: an auto-assignment must yield to them rather than
+    # claim a position the operator asked for.
+    assigned: dict[int, int] = {}
+    rack_group_ids = sorted(gid for gid, g in groups.items() if g.get("on_rack"))
+
+    for group_id in rack_group_ids:
+        position = choice.get(group_id)
+        if position is None:
+            continue
+        group = groups[group_id]
+        if rack_position_to_nozzle_id(position) is None:
+            return None, f"rack position {position} does not exist"
+        if position in assigned.values():
+            return None, f"rack position {position} is picked for more than one filament group"
+        slot = by_position.get(position)
+        if slot is None:
+            return None, f"the printer reports nothing at rack position {position}"
+        if not _rack_slot_is_eligible(slot, group.get("nozzle_diameter", ""), group.get("volume_type", "")):
+            return None, (
+                f"rack position {position} holds a "
+                f"{slot.get('diameter') or 'missing'} {slot.get('type') or ''} nozzle, "
+                f"and the plate needs {group.get('nozzle_diameter')} {group.get('volume_type')}".replace("  ", " ")
+            )
+        assigned[group_id] = position
+
+    for group_id in rack_group_ids:
+        if group_id in assigned:
+            continue
+        group = groups[group_id]
+        eligible = [
+            position
+            for position in RACK_POSITIONS
+            if position not in assigned.values()
+            and position in by_position
+            and _rack_slot_is_eligible(
+                by_position[position], group.get("nozzle_diameter", ""), group.get("volume_type", "")
+            )
+        ]
+        if not eligible:
+            return None, (
+                f"no free rack position holds a {group.get('nozzle_diameter')} "
+                f"{group.get('volume_type')} nozzle for filament group {group_id}"
+            )
+        # Prefer a position already carrying this group's colour: picking it
+        # means the operator does not have to move filament to make the print
+        # match what they asked for.
+        wanted_colour = str(group.get("filament_color") or "").strip().lstrip("#").upper()[:6]
+        assigned[group_id] = next(
+            (
+                position
+                for position in eligible
+                if wanted_colour
+                and str(by_position[position].get("filament_color") or "").strip().lstrip("#").upper()[:6]
+                == wanted_colour
+            ),
+            eligible[0],
+        )
+
+    wire = [-1] * _RACK_WIRE_SLOTS
+    for index, group_id in enumerate(slot_groups):
+        if not isinstance(group_id, int) or isinstance(group_id, bool) or group_id < 0:
+            continue  # slot this plate does not print
+        group = groups.get(group_id)
+        if group is None:
+            return None, f"filament slot {index + 1} names group {group_id}, which the plate does not describe"
+        if not group.get("on_rack"):
+            wire[index] = _FIXED_NOZZLE_ID
+            continue
+        nozzle_id = rack_position_to_nozzle_id(assigned[group_id])
+        if nozzle_id is None:  # pragma: no cover - assigned only ever holds valid positions
+            return None, f"filament group {group_id} resolved to no rack position"
+        wire[index] = nozzle_id
+
+    if all(value == -1 for value in wire):
+        return None, "the plate assigns no filament to a nozzle"
+    return wire, None
 
 
 def apply_tray_exist_bits(
@@ -1276,6 +1535,9 @@ class PrinterState:
     # (home_flag / xcam / cfg / fun / fun2 / named support bools). Populated as
     # messages arrive; compute_printer_supports gates each row on it.
     print_option_support: dict = field(default_factory=dict)
+    # P1P enclosure upgrade: unknown until the corresponding MQTT bit arrives.
+    upgrade_kit_supported: bool | None = None
+    upgrade_kit_installed: bool | None = None
     # What the machine says its heaters will accept. Each is optional because
     # "did not report" is a real answer with its own fallback — see
     # ``utils.temperature_limits``, which owns the precedence.
@@ -1616,7 +1878,7 @@ STAGE_NAMES = {
     47: "Auto bed leveling - phase 1",
     48: "Auto bed leveling - phase 2",
     49: "Heating chamber",
-    50: "Cooling heatbed",
+    50: "Adjusting heatbed temperature",
     51: "Printing calibration lines",
     52: "Auto Check: Material",
     53: "Live View Camera Calibration",
@@ -1633,7 +1895,18 @@ STAGE_NAMES = {
     64: "Preparing Hotend",
     65: "Calibrating nozzle clumping detection",
     66: "Purifying the chamber air",
-    74: "Preparing",  # Seen on H2D during print preparation
+    # 67-76 as BambuStudio names them (v02.08.02.61). 74 was "Preparing" here,
+    # a guess from an H2D; it is the heatbed foreign-object check.
+    67: "Measuring Rotary Attachment",
+    68: "The toolhead moves above the purge chute",
+    69: "Cooling down the nozzle",
+    70: "The toolhead moves to the center of the heatbed",
+    71: "Active Arc Fitting",
+    72: "Hotend Type Detection",
+    73: "Build plate alignment detection",
+    74: "Heatbed surface foreign object detection",
+    75: "Heatbed underside foreign object detection",
+    76: "Pre-extrusion before printing",
     77: "Preparing AMS",
 }
 
@@ -2176,6 +2449,11 @@ class BambuMQTTClient:
         # plate. For a print BamDude did not send this is the only sighting of
         # it before the 3MF has been fetched and read.
         self._captured_print_param: str | None = None
+        # The ``project_file`` WE dispatched, per topic that will echo it, so its
+        # echo is told from a slicer's (upstream 89ea3376). One-shot, consumed by
+        # the first matching frame on each topic — both topics feed
+        # ``_handle_project_file_command``, and our dispatch comes back on each.
+        self._own_project_file_keys: dict[str, str] = {}
 
         # True once we've seen (and normalised 16→6) an A2L AMS-Lite unit in the
         # AMS telemetry. Used to globalise the Lite's local ``tray_now`` to
@@ -2757,7 +3035,7 @@ class BambuMQTTClient:
                 # printer telemetry; anything we send lands twice, once on
                 # publish and once on the broker's echo, and that pair is itself
                 # evidence the command reached the broker.
-                self._handle_project_file_command(payload)
+                self._handle_project_file_command(payload, source="request")
                 return
 
             # Count status reports per connection so check_staleness() can tell
@@ -2769,7 +3047,22 @@ class BambuMQTTClient:
         except json.JSONDecodeError:
             pass  # Ignore non-JSON MQTT messages (e.g. binary or malformed payloads)
 
-    def _handle_project_file_command(self, data: dict) -> None:
+    @staticmethod
+    def _project_file_key(print_data: dict) -> str:
+        """Identity of a ``project_file`` dispatch, for telling ours from a slicer's.
+
+        Sequence id alone cannot — every slicer counts up from the same 20000 —
+        so the key also carries the file and where it went, which differ between
+        any two real dispatches.
+        """
+        return "|".join(str(print_data.get(field, "")) for field in ("sequence_id", "file", "url", "subtask_name"))
+
+    def _remember_own_project_file(self, print_data: dict) -> None:
+        """Mark the ``project_file`` we are about to publish as ours, on both topics."""
+        key = self._project_file_key(print_data)
+        self._own_project_file_keys = {"request": key, "report": key}
+
+    def _handle_project_file_command(self, data: dict, *, source: str = "request") -> None:
         """Remember what a ``project_file`` dispatch asked the printer for.
 
         ⚠️ **Fed by two topics, and on some printers only by the second.** The
@@ -2828,12 +3121,16 @@ class BambuMQTTClient:
                     param,
                 )
             # Diagnostic for upstream #1162 follow-up (X2D + FTS routing): when a
-            # slicer-launched project_file passes through the request topic, log
-            # the full payload so we can diff Studio's field set against ours.
-            # We pin our own sequence_id to "20000" when sending project_file
-            # ourselves, so any other value means the command came from
-            # Studio / Orca, not from us.
-            if print_data.get("sequence_id") != "20000":
+            # slicer-launched project_file passes through, log the full payload
+            # so Studio's field set can be diffed against ours. Ours is the job
+            # we remembered at dispatch, consumed once per topic — NOT
+            # ``sequence_id == "20000"``: slicers count up from that same base,
+            # so whichever of their dispatches landed on it was filed as ours
+            # (upstream 89ea3376).
+            key = self._project_file_key(print_data)
+            if self._own_project_file_keys.get(source) == key:
+                self._own_project_file_keys.pop(source, None)
+            else:
                 logger.info(
                     "[%s] External project_file payload: %s",
                     self.serial_number,
@@ -2942,7 +3239,7 @@ class BambuMQTTClient:
             # capture would then sit there waiting to be attributed to whatever
             # runs next.
             if is_successful_project_file(print_data):
-                self._handle_project_file_command(payload)
+                self._handle_project_file_command(payload, source="report")
             # Handle gcode_line ACK - resolve ACK listener for HTTP wait
             if isinstance(print_data, dict) and print_data.get("command") == "gcode_line" and "result" in print_data:
                 seq_id = print_data.get("sequence_id")
@@ -3327,6 +3624,17 @@ class BambuMQTTClient:
             if not cali_query_reply:
                 self._update_state(print_data)
 
+        # Modern upgrade-kit support can arrive at the top level. Apply it after
+        # the nested legacy home_flag so the newer fun bit wins in one frame.
+        if "fun" in payload and ("print" not in payload or is_printer_status_frame(payload["print"])):
+            fun = parse_hex_bitfield(payload["fun"])
+            if fun is not None:
+                supported = bool((fun >> 14) & 1)
+                if self.state.upgrade_kit_supported != supported:
+                    self.state.upgrade_kit_supported = supported
+                    if self.on_state_change:
+                        self.on_state_change(self.state)
+
     def _handle_system_response(self, data: dict):
         """Handle system responses including accessories info.
 
@@ -3557,6 +3865,9 @@ class BambuMQTTClient:
             sup["filament_tangle"] = bool((u >> 19) & 1)
             sup["nozzle_blob"] = bool((u >> 25) & 1)
             sup["air_print_nonvisual"] = bool((u >> 29) & 1)  # BS is_support_air_print_detection
+            if is_printer_status_frame(data):
+                self.state.upgrade_kit_supported = bool((u >> 27) & 1)
+                self.state.upgrade_kit_installed = bool((u >> 26) & 1)
 
         xcam = data.get("xcam")
         if isinstance(xcam, dict):
@@ -3567,6 +3878,7 @@ class BambuMQTTClient:
         # and A1 families, which send no cfg of their own (#3040).
         cfg = _hx(data.get("cfg")) if is_printer_status_frame(data) else None
         if cfg is not None:
+            self.state.upgrade_kit_installed = bool((cfg >> 25) & 1)
             sup["snapshot"] = ((cfg >> 38) & 0x3) in (1, 2)
             # Store-sent-files support: X2D-class printers carry the value at cfg
             # bit 19 but don't send the named support_save_remote_print_file_to_storage
@@ -3577,6 +3889,8 @@ class BambuMQTTClient:
 
         fun = _hx(data.get("fun"))
         if fun is not None:
+            if is_printer_status_frame(data):
+                self.state.upgrade_kit_supported = bool((fun >> 14) & 1)
             sup["filament_tangle"] = bool((fun >> 9) & 1)
             sup["spaghetti_detector"] = bool((fun >> 42) & 1)
             sup["pileup_detector"] = bool((fun >> 43) & 1)
@@ -6835,7 +7149,13 @@ class BambuMQTTClient:
             # Include HMS errors for failure reason detection
             hms_errors_data = (
                 [
-                    {"code": e.code, "attr": e.attr, "module": e.module, "severity": e.severity}
+                    {
+                        "code": e.code,
+                        "attr": e.attr,
+                        "module": e.module,
+                        "severity": e.severity,
+                        "full_code": e.full_code,
+                    }
                     for e in self.state.hms_errors
                 ]
                 if self.state.hms_errors
@@ -8026,6 +8346,9 @@ class BambuMQTTClient:
                         command["print"]["nozzle_mapping"] = resolved
 
             logger.info("[%s] Sending print command: %s", self.serial_number, json.dumps(command))
+            # Remembered BEFORE the publish: the broker's echo can arrive on the
+            # network thread before this line returns.
+            self._remember_own_project_file(command["print"])
             self._client.publish(self.topic_publish, json.dumps(command), qos=1)
             # Record what we dispatched so /printers/{id}/camera-cover can pick
             # the right plate thumbnail even when the printer's gcode_file echo
@@ -10672,7 +10995,9 @@ class BambuMQTTClient:
                 "slot_id": slot_id,
                 "tray_info_idx": tray_info_idx,
                 "tray_type": tray_type,
-                "tray_color": tray_color,
+                # UPPERCASE, always: lowercase hex is silently read as zeros by
+                # P1S firmware and acknowledged as a success (upstream #2987).
+                "tray_color": wire_tray_color(tray_color),
                 "nozzle_temp_min": nozzle_temp_min,
                 "nozzle_temp_max": nozzle_temp_max,
                 "sequence_id": "0",
@@ -10684,8 +11009,9 @@ class BambuMQTTClient:
             command["print"]["setting_id"] = setting_id
 
         # Multi-colour spools: BS sends every stop plus the colour type.
+        # Every stop is a colour on the same firmware, so it gets the same case.
         if cols:
-            command["print"]["cols"] = cols
+            command["print"]["cols"] = [wire_tray_color(c) for c in cols]
             command["print"]["ctype"] = ctype
 
         command_json = json.dumps(command)

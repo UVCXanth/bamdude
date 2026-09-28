@@ -611,6 +611,7 @@ async def get_system_info(
 
     from backend.app.services.analysis_runtime import get_analysis_health
     from backend.app.services.camera_runtime import camera_runtime_health
+    from backend.app.services.library_file_runtime import get_library_file_health
 
     return {
         "app": {
@@ -623,6 +624,7 @@ async def get_system_info(
         },
         "preview": get_preview_health().model_dump(),
         "analysis_worker": get_analysis_health(),
+        "library_file_worker": get_library_file_health(),
         "camera_worker": camera_runtime_health(),
         "database": {
             "engine": engine_name,

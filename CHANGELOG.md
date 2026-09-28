@@ -2,707 +2,365 @@
 
 ### Security
 
-- **An API key limited to some printers now stays with those printers.** The
-  printer list on an API key was saved and shown, but only the webhook routes
-  honoured it: a key limited to printer 1 could read, control and queue work
-  for printer 2 through the rest of the API. It now applies everywhere a request
-  names a printer — in the address, in the query, anywhere in the request body,
-  and through what belongs to a printer: its queue, a queued job or a batch of
-  jobs, a smart plug, a maintenance item, a running dispatch, a calibration
-  session, and the MQTT recordings a support bundle can attach. The printer
-  list, printer statuses, queues, queued jobs and the monitor wall show such a
-  key only its own printers. The auto-queue hands work to whichever printer
-  fits, so a limited key cannot use it at all. Keys without a printer list
-  work as before; a key with an empty list reaches no printer.
+- **An API key limited to some printers now stays with those printers.** The printer list on an API key was saved and shown, but only the webhook routes honoured it: a key limited to printer 1 could read, control and queue work for printer 2 through the rest of the API. It now applies everywhere a request names a printer — in the address, in the query, anywhere in the request body, and through what belongs to a printer: its queue, a queued job or a batch of jobs, a smart plug, a maintenance item, a running dispatch, a calibration session, and the MQTT recordings a support bundle can attach. The printer list, printer statuses, queues, queued jobs and the monitor wall show such a key only its own printers. The Auto Queue hands work to whichever printer fits, so a limited key cannot use it at all. Keys without a printer list work as before; a key with an empty list reaches no printer.
 
-### Changed
+- **Pictures and videos are no longer open to anyone who can reach BamDude.** Archive and library thumbnails, plate previews, pictures inside a 3MF, QR codes, timelapses and MakerWorld covers could be read by anyone on the network by guessing a number. They now need a sign-in: the page fetches a short-lived picture token for the signed-in user, and each picture is checked against what that user may see — a user limited to their own prints sees only their own pictures. Product, order and model-card pictures and the current job's cover on a printer card used to need permission to watch the live camera; they now follow the permission for what they show, so a user without camera access no longer sees broken images there. The camera itself still needs camera access, and a Cam Wall, overlay or kiosk token opens no picture. API keys reach the pictures with their usual header, within their scopes. Photos of a finished print stay public, because notifications link them for Discord, webhooks and ntfy, which fetch without signing in; so do the icons on the sign-in page and on external links.
 
-- **Projects opens into its sections in the sidebar.** Orders, Products,
-  Customers and Stock sit under Projects in the sidebar, and the tabs at the top
-  of those pages are gone. Projects folds and unfolds, and remembers which you
-  chose. On the collapsed icon bar its sections open beside the icon — on hover,
-  on a click, or with Enter from the keyboard. Orders shows how many orders are
-  active; with the sections folded away a dot on Projects says there is a count
-  to see.
-- **The Projects lists share one frame.** The cards/table switch of the orders,
-  products and customers lists moved from the filter bar into the page header,
-  beside the create button, and shows an icon — its label hides on a narrow
-  screen. Every list page carries a one-line explanation under its title, and
-  the search box of every list is the same one.
-- **New API keys start with `bd_`.** The `bb_` they used to start with came
-  from Bambuddy, the project BamDude grew out of. Keys you already have keep
-  working exactly as before — through `X-API-Key` and through
-  `Authorization: Bearer` alike — so nothing needs to be re-issued; only keys
-  created from now on look different.
+- **MakerWorld cover downloads no longer carry your Bambu Cloud token.** The covers fetched during an import went to MakerWorld's public image CDN with the signed-in token attached; the token now goes to Bambu's API only, as the 3MF download already did.
 
 ### Added
 
-- **The product catalog has SKUs, versions, categories and a ready-to-print
-  status.** A product gets an optional SKU (unique, whatever the case), a
-  version, and a category chosen from a list you keep in one place — rename a
-  category and every product shows the new name; delete it and its products
-  become uncategorized. Each product is a **draft** until you mark it **ready
-  to print**, which needs at least one part and one plate (a file in the
-  trash does not count); products that already have both start as ready. A ready product that later loses its parts
-  or plates is not demoted behind your back — it is marked «incomplete». The
-  catalog has a category panel with counts beside the list, and filters for
-  material, colour, printer model, status and «in stock», all kept in the
-  address. Search takes several words, and each must match something: the
-  name, the code, the SKU, the category, a part, a linked file, a material or a
-  colour. A plate shows the printer model it was sliced for, and the sidebar
-  counts the drafts beside «Products». Material, colour and model are stored
-  with the product and refreshed when its plates change, so filtering a large
-  catalog stays fast; a file in the trash drops out of the filters and the
-  search, and comes back when it is restored.
-- **Products have variants, and an order line keeps its configuration.** A
-  product can carry variant groups — a tail that is straight or angled, a
-  mount for the wall or the desk — each with options and a standard one. A
-  part belongs to one option or is always in the kit, and the product page
-  manages groups, options and bindings; a delete that would change an order's
-  kit is refused and says why. An order line records the option of every group
-  and any per-unit count it changed, so changing the product's standard later —
-  or binding a part to an option — leaves saved orders alone. «Configuration…»
-  on a line changes it afterwards: before saving, the dialog says how much of
-  what is already printed or queued would become surplus and what the line's
-  stock reservation becomes, and the reservation follows the new kit. Parts a
-  change leaves out stay on the line as surplus that «Surplus» can put on the
-  shelf; a completed order's lines are not reconfigured (reopen it first). A line can
-  also order just some parts of a product — a set of parts, with no kits and
-  nothing from stock. The order figures, the print plan, stock reservations,
-  filament needs and the matching of prints to lines all follow each line's
-  own configuration; copying a product or an order, and a product's export
-  file, carry it.
-- **Finished goods are kept in stock.** The Stock page opens on finished goods:
-  one position per product configuration (`SK-…`), with its location, a
-  minimum and what is on hand, reserved and available — a position whose free
-  quantity drops under its minimum is marked, and the sidebar counts them.
-  Receipts, stocktakes (you enter what you counted, the difference is
-  recorded), reservations, issues to a customer and assembly from the free
-  parts on the shelf each leave a line in the journal with who did it;
-  assembly takes the kit's printed parts off the shelf in the same step, and
-  the list says how many of each position the shelf could still make. The
-  free-parts shelf and the journal of both ledgers are tabs of their own, and
-  every position has a page with its reservations, the product's other
-  configurations and the parts its kit needs. A product or a variant option
-  that finished goods are kept under cannot be deleted.
-- **«Add to order» adds many lines at once and takes what is already in
-  stock.** One dialog, opened from an order or from a catalog product's page
-  (which asks which active order), adds several products with their
-  configuration, material and colour, parts of a product, or a one-off product
-  made of a file's plate — picked across searches, pages and tabs, and added
-  in one go: if any line is refused, nothing is added. The stock is picked by
-  itself: ready units of exactly that configuration first, then kits of free
-  parts, and only the rest goes to print; you can change either number, and
-  «pick» brings the proposal back. If the stock moved while you were choosing,
-  the line takes what is left and you are told how much. A line now shows how
-  many ready units and kits it takes, and editing it has «Pick from stock».
-  Cancelling an order, deleting a line or the order puts them back; changing a
-  line's configuration moves them to the new configuration's position, as far
-  as it has free. Only an active order takes ready units. The order's activity
-  log says what each new line took from stock.
-- **An order is issued to its customer in batches.** «Stock & issue» on the
-  order assembles the kits it reserved, receives its printed units onto the
-  shelf under the order and issues what the customer takes now — part of it
-  or all, as many times as needed; an order of loose parts is received and
-  issued part by part. Each issue records who took the goods, the delivery
-  and an optional waybill number (up to 24 characters, which can be added
-  later) and shows on the customer's page with the order it came from; a
-  manual issue on the Stock page now names its customer the same way. An
-  order is completed only once everything it ordered has been issued —
-  «Mark completed», the order's menu and a drop onto «done» on the board all
-  open the issue dialog, and kits nobody assembled go back on the shelf. An
-  order without a customer — one made for stock — issues nothing: once
-  everything it ordered is on the shelf it is closed to stock, and what it held
-  becomes free stock; such an order is duplicated rather than reopened. A unit
-  that breaks on the shelf before it goes out is written off in the same
-  dialog, with a note saying why, and the order makes it again — the plan
-  prints one more, and the replacement is not counted as surplus. Once a
-  line's stock has moved, its ready units are only added to and its kits only
-  lowered — back onto the shelf, so the prints already made take their place:
-  «Take from stock» on the order offers what the shelves hold for the part
-  nobody has printed, is printing or has queued yet. Its configuration stays,
-  and its quantity cannot go below what is issued and held; cancelling gives
-  the shelf back everything still held, and such an order is duplicated
-  rather than reopened. A print whose units went onto the shelf for an order
-  stays filed under it, so its parts are never counted a second time, and the
-  order receives no more units than its prints made, however they are shared
-  between its lines; a product made only of bought parts is received as its
-  units come. Lines, cards, the board and the orders table say how much went
-  out, a product's stock shows the parts its orders hold, and the activity log
-  says what was assembled, received, written off, moved to stock, issued and
-  taken.
-- **Every issue is a dispatch note.** Issuing goods — from an order or straight
-  off the stock page — makes a dispatch note numbered `DN-0042`: the supplier's
-  details (a new card, Settings → General → Details for documents), the
-  recipient and the delivery, the basis (the order, or an issue from stock),
-  one line per product with its SKU and configuration — an order of loose parts
-  lists each part — the quantities and their total, and «Issued by / Received
-  by». The note opens right after the issue, is a white sheet in any theme and
-  prints on its own, without the app around it. The Stock page lists every note
-  on a new «Dispatch notes» tab, searchable by number, order, customer,
-  recipient, product, SKU or waybill; an order shows its own under «Issues», a
-  customer's page lists theirs, and the stock movements link each issue to its
-  note. A note is a record of what was handed over: renaming or deleting the
-  product, the order or the customer, or changing the supplier's details later
-  never changes it — only the waybill and the note text can be added
-  afterwards.
-- **A zero in a product's parts means «out of the kit»; «Not counted» marks
-  what is not a part at all.** A part the product lists with a count of 0 —
-  a spare handle — is still a part: it has its own shelf, an order of loose
-  parts receives and issues it, a print without an order puts it on the shelf,
-  and the product's stock shows it apart from the kit. A test cube or an
-  object of another plate of the file is marked «Not counted» beside its zero:
-  it is counted nowhere and no order line can ask for it. Every zero a product
-  already had is marked «Not counted» on upgrade, unless it holds stock or an
-  order asks for it — so nothing changes until you unmark a spare part.
-- **An order's Queue section shows everything the order has in the queue.**
-  It used to list only jobs already on a printer's queue, so work the order
-  plan had just queued counted in the «In queue» tile but was nowhere in the
-  list until the auto-queue handed it to a printer. The section now shows what
-  is printing, what waits on a printer, and what waits for the auto-queue to
-  hand it out — with the printers it may go to and why it is still waiting —
-  exactly the jobs the tiles count. A print started from the printer's screen
-  and filed to the order shows under «Printing» too. The order page no longer
-  downloads the whole farm's queue to draw one order's part of it.
-- **The orders page switches between five views.** Besides the table and the
-  cards there is now a **kanban** by stage — drag a card (or move it with the
-  keyboard) to another column to set its stage, or into Done to complete the
-  order after a confirmation; each column shows its count, and a long column
-  links to the list filtered by that stage. The **workspace** keeps the list on
-  the left and the open order on the right, so going through orders one by one
-  no longer means leaving the list; the order you picked stays in the address.
-  The **deadlines** board lays two weeks out day by day: each order on its
-  deadline day with the farm's forecast «ready ≈» beside it — in red when the
-  forecast lands after the deadline — the other orders' expected ready days,
-  and below it everything that needs attention: overdue, without a deadline,
-  or forecast to be late. Search, customer and responsible filter every view
-  alike.
-- **Orders have a stage, a responsible person and an activity log of who did
-  what.** Every active order stands at a stage — Preparation, Printing or
-  Quality check — which whoever is on the farm sets by hand from the order
-  page; «Done» is simply a completed order. The table shows a Stage column in
-  place of Status and sorts by it, and each card carries the stage badge.
-  Every order also names who is responsible for it — the person who created it
-  unless someone else is chosen — shown with their initials on the table, the
-  card and the order page, and the list filters by it, including «Mine». The
-  order's Activity feed now records every operator action beside its prints:
-  status and stage changes, edits to the order and its lines, prints filed or
-  taken out, defects, jobs sent to the queue, stock and purchased parts,
-  attachments and the cover — each with who did it. Existing orders start in
-  Preparation with nobody responsible, and their feed begins from now.
-- **Customers have several contacts, a type and a code; everything in Projects
-  has a code.** A customer is a Company, a Regular or a Private person — the
-  list filters by «Regular» — and holds any number of contacts, each with its
-  name, role, phone, email, city, a delivery method and delivery details, and a
-  note; the first contact is the main one, shown in the list and on the card,
-  and a table row opens to all of them. Delivery methods are a list you edit
-  from a contact — rename, reorder, add; one that contacts use cannot be
-  deleted. An order names its contact person. Customers, contacts, orders and
-  products carry codes made from their number — `CU-0007`, `CT-0012`,
-  `OR-0042`, `PR-0015` — shown on lists, cards, pages and pickers, and every
-  search finds them. A removed contact's code is never given to another one.
-  The old single «Contact» text moved into each customer's first contact: the
-  email and phone into their fields, the line left into the name — and
-  whenever it could not be kept exactly as written, the whole text into the
-  contact's note as well, so nothing is lost. Emptying a contact that orders
-  still name holds the save until it is filled in or removed, the way removing
-  it warns first.
-- **Summary tiles above the orders, customers and stock lists.** They sum up
-  the whole farm, whatever the list below is filtered by. For orders: active
-  orders with how many are overdue and urgent, prints running and jobs waiting,
-  units still to cover, and orders fully covered and waiting to be checked and
-  closed. For customers: how many there are, how many have work in progress,
-  the orders in work and the order total. For the stock: kits and parts on the
-  shelf, kits held by active orders, and products whose parts on the shelf do
-  not make a whole kit. The customer page opens with three tiles — orders,
-  total and print cost, and how much of what was ordered is covered.
-- **The orders table sorts the whole list by «Ready ≈» and by machine hours.**
-  Before, these two columns only reordered the page on screen; now the server
-  runs the farm forecast once for the active orders under the filter and pages
-  the result. Closed orders and orders without an estimate go last. The same
-  two keys are in the cards' sort control.
-- **The stock list works like the other lists.** It comes one page at a time,
-  sorts from its headers by product, kits or the new «Reserved» column, and
-  keeps its search, the «only with stock» switch, the sort and the page in the
-  address, so a reload or a shared link returns to the same place.
-- **The customer page shows its orders one page at a time** with the same
-  cards/table views, sorting and page bar as the orders list; the tab counts
-  come from the server instead of the orders loaded on screen.
-- **Smaller list conveniences.** Customers can be filtered to those with active
-  orders. Order search also finds an order by its tags. `/` focuses the search
-  of any Projects list, and the keyboard help lists it. An order's description
-  is shown under its title on the order page.
-- **Lighter farm monitoring in the browser.** The queue badge reads compact
-  counts instead of every queued job, and shows `!` rather than a false zero when
-  a count cannot be read. Queue and Printers cards share one set of active queue
-  reads, and an Issues section loads its rows, page by page, only when opened —
-  **Delete all** first loads the complete list, then asks about exactly those
-  jobs. The printer-status fallback of every card on a page now goes out as one
-  batched request per interval, and a printer whose live state just arrived
-  waits for its own turn. A hidden tab sends no farm reads, even when queue
-  events arrive — it catches up once when shown — and a quick switch back to a
-  fresh tab rereads nothing. After a network drop the live connection retries
-  with growing delays of up to 30 seconds. Background reads are bounded and
-  cancelled when no longer needed; printing commands stay immediate and are
-  never retried automatically. On a synthetic 50-printer farm, one open Queue
-  tab made about nine in ten fewer requests over ten quiet minutes.
-- **Camera capture is worker-only.** Built-in and external live views, snapshots,
-  connection tests, background photos and Virtual Printer camera passthrough
-  use one supervised local worker; there is no inline fallback. A failed camera
-  worker leaves unrelated printing and queues available; camera-dependent
-  checks can wait for its bounded restart. System has a separate health panel.
-  The former `CAMERA_RUNTIME` variable is ignored. Normal shutdown now waits
-  for the worker to finish its camera cleanup before closing its guardian;
-  independent live streams are released concurrently, while an unresponsive
-  worker is still forcibly reaped without delaying recovery. Live viewers are
-  detached before the worker stops, avoiding a spurious fan-out crash report
-  during an ordinary server shutdown. Native and container launchers now bound
-  the wait for open live streams to 15 seconds, so an abandoned browser tab
-  cannot prevent the camera worker and the rest of the server from stopping.
-  Camera-wall tiles now mark a server disconnect even if the browser keeps the
-  last MJPEG frame, then reopen the stream when the server reconnects.
-- **3MF filament analysis has its own local service.** A shared embedded NATS
-  broker carries bounded results from a reusable, supervised parser process;
-  the source archive remains a local read-only file. Repeated browser polls
-  still share the print-context cache, while a slow or crashed G-code parser
-  no longer occupies the server event loop. System shows this worker's state
-  separately from preview and cameras. Failed temporary-file cleanup is
-  reported in the server log instead of silently retaining artifacts.
+- **Home Assistant sensors can now watch printers and spool storage.** Bind numeric or binary entities to printers or storage locations, set per-binding alert rules and notifications, and inspect retained history. An optional printer rule holds queued starts while alerting; unavailable or stale HA readings release the hold. The same HA entity can serve several printers or locations independently.
 
-- **Preview recovery after an unclean shutdown.** On the next application start,
-  the embedded broker can recover its runtime when an inherited OS lifetime
-  lock proves that the old broker has exited. A live broker or unverifiable
-  legacy/corrupt marker remains a visible manual-recovery condition, not a
-  reason to guess from a PID or closed port. Old renderer staging with payloads
-  or uncertain ownership is retained with cleanup guidance; harmless empty
-  skeletons are distinguished from it. After a confirmed service crash, its
-  abandoned current-generation attempt files are cleaned before relaunch, so
-  the next preview need not wait for an application restart. Existing
-  library/archive thumbnails are untouched.
+- **One Zigbee sensor can serve several printers, rooms and storage locations.** Each binding has its own display name, order, alert rules and notification switch. The device records one shared history, and removing one binding leaves the others in place. Existing single-target sensors are migrated automatically. Storage locations show both Zigbee and Home Assistant readings and let operators choose a primary temperature, humidity or battery reading for the compact inventory display. Optional sortable columns and spool-card readings show the conditions where a spool is stored.
 
-- **Preview-service diagnostics on the System page.** See availability,
-  worker restart/backoff, or a startup/ownership failure, with a runtime path
-  and recovery instructions in English and Ukrainian. Warnings now include
-  the path and safe next steps; printing and existing thumbnails are unaffected.
+- **External MQTT subscribers receive retained plate-clear state.** The relay publishes a dedicated gate topic and includes the gate in printer status, refreshing it after reconnect; its status also exposes current left auxiliary and exhaust fan telemetry when the printer reports it.
 
-- **Empty spools can retire themselves.** A new Usage accuracy switch,
-  *Archive the spool it closed*, moves a spool to the inventory archive when
-  an unambiguous filament runout closed it at empty and the printer
-  demonstrably moved on — an AMS auto-switch to a backup, or a replacement
-  loaded into the slot. A reel that was simply reinserted and kept printing
-  stays active. Works for the built-in inventory and Spoolman alike. Off by
-  default: farms that archive empty spools by hand lose nothing.
-- **Clear a printer's finished issues in one go.** The Issues section of a
-  queue card gained *Delete all*: after a confirm that names the printer and
-  the counts, it removes the failed and cancelled jobs the section is
-  showing — the ones you are allowed to delete, so an operator who may only
-  delete their own jobs sees exactly that number. Skipped jobs stay (they are
-  deferred work, not finished failures), print history and the queue's
-  counters are untouched, and a job that was retried in the meantime is left
-  in place rather than deleted. Deleting failed jobs counts as acknowledging
-  them: jobs set to wait for a successful previous print may start on that
-  printer again, and the confirm says so. Suggested by a farm operator. Along
-  the way the per-row remove button got its missing tooltip text, and its
-  toast now says the job was removed rather than cancelled.
-- **Orders, products and customers now page, search and sort like the
-  archive.** Each list loads 24 rows a page (12–96, or all), has a search box
-  — orders by their own name or the customer's, customers by name or
-  contact — sorts on the server (from the table's column headers, or a sort
-  picker over the cards), and offers both cards and a table: the product
-  catalog gained a table, customers gained cards, and the customer table's
-  header now looks like the other two. The order table still
-  opens sorted by due date; the order cards open with the most recently
-  changed first. While the next page loads, the current one stays on screen,
-  dimmed. The page, the search, the sort and the orders tab and customer
-  filter live in the address bar, so Back, a refresh or a shared link lands
-  on the same view; the view mode and the page size are remembered per
-  browser. The order tabs count under the current customer and search
-  instead of across the whole farm. Everything else that reads these lists
-  — pickers, the customer and product pages — works exactly as before.
-- **Drying can be scheduled.** The drying button on an AMS now asks *when*:
-  now, after a delay, at a set time, as soon as the printer is free, or on a
-  repeating schedule — chosen weekdays at a time of day, with an optional
-  "not later than" that closes the window. Schedules run in the farm's time,
-  and the dialog says so when your browser is in another time zone. A
-  scheduled cycle waits while its printer prints, is stopped by a print that
-  goes out on that printer and resumes afterwards if its window is still
-  open; whether the queue waits for a scheduled cycle is the same **Block
-  queue until drying completes** switch that governs auto-drying, and
-  auto-drying leaves a unit alone while a schedule holds it. The printer card
-  lists what is planned — when a run starts, why it is still waiting, a run
-  that did not happen and why — with cancel, pause, edit and delete, and
-  Settings → Filament shows every schedule of the farm in one table. Three new
-  notifications — scheduled drying started, finished, did not happen — the
-  last one on by default, since a missed night otherwise looks like a dried
-  spool. A schedule's missed nights while BamDude was down are skipped
-  quietly rather than reported one by one on restart.
+- **Printer model compatibility follows Bambu Studio.** The target printer's `compatible_machine` list now decides whether a sliced file is exact, compatible, or incompatible; a confirmed P1P upgrade kit uses P1S for that decision. Manual compatible targets show a warning and remain subject to nozzle, filament, and dispatch checks. Auto Queue has a default-off **Use compatible printers** fallback that prefers ready exact-model printers, then ready compatible printers; its preview, offline wake, forecast, and queue rebalance use the same rule. The REST model matrix feeds the print and queue UI without a second hard-coded family table. The complete printer JSON catalog is mirrored from Bambu Studio `v02.08.04.57`, including the new N8 description, serial prefixes, and updated filament blacklist.
+
+- **H2C: choose which rack nozzle each filament prints from.** The rack holds six hotends, and a multi-colour plate is often sliced to use a different one per colour. Which of the six each colour takes is not in the 3MF — Bambu Studio sends it with the print — so BamDude used to leave it to the printer. The print dialog now shows a rack position, R1 to R6, beside every filament that prints from the rack, listing the nozzle each position holds; an empty position, or one holding the wrong diameter or flow type, is greyed out with the reason. The choice is made per filament group: filaments the slicer put in one group share one hotend. Nothing has to be picked — positions are assigned on their own, preferring one already loaded with that colour, and the nozzle sitting on the carriage counts too. The pick is checked again when the print is sent, because the rack can be reloaded in the meantime: a position you chose that no longer fits stops the print with a message saying what it holds now, and the uploaded file is removed from the printer; an automatic assignment that cannot be made leaves the choice to the printer, as before. It works for queued jobs, prints started straight away, reprints and every copy of a quantity. The print dialog is wider on every printer, so filament names are no longer cut short. On the printer card the nozzle rack numbers its positions 1 to 6 and takes only the width its six nozzles need, so the temperatures beside it stay on one line. (upstream #1784 3954d3a7, d0e217f6)
+
+- **Each AMS slot card shows its K value.** The calibrated pressure-advance value used to be readable only in the slot's hover card; it now sits under the material on every calibrated slot — AMS, AMS HT and the external spool — as "K 0.024", with the full name on hover. A slot with no known calibration shows nothing rather than the 0.020 default the hover card falls back to, and the other slots on the card keep the line's height, so every fill bar stays aligned.
+
+- **The filament a print used can be typed into its archive.** A print whose 3MF never reached BamDude carried no weight, and nothing could give it one afterwards — a rescan needs the file. Edit archive now has a *Filament used (g)* field. It is the archive's figure only: statistics, cost and order figures read it, and no spool is debited. A cost that was empty, or was the farm rate applied to the old figure, follows the new one; a cost from spool tracking stays. The field takes a decimal comma as well as a point.
+
+- **Preview-service diagnostics on the System page.** See availability, worker restart/backoff, or a startup/ownership failure, with a runtime path and recovery instructions in English and Ukrainian. Warnings now include the path and safe next steps; printing and existing thumbnails are unaffected.
+
+- **Empty spools can retire themselves.** A new Usage accuracy switch, *Archive the spool it closed*, moves a spool to the inventory archive when an unambiguous filament runout closed it at empty and the printer demonstrably moved on — an AMS auto-switch to a backup, or a replacement loaded into the slot. A reel that was simply reinserted and kept printing stays active. Works for the built-in inventory and Spoolman alike. Off by default: farms that archive empty spools by hand lose nothing.
+
+- **Clear a printer's finished issues in one go.** The Issues section of a queue card gained *Delete all*: after a confirmation that names the printer and the counts, it removes the failed and cancelled jobs the section is showing — the ones you are allowed to delete, so an operator who may only delete their own jobs sees exactly that number. Skipped jobs stay (they are deferred work, not finished failures), print history and the queue's counters are untouched, and a job that was retried in the meantime is left in place rather than deleted. Deleting failed jobs counts as acknowledging them: jobs set to wait for a successful previous print may start on that printer again, and the confirmation says so. Suggested by a farm operator. Along the way the per-row remove button got its missing tooltip text, and its toast now says the job was removed rather than cancelled.
+
+- **Orders, products and customers now page, search and sort like the archive.** Each list loads 24 rows a page (12–96, or all), has a search box — orders by their own name or the customer's, customers by name or contact — sorts on the server (from the table's column headers, or a sort picker over the cards), and offers both cards and a table: the product catalog gained a table, customers gained cards, and the customer table's header now looks like the other two. The order table still opens sorted by due date; the order cards open with the most recently changed first. While the next page loads, the current one stays on screen, dimmed. The page, the search, the sort and the orders tab and customer filter live in the address bar, so Back, a refresh or a shared link lands on the same view; the view mode and the page size are remembered per browser. The order tabs count under the current customer and search instead of across the whole farm. Everything else that reads these lists — pickers, the customer and product pages — works exactly as before.
+
+- **Drying can be scheduled.** The drying button on an AMS now asks *when*: now, after a delay, at a set time, as soon as the printer is free, or on a repeating schedule — chosen weekdays at a time of day, with an optional "not later than" that closes the window. Schedules run in the farm's time, and the dialog says so when your browser is in another time zone. The button stays usable while the unit is drying or cannot start right now — it opens with only **Now** switched off, so the next cycle can be planned; Stop stays on the drying bar. A scheduled cycle waits while its printer prints or is offline, is stopped by any print that starts on that printer — from the queue, **Print now**, the printer's screen or the slicer — and resumes afterwards if its window is still open; whether the queue waits for a scheduled cycle is the same **Block queue until drying completes** switch that governs auto-drying, and auto-drying leaves a unit alone while a schedule holds it. The printer card lists what is planned — when a run starts, why it is still waiting, a run that did not happen and why — and Settings → Filament shows every schedule of the farm in one table; changing them takes printer control, and deleting a schedule or stopping a running cycle asks first. Three new notifications — scheduled drying started, finished, did not happen (including an AMS that accepted the command and never began) — the last one on by default for new notification providers and for Telegram chats that keep the default selection; a provider or chat with its own selection gets it by ticking it there. A schedule's missed nights while BamDude was down are skipped quietly rather than reported one by one on restart.
+
+- **A half-used sheet of labels can go back into the printer.** With a sheet chosen, the print dialog asks for a **Starting position** — the first free label, counted row by row — and the first page starts there, every later page at the top. The API takes it as `starting_position`.
+
+- **The product catalog has SKUs, versions, categories and a ready-to-print status.** A product gets an optional SKU (unique, whatever the case), a version, and a category chosen from a list you keep in one place — rename a category and every product shows the new name; delete it and its products become uncategorized. Each product is a **draft** until you mark it **ready to print**, which needs at least one part and one plate (a file in the trash does not count); products that already have both start as ready. A ready product that later loses its parts or plates is not demoted behind your back — it is marked «incomplete». The catalog has a category panel with counts beside the list, and filters for material, colour, printer model, status and «in stock», all kept in the address. Search takes several words, and each must match something: the name, the code, the SKU, the category, a part, a linked file, a material or a colour. A plate shows the printer model it was sliced for, and the sidebar counts the drafts beside «Products». Material, colour and model are stored with the product and refreshed when its plates change, so filtering a large catalog stays fast; a file in the trash drops out of the filters and the search, and comes back when it is restored.
+
+- **Products have variants, and an order line keeps its configuration.** A product can carry variant groups — a tail that is straight or angled, a mount for the wall or the desk — each with options and a standard one. A part belongs to one option or is always in the kit, and the product page manages groups, options and bindings; a delete that would change an order's kit is refused and says why. An order line records the option of every group and any per-unit count it changed, so changing the product's standard later — or binding a part to an option — leaves saved orders alone. «Configuration…» on a line changes it afterwards: before saving, the dialog says how much of what is already printed or queued would become surplus and what the line's stock reservation becomes, and the reservation follows the new kit. Parts a change leaves out stay on the line as surplus that «Surplus» can put on the shelf; a completed order's lines are not reconfigured (reopen it first). A line can also order just some parts of a product — a set of parts, with no kits and nothing from stock. The order figures, the print plan, stock reservations, filament needs and the matching of prints to lines all follow each line's own configuration; copying a product or an order, and a product's export file, carry it.
+
+- **Finished goods are kept in stock.** The Stock page opens on finished goods: one position per product configuration (`SK-…`), with its location, a minimum and what is on hand, reserved and available — a position whose free quantity drops under its minimum is marked, and the sidebar counts them. Receipts, stocktakes (you enter what you counted, the difference is recorded), reservations, issues to a customer and assembly from the free parts on the shelf each leave a line in the journal with who did it; assembly takes the kit's printed parts off the shelf in the same step, and the list says how many of each position the shelf could still make. The free-parts shelf and the journal of both ledgers are tabs of their own, and every position has a page with its reservations, the product's other configurations and the parts its kit needs. A product or a variant option that finished goods are kept under cannot be deleted.
+
+- **«Add to order» adds many lines at once and takes what is already in stock.** One dialog, opened from an order or from a catalog product's page (which asks which active order), adds several products with their configuration, material and colour, parts of a product, or a one-off product made of a file's plate — picked across searches, pages and tabs, and added in one go: if any line is refused, nothing is added. The stock is picked by itself: ready units of exactly that configuration first, then kits of free parts, and only the rest goes to print; you can change either number, and «pick» brings the proposal back. If the stock moved while you were choosing, the line takes what is left and you are told how much. A line now shows how many ready units and kits it takes, and editing it has «Pick from stock». Cancelling an order, deleting a line or the order puts them back; changing a line's configuration moves them to the new configuration's position, as far as it has free. Only an active order takes ready units. The order's activity log says what each new line took from stock.
+
+- **An order is issued to its customer in batches.** «Stock & issue» on the order assembles the kits it reserved, receives its printed units onto the shelf under the order and issues what the customer takes now — part of it or all, as many times as needed; an order of loose parts is received and issued part by part. Each issue records who took the goods, the delivery and an optional waybill number (up to 24 characters, which can be added later) and shows on the customer's page with the order it came from; a manual issue on the Stock page now names its customer the same way. An order is completed only once everything it ordered has been issued — «Mark completed», the order's menu and a drop onto «done» on the board all open the issue dialog, and kits nobody assembled go back on the shelf. An order without a customer — one made for stock — issues nothing: once everything it ordered is on the shelf it is closed to stock, and what it held becomes free stock; such an order is duplicated rather than reopened. A unit that breaks on the shelf before it goes out is written off in the same dialog, with a note saying why, and the order makes it again — the plan prints one more, and the replacement is not counted as surplus. Once a line's stock has moved, its ready units are only added to and its kits only lowered — back onto the shelf, so the prints already made take their place: «Take from stock» on the order offers what the shelves hold for the part nobody has printed, is printing or has queued yet. Its configuration stays, and its quantity cannot go below what is issued and held; cancelling gives the shelf back everything still held, and such an order is duplicated rather than reopened. A print whose units went onto the shelf for an order stays filed under it, so its parts are never counted a second time, and the order receives no more units than its prints made, however they are shared between its lines; a product made only of bought parts is received as its units come. Lines, cards, the board and the orders table say how much went out, a product's stock shows the parts its orders hold, and the activity log says what was assembled, received, written off, moved to stock, issued and taken.
+
+- **Every issue is a dispatch note.** Issuing goods — from an order or straight off the stock page — makes a dispatch note numbered `DN-0042`: the supplier's details (a new card, Settings → General → Details for documents), the recipient and the delivery, the basis (the order, or an issue from stock), one line per product with its SKU and configuration — an order of loose parts lists each part — the quantities and their total, and «Issued by / Received by». The note opens right after the issue, is a white sheet in any theme and prints on its own, without the app around it. The Stock page lists every note on a new «Dispatch notes» tab, searchable by number, order, customer, recipient, product, SKU or waybill; an order shows its own under «Issues», a customer's page lists theirs, and the stock movements link each issue to its note. A note is a record of what was handed over: renaming or deleting the product, the order or the customer, or changing the supplier's details later never changes it — only the waybill and the note text can be added afterwards.
+
+- **A zero in a product's parts means «out of the kit»; «Not counted» marks what is not a part at all.** A part the product lists with a count of 0 — a spare handle — is still a part: it has its own shelf, an order of loose parts receives and issues it, a print without an order puts it on the shelf, and the product's stock shows it apart from the kit. A test cube or an object of another plate of the file is marked «Not counted» beside its zero: it is counted nowhere and no order line can ask for it. Every zero a product already had is marked «Not counted» on upgrade, unless it holds stock or an order asks for it — so nothing changes until you unmark a spare part.
+
+- **An order's Queue section shows everything the order has in the queue.** It used to list only jobs already on a printer's queue, so work the order plan had just queued counted in the «In queue» tile but was nowhere in the list until the auto-queue handed it to a printer. The section now shows what is printing, what waits on a printer, and what waits for the auto-queue to hand it out — with the printers it may go to and why it is still waiting — exactly the jobs the tiles count. A print started from the printer's screen and filed to the order shows under «Printing» too. The order page no longer downloads the whole farm's queue to draw one order's part of it.
+
+- **The orders page switches between five views.** Besides the table and the cards there is now a **kanban** by stage — drag a card (or move it with the keyboard) to another column to set its stage, or into Done to complete the order after a confirmation; each column shows its count, and a long column links to the list filtered by that stage. The **workspace** keeps the list on the left and the open order on the right, so going through orders one by one no longer means leaving the list; the order you picked stays in the address. The **deadlines** board lays two weeks out day by day: each order on its deadline day with the farm's forecast «ready ≈» beside it — in red when the forecast lands after the deadline — the other orders' expected ready days, and below it everything that needs attention: overdue, without a deadline, or forecast to be late. Search, customer and responsible filter every view alike.
+
+- **Orders have a stage, a responsible person and an activity log of who did what.** Every active order stands at a stage — Preparation, Printing or Quality check — which whoever is on the farm sets by hand from the order page; «Done» is simply a completed order. The table shows a Stage column in place of Status and sorts by it, and each card carries the stage badge. Every order also names who is responsible for it — the person who created it unless someone else is chosen — shown with their initials on the table, the card and the order page, and the list filters by it, including «Mine». The order's Activity feed now records every operator action beside its prints: status and stage changes, edits to the order and its lines, prints filed or taken out, defects, jobs sent to the queue, stock and purchased parts, attachments and the cover — each with who did it. Existing orders start in Preparation with nobody responsible, and their feed begins from now.
+
+- **Customers have several contacts, a type and a code; everything in Projects has a code.** A customer is a Company, a Regular or a Private person — the list filters by «Regular» — and holds any number of contacts, each with its name, role, phone, email, city, a delivery method and delivery details, and a note; the first contact is the main one, shown in the list and on the card, and a table row opens to all of them. Delivery methods are a list you edit from a contact — rename, reorder, add; one that contacts use cannot be deleted. An order names its contact person. Customers, contacts, orders and products carry codes made from their number — `CU-0007`, `CT-0012`, `OR-0042`, `PR-0015` — shown on lists, cards, pages and pickers, and every search finds them. A removed contact's code is never given to another one. The old single «Contact» text moved into each customer's first contact: the email and phone into their fields, the line left into the name — and whenever it could not be kept exactly as written, the whole text into the contact's note as well, so nothing is lost. Emptying a contact that orders still name holds the save until it is filled in or removed, the way removing it warns first.
+
+- **Summary tiles above the orders, customers and stock lists.** They sum up the whole farm, whatever the list below is filtered by. For orders: active orders with how many are overdue and urgent, prints running and jobs waiting, units still to cover, and orders fully covered and waiting to be checked and closed. For customers: how many there are, how many have work in progress, the orders in work and the order total. For the stock: kits and parts on the shelf, kits held by active orders, and products whose parts on the shelf do not make a whole kit. The customer page opens with three tiles — orders, total and print cost, and how much of what was ordered is covered.
+
+- **The orders table sorts the whole list by «Ready ≈» and by machine hours.** Before, these two columns only reordered the page on screen; now the server runs the farm forecast once for the active orders under the filter and pages the result. Closed orders and orders without an estimate go last. The same two keys are in the cards' sort control.
+
+- **The stock list works like the other lists.** It comes one page at a time, sorts from its headers by product, kits or the new «Reserved» column, and keeps its search, the «only with stock» switch, the sort and the page in the address, so a reload or a shared link returns to the same place.
+
+- **The customer page shows its orders one page at a time** with the same cards/table views, sorting and page bar as the orders list; the tab counts come from the server instead of the orders loaded on screen.
+
+- **Smaller list conveniences.** Customers can be filtered to those with active orders. Order search also finds an order by its tags. `/` focuses the search of any Projects list, and the keyboard help lists it. An order's description is shown under its title on the order page.
+
+### Changed
+
+- **Local uploads and external-folder scans now share one background file-preparation service.** It extracts the full 3MF plate list and metadata, even from large multi-plate files on SMB shares, while keeping slow file reads and parsing out of the web server. The next external-folder scan fills missing metadata on existing files and refreshes changed files in place, including their plate lists and thumbnails; an unreadable file keeps its last good metadata. System shows the service's health separately. The server log now shows when its worker is ready and reports the start, result, plate count and duration of each file it parses.
+
+- **The Bambu Studio sidecar now defaults to the latest stable release, 02.08.02.61.** Build defaults, Compose settings and the example environment file use the same version; OrcaSlicer remains on its latest stable release, 2.4.2. Existing installations with a version pinned in `.env` need to update that pin and rebuild the sidecar.
+
+- **Sensor settings now use one section.** Zigbee and Home Assistant sensors appear together in the existing Sensors panel under Smart plugs, with one Add sensor button and filters for source and place. A Home Assistant entity used by several printers or spool-storage locations has one card with separate readings, alerts and actions for each binding; hidden card readings remain manageable here. Pairing, history, reporting, storage defaults and print holds keep their existing controls. Adding a Zigbee sensor directly to spool storage now saves the sensor and first binding together, so a failed target cannot leave an unbound sensor behind.
+
+- **New API keys start with `bd_`.** The `bb_` they used to start with came from Bambuddy, the project BamDude grew out of. Keys you already have keep working exactly as before — through `X-API-Key` and through `Authorization: Bearer` alike — so nothing needs to be re-issued; only keys created from now on look different.
+
+- **Lighter farm monitoring in the browser.** The queue badge reads compact counts instead of every queued job, and shows `!` rather than a false zero when a count cannot be read. Queue and Printers cards share one set of active queue reads, and an Issues section loads its rows, page by page, only when opened — **Delete all** first loads the complete list, then asks about exactly those jobs. The printer-status fallback of every card on a page now goes out as one batched request per interval, and a printer whose live state just arrived waits for its own turn. A hidden tab sends no farm reads, even when queue events arrive — it catches up once when shown — and a quick switch back to a fresh tab rereads nothing. After a network drop the live connection retries with growing delays of up to 30 seconds. Background reads are bounded and cancelled when no longer needed; printing commands stay immediate and are never retried automatically. On a synthetic 50-printer farm, one open Queue tab made about nine in ten fewer requests over ten quiet minutes.
+
+- **Camera capture is worker-only.** Built-in and external live views, snapshots, connection tests, background photos and Virtual Printer camera passthrough use one supervised local worker; there is no inline fallback. A failed camera worker leaves unrelated printing and queues available; camera-dependent checks can wait for its bounded restart. System has a separate health panel. The former `CAMERA_RUNTIME` variable is ignored. Normal shutdown now waits for the worker to finish its camera cleanup before closing its guardian; independent live streams are released concurrently, while an unresponsive worker is still forcibly reaped without delaying recovery. Live viewers are detached before the worker stops, avoiding a spurious fan-out crash report during an ordinary server shutdown. Native and container launchers now bound the wait for open live streams to 15 seconds, so an abandoned browser tab cannot prevent the camera worker and the rest of the server from stopping. Camera-wall tiles now mark a server disconnect even if the browser keeps the last MJPEG frame, then reopen the stream when the server reconnects.
+
+- **3MF filament analysis runs in its own local service.** A reusable, supervised parser process reads the local source file and returns results through the embedded broker. Repeated browser polls share cached print information, while a slow or crashed G-code parser no longer blocks the web server. System shows this worker's state separately from previews and cameras. Failed temporary-file cleanup is reported in the server log instead of silently retaining artifacts.
+
+- **How a camera opens is chosen on the camera button, per browser.** The window-or-overlay choice was one setting for every camera and every person, five steps away on the Settings page. The camera button on a printer card now has an arrow beside it: pick *New window* or *Embedded overlay* and the camera opens that way, and this browser remembers it for the icon from then on — two people watching one farm each keep their own. The Settings value is now the default for a browser that has not chosen. An overlay you open is no longer closed on its own because the default says "window".
+
+- **Spools are named with their subtype by default.** PLA, PLA Matte and PLA Wood of one brand and colour are different filaments, and the default name template (`{brand} {material} {color_name}`) named them alike on every screen and label. The default is now `{brand} {material} {subtype} {color_name}` — a spool without a subtype reads as before. A template you set yourself is kept as it is.
+
+- **Model previews no longer render in the web server.** STL/OBJ uploads, ZIP imports, thumbnail regeneration and missing previews after slicing use a bounded local preview service, bundled with BamDude in the same installation or container. A failed or overloaded renderer leaves the uploaded/sliced file usable, and regenerating a preview keeps the old picture until the replacement is safely attached. Concurrent file changes cannot receive a stale preview. No separate broker setup, exposed port or remote service is required.
+
+- **Projects opens into its sections in the sidebar.** Orders, Products, Customers and Stock sit under Projects in the sidebar, and the tabs at the top of those pages are gone. Projects folds and unfolds, and remembers which you chose. On the collapsed icon bar its sections open beside the icon — on hover, on a click, or with Enter from the keyboard. Orders shows how many orders are active; with the sections folded away a dot on Projects says there is a count to see.
+
+- **The Projects lists share one frame.** The cards/table switch of the orders, products and customers lists moved from the filter bar into the page header, beside the create button, and shows an icon — its label hides on a narrow screen. Every list page carries a one-line explanation under its title, and the search box of every list is the same one.
 
 ### Fixed
 
-- **An order made from library files respects who may see those files.** A user
-  whose group sees only its own library files could still start an order from
-  another user's file by its number; the order now answers «file not found»
-  for it, exactly as the library does. Groups that see the whole library are
-  not affected.
-- **A customer's order total no longer counts cancelled orders** — in the
-  customers list and its «Total» sort, on the customer page and in the tiles. A
-  cancelled order is not revenue. On the customer page «covered of ordered»
-  leaves cancelled orders out as well; the print cost still counts every
-  order, because those prints were paid for.
-- **The orders table no longer marks an order overdue on the morning of its due
-  date.** It compared the deadline with the current minute; the cards compared
-  it with the start of today. Both now use the card's rule, and so does the
-  «overdue» count on the orders tile.
-- **With a Filament Track Switch, each AMS is badged with the switch inlet it
-  feeds, not a made-up nozzle.** Behind the switch an AMS reaches both
-  nozzles, so the printer reports no nozzle for it, and the card fell back to
-  the unit number: AMS A was badged R and AMS B L for no reason, and a third
-  unit got nothing. The card now shows the inlet set on the printer's Manual
-  AMS Setup screen — A or B, in blue rather than the nozzle badge's green,
-  never L or R, because an inlet can feed either nozzle — and shows nothing
-  while the switch is not set up yet. The print dialog's slot list carries
-  the same inlet (its old left/right hint never matched a slot). Both follow
-  the printer screen live. The print dialog also recommends which filaments
-  to move to which inlet, as Bambu Studio does: it reads the arrangement the
-  slicer worked out from the file, times the current one against it — two
-  filaments on one inlet cannot share its tube, and printers with AMS preload
-  pre-feed only across the two inlets — and speaks up only when a move saves
-  at least a second.
-- **Load and Unload in the AMS slot menu work with a Filament Track Switch, and
-  Unload removes the slot you picked.** With the switch fitted, either nozzle
-  can be fed from any slot, and a load that did not say which one was quietly
-  dropped by the printer. Load now asks which nozzle to feed, as Bambu Studio
-  does: nothing is preselected, and a nozzle already loaded from that slot is
-  greyed out. While the switch is not set up on the printer, BamDude says so
-  instead of sending a load. Printers without a switch still load in one click.
-  Unload used to act on whichever slot the printer reported as loaded, so on a
-  two-nozzle printer with both nozzles loaded it could empty the wrong one; it
-  now unloads the slot whose menu you used, and says so when no nozzle is loaded
-  from it.
-- **Auto-drying dries composite spools as their base material.** A tray
-  holding PA6-CF, ABS-GF or PLA-AERO matched no drying preset, so auto-drying
-  skipped that AMS on every pass without saying why, and a per-filament
-  humidity threshold never applied to a material's composites. The spool now
-  dries — and is judged — as its base material, nylon under any of its
-  spellings (NYLON, PA6, PA11, PA12, PAHT, PPA) as PA; the preheat stage reads
-  the chamber target the same way.
-- **A drying button that cannot start names the actual reason.** It always
-  asked for the AMS power adapter, even when the unit was refusing because
-  filament sat at its outlet. It now names the power adapter first, then the
-  filament at the outlet, then anything else — the same order the server uses
-  when it refuses a drying command.
-- **The AMS temperature alarm no longer fires for heat you asked for, and has
-  its own threshold.** While an AMS dried filament — 45 °C for PLA, 65 °C for
-  PETG, up to 85 °C on an AMS-HT — the alarm, set at the 35 °C amber band,
-  sent a notification every hour of the cycle and on through the cool-down.
-  It now stays quiet while the unit is drying and until it has cooled back to
-  the alarm threshold (at most two hours after the cycle), a hold that
-  survives a restart; a heater that has lost control still alarms. And the
-  alarm no longer has to share the amber band: **Settings → Filament → AMS
-  Display Thresholds → Alarm above** sets the temperature that notifies,
-  so a warm room can turn the card amber without paging you. Left empty, it
-  alarms at the amber band, as before.
-- **A Bambu Lab RFID spool gets the right empty-spool weight.** A spool
-  added from an RFID tag took whichever "Bambu Lab" row the spool catalogue
-  returned first — usually the 216 g High Temp spool — instead of the 250 g
-  Low Temp spool the rolls ship on, so its gross weight read 34 g light and a
-  weigh-in against it came out 34 g off. New spools take the Low Temp row (or
-  your own measurement of it); spools already added that way are corrected
-  once on upgrade.
-- **The model viewer opens an archive on the plate that was printed.** The
-  archive API left the printed plate out of its answer, so a multi-plate
-  archive always opened on "All plates" instead of the plate that ran.
-- **A print that could not be started no longer disappears silently.** When a
-  Reprint, a print from the library or one sent from Telegram is refused at the
-  last check before it starts, BamDude now says so through your notification
-  channels («Job Failed to Start», with the reason), and the job stays in the
-  printer's queue as failed with a Retry button instead of looking cancelled.
-  The same goes for a direct print that fails before its upload even begins —
-  the printer is not connected, there is no card in it — which used to be
-  reported only to an open browser, and whose print-history entry now closes
-  as failed instead of staying «printing». The dispatch panel shows a refused
-  job as «Not started» rather than a raw label, and the batch closes instead of
-  spinning on «Starting prints».
-- **Uploading a file no longer drops the printer's connection.** A printer on a
-  slow link could stop reporting while it received a large file; BamDude took
-  the silence for a dead session and reconnected, which then refused the print.
-  Silence during an upload is now expected; right before the start BamDude asks
-  a printer that has been quiet since the upload to report, and reconnects it if
-  it does not answer. If the connection does get re-established during
-  preparation, the print still starts once the printer reports the same
-  filament as before, with its pressure-advance profile sent again.
-- **Importing from MakerWorld on Windows no longer fails with "unable to get
-  local issuer certificate".** MakerWorld often hands the 3MF out as an Amazon
-  S3 link, and that one download checked the certificate against the operating
-  system's store rather than the bundle every other connection uses. Windows
-  fills its store lazily, so on a machine that had not met that Amazon root yet
-  the import failed after everything before it had worked. The download now
-  trusts the same bundle as the rest of BamDude — including a CA you point
-  `SSL_CERT_FILE` or `SSL_CERT_DIR` at behind a TLS-inspecting proxy.
-- **An expired Bambu Cloud sign-in is shown as expired on the MakerWorld page.**
-  When Bambu stopped accepting the stored token, the page still read as signed
-  in, and an import failed with Bambu's bare "Please login." — or with advice
-  to open a Settings page that does not exist. The page now says the sign-in
-  has expired, keeps import and print switched off until you sign in again,
-  and a refused request says where to do that: the Profiles page. When the
-  expiry is discovered by the import you just clicked, the page switches to
-  that state at once. `GET /makerworld/status` reports it as `sign_in_expired`.
-- **MakerWorld cover downloads no longer carry your Bambu Cloud token.** The
-  covers fetched during an import went to MakerWorld's public image CDN with
-  the signed-in token attached; the token now goes to Bambu's API only, as the
-  3MF download already did.
-- **A spool of PLA Aero, a carbon- or glass-filled filament, or one without a
-  filament profile no longer drops off the slot it was just assigned to.** The
-  slot is configured with the type of the spool's filament profile — `PLA-AERO`
-  for Bambu PLA Aero, `PLA` for a spool without a profile whose material reads
-  "PLA Matte" — while the check that keeps an assignment compared the slot with
-  the spool's material field, so the first AMS report after the assignment
-  looked like a different spool and the link was removed. It now accepts
-  exactly the type the assignment wrote.
-- **A spool without a filament profile keeps its own filament type on the
-  slot.** Such a spool — in Spoolman, one without a linked K-profile — used to be
-  configured with the generic profile of its base material, and the slot took
-  that profile's type: PLA Aero became plain PLA, ASA-GF became ASA. The queue
-  matches spools to plates by that type, so a PLA plate could be sent to foaming
-  filament and a PLA Aero plate found no slot; AMS Backup could also group the
-  spool with ordinary filament of the same colour. The slot now gets a profile
-  of exactly the spool's type — the generic one where it exists, otherwise the
-  catalogue's own, such as Bambu PLA Aero. For a type no profile exists for
-  (ASA-GF), the base material's generic profile supplies the temperatures and
-  the slot keeps the type as the spool gives it. A material written as `PLA+`,
-  "PLA Matte" or "PolyTerra PLA" is recognised as PLA, where `PLA+` used to leave
-  the slot unconfigured.
-- **A print whose filaments want no chamber heat skips preheat entirely.**
-  With preheat on, a PLA, PETG, TPU or PVA print used to skip only the chamber
-  phase and still heat the bed, wait for it and hold the full soak — five to
-  seven minutes before every such print, for nothing: the print's own start
-  code heats the bed anyway, and there was no chamber to condition. It now
-  starts straight away; on printers with an airduct flap the flap is still set
-  back to cooling. A chamber target of exactly 0 typed for one print, or
-  preheat forced on for it, still heats the bed and runs the soak — the print
-  options now say so under the chamber target field.
-- **Preheat heats the chamber for the filaments the print uses, not for every
-  spool in the AMS.** The chamber target was the highest one across all loaded
-  slots, so a single ASA spool parked beside PLA made every PLA job wait for a
-  45 °C chamber — on a printer without a chamber heater, the full maximum wait
-  and soak before each upload. Only the slots the print's filament mapping
-  names count now, including an external spool the print feeds from, which used
-  to be ignored. A print without a filament mapping still considers every AMS
-  slot.
-- **Preheat gives a filled or foamed filament its base material's chamber
-  temperature.** A slot with ASA-GF, ASA Aero or ABS-GF had no row of its own
-  in the chamber-target map and fell to "Other" — 0 °C, no chamber phase.
-  It now takes ASA's or ABS's row; a type listed on its own, such as PETG-CF
-  or PA-CF, keeps its own value.
-- **"Open source 3MF in slicer" works, and "Open in slicer" no longer fails
-  when the slicer fetches the file twice.** The source 3MF download was
-  refused before its one-time link was even checked, so it never worked with
-  sign-in enabled — which is every install. And each open-in-slicer link was
-  spent by the first request, while Bambu Studio retries a failed download
-  and other tools can fetch the same address, so the slicer could be refused
-  the file it had just been sent to. Links now stay valid for their five
-  minutes and still open only the file they were made for.
-- **A print with no 3MF in its archive can receive its timelapse and a Fusion
-  360 design file again.** H2-series and P2S printers keep a job sent from the
-  slicer on their internal storage, where it cannot be downloaded, so the
-  archive has no 3MF. For such an archive the timelapse and the design file were
-  written one folder above the data directory — under Docker that failed with a
-  permission error, so the timelapse was downloaded and thrown away again and
-  again; elsewhere the file landed beside the installation and the attach still
-  failed. Both now go into the archive's own folder, next to its photos.
-- **Deleting an archive that has no 3MF now removes its photos, timelapse and
-  design file, and a photo taken before the 3MF arrived no longer disappears.**
-  Such an archive kept its files in a folder named after its number inside
-  the archive directory — the same place where printers' folders are named
-  after theirs, so archive 3's files sat in printer 3's folder and were never
-  cleaned up. They now live in `archive/no_source/<number>/`. When the 3MF
-  reaches the archive later, as it routinely does after a delayed download,
-  photos taken before that are still shown and can still be deleted; photos in
-  the old location are found as well.
-- **`scripts/prune_orphan_archive_files.py --apply` no longer deletes
-  timelapses, photos, design files, source 3MFs and MakerWorld covers.** It
-  treated every file not named as an archive's 3MF or thumbnail as an orphan.
-  It now keeps every file any path column names and everything inside a folder
-  that belongs to an archive still in the database or the trash.
-- **Starting a print no longer switches the printer's AMS and print settings
-  off in BamDude.** A printer confirms a print job by echoing the job back, and
-  that echo was read as the printer's own status. The job carries a value that
-  shares a field with the printer's settings, so right after every dispatch —
-  from BamDude or from Bambu Studio — BamDude showed AMS auto-refill,
-  detect-on-insert and remaining-capacity estimation as off, reset the door
-  check, sounds, tangle and clog detection and AI monitoring to off, and took
-  the requested timelapse for the recorder's state. Printers that report these
-  settings continuously corrected themselves a second later; on the P1 and A1
-  families the wrong values stayed until the next full status. The same echo
-  also made a P1 or A1 offer "store sent files", which those printers do not
-  have.
-- **Reading one nozzle size's K-profiles no longer deletes the calibrations of
-  every other size.** The printer reports its pressure-advance table one
-  nozzle diameter at a time, and every answer — the nightly Git backup
-  checking 0.2 to 0.8 mm, Bambu Studio asking on the same connection, opening
-  the Profiles page for 0.6 mm — replaced the whole list. The calibration
-  cache then removed everything the latest answer did not contain, together
-  with the spools linked to those calibrations and their notes. Each nozzle
-  size is now kept separately, and a calibration is only removed when its own
-  size's table no longer lists it.
-- **K values on AMS slot cards no longer vanish or show the other nozzle's
-  number.** The card reads a slot's K from that table (H2-series trays do not
-  report it themselves), so it went blank after any answer for another nozzle
-  size, and on a dual-nozzle printer it could show the other hotend's value.
-  The value is now looked up against the nozzle the slot actually feeds, and
-  the card stays empty rather than guessing when that is ambiguous. The fitted
-  nozzles' tables are read as soon as the printer connects, so the card no
-  longer waits for somebody to open the Profiles page.
-- **Applying a spool's calibration to a slot, linking a K-profile on the
-  spool's PA tab, and saving a note on the Profiles page pick the profile of
-  the right nozzle.** Each of these found a profile by its index or its name,
-  both of which repeat across nozzle sizes and hotends, and could bind or
-  annotate the other nozzle's profile — a note saved that way could also fail
-  with a server error. The Calibration History window likewise keeps every
-  nozzle size it has read instead of only the latest.
-- **K-profiles calibrated on a High Flow nozzle are now applied, and every AMS
-  slot is matched against the nozzle it actually feeds.** The printer reports
-  which flow type is fitted, but the lookup always asked for Standard, so a
-  High Flow calibration (H2D, H2C, H2S, P2S, X2D) was never applied on its own
-  — not when assigning a spool, not before a print, not after an RFID read. On
-  dual-nozzle printers every slot was also matched against the first nozzle's
-  size, and spools assigned by RFID and the left external holder were treated
-  as belonging to the right hotend. Configure Slot now offers only the profiles
-  for the fitted flow type, as Bambu Studio does; profiles from printers that
-  do not record a flow type are still always offered.
-- **A spool's PA tab now holds one K-profile per nozzle size and flow type, as
-  Bambu Studio does.** On a printer with two nozzle sizes, profiles that shared
-  a number were one checkbox, and saving could re-link the other size's
-  profile. A spool can now keep, for example, a 0.4 mm and a 0.6 mm profile, or
-  a Standard and a High Flow one, side by side on the same printer; picking a
-  second profile for the same nozzle still replaces the first. High Flow
-  profiles are labelled in the list.
-- **The jog "up" arrow on an A1 recorded under an alternate model code no
-  longer drives the nozzle into the bed.** The printer's own model name decides
-  whether the Z direction is reversed for a bed-slinger, and three alternate
-  codes for the A1 and A1 Mini (`A11`, `A12`, `A04`) were not recognised, so
-  those printers were treated as if the bed moved on Z. They — and `O2D` for
-  the H2D Pro — now resolve to their model everywhere a per-model capability is
-  looked up.
-- **`POST /printers/{id}/bed-jog` now means what its documentation says on
-  every printer.** `distance` is the nozzle-bed gap: positive opens it, whether
-  the bed drops away (X1, P1, H2, P2S, X2D) or the toolhead rises (A1, A1 Mini,
-  A2L). On bed-slingers it used to follow the arrow direction instead, so a
-  script that asked for clearance lowered the nozzle. The printer card's arrows
-  are unchanged — they now use the same axis control as the Motion window —
-  and on a bed-slinger the card and that window label the control **Z** and
-  talk about the toolhead rather than the plate, as Bambu Studio does.
-- **A printer that stops answering can no longer freeze the whole web
-  interface.** When a printer went offline but its port still accepted
-  connections, rebuilding its connection — by the connection watchdog, a
-  queue dispatch, a status check, or editing, deleting or disconnecting the
-  printer — could wait indefinitely for the old connection to wind down, and
-  BamDude stopped answering every page and API call while the process stayed
-  up. The old connection is now let go on a background thread and the new one
-  starts straight away; a teardown that takes longer than a few seconds is
-  logged with the printer's serial. The MQTT relay and the MQTT smart-plug
-  connection shut down the same way, so a stuck broker no longer holds up a
-  service stop.
-- **The Information page no longer pauses BamDude while it refreshes.** Every
-  30 seconds, each open Information page made the server measure the archive
-  by visiting every archived file, and sample the CPU with a 100 ms wait —
-  both on the loop that also serves printer control, the WebSocket and every
-  other request, so a large archive stalled all of them. Both now run on a
-  worker thread; the archive is measured once for all open pages and the
-  figure is reused for up to a minute. Connected printers on the page are
-  named with one database query instead of one per printer.
-- **Live printer states and busy-farm refreshes no longer race.** The browser
-  acknowledges a WebSocket bootstrap only after all pre-marker printer states
-  reach its cache; late status chunks cannot overwrite newer patches or write
-  after disconnect. Repeated archive, library and inventory events now mark
-  affected views stale within a bounded window, with active HTTP refreshes
-  paced instead of launched as one burst. Bootstrap logs separate token,
-  socket-open, first-status and cache-commit timings.
-- **Busy farm reads do less repeated work without widening access.** A request
-  reuses one complete JWT or API-key authority check across middleware and
-  permission gates; revoked or stale JWTs can no longer pass a narrower route
-  check. API-key hashing runs outside the server event loop with bounded
-  concurrency. Queue lists batch virtual-print lookups, keep them visible only
-  to their archive owner, and no longer fetch printer tags and locations to
-  show a printer name. Local spool pickers search and page on the server;
-  display-name previews, form categories and AMS family colours read only the
-  data they need. Spoolman lists are unchanged.
-- **The AMS drying panel on the printer card opens again.** Since 0.6.0 a
-  click on the flame did nothing visible: the panel opened beyond the edge of
-  the card and was cut off by it. It now opens next to its button and scrolls
-  with the page like the card's other menus. The AMS slot cards that appear on
-  hover scroll with the page the same way, instead of floating over it while
-  the page moves underneath.
-- **Service stops preserve the local preview broker's clean shutdown.**
-  Linux, macOS and Windows service wrappers now allow ordered child-process
-  shutdown with every database backend, not just bundled PostgreSQL. Windows
-  upgrades apply the grace period before stopping the old service; Docker
-  forwards stop signals directly to the application. This avoids leaving
-  previews unavailable after an otherwise normal service restart.
-- **Model previews no longer render in the web server.** STL/OBJ uploads,
-  ZIP imports, thumbnail regeneration and missing previews after slicing use
-  a bounded local preview service, bundled with BamDude in the same installation
-  or container. A failed or overloaded renderer leaves the uploaded/sliced file
-  usable, and regenerating a preview keeps the old picture until the replacement
-  is safely attached. Concurrent file changes cannot receive a stale preview.
-  No separate broker setup, exposed port or remote service is required.
-- **A product's picture is no longer cropped.** On the catalog cards — most
-  of which are narrow enough to stack — a square plate picture was cut to a
-  thin strip; it is now shown whole in a band as tall as the product page's
-  own cover tile, and the product page's gallery and the order cards show
-  their pictures whole too. Reported by a farm operator.
-- **An archived spool no longer comes back while its empty reel is still in
-  the AMS.** The AMS sync did not recognise the tag of an archived spool, so
-  the next update re-added the reel: Spoolman auto-created a duplicate spool
-  (or offered "+ Add" when auto-add is off), and the built-in inventory could
-  hang the tag on another spool of the same colour. That hit anyone who
-  archived a spool before taking it out, and would have hit every reel the
-  new auto-archive retires after an AMS auto-switch. A slot holding an
-  archived spool's reel is now left alone, in the automatic sync and both
-  manual Sync buttons; restore the spool to use the reel again.
-- **Settings stay readable after an API client sends `null` for a switch.**
-  Writing `null` to the runout zero-point or two-way AMS weight sync switch
-  made the settings endpoint fail until the value was set again; it now reads
-  as the switch's default, the same way the accounting already treated it.
+- **Batch firmware updates no longer claim to start when Bambu has announced a version but has not published its offline file.** The batch picker now offers only versions that can be downloaded or are already stored locally, and explains why a newer announced version is missing. A direct request for an unavailable version is rejected before creating a run. The success message now says an upload task was created; applying the firmware still happens on the printer screen.
 
-- **Repeated or late printer events now stay with the physical print that
-  caused them.** BamDude keeps the known run's archive and queue attempt from
-  observed start through terminal handling, so a delayed completion, finish
-  macro, cleanup, photo or smart-plug action cannot finish or operate the next
-  same-named print on that printer. A restart keeps a conservatively accepted
-  terminal outcome rather than guessing a successful completion, while an
-  archive-file recovery prepares its data outside the writer and preserves a
-  possibly committed file if the database acknowledgement is lost.
+- **Existing PostgreSQL installations start after the sensor update.** Migrating an existing Zigbee sensor's printer or room binding used SQLite-style numbers for boolean fields, which PostgreSQL rejected and stopped startup. The migration now writes proper boolean values and preserves the sensor's alert state.
 
-- **A failed late 3MF attachment now remains safely retryable.** Archive storage
-  names no longer inherit a terminal dot or space that Windows silently changes,
-  so a valid recovered file is not mistaken for a path escape.  A failed copy or
-  parse rolls back its database write, removes only the directory it just made,
-  and records the unavailable source without touching a file another recovery
-  has already attached.  The normal print-start, adopted-print and background
-  retry paths now use the same recovery result; a rollback also reloads the
-  archive by its saved id before reading it, avoiding an async ORM
-  `MissingGreenlet` error that could mask the original attach failure.
+- **Multi-plate library cards keep their selection checkbox clear.** The plate counter now sits to the right of the checkbox, so it no longer covers the checkmark or blocks selecting the file.
 
-- **One printer now admits one active start, across every queue path.** Print now and Reprint take a final shared queue claim before their file is sent, so they cannot slip past a queue item that is already preparing or printing; they also stop at a paused or error queue instead of silently bypassing an operator's recovery decision. Auto-Queue sees both halves of a live claim — even an older damaged header/item pair — and retries another eligible printer when it loses a candidate in the race. A printer start observed from Bambu Studio or its screen no longer steals the newest old claim: a distinct archive stays distinct, both records remain visible, and the queue pauses for review.
+- **Large multi-plate exports stay usable in the preview dialog.** Plate lists now scroll within a bounded panel, leaving room for the selected plate's 3D or G-code preview in both normal and fullscreen mode. Files with many plates no longer hide the last plates or push the preview below the dialog.
+
+- **An external-folder scan no longer fails when a file already exists in the library.** The scanner skips the duplicate, completes the job and records the skipped count in its log. Previously this path raised `KeyError: 'skipped_duplicates'` and left the scan marked failed.
+
+- **Auto Queue now checks the model you selected before adding a print.** A file sliced for P1P can be aimed explicitly at a compatible P1S even when automatic compatible-printer fallback is off. The preview now checks that P1S target, so the form no longer reports a missing P1P printer or blocks a valid submission. Automatic fallback remains controlled by its existing setting.
+
+- **Previews recover after an unclean shutdown.** On the next application start, BamDude can recover its local preview service once it confirms that the old broker has exited. A broker that is still running or whose ownership cannot be verified remains a visible manual-recovery condition. Abandoned renderer files with uncertain ownership are retained with cleanup guidance; harmless empty folders are distinguished from them. After a confirmed service crash, its abandoned attempt files are cleaned before relaunch, so the next preview need not wait for an application restart. Existing library and archive thumbnails are untouched.
+
+- **H2C: a plate is printed with the nozzles it was sliced for.** BamDude had the H2C's two carriages the wrong way round: it treated the fixed hotend as the rack carriage and the rack carriage as the fixed hotend. A plate using both could be levelled with one nozzle and printed with the other, several millimetres above the bed, and a plate using only the fixed hotend was sent with a rack position for it. The carriages now follow Bambu Studio's numbering, and the nozzle-size check before dispatch on an H2C compares each carriage with its own nozzles. (upstream 45dc139c)
+
+- **A colour mismatch in the print dialog says which colours it compares.** When the requested colour and the slot's colour have the same name, for example a slicer's bright blue and Bambu's navy "Blue", the warning appeared between two identical labels and looked wrong. Both colours now show their hex codes in that case: "needs Blue (#0028FF), slot has Blue (#0A2989)". The comparison itself is unchanged. (upstream #2941)
+
+- **The File Manager card menu no longer loses its top entry.** On a card near the top of the screen the "…" menu opened upward and ran past the top edge, so its first entry (Slice, on an STL) could not be reached. All "…" menus now open on the side with enough room and, when neither side has enough, scroll inside their own panel instead of running off the screen. (upstream #2846)
+
+- **Controls no longer disappear on hover in the light themes.** Many icon buttons and links turn white when the pointer is over them. On a light background that made them vanish exactly while being pointed at. They now use the theme's text colour on hover, as they already did when not hovered. (upstream #1909)
+
+- **Buttons that appear on hover are usable on phones and tablets.** Several controls appeared only when the mouse was over them. A touchscreen has no hover, so they never appeared: the slot options menu (⋮) on printer cards, deleting a plate reference or a print photo, renaming and deleting tags, duplicating a preset, deleting a usage entry, linking a library file to products, and the File Manager's folder actions. The archive and file cards already showed theirs on narrow screens but not on a tablet in landscape. On a touch device these controls are now always visible; with a mouse they still appear on hover, and also when reached with the keyboard. (upstream #2865)
+
+- **A bug report's debug recording survives closing the panel.** Closing the bug-report panel while reproducing a problem used to lose the recording. Reopening it within five minutes showed an empty form while debug logging stayed on, and leaving it closed let the five-minute limit submit the report unseen. Closing the panel now keeps the recording. The bug button turns amber while it runs, and reopening it (or **Resume report** on the debug-logging banner) returns to the recording with the description you wrote. A page reload resumes it too. If the limit is reached while the panel is closed, the panel opens before the report is submitted. (upstream #2847)
+
+- **Restoring a backup no longer relies on an order the database schema cannot give.** Restoring asked for the tables in dependency order, which a set of tables that refer to each other in a loop does not have. Every restore logged a warning that this would become an error in a future release. Restore does not need that order and no longer asks for it. (upstream 58ea7a36)
+
+- **Times recorded by an external PostgreSQL server are in UTC regardless of the server's time zone.** Timestamps that the database fills itself (sensor history, new archives and more) followed the PostgreSQL server's time zone, so on a server set to UTC+3 they showed three hours in the future. BamDude now asks every PostgreSQL connection for UTC. SQLite and the bundled PostgreSQL were already correct. Rows written before the update keep the times they were given. (upstream #2855)
+
+- **A slicer can trust the virtual printers of two installs at once.** Every install named its certificate authority the same, and a slicer holding two of them tried only the first, so one install failed to connect. A newly created authority is now named `BamDude Virtual Printer CA` plus a code unique to the install. An existing one is kept as it is, so nothing needs to be imported again; if two older installs still clash, regenerate one of them as described in the virtual printer docs. (upstream #3014)
+
+- **On Windows and macOS every IP address of a network adapter can be a virtual printer's bind address.** Only the first address of each adapter was offered, so a Windows host with extra addresses added for more virtual printers still listed one, and a second virtual printer could not start ("Bind IP ... is already in use"). All addresses are now listed, as on Linux. (upstream #3121)
+
+- **A virtual printer in Docker bridge mode can be told which address slicers should upload to.** A virtual printer bound to a real printer passes the slicer its own address as the upload destination; in bridge mode that was the container's private IP, and a send from the slicer stalled at around 10 %. The new `VIRTUAL_PRINTER_ADVERTISE_ADDRESS` setting supplies the host's LAN address. Leave it unset on host or macvlan networking; nothing changes there. (upstream #2930)
+
+- **A file only partly downloaded from the printer is no longer kept as complete.** A download that stopped early was accepted as long as it was not empty, so a truncated 3MF could be attached to an archive and fail later. The download is now checked against the size the printer reports and retried like any other failed download; a printer that does not report sizes is unaffected. (upstream 55cc64c8)
+
+- **Timelapse and video failures log ffmpeg's actual error, and deleting an archive without a 3MF no longer raises a false security alarm.** When a timelapse stitch, a video conversion or a last-frame extraction failed, the log kept the start of ffmpeg's output, which is its version banner, and dropped the error at the end. It now keeps the error, with camera passwords masked, like the camera captures already did. Deleting an archive that never had a 3MF logged an error under a "SECURITY" heading every time; its files are removed as before, and the heading is gone. An archive whose recorded file path is missing a folder can no longer take its printer's whole archive folder with it. (upstream #2968)
+
+- **An external RTSP camera that passes the connection test no longer shows a black live view.** The live view gave ffmpeg only a moment to recognise the stream, which is too short for a camera that describes its video a little after connecting (for example a WebRTC camera republished through go2rtc), so no picture ever started. External cameras now get ffmpeg's normal detection, as the connection test already did; Bambu printer cameras keep their per-model tuning. (upstream #3082)
+
+- **Storage locations are listed in natural order.** "Drybox 2" now comes before "Drybox 10", and names starting with Ґ, Є, І or Ї sort inside the alphabet instead of before А — in the locations list, the location filter and the spool form alike, by the same rule the printer locations already follow. (upstream 54af3146)
+
+- **The per-event ntfy priority is actually sent.** The priorities chosen in an ntfy provider's **Event priority** section never reached ntfy: they were saved under one spelling of the event name and looked up under another, so every notification went out at the ntfy server's default. Existing settings now take effect as saved, without re-entering them. (upstream #3139)
+
+- **Swapping a spool updates the slot card right away, and a Spoolman sync updates it in every open tab.** After a spool change the slot card could keep showing the previous spool's name for up to five seconds, because refreshing the slot waited for the same pause as the refresh after a print finished. The slot now refreshes as soon as the change arrives. A manual Spoolman AMS sync (per printer or for all printers) also told no other browser which slots it changed or cleared, so other tabs kept the old spool until the next reload. It now reports each slot it actually changed. (upstream 7363d5fd)
+
+- **An assigned spool no longer unassigns itself seconds later on P1S.** P1S firmware reads a lowercase hex letter in a slot's colour as zero while still acknowledging the command as a success, and a spool's colour could go out in lowercase. The slot then showed a different colour, no longer matched its spool and the assignment was removed, and Configure Slot wrote the wrong colour back the next time. Slot colours, including every stop of a multi-colour spool, are now always sent in uppercase, as Bambu Studio sends them. Also, an FTP upload the printer closed with a 426 after the file was verified intact is now logged as information rather than a warning, so the connection failures that do cost a print stand out in the log. (upstream #2987)
+
+- **A spool the AMS cannot read keeps its assignment, and Assign Spool configures its slot.** After swapping a Bambu spool for one without a tag, the slot could read as empty although the AMS reported a spool in it: Assign Spool then sent nothing to the printer (it kept showing "?"), and an idle update deleted the assignment — in the built-in inventory and in the manual Spoolman sync alike. The AMS's own presence bit now decides whether a spool is there.
+
+- **The print dialog names a slot after the spool assigned to it.** It described slots from what the printer reports, and a printer cannot name a spool it did not sell — a Devil Design PLA Basic Orange read "PLA (Sunflower Yellow)", the Bambu colour with the same hex, while the printer card named it right. With a spool assigned (BamDude or Spoolman), the slot pickers now show its name from your spool-name template; matching itself is unchanged.
+
+- **An AMS that reports only a humidity index no longer shows it as a percentage.** Bambu sends relative humidity in percent and, separately, a 1–5 index that runs the other way (a high index is dry). Where no percentage arrived the index was used instead, so a fairly wet unit read "2%", charted as a percentage, and never crossed a humidity threshold — the alarm and auto-drying could not fire for it. Such a unit now shows no humidity rather than a number meaning the opposite. A reading of exactly 0% is stored and averaged as 0 rather than as missing.
+
+- **The AMS slot hover card paints a multi-colour spool as it is.** A printer reports one colour per slot, so a tri-colour or silk roll showed as a flat band of that one colour. With a spool assigned, the card's colour header now paints the spool's own swatch — its colour stops and effect, as on the Filaments page — and keeps the name readable over it. Spoolman spools now carry their colour stops too (on the card and in the Filaments list); Spoolman has no field for a surface effect, so those show the gradient only.
+
+- **An AMS slot names its colour for its own material.** One hex can be two colours in Bambu's range — white is Jade White in PLA Basic and Ivory White in PLA Matte — and the slot card named it from the hex alone, so an ivory Matte spool read "Jade White". The slot now asks with its material first, and a slot with an assigned spool shows that spool's colour name (a Spoolman subtype such as "Silk+" is still not taken for a colour).
+
+- **A macOS native install could lose all access to the printer.** macOS grants Local Network permission to a code signature, and Homebrew's Python on Intel has none, so every connection to the printer was dropped silently — no error, no prompt. The installer now signs the interpreter on macOS when it is unsigned (never re-signing a signed one, which would revoke a working grant), and the connection diagnostic gained a **macOS Local Network permission** check that says whether to sign Python or re-grant the permission in System Settings.
+
+- **The connection diagnostic reads your real network.** Its subnet check assumed every LAN is a /24, so on a wider network (a /22, for example) it told you a printer a few hundred addresses away was on a different network; it now reads the prefix off BamDude's own interface, and compares the printer against the interface that actually routes to it, which matters on a machine with two network cards. The network-mode check names the container engine — Docker, Podman, Kubernetes, LXC — instead of telling a Podman install it is "not running in Docker"; a mode it cannot read is said to be unknown rather than guessed, and an LXC system container is not told to switch to host networking. Support bundles record the engine as well.
+
+- **The AI detection badge no longer says a print is watched when it is not.** A monitored print with no result yet — or whose checks were failing: a rejected ML token, an unreachable ML server, no camera frame, no External URL — showed as "AI Safe" at score 0 (or "AI Idle" mid-print). It now reads **AI starting** until the first result, and **AI not checking** with the reason for that printer when a check produced none; Failure Detection's Active prints list says the same. **Test** saves the form before probing, so a green result describes the configuration detection actually runs with.
+
+- **Per-print energy is read from the plug that actually meters the printer.** With several plugs on a printer, the one marked as its power source was read even when it had no energy counter, and the print got no energy figure. The start now takes the first plug in that order that reports a counter, and the end reads the same plug, so two meters never make one figure. The Smart Plugs tab also counts a plug that answers but measures nothing as online.
+
+- **A queue job that failed on a printer fault names a code you can look up.** A fault reported through the printer's HMS list carries its alert level in the code, and the failure reason read `[0500_24038]` — no such code, and no description with it. It now reads `[0500_4038]` with the fault's sentence, as the same fault does when reported the other way.
+
+- **The printer card names the newer preparation stages.** Stages 67–76 (arc fitting, hotend type detection, build plate alignment, the heatbed foreign-object checks, pre-extrusion and others) showed as "Unknown stage", and stage 74 — the heatbed surface foreign-object check — as "Preparing". They now read as Bambu Studio names them.
+
+- **Clear plate works on a printer that is switched off.** With Auto Power Off a print ends with the plate gate up and the printer off, and the web refused to clear it ("Printer not connected") while the card hid the button, so the gate stayed up until somebody switched the printer back on. Clearing sends nothing to the printer, so it is now offered and accepted on a switched-off printer, card and bulk action alike; the queue then powers the printer on for its next job.
+
+- **An H2C hotend that has parked its nozzle no longer counts as having it.** The printer keeps reporting the last nozzle's diameter for an empty hotend, so a job sliced for that size could be routed to a machine with no such nozzle mounted or docked. A hotend the printer reports as empty (no serial, no temperature rating) is now left out; nozzles in the rack still count.
+
+- **The queue's log says why a printer sat out a pass.** It called every such printer "not available", including the one it had just sent a job to, and showed its state as read afterwards — "state=IDLE" one line before the job started there. A printer the pass dispatched to is now logged as reserved; any other names its reason (offline, not idle, drying, plate hold…), with the live state marked as read now.
+
+- **With Queue Shortest First on, the Auto Queue panel lists jobs in the order they will be placed.** It kept showing the manual order, while the distributor placed the shortest job of each printer model first, a job that had been jumped ahead of that, and a job of unknown length last. The list now follows the same order.
+
+- **A file dropped on a busy or offline printer's card is queued, not refused.** The drop only ever adds a job to that printer's queue, but the card refused it unless the printer was idle and online — a red "Printer busy", and the file was dropped with nothing uploaded. It is now accepted whatever the printer is doing, and the overlay says whether the job will start at once ("Drop to print") or wait ("Drop to queue"). It asks for the permissions the drop uses — upload and add to queue — instead of printer control, and names the one that is missing.
+
+- **The Auto Queue no longer switches on a printer that cannot run the job.** With every printer of the job's model off, it used to power on the first one with an Auto On plug and only then look at what was loaded, so a job for a colour at the far end of the farm woke every earlier printer in turn. What a switched-off printer holds is now read before its plug is touched — from the spools assigned to its slots, and for an unassigned slot from what the printer last reported — and a printer that lacks the job's material or forced colour is passed over, with the job's waiting reason saying what it lacks. A printer not heard from since BamDude started is still switched on.
+
+- **K-profiles of a custom Bambu Cloud filament show its name, not a raw `P…` code.** Bambu Cloud keeps a custom filament's own id either beside the preset or inside the preset's settings, and only the first place was read, so on the Profiles page and in the print dialog such a filament's calibrations were labelled with the bare id. Both places are read now.
+
+- **With a Filament Track Switch, each AMS is badged with the switch inlet it feeds, not a made-up nozzle.** Behind the switch an AMS reaches both nozzles, so the printer reports no nozzle for it, and the card fell back to the unit number: AMS A was badged R and AMS B L for no reason, and a third unit got nothing. The card now shows the inlet set on the printer's Manual AMS Setup screen — A or B, in blue rather than the nozzle badge's green, never L or R, because an inlet can feed either nozzle — and shows nothing while the switch is not set up yet. The print dialog's slot list carries the same inlet (its old left/right hint never matched a slot). Both follow the printer screen live. The print dialog also recommends which filaments to move to which inlet, as Bambu Studio does: it reads the arrangement the slicer worked out from the file, times the current one against it — two filaments on one inlet cannot share its tube, and printers with AMS preload pre-feed only across the two inlets — and speaks up only when a move saves at least a second.
+
+- **Load and Unload in the AMS slot menu work with a Filament Track Switch, and Unload removes the slot you picked.** With the switch fitted, either nozzle can be fed from any slot, and a load that did not say which one was quietly dropped by the printer. Load now asks which nozzle to feed, as Bambu Studio does: nothing is preselected, and a nozzle already loaded from that slot is greyed out. While the switch is not set up on the printer, BamDude says so instead of sending a load. Printers without a switch still load in one click. Unload used to act on whichever slot the printer reported as loaded, so on a two-nozzle printer with both nozzles loaded it could empty the wrong one; it now unloads the slot whose menu you used, and says so when no nozzle is loaded from it.
+
+- **Auto-drying dries composite spools as their base material.** A tray holding PA6-CF, ABS-GF or PLA-AERO matched no drying preset, so auto-drying skipped that AMS on every pass without saying why, and a per-filament humidity threshold never applied to a material's composites. The spool now dries — and is judged — as its base material, nylon under any of its spellings (NYLON, PA6, PA11, PA12, PAHT, PPA) as PA.
+
+- **A failure reason is counted once, in one language.** The failure breakdown in Statistics counted "User cancelled" and a user-picked "User cancelled" as two reasons, and in Ukrainian one of them stayed English: the backend stored English labels, older archive editors stored the label in the user's language, and the reconnect paths stored English sentences. Every writer now stores the same key, existing archives are converted on update — including databases imported from Bambuddy, in any of its languages — and the notification for a failed print names the reason in the system language. Reopening the archive editor on a reason it does not recognise no longer blanks it on Save; the text is kept as its own option.
+
+- **The archive API refuses an impossible item count.** Editing an archive through the API accepted a negative number of printed items, which would have subtracted from an order's completed count. It now takes 0 to 10 000.
+
+- **Skip Objects works again after BamDude restarts mid-print.** After a restart the printer card knew no objects for the running print and greyed out its Skip Objects button for the rest of the print — and the button was the only way to open the list that would have reloaded them. The button now stays usable until the list is known (only a print with exactly one object disables it), and the list is taken from the archive of the print that is actually running, never from a leftover one.
+
+- **The bed temperature is read from the filaments that print.** A plate's temperature is stored per filament, and a 0 means that filament cannot use the plate; the archive read the first entry, so a project whose first filament was not the one printing recorded the wrong temperature or none, and preheat fell back to its configured default. It now takes the highest temperature among the filaments the plate actually uses, as Bambu Studio does.
+
+- **BamDude loads on iPhones and iPads with iOS 16.0–16.3 again.** Those Safari versions cannot read one kind of pattern in JavaScript (a regex lookbehind), and two of them had reached the app — one in the G-code editor's highlighting, one pulled in by the folder README viewer — so the page stayed blank white. Both are gone, and the build now refuses to ship anything those browsers cannot load. A bare web address or e-mail address in a folder README no longer turns into a link by itself; `[text](url)` and `<https://…>` still do.
+
+- **"Secure file-transfer handshake failed" no longer blames your firewall or firmware.** When the printer answers its file port (990) in plain text — the log's `WRONG_VERSION_NUMBER` — the diagnostic now says so, with the cause that fits: the printer's file server turning a connection away, most often because another program is using it at that moment. BamDude also asks the printer once what it replied and logs its own words, so a report can say what actually happened. Other TLS failures keep their own finding, without the firmware advice. A failed file connection now closes its socket instead of leaving it to linger against a printer that serves about one at a time.
+
+- **Searching when assigning a spool finds it by what it is, whatever its name shows.** The search in the slot-assignment dialog matched only the name built from your template, so "Matte", a note or a lot found nothing unless the template happened to show it. It now searches the spool's fields too, as the Filaments page always did. Labels printed without a template set now carry the same default name as the list, instead of one of their own.
+
+- **Switching between the built-in inventory and Spoolman asks first.** The switch removes every AMS slot assignment of the mode you leave, and the settings page saved it on its own half a second after a click — a look at the two options was enough to lose a farm's assignments. Choosing a mode now opens a confirmation that says how many assignments will be removed and which printers are printing right now, and nothing changes until you confirm.
+
+- **A print that could not charge its filament says so.** When a finished print draws from a slot with no spool assigned — the assignment was removed mid-print, or never existed — the grams used to vanish with only a hidden log line. You now get a **Filament not charged** notification naming the slots and the grams, in both inventory modes, on the same toggle as *Missing spool assignment*.
+
+- **A filament you created gets your own preset on the AMS slot.** A spool of a filament you created in Bambu Studio (Create filament, synced to your Bambu Cloud) put its slot on no preset at all and the generic 200–240 °C, although your presets for it were right there. The slot now gets your preset made for that printer and nozzle — your "… @Bambu Lab P1S 0.4 nozzle" on the P1S, your "… @Bambu Lab X2D 0.4 nozzle" on the X2D — with its temperatures. Where you made none for that printer or nozzle, the slot still gets the filament and your temperatures, just no preset name. Spools of Bambu and generic filaments are unchanged: they already got the preset for each printer.
+
+- **A sliced 3MF prints whatever it is called.** A plate exported from the slicer or a print sent through the cloud arrives as `Foo.3mf`, G-code and all. The file manager already recognised it and offered Print, but printing it, queueing it, copying its queue job or dispatching it refused with "Not a sliced file", because each of those checked the name for `.gcode.3mf`. They now also look inside the file; a 3MF without G-code is still refused. External folders now recognise such files too — until now a scan filed them as source projects with no Print button; the next scan of the folder puts the existing ones right.
+
+- **An archived print shows the layer height it actually printed at.** The archive card and the file details read the layer height from the project's settings, which can describe another plate or an earlier process — a print running at 0.08 mm was archived as 0.2 mm, beside a correct layer count from the same file. The printed plate's own G-code now decides; a source 3MF without G-code keeps the project value.
+
+- **Picking a layer-height preset is no longer undone by the file.** When a file's designer changed the layer height, re-slicing with "0.08mm High Quality" still sliced at the file's 0.2, because every design setting that was not machine-tuned started ticked. Layer height and first-layer height are now offered with an **overrides preset** badge — showing the preset's own value beside the file's — and left unticked.
+
+- **A spool the AMS adds by RFID is drawn like one you add by hand.** The auto-added spool took only the colour name from the colour catalogue, not the extra colour stops and effect the same row gives a hand-added spool, so a gradient or silk roll drew as a flat disc. It now takes all three, and where the catalogue has no effect, the subtype supplies one when it names a finish — Wood, Silk, Sparkle, Gradient, Dual Color and the like.
+
+- **AMS slots are no longer offered as places to store a spool.** In Spoolman mode the Storage Location list could show entries like `H2D-1 - AMS A1` or `External Spool` beside real shelves — slot markers an older version wrote into Spoolman's location field, imported back on every sync — and they could not be deleted. The sync now skips them and the ones already in the list are removed, unless a spool here is filed under one. The strings stay on your Spoolman spools; only the list stops offering them. Shelves that merely mention an AMS, like "AMS Drybox", are kept.
+
+- **Linking a tag another spool already carries answers with that spool.** When two active spools held the same tag — nothing stops that: editing a spool or adding several at once copies the tag unchecked — linking it to a third one failed with a server error instead of a refusal. Both inventory modes now refuse the same way, naming the spool that holds the tag and which identifier (tag UID or tray UUID) collided, with a code API clients can act on; in Spoolman mode a tag edited to something odd in Spoolman itself no longer breaks the check.
+
+- **Clear RFID Tag works on a Bambu Lab spool.** The button in the spool dialog stayed greyed out for a spool linked only by its 32-character tray UUID — which in Spoolman mode is every Bambu Lab spool synced from the AMS — so the tag could only be removed in Spoolman itself. Either identifier now enables it, and clearing still removes both.
+
+- **The drying button names what actually blocks drying.** It always asked for the AMS power adapter, even when the unit was refusing because filament sat at its outlet. It now names the power adapter first, then the filament at the outlet, then anything else — the same order the server uses when it refuses a drying command.
+
+- **The AMS temperature alarm no longer fires for heat you asked for, and has its own threshold.** While an AMS dried filament — 45 °C for PLA, 65 °C for PETG, up to 85 °C on an AMS-HT — the alarm, set at the 35 °C amber band, sent a notification every hour of the cycle and on through the cool-down. It now stays quiet while the unit is drying and until it has cooled back to the alarm threshold (at most two hours after the cycle), a hold that survives a restart; a heater that has lost control still alarms. And the alarm no longer has to share the amber band: **Settings → Filament → AMS Display Thresholds → Alarm above** sets the temperature that notifies, so a warm room can turn the card amber without paging you. Left empty, it alarms at the amber band, as before.
+
+- **A Bambu Lab RFID spool gets the right empty-spool weight.** A spool added from an RFID tag took whichever "Bambu Lab" row the spool catalogue returned first — usually the 216 g High Temp spool — instead of the 250 g Low Temp spool the rolls ship on, so its gross weight read 34 g light and a weigh-in against it came out 34 g off. New spools take the Low Temp row (or your own measurement of it); spools already added that way are corrected once on upgrade.
+
+- **The model viewer opens an archive on the plate that was printed.** The archive API left the printed plate out of its answer, so a multi-plate archive always opened on "All plates" instead of the plate that ran.
+
+- **A print that could not be started no longer disappears silently.** When a Reprint, a print from the library or one sent from Telegram is refused at the last check before it starts, BamDude now says so through your notification channels ("Job Failed to Start", with the reason), and the job stays in the printer's queue as failed with a Retry button instead of looking cancelled. The same goes for a direct print that fails before its upload even begins — the printer is not connected, there is no card in it — which used to be reported only to an open browser, and whose print-history entry now closes as failed instead of staying "printing". The dispatch panel shows a refused job as "Not started" rather than a raw label, and the batch closes instead of spinning on "Starting prints".
+
+- **Uploading a file no longer drops the printer's connection.** A printer on a slow link could stop reporting while it received a large file; BamDude took the silence for a dead session and reconnected, which then refused the print. Silence during an upload is now expected; right before the start BamDude asks a printer that has been quiet since the upload to report, and reconnects it if it does not answer. If the connection does get re-established during preparation, the print still starts once the printer reports the same filament as before, with its pressure-advance profile sent again.
+
+- **Importing from MakerWorld on Windows no longer fails with "unable to get local issuer certificate".** MakerWorld often hands the 3MF out as an Amazon S3 link, and that one download checked the certificate against the operating system's store rather than the bundle every other connection uses. Windows fills its store lazily, so on a machine that had not met that Amazon root yet the import failed after everything before it had worked. The download now trusts the same bundle as the rest of BamDude — including a CA you point `SSL_CERT_FILE` or `SSL_CERT_DIR` at behind a TLS-inspecting proxy.
+
+- **An expired Bambu Cloud sign-in is shown as expired on the MakerWorld page.** When Bambu stopped accepting the stored token, the page still read as signed in, and an import failed with Bambu's bare "Please login." — or with advice to open a Settings page that does not exist. The page now says the sign-in has expired, keeps import and print switched off until you sign in again, and a refused request says where to do that: the Profiles page. When the expiry is discovered by the import you just clicked, the page switches to that state at once. `GET /makerworld/status` reports it as `sign_in_expired`.
+
+- **A spool of PLA Aero, a carbon- or glass-filled filament, or one without a filament profile no longer drops off the slot it was just assigned to.** The slot is configured with the type of the spool's filament profile — `PLA-AERO` for Bambu PLA Aero, `PLA` for a spool without a profile whose material reads "PLA Matte" — while the check that keeps an assignment compared the slot with the spool's material field, so the first AMS report after the assignment looked like a different spool and the link was removed. It now accepts exactly the type the assignment wrote.
+
+- **A spool without a filament profile keeps its own filament type on the slot.** Such a spool — in Spoolman, one without a linked K-profile — used to be configured with the generic profile of its base material, and the slot took that profile's type: PLA Aero became plain PLA, ASA-GF became ASA. The queue matches spools to plates by that type, so a PLA plate could be sent to foaming filament and a PLA Aero plate found no slot; AMS Backup could also group the spool with ordinary filament of the same colour. The slot now gets a profile of exactly the spool's type — the generic one where it exists, otherwise the catalogue's own, such as Bambu PLA Aero. For a type no profile exists for (ASA-GF), the base material's generic profile supplies the temperatures and the slot keeps the type as the spool gives it. A material written as `PLA+`, "PLA Matte" or "PolyTerra PLA" is recognised as PLA, where `PLA+` used to leave the slot unconfigured.
+
+- **A print whose filaments want no chamber heat skips preheat entirely.** With preheat on, a PLA, PETG, TPU or PVA print used to skip only the chamber phase and still heat the bed, wait for it and hold the full soak — five to seven minutes before every such print, for nothing: the print's own start code heats the bed anyway, and there was no chamber to condition. It now starts straight away; on printers with an airduct flap the flap is still set back to cooling. A chamber target of exactly 0 typed for one print, or preheat forced on for it, still heats the bed and runs the soak — the print options now say so under the chamber target field.
+
+- **Preheat heats the chamber for the filaments the print uses, not for every spool in the AMS.** The chamber target was the highest one across all loaded slots, so a single ASA spool parked beside PLA made every PLA job wait for a 45 °C chamber — on a printer without a chamber heater, the full maximum wait and soak before each upload. Only the slots the print's filament mapping names count now, including an external spool the print feeds from, which used to be ignored. A print without a filament mapping still considers every AMS slot.
+
+- **Preheat gives a filled or foamed filament its base material's chamber temperature.** A slot with ASA-GF, ASA Aero or ABS-GF had no row of its own in the chamber-target map and fell to "Other" — 0 °C, no chamber phase. It now takes ASA's or ABS's row; a type listed on its own, such as PETG-CF or PA-CF, keeps its own value.
+
+- **"Open source 3MF in slicer" works, and "Open in slicer" no longer fails when the slicer fetches the file twice.** The source 3MF download was refused before its one-time link was even checked, so it never worked with sign-in enabled — which is every install. And each open-in-slicer link was spent by the first request, while Bambu Studio retries a failed download and other tools can fetch the same address, so the slicer could be refused the file it had just been sent to. Links now stay valid for their five minutes and still open only the file they were made for.
+
+- **A timelapse is no longer guessed when the printer's storage did not answer at print start.** The recording attached to a print is the one that appeared after the print started, and what was already there is read at the start. When the card or built-in storage did not answer at that moment, everything on it later looked new, and the first recording in the listing was attached — possibly an old one, which the clean-up option then deleted from the printer. A single new recording, or the one the printer itself names as just finished, is still attached; between several others BamDude no longer guesses and leaves them for *Scan for timelapse*.
+
+- **A finished print with no 3MF records the filament its spools gave.** When the file never arrived there was no slicer figure, and the archive of a print that finished kept 0 g even though its assigned spools were debited by their measured drop — statistics and inventory disagreed. The measured weight is now the archive's figure whenever there is no estimate.
+
+- **A K-profile calibration run no longer shows up as a print.** With flow dynamics calibration on — or when you run it by hand — the printer's pressure-advance line arrived as an archive named after the calibration, with "Print started" and "Print finished" notifications; and because it had no archive, its completion was pinned on the last queue job to finish and emailed that job's owner that their print was done, early. The printer's own jobs are now recognised by name as well as by path, and leave no archive and no notification.
+
+- **"Silk+" is no longer shown as a Spoolman spool's colour.** Spoolman has no colour-name field, so a Spoolman spool carried its subtype in its place, and the Filaments page, Assign Spool and the default spool name read it as the colour ("Bambu Lab PLA Silk+ Silk+"). The catalogue's name for the swatch now wins, with the subtype only as a last resort. Searching by a colour name you can see on screen now finds the spool, even when it is resolved from the swatch rather than stored.
+
+- **Spoolman charges the tray the printer used, not the first one loaded.** A print BamDude did not send, on a printer that publishes no mapping (an A1), was charged to whatever sat in the first tray — while the printer had reported feeding from another. A one-filament print is now charged to the tray the printer named; a mapping from the print command or the queue still comes first. Where nothing names a tray the charge still goes by position, but as a logged guess that no longer rewrites the archive's colour and material from the spool it picked.
+
+- **In Spoolman mode a print costs what its spools cost, and weighs what was charged.** Spoolman holds each spool's price and BamDude never read it: every print kept the figure estimated at its start, a multi-material print at one rate for all its filament. Each charge is now priced from the spool it came off, with grams no spool could price at the farm rate. The archive's filament weight also learns what was charged — a failed print records what it used, a print whose 3MF never arrived the grams Spoolman was charged instead of 0. **Recalculate Costs** and a 3MF that lands after the print finished no longer re-price such a cost at the default rate.
+
+- **A clear spool stays clear in Spoolman.** Every colour was cut to six characters on its way to Spoolman, so a clear spool (`00000000`) was stored as opaque black, and reading an eight-character colour back turned it grey. A translucent colour now keeps its alpha; an opaque one stays six characters, exactly as existing filaments are stored, so nothing already in Spoolman is rewritten or duplicated. Swatches across the spool dialogs draw a partly translucent colour over the transparency checkerboard instead of as solid.
+
+- **Spoolman works from the first sync after enabling it.** Spoolman refuses a spool carrying an extra field it was not told about, and BamDude registered its fields only from the Connect button — which enabling Spoolman in Settings never reached, so the first AMS sync failed on every slot. Each write now registers the fields it carries. Registration also stopped resetting fields you renamed in Spoolman on every restart: the existence check asked an endpoint Spoolman never served, and fell through to one that overwrites. The Spoolman status now asks the configured server each time instead of reporting whether an earlier request had left a client behind, and the Disconnect button is gone — there was no session to close, and it undid itself within 30 seconds.
+
+- **A slicer-sent print keeps its AMS mapping and plate on more printers.** The printer confirms a print command by echoing it back, and some models (an H2S among them) answer `SUCCESS` in capitals — which BamDude read as a refusal. On a printer whose command channel BamDude cannot listen to, that echo is the only sighting of a print sent from the slicer, so it arrived with no AMS mapping and no plate. BamDude's own prints are now also told from a slicer's by the job itself rather than by a number slicers use too, so the diagnostic log stops filing a slicer's print as BamDude's.
+
+- **Configure Slot binds the calibrated K-profile it shows.** A click landing in the instant the K-profile list finished loading could send the previous render's empty choice, and the printer bound the default K while the dialog showed the calibrated profile selected.
+
+- **A print whose 3MF turned out to be another plate's stays right.** When the file on the card held another plate than the one printing, BamDude refused it but renamed the archive `plate_1` if the job's name carried no plate number; it now keeps the project's name. And the retries that come back for the file later — on reconnect, at print end, by hand — no longer attach that same other-plate file: a recovered 3MF must hold the plate that was printed.
+
+- **The Slice dialog picks the right material and the right printer's process.** A PLA plate could be pre-filled with a PETG profile, and a P1S with an A1 process the slicer then refused. Filament profiles are now pre-picked from the slot's own base material (PLA, PETG, ABS… — the type the profile states, not a brand or profile family; PA-CF / PA12-CF / PAHT-CF count as one, as they do when printing), falling back to another material only when nothing else exists; a profile you chose yourself is never swapped out. Built-in profiles now carry the slicer's own list of printers they fit (with an updated slicer sidecar), which is what a P1S, X1, X1E or H2D Pro needs — the slicer ships no process named after them. The default process is the one nearest 0.20 mm rather than the alphabetically first, H2D Pro profiles spelled "H2DP" are recognised, and a printer filter that would empty a dropdown shows the whole list instead.
+
+- **A sliced file records the colour it is printed in.** Every file BamDude sliced came back Bambu green whatever filament was picked — a green plate picture and a "colour mismatch" in the print dialog against a correctly mapped spool — because neither slicer keeps a colour on a filament profile. Each filament row in the Slice dialog now has a colour control, starting at the colour the source plate was designed with; untouched, a slot takes the profile's own default colour or the designed one, and a source with none keeps the slicer's green. It is a record, not a requirement: printing in another colour is still an ordinary choice in the print dialog. A filament profile the slicer could not find — which slices silently as PLA at 200 °C — is now named in the log.
+
+- **Unticking the designer's support settings sticks.** A file with supports on carried them into the slice even when every one of its support settings was unticked in the Slice dialog — an emptied list looked like an old client and the carry ran underneath. It now stands down for what you untick; ticked by default, a file's supports still switch on as before. The Process settings panel shows the designer's settings beside each option, sharing the ticks with the list above it, and greys an option out only when the slice would really switch it off — read from your preset, the file's ticked values and what you typed, rather than from the slicer's built-in defaults, which greyed the whole Support page for a preset with supports on.
+
+- **A plate of many copies gets its picture.** When the slicer leaves a plate without a thumbnail, BamDude draws one from the model — but a plate of repeated parts (25 bins, say) was read with every copy's triangles multiplied by the number of copies, so the drawing ran out of memory and the plate stayed blank. Each part is now read once and placed per copy, with detail reduced evenly across the plate; a plate still too heavy after that is skipped rather than drawn.
+
+- **Generated thumbnails show the model's shape.** The light on the File Manager's STL thumbnails sat behind the model, so a box's two visible sides came out the same shade and its front edge vanished; it now comes from the viewer's upper left. The plate pictures BamDude draws for a slice the slicer left without one were not lit at all — they now use the same light and the same camera, so plate 1 of a slice from an STL and its other plates look alike. A file whose triangles face the wrong way no longer renders patchy, and a stub STL with no real surface still gets its flat picture instead of none. Existing thumbnails keep their picture until **Generate Thumbnail** is run on the file.
+
+- **A 3MF that names "the object's filament" for its walls or infill slices again.** Bambu Studio writes `0` into the wall, sparse-infill and solid-infill filament settings to mean "whichever filament the object uses"; OrcaSlicer 2.3 and earlier count filaments from 1 and refused such a file before our presets were even read. Those three settings are now cleared before slicing when they hold `0`, so every slicer build falls back to its own default — the active filament. The filament preview in the print dialog runs the same cleanup, so a file it could not preview before (this case, or the inherit markers MakerWorld P2S files carry) now shows its per-plate filaments instead of a guess.
+
+- **An Orca Cloud session that cannot be refreshed no longer leaks connections.** Every failed sign-in refresh — a revoked token, Orca unreachable, a failed write of the new token — left an open HTTP client behind, once per preset sync, push or profile lookup.
+
+- **Open in Slicer is offered only for a file the slicer will take.** Bambu Studio accepts only a 3MF from a link and refuses an STL or STEP before downloading anything, with a message that reads like a broken model. The file menu no longer offers that handoff; OrcaSlicer, which takes STL and STEP, still gets it. The 3D preview opens an STL in OrcaSlicer, naming it on the button, when Bambu Studio is the configured slicer.
+
+- **Updating a native install repairs a service file that lacks `--loop asyncio`.** Installs created before the installer pinned the flag (July 2026) kept running on uvloop however often they were updated, and uvloop can silently truncate a file uploaded to the Virtual Printer. `update.sh` now adds the flag to a plain one-line uvicorn unit while the service is stopped, after backing the file up; a unit with drop-ins, a wrapper script or a continued command line is left alone with a note of what to add. BamDude also logs a warning at startup whenever it runs on uvloop.
+
+- **A print that could not be sent to the printer's card says why.** Every failed upload told the operator to check that the SD card is inserted and formatted FAT32/exFAT — including after the printer turned the file connection away, refused the access code or did not answer, none of which ever reached the card. The queue entry and the failure notification now name what happened: the card only when the printer refused to store the file (with its reply code), otherwise the refused connection, the access code, the network, a dropped transfer or a short copy on the printer.
+
+- **The connection diagnostic no longer shows port 990 green when the printer's file service is turning connections away.** It only checked that the port accepted a connection, so a printer answering in plain text — every archive arriving empty — passed. It now completes a real TLS handshake (without signing in), and an open port that refuses it gets its own warning, which says unblocking the port will not help and what will. While a printer is refusing, BamDude no longer walks its card's folders for a missing 3MF, connection after connection. Scan for timelapse and choosing a recording now say the printer did not answer, instead of that it has no recordings.
+
+- **The Archives banner for prints without a 3MF says why, and no longer blames the slicer for what the printer did.** It told everyone to switch on "Store sent files on external storage" in the slicer — wrong whenever BamDude never got to look: the printer turned the file connection away, rejected the access code, or did not answer at all. BamDude now records why each 3MF could not be fetched, and the banner speaks to the most urgent cause, with a link to the matching troubleshooting entry: a refused connection first, then a rejected access code, then an unreachable printer. The slicer setting is suggested only when the file was looked for and was not on the printer. Each cause is dismissed on its own, so closing one no longer hides another; a banner closed before this update stays closed.
+
+- **A print with no 3MF in its archive can receive its timelapse and a Fusion 360 design file again.** When a print's 3MF could not be fetched from the printer, the archive has none, and for such an archive the timelapse and the design file were written one folder above the data directory — under Docker that failed with a permission error, so the timelapse was downloaded and thrown away again and again; elsewhere the file landed beside the installation and the attach still failed. Both now go into the archive's own folder, next to its photos.
+
+- **Deleting an archive that has no 3MF now removes its photos, timelapse and design file, and a photo taken before the 3MF arrived no longer disappears.** Such an archive kept its files in a folder named after its number inside the archive directory — the same place where printers' folders are named after theirs, so archive 3's files sat in printer 3's folder and were never cleaned up. They now live in `archive/no_source/<number>/`. When the 3MF reaches the archive later, as it routinely does after a delayed download, photos taken before that are still shown and can still be deleted; photos in the old location are found as well.
+
+- **`scripts/prune_orphan_archive_files.py --apply` no longer deletes timelapses, photos, design files, source 3MFs and MakerWorld covers.** It treated every file not named as an archive's 3MF or thumbnail as an orphan. It now keeps every file any path column names and everything inside a folder that belongs to an archive still in the database or the trash.
+
+- **Starting a print no longer switches the printer's AMS and print settings off in BamDude.** A printer confirms a print job by echoing the job back, and that echo was read as the printer's own status. The job carries a value that shares a field with the printer's settings, so right after every dispatch — from BamDude or from Bambu Studio — BamDude showed AMS auto-refill, detect-on-insert and remaining-capacity estimation as off, reset the door check, sounds, tangle and clog detection and AI monitoring to off, and took the requested timelapse for the recorder's state. Printers that report these settings continuously corrected themselves a second later; on the P1 and A1 families the wrong values stayed until the next full status. The same echo also made a P1 or A1 offer "store sent files", which those printers do not have.
+
+- **Reading one nozzle size's K-profiles no longer deletes the calibrations of every other size.** The printer reports its pressure-advance table one nozzle diameter at a time, and every answer — the nightly Git backup checking 0.2 to 0.8 mm, Bambu Studio asking on the same connection, opening the Profiles page for 0.6 mm — replaced the whole list. The calibration cache then removed everything the latest answer did not contain, together with the spools linked to those calibrations and their notes. Each nozzle size is now kept separately, and a calibration is only removed when its own size's table no longer lists it.
+
+- **K values on AMS slot cards no longer vanish or show the other nozzle's number.** The card reads a slot's K from that table (H2-series trays do not report it themselves), so it went blank after any answer for another nozzle size, and on a dual-nozzle printer it could show the other hotend's value. The value is now looked up against the nozzle the slot actually feeds, and the card stays empty rather than guessing when that is ambiguous. The fitted nozzles' tables are read as soon as the printer connects, so the card no longer waits for somebody to open the Profiles page.
+
+- **Applying a spool's calibration to a slot, linking a K-profile on the spool's PA tab, and saving a note on the Profiles page pick the profile of the right nozzle.** Each of these found a profile by its index or its name, both of which repeat across nozzle sizes and hotends, and could bind or annotate the other nozzle's profile — a note saved that way could also fail with a server error. The Calibration History window likewise keeps every nozzle size it has read instead of only the latest.
+
+- **K-profiles calibrated on a High Flow nozzle are now applied, and every AMS slot is matched against the nozzle it actually feeds.** The printer reports which flow type is fitted, but the lookup always asked for Standard, so a High Flow calibration (H2D, H2C, H2S, P2S, X2D) was never applied on its own — not when assigning a spool, not before a print, not after an RFID read. On dual-nozzle printers every slot was also matched against the first nozzle's size, and spools assigned by RFID and the left external holder were treated as belonging to the right hotend. Configure Slot now offers only the profiles for the fitted flow type, as Bambu Studio does; profiles from printers that do not record a flow type are still always offered.
+
+- **A spool's PA tab now holds one K-profile per nozzle size and flow type, as Bambu Studio does.** On a printer with two nozzle sizes, profiles that shared a number were one checkbox, and saving could re-link the other size's profile. A spool can now keep, for example, a 0.4 mm and a 0.6 mm profile, or a Standard and a High Flow one, side by side on the same printer; picking a second profile for the same nozzle still replaces the first. High Flow profiles are labelled in the list.
+
+- **The jog "up" arrow on an A1 recorded under an alternate model code no longer drives the nozzle into the bed.** The printer's own model name decides whether the Z direction is reversed for a bed-slinger, and three alternate codes for the A1 and A1 Mini (`A11`, `A12`, `A04`) were not recognised, so those printers were treated as if the bed moved on Z. They — and `O2D` for the H2D Pro — now resolve to their model everywhere a per-model capability is looked up.
+
+- **`POST /printers/{id}/bed-jog` now means what its documentation says on every printer.** `distance` is the nozzle-bed gap: positive opens it, whether the bed drops away (X1, P1, H2, P2S, X2D) or the toolhead rises (A1, A1 Mini, A2L). On bed-slingers it used to follow the arrow direction instead, so a script that asked for clearance lowered the nozzle. The printer card's arrows are unchanged — they now use the same axis control as the Motion window — and on a bed-slinger the card and that window label the control **Z** and talk about the toolhead rather than the plate, as Bambu Studio does.
+
+- **A printer that stops answering can no longer freeze the whole web interface.** When a printer went offline but its port still accepted connections, rebuilding its connection — by the connection watchdog, a queue dispatch, a status check, or editing, deleting or disconnecting the printer — could wait indefinitely for the old connection to wind down, and BamDude stopped answering every page and API call while the process stayed up. The old connection is now let go on a background thread and the new one starts straight away; a teardown that takes longer than a few seconds is logged with the printer's serial. The MQTT relay and the MQTT smart-plug connection shut down the same way, so a stuck broker no longer holds up a service stop.
+
+- **The Information page no longer pauses BamDude while it refreshes.** Every 30 seconds, each open Information page made the server measure the archive by visiting every archived file, and sample the CPU with a 100 ms wait — both on the loop that also serves printer control, the WebSocket and every other request, so a large archive stalled all of them. Both now run on a worker thread; the archive is measured once for all open pages and the figure is reused for up to a minute. Connected printers on the page are named with one database query instead of one per printer.
+
+- **Live printer states and busy-farm refreshes no longer race.** The browser acknowledges a WebSocket bootstrap only after all pre-marker printer states reach its cache; late status chunks cannot overwrite newer patches or write after disconnect. Repeated archive, library and inventory events now mark affected views stale within a bounded window, with active HTTP refreshes paced instead of launched as one burst. Bootstrap logs separate token, socket-open, first-status and cache-commit timings.
+
+- **Busy farm reads do less repeated work without widening access.** A request reuses one complete JWT or API-key authority check across middleware and permission gates; revoked or stale JWTs can no longer pass a narrower route check. API-key hashing runs outside the server event loop with bounded concurrency. Queue lists batch virtual-print lookups, keep them visible only to their archive owner, and no longer fetch printer tags and locations to show a printer name. Local spool pickers search and page on the server; display-name previews, form categories and AMS family colours read only the data they need. Spoolman lists are unchanged.
+
+- **The AMS drying panel on the printer card opens again.** Since 0.6.0 a click on the flame did nothing visible: the panel opened beyond the edge of the card and was cut off by it. It now opens next to its button and scrolls with the page like the card's other menus. The AMS slot cards that appear on hover scroll with the page the same way, instead of floating over it while the page moves underneath.
+
+- **Service stops preserve the local preview broker's clean shutdown.** Linux, macOS and Windows service wrappers now allow ordered child-process shutdown with every database backend, not just bundled PostgreSQL. Windows upgrades apply the grace period before stopping the old service; Docker forwards stop signals directly to the application. This avoids leaving previews unavailable after an otherwise normal service restart.
+
+- **A product's picture is no longer cropped.** On the catalog cards — most of which are narrow enough to stack — a square plate picture was cut to a thin strip; it is now shown whole in a band as tall as the product page's own cover tile, and the product page's gallery and the order cards show their pictures whole too. Reported by a farm operator.
+
+- **An archived spool no longer comes back while its empty reel is still in the AMS.** The AMS sync did not recognise the tag of an archived spool, so the next update re-added the reel: Spoolman auto-created a duplicate spool (or offered "+ Add" when auto-add is off), and the built-in inventory could hang the tag on another spool of the same colour. That hit anyone who archived a spool before taking it out, and would have hit every reel the new auto-archive retires after an AMS auto-switch. A slot holding an archived spool's reel is now left alone, in the automatic sync and both manual Sync buttons; restore the spool to use the reel again.
+
+- **Settings stay readable after an API client sends `null` for a switch.** Writing `null` to the runout zero-point or two-way AMS weight sync switch made the settings endpoint fail until the value was set again; it now reads as the switch's default, the same way the accounting already treated it.
+
+- **Repeated or late printer events stay with the print that caused them.** BamDude tracks each run's archive, queue attempt and printer subtask ID from its observed start through completion, so a delayed completion, finish macro, cleanup, photo or smart-plug action cannot affect the next same-named print. Sent subtask names now preserve meaningful internal `.gcode` fragments, and older jobs retain a narrowly reconstructed compatibility label. A completion must identify exactly one active queue row before it can clear user state, update counters or release the queue; ambiguous matches leave every claim intact for review. Restarts preserve an accepted terminal outcome; after a reconnect, an outcome that cannot be proven is cancelled and pauses the queue instead of being counted as a success.
+
+- **A failed late 3MF attachment now remains safely retryable.** Archive storage names no longer inherit a terminal dot or space that Windows silently changes, so a valid recovered file is not mistaken for a path escape. A failed copy or parse rolls back its database write, removes only the directory it just made, and records the unavailable source without touching a file another recovery has already attached. The normal print-start, adopted-print and background retry paths now use the same recovery result; a rollback also reloads the archive by its saved id before reading it, avoiding an async ORM `MissingGreenlet` error that could mask the original attach failure. Recovery prepares the file outside the database write and preserves a possibly committed file if the database acknowledgement is lost.
+
+- **One printer now admits one active start, across every queue path.** Print now and Reprint take a final shared queue claim before their file is sent, so they cannot slip past a queue item that is already preparing or printing; they also stop at a paused or error queue instead of silently bypassing an operator's recovery decision. Auto Queue sees both halves of a live claim — even an older damaged header/item pair — and retries another eligible printer when it loses a candidate in the race. A printer start observed from Bambu Studio or its screen no longer steals the newest old claim: a distinct archive stays distinct, both records remain visible, and the queue pauses for review.
 
 - **Old stuck queue rows are repaired without printing them again.** On the first fresh printer status after a restart or reconnect, BamDude can reconcile a still-printing queue row with its linked, already-finished archive, preserving success, failure or cancellation. It skips active/offline printers and ambiguous links, never replays accounting, notifications or macros, and pauses repaired queues for an operator to inspect the printer and plate. Startup recovery no longer returns an archive-linked row to pending just because no archive is still printing.
 
-- **A late completion can no longer finish the wrong print.** BamDude now sends one canonical subtask name — preserving meaningful internal `.gcode` fragments — and carries the printer's subtask ID from the observed start through completion. A completion must identify exactly one active queue row before it can clear user state, take a finish photo, run macros, update counters or release the queue. Older jobs retain a narrowly reconstructed compatibility label, but an ambiguous match leaves every claim intact for review rather than choosing the newest row. After a reconnect, an outcome that cannot be proven is cancelled and pauses the queue; it is never recorded as a successful print or allowed to trigger success accounting.
-
 - **A busy printer card no longer repeatedly freezes the server while it measures filament use.** The first card that needs a running print's layer-by-layer estimate now prepares it once in a separate process. Every open card, the internal inventory and Spoolman reuse that same result for this one print; ordinary updates keep using the live printer layer and spool changes, not a stale snapshot. While a large file is still being read, the card stays responsive and waits for its next update instead of making every request parse the G-code again. The analysis is released after the print's final accounting, so it does not become a history cache or a new database store.
 
-- **Telegram completion actions cannot hit a newer print.** A completion card now names the exact run it is allowed to clear or repeat; an old message is refused instead of using the printer's current hold. The web card and bulk clear action carry the same run identity. Defect prompts keep the printer, print and run in view, and a typed number must reply to its own prompt, so a late response cannot be saved against another open prompt. Reported in [Discussion #53](https://github.com/kainpl/bamdude/discussions/53) by [@UVCXanth](https://github.com/UVCXanth).
+- **Telegram completion actions cannot hit a newer print.** A completion card now names the exact run it is allowed to clear or repeat; an old message is refused instead of using the printer's current hold. The web card and bulk clear action carry the same run identity; Clear and Repeat also identify the specific plate hold, so a later hold cannot be cleared by an old message. Defect prompts keep the printer, print and run in view, and a typed number must reply to its own prompt, so a late response cannot be saved against another open prompt. Reported in [Discussion #53](https://github.com/kainpl/bamdude/discussions/53) by [@UVCXanth](https://github.com/UVCXanth).
 
-- **Telegram defect grading is now one deliberate completion, not partial writes.** Choosing counts in a defect prompt builds a short-lived draft bound to the Telegram user and chat; nothing changes in the archive or stock ledger until the complete plate has been confirmed. Another operator cannot take over that draft, a late reply belongs only to its own ForceReply prompt, and buttons from the older raw-archive format are consumed as stale rather than changing a print after a restart. The final assessment is retained beside a clear/repeat receipt, so retrying a completion action returns its saved outcome instead of applying it twice. Reported in [Discussion #53](https://github.com/kainpl/bamdude/discussions/53) by [@UVCXanth](https://github.com/UVCXanth).
-
-- **A completion assessment now cannot race an archive correction, part refresh or deletion.** Archive facts, their part rows, their free-stock correction and a completion receipt share one short write boundary. On SQLite it owns the writer before the decisive read; on PostgreSQL it has transaction-scoped archive and row locks. A Telegram form also carries a full snapshot of the run, so changing its quantity, attribution, existing grade or part list while it is open produces a clear stale-form refusal rather than a lost update. Completion forms are bounded, can be cancelled without a write, and typed replies are routed by their individual prompt instead of whichever Telegram FSM screen happened to be current. Clear/Repeat messages now carry the gate generation as well as the run id. Reported in [Discussion #53](https://github.com/kainpl/bamdude/discussions/53) by [@UVCXanth](https://github.com/UVCXanth).
+- **Telegram defect grading is saved once, after the whole plate is confirmed.** Counts stay in a short-lived draft tied to the Telegram user and chat; another operator cannot take it over, and cancelling writes nothing to the archive or stock ledger. Each typed reply belongs to its own prompt. If the print's quantity, attribution, existing grade or part list changes while the form is open, the form is refused as stale instead of overwriting the correction. Archive corrections, part refreshes and deletions are coordinated with completion, so the assessment, part counts, stock adjustment and saved completion result cannot race each other. Retrying Clear or Repeat returns the saved outcome instead of applying it twice, and buttons from the older archive-only format are refused as stale after a restart. Reported in [Discussion #53](https://github.com/kainpl/bamdude/discussions/53) by [@UVCXanth](https://github.com/UVCXanth).
 
 - **Order coverage now includes allocated stock everywhere.** The main order bar, cards, table, line rows and product-page order list show **Covered** — printed kits plus kits allocated from stock — rather than prints alone. The server caps that total per order line, so an overprint of one product cannot hide a shortage of another. Printed and stock quantities stay separate, remaining work is consistent with the bar and table sort, and live counters explicitly say whether they count prints or queue jobs. **Can assemble** remains separate because purchased components can still be missing. Reported with a clear proposed display in [Discussion #52](https://github.com/kainpl/bamdude/discussions/52) by [@UVCXanth](https://github.com/UVCXanth).
 
-- **Order-filament weight now survives the library cache.** Imported 3MF metadata names a slicer channel's weight `used_grams`; a legacy queue reader calls it `used_g`. The plan advisor read only the latter, so before a job entered the queue it could say PETG needs 0 g while the plan total correctly carried the slicer's grams. Both shapes now use one validated reader, with the imported value taking precedence and a genuine 0 remaining a genuine 0. A channel whose weight is truly unavailable is now visibly *unknown* (or *at least* the known part), rather than a false 0 or «everything is on the shelf». The order strip and inventory forecast carry that uncertainty too: **Reserved** and **Reorder by** explicitly say when they include only known grams. Reported and diagnosed by [@UVCXanth](https://github.com/UVCXanth) in [#51](https://github.com/kainpl/bamdude/issues/51).
+- **Order-filament weight now survives the library cache.** Imported 3MF metadata names a slicer channel's weight `used_grams`; a legacy queue reader calls it `used_g`. The plan advisor read only the latter, so before a job entered the queue it could say PETG needs 0 g while the plan total correctly carried the slicer's grams. Both shapes now use one validated reader, with the imported value taking precedence and a genuine 0 remaining a genuine 0. A channel whose weight is truly unavailable is now visibly *unknown* (or *at least* the known part), rather than a false 0 or "everything is on the shelf". The order strip and inventory forecast carry that uncertainty too: **Reserved** and **Reorder by** explicitly say when they include only known grams. Reported and diagnosed by [@UVCXanth](https://github.com/UVCXanth) in [#51](https://github.com/kainpl/bamdude/issues/51).
 
-- **Filament Track Switch routing now follows the printer's actual topology.** FTS presence comes from the firmware's authoritative accessory bit, including removal and reconnects, and reaches both the first printer status and live updates. With FTS installed, any suitable AMS spool can feed either nozzle, but external holders are excluded everywhere — the mapping picker, printer queue, Auto-Queue and the final dispatch check — because the firmware itself cannot print through one. Explicit external selections on raw G-code and server calibration jobs are stopped too; unknown raw metadata is not guessed. On models that report the extra left-nozzle TPU capability, a plain `TPU` job waits for that confirmation on the left only; `TPU-AMS` remains its own material and the right nozzle is unaffected.
+- **Filament Track Switch routing now follows the printer's actual topology.** FTS presence comes from the firmware's authoritative accessory bit, including removal and reconnects, and reaches both the first printer status and live updates. With FTS installed, any suitable AMS spool can feed either nozzle, but external holders are excluded everywhere — the mapping picker, printer queue, Auto Queue and the final dispatch check — because the firmware itself cannot print through one. Explicit external selections on raw G-code and server calibration jobs are stopped too; unknown raw metadata is not guessed. On models that report the extra left-nozzle TPU capability, a plain `TPU` job waits for that confirmation on the left only; `TPU-AMS` remains its own material and the right nozzle is unaffected.
+
+- **An order made from library files respects who may see those files.** A user whose group sees only its own library files could still start an order from another user's file by its number; the order now answers «file not found» for it, exactly as the library does. Groups that see the whole library are not affected.
+
+- **A customer's order total no longer counts cancelled orders** — in the customers list and its «Total» sort, on the customer page and in the tiles. A cancelled order is not revenue. On the customer page «covered of ordered» leaves cancelled orders out as well; the print cost still counts every order, because those prints were paid for.
+
+- **The orders table no longer marks an order overdue on the morning of its due date.** It compared the deadline with the current minute; the cards compared it with the start of today. Both now use the card's rule, and so does the «overdue» count on the orders tile.
 
 ## [0.6.1] - 2026-09-21
 

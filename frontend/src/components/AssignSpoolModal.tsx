@@ -11,7 +11,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { DEFAULT_SPOOL_DISPLAY_TEMPLATE, formatSpoolDisplayName } from '../utils/spoolName';
 import { filterSpoolsByQuery } from '../utils/inventorySearch';
-import { getSwatchStyle } from '../utils/colors';
+import { getSwatchStyle, resolveSpoolColorName } from '../utils/colors';
 
 interface AssignSpoolModalProps {
   isOpen: boolean;
@@ -476,7 +476,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                 {trayInfo.color && (
                   <span
                     className="w-4 h-4 rounded-full border border-black/20"
-                    style={{ backgroundColor: `#${trayInfo.color}` }}
+                    style={getSwatchStyle(trayInfo.color)}
                   />
                 )}
                 <span className="text-white font-medium">{trayInfo.type || t('ams.emptySlot')}</span>
@@ -526,7 +526,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                           style={getSwatchStyle(spool.rgba)}
                         />
                       )}
-                      <span className="text-xs text-bambu-gray truncate">{spool.color_name || ''}</span>
+                      <span className="text-xs text-bambu-gray truncate">{resolveSpoolColorName(spool.color_name, spool.rgba, spool.color_name_is_synthesized) || ''}</span>
                     </div>
                     {spool.label_weight && (
                       <p className="text-xs text-bambu-gray mt-1">
@@ -613,7 +613,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                                   style={getSwatchStyle(spool.rgba)}
                                 />
                               )}
-                              <span className="text-xs text-bambu-gray truncate">{spool.color_name || ''}</span>
+                              <span className="text-xs text-bambu-gray truncate">{resolveSpoolColorName(spool.color_name, spool.rgba, spool.color_name_is_synthesized) || ''}</span>
                             </div>
                             {spool.label_weight && (
                               <p className="text-xs text-bambu-gray mt-1">

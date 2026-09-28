@@ -24,6 +24,7 @@ PRINTER_MODEL_MAP = {
     "Bambu Lab H2S": "H2S",
     "Bambu Lab X2D": "X2D",
     "Bambu Lab A2L": "A2L",
+    "Bambu Lab N8": "N8",
 }
 
 # Map from printer_model_id (internal codes in slice_info.config) to short names
@@ -44,6 +45,9 @@ PRINTER_MODEL_ID_MAP = {
     "N7": "P2S",  # SSDP/MQTT internal code for P2S
     # X2 series
     "N6": "X2D",
+    # New model in the mirrored BS printer catalog; no hardware capabilities
+    # are inferred from the name alone.
+    "N8": "N8",
     # A2 series (A2L is single-FDM + integrated cutter/plotter — single nozzle)
     "N9": "A2L",
     # A1 series
@@ -209,15 +213,17 @@ DUAL_NOZZLE_MODELS = frozenset(
 # ⚠️ **Why this needs its own set rather than reusing DUAL_NOZZLE_MODELS.** On
 # every other dual-nozzle printer the dispatch ``nozzle_mapping`` values ARE the
 # MQTT extruder indices (0 = right, 1 = left). On a rack model the wire wants
-# the *physical* nozzle position for both carriages: the rack positions the
-# firmware reports as IDs 16-21 (see ``device.nozzle.info`` in bambu_mqtt), and
-# **1** for the fixed hotend — which is not its extruder index.
+# the *physical* nozzle position: the dock the firmware reports as live (IDs
+# 16-21, see ``device.nozzle.info`` in bambu_mqtt) for the rack carriage, and
+# **1** for the fixed hotend.
 #
-# ⚠️ The H2C does not follow the "0 = right" convention either: **extruder index
-# 1 is the rack side**. Both values were settled by hardware A/B in upstream
-# #2800 after the first attempt got both of them wrong — sending an extruder
-# index where a physical position is expected makes the printer clean and level
-# with one nozzle and then print with another, several millimetres off the bed.
+# The H2C numbers its carriages like every H2 (BambuStudio's MAIN = 0 = right,
+# DEPUTY = 1 = left): **the rack is extruder 0**, the right carriage, and the
+# fixed hotend extruder 1 — whose ``nozzle.info`` id is 1 as well. Sending an
+# extruder index where a physical position is expected makes the printer level
+# with one nozzle and print with another, several millimetres off the bed; so
+# does swapping the two carriages, which is what the rack = 1 this file held
+# until 2026-09-26 did (upstream 45dc139c, see ``_RACK_EXTRUDER_ID``).
 NOZZLE_RACK_MODELS = frozenset(
     [
         # Display names (uppercase, no spaces)
@@ -228,10 +234,9 @@ NOZZLE_RACK_MODELS = frozenset(
     ]
 )
 
-# The extruder index the rack carriage answers to, and the physical nozzle id
-# the fixed carriage answers to. Neither is derivable from the other models.
-NOZZLE_RACK_EXTRUDER_INDEX = 1
-FIXED_CARRIAGE_PHYSICAL_ID = 1
+# The extruder the docks (16-21) belong to: the carriage that fetches from
+# them. BambuStudio files rack nozzles under its MAIN extruder.
+NOZZLE_RACK_EXTRUDER_INDEX = 0
 
 
 def is_nozzle_rack_model(model: str | None) -> bool:
@@ -442,40 +447,6 @@ def get_rod_type(model: str | None) -> str | None:
     if normalized in LINEAR_RAIL_MODELS:
         return "linear_rail"
     return None
-
-
-# G-code interchange families (#2578). A sliced 3MF may target a different model
-# ONLY within its family: same kinematics, build volume and G-code dialect. The
-# X1/P1 series is the one proven-interchangeable group (256mm CoreXY, single
-# nozzle — mixed farms intentionally run X1-sliced jobs on P1S/P1P). Everything
-# else is exact-match only; extend deliberately, never by assumption — a wrong
-# entry here dispatches G-code onto hardware it was not sliced for. Short display
-# names only (uppercase, no spaces); is_gcode_compatible() resolves internal
-# codes (C11, O1D, ...) to short names before lookup.
-GCODE_COMPAT_FAMILIES = (frozenset(["X1", "X1C", "X1E", "P1P", "P1S"]),)
-
-
-def is_gcode_compatible(sliced_for_model: str | None, target_model: str | None) -> bool:
-    """Return True when G-code sliced for one model may be dispatched to the other.
-
-    Unknown/missing metadata on either side returns True — we can only validate
-    what the 3MF declares, and legacy files without ``sliced_for_model`` must keep
-    working.
-    """
-    if not sliced_for_model or not target_model:
-        return True
-
-    def _norm(model: str) -> str:
-        # Internal codes (e.g. "C11") → short names first, so "C11" vs "X1C"
-        # compares equal instead of leaning on family membership.
-        resolved = PRINTER_MODEL_ID_MAP.get(model.strip(), model)
-        return resolved.strip().upper().replace(" ", "").replace("-", "")
-
-    a = _norm(sliced_for_model)
-    b = _norm(target_model)
-    if a == b:
-        return True
-    return any(a in family and b in family for family in GCODE_COMPAT_FAMILIES)
 
 
 def normalize_printer_model_id(model_id: str | None) -> str | None:

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 
@@ -16,6 +19,15 @@ async def test_start_batch_returns_run_id(async_client, printer_factory, monkeyp
             return 42
 
     monkeypatch.setattr("backend.app.api.routes.firmware.firmware_batch_service", FakeSvc())
+    monkeypatch.setattr(
+        "backend.app.api.routes.firmware.get_firmware_service",
+        lambda: SimpleNamespace(
+            get_available_versions=AsyncMock(
+                return_value=[SimpleNamespace(version="01.02.03.04", download_url="https://example.com/fw.bin")]
+            )
+        ),
+    )
+    monkeypatch.setattr("backend.app.api.routes.firmware.firmware_store.list_cached", AsyncMock(return_value=[]))
 
     r = await async_client.post(
         "/api/v1/firmware/batch",
@@ -23,6 +35,55 @@ async def test_start_batch_returns_run_id(async_client, printer_factory, monkeyp
     )
     assert r.status_code == 200
     assert r.json()["run_id"] == 42
+
+
+@pytest.mark.asyncio
+async def test_batch_preview_excludes_wiki_only_versions(async_client, printer_factory, monkeypatch):
+    printer = await printer_factory(model="P2S")
+    monkeypatch.setattr(
+        "backend.app.api.routes.firmware.get_firmware_service",
+        lambda: SimpleNamespace(
+            get_available_versions=AsyncMock(
+                return_value=[
+                    SimpleNamespace(version="01.03.00.00", download_url=""),
+                    SimpleNamespace(version="01.02.00.00", download_url="https://example.com/fw.bin"),
+                    SimpleNamespace(version="01.01.03.00", download_url=""),
+                ]
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.app.api.routes.firmware.firmware_store.list_cached",
+        AsyncMock(return_value=[SimpleNamespace(version="01.01.03.00")]),
+    )
+
+    r = await async_client.post("/api/v1/firmware/batch/preview", json={"targets": [{"printer_id": printer.id}]})
+    assert r.status_code == 200
+    group = r.json()["groups"][0]
+    assert group["available_versions"] == ["01.02.00.00", "01.01.03.00"]
+    assert group["default_version"] == "01.02.00.00"
+    assert group["cached_versions"] == ["01.01.03.00"]
+
+
+@pytest.mark.asyncio
+async def test_batch_rejects_wiki_only_firmware_before_creating_run(async_client, printer_factory, monkeypatch):
+    printer = await printer_factory(model="P2S")
+    start = AsyncMock()
+    monkeypatch.setattr("backend.app.api.routes.firmware.firmware_batch_service", SimpleNamespace(start_batch=start))
+    monkeypatch.setattr(
+        "backend.app.api.routes.firmware.get_firmware_service",
+        lambda: SimpleNamespace(
+            get_available_versions=AsyncMock(return_value=[SimpleNamespace(version="01.03.00.00", download_url="")])
+        ),
+    )
+    monkeypatch.setattr("backend.app.api.routes.firmware.firmware_store.list_cached", AsyncMock(return_value=[]))
+
+    r = await async_client.post(
+        "/api/v1/firmware/batch", json={"targets": [{"printer_id": printer.id, "version": "01.03.00.00"}]}
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "firmware_file_unavailable"
+    start.assert_not_called()
 
 
 @pytest.mark.asyncio

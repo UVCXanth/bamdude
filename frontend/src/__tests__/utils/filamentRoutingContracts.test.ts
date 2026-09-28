@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import en from '../../i18n/locales/en';
 import uk from '../../i18n/locales/uk';
-import { isGcodeCompatible } from '../../utils/printer';
+import { modelCompatibility } from '../../utils/modelCompatibility';
 
 describe('routing mirrors cannot silently drift', () => {
   it.each([['en', en], ['uk', uk]] as const)('keeps %s refusal sentences identical to the backend', (lang, locale) => {
@@ -17,23 +17,13 @@ describe('routing mirrors cannot silently drift', () => {
     }
   });
 
-  it('uses the backend compatibility families for all known model pairs', () => {
-    const backend = readFileSync(resolve(process.cwd(), '../backend/app/utils/printer_models.py'), 'utf8');
-    const declaration = backend.match(/GCODE_COMPAT_FAMILIES = ([^\n]+)/)?.[1];
-    expect(declaration).toBeTruthy();
-    const families = [...declaration!.matchAll(/frozenset\(\[([^\]]+)\]/g)]
-      .map(match => [...match[1].matchAll(/"([^"]+)"/g)].map(row => row[1]));
-    expect(families.length).toBeGreaterThan(0);
-    const frontend = readFileSync(resolve(process.cwd(), 'src/utils/printer.ts'), 'utf8');
-    const frontendDeclaration = frontend.match(/const GCODE_COMPAT_FAMILIES[^=]*= ([\s\S]*?);/)?.[1];
-    expect(frontendDeclaration).toBeTruthy();
-    const frontendFamilies = [...frontendDeclaration!.matchAll(/new Set\(\[([^\]]+)\]/g)]
-      .map(match => [...match[1].matchAll(/'([^']+)'/g)].map(row => row[1]));
-    expect(frontendFamilies.map(group => group.sort()).sort()).toEqual(families.map(group => group.sort()).sort());
-    const models = [...new Set([...families.flat(), 'P2S', 'H2D', 'A1', 'A1MINI', 'X2D'])];
-    for (const a of models) for (const b of models) {
-      expect(isGcodeCompatible(a, b), `${a}/${b}`).toBe(a === b || families.some(group => group.includes(a) && group.includes(b)));
-    }
-    expect(isGcodeCompatible('C11', 'Bambu Lab X1 Carbon')).toBe(true);
+  it('uses directed API data and keeps exact matches available before loading', () => {
+    const matrix = { P1S: ['P1P'], X1C: ['P1S'] };
+    expect(modelCompatibility('C12', 'Bambu Lab P1S')).toBe('exact');
+    expect(modelCompatibility('P1P', 'P1S')).toBe('unknown');
+    expect(modelCompatibility('P1P', 'P1S', matrix)).toBe('compatible');
+    expect(modelCompatibility('P1S', 'P1P', matrix)).toBe('incompatible');
+    expect(modelCompatibility('P1P', 'X1C', matrix)).toBe('incompatible');
+    expect(modelCompatibility('', 'P1S', matrix)).toBe('unknown');
   });
 });

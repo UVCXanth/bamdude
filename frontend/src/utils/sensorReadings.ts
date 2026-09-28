@@ -48,6 +48,15 @@ export function sensorsForGroup(
   const rank = new Map(chain.map((id, position) => [id, position]));
 
   return sensors
+    .map((sensor) => {
+      const nearest = (sensor.bindings ?? [])
+        .filter((binding) => binding.visible && binding.printer_location_id != null && rank.has(binding.printer_location_id))
+        .sort((a, b) => rank.get(a.printer_location_id!)! - rank.get(b.printer_location_id!)!)[0];
+      return nearest
+        ? { ...sensor, name: nearest.display_name || sensor.name, location: nearest.location,
+            binding_sort_order: nearest.sort_order }
+        : (sensor.bindings ?? []).length ? { ...sensor, location: null } : sensor;
+    })
     .filter((sensor) => {
       if (sensor.location == null || !rank.has(sensor.location.id)) return false;
       // A live sensor with nothing to say about the room gets no chip; one that
@@ -59,7 +68,8 @@ export function sensorsForGroup(
       const byDistance = rank.get(a.location!.id)! - rank.get(b.location!.id)!;
       // Two sensors in the same place would otherwise sit in whatever order the
       // API returned them, and the header would reshuffle between renders.
-      return byDistance !== 0 ? byDistance : compareLocationNames(a.name, b.name);
+      return byDistance !== 0 ? byDistance
+        : (a.binding_sort_order ?? 0) - (b.binding_sort_order ?? 0) || compareLocationNames(a.name, b.name);
     });
 }
 
@@ -74,10 +84,29 @@ export function sensorsForGroup(
  */
 export function sensorsForPrinter(sensors: ZigbeeSensor[], printerId: number): ZigbeeSensor[] {
   return sensors
+    .map((sensor) => {
+      const binding = (sensor.bindings ?? []).find((item) => item.visible && item.printer_id === printerId);
+      return binding
+        ? { ...sensor, name: binding.display_name || sensor.name, printer_id: printerId,
+            printer_name: binding.printer_name, binding_sort_order: binding.sort_order }
+        : (sensor.bindings ?? []).length ? { ...sensor, printer_id: null } : sensor;
+    })
     .filter((sensor) => sensor.printer_id === printerId)
     // Same rule as the group header: a live sensor with nothing to say gets no
     // chip, an absent one keeps its chip, because its readings are empty
     // BECAUSE it is absent and a dead sensor must not look like no sensor.
     .filter((sensor) => !sensor.present || roomReadings(sensor).length > 0)
-    .sort((a, b) => compareLocationNames(a.name, b.name));
+    .sort((a, b) => (a.binding_sort_order ?? 0) - (b.binding_sort_order ?? 0)
+      || compareLocationNames(a.name, b.name));
+}
+
+export function sensorsForStorage(sensors: ZigbeeSensor[], storageLocationId: number): ZigbeeSensor[] {
+  return sensors
+    .flatMap((sensor) => (sensor.bindings ?? [])
+      .filter((binding) => binding.visible && binding.storage_location_id === storageLocationId)
+      .map((binding) => ({ ...sensor, name: binding.display_name || sensor.name,
+        binding_sort_order: binding.sort_order })))
+    .filter((sensor) => !sensor.present || roomReadings(sensor).length > 0)
+    .sort((a, b) => (a.binding_sort_order ?? 0) - (b.binding_sort_order ?? 0)
+      || compareLocationNames(a.name, b.name));
 }

@@ -93,7 +93,6 @@ import { PurgeOldFilesModal } from '../components/PurgeOldFilesModal';
 import { TrashSplitButton } from '../components/TrashSplitButton';
 import { MakerWorldIcon } from '../components/BrandIcons';
 import { useToast } from '../contexts/ToastContext';
-import { useIsMobile } from '../hooks/useIsMobile';
 import { useAnchoredPosition } from '../hooks/useAnchoredPosition';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateTime, formatDuration, type TimeFormat, type DateFormat } from '../utils/date';
@@ -104,7 +103,7 @@ import { SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { getTagStyle, is3mf, isPrintable, isSliceable, isMultiPlate } from '../lib/fileTags';
 import { figuresAt, formatMaterials, plateAt, plateSlices, plateThumbnailUrl, step } from '../lib/plateBrowsing';
 import { PlanFromFilesModal } from '../components/library/PlanFromFilesModal';
-import { openInSlicer, type SlicerType } from '../utils/slicer';
+import { desktopSlicerAccepts, isApiSliceableFileType, openInSlicer, type SlicerType } from '../utils/slicer';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsPopover';
@@ -559,7 +558,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
         {folder.file_count > 0 && (
           <span className="flex-shrink-0 text-xs text-bambu-gray">{folder.file_count}</span>
         )}
-        <div className={`flex-shrink-0 flex items-center gap-0.5 transition-opacity ${wrapNames ? '' : 'opacity-0 group-hover:opacity-100'}`} onClick={(e) => e.stopPropagation()}>
+        <div className={`flex-shrink-0 flex items-center gap-0.5 transition-opacity ${wrapNames ? '' : 'can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'}`} onClick={(e) => e.stopPropagation()}>
           <div className="relative">
             <button
               onClick={() => setShowActions(!showActions)}
@@ -665,7 +664,6 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
 interface FileCardProps {
   file: LibraryFileListItem;
   isSelected: boolean;
-  isMobile: boolean;
   onSelect: (id: number) => void;
   /** Open the archive (print history) filtered to this file's prints. */
   onOpenArchives: (file: LibraryFileListItem) => void;
@@ -676,6 +674,7 @@ interface FileCardProps {
   onSlice?: (file: LibraryFileListItem) => void;
   onOpenInSlicer?: (file: LibraryFileListItem) => void;
   useSlicerApi?: boolean;
+  desktopSlicer?: SlicerType;
   onPreview3d?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
   onLink?: (file: LibraryFileListItem) => void;
@@ -729,7 +728,25 @@ function anchorFrom(
   };
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, onOpenInSlicer, useSlicerApi, onPreview3d, onModelCard, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
+/**
+ * Whether a file row offers its Slice / Open-in-slicer entry at all.
+ *
+ * With the sidecar, only what a slicer CLI loads (no STEP). Without it, only
+ * what the configured desktop slicer takes over its LINK — Bambu Studio refuses
+ * anything but a 3MF there, before fetching (upstream e2493132); an entry that
+ * could only fail is worse than none.
+ */
+function offersSliceEntry(
+  file: LibraryFileListItem,
+  useSlicerApi: boolean | undefined,
+  desktopSlicer: SlicerType | undefined,
+): boolean {
+  if (!isSliceable(file)) return false;
+  if (useSlicerApi) return isApiSliceableFileType(file.file_type);
+  return desktopSlicerAccepts(file.file_type, desktopSlicer ?? 'bambu_studio');
+}
+
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
@@ -739,6 +756,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onSlice?: (f: LibraryFileListItem) => void;
   onOpenInSlicer?: (f: LibraryFileListItem) => void;
   useSlicerApi?: boolean;
+  desktopSlicer?: SlicerType;
   onPreview3d: (f: LibraryFileListItem) => void;
   onModelCard?: (f: LibraryFileListItem) => void;
   onDownload: (id: number) => void;
@@ -781,8 +799,11 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
           <div
             style={{
               position: 'fixed',
-              top: coords?.top ?? 0,
+              top: coords?.top,
+              bottom: coords?.bottom,
               right: coords?.right ?? 0,
+              maxHeight: coords?.maxHeight,
+              overflowY: 'auto',
               width: MENU_WIDTH,
               visibility: coords ? 'visible' : 'hidden',
             }}
@@ -814,7 +835,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                 DIFFERENT permissions: slicing on the server writes a new
                 library file (library:upload), while opening in a desktop app
                 is a download (library:read). */}
-            {isSliceable(file) && (onSlice || onOpenInSlicer) && (
+            {offersSliceEntry(file, useSlicerApi, desktopSlicer) && (onSlice || onOpenInSlicer) && (
               <button
                 className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${!sliceDisabled ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
                 onClick={() => {
@@ -947,7 +968,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, onPreview3d, onModelCard, onRename, onLink, onGenerateThumbnail, onPlateGallery, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onRename, onLink, onGenerateThumbnail, onPlateGallery, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   // ⚠️ The two modes need different permissions: slicing through the sidecar
   // writes a new library file, while opening in a desktop slicer is a download.
   const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
@@ -965,10 +986,11 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
     setShowActions(false);
     triggerRef.current?.focus();
   };
-  // Anchor the menu's bottom edge to the trigger's top (default) so the gap
-  // stays a fixed 4 px regardless of menu height. Flip to top-anchor when
-  // there isn't enough room above (e.g. trigger near top of viewport).
-  const [coords, setCoords] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
+  // Placed by the same hook as every other "…" menu. This card used to carry
+  // its own copy that opened above past 120 px of room, so a seven-entry menu
+  // near the top of the screen ran off the top edge and lost its first entry —
+  // Slice, on an STL (upstream #2846).
+  const coords = useAnchoredPosition(triggerRef, showActions);
   const [showPlateObjects, setShowPlateObjects] = useState(false);
   // Which plate the card is showing (vault 60-specs/library-multiplate-card-spec 5).
   // A POSITION, not a plate index - the slices are what the row carries. Reset
@@ -981,31 +1003,6 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
   const plate = plateAt(file, current);
   const figures = figuresAt(file, current);
   const thumbUrl = plateThumbnailUrl(file, current, thumbnailVersion);
-
-  useEffect(() => {
-    if (!showActions) return;
-    const update = () => {
-      const btn = triggerRef.current;
-      if (!btn) return;
-      const rect = btn.getBoundingClientRect();
-      const right = Math.max(8, window.innerWidth - rect.right);
-      // Default: anchor menu's bottom 4 px above the trigger — flush layout,
-      // exact gap. Flip below when the trigger is near the top of the viewport.
-      const minOpenAboveHeight = 120;
-      if (rect.top > minOpenAboveHeight + 8) {
-        setCoords({ bottom: window.innerHeight - rect.top + 4, right });
-      } else {
-        setCoords({ top: rect.bottom + 4, right });
-      }
-    };
-    update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
-  }, [showActions]);
 
   return (
     <div
@@ -1030,7 +1027,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
         {/* Plate carousel (spec 5): arrows and a counter, no dots - a
             twelve-plate MakerWorld file would drown the card in them. z-20
             keeps them under the regen overlay's z-30. The counter sits
-            top-left: tags own top-right, the gallery and notes buttons own
+            right of the top-left selection checkbox: tags own top-right, the gallery and notes buttons own
             bottom-left, the actions trigger owns bottom-right. */}
         {slices.length > 1 && (
           <>
@@ -1038,7 +1035,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
               type="button"
               aria-label={t('fileManager.previousPlate')}
               onClick={(e) => { e.stopPropagation(); setCurrent((c) => step(c, slices.length, -1)); }}
-              className={`absolute left-1 top-1/2 -translate-y-1/2 z-20 p-1 rounded-full bg-black/60 hover:bg-black/80 text-white transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+              className={`absolute left-1 top-1/2 -translate-y-1/2 z-20 p-1 rounded-full bg-black/60 hover:bg-black/80 text-white transition-opacity can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100`}
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
@@ -1046,14 +1043,14 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
               type="button"
               aria-label={t('fileManager.nextPlate')}
               onClick={(e) => { e.stopPropagation(); setCurrent((c) => step(c, slices.length, 1)); }}
-              className={`absolute right-1 top-1/2 -translate-y-1/2 z-20 p-1 rounded-full bg-black/60 hover:bg-black/80 text-white transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+              className={`absolute right-1 top-1/2 -translate-y-1/2 z-20 p-1 rounded-full bg-black/60 hover:bg-black/80 text-white transition-opacity can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100`}
             >
               <ChevronRight className="w-4 h-4" />
             </button>
             <span
               data-testid="plate-counter"
               title={plate ? t('fileManager.plateOf', { index: plate.index, count: slices.length }) : undefined}
-              className="absolute top-2 left-2 z-20 px-1.5 py-0.5 rounded bg-black/60 text-[11px] text-white tabular-nums"
+              className="absolute top-2 left-9 z-20 px-1.5 py-0.5 rounded bg-black/60 text-[11px] text-white tabular-nums"
             >
               {current + 1}/{slices.length}
             </span>
@@ -1077,7 +1074,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
             renders. Provenance (MakerWorld) ships as the orange ``MW``
             chip inside FileTagBadges; the click-to-open-original action
             lives in the three-dots menu. */}
-        <div className="absolute top-2 right-2 flex items-center gap-1">
+        <div className={`absolute top-2 right-2 flex items-center gap-1 ${slices.length > 1 ? 'max-w-[calc(100%-6rem)]' : ''}`}>
           <FileTagBadges tags={file.file_tags} compact />
         </div>
         {/* Plate-gallery overlay — sits directly above the notes button.
@@ -1119,7 +1116,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
             ) : canModify('library', 'update', file.created_by_id) ? (
               <button
                 onClick={() => onLink(file)}
-                className="rounded-md bg-bambu-dark/80 backdrop-blur text-bambu-gray hover:text-bambu-green hover:bg-bambu-dark transition-colors flex items-center p-1 opacity-0 group-hover:opacity-100"
+                className="rounded-md bg-bambu-dark/80 backdrop-blur text-bambu-gray hover:text-bambu-green hover:bg-bambu-dark transition-colors flex items-center p-1 can-hover:opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
                 title={t('fileManager.linkToProducts')}
               >
                 <Link2 className="w-5 h-5" />
@@ -1238,8 +1235,8 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
         )}
       </div>
 
-      {/* Actions - always visible on mobile, hover on desktop */}
-      <div className={`absolute bottom-2 right-2 transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} onClick={(e) => e.stopPropagation()}>
+      {/* Actions - hover-revealed with a mouse, always there without one (upstream #2865) */}
+      <div className="absolute bottom-2 right-2 transition-opacity can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100" onClick={(e) => e.stopPropagation()}>
         <button
           ref={triggerRef}
           onClick={() => setShowActions(!showActions)}
@@ -1258,6 +1255,8 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
                 top: coords?.top,
                 bottom: coords?.bottom,
                 right: coords?.right ?? 0,
+                maxHeight: coords?.maxHeight,
+                overflowY: 'auto',
                 visibility: coords ? 'visible' : 'hidden',
               }}
               className="z-[60] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 whitespace-nowrap w-max max-w-[calc(100vw-16px)]"
@@ -1291,7 +1290,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
               )}
               {/* See the note on the sibling menu above: not gated on the
                   sidecar, and the two modes need different permissions. */}
-              {isSliceable(file) && (onSlice || onOpenInSlicer) && (
+              {offersSliceEntry(file, useSlicerApi, desktopSlicer) && (onSlice || onOpenInSlicer) && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
                     !sliceDisabled ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
@@ -1451,13 +1450,13 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
         className={`absolute top-2 left-2 w-5 h-5 rounded border-2 flex items-center justify-center transition-all cursor-pointer ${
           isSelected
             ? 'bg-bambu-green border-bambu-green'
-            : `border-white/30 bg-black/30 ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`
+            : 'border-white/30 bg-black/30 can-hover:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
         }`}
       >
         {isSelected && <Check className="w-3 h-3 text-black" strokeWidth={3} />}
       </button>
       {/* Sibling of the card body, NOT of the hover-revealed action cluster:
-          that wrapper is `opacity-0 group-hover:opacity-100`, so a modal nested
+          that wrapper is hidden until the card is hovered, so a modal nested
           inside it would vanish the moment the pointer left the card. */}
       {showPlateObjects && (
         <PlateObjectsPreviewModal
@@ -1663,9 +1662,6 @@ export function FileManagerPage() {
   useEffect(() => {
     localStorage.setItem('library-per-page', String(perPage));
   }, [perPage]);
-
-  // Mobile detection for touch-friendly UI
-  const isMobile = useIsMobile();
 
   // Update selectedFolderId when URL parameter changes (e.g., navigating from Project or Archive page)
   useEffect(() => {
@@ -1981,6 +1977,10 @@ export function FileManagerPage() {
         // Deliberately not a success toast. Nothing was deleted, and the reason
         // is one the operator has to act on — the strip keeps saying it.
         showToast(t('fileManager.toast.scanSkippedDeletions'), 'warning');
+        return;
+      }
+      if (state.warnings) {
+        showToast(t('fileManager.toast.scanWarnings', { count: state.warnings }), 'warning');
         return;
       }
       showToast(t('fileManager.toast.folderScanned', { added: state.added, removed: state.removed }), 'success');
@@ -2404,7 +2404,6 @@ export function FileManagerPage() {
       key={file.id}
       file={file}
       isSelected={selectedFiles.includes(file.id)}
-      isMobile={isMobile}
       t={t}
       onSelect={handleFileSelect}
       onOpenArchives={handleOpenArchives}
@@ -2418,6 +2417,7 @@ export function FileManagerPage() {
       onSlice={setSliceFile}
       onOpenInSlicer={handleOpenInSlicer}
       useSlicerApi={settings?.use_slicer_api ?? false}
+      desktopSlicer={preferredSlicer}
       onPreview3d={setViewerFile}
       onModelCard={setModelCardFile}
       onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
@@ -3393,7 +3393,7 @@ export function FileManagerPage() {
                         >
                           {file.thumbnail_path ? (
                             <img
-                              src={`${api.getLibraryFileThumbnailUrl(file.id)}${thumbnailVersions[file.id] ? `?v=${thumbnailVersions[file.id]}` : ''}`}
+                              src={api.getLibraryFileThumbnailUrl(file.id, thumbnailVersions[file.id])}
                               alt=""
                               className="w-full h-full object-contain"
                             />
@@ -3418,7 +3418,7 @@ export function FileManagerPage() {
                           <div className="absolute top-2/3 left-2/3 z-50 hidden group-hover/thumb:block">
                             <div className="w-48 h-48 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary shadow-xl overflow-hidden">
                               <img
-                                src={`${api.getLibraryFileThumbnailUrl(file.id)}${thumbnailVersions[file.id] ? `?v=${thumbnailVersions[file.id]}` : ''}`}
+                                src={api.getLibraryFileThumbnailUrl(file.id, thumbnailVersions[file.id])}
                                 alt={file.filename}
                                 className="w-full h-full object-contain"
                               />
@@ -3648,6 +3648,7 @@ export function FileManagerPage() {
                         onSlice={setSliceFile}
                         onOpenInSlicer={handleOpenInSlicer}
                         useSlicerApi={settings?.use_slicer_api ?? false}
+                        desktopSlicer={preferredSlicer}
                         onPreview3d={setViewerFile}
                         onModelCard={setModelCardFile}
                             onDownload={handleDownload}

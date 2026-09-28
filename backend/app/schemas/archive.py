@@ -53,6 +53,10 @@ class ArchiveBase(BaseModel):
 
 
 class ArchiveUpdate(ArchiveBase):
+    # Bounded where it is written, not on the base the responses share: it feeds
+    # order totals, and a negative would subtract from them (upstream 30e530a8).
+    # 0 is legal; a ruined plate is still recorded as defects here.
+    quantity: int | None = Field(None, ge=0, le=10_000)
     printer_id: int | None = None
     project_id: int | None = None
     # The order line this print is for; validated against ``project_id``.
@@ -63,6 +67,13 @@ class ArchiveUpdate(ArchiveBase):
     # applies it to PrintArchivePart rows and derives defective_count from
     # them; it must never reach the generic setattr loop.
     parts_defective: list[ArchivePartDefective] | None = None
+    # Typed by hand, above all for a print whose 3MF never arrived: nothing
+    # else can supply the figure afterwards — a rescan needs the file (audit D6
+    # part 2, upstream d227d422). The ARCHIVE's figure only: statistics, cost
+    # and order metrics read it, and no spool is ever debited from it. Bounded
+    # because it feeds those totals: a negative would subtract, and 100 kg is
+    # far past any single print.
+    filament_used_grams: float | None = Field(None, ge=0, le=100_000)
 
 
 class ArchiveDuplicate(BaseModel):
@@ -290,6 +301,11 @@ class ReprintRequest(FilamentRoutingChoices):
     # AMS slot mapping: list of tray IDs for each filament slot in the 3MF
     # Global tray ID = (ams_id * 4) + slot_id, external = 254
     ams_mapping: list[int] | None = None
+    # Which rack position each filament group prints from on an H2C (upstream
+    # #1784), as {group_id: 1-based position}. A direct print reaches the
+    # dispatcher as job options, not a queue row, so the pick travels here; the
+    # dispatcher re-checks it against the live rack. Null = assign them for me.
+    nozzle_rack_choice: dict[int, int] | None = None
 
     # Print options — tri-state calibration (off/auto/on) or legacy bool.
     bed_levelling: CalibrationMode = "on"

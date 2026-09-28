@@ -40,6 +40,7 @@ from backend.app.api.routes import (
     firmware,
     git_backup,
     groups,
+    ha_sensors,
     hms as hms_routes,
     inbox,
     inventory,
@@ -53,6 +54,7 @@ from backend.app.api.routes import (
     library_trash,
     local_backup,
     local_presets,
+    location_ha_sensors,
     macros,
     maintenance,
     makerworld,
@@ -106,14 +108,17 @@ from backend.app.core.tasks import spawn_background_task
 from backend.app.core.websocket import ws_manager
 from backend.app.i18n.api_errors import install as install_api_error_translation
 from backend.app.models.smart_plug import SmartPlug
+from backend.app.services.ams_slot_presence import spool_present
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.archive_parts import refresh_archive_parts
 from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch, delete_internal_by_name
 from backend.app.services.bambu_mqtt import HMS_SEVERITY_NOTIFY_THRESHOLD, PrinterState
 from backend.app.services.git_backup import git_backup_service
+from backend.app.services.ha_sensor_manager import ha_sensor_manager
 from backend.app.services.hms_catalogue import device_of as hms_device_of
 from backend.app.services.local_backup import local_backup_service
+from backend.app.services.location_ha_sensor_manager import location_ha_sensor_manager
 from backend.app.services.mqtt_relay import mqtt_relay
 from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
 from backend.app.services.notification_service import notification_service
@@ -147,13 +152,17 @@ from backend.app.services.stock_forecast_alerts import stock_forecast_alerts
 # only the listing was worse than useless for a while: the auto-scan found the
 # recording in internal storage and then tried to fetch it over FTP.
 from backend.app.services.timelapse_files import (
+    last_listing_answered as _last_listing_answered,
     last_recording_path as _last_recording_path,
     list_timelapse_videos as _list_timelapse_videos,
     pick_new_recording as _pick_new_recording,
     read_timelapse_video,
     remove_recording_after_attach,
 )
+from backend.app.utils.ams_humidity import ams_humidity_percent
+from backend.app.utils.failure_reasons import USER_CANCELLED
 from backend.app.utils.filament_remaining import grams_used
+from backend.app.utils.print_jobs import is_internal_printer_job
 
 
 # =============================================================================
@@ -515,6 +524,11 @@ _POST_PRINT_CLEANUP_BUDGET = 120.0
 # Track timelapse file baselines at print start: {printer_id: set of video filenames}
 # Used for snapshot-diff detection at print completion
 _timelapse_baselines: dict[int, set[str]] = {}
+# Printers whose baseline above was taken off a card that did not answer (audit
+# D6 part 4): recorded all the same — the usual card holds one recording at
+# completion, and an empty baseline resolves it — but the completion scan then
+# refuses to guess between several new recordings.
+_untrusted_timelapse_baselines: set[int] = set()
 
 # Track active bed cooldown monitoring tasks: {printer_id: asyncio.Task}
 _bed_cooldown_tasks: dict[int, asyncio.Task] = {}
@@ -538,33 +552,38 @@ _user_stopped_printers: dict[int, int | None] = {}
 #      failures.
 # We now match by full short code only — anything not in this map leaves
 # failure_reason=None rather than guessing.
+#
+# Values are KEYS from utils/failure_reasons, not display labels (upstream
+# #2974): the Failure Analysis widget groups on the raw value, so a label here
+# was a second bucket beside the key the editor stores, and could never be
+# translated.
 _HMS_FAILURE_REASONS: dict[str, str] = {
     # Layer shift / step loss
-    "0300_4057": "Layer shift",
-    "0300_4068": "Layer shift",
-    "0300_800C": "Layer shift",
+    "0300_4057": "layerShift",
+    "0300_4068": "layerShift",
+    "0300_800C": "layerShift",
     # Filament runout (printer-side & per-AMS-slot)
-    "0300_8004": "Filament runout",
-    "0700_8011": "Filament runout",
-    "0701_8011": "Filament runout",
-    "0702_8011": "Filament runout",
-    "0703_8011": "Filament runout",
-    "0704_8011": "Filament runout",
-    "0705_8011": "Filament runout",
-    "0706_8011": "Filament runout",
-    "0707_8011": "Filament runout",
-    "07FF_8011": "Filament runout",
+    "0300_8004": "filamentRunout",
+    "0700_8011": "filamentRunout",
+    "0701_8011": "filamentRunout",
+    "0702_8011": "filamentRunout",
+    "0703_8011": "filamentRunout",
+    "0704_8011": "filamentRunout",
+    "0705_8011": "filamentRunout",
+    "0706_8011": "filamentRunout",
+    "0707_8011": "filamentRunout",
+    "07FF_8011": "filamentRunout",
     # Clogged nozzle / extruder
-    "0300_4006": "Clogged nozzle",
-    "0300_8016": "Clogged nozzle",
-    "0300_801C": "Clogged nozzle",
-    "0700_8003": "Clogged nozzle",
-    "0700_8007": "Clogged nozzle",
-    "0700_8013": "Clogged nozzle",
-    "0701_8003": "Clogged nozzle",
-    "0701_8007": "Clogged nozzle",
-    "0701_8013": "Clogged nozzle",
-    "0702_8003": "Clogged nozzle",
+    "0300_4006": "cloggedNozzle",
+    "0300_8016": "cloggedNozzle",
+    "0300_801C": "cloggedNozzle",
+    "0700_8003": "cloggedNozzle",
+    "0700_8007": "cloggedNozzle",
+    "0700_8013": "cloggedNozzle",
+    "0701_8003": "cloggedNozzle",
+    "0701_8007": "cloggedNozzle",
+    "0701_8013": "cloggedNozzle",
+    "0702_8003": "cloggedNozzle",
 }
 
 
@@ -579,14 +598,14 @@ def _hms_short_code(attr: int, code: int | str) -> str:
 
 
 def derive_failure_reason(status: str, hms_errors: list[dict] | None) -> str | None:
-    """Derive a human-readable failure_reason for an archived print.
+    """Derive the failure_reason KEY for an archived print (see utils/failure_reasons).
 
-    Returns "User cancelled" for cancelled/aborted prints; for failed prints,
+    Returns "userCancelled" for cancelled/aborted prints; for failed prints,
     returns the first matching reason from _HMS_FAILURE_REASONS, or None when
     no HMS code matches (don't guess — null is honest).
     """
     if status in ("aborted", "cancelled"):
-        return "User cancelled"
+        return USER_CANCELLED
     if status != "failed":
         return None
     for err in hms_errors or []:
@@ -780,7 +799,23 @@ async def _record_print_energy(archive_id: int, printer_id: int, *, approximate:
                 logger.info("[ENERGY-BG] No start kWh recorded for archive %s", archive_id)
                 return
 
-            plug = await _energy_plug_for_printer(printer_id, db)
+            # The meter the start was read from — never another one: two
+            # counters make a plausible, wrong delta rather than a missing one.
+            # An archive started before the plug was remembered keeps the old
+            # rule, the ranked first plug, which is what its start was read on.
+            remembered = (archive.extra_data or {}).get(ENERGY_PLUG_KEY)
+            if remembered is not None:
+                plug = await db.get(SmartPlug, remembered)
+                if plug is None or plug.printer_id != printer_id:
+                    logger.info(
+                        "[ENERGY-BG] Plug %s that archive %s started on is no longer on printer %s",
+                        remembered,
+                        archive_id,
+                        printer_id,
+                    )
+                    return
+            else:
+                plug = await _energy_plug_for_printer(printer_id, db)
             if plug is None:
                 logger.info("[ENERGY-BG] No smart plug for printer %s", printer_id)
                 return
@@ -855,6 +890,20 @@ async def _default_queue_id_for_printer(db, printer_id: int) -> int | None:
     return (await ensure_printer_queue(db, printer_id)).id
 
 
+#: ``PrintArchive.extra_data`` key: the plug a print's energy start was read from.
+ENERGY_PLUG_KEY = "energy_plug_id"
+
+
+async def _energy_plugs_for_printer(printer_id: int, db) -> list[SmartPlug]:
+    """Every plug on the printer, in the order energy tries them (see below)."""
+    result = await db.execute(
+        select(SmartPlug)
+        .where(SmartPlug.printer_id == printer_id)
+        .order_by(SmartPlug.controls_printer_power.desc(), SmartPlug.id.asc())
+    )
+    return list(result.scalars().all())
+
+
 async def _energy_plug_for_printer(printer_id: int, db) -> SmartPlug | None:
     """The one plug a printer's energy is measured with.
 
@@ -887,15 +936,33 @@ async def _record_energy_start(archive, printer_id: int, db, *, context: str = "
     """
     _logger = logging.getLogger(__name__)
     try:
-        plug = await _energy_plug_for_printer(printer_id, db)
-        if not plug:
+        plugs = await _energy_plugs_for_printer(printer_id, db)
+        if not plugs:
             _logger.info("[ENERGY] No smart plug for printer %s (archive %s)", printer_id, archive.id)
             return False
-        energy = await _get_plug_energy(plug, db)
-        if not energy or energy.get("total") is None:
-            _logger.warning("[ENERGY] No 'total' in energy response for archive %s", archive.id)
+        # The first plug, in the ranked order, that actually reports a counter
+        # (upstream #2859): a mains switch with no power sensor must not stand
+        # in front of the plug that meters the printer. Ranking rather than
+        # filtering — a printer whose only plug is an accessory or disabled is
+        # still measured by it when it answers.
+        plug = energy = None
+        for candidate in plugs:
+            reading = await _get_plug_energy(candidate, db)
+            if reading and reading.get("total") is not None:
+                plug, energy = candidate, reading
+                break
+        if plug is None:
+            _logger.warning(
+                "[ENERGY] None of printer %s's plugs reports an energy counter for archive %s (tried: %s)",
+                printer_id,
+                archive.id,
+                ", ".join(p.name for p in plugs),
+            )
             return False
         archive.energy_start_kwh = float(energy["total"])
+        # The end reads THIS meter (``_record_print_energy``). Reassign the dict
+        # so SQLAlchemy flags the JSON column dirty.
+        archive.extra_data = {**(archive.extra_data or {}), ENERGY_PLUG_KEY: plug.id}
         # Same reading, also kept as a snapshot: it marks the true start of this
         # print in the range report instead of leaving the nearest boundary on
         # whichever hour the snapshot loop last fired.
@@ -1386,10 +1453,12 @@ def _format_hms_error_summary(hms_errors: list[dict], device: str = "") -> str |
     parts: list[str] = []
     for err in hms_errors:
         try:
-            code_str = str(err.get("code", "")).replace("0x", "")
-            error_num = int(code_str, 16) if code_str else 0
-            module_num = (int(err.get("attr", 0)) >> 16) & 0xFFFF
-            short_code = f"{module_num:04X}_{error_num:04X}"
+            # ⚠️ Through the one derivation that masks the error to 16 bits: a
+            # fault from the hms[] array carries its alert level in the code's
+            # high half, and unmasked it read 0500_24038 — no such code, and
+            # no catalogue key, so the description was lost too (upstream
+            # 6988a30e). It also takes the raw integer the payload may carry.
+            short_code = _hms_short_code(err.get("attr", 0), err.get("code", ""))
         except (TypeError, ValueError):
             continue
         # ⚠️ The short code goes in WITHOUT its separator: that is how both
@@ -1838,6 +1907,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         # that changes constantly is harmless, and triggers nothing.
         f"{state.speed_level}:{state.door_open}:{state.sdcard}:{state.sdcard_state}:"
         f"{state.store_to_sdcard}:{state.timelapse}:{state.ipcam}:"
+        f"{state.upgrade_kit_supported}:{state.upgrade_kit_installed}:"
         f"{state.firmware_version}:{state.mc_print_sub_stage}:"
         f"{state.firmware_consistency_request}:{state.firmware_force_upgrade}:"
         f"{ams_dry_key}:{ams_tray_key}:{state.ams_auto_switch_filament}:{ams_backup_key}:"
@@ -1861,7 +1931,13 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     try:
         printer_info = printer_manager.get_printer(printer_id)
         if printer_info:
-            await mqtt_relay.on_printer_status(printer_id, state, printer_info.name, printer_info.serial_number)
+            await mqtt_relay.on_printer_status(
+                printer_id,
+                state,
+                printer_info.name,
+                printer_info.serial_number,
+                awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
+            )
     except Exception:
         pass  # Don't fail status callback if MQTT fails
 
@@ -2466,6 +2542,22 @@ async def on_ams_change(printer_id: int, ams_data: list):
                         if printing_now:
                             logger.info(
                                 "Auto-unlink skipped: spool %d AMS%d-T%d - slot empty during a running print (runout?)",
+                                assignment.spool_id,
+                                assignment.ams_id,
+                                assignment.tray_id,
+                            )
+                            continue
+                        # Off a print too, on firmware's own say-so: a blank report
+                        # from a slot whose presence bit is set describes a spool the
+                        # AMS cannot identify (non-RFID, or a reset slot), not one
+                        # that was taken out — the 9 is our own stale stamp. Deleting
+                        # the row threw away the identity the user had supplied
+                        # (upstream #3100). A slot the bit calls empty, or one with no
+                        # bit, still unlinks.
+                        if spool_present(current_tray) is True:
+                            logger.info(
+                                "Auto-unlink skipped: spool %d AMS%d-T%d - slot still occupied, "
+                                "tray reports no filament data yet",
                                 assignment.spool_id,
                                 assignment.ams_id,
                                 assignment.tray_id,
@@ -3776,6 +3868,25 @@ async def _find_live_hash_twin(db, printer_id: int, exclude_id: int, content_has
     return (await db.execute(stmt.limit(1))).scalar_one_or_none()
 
 
+def _name_after_plate_reject(subtask_name: str, corrected_subtask: str | None, filename: str | None) -> str:
+    """The title a row keeps after the wrong-plate guard (#1204) refused its 3MF.
+
+    ``corrected_subtask`` is the name re-pointed at the running plate. Without
+    one, the original name still titles the row when it carries no plate
+    suffix — ``swap_plate_suffix`` returns None for that too, and such a name
+    holds no stale plate number to be wrong about (upstream ebc72e1d, #3126);
+    blanking it dropped the project name and titled the row ``plate_1`` from the
+    gcode path. Only with no name at all is the gcode file's stem what is left.
+    Title only: the stale name stays disowned for lookups.
+    """
+    name = corrected_subtask or subtask_name
+    if name:
+        return name
+    if not filename:
+        return ""
+    return filename.split("/")[-1].replace(".gcode.3mf", "").replace(".gcode", "").replace(".3mf", "")
+
+
 async def on_print_start(printer_id: int, data: dict):
     """Own the short start-resolution window around archive persistence."""
 
@@ -4063,12 +4174,18 @@ async def _on_print_start_impl(printer_id: int, data: dict):
             subtask_id,
         )
 
-        # Skip calibration prints - internal printer files should not be archived
-        # Bambu calibration gcode lives under /usr/ (e.g. /usr/etc/print/auto_cali_for_user.gcode)
-        if filename and filename.startswith("/usr/"):
-            logger.info("[CALLBACK] Skipping archive - internal printer file detected: %s", filename)
-            if not notification_sent:
-                await _send_print_start_notification(printer_id, data, logger=logger)
+        # The printer's own jobs — a calibration run is not a user's print. See
+        # utils/print_jobs: the pressure-advance line reports as a subtask name
+        # with no /usr/ path, which a prefix test alone never saw (upstream
+        # 9c938843 / a4a1f4c5 / 164382b3). No "Print started" either: the event
+        # describes the printer calibrating itself, and its completion is
+        # silenced in on_print_complete for the same reason.
+        if is_internal_printer_job(filename, subtask_name):
+            logger.info(
+                "[CALLBACK] Skipping archive - internal printer job detected: filename=%s, subtask=%s",
+                filename,
+                subtask_name,
+            )
             return
 
         if not filename and not subtask_name:
@@ -4696,7 +4813,7 @@ async def _on_print_start_impl(printer_id: int, data: dict):
         await db.commit()
 
         # Shared download helper (same logic used by the retry service).
-        from backend.app.services.archive_download import try_download_3mf
+        from backend.app.services.archive_download import last_download_failure_reason, try_download_3mf
         from backend.app.services.archive_download_retry import archive_download_retry
 
         temp_dir = app_settings.archive_dir / "temp"
@@ -4833,27 +4950,18 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                                 pass
                             temp_path = None
                             downloaded_filename = None
-                            # Override the stale subtask_name so the archive's
-                            # print_name reflects the correct plate. Prefer the swapped
-                            # name when we have one; otherwise let filename win.
-                            if corrected_subtask:
-                                subtask_name = corrected_subtask
-                            else:
-                                subtask_name = ""
                             # The row was named from the lagging subtask_name
                             # before the download could contradict it, and this
                             # branch is where it gets contradicted with no file
                             # to re-derive the name from. A successful
                             # re-download needs no fix — the attach renames from
-                            # the corrected file it actually got.
-                            corrected_name = subtask_name or (
-                                filename.split("/")[-1]
-                                .replace(".gcode.3mf", "")
-                                .replace(".gcode", "")
-                                .replace(".3mf", "")
-                                if filename
-                                else ""
-                            )
+                            # the corrected file it actually got. A name without
+                            # a plate suffix keeps titling the row (#3126).
+                            corrected_name = _name_after_plate_reject(subtask_name, corrected_subtask, filename)
+                            # Disown the stale name for LOOKUPS: it has just
+                            # fetched another plate's 3MF. Only a name re-pointed
+                            # at the running plate survives.
+                            subtask_name = corrected_subtask or ""
                             if corrected_name and corrected_name != archive.print_name:
                                 logger.info(
                                     "Renaming archive %s %r -> %r (stale plate name)",
@@ -4931,7 +5039,9 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                     # unavailable" and what the four retry triggers key on.
                     logger.warning("Could not find 3MF file for print: %s", filename or subtask_name)
                     archive_id = archive.id
-                    await ArchiveService(db).mark_3mf_unavailable(archive_id)
+                    await ArchiveService(db).mark_3mf_unavailable(
+                        archive_id, reason=last_download_failure_reason(printer.id)
+                    )
                     archive = await db.get(PrintArchive, archive_id)
                 else:
                     service = ArchiveService(db)
@@ -5053,6 +5163,15 @@ async def _capture_timelapse_baseline_at_start(printer, printer_id: int, logger:
     try:
         baseline_files, _ = await _list_timelapse_videos(printer)
         _timelapse_baselines[printer_id] = {f.get("name", "") for f in baseline_files}
+        if _last_listing_answered(printer.id):
+            _untrusted_timelapse_baselines.discard(printer_id)
+        else:
+            _untrusted_timelapse_baselines.add(printer_id)
+            logger.warning(
+                "[TIMELAPSE] Baseline for printer %s taken while its storage did not answer — a single new "
+                "recording will still be attached at completion, several will not be guessed between",
+                printer_id,
+            )
         logger.info(
             "[TIMELAPSE] Baseline at print start: %s video files for printer %s",
             len(_timelapse_baselines[printer_id]),
@@ -5062,7 +5181,19 @@ async def _capture_timelapse_baseline_at_start(printer, printer_id: int, logger:
         logger.warning("[TIMELAPSE] Failed to capture baseline at print start: %s", e)
 
 
-async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[str] | None = None):
+def _pop_timelapse_baseline(printer_id: int) -> tuple[set[str] | None, bool]:
+    """Hand a finished print's baseline to its scan: ``(names, trusted)``, both forgotten here.
+
+    ``(None, True)`` when no baseline was taken — the scan takes its own.
+    """
+    trusted = printer_id not in _untrusted_timelapse_baselines
+    _untrusted_timelapse_baselines.discard(printer_id)
+    return _timelapse_baselines.pop(printer_id, None), trusted
+
+
+async def _scan_for_timelapse_with_retries(
+    archive_id: int, baseline_names: set[str] | None = None, *, baseline_trusted: bool = True
+):
     """
     Scan for timelapse with retries using a snapshot-diff approach.
 
@@ -5076,6 +5207,10 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
 
     Falls back to name-matching (print name contained in MP4 filename) if no
     new file appears after all retries.
+
+    *baseline_trusted* is False when the baseline was taken off a card that did
+    not answer; several new recordings are then left for Scan for timelapse
+    instead of the first being taken (audit D6 part 4).
     """
     logger = logging.getLogger(__name__)
 
@@ -5114,6 +5249,13 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
 
                 baseline_files, _ = await _list_timelapse_videos(printer)
                 baseline_names = {f.get("name", "") for f in baseline_files}
+                if not _last_listing_answered(printer.id):
+                    baseline_trusted = False
+                    logger.warning(
+                        "[TIMELAPSE] Fallback baseline for archive %s taken while printer %s did not answer",
+                        archive_id,
+                        printer.id,
+                    )
                 logger.info(
                     "[TIMELAPSE] Baseline snapshot (fallback): %s existing video files for archive %s",
                     len(baseline_names),
@@ -5179,7 +5321,12 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
 
             # Which of them is ours: new since this print started, and — when
             # the printer named the file it just closed — that one specifically.
-            target = _pick_new_recording(video_files, baseline_names, _last_recording_path(printer))
+            target = _pick_new_recording(
+                video_files,
+                baseline_names,
+                _last_recording_path(printer),
+                require_unambiguous=not baseline_trusted,
+            )
 
             if target is not None:
                 file_name = target.get("name")
@@ -5579,12 +5726,15 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
             subtask_id = None
 
         # The same two refusals ``on_print_start`` makes before it would create
-        # anything: an internal calibration file (Bambu keeps its own gcode under
-        # ``/usr/``) is not the user's print, and a print we cannot even name is
-        # not adoptable.
-        if filename.startswith("/usr/"):
+        # anything: the printer's own calibration run is not the user's print
+        # (utils/print_jobs — by path OR by name), and a print we cannot even
+        # name is not adoptable.
+        if is_internal_printer_job(filename, subtask_name):
             logger.info(
-                "[ADOPT] Printer %s is running an internal printer file (%s) — not archived", printer_id, filename
+                "[ADOPT] Printer %s is running an internal printer job (%s / %s) — not archived",
+                printer_id,
+                filename,
+                subtask_name,
             )
             return None
         if not filename and not subtask_name:
@@ -5814,7 +5964,7 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
     """
     from backend.app.models.archive import PrintArchive
     from backend.app.models.printer import Printer
-    from backend.app.services.archive_download import try_download_3mf
+    from backend.app.services.archive_download import last_download_failure_reason, try_download_3mf
     from backend.app.services.archive_download_retry import archive_download_retry
 
     try:
@@ -5844,7 +5994,11 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
                     archive = await db.get(PrintArchive, archive_id)
                     if archive is not None:
                         if not archive.file_path:
-                            archive.extra_data = {**(archive.extra_data or {}), "no_3mf_available": True}
+                            extra = {**(archive.extra_data or {}), "no_3mf_available": True}
+                            reason = last_download_failure_reason(printer.id)
+                            if reason:
+                                extra["no_3mf_reason"] = reason
+                            archive.extra_data = extra
                             await db.commit()
                         # Locked-file firmware never hands the 3MF over, and the
                         # print still runs to the end — so the tracking row is
@@ -8202,6 +8356,19 @@ async def _on_print_complete_impl(
         _bed_cooldown_tasks[printer_id] = task
 
     if not archive_id:
+        # The printer's own calibration run has no archive by design. Returning
+        # before the no-archive notification is not noise control: that path
+        # attributes an unmatched completion to a queue item this printer
+        # finished in the last five minutes — for a calibration run alongside a
+        # real print, an email to its owner that the print is done, early and
+        # twice (upstream 9c938843). Everything above has already run.
+        if is_internal_printer_job(filename, subtask_name):
+            logger.info(
+                "[CALLBACK] Internal printer job completed, no notification: filename=%s, subtask=%s",
+                filename,
+                subtask_name,
+            )
+            return
         logger.warning("Could not find archive for print complete: filename=%s, subtask=%s", filename, subtask_name)
 
         # Still send print-complete/failed/stopped notifications even without an archive.
@@ -8957,9 +9124,10 @@ async def _on_print_complete_impl(
         logger.info("[TIMELAPSE] Timelapse was active during print, scheduling auto-scan for archive %s", archive_id)
         # Schedule timelapse scan as background task with retries
         # The printer needs time to encode the video after print completion
-        baseline = _timelapse_baselines.pop(printer_id, None)
+        baseline, baseline_trusted = _pop_timelapse_baseline(printer_id)
         spawn_background_task(
-            _scan_for_timelapse_with_retries(archive_id, baseline), name=f"timelapse-scan-{archive_id}"
+            _scan_for_timelapse_with_retries(archive_id, baseline, baseline_trusted=baseline_trusted),
+            name=f"timelapse-scan-{archive_id}",
         )
         log_timing("Timelapse scan scheduled")
 
@@ -8974,6 +9142,10 @@ AMS_HISTORY_INTERVAL = 300  # Record every 5 minutes
 AMS_HISTORY_RETENTION_DAYS = 30  # Keep data for 30 days
 INBOX_RETENTION_DAYS = 30  # in-app inbox rows; spec: notification-center §4.4
 _ams_cleanup_counter = 0  # Track recordings to trigger periodic cleanup
+# (printer_id, ams_id) already reported as sending the drop index and no
+# percentage. Logged once each so a printer that does this shows up in a
+# support bundle rather than as a missing humidity reading (upstream #3140).
+_ams_index_only_logged: set[tuple[int, int]] = set()
 # Track alarm cooldowns (printer_id:ams_id:type -> last_alarm_time)
 _ams_alarm_cooldown: dict[str, datetime] = {}
 AMS_ALARM_COOLDOWN_MINUTES = 60  # Don't send same alarm more than once per hour
@@ -9231,20 +9403,30 @@ async def record_ams_history():
                     for ams_data in raw_data["ams"]:
                         ams_id = int(ams_data.get("id", 0))
 
-                        # Get humidity (prefer humidity_raw)
-                        humidity_raw = ams_data.get("humidity_raw")
-                        humidity_idx = ams_data.get("humidity")
-                        humidity = None
-                        if humidity_raw is not None:
-                            try:
-                                humidity = float(humidity_raw)
-                            except (ValueError, TypeError):
-                                pass  # Skip unparseable humidity; will try fallback
-                        if humidity is None and humidity_idx is not None:
-                            try:
-                                humidity = float(humidity_idx)
-                            except (ValueError, TypeError):
-                                pass  # Skip unparseable humidity index value
+                        # Percentage only. The 1-5 index is inverted, so
+                        # charting it as a percentage drew the wettest units as
+                        # the driest (#3140); a unit that reports no percentage
+                        # leaves a gap in the chart instead. See
+                        # utils/ams_humidity.
+                        humidity = ams_humidity_percent(ams_data)
+
+                        # No supported printer is known to send the index
+                        # alone -- the report came from unsupported firmware,
+                        # and no install has been seen using the old fallback.
+                        # "Known" is doing work there, so say so once per unit:
+                        # the alternative is a silent blank card.
+                        if humidity is None and ams_data.get("humidity") is not None:
+                            unit_key = (printer.id, ams_id)
+                            if unit_key not in _ams_index_only_logged:
+                                _ams_index_only_logged.add(unit_key)
+                                logger.info(
+                                    "[%s] AMS %d reports the 1-5 humidity index but no usable humidity_raw "
+                                    "percentage. The index is inverted and is not shown as a percentage "
+                                    "(#3140), so this unit has no humidity reading, chart or alarm. "
+                                    "Please report this with the printer and AMS firmware versions.",
+                                    printer.name,
+                                    ams_id,
+                                )
 
                         # Get temperature
                         temperature = None
@@ -9264,7 +9446,12 @@ async def record_ams_history():
                             printer_id=printer.id,
                             ams_id=ams_id,
                             humidity=humidity,
-                            humidity_raw=float(humidity_raw) if humidity_raw else None,
+                            # Both columns hold the same reading now that the
+                            # index can no longer reach ``humidity``. Writing it
+                            # through the same value also stops a genuine 0%
+                            # from being stored as NULL, which the old truthiness
+                            # test did.
+                            humidity_raw=humidity,
                             temperature=temperature,
                         )
                         db.add(history)
@@ -9990,9 +10177,12 @@ async def lifespan(app: FastAPI):
     # Install Windows-only asyncio Proactor cleanup-RST filter (#1113) before
     # anything else can spawn tasks that might trip it. The filter is a no-op
     # on non-Windows hosts.
-    from backend.app.core.asyncio_handlers import install_proactor_reset_filter
+    from backend.app.core.asyncio_handlers import install_proactor_reset_filter, warn_if_running_on_uvloop
 
     install_proactor_reset_filter()
+    # Before init_db, so it sits near the top of the log rather than below a
+    # migration run (upstream 0dfcff59).
+    warn_if_running_on_uvloop()
 
     # Scratch goes on the data volume, not the system temp — before anything
     # stages its first file there. The backup copies the whole data tree into
@@ -10622,6 +10812,8 @@ async def lifespan(app: FastAPI):
 
     # Start the smart plug scheduler for time-based on/off
     smart_plug_manager.start_scheduler()
+    ha_sensor_manager.start()
+    location_ha_sensor_manager.start()
 
     # Resume any pending auto-offs that were interrupted by restart
     await smart_plug_manager.resume_pending_auto_offs()
@@ -10837,6 +11029,12 @@ async def lifespan(app: FastAPI):
     from backend.app.services.local_worker_broker import stop_local_worker_broker
 
     await start_analysis_runtime(Path(app_settings.base_dir))
+    from backend.app.services.library_file_runtime import start_library_file_runtime, stop_library_file_runtime
+
+    try:
+        await start_library_file_runtime(Path(app_settings.base_dir))
+    except Exception:
+        logging.getLogger(__name__).exception("Library file service unavailable at startup")
 
     yield
 
@@ -10867,6 +11065,8 @@ async def lifespan(app: FastAPI):
     stock_forecast_alerts.stop()
     await background_dispatch.stop()
     smart_plug_manager.stop_scheduler()
+    await ha_sensor_manager.stop()
+    await location_ha_sensor_manager.stop()
     try:
         from backend.app.services.zigbee.coordinator import zigbee_coordinator
         from backend.app.services.zigbee.poller import zigbee_poller
@@ -10964,6 +11164,7 @@ async def lifespan(app: FastAPI):
 
     cancel_running_scans()
     printer_manager.disconnect_all()
+    await stop_library_file_runtime()
     await stop_analysis_runtime()
     await stop_local_worker_broker()
     await close_spoolman_client()
@@ -11099,6 +11300,13 @@ PUBLIC_API_PREFIXES = [
 # ``backend/tests/test_auth_public_patterns.py`` holds the table of every route
 # these are meant to open and fails on drift in either direction.
 PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # ⚠️ An entry lets a header-less request REACH its route; it opens nothing by
+    # itself. Pictures and videos that are not the camera are gated by the
+    # route's MEDIA-token dependency (``require_media_*`` — a signed-in user's
+    # token in ``?token=``, or the ordinary headers, then the resource's own
+    # permission and ownership rule; audit D9 a2). The camera routes keep the
+    # stream token. Anonymous by decision: archive photos (linked from
+    # notifications), external-link icons and the OIDC button icon.
     # Thumbnails
     re.compile(r"^/api/v1/archives/\d+/thumbnail$"),
     re.compile(r"^/api/v1/library/files/\d+/thumbnail$"),
@@ -11113,15 +11321,15 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^/api/v1/archives/\d+/project-image/.+$"),
     # /library/files/{id}/card-file/{zip_path} — the model card's pictures,
     # loaded by <img> from the card dialog. ``{zip_path:path}`` again; the
-    # route's own RequireCameraStreamToken is what authenticates it, this entry
-    # only lets the request reach that gate.
+    # route's own media-token gate is what authenticates it, this entry only
+    # lets the request reach that gate.
     re.compile(r"^/api/v1/library/files/\d+/card-file/.+$"),
     # /products/{id}/attachment-image/{filename} — a product's gallery
     # pictures, loaded by <img> from the product page. Same reasoning: the
     # bearer-only attachment download deliberately lives under /attachments/
     # instead, so no pattern here can reach it.
     re.compile(r"^/api/v1/products/\d+/attachment-image/[^/]+$"),
-    # The product and order covers, both stream-token routes. The write methods
+    # The product and order covers, both media-token routes. The write methods
     # share these paths and ride in with them — the middleware sees a path, not
     # a method — and are stopped by their own PROJECTS_UPDATE permission.
     re.compile(r"^/api/v1/products/\d+/cover-image$"),
@@ -11197,10 +11405,11 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     # The nonce itself is the credential: 32-byte random, single-use, ~30s TTL.
     re.compile(r"^/api/v1/obico/cached-frame/[^/]+$"),
     # MakerWorld covers and the thumbnail proxy (B.5 — 0.5.x cycle). <img> tags
-    # can't send Authorization headers and would 401 every image; the proxy's
-    # upstream is MakerWorld's *public* CDN (anyone visiting makerworld.com can
-    # fetch without auth) and the route's SSRF guard restricts the upstream host
-    # to the MakerWorld CDN allowlist, so it can't be abused as an open proxy.
+    # can't send Authorization headers and would 401 every image here; the
+    # routes' own media-token gates authenticate them (the covers under the
+    # library file's ownership, the proxy under MakerWorld's view permission),
+    # and the proxy's SSRF guard still restricts the upstream to the CDN
+    # allowlist.
     re.compile(r"^/api/v1/makerworld/imports/\d+/cover$"),
     re.compile(r"^/api/v1/makerworld/imports/\d+/cover-variant$"),
     re.compile(r"^/api/v1/makerworld/thumbnail$"),
@@ -11660,6 +11869,8 @@ app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
 app.include_router(makerworld.router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
 app.include_router(zigbee.router, prefix=app_settings.api_prefix)
+app.include_router(ha_sensors.router, prefix=app_settings.api_prefix)
+app.include_router(location_ha_sensors.router, prefix=app_settings.api_prefix)
 app.include_router(print_queue.router, prefix=app_settings.api_prefix)
 app.include_router(print_options_preferences.router, prefix=app_settings.api_prefix)
 app.include_router(auto_queue.router, prefix=app_settings.api_prefix)

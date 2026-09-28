@@ -53,15 +53,18 @@ from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
+from backend.app.models.settings import Settings
 from backend.app.services.auto_queue_ams import _normalize_color_for_compare
 from backend.app.services.filament_intake import read_item_requirements, routing_detail
 from backend.app.services.filament_policy import auto_policy
 from backend.app.services.filament_preflight import feed_signature
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.filament_routing import resolve_filament_routing
+from backend.app.services.offline_feed import offline_shortfall
 from backend.app.services.print_scheduler import _canonical_filament_type, scheduler
 from backend.app.services.printer_location_service import load_tree, path_of, subtree_ids
 from backend.app.services.printer_manager import printer_manager
+from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.printer_models import normalize_model_name
 
 logger = logging.getLogger(__name__)
@@ -242,7 +245,16 @@ async def printers_for_item(db: AsyncSession, item: AutoQueueItem) -> tuple[list
             location_suffix = f" in {path_of(tree, item.target_location_id)}"
 
     result = await db.execute(query)
-    printers = [p for p in result.scalars().all() if normalize_model_name(p.model) == normalized_model]
+    setting = await db.scalar(select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
+    allow_compatible = isinstance(setting, str) and setting.lower() == "true"
+    exact, compatible = [], []
+    for printer in result.scalars().all():
+        verdict = model_compatibility(normalized_model, printer_manager.effective_model_for(printer.id, printer.model))
+        if verdict == "exact":
+            exact.append(printer)
+        elif verdict == "compatible" and allow_compatible:
+            compatible.append(printer)
+    printers = exact + compatible
     return printers, normalized_model, location_suffix
 
 
@@ -298,7 +310,16 @@ async def find_eligible_printer(
     *,
     cache: PrintRequirementsCache | None = None,
     prefer_lowest: bool = False,
+    offline_feeds=None,
+    interlocked_printers: set[int] | None = None,
 ) -> EligiblePrinter:
+    """The best printer for ``item`` now, or why there is none.
+
+    ``offline_feeds`` (an ``offline_feed.OfflineFeedCache``) lets a switched-off
+    printer be described by what it lacks instead of as "offline": it is the
+    same answer the wake step acts on, so the reason says why nothing was
+    switched on (upstream #2876). Without it an off printer reads as offline.
+    """
     if item.target_model:
         printers, normalized_model, location_suffix = await printers_for_item(db, item)
         if not printers:
@@ -315,6 +336,10 @@ async def find_eligible_printer(
     policy = auto_policy(item)
     candidates, reasons = [], []
     for printer in printers:
+        verdict = model_compatibility(req.model, printer_manager.effective_model_for(printer.id, printer.model))
+        if verdict not in ("exact", "compatible"):
+            reasons.append(f"{printer.name}: incompatible file model")
+            continue
         if printer.id in busy_printers:
             reasons.append(f"{printer.name}: " + routing_detail("printer_busy")["message"])
             continue
@@ -325,17 +350,38 @@ async def find_eligible_printer(
         # the assignment's re-read is compared to, and only here are the policy
         # and that snapshot both in hand.
         snapshot = printer_manager.get_feed_snapshot(printer.id)
-        result = resolve_filament_routing(req, policy, snapshot, prefer_lowest=prefer_lowest)
+        if not snapshot.connected and offline_feeds is not None:
+            feed = await offline_feeds.get(db, printer.id)
+            missing = offline_shortfall(req, policy, feed)
+            if missing:
+                loaded = ", ".join(dict.fromkeys(s.material for s in feed.sources))
+                reasons.append(
+                    f"{printer.name}: "
+                    + routing_detail(
+                        "printer_off_missing_filament",
+                        slot=missing[0]["slot"],
+                        wanted=missing[0]["wanted"],
+                        loaded=loaded,
+                    )["message"]
+                )
+                continue
+        result = resolve_filament_routing(
+            req, policy, snapshot, exact_model=verdict == "exact", prefer_lowest=prefer_lowest
+        )
         if result.plan is None:
             # With the facts: this line names ONE printer, so its trays can be
             # listed. Without them a farm-wide refusal reads as 24 identical
             # sentences and the operator cannot tell which channel disagreed.
             reasons.append(f"{printer.name}: " + routing_detail(result.reason, **result.params)["message"])
             continue
-        ready = scheduler._is_printer_idle(printer.id, require_plate_clear)
-        candidates.append((ready, result.plan.color_matches, -printer.id, printer, result.plan, snapshot))
+        ready = scheduler._is_printer_idle(printer.id, require_plate_clear) and printer.id not in (
+            interlocked_printers or ()
+        )
+        candidates.append(
+            (ready, verdict == "exact", result.plan.color_matches, -printer.id, printer, result.plan, snapshot)
+        )
     if candidates:
-        _, _, _, printer, plan, snapshot = max(candidates, key=lambda c: c[:3])
+        _, _, _, _, printer, plan, snapshot = max(candidates, key=lambda c: c[:4])
         return EligiblePrinter(
             printer, plan=plan, requirements=req, snapshot_signature=feed_signature(policy, snapshot)
         )

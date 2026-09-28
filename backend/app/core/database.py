@@ -118,9 +118,38 @@ def _resolve_pool_kwargs() -> dict:
     return kwargs
 
 
+def _resolve_connect_args() -> dict:
+    """Connect args that pin a PostgreSQL session to UTC (upstream #2855).
+
+    ``DateTime`` columns here are naive and hold UTC, and the frontend reads an
+    offsetless timestamp as UTC. Python-side writes honour that, but many columns
+    are filled by the database — ``server_default=func.now()`` in the models,
+    ``DEFAULT CURRENT_TIMESTAMP`` in migration DDL. On PostgreSQL ``now()`` is a
+    ``timestamptz``, so storing it into ``timestamp without time zone`` casts it
+    through the session ``TimeZone``: a server initialised with
+    ``TZ=Europe/Istanbul`` stamped every defaulted row three hours ahead. Pinning
+    the session makes that cast a no-op whatever the server's own setting. The
+    bundled PostgreSQL is initialised on UTC already; an external one is the
+    operator's, so every PostgreSQL session gets the pin.
+
+    SQLite needs nothing — its ``CURRENT_TIMESTAMP`` is UTC by definition — and
+    aiosqlite would reject an unknown connect arg.
+    """
+    if is_sqlite():
+        return {}
+    # asyncpg takes it in the startup packet; any other PostgreSQL driver goes
+    # through libpq, which takes the same setting as a command-line option.
+    if "+asyncpg" in settings.database_url:
+        return {"server_settings": {"timezone": "UTC"}}
+    return {"options": "-c timezone=UTC"}
+
+
 def _create_engine():
     """Create the async engine with dialect-appropriate settings."""
     kwargs = _resolve_pool_kwargs()
+    connect_args = _resolve_connect_args()
+    if connect_args:
+        kwargs["connect_args"] = connect_args
 
     global _pool_config
     _pool_config = {
@@ -317,6 +346,7 @@ def import_all_models() -> None:
         firmware,
         git_backup,
         group,
+        ha_sensor_history,
         hms_mute,
         kprofile_note,
         label_device,
@@ -328,6 +358,8 @@ def import_all_models() -> None:
         line_config,
         local_preset,
         location,
+        location_ha_sensor,
+        location_sensor_primary,
         long_lived_token,
         macro,
         maintenance,
@@ -341,6 +373,7 @@ def import_all_models() -> None:
         print_queue,
         print_usage_event,
         printer,
+        printer_ha_sensor,
         printer_location,
         printer_queue,
         printer_sensor_history,
@@ -360,6 +393,7 @@ def import_all_models() -> None:
         smart_plug_energy_snapshot,
         smart_plug_power_history,
         smart_sensor,
+        smart_sensor_binding,
         smart_sensor_history,
         smart_sensor_threshold,
         spool,

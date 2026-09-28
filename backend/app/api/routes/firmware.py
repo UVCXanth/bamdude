@@ -328,6 +328,13 @@ async def get_firmware_upload_status(
 # ---------------------------------------------------------------------------
 
 
+async def _installable_versions(model: str):
+    """Versions with an offline download URL or a file in the local store."""
+    cached = {sf.version for sf in await firmware_store.list_cached(model)}
+    versions = await get_firmware_service().get_available_versions(model)
+    return [v for v in versions if v.download_url or v.version in cached], cached
+
+
 def _batch_run_to_out(run: FirmwareBatchRun, items: list[FirmwareBatchItem]) -> BatchRunOut:
     return BatchRunOut(
         id=run.id,
@@ -380,6 +387,16 @@ async def start_batch(
         targets.append(BatchTarget(printer_id=t.printer_id, model=model, version=version, from_version=from_version))
     if not targets:
         raise HTTPException(400, "No eligible printers (all skipped or unresolved)")
+    for model, version in {(t.model, t.version) for t in targets}:
+        versions, _ = await _installable_versions(model)
+        if version not in {v.version for v in versions}:
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "firmware_file_unavailable",
+                    "message": f"No offline firmware file is available for {model} {version}",
+                },
+            )
     run_id = await firmware_batch_service.start_batch(targets, actor_id=user.id if user else None)
     return BatchStartResponse(run_id=run_id)
 
@@ -391,7 +408,6 @@ async def preview_batch(
     _: User | None = RequirePermission(Permission.FIRMWARE_READ),
 ):
     """Group the selected printers by model and report versions + skip list."""
-    svc = get_firmware_service()
     groups: dict[str, PreviewModelGroup] = {}
     for t in body.targets:
         printer = (await db.execute(select(Printer).where(Printer.id == t.printer_id))).scalar_one_or_none()
@@ -399,15 +415,14 @@ async def preview_batch(
             continue
         model = printer.model or "Unknown"
         if model not in groups:
-            versions = [v.version for v in await svc.get_available_versions(model)]
-            latest = await svc.get_latest_version(model)
-            cached = [sf.version for sf in await firmware_store.list_cached(model)]
+            installable, cached = await _installable_versions(model)
+            versions = [v.version for v in installable]
             groups[model] = PreviewModelGroup(
                 model=model,
                 printer_ids=[],
                 available_versions=versions,
-                cached_versions=cached,
-                default_version=(latest.version if latest else None),
+                cached_versions=sorted(cached),
+                default_version=versions[0] if versions else None,
                 remote_apply=get_firmware_profile(model).remote_apply,
                 skipped_printer_ids=[],
             )

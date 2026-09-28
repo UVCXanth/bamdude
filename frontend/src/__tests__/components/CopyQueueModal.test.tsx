@@ -169,6 +169,12 @@ describe('where it can go', () => {
     expect(copyTargets([SOURCE], SOURCE)).toEqual([]);
   });
 
+  it('checks every selected file against a directed target model', () => {
+    const queues = [SOURCE, queue({ printer_id: 2, printer_model: 'P1P' })];
+    expect(copyTargets(queues, SOURCE, ['P1S'], { P1P: ['P1S'] }).map((q) => q.printer_id)).toEqual([2]);
+    expect(copyTargets(queues, SOURCE, ['P1S', 'A1'], { P1P: ['P1S'] })).toEqual([]);
+  });
+
   it('survives queues it has not been given yet', () => {
     expect(copyTargets(undefined, SOURCE)).toEqual([]);
   });

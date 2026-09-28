@@ -328,6 +328,7 @@ def _copy_item_fields(src: PrintQueueItem, new_batch_id: str | None, new_positio
         ams_mapping=src.ams_mapping,
         filament_routing=src.filament_routing,
         nozzle_mapping=src.nozzle_mapping,
+        nozzle_rack_choice=src.nozzle_rack_choice,
         plate_id=src.plate_id,
         bed_levelling=src.bed_levelling,
         bed_levelling_mode=src.bed_levelling_mode,

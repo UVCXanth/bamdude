@@ -21,6 +21,7 @@ from backend.app.services.telegram_handlers.common import (
     scene_expired,
 )
 from backend.app.services.telegram_handlers.pagination import build_page_nav
+from backend.app.utils.model_compatibility import model_compatibility
 
 if TYPE_CHECKING:
     from backend.app.models.telegram_chat import TelegramChat
@@ -180,14 +181,18 @@ async def cb_library_select_file(
     printers = await get_printers_data(tg_chat)
     idle_printers = [p for p in printers if p["connected"] and p["state"] in ("IDLE", "FINISH")]
     if sliced_for_model:
-        compatible = [p for p in idle_printers if p["model"] and p["model"].upper() == sliced_for_model.upper()]
-        # If compatible found, show only those; otherwise show all (user's choice)
-        if compatible:
-            idle_printers = compatible
+        idle_printers = [
+            p
+            for p in idle_printers
+            if model_compatibility(sliced_for_model, p.get("effective_model") or p["model"]) in ("exact", "compatible")
+        ]
+        idle_printers.sort(
+            key=lambda p: model_compatibility(sliced_for_model, p.get("effective_model") or p["model"]) != "exact"
+        )
 
     if not idle_printers:
         await callback.message.edit_text(
-            f"\U0001f5a8 {escape_md(t(lang, NS, 'library.no_printers'))}",
+            f"\U0001f5a8 {escape_md(t(lang, NS, 'library.no_compatible_printers' if sliced_for_model else 'library.no_printers'))}",
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
@@ -210,7 +215,7 @@ async def cb_library_select_file(
         btns.append(
             [
                 InlineKeyboardButton(
-                    text=f"\U0001f5a8 {p['name']}",
+                    text=f"\U0001f5a8 {p['name']}{' ≈' if sliced_for_model and model_compatibility(sliced_for_model, p.get('effective_model') or p['model']) == 'compatible' else ''}",
                     callback_data=f"lib:printer:{p['id']}",
                 )
             ]
@@ -250,13 +255,27 @@ async def cb_library_select_printer(
     printer_name = printer["name"] if printer else f"#{printer_id}"
 
     await state.set_state(LibraryPrintState.confirming)
-    await state.update_data(printer_id=printer_id, printer_name=printer_name)
+    await state.update_data(
+        printer_id=printer_id,
+        printer_name=printer_name,
+        printer_model=(printer.get("effective_model") or printer["model"]) if printer else None,
+    )
 
     text = (
         f"\u2705 *{escape_md(t(lang, NS, 'library.confirm_title'))}*\n\n"
         f"\U0001f4c4 {escape_md(t(lang, NS, 'library.confirm_file'))}: *{escape_md(file_name)}*\n"
         f"\U0001f5a8 {escape_md(t(lang, NS, 'library.confirm_printer'))}: *{escape_md(printer_name)}*"
     )
+    if model_compatibility(data.get("sliced_for_model"), data.get("printer_model")) == "compatible":
+        text += "\n\n" + escape_md(
+            t(
+                lang,
+                NS,
+                "model_compatible_warning",
+                file_model=data["sliced_for_model"],
+                printer_model=data["printer_model"],
+            )
+        )
 
     await callback.message.edit_text(
         text,
@@ -347,6 +366,7 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
         discard_staged,
         plan_capture,
         publish_staged,
+        staged_requirements,
     )
 
     queue_id = await resolve_queue_id(printer_id)
@@ -378,6 +398,14 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
             # does — back at the menu, rather than returning from the middle.
             plan = plan_capture(library_file=library_file)
         staged = await capture_staged(plan)
+        from backend.app.services.filament_requirements import PrintRequirementsCache
+        from backend.app.services.queue_add import _check_captured_model
+
+        requirements = await staged_requirements(
+            staged, PrintRequirementsCache(), None, library_file, None, allow_raw_gcode=True
+        )
+        async with async_session() as db:
+            await _check_captured_model(db, printer_id, requirements.model if requirements else None)
 
         async def attach(session, source) -> None:
             session.add(

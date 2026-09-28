@@ -39,11 +39,13 @@ from backend.app.services import queue_sources
 from backend.app.services.filament_intake import (
     item_descriptor,
     require_source_requirements,
+    resolve_source_path,
     routing_detail,
     source_display_filename,
 )
 from backend.app.services.filament_policy import choices_policy, record_queue_source, serialize_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
+from backend.app.services.library_helpers import sliced_by_content
 from backend.app.services.order_filing import resolve_line_id
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_ops import place_pending_block, queue_scope_lock
@@ -58,7 +60,28 @@ from backend.app.services.queue_source_capture import (
 )
 from backend.app.services.source_io import SourceUnavailable
 from backend.app.utils.filename import InvalidFilenameError, is_sliced_file, validate_print_filename
-from backend.app.utils.printer_models import is_gcode_compatible
+from backend.app.utils.model_compatibility import model_compatibility
+
+
+def _rack_choice_json(data: PrintQueueItemCreate) -> str | None:
+    """The rack-position pick as the column stores it (upstream #1784); None = auto."""
+    return json.dumps(data.nozzle_rack_choice) if data.nozzle_rack_choice else None
+
+
+async def _check_captured_model(db: AsyncSession, printer_id: int | None, file_model: str | None) -> None:
+    """Decide from the captured file, never stale archive or library metadata."""
+    if printer_id is None or not file_model:
+        return
+    from backend.app.models.printer import Printer
+
+    printer_model = await db.scalar(select(Printer.model).where(Printer.id == printer_id))
+    if (
+        model_compatibility(file_model, printer_manager.effective_model_for(printer_id, printer_model))
+        == "incompatible"
+    ):
+        raise HTTPException(
+            400, f"File was sliced for {file_model} and cannot be dispatched to a {printer_model} printer"
+        )
 
 
 async def add_items_to_printer_queue(
@@ -159,30 +182,15 @@ async def add_items_to_printer_queue(
         # dispatcher refuses it too, but by then the item has been sitting
         # pending and the refusal reaches nobody. Held by the bulk library route
         # until that route was replaced by the Schedule dialog; it belongs here,
-        # where every caller passes.
-        if not is_sliced_file(library_file.filename):
-            raise HTTPException(400, "Not a sliced file. Only .gcode or .gcode.3mf files can be printed.")
-
-    # Cross-model safety gate (#2578): a G-code 3MF sliced for one model must not
-    # be queued to a printer it can't run on. This is the per-printer tier — the
-    # item binds to this queue's printer and the dispatcher hands it straight over
-    # with no human in the loop — so an API-created (or UI) mismatch is rejected
-    # here. Missing slice metadata never blocks (see is_gcode_compatible).
-    sliced_for = None
-    if archive:
-        sliced_for = archive.sliced_for_model
-    elif library_file and library_file.file_metadata:
-        sliced_for = library_file.file_metadata.get("sliced_for_model")
-    if sliced_for and queue.printer_id is not None:
-        from backend.app.models.printer import Printer
-
-        printer_model = (
-            await db.execute(select(Printer.model).where(Printer.id == queue.printer_id))
-        ).scalar_one_or_none()
-        if not is_gcode_compatible(sliced_for, printer_model):
+        # where every caller passes. A sliced 3MF named ``Foo.3mf`` passes on its
+        # contents (upstream #2993) — the file manager offers it Print.
+        if not is_sliced_file(library_file.filename) and not await sliced_by_content(
+            library_file.filename,
+            resolve_source_path(library_file=library_file),
+            file_metadata=library_file.file_metadata,
+        ):
             raise HTTPException(
-                400,
-                f"File was sliced for {sliced_for} and cannot be dispatched to a {printer_model} printer",
+                400, "Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed."
             )
 
     # Validate project exists before insert so a bogus ID yields 404, not an FK-constraint 500
@@ -239,6 +247,7 @@ async def add_items_to_printer_queue(
             if any(override.slot_id not in used_slots for override in data.filament_overrides or []):
                 raise HTTPException(422, routing_detail("override_slot_not_used"))
             data = data.model_copy(update={"plate_id": requirements.resolved_plate_id})
+            await _check_captured_model(db, queue.printer_id, requirements.model)
         created_ids = await _publish_items(
             data,
             staged,
@@ -314,7 +323,9 @@ async def _add_items_from_queue_source(
         validate_print_filename(filename)
     except InvalidFilenameError as exc:
         raise HTTPException(422, routing_detail("source_unreadable")) from exc
-    if not is_sliced_file(filename):
+    # The snapshot keeps the name it was captured under, so a sliced ``Foo.3mf``
+    # is judged on the captured bytes, exactly as the job that owns them was.
+    if not is_sliced_file(filename) and not await sliced_by_content(filename, descriptor.path):
         raise HTTPException(422, routing_detail("source_unreadable"))
 
     # Read only the immutable object, pinned against collection.  The original
@@ -343,7 +354,12 @@ async def _add_items_from_queue_source(
             printer_model = (
                 await db.execute(select(Printer.model).where(Printer.id == queue.printer_id))
             ).scalar_one_or_none()
-            if not is_gcode_compatible(requirements.model, printer_model):
+            if (
+                model_compatibility(
+                    requirements.model, printer_manager.effective_model_for(queue.printer_id, printer_model)
+                )
+                == "incompatible"
+            ):
                 raise HTTPException(
                     400,
                     f"File was sliced for {requirements.model} and cannot be dispatched to a {printer_model} printer",
@@ -416,6 +432,7 @@ async def _add_items_from_queue_source(
                         manual_start=data.manual_start,
                         require_previous_success=data.require_previous_success,
                         ams_mapping=ams_mapping_json,
+                        nozzle_rack_choice=_rack_choice_json(data),
                         filament_routing=stamped_routing,
                         plate_id=data.plate_id,
                         bed_levelling=mode_to_bool(data.bed_levelling),
@@ -567,6 +584,7 @@ async def _publish_items(
                         manual_start=data.manual_start,
                         require_previous_success=data.require_previous_success,
                         ams_mapping=ams_mapping_json,
+                        nozzle_rack_choice=_rack_choice_json(data),
                         filament_routing=stamped_routing,
                         plate_id=data.plate_id,
                         bed_levelling=mode_to_bool(data.bed_levelling),
@@ -659,6 +677,7 @@ def _new_rows_for_data(
             manual_start=data.manual_start,
             require_previous_success=data.require_previous_success,
             ams_mapping=json.dumps(data.ams_mapping) if data.ams_mapping else None,
+            nozzle_rack_choice=_rack_choice_json(data),
             filament_routing=record_queue_source(routing, source),
             plate_id=data.plate_id,
             bed_levelling=mode_to_bool(data.bed_levelling),
@@ -776,19 +795,13 @@ async def add_next_block_to_printer_queue(
             validate_print_filename(library_file.filename)
         except InvalidFilenameError as exc:
             raise HTTPException(400, str(exc)) from exc
-        if not is_sliced_file(library_file.filename):
-            raise HTTPException(400, "Not a sliced file. Only .gcode or .gcode.3mf files can be printed.")
-
-    sliced_for = archive.sliced_for_model if archive else (library_file.file_metadata or {}).get("sliced_for_model")
-    if sliced_for and queue.printer_id is not None:
-        from backend.app.models.printer import Printer
-
-        printer_model = (
-            await db.execute(select(Printer.model).where(Printer.id == queue.printer_id))
-        ).scalar_one_or_none()
-        if not is_gcode_compatible(sliced_for, printer_model):
+        if not is_sliced_file(library_file.filename) and not await sliced_by_content(
+            library_file.filename,
+            resolve_source_path(library_file=library_file),
+            file_metadata=library_file.file_metadata,
+        ):
             raise HTTPException(
-                400, f"File was sliced for {sliced_for} and cannot be dispatched to a {printer_model} printer"
+                400, "Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed."
             )
 
     effective_project_ids = await _effective_project_ids(db, data_items)
@@ -807,6 +820,7 @@ async def add_next_block_to_printer_queue(
                 if any(override.slot_id not in used_slots for override in data.filament_overrides or []):
                     raise HTTPException(422, routing_detail("override_slot_not_used"))
                 data = data.model_copy(update={"plate_id": requirements.resolved_plate_id})
+                await _check_captured_model(db, queue.printer_id, requirements.model)
             resolved.append((data, requirements, effective_project_id))
 
         created_ids: list[int] = []
@@ -896,7 +910,7 @@ async def _add_next_block_from_queue_source(
         validate_print_filename(filename)
     except (SourceUnavailable, InvalidFilenameError) as exc:
         raise HTTPException(422, routing_detail("source_unreadable")) from exc
-    if not is_sliced_file(filename):
+    if not is_sliced_file(filename) and not await sliced_by_content(filename, descriptor.path):
         raise HTTPException(422, routing_detail("source_unreadable"))
 
     effective_project_ids = await _effective_project_ids(db, data_items)
@@ -918,7 +932,12 @@ async def _add_next_block_from_queue_source(
                         printer_model = (
                             await db.execute(select(Printer.model).where(Printer.id == queue.printer_id))
                         ).scalar_one_or_none()
-                        if not is_gcode_compatible(requirements.model, printer_model):
+                        if (
+                            model_compatibility(
+                                requirements.model, printer_manager.effective_model_for(queue.printer_id, printer_model)
+                            )
+                            == "incompatible"
+                        ):
                             raise HTTPException(
                                 400,
                                 f"File was sliced for {requirements.model} and cannot be dispatched to a {printer_model} printer",

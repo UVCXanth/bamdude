@@ -77,6 +77,8 @@ PROVIDER_EVENT_DEFAULTS: dict[str, bool] = {
     "on_ams_ht_temperature_high": False,
     "on_sensor_threshold": False,
     "on_sensor_silent": False,
+    "on_ha_sensor_alert": False,
+    "on_location_ha_sensor_alert": False,
     "on_plate_not_empty": True,
     "on_bed_cooled": False,
     "on_first_layer_complete": False,

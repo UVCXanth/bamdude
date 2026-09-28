@@ -1,27 +1,8 @@
-"""Scanning an external folder without holding the database while it happens.
+"""Incremental external-folder scan using the shared library file worker.
 
-The scan used to be the request. It opened a write transaction on the first
-subfolder it discovered and committed after the last file — with the entire walk
-of the share in between. On a NAS that is minutes, and SQLite lets nobody else
-write for the duration, so unrelated queries died with ``database is locked``
-fifteen seconds in and the traceback named whichever innocent statement happened
-to be next. (Reported against a Synology mount; the log blamed the WebSocket
-token cleanup, which had nothing to do with it.)
-
-Two rules make that impossible here, and they are the whole design:
-
-1. **Nothing slow happens inside a session.** Walking, stat-ing, hashing and
-   parsing are done first, into plain data. The session is opened afterwards,
-   holds the lock for milliseconds, and closes.
-2. **Nothing slow happens on the event loop.** Every blocking call goes through
-   ``asyncio.to_thread``. Short transactions alone would not have stopped the
-   WebSocket dropping — what stalled the loop was the network and the parser.
-
-⚠️ **The helpers still live in ``api/routes/library.py``** and are imported
-lazily, inside the functions that use them, because that module imports this one.
-They are pure functions that belong in a service; moving them means touching a
-3800-line route in eight places, which does not belong in a bug fix. Recorded as
-debt rather than done quietly.
+The worker walks, stats, hashes and parses outside main; this module holds only
+short DB transactions for folder/file publication. A failed or incomplete walk
+never enters the destructive deletion pass.
 """
 
 from __future__ import annotations
@@ -35,14 +16,13 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.library_scan import LibraryScanJob
-from backend.app.services.product_sync import purge_file_product_links, resync_file_products
+from backend.app.services.product_sync import inherit_folder_products, purge_file_product_links, resync_file_products
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +62,11 @@ class _Known:
     file_hash: str | None
     file_size: int | None
     fs_modified_at: datetime | None
+    #: The stored ``has_sliced_gcode`` — ``None`` when the row never got one
+    #: (every row this scan wrote before it asked, upstream #2993).
+    sliced: bool | None = None
+    extraction_version: int | None = None
+    extraction_hash: str | None = None
 
 
 @dataclass
@@ -103,174 +88,81 @@ class _Prepared:
     content_hash: str | None = None
     thumbnail_path: str | None = None
     file_metadata: dict | None = field(default=None)
+    #: A refresh's new answer to "does this 3MF hold G-code", set only when it
+    #: differs from what the row stores.
+    sliced: bool | None = None
+    metadata_complete: bool = False
+    expected_hash: str | None = None
 
 
-# ── The walk ─────────────────────────────────────────────────────────────────
-
-
-def _walk_sync(root: Path, show_hidden: bool) -> list[tuple[str, list[str]]]:
-    """Every directory under ``root`` with the files in it.
-
-    ⚠️ Runs in a thread. On a network share each ``readdir`` is a round trip, and
-    on the event loop that stalls every other request in the process — which is
-    what made the WebSocket drop, which made the frontend ask for a token, which
-    is the request the user saw fail.
-    """
-    out: list[tuple[str, list[str]]] = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        if not show_hidden:
-            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-            filenames = [f for f in filenames if not f.startswith(".")]
-        out.append((dirpath, filenames))
-    return out
-
-
-async def collect_tree(root: Path, show_hidden: bool) -> list[tuple[str, list[str]]]:
-    """The whole tree up front, off the loop.
-
-    Collected rather than streamed for a second reason beyond not blocking: it
-    is what gives the job a total, and progress that is a fraction beats a
-    number rising toward nothing in particular.
-    """
-    return await asyncio.to_thread(_walk_sync, root, show_hidden)
-
-
-# ── Examining one file, with no session in hand ──────────────────────────────
-
-
-def _prepare_sync(
+async def prepare_via_service(
     dirpath: str,
     filename: str,
     root: Path,
     known: _Known | None,
     folder_rel: str,
+    size: int,
+    mtime_ns: int,
 ) -> _Prepared | None:
-    """Everything about a file that can be learned without the database.
+    """The scan's production path through the shared local file worker."""
+    from backend.app.api.routes.library import _mtime_to_utc, get_library_thumbnails_dir, to_relative_path
+    from backend.app.services.library_file_preparation import EXTRACTION_VERSION, SCANNABLE_EXTENSIONS
+    from backend.app.services.library_file_runtime import get_library_file_runtime
 
-    ⚠️ Runs in a thread and opens no session. The hash reads the whole file over
-    the network and the 3MF parser unzips it — doing either with a transaction
-    open is the bug this module exists to fix.
-    """
-    from backend.app.api.routes.library import (
-        _SCANNABLE_EXTENSIONS,
-        IMAGE_EXTENSIONS,
-        _clean_3mf_metadata,
-        _mtime_to_utc,
-        calculate_file_hash,
-        create_image_thumbnail,
-        extract_gcode_thumbnail,
-        get_library_thumbnails_dir,
-        to_relative_path,
+    path = Path(dirpath) / filename
+    if path.suffix.lower() not in SCANNABLE_EXTENSIONS:
+        return None
+    runtime = get_library_file_runtime()
+    mtime = _mtime_to_utc(mtime_ns / 1e9)
+    complete = (
+        known is not None
+        and known.extraction_version == EXTRACTION_VERSION
+        and known.extraction_hash == known.file_hash
+        and (not filename.lower().endswith(".3mf") or known.sliced is not None)
     )
-    from backend.app.services.archive import ThreeMFParser
-    from backend.app.services.library_helpers import detect_file_type
-    from backend.app.services.library_ingest import external_hash_is_stale
-
-    filepath = (
-        Path(dirpath) / filename
-    )  # SEC-PATH-OK: dirpath+filename come from os.walk of the folder root, not from a request
-    ext = filepath.suffix.lower()
-    if ext not in _SCANNABLE_EXTENSIONS:
-        compound = "".join(filepath.suffixes[-2:]).lower() if len(filepath.suffixes) >= 2 else ""
-        if compound not in _SCANNABLE_EXTENSIONS:
-            return None
-
-    # A symlink that leaves the mount is not part of this folder.
-    try:
-        filepath.resolve().relative_to(root.resolve())
-    except (ValueError, OSError):
+    if known and complete and known.file_size == size and known.fs_modified_at == mtime:
         return None
-
-    try:
-        stat = filepath.stat()
-    except OSError:
-        return None
-    fs_modified_at = _mtime_to_utc(stat.st_mtime)
-    file_path_str = str(filepath)
-
-    if known is not None:
-        # ⚠️ Re-hash only what moved. `external_hash_is_stale` answers off the
-        # size and mtime already stored, so a mount that has not changed costs
-        # no reads — which is what makes hashing mounts affordable at all.
-        stale = external_hash_is_stale(
-            SimpleNamespace(
-                file_hash=known.file_hash,
-                file_size=known.file_size,
-                fs_modified_at=known.fs_modified_at,
-            ),
-            size=stat.st_size,
-            mtime=fs_modified_at,
-        )
-        new_hash = None
-        if stale:
-            with contextlib.suppress(OSError):
-                new_hash = calculate_file_hash(filepath)
-        return _Prepared(
-            path=filepath,
-            file_path_str=file_path_str,
-            filename=filename,
-            folder_rel=folder_rel,
-            size=stat.st_size,
-            fs_modified_at=fs_modified_at,
-            intent="refresh",
-            known_id=known.id,
-            new_hash=new_hash,
-            mtime_changed=known.fs_modified_at != fs_modified_at,
-        )
-
-    file_type = detect_file_type(filepath.name)
-    is_3mf_container = filepath.name.lower().endswith(".3mf")
+    if known and complete:
+        revision = await runtime.hash(path, root=root)
+        if revision["digest"] == known.file_hash:
+            return _Prepared(
+                path=path,
+                file_path_str=str(path),
+                filename=filename,
+                folder_rel=folder_rel,
+                size=revision["size"],
+                fs_modified_at=_mtime_to_utc(revision["mtime_ns"] / 1e9),
+                intent="refresh",
+                known_id=known.id,
+                new_hash=revision["digest"],
+                mtime_changed=known.fs_modified_at != mtime,
+                expected_hash=known.file_hash,
+            )
+    result = await runtime.prepare(path, root=root, filename=filename)
     thumbnail_path = None
-    file_metadata = None
-
-    if is_3mf_container:
-        try:
-            parser = ThreeMFParser(str(filepath))
-            meta = parser.parse()
-            if meta:
-                file_metadata = _clean_3mf_metadata(meta)
-            thumb_data = parser.extract_thumbnail()
-            if thumb_data:
-                thumb_full = get_library_thumbnails_dir() / f"{uuid.uuid4().hex}.png"
-                thumb_full.write_bytes(thumb_data)
-                thumbnail_path = to_relative_path(thumb_full)
-        except Exception:
-            logger.debug("3MF parse failed during scan for %s", filepath, exc_info=True)
-
-    if file_type == "gcode" and not is_3mf_container and thumbnail_path is None:
-        thumb_data = extract_gcode_thumbnail(filepath)
-        if thumb_data:
-            thumb_full = get_library_thumbnails_dir() / f"{uuid.uuid4().hex}.png"
-            thumb_full.write_bytes(thumb_data)
-            thumbnail_path = to_relative_path(thumb_full)
-
-    if ext in IMAGE_EXTENSIONS and thumbnail_path is None:
-        made = create_image_thumbnail(filepath, get_library_thumbnails_dir())
-        if made:
-            thumbnail_path = to_relative_path(Path(made))
-
-    try:
-        content_hash = calculate_file_hash(filepath)
-    except OSError:
-        return None
-
+    if result.thumbnail:
+        extension = result.thumbnail_ext if result.thumbnail_ext in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
+        thumb = get_library_thumbnails_dir() / f"{uuid.uuid4().hex}{extension}"
+        await asyncio.to_thread(thumb.write_bytes, result.thumbnail)
+        thumbnail_path = to_relative_path(thumb)
     return _Prepared(
-        path=filepath,
-        file_path_str=file_path_str,
+        path=path,
+        file_path_str=str(path),
         filename=filename,
         folder_rel=folder_rel,
-        size=stat.st_size,
-        fs_modified_at=fs_modified_at,
-        intent="create",
-        file_type=file_type,
-        content_hash=content_hash,
+        size=result.size,
+        fs_modified_at=_mtime_to_utc(result.mtime_ns / 1e9),
+        intent="refresh" if known else "create",
+        known_id=known.id if known else None,
+        new_hash=result.digest if known else None,
+        content_hash=result.digest,
+        mtime_changed=known.fs_modified_at != mtime if known else False,
+        file_type=result.file_type,
+        file_metadata=result.metadata,
         thumbnail_path=thumbnail_path,
-        file_metadata=file_metadata,
+        metadata_complete=True,
+        expected_hash=known.file_hash if known else None,
     )
-
-
-async def prepare(dirpath: str, filename: str, root: Path, known: _Known | None, folder_rel: str) -> _Prepared | None:
-    return await asyncio.to_thread(_prepare_sync, dirpath, filename, root, known, folder_rel)
 
 
 # ── Writing a batch, with the session held for as little as possible ─────────
@@ -280,26 +172,64 @@ async def write_batch(
     batch: list[_Prepared],
     folder_ids: dict[str, int],
     counters: dict[str, int],
-) -> list[tuple[int, str]]:
-    """Persist one batch and return the rows that were created.
+) -> tuple[list[tuple[int, str]], int]:
+    """Persist one batch and return created rows and skipped duplicates.
 
     ⚠️ The session is opened here and closed on the way out. Everything this
     needs was worked out before it was called, so the write lock is held for the
     length of a few INSERTs rather than the length of a scan.
     """
-    from backend.app.api.routes.library import _without_print_name
+    from backend.app.api.routes.library import _without_print_name, to_absolute_path
     from backend.app.core.database import async_session
-    from backend.app.services.library_helpers import skip_objects_supported_from_metadata, sync_system_tags
-    from backend.app.services.library_ingest import find_reusable_row
+    from backend.app.services.library_file_runtime import get_library_file_runtime
+    from backend.app.services.library_helpers import (
+        SLICED_GCODE_META_KEY,
+        skip_objects_supported_from_metadata,
+        sync_system_tags,
+    )
+    from backend.app.services.library_ingest import _rows_with_hash
+
+    # Check duplicate candidates before opening the write session. A mounted
+    # share can stall on a presence check, and no DB transaction should stay
+    # open while that happens. The worker performs the filesystem I/O.
+    candidate_hashes = {item.content_hash for item in batch if item.intent == "create" and item.content_hash}
+    candidates: dict[str, list[str]] = {}
+    if candidate_hashes:
+        async with async_session() as read_db:
+            for digest in candidate_hashes:
+                rows = await _rows_with_hash(read_db, digest)
+                paths = []
+                for row in rows:
+                    with contextlib.suppress(Exception):
+                        absolute = to_absolute_path(row.file_path)
+                        if absolute:
+                            paths.append(str(absolute))
+                candidates[digest] = paths
+    duplicate_present: set[str] = set()
+    runtime = get_library_file_runtime()
+    for digest, paths in candidates.items():
+        for path in paths:
+            if (await runtime.present(Path(path).parent, [path]))[0]:
+                duplicate_present.add(digest)
+                break
 
     created: list[tuple[int, str]] = []
+    skipped_duplicates = 0
     #: Ids of the rows this batch actually rewrote — the ones whose bytes moved
     #: on disk, so a product that owns plates off them has to be reconciled.
     refreshed: list[int] = []
+    retired_thumbnails: list[str] = []
 
     async with async_session() as db:
         for item in batch:
             if item.intent == "refresh":
+                row = await db.get(LibraryFile, item.known_id)
+                if (
+                    row is None
+                    or row.file_path != item.file_path_str
+                    or (item.metadata_complete and row.file_hash != item.expected_hash)
+                ):
+                    continue
                 values: dict = {}
                 if item.mtime_changed:
                     # ⚠️ Assigned only when it moved. A no-op write still fires
@@ -310,19 +240,34 @@ async def write_batch(
                 if item.new_hash:
                     values["file_hash"] = item.new_hash
                     values["file_size"] = item.size
+                if item.metadata_complete:
+                    values["file_metadata"] = _without_print_name(item.file_metadata)
+                    values["skip_objects_supported"] = skip_objects_supported_from_metadata(item.file_metadata)
+                    if row.thumbnail_path and row.thumbnail_path != item.thumbnail_path:
+                        retired_thumbnails.append(row.thumbnail_path)
+                    values["thumbnail_path"] = item.thumbnail_path
                 if values:
                     await db.execute(update(LibraryFile).where(LibraryFile.id == item.known_id).values(**values))
+                if item.metadata_complete:
+                    await db.refresh(row)
+                    await sync_system_tags(db, row)
+                elif item.sliced is not None:
+                    # The answer moved, so the tags that gate Print move with it.
+                    row = await db.get(LibraryFile, item.known_id)
+                    if row is not None:
+                        row.file_metadata = {**(row.file_metadata or {}), SLICED_GCODE_META_KEY: item.sliced}
+                        await sync_system_tags(db, row)
+                if values or item.sliced is not None:
                     counters["files_updated"] += 1
                     if item.known_id is not None:
                         refreshed.append(item.known_id)
                 continue
 
-            reusable = await find_reusable_row(db, content_hash=item.content_hash or "")
-            if reusable is not None and reusable[1]:
+            if item.content_hash in duplicate_present:
                 # The library already holds these bytes. Counted rather than
                 # silent: a scan is also how people browse a mount, and a
                 # skipped file reads as a scan that missed something.
-                counters["skipped_duplicates"] += 1
+                skipped_duplicates += 1
                 continue
 
             db_file = LibraryFile(
@@ -341,6 +286,7 @@ async def write_batch(
             db.add(db_file)
             await db.flush()
             await sync_system_tags(db, db_file)
+            await inherit_folder_products(db, db_file, await db.get(LibraryFolder, db_file.folder_id))
             counters["files_added"] += 1
             created.append((db_file.id, db_file.filename))
 
@@ -354,11 +300,7 @@ async def write_batch(
         # ``product_files`` — ``resync_file_products`` returns on the first
         # SELECT for the overwhelming majority that belong to no product.
         #
-        # ⚠️ It reconciles against whatever ``file_metadata`` the ROW holds. A
-        # refresh re-hashes but does not re-parse the 3MF (``_prepare_sync``
-        # returns before the parser for a known file), so today this catches a
-        # link that changed, not a plate list that did. The day the refresh
-        # branch starts rewriting metadata, this hook is already in place.
+        # It reconciles against the row's freshly published plate snapshot.
         #
         # ⚠️ Best-effort, per file, like ``seed_archive_parts``: a scan must not
         # die because one product's composition could not be reconciled. The
@@ -371,7 +313,16 @@ async def write_batch(
 
         await db.commit()
 
-    return created
+    if retired_thumbnails:
+        from backend.app.api.routes.library import to_absolute_path
+
+        for old in retired_thumbnails:
+            with contextlib.suppress(OSError):
+                path = to_absolute_path(old)
+                if path:
+                    await asyncio.to_thread(path.unlink, missing_ok=True)
+
+    return created, skipped_duplicates
 
 
 async def ensure_folders(
@@ -434,6 +385,8 @@ async def remove_vanished(
     known: dict[str, _Known],
     folder_ids: dict[str, int],
     counters: dict[str, int],
+    *,
+    root: Path | None = None,
 ) -> bool:
     """Drop rows whose file is gone. Returns whether deletion was refused.
 
@@ -458,11 +411,17 @@ async def remove_vanished(
         )
         return True
 
-    doomed = [
-        (entry.id, path)
-        for path, entry in known.items()
-        if path not in found_paths and not await asyncio.to_thread(os.path.exists, path)
-    ]
+    absent_candidates = [(entry.id, path) for path, entry in known.items() if path not in found_paths]
+    if root is not None:
+        from backend.app.services.library_file_runtime import get_library_file_runtime
+
+        runtime = get_library_file_runtime()
+        presence = []
+        for start in range(0, len(absent_candidates), 32):
+            presence.extend(await runtime.present(root, [path for _, path in absent_candidates[start : start + 32]]))
+    else:
+        presence = [await asyncio.to_thread(os.path.exists, path) for _, path in absent_candidates]
+    doomed = [candidate for candidate, present in zip(absent_candidates, presence, strict=True) if not present]
     if not doomed:
         return False
 
@@ -499,6 +458,14 @@ async def remove_vanished(
 
     # Subfolder rows whose directory is gone, deepest first so a parent is only
     # considered once its children have left.
+    if root is not None:
+        folder_presence = {}
+        paths = [str(root / rel) for rel in folder_ids if rel]
+        for start in range(0, len(paths), 32):
+            found = await runtime.present(root, paths[start : start + 32])
+            folder_presence.update(zip(paths[start : start + 32], found, strict=True))
+    else:
+        folder_presence = {}
     async with async_session() as db:
         subs = (
             (
@@ -513,7 +480,11 @@ async def remove_vanished(
         )
         subs = sorted(subs, key=lambda f: (f.external_path or "").count("/"), reverse=True)
         for sub in subs:
-            if not sub.external_path or await asyncio.to_thread(os.path.exists, sub.external_path):
+            if not sub.external_path or (
+                folder_presence.get(sub.external_path, True)
+                if root is not None
+                else await asyncio.to_thread(os.path.exists, sub.external_path)
+            ):
                 continue
             files_left = (
                 await db.execute(select(LibraryFile.id).where(LibraryFile.folder_id == sub.id).limit(1))
@@ -594,6 +565,8 @@ async def run_scan(job_id: int) -> None:
     # Resolved a few lines down; declared here so every failure path can name
     # the folder whose strip has to stop spinning.
     folder_id: int | None = None
+    walk_token: str | None = None
+    runtime = None
 
     try:
         async with async_session() as db:
@@ -610,16 +583,15 @@ async def run_scan(job_id: int) -> None:
 
         await _set_job(job_id, status="running", started_at=_now())
 
-        # ⚠️ Asked in a thread. On an unreachable mount this call itself blocks,
-        # and on the loop it would stall the process before the scan even began.
-        reachable = await asyncio.to_thread(lambda: root.exists() and root.is_dir())
-        if not reachable:
+        from backend.app.services.library_file_runtime import get_library_file_runtime
+
+        runtime = get_library_file_runtime()
+        try:
+            walk_token = await runtime.walk_start(root, show_hidden)
+        except Exception:
             await _fail_job(job_id, folder_id, f"external path is not accessible: {root}")
             return
-
-        tree = await collect_tree(root, show_hidden)
-        total = sum(len(files) for _, files in tree)
-        await _set_job(job_id, files_total=total)
+        total = 0
 
         # Read once into plain data, so nothing is carried between the short
         # sessions that follow.
@@ -641,7 +613,7 @@ async def run_scan(job_id: int) -> None:
                             folder_ids[rel] = child_id
 
             known: dict[str, _Known] = {}
-            for row_id, path, digest, size, mtime in (
+            for row_id, path, digest, size, mtime, sliced, version, extraction_hash in (
                 await db.execute(
                     select(
                         LibraryFile.id,
@@ -649,22 +621,35 @@ async def run_scan(job_id: int) -> None:
                         LibraryFile.file_hash,
                         LibraryFile.file_size,
                         LibraryFile.fs_modified_at,
+                        # The one key, not the whole metadata blob — a plate
+                        # list per row, for every file on the mount, is not
+                        # something a scan needs to hold.
+                        LibraryFile.file_metadata["has_sliced_gcode"].as_boolean(),
+                        LibraryFile.file_metadata["_library_extraction"]["version"].as_integer(),
+                        LibraryFile.file_metadata["_library_extraction"]["hash"].as_string(),
                     ).where(LibraryFile.folder_id.in_(list(folder_ids.values())))
                 )
             ).all():
-                known[path] = _Known(id=row_id, file_hash=digest, file_size=size, fs_modified_at=mtime)
-
-            await ensure_folders(db, root, folder, [d for d, _ in tree], folder_ids, counters)
-            await db.commit()
+                known[path] = _Known(
+                    id=row_id,
+                    file_hash=digest,
+                    file_size=size,
+                    fs_modified_at=mtime,
+                    sliced=sliced,
+                    extraction_version=version,
+                    extraction_hash=extraction_hash,
+                )
 
         found_paths: set[str] = set()
         batch: list[_Prepared] = []
         last_progress = 0.0
+        warnings = 0
 
         async def flush(force: bool = False) -> None:
-            nonlocal batch, last_progress
+            nonlocal batch, last_progress, skipped_duplicates
             if batch and (force or len(batch) >= BATCH_SIZE):
-                created = await write_batch(batch, folder_ids, counters)
+                created, skipped_in_batch = await write_batch(batch, folder_ids, counters)
+                skipped_duplicates += skipped_in_batch
                 batch = []
                 for file_id, filename in created:
                     # Best effort: a socket problem must never fail a scan whose
@@ -680,35 +665,64 @@ async def run_scan(job_id: int) -> None:
                         {"job_id": job_id, "folder_id": folder_id, "total": total, **counters}
                     )
 
-        for dirpath, filenames in tree:
-            rel = str(Path(dirpath).relative_to(root)).replace("\\", "/")
-            if rel == ".":
-                rel = ""
-            for filename in filenames:
-                counters["files_seen"] += 1
-                candidate_path = str(
-                    Path(dirpath) / filename
-                )  # SEC-PATH-OK: both parts come from the walk of the folder root
-                prepared = await prepare(dirpath, filename, root, known.get(candidate_path), rel)
-                if prepared is None:
+        while True:
+            page = await runtime.walk_next(root, walk_token)
+            entries = page["entries"]
+            directories = [entry["directory"] for entry in entries if entry["is_dir"]]
+            if directories:
+                async with async_session() as db:
+                    await ensure_folders(db, root, folder, directories, folder_ids, counters)
+                    await db.commit()
+            for entry in entries:
+                if entry["is_dir"]:
                     continue
-                found_paths.add(prepared.file_path_str)
-                batch.append(prepared)
-                await flush()
+                dirpath = entry["directory"]
+                filename = entry["name"]
+                rel = str(Path(dirpath).relative_to(root)).replace("\\", "/")
+                if rel == ".":
+                    rel = ""
+                counters["files_seen"] += 1
+                total += 1
+                candidate_path = str(Path(dirpath) / filename)
+                found_paths.add(candidate_path)
+                try:
+                    prepared = await prepare_via_service(
+                        dirpath,
+                        filename,
+                        root,
+                        known.get(candidate_path),
+                        rel,
+                        entry["size"],
+                        entry["mtime_ns"],
+                    )
+                except Exception:
+                    warnings += 1
+                    logger.warning("library scan skipped unreadable file %s", candidate_path, exc_info=True)
+                    continue
+                if prepared is not None:
+                    batch.append(prepared)
+                    await flush()
+            if page["done"]:
+                break
 
         await flush(force=True)
 
-        skipped = await remove_vanished(found_paths, known, folder_ids, counters)
+        skipped = await remove_vanished(found_paths, known, folder_ids, counters, root=root)
         if skipped_duplicates:
             logger.info("scan skipped %d file(s) the library already holds", skipped_duplicates)
+        if warnings:
+            logger.warning("scan finished with %d unreadable file(s); last good metadata kept", warnings)
 
-        await _set_job(job_id, status="finished", finished_at=_now(), skipped_deletions=skipped, **counters)
+        await _set_job(
+            job_id, status="finished", finished_at=_now(), files_total=total, skipped_deletions=skipped, **counters
+        )
         await _announce_finish(
             {
                 "job_id": job_id,
                 "folder_id": folder_id,
                 "status": "finished",
                 "skipped_deletions": skipped,
+                "warnings": warnings,
                 "total": total,
                 **counters,
             }
@@ -721,8 +735,14 @@ async def run_scan(job_id: int) -> None:
         raise
     except Exception as error:
         logger.exception("external folder scan failed")
-        await _fail_job(job_id, folder_id, str(error))
+        message = str(error)
+        if isinstance(error, FileNotFoundError) or "FileNotFoundError" in message:
+            message = f"External folder is not accessible: {root}"
+        await _fail_job(job_id, folder_id, message)
     finally:
+        if walk_token and runtime is not None:
+            with contextlib.suppress(Exception):
+                await runtime.walk_end(root, walk_token)
         _running.pop(job_id, None)
 
 
@@ -747,14 +767,26 @@ async def active_job_id(db: AsyncSession, folder_id: int) -> int | None:
     ⚠️ Two walks writing the same rows is not twice as fast, it is a race — the
     second would keep finding half-written state from the first.
     """
-    row = (
+    target = await db.get(LibraryFolder, folder_id)
+    if target is None or not target.external_path:
+        return None
+    candidates = (
         await db.execute(
-            select(LibraryScanJob.id)
-            .where(LibraryScanJob.folder_id == folder_id, LibraryScanJob.status.in_(("queued", "running")))
-            .limit(1)
+            select(LibraryScanJob.id, LibraryFolder.external_path)
+            .join(LibraryFolder, LibraryScanJob.folder_id == LibraryFolder.id)
+            .where(LibraryScanJob.status.in_(("queued", "running")))
         )
-    ).first()
-    return row[0] if row else None
+    ).all()
+    target_path = os.path.normcase(os.path.abspath(target.external_path))
+    for job_id, path in candidates:
+        if path:
+            candidate_path = os.path.normcase(os.path.abspath(path))
+            try:
+                if os.path.commonpath([target_path, candidate_path]) in {target_path, candidate_path}:
+                    return job_id
+            except ValueError:
+                continue
+    return None
 
 
 async def sweep_interrupted_jobs() -> int:

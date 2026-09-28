@@ -10,10 +10,12 @@ which killed legitimate in-flight transfers on slow SD cards.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 from backend.app.models.printer import Printer
 from backend.app.services.bambu_ftp import (
+    BambuFTPClient,
     download_file_try_paths_async,
     get_ftp_retry_settings,
     list_files_async,
@@ -21,6 +23,32 @@ from backend.app.services.bambu_ftp import (
 from backend.app.utils.safe_path import safe_join_under
 
 logger = logging.getLogger(__name__)
+
+# Why the last download for each printer came back empty (audit D6). The callers
+# that mark an archive "3MF unavailable" read it straight after the call, and the
+# Archives banner words itself by it. ⚠️ There is deliberately no "internal
+# storage" reason: both storages are read on every printer that has both, so a
+# file kept in the printer's own memory is never why an archive is empty.
+_failure_reasons: dict[int, str] = {}
+
+# How a failed FTP connect reads as a reason. Anything else — every connect
+# succeeded — means the file was on neither storage.
+_REASON_BY_CONNECT_FAILURE = {
+    "tls": "ftps_refused",
+    "auth": "auth_rejected",
+    "timeout": "unreachable",
+    "network": "unreachable",
+}
+
+
+def last_download_failure_reason(printer_id: int) -> str | None:
+    """Why the last :func:`try_download_3mf` for *printer_id* found nothing, or None.
+
+    ``ftps_refused`` / ``auth_rejected`` / ``unreachable`` — BamDude never got to
+    look; ``not_found`` — it looked and the file was not there. ``None`` after a
+    success.
+    """
+    return _failure_reasons.get(printer_id)
 
 
 def build_filename_candidates(subtask_name: str | None, filename: str | None) -> list[str]:
@@ -58,6 +86,26 @@ def build_filename_candidates(subtask_name: str | None, filename: str | None) ->
 
 
 async def try_download_3mf(
+    printer: Printer,
+    subtask_name: str | None,
+    filename: str | None,
+    temp_dir: Path,
+) -> tuple[Path, str] | None:
+    """Attempt to download a 3MF file from *printer*'s storage.
+
+    Returns ``(temp_path, downloaded_filename)`` on success. On failure
+    :func:`last_download_failure_reason` says why.
+    """
+    _failure_reasons.pop(printer.id, None)
+    started = time.monotonic()
+    result = await _download_3mf(printer, subtask_name, filename, temp_dir)
+    if result is None:
+        kind = BambuFTPClient.connect_failure_since(printer.ip_address, started)
+        _failure_reasons[printer.id] = _REASON_BY_CONNECT_FAILURE.get(kind or "", "not_found")
+    return result
+
+
+async def _download_3mf(
     printer: Printer,
     subtask_name: str | None,
     filename: str | None,
@@ -110,6 +158,7 @@ async def try_download_3mf(
     temp_path = safe_join_under(temp_dir, primary_filename, http=False)
 
     remote_paths_only = [rp for rp, _ in all_remote_paths]
+    stage_one_started = time.monotonic()
     try:
         downloaded = await download_file_try_paths_async(
             printer.ip_address,
@@ -135,6 +184,12 @@ async def try_download_3mf(
     # lives in an unexpected subdir.
     search_term = (subtask_name or filename or "").lower().replace(".gcode", "").replace(".3mf", "")
     if not search_term:
+        return await _try_internal_storage(printer, candidates, original_temp_dir)
+    # ...but only when the printer answered. Stage 1 could not even connect —
+    # refused, rejected, silent — so five directory listings, each a connect of
+    # its own, cannot get further (upstream 91acac2b). The retry triggers come
+    # back for the file; internal storage is another transport and is still asked.
+    if BambuFTPClient.connect_failure_since(printer.ip_address, stage_one_started):
         return await _try_internal_storage(printer, candidates, original_temp_dir)
 
     search_dirs = ["/", "/cache", "/model", "/data", "/data/Metadata"]

@@ -79,6 +79,44 @@ it('queues with confirmed compatible candidates despite incomplete farm checks a
 });
 
 
+it('previews the selected compatible target model before submitting to AutoQueue', async () => {
+  const previews: (string | null)[] = [];
+  const posts: Record<string, unknown>[] = [];
+  server.use(
+    http.get('/api/v1/printers/', () => HttpResponse.json([
+      { id: 1, name: 'P1S', model: 'P1S', is_active: true },
+    ])),
+    http.get('/api/v1/printers/model-compatibility', () => HttpResponse.json({ models: { P1S: ['P1P'] } })),
+    http.get('/api/v1/archives/:id', () => HttpResponse.json({ id: 1, sliced_for_model: 'P1P' })),
+    http.get('/api/v1/archives/:id/plates', () => HttpResponse.json({ is_multi_plate: false, plates: [{ index: 15, name: 'Part' }] })),
+    http.post('/api/v1/auto-queue/routing-preview', async ({ request }) => {
+      const body = await request.json() as { target_model: string | null };
+      previews.push(body.target_model);
+      return HttpResponse.json({ plates: [{ ...preview.plates[0], target_model: body.target_model,
+        groups: body.target_model === 'P1S' ? [{ ...preview.plates[0].groups[0], model: 'P1S' }] : [],
+      }] });
+    }),
+    http.post('/api/v1/auto-queue/', async ({ request }) => {
+      posts.push(await request.json() as Record<string, unknown>);
+      return HttpResponse.json({ id: 1, status: 'pending' });
+    }),
+  );
+  render(<PrintModal mode="add-to-queue" archiveId={1} archiveName="Part" initialDispatchMode="auto"
+    preselectedPlateId={15} onClose={vi.fn()} />);
+
+  const button = await screen.findByRole('button', { name: /Add to Queue/i });
+  await waitFor(() => expect(button).toBeDisabled());
+  const target = screen.getByText('Target model').parentElement?.querySelector('select');
+  expect(target).not.toBeNull();
+  await userEvent.selectOptions(target!, 'P1S');
+  await waitFor(() => expect(previews).toContain('P1S'));
+  await waitFor(() => expect(button).toBeEnabled());
+  await userEvent.click(button);
+  await waitFor(() => expect(posts).toHaveLength(1));
+  expect(posts[0].target_model).toBe('P1S');
+});
+
+
 it('waits for source requirements and keeps an explicit false when an older preview arrives late', async () => {
   let releaseInitial!: () => void;
   const pendingInitial = new Promise<void>(resolve => { releaseInitial = resolve; });

@@ -200,6 +200,12 @@ def _merged_metadata(meta: dict | None, parsed: dict) -> dict | None:
     ``None`` matters: it is what keeps a file whose 3MF genuinely holds no
     objects from being rewritten, and ``updated_at`` re-stamped, on every pass.
     """
+    from backend.app.services.library_file_preparation import EXTRACTION_KEY, EXTRACTION_VERSION
+
+    if (meta or {}).get(EXTRACTION_KEY, {}).get("version") == EXTRACTION_VERSION:
+        # The shared file worker already published a complete snapshot. An
+        # earlier boot-time parse must not append plates from old bytes.
+        return None
     out = dict(meta or {})
     changed = False
 

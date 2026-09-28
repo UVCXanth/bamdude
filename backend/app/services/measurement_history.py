@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, select
 
 from backend.app.api.routes.settings import get_setting
+from backend.app.models.ha_sensor_history import HASensorHistory
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.smart_plug_power_history import SmartPlugPowerHistory
 from backend.app.models.smart_sensor import SmartSensor
@@ -148,6 +149,13 @@ async def prune(db) -> tuple[int, int]:
     sensor_removed = (
         await db.execute(
             delete(SmartSensorHistory).where(SmartSensorHistory.recorded_at < now - timedelta(days=sensor_days))
+        )
+    ).rowcount or 0
+    sensor_removed += (
+        await db.execute(
+            delete(HASensorHistory).where(
+                HASensorHistory.observed_at < now.replace(tzinfo=None) - timedelta(days=sensor_days)
+            )
         )
     ).rowcount or 0
     await db.commit()

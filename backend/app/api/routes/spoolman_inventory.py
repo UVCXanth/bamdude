@@ -59,6 +59,8 @@ from backend.app.services.spoolman import (
 )
 from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
 from backend.app.services.spoolman_tracking import get_fallback_spool_tag_for_slot
+from backend.app.services.tag_conflict import tag_already_linked
+from backend.app.utils.color_utils import spoolman_color_hex
 from backend.app.utils.filament_remaining import grams_remaining
 
 logger = logging.getLogger(__name__)
@@ -517,7 +519,9 @@ async def _resolve_filament_id(data: SpoolmanInventoryCreate, client: SpoolmanCl
         return data.spoolman_filament_id
     # Validator guarantees material is non-None when spoolman_filament_id is None
     assert data.material is not None  # noqa: S101
-    color_hex = (data.rgba or "808080FF")[:6]
+    # `or "808080"` on the result: spoolman_color_hex returns None only for a
+    # missing value, so this is the same neutral grey the old default gave (#2912).
+    color_hex = spoolman_color_hex(data.rgba) or "808080"
     async with _translate_spoolman_errors():
         return await client.find_or_create_filament(
             material=data.material,
@@ -738,7 +742,9 @@ async def update_spool(
     brand = data.brand if data.brand is not None else (cur_vendor.get("name") or None)
     color_name = data.color_name if data.color_name is not None else (cur_filament.get("color_name") or None)
     cur_color = (cur_filament.get("color_hex") or "808080").upper().removeprefix("#")
-    rgba = data.rgba if data.rgba is not None else (cur_color + "FF")
+    # Handed over as stored: the opaque alpha this used to append was folded
+    # straight back off by `spoolman_color_hex` below (#2912).
+    rgba = data.rgba if data.rgba is not None else cur_color
     label_weight = data.label_weight if data.label_weight is not None else int(cur_filament.get("weight") or 1000)
     # Default ``weight_used`` from the synthetic mapping (``label_weight -
     # remaining_weight``) so an edit that doesn't touch the weight field
@@ -770,7 +776,7 @@ async def update_spool(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    color_hex = rgba[:6]
+    color_hex = spoolman_color_hex(rgba) or rgba
 
     # Resolve which filament this spool should be linked to AFTER the edit.
     #
@@ -784,14 +790,17 @@ async def update_spool(
     # a singleton (only this spool links to it, archived spools included).
     cur_filament_id = cur_filament.get("id")
     desired_name = f"{material} {subtype}".strip() if subtype else material
-    cur_color_norm = (cur_filament.get("color_hex") or "").upper()[:6]
+    # Compare the stored shapes, not raw strings and not bare RGB prefixes: raw
+    # strings PATCH the filament on every no-op edit of an opaque spool, bare
+    # prefixes make an alpha-only edit invisible (#2912).
+    cur_color_norm = spoolman_color_hex(cur_filament.get("color_hex")) or ""
     cur_vendor_name = (cur_vendor.get("name") or "").strip()
     cur_weight_int = int(cur_filament.get("weight") or 0)
     metadata_unchanged = (
         cur_filament_id
         and (cur_filament.get("name") or "").strip() == desired_name
         and (cur_filament.get("material") or "").upper() == material.upper()
-        and cur_color_norm == color_hex.upper()
+        and cur_color_norm == (color_hex or "").upper()
         and cur_vendor_name.lower() == ((brand or "").strip().lower())
         and cur_weight_int == int(label_weight)
     )
@@ -1132,6 +1141,18 @@ async def sync_spool_weight(
     return {"status": "ok", "weight_used": weight_used}
 
 
+def _extra_tag(spool: dict) -> str:
+    """The tag stored in a Spoolman spool's ``extra``, normalised for comparison.
+
+    Anything that is not a string reads as no tag: ``extra`` is free-form and
+    edited outside BamDude, and ``.get("tag", "")`` does not default a key that
+    is present and null.
+    """
+    extra = spool.get("extra")
+    raw = extra.get("tag") if isinstance(extra, dict) else None
+    return raw.strip('"').upper() if isinstance(raw, str) else ""
+
+
 @router.patch("/spools/{spool_id}/tag")
 async def link_tag_to_spoolman_spool(
     *,
@@ -1143,8 +1164,10 @@ async def link_tag_to_spoolman_spool(
     """Write an NFC tag UID or Bambu tray UUID into Spoolman's extra.tag for a spool.
 
     tray_uuid takes precedence over tag_uid when both are supplied.
-    Returns 409 if another spool already carries the same tag.
     Uses extra_lock to serialise against concurrent extra-field writes.
+
+    A tag another spool already carries is refused with the shared
+    ``tag_already_linked`` 409, identical to the built-in route's (upstream #3110).
     """
     client = await _get_client(db)
     tag = (data.tray_uuid or data.tag_uid).upper()
@@ -1152,15 +1175,19 @@ async def link_tag_to_spoolman_spool(
 
     async with client.extra_lock(spool_id):
         # Duplicate check: scan all spools for the same tag on a different spool.
+        # Sorted, because Spoolman has no unique constraint on extra.tag either:
+        # the built-in route names the lowest id, and so does this one. Every row
+        # is read now, so one malformed row must not take the request down —
+        # _extra_tag refuses a non-string, and a row without an integer id cannot
+        # be named and so is not a holder.
         async with _translate_spoolman_errors():
             all_spools = await client.get_all_spools()
-        for s in all_spools:
-            s_tag = (s.get("extra") or {}).get("tag", "")
-            if s_tag.strip('"').upper() == tag and s.get("id") != spool_id:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Tag is already assigned to spool {s['id']}",
-                )
+        holders = sorted(
+            (s for s in all_spools if _extra_tag(s) == tag and isinstance(s.get("id"), int) and s["id"] != spool_id),
+            key=lambda s: s["id"],
+        )
+        if holders:
+            raise tag_already_linked("tray_uuid" if data.tray_uuid else "tag_uid", holders[0]["id"])
 
         # Re-fetch inside the lock so cur_extra reflects any concurrent update.
         async with _translate_spoolman_errors():

@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { Bug, X, Loader2, CheckCircle, AlertCircle, AlertTriangle, Trash2, Upload, Circle, CheckCircle2, Stethoscope } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { api, bugReportApi, type PrinterDiagnosticResult } from '../api/client';
+import { api, bugReportApi, supportApi, type PrinterDiagnosticResult } from '../api/client';
 import { DiagnosticChecklist } from './ConnectionDiagnostic';
 import { SystemHealthPanel } from './SystemHealthPanel';
 import { Collapsible } from './Collapsible';
@@ -25,6 +25,64 @@ const REPORT_STATUS_STYLES: Record<string, string> = {
 const MAX_DIMENSION = 1920;
 const JPEG_QUALITY = 0.7;
 const MAX_LOG_SECONDS = 300; // 5 minutes
+
+/**
+ * A recording outlives the panel that started it (upstream #2847).
+ *
+ * Step 2 asks the user to reproduce the problem, and the panel sits over the
+ * part of the app they have to reach to do that. Closing it has to be allowed,
+ * so the run is written down rather than held only in component state: the
+ * panel reopens on the step it left, and a reload lands there too instead of
+ * leaving the server at DEBUG with nothing in the UI still tracking it.
+ *
+ * The screenshot is deliberately not stored — a 1920px JPEG runs to hundreds of
+ * kilobytes against an origin-wide budget — and it survives a close anyway.
+ */
+const SESSION_KEY = 'bamdude-bug-report-session';
+
+interface LoggingSession {
+  description: string;
+  email: string;
+  /** Debug logging was already on before this run, so stopping must leave it on. */
+  wasDebug: boolean;
+  /** Wall clock. Elapsed is derived from it rather than counted in ticks, which
+   *  a background tab throttles — the 5-minute cap has to mean five minutes. */
+  startedAt: number;
+}
+
+function readSession(): LoggingSession | null {
+  try {
+    const raw = window.localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<LoggingSession>;
+    if (typeof parsed?.startedAt !== 'number') return null;
+    return {
+      description: typeof parsed.description === 'string' ? parsed.description : '',
+      email: typeof parsed.email === 'string' ? parsed.email : '',
+      wasDebug: parsed.wasDebug === true,
+      startedAt: parsed.startedAt,
+    };
+  } catch {
+    // Unparseable or unreadable: no session, rather than a panel that cannot restore.
+    return null;
+  }
+}
+
+function writeSession(session: LoggingSession): void {
+  try {
+    window.localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  } catch {
+    // Quota, or storage refused. The run still survives a close; only a reload loses it.
+  }
+}
+
+function clearSession(): void {
+  try {
+    window.localStorage.removeItem(SESSION_KEY);
+  } catch {
+    // See writeSession.
+  }
+}
 
 function compressImage(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -75,9 +133,16 @@ interface BugReportBubbleProps {
   /** Controlled open state. Falls back to internal state when omitted. */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  /**
+   * Fired when a recording starts or ends. The floating disc shows a live run
+   * itself, but the compact layout replaces it with a header button, so Layout
+   * uses this to mark that button and to offer a way back into the run from the
+   * debug-logging banner (upstream #2847).
+   */
+  onLoggingChange?: (active: boolean) => void;
 }
 
-export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugReportBubbleProps = {}) {
+export function BugReportBubble({ showTrigger = true, open, onOpenChange, onLoggingChange }: BugReportBubbleProps = {}) {
   const { t } = useTranslation();
   const [internalOpen, setInternalOpen] = useState(false);
   const isControlled = open !== undefined;
@@ -98,6 +163,7 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
   const [issueNumber, setIssueNumber] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
   const [wasDebug, setWasDebug] = useState(false);
   const [reportsOpen, setReportsOpen] = useState(false);
   // Lazy: the list (and the relay status sync behind it) is fetched only
@@ -112,6 +178,14 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
   const modalRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handleStopLoggingRef = useRef<() => void>(() => {});
+  // Read inside effects that must not re-run when the view changes.
+  const viewStateRef = useRef(viewState);
+  viewStateRef.current = viewState;
+
+  const isLogging = viewState === 'logging';
+  useEffect(() => {
+    onLoggingChange?.(isLogging);
+  }, [isLogging, onLoggingChange]);
 
   // Before the user files a report, diagnose configured printers. Most bug
   // reports are setup issues — surfacing a connection problem inline lets the
@@ -147,23 +221,32 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
   });
   const logFindings = logHealthScan.data?.findings ?? [];
 
-  // Elapsed timer for the logging phase — auto-stop at 5 minutes.
+  // Elapsed timer for the logging phase — auto-stop at 5 minutes. Measured
+  // against the run's start time, not counted in ticks: the run goes on while
+  // the panel is closed and while the tab is in the background, where timers
+  // are throttled hard enough that a tick count is not a clock.
   useEffect(() => {
-    if (viewState !== 'logging') return;
-    if (elapsedSeconds >= MAX_LOG_SECONDS) {
-      handleStopLoggingRef.current();
-      return;
-    }
-    const timer = setTimeout(() => setElapsedSeconds((s) => s + 1), 1000);
-    return () => clearTimeout(timer);
-  }, [viewState, elapsedSeconds]);
+    if (viewState !== 'logging' || startedAt === null) return;
+    const tick = () => {
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      setElapsedSeconds(elapsed);
+      if (elapsed >= MAX_LOG_SECONDS) handleStopLoggingRef.current();
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [viewState, startedAt]);
 
   // ⚠️ Reset ON OPEN rather than in the click handler: the panel now has two
   // possible triggers — the floating disc here, and the compact header's
   // button, which only flips the controlled flag — and a stale half-filled
   // form reappearing for one of them would be a nasty little inconsistency.
+  //
+  // A run in progress is the exception (upstream #2847): the only thing that
+  // stops debug logging is Stop & Submit on the step this reset would discard.
   useEffect(() => {
     if (!isOpen) return;
+    if (['logging', 'stopping', 'submitting'].includes(viewStateRef.current)) return;
     setViewState('form');
     setDescription('');
     setEmail('');
@@ -172,8 +255,60 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
     setIssueNumber(null);
     setErrorMessage('');
     setElapsedSeconds(0);
+    setStartedAt(null);
     setWasDebug(false);
   }, [isOpen]);
+
+  // Pick a run back up after a reload — an ordinary step in reproducing a bug.
+  // The panel's state is gone by then but the server still has the log level
+  // raised, and nothing else in the report flow points at it.
+  useEffect(() => {
+    const session = readSession();
+    if (!session) return;
+    let cancelled = false;
+
+    (async () => {
+      let stillLogging: boolean;
+      try {
+        stillLogging = (await supportApi.getDebugLoggingState()).enabled;
+      } catch {
+        // Can't tell: keep it for the next load rather than drop a live run.
+        return;
+      }
+      if (cancelled || viewStateRef.current !== 'form') return;
+
+      if (!stillLogging) {
+        // Switched off on the System page, or finished in another tab.
+        clearSession();
+        return;
+      }
+
+      const elapsed = Math.floor((Date.now() - session.startedAt) / 1000);
+      if (elapsed >= MAX_LOG_SECONDS) {
+        // Past the cap with nobody watching. Put the log level back, but do not
+        // file it: a description written that long ago is not a report anyone
+        // still expects, and no one is here to see it happen.
+        try {
+          await bugReportApi.stopLogging(session.wasDebug);
+        } catch {
+          // The debug-logging banner still shows the raised level.
+        }
+        clearSession();
+        return;
+      }
+
+      setDescription(session.description);
+      setEmail(session.email);
+      setWasDebug(session.wasDebug);
+      setStartedAt(session.startedAt);
+      setElapsedSeconds(elapsed);
+      setViewState('logging');
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleOpen = () => setIsOpen(true);
 
@@ -224,9 +359,17 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
     if (!description.trim()) return;
     try {
       const result = await bugReportApi.startLogging();
+      const runStartedAt = Date.now();
       setWasDebug(result.was_debug);
+      setStartedAt(runStartedAt);
       setElapsedSeconds(0);
       setViewState('logging');
+      writeSession({
+        description: description.trim(),
+        email: email.trim(),
+        wasDebug: result.was_debug,
+        startedAt: runStartedAt,
+      });
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : t('bugReport.unexpectedError'));
       setViewState('error');
@@ -234,6 +377,13 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
   };
 
   const handleStopLogging = async () => {
+    // The cap can fire while the panel is closed, and stopping submits: show
+    // the panel so that happens in front of the user, not behind them.
+    setIsOpen(true);
+    // Over from here whichever way it goes — including a failed stop, where the
+    // debug-logging banner surfaces a level that did not come back down.
+    clearSession();
+    setStartedAt(null);
     setViewState('stopping');
     try {
       const stopResult = await bugReportApi.stopLogging(wasDebug);
@@ -276,10 +426,15 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
       {showTrigger && (
         <button
           onClick={handleOpen}
-          className="fixed bottom-4 right-4 z-40 w-12 h-12 rounded-full bg-red-500 hover:bg-red-600 text-white shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-110 flex items-center justify-center"
-          title={t('bugReport.title')}
+          className={`fixed bottom-4 right-4 z-40 w-12 h-12 rounded-full text-white shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-110 flex items-center justify-center ${
+            // Amber while a run is going, like the debug-logging banner, so a
+            // closed panel still says the recording is live and clickable.
+            isLogging ? 'bg-amber-500 hover:bg-amber-600' : 'bg-red-500 hover:bg-red-600'
+          }`}
+          title={isLogging ? t('bugReport.resumeRecording', { elapsed: formatElapsed(elapsedSeconds) }) : t('bugReport.title')}
         >
-          <Bug className="w-5 h-5" />
+          {isLogging && <span className="absolute inset-0 rounded-full bg-amber-400 opacity-75 animate-ping" />}
+          <Bug className="w-5 h-5 relative" />
         </button>
       )}
 
@@ -574,6 +729,9 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
                   <div className="text-center">
                     <p className="text-3xl font-mono text-bambu-green">{formatElapsed(elapsedSeconds)}</p>
                     <p className="text-xs text-bambu-gray-dark mt-1">{t('bugReport.maxDuration', { minutes: 5 })}</p>
+                    {/* The panel covers whatever has to be clicked to reproduce
+                        the problem, so say plainly that closing it is fine. */}
+                    <p className="text-xs text-bambu-gray-dark mt-2">{t('bugReport.closeKeepsRecording')}</p>
                   </div>
 
                   {/* Stop & Submit button */}

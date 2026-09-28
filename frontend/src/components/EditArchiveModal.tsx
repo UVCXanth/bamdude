@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Save, Tag, Camera, Trash2, Loader2, Plus, FolderKanban, Hash, Link, PackagePlus } from 'lucide-react';
+import { X, Save, Tag, Camera, Trash2, Loader2, Plus, FolderKanban, Hash, Link, PackagePlus, Weight } from 'lucide-react';
 import { api } from '../api/client';
 import type { Archive } from '../api/client';
 import { Button } from './Button';
@@ -14,7 +14,8 @@ import { OrderLinePicker } from './pickers/OrderLinePicker';
 import { invalidateOrderViews } from '../utils/queryInvalidation';
 import { Select } from './Select';
 
-// Keys for failure reasons - translated at render time
+// Keys for failure reasons - translated at render time. The backend stores
+// exactly these (utils/failure_reasons.py; a test pins the two lists).
 const FAILURE_REASON_KEYS = [
   'adhesionFailure',
   'spaghettiDetached',
@@ -28,6 +29,7 @@ const FAILURE_REASON_KEYS = [
   'swapModeFailure',
   'printerError',
   'userCancelled',
+  'noStatusUpdate',
   'other',
 ] as const;
 
@@ -38,6 +40,34 @@ interface EditArchiveModalProps {
   archive: Archive;
   onClose: () => void;
   existingTags?: string[];
+}
+
+// What the server accepts for a typed filament figure (`ArchiveUpdate`).
+const MAX_FILAMENT_GRAMS = 100_000;
+
+/**
+ * Keep only a number while it is typed: digits and one decimal separator, a
+ * comma as good as a point, clamped to what the server accepts.
+ *
+ * A text field rather than a number input (upstream d227d422): a number input
+ * reports "" for anything the browser judges malformed — a decimal comma in a
+ * locale that does not expect one included — and that would read as "cleared"
+ * and wipe a good figure while the field still showed what was typed. This
+ * modal has no error surface, so a refused save would look like nothing
+ * happened; filtering here keeps what is shown and what is sent the same.
+ */
+function filamentGramsInput(raw: string): string {
+  let out = '';
+  let separator = false;
+  for (const ch of raw) {
+    if (ch >= '0' && ch <= '9') {
+      out += ch;
+    } else if ((ch === '.' || ch === ',') && !separator) {
+      separator = true;
+      out += ch;
+    }
+  }
+  return Number(out.replace(',', '.')) > MAX_FILAMENT_GRAMS ? String(MAX_FILAMENT_GRAMS) : out;
 }
 
 export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditArchiveModalProps) {
@@ -55,10 +85,11 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   const [projectLineId, setProjectLineId] = useState<number | null>(archive.project_line_id ?? null);
   const [notes, setNotes] = useState(archive.notes || '');
   const [tags, setTags] = useState(archive.tags || '');
-  // Failure reason is stored as a camelCase key (`filamentRunout`), but earlier
-  // versions of this modal saved the translated label as the value. Reverse-
-  // lookup any legacy translated text against the current locale so the
-  // dropdown pre-selects the right option, then any save converts it forward.
+  // Failure reason is stored as a camelCase key (`filamentRunout`); m186 folded
+  // the historical labels onto the keys. Reverse-lookup any legacy text still
+  // spelled as a label in the current locale, and otherwise KEEP the value as
+  // its own option: falling back to '' used to save the empty selection over
+  // the stored text, so opening the editor and pressing Save erased it (#2974).
   const [failureReason, setFailureReason] = useState(() => {
     const raw = archive.failure_reason || '';
     if (!raw) return '';
@@ -66,11 +97,23 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
     const match = FAILURE_REASON_KEYS.find(
       (k) => t(`editArchive.failureReasons.${k}`) === raw,
     );
-    return match || '';
+    return match || raw;
   });
+  // A stored value outside the vocabulary: shown as itself, so it can be kept.
+  const legacyFailureReason =
+    archive.failure_reason && !FAILURE_REASON_KEYS.some(
+      (k) => k === archive.failure_reason || t(`editArchive.failureReasons.${k}`) === archive.failure_reason,
+    )
+      ? archive.failure_reason
+      : null;
   const [errorMessage, setErrorMessage] = useState(archive.error_message || '');
   const [status, setStatus] = useState(archive.status);
   const [quantity, setQuantity] = useState(archive.quantity ?? 1);
+  // Filament used, typed by hand (audit D6 part 2) — above all for a print whose
+  // 3MF never arrived, which has no figure and no file to rescan. Sent only
+  // when changed, so an untouched save never rewrites the stored figure.
+  const initialFilamentGrams = archive.filament_used_grams == null ? '' : String(archive.filament_used_grams);
+  const [filamentGrams, setFilamentGrams] = useState(initialFilamentGrams);
   const [defectiveCount, setDefectiveCount] = useState(archive.defective_count ?? 0);
   // Per-part defective counts, keyed by part id. Only meaningful when
   // archive.parts is non-empty — see the render block below.
@@ -267,6 +310,11 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
       external_url: externalUrl || null,
     };
 
+    if (filamentGrams !== initialFilamentGrams) {
+      const grams = Number(filamentGrams.replace(',', '.'));
+      updateData.filament_used_grams = filamentGrams === '' || !Number.isFinite(grams) ? null : grams;
+    }
+
     if (hasParts) {
       // Only send defect data when a stepper was actually touched — see the
       // partsDirty declaration above for why an untouched save must omit
@@ -415,6 +463,26 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
           </p>
         </div>
 
+        {/* Filament used — the archive's figure only; no spool is debited. */}
+        <div>
+          <label htmlFor="edit-archive-filament-grams" className="block text-sm text-bambu-gray mb-1">
+            <Weight className="w-4 h-4 inline mr-1" />
+            {t('editArchive.filamentUsed')}
+          </label>
+          <input
+            id="edit-archive-filament-grams"
+            type="text"
+            inputMode="decimal"
+            autoComplete="off"
+            value={filamentGrams}
+            onChange={(e) => setFilamentGrams(filamentGramsInput(e.target.value))}
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+          />
+          <p className="text-xs text-bambu-gray mt-1">
+            {t('editArchive.filamentUsedHelp')}
+          </p>
+        </div>
+
         {/* Defective parts — scrap out of the plate above. One form, shared
             with the order page and the printer card (`DefectsFields`). */}
         <DefectsFields
@@ -559,6 +627,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
               onChange={(e) => setFailureReason(e.target.value)}
             >
               <option value="">{t('editArchive.selectReason')}</option>
+              {legacyFailureReason && <option value={legacyFailureReason}>{legacyFailureReason}</option>}
               {FAILURE_REASON_KEYS.map((reasonKey) => (
                 <option key={reasonKey} value={reasonKey}>
                   {t(`editArchive.failureReasons.${reasonKey}`)}
@@ -600,7 +669,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
                 <button
                   type="button"
                   onClick={() => handlePhotoDelete(filename)}
-                  className="absolute -top-1 -right-1 p-1 bg-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                  className="absolute -top-1 -right-1 p-1 bg-red-500 rounded-full can-hover:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
                 >
                   <Trash2 className="w-3 h-3 text-white" />
                 </button>

@@ -327,9 +327,17 @@ class NotificationService:
         # Per-event Priority header (#990). Only set when the user has
         # explicitly mapped this event to a 1-5 value; otherwise fall through
         # to the ntfy server's default so existing setups stay unchanged.
+        #
+        # The dialog keys the map by the provider's toggle column
+        # ("on_print_failed") while every sender passes the bare event name
+        # ("print_failed"), so the lookup used to miss for every real
+        # notification (upstream #3139). Both spellings, bare first — stored
+        # configs keep working unmigrated.
         event_priorities = config.get("event_priorities") or {}
         if event_type and isinstance(event_priorities, dict):
             raw = event_priorities.get(event_type)
+            if raw is None and not event_type.startswith("on_"):
+                raw = event_priorities.get(f"on_{event_type}")
             try:
                 priority = int(raw) if raw is not None else None
             except (TypeError, ValueError):
@@ -1234,7 +1242,8 @@ class NotificationService:
         elif response.status_code == 401:
             return False, "Home Assistant authentication failed - check your token"
         else:
-            return False, f"HTTP {response.status_code}: {response.text[:200]}"
+            logger.debug("Home Assistant notification failed with HTTP %s", response.status_code)
+            return False, f"HTTP {response.status_code} from the configured Home Assistant endpoint"
 
     async def _send_to_provider(
         self,
@@ -1843,7 +1852,10 @@ class NotificationService:
             if archive_data.get("actual_filament_grams"):
                 variables["filament_grams"] = f"{archive_data['actual_filament_grams']:.1f}"
             if status == "failed" and archive_data.get("failure_reason"):
-                variables["reason"] = archive_data["failure_reason"]
+                # Stored as a key (upstream #2974); a notification is read by a person.
+                from backend.app.utils.failure_reasons import reason_label
+
+                variables["reason"] = reason_label(archive_data["failure_reason"])
             if archive_data.get("finish_photo_url"):
                 variables["finish_photo_url"] = archive_data["finish_photo_url"]
 
@@ -2148,6 +2160,47 @@ class NotificationService:
         }
 
         title, message = await self._build_message_from_template(db, "print_missing_spool_assignment", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "print_missing_spool_assignment",
+            printer_id,
+            printer_name,
+            variables=variables,
+        )
+
+    async def on_print_usage_not_recorded(
+        self,
+        printer_id: int,
+        printer_name: str,
+        missing_slots: list[dict[str, str]],
+        db: AsyncSession,
+    ):
+        """A finished print left filament uncharged: its trays had no spool to charge (audit D4).
+
+        The missing-spool-assignment EVENT — same provider toggle, Telegram
+        subscription and inbox entry — with its own template, because that
+        event's template says the print STARTED without an assignment.
+        """
+        if not missing_slots:
+            return
+
+        providers = await self._get_providers_for_event(db, "on_print_missing_spool_assignment", printer_id)
+        if not providers:
+            return
+
+        variables = {
+            "printer": printer_name,
+            "missing_slots": ", ".join(slot.get("slot", "Unknown") for slot in missing_slots),
+            "missing_slot_details": "\n".join(
+                f"- {slot.get('slot', 'Unknown')}: {slot.get('grams', '?')} g {slot.get('profile', 'Unknown')}"
+                for slot in missing_slots
+            ),
+        }
+
+        title, message = await self._build_message_from_template(db, "print_usage_not_recorded", variables)
         await self._send_to_providers(
             providers,
             title,
@@ -2663,15 +2716,18 @@ class NotificationService:
     async def on_sensor_alert(self, event, db: AsyncSession):
         """One sensor alert, raised or cleared.
 
-        ``unscoped_only``: a sensor belongs to a place, not to a printer, so a
-        provider bound to one printer is not a recipient.
+        A target binding may belong to a printer. Room and storage alerts stay
+        unscoped so a printer-only recipient cannot see another target.
         """
         from backend.app.i18n import get_language, t
 
         field = self._SENSOR_ALERT_FIELDS.get(event.template)
         if field is None:
             return
-        providers = await self._get_providers_for_event(db, field, unscoped_only=True)
+        printer_id = getattr(event, "printer_id", None)
+        providers = await self._get_providers_for_event(
+            db, field, printer_id=printer_id, unscoped_only=printer_id is None
+        )
         if not providers:
             return
 
@@ -2689,8 +2745,29 @@ class NotificationService:
             message,
             db,
             event.template,
+            printer_id=printer_id,
             variables=variables,
         )
+
+    async def on_ha_sensor_alert(
+        self, printer_id: int, printer_name: str, sensor_name: str, state: str, db: AsyncSession
+    ):
+        providers = await self._get_providers_for_event(db, "on_ha_sensor_alert", printer_id=printer_id)
+        if not providers:
+            return
+        variables = {"printer": printer_name, "sensor": sensor_name, "state": state}
+        title, message = await self._build_message_from_template(db, "ha_sensor_alert", variables)
+        await self._send_to_providers(
+            providers, title, message, db, "ha_sensor_alert", printer_id=printer_id, variables=variables
+        )
+
+    async def on_location_ha_sensor_alert(self, location_name: str, sensor_name: str, state: str, db: AsyncSession):
+        providers = await self._get_providers_for_event(db, "on_location_ha_sensor_alert", unscoped_only=True)
+        if not providers:
+            return
+        variables = {"location": location_name, "sensor": sensor_name, "state": state}
+        title, message = await self._build_message_from_template(db, "location_ha_sensor_alert", variables)
+        await self._send_to_providers(providers, title, message, db, "location_ha_sensor_alert", variables=variables)
 
     async def on_bed_cooled(
         self,

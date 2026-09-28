@@ -63,6 +63,7 @@ class RoutingPreviewRequest(FilamentRoutingChoices):
     archive_id: int | None = None
     library_file_id: int | None = None
     plate_ids: list[Annotated[int, Field(ge=0)]] = Field(default_factory=lambda: [0], min_length=1, max_length=64)
+    target_model: str | None = None
     target_location_id: int | None = None
 
     @model_validator(mode="after")

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildLocationIndex } from '../../utils/locationTree';
 import type { LocationNode } from '../../utils/locationTree';
-import { formatReading, roomReadings, sensorsForGroup, sensorsForPrinter } from '../../utils/sensorReadings';
+import { formatReading, roomReadings, sensorsForGroup, sensorsForPrinter, sensorsForStorage } from '../../utils/sensorReadings';
 import type { ZigbeeSensor } from '../../api/client';
 
 // Workshop(1) -> Shelf 1(2) -> Box(4);  Workshop -> Shelf 2(3);  Hall(5)
@@ -65,6 +65,25 @@ describe('roomReadings', () => {
 });
 
 describe('sensorsForGroup', () => {
+  it('uses the nearest explicit room binding once and keeps printer and storage targets', () => {
+    const shared = sensor({ bindings: [
+      { id: 1, sensor_id: 1, printer_id: null, printer_name: null, printer_location_id: 1,
+        location: ROWS[0], storage_location_id: null, storage_location_name: null,
+        display_name: null, visible: true, sort_order: 0, notify_enabled: false },
+      { id: 2, sensor_id: 1, printer_id: null, printer_name: null, printer_location_id: 2,
+        location: ROWS[1], storage_location_id: null, storage_location_name: null,
+        display_name: 'Near', visible: true, sort_order: 0, notify_enabled: false },
+      { id: 3, sensor_id: 1, printer_id: 9, printer_name: 'P9', printer_location_id: null,
+        location: null, storage_location_id: null, storage_location_name: null,
+        display_name: null, visible: true, sort_order: 0, notify_enabled: false },
+      { id: 4, sensor_id: 1, printer_id: null, printer_name: null, printer_location_id: null,
+        location: null, storage_location_id: 20, storage_location_name: 'Drybox',
+        display_name: null, visible: true, sort_order: 0, notify_enabled: false },
+    ] });
+    expect(sensorsForGroup([shared], 4, INDEX).map((item) => item.name)).toEqual(['Near']);
+    expect(sensorsForPrinter([shared], 9)).toHaveLength(1);
+    expect(sensorsForStorage([shared], 20)).toHaveLength(1);
+  });
   it('shows an ancestor sensor in a descendant group', () => {
     // The whole point of the hierarchy: one sensor on the workshop covers every
     // shelf without one sensor per shelf.

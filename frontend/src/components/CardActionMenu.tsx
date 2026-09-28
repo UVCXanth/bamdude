@@ -22,6 +22,13 @@ interface CardActionMenuProps {
   /** The trigger icon's classes — a card that scales its icons through a CSS
    *  variable passes the same expression its neighbours use. */
   iconClassName?: string;
+  /** The trigger's icon, when it is not the card's "⋮" — the caret of a split
+   *  button (the camera button's view-mode menu). */
+  icon?: ReactNode;
+  /** The trigger is disabled — the action beside it is unavailable too. */
+  disabled?: boolean;
+  /** The trigger's hover text. */
+  title?: string;
   /** The items. Called with `close` so each item shuts the menu itself — the
    *  panel cannot close on a bubbling click, being in another tree. */
   children: (close: () => void) => ReactNode;
@@ -57,6 +64,9 @@ export function CardActionMenu({
   estimatedHeight,
   triggerClassName = 'p-1.5 rounded-lg hover:bg-bambu-dark text-bambu-gray hover:text-white transition-colors',
   iconClassName = 'w-4 h-4',
+  icon,
+  disabled,
+  title,
   children,
 }: CardActionMenuProps) {
   const [open, setOpen] = useState(false);
@@ -159,10 +169,12 @@ export function CardActionMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={label}
+        title={title}
+        disabled={disabled}
         onClick={() => setOpen((v) => !v)}
         className={triggerClassName}
       >
-        <MoreVertical className={iconClassName} />
+        {icon ?? <MoreVertical className={iconClassName} />}
       </button>
       {open
         && createPortal(
@@ -175,14 +187,17 @@ export function CardActionMenu({
               data-testid={testId ? `${testId}-panel` : undefined}
               style={{
                 position: 'fixed',
-                top: coords?.top ?? 0,
+                top: coords?.top,
+                bottom: coords?.bottom,
                 right: coords?.right ?? 0,
+                maxHeight: coords?.maxHeight,
+                overflowY: 'auto',
                 width,
                 visibility: coords ? 'visible' : 'hidden',
               }}
-              // Never taller than the viewport: a long menu on a short screen
-              // scrolls inside its own panel rather than running off the bottom
-              // where the flip could not save it (no room above either).
+              // Never runs off the screen: `maxHeight` above is the room on the
+              // side the hook chose, and the panel scrolls past it. The class
+              // is the ceiling before the first measurement, while hidden.
               className="z-[60] max-h-[calc(100vh-1rem)] overflow-y-auto bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 whitespace-nowrap"
             >
               {children(close)}

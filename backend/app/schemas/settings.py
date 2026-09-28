@@ -164,7 +164,7 @@ class AppSettings(BaseModel):
     # kept verbatim so typos surface instead of silently collapsing. Used by
     # the Filaments page for tokenised substring search and sort-by-name.
     spool_display_template: str = Field(
-        default="{brand} {material} {color_name}",
+        default="{brand} {material} {subtype} {color_name}",
         description="Template for the synthesised spool display name",
     )
 
@@ -257,6 +257,10 @@ class AppSettings(BaseModel):
     auto_queue_rebalance_models: bool = Field(
         default=False,
         description="Auto-queue: move an order line's pending prints to idle printers of another model when that finishes sooner",
+    )
+    auto_queue_compatible_models: bool = Field(
+        default=False,
+        description="Auto-queue: use Bambu Studio compatible printer models when no exact model is ready",
     )
     auto_order_for_batches: bool = Field(
         default=True,
@@ -607,6 +611,8 @@ class AppSettings(BaseModel):
         ge=0,
         description="Global minimum lead-time in days; combined with per-SKU lead time as max(global, sku)",
     )
+    location_sensor_poll_interval: int = Field(default=120, ge=60, le=3600)
+    location_sensor_alert_defaults: str = Field(default="")
 
     # Auto-Print G-code Injection (#422). Per-model snippet library:
     # ``{model: {"start_gcode": "...", "end_gcode": "..."}}`` JSON-encoded.
@@ -756,6 +762,7 @@ class AppSettingsUpdate(BaseModel):
     prefer_lowest_filament: bool | None = None
     queue_shortest_first: bool | None = None
     auto_queue_rebalance_models: bool | None = None
+    auto_queue_compatible_models: bool | None = None
     auto_order_for_batches: bool | None = None
     preheat_enabled: bool | None = None
     preheat_filament_targets: str | None = None
@@ -829,6 +836,8 @@ class AppSettingsUpdate(BaseModel):
     low_stock_threshold: float | None = Field(default=None, ge=0.1, le=99.9)
     session_max_hours: int | None = Field(default=None, ge=1, le=720)
     forecast_global_lead_time_days: int | None = Field(default=None, ge=0)
+    location_sensor_poll_interval: int | None = Field(default=None, ge=60, le=3600)
+    location_sensor_alert_defaults: str | None = Field(default=None, max_length=2000)
     user_notifications_enabled: bool | None = None
     ldap_enabled: bool | None = None
     ldap_server_url: str | None = None

@@ -11,6 +11,7 @@ import math
 import re
 import zipfile
 from contextlib import nullcontext
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # Parsing goes through defusedxml; the element type it hands back is the
@@ -22,6 +23,99 @@ import defusedxml.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 _ZIP_FILE_TYPE = zipfile.ZipFile
+
+
+# Keys in ``Metadata/project_settings.config`` that Bambu Studio writes an
+# "inherit / unset" marker into, mapped to the marker it uses for that key. The
+# slicer CLI's ``StaticPrintConfig`` validator runs against the embedded
+# settings BEFORE ``--load-settings`` overrides apply, so a marker the CLI's own
+# range check rejects makes it exit before our presets are ever consulted.
+#
+# Two conventions, two markers (upstream 9a837d19):
+#   "-1" — inherit from the parent process preset (#1201, MakerWorld P2S 3MFs);
+#   "0"  — "use the object's filament", Bambu Studio's default for the three
+#          feature-filament indices (#3030). Bambu Studio and OrcaSlicer 2.4+
+#          accept 0; OrcaSlicer 2.3 and earlier used a 1-based scheme and
+#          reject it — and sidecar images are version-tagged.
+# The key is REMOVED, not rewritten: the CLI then uses its own compiled default,
+# which is 0 where 0 was legal and 1 on the older builds — "the active filament"
+# either way. Allowlisted, never "strip every marker-shaped value": z_offset,
+# translations, a filament index somebody really set, a raft field at 0 — all
+# legitimate. The buckets must not bleed. Add entries as reports surface: the
+# slicer names the offending field ("<field>: <value> not in range [...]").
+PROJECT_SETTINGS_SENTINELS: dict[str, str] = {
+    "raft_first_layer_expansion": "-1",
+    "tree_support_wall_count": "-1",
+    "prime_tower_brim_width": "-1",
+    "wall_filament": "0",
+    "sparse_infill_filament": "0",
+    "solid_infill_filament": "0",
+}
+
+PROJECT_SETTINGS_PATH = "Metadata/project_settings.config"
+
+
+def _is_sentinel(value: object, sentinel: str) -> bool:
+    """Does ``value`` carry ``sentinel``, as text or as a JSON number?
+
+    Bambu Studio writes every value as a string, but a 3MF round-tripped
+    through another tool can carry a number. ``bool`` is excluded: it is an
+    ``int`` subclass, and ``False`` must never match a ``0`` marker.
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (str, int)):
+        return str(value) == sentinel
+    return False
+
+
+def sanitize_project_settings_sentinels(zip_bytes: bytes) -> bytes:
+    """Strip the allowlisted inherit/unset markers from a 3MF's ``project_settings.config``.
+
+    Only a key from ``PROJECT_SETTINGS_SENTINELS``, and only when it holds that
+    key's marker. The rest of the config — and every other zip entry — is
+    preserved; the file still parses, so ``StaticPrintConfig`` initialises and
+    the slicer falls back to ``--load-settings`` or its own default for the
+    removed key. Returns the input bytes unchanged whenever there is nothing to
+    do or the file cannot be read, so callers pass the result on blind. Used by
+    the real slice AND the preview slice (upstream 9a837d19).
+    """
+    from io import BytesIO
+
+    try:
+        with zipfile.ZipFile(BytesIO(zip_bytes), "r") as zin:
+            if PROJECT_SETTINGS_PATH not in zin.namelist():
+                return zip_bytes
+            try:
+                config = json.loads(zin.read(PROJECT_SETTINGS_PATH).decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return zip_bytes
+            if not isinstance(config, dict):
+                return zip_bytes
+            removed = {
+                key: sentinel
+                for key, sentinel in PROJECT_SETTINGS_SENTINELS.items()
+                if _is_sentinel(config.get(key), sentinel)
+            }
+            if not removed:
+                return zip_bytes
+            for key in removed:
+                config.pop(key, None)
+            patched = json.dumps(config)
+            logger.info(
+                "3MF sanitiser: removed inherit markers %s — the slicer uses its defaults for those keys",
+                sorted(f"{key}={sentinel}" for key, sentinel in removed.items()),
+            )
+            dst = BytesIO()
+            with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
+                for item in zin.infolist():
+                    if item.filename == PROJECT_SETTINGS_PATH:
+                        zout.writestr(item, patched)
+                    else:
+                        zout.writestr(item, zin.read(item.filename))
+            return dst.getvalue()
+    except (zipfile.BadZipFile, OSError):
+        return zip_bytes
 
 
 def _zip_source(source: Path | zipfile.ZipFile):
@@ -432,6 +526,8 @@ def extract_slot_extruders_from_3mf(file_path: Path, plate_id: int | None = None
     try:
         with zipfile.ZipFile(file_path) as zf:
             by_slot = extract_nozzle_mapping_from_3mf(zf, plate_id=plate_id)
+            if by_slot and _plate_needs_several_rack_nozzles(zf, plate_id):
+                return None
     except (zipfile.BadZipFile, OSError) as exc:
         logger.warning("Failed to read nozzle mapping from %s: %s", file_path, exc)
         return None
@@ -448,6 +544,225 @@ def extract_slot_extruders_from_3mf(file_path: Path, plate_id: int | None = None
         )
         return None
     return [by_slot.get(slot, -1) for slot in range(1, highest_slot + 1)]
+
+
+@dataclass(frozen=True)
+class RackGroup:
+    """One filament group on a nozzle-rack plate, and what hotend it needs.
+
+    A group is the slicer's *logical* nozzle. On an H2C the rack carriage hosts
+    six of them, so several groups share one extruder index -- exactly the case
+    the dispatch path's :func:`_plate_needs_several_rack_nozzles` withholds a
+    mapping for, because the physical rack position per group is the
+    operator's choice and is stated nowhere in the file.
+    """
+
+    group_id: int
+    on_rack: bool
+    nozzle_diameter: str
+    volume_type: str
+    # Only a hint, for preferring a rack position already loaded with this
+    # colour. Excluded from equality on purpose: two filaments may share a
+    # group and differ in colour without the group being contradictory, and
+    # the agreement check below must not reject that file.
+    filament_color: str = field(default="", compare=False)
+
+
+@dataclass(frozen=True)
+class RackPlan:
+    """Everything a rack dispatch needs from the 3MF, short of the choice itself.
+
+    ``slot_groups`` is dense: index 0 is filament slot 1, and a slot the plate
+    does not print is ``-1``, matching :func:`extract_slot_extruders_from_3mf`.
+    ``groups`` is keyed by group id.
+    """
+
+    slot_groups: list[int]
+    groups: dict[int, RackGroup]
+
+    @property
+    def rack_group_ids(self) -> list[int]:
+        """Groups needing a rack position, lowest first, for stable assignment."""
+        return sorted(gid for gid, group in self.groups.items() if group.on_rack)
+
+    def group_dicts(self) -> dict[int, dict]:
+        """The groups as plain dicts, the form the resolver and the API take.
+
+        Keeps one definition of the shape rather than two that can drift: the
+        dispatcher resolves against it and the print dialog renders from it.
+        """
+        return {
+            gid: {
+                "on_rack": group.on_rack,
+                "nozzle_diameter": group.nozzle_diameter,
+                "volume_type": group.volume_type,
+                "filament_color": group.filament_color,
+            }
+            for gid, group in self.groups.items()
+        }
+
+
+def extract_rack_plan_from_3mf(file_path: Path, plate_id: int | None = None) -> RackPlan | None:
+    """What a nozzle-rack plate needs per group, or None (upstream #1784, 3954d3a7).
+
+    :func:`extract_nozzle_mapping_from_3mf` answers "which carriage"; the
+    dispatch path withholds that answer when a plate needs several hotends off
+    one rack. This answers the question underneath it -- which groups exist,
+    which of them are rack-bound, and what nozzle each one wants -- so the
+    caller can pair it with a chosen rack position and build a mapping the
+    other cannot.
+
+    Measured basis (upstream's H2C, 2026-08-14): the same plate was sent twice
+    with different rack picks and every member of the two 3MFs was identical
+    bar float noise -- ``group_id`` values, the toolchange stream and the
+    ``NOZZLE_CHANGE`` markers included. The pick lives only in the dispatched
+    ``nozzle_mapping``, so nothing here can or should derive it.
+
+    Returns None whenever the plate cannot be described completely: a partial
+    plan would place some slots and leave others at "not printed", which is the
+    contradiction the firmware rejects as HMS 0500-4047.
+
+    ⚠️ A filament whose ``used_g`` is exactly 0 is no part of the plan
+    (``_known_unused_filament``, the rule ``extract_nozzle_mapping_from_3mf``
+    already follows) -- a divergence from upstream, which reads every listed
+    filament and so loses the whole plan to an unused channel without a group.
+
+    Takes a path rather than an open archive for the same reason
+    :func:`extract_slot_extruders_from_3mf` does -- the dispatcher is holding
+    the file, and a broken one must not take the print down.
+    """
+    try:
+        with zipfile.ZipFile(file_path) as zf:
+            return _rack_plan(zf, plate_id=plate_id)
+    except (zipfile.BadZipFile, OSError) as exc:
+        logger.warning("Failed to read rack plan from %s: %s", file_path, exc)
+        return None
+    except Exception:
+        logger.exception("Unreadable rack plan in %s", file_path)
+        return None
+
+
+def _rack_plan(zf: zipfile.ZipFile, plate_id: int | None) -> RackPlan | None:
+    """Body of :func:`extract_rack_plan_from_3mf`, on an already-open archive."""
+    names = zf.namelist()
+    if "Metadata/project_settings.config" not in names:
+        return None
+    if "Metadata/slice_info.config" not in names:
+        return None
+
+    data = json.loads(zf.read("Metadata/project_settings.config").decode())
+    physical_extruder_map = data.get("physical_extruder_map")
+    if not physical_extruder_map or len(physical_extruder_map) <= 1:
+        return None
+
+    # Which slicer extruder is the rack, taken from the file rather than a
+    # constant: the rack is the carriage that can address more than one nozzle.
+    # ``extruder_max_nozzle_count`` is ['1', '6'] on an H2C, and reading it here
+    # means a future rack of a different size needs no change.
+    rack_indices: set[int] = set()
+    for index, count in enumerate(data.get("extruder_max_nozzle_count") or []):
+        try:
+            if int(count) > 1:
+                rack_indices.add(index)
+        except (TypeError, ValueError):
+            return None
+    if not rack_indices:
+        return None
+
+    si_root = ET.fromstring(zf.read("Metadata/slice_info.config").decode())
+    plates = _plates_in_scope(si_root, plate_id)
+    group_extruders = _group_extruder_indices(plates)
+    if not group_extruders:
+        return None
+
+    filament_elems = [
+        elem for plate in plates for elem in plate.findall(".//filament") if not _known_unused_filament(elem)
+    ]
+    if not filament_elems:
+        return None
+
+    slot_groups: dict[int, int] = {}
+    groups: dict[int, RackGroup] = {}
+    for elem in filament_elems:
+        group_id_str = elem.get("group_id")
+        slot_id_str = elem.get("id")
+        if group_id_str is None or not slot_id_str:
+            # One ungrouped filament makes the plan partial, and a partial plan
+            # dispatches the ungrouped slot as unprinted.
+            return None
+        try:
+            group_id = int(group_id_str)
+            slot_id = int(slot_id_str)
+        except (TypeError, ValueError):
+            return None
+
+        extruder_index = group_extruders.get(group_id)
+        if extruder_index is None or not 0 <= extruder_index < len(physical_extruder_map):
+            return None
+
+        # Two plates in scope may name the same slot; they must agree, or the
+        # dispatched plate is ambiguous.
+        if slot_groups.setdefault(slot_id, group_id) != group_id:
+            return None
+
+        group = RackGroup(
+            group_id=group_id,
+            on_rack=extruder_index in rack_indices,
+            nozzle_diameter=(elem.get("nozzle_diameter") or "").strip(),
+            volume_type=(elem.get("volume_type") or "").strip(),
+            filament_color=(elem.get("color") or "").strip(),
+        )
+        # Filaments sharing a group must want the same hotend, or "the group is
+        # one nozzle" is not true and no single position can serve them.
+        if groups.setdefault(group_id, group) != group:
+            return None
+
+    highest_slot = max(slot_groups)
+    if highest_slot < 1 or highest_slot > _MAX_DENSE_FILAMENT_SLOTS:
+        return None
+
+    return RackPlan(
+        slot_groups=[slot_groups.get(slot, -1) for slot in range(1, highest_slot + 1)],
+        groups=groups,
+    )
+
+
+def _plate_needs_several_rack_nozzles(zf: zipfile.ZipFile, plate_id: int | None) -> bool:
+    """Whether the plate's nozzle table puts two groups on one extruder (upstream 45dc139c).
+
+    Two groups on one extruder means that extruder is a nozzle rack and the
+    plate wants a *different* hotend from it per group. Which dock each group
+    takes is the slicer's choice against the rack's live contents and is stated
+    nowhere in the file — upstream's plate carried identical diameter and
+    volume type on both rack groups, and BambuStudio still dispatched them to
+    16 and 18. The #2800 fallback this guards can name only one dock, and
+    answering anyway is what printed in mid-air, so it sends no
+    ``nozzle_mapping`` and the firmware picks. The per-group pick itself is
+    resolved before this path is ever asked (:func:`extract_rack_plan_from_3mf`,
+    upstream #1784); the guard stays for the plate that pick could not place.
+
+    ⚠️ Asked only on the dispatch path. Which CARRIAGE each slot prints from is
+    known either way — both rack slots are extruder 0 — and routing, the
+    archive and the library read that through ``extract_nozzle_mapping_from_3mf``;
+    upstream withholds the whole mapping there, which here would refuse the plate
+    in routing. A file without a table (every H2D slice) never answers True.
+    """
+    try:
+        if "Metadata/slice_info.config" not in zf.namelist():
+            return False
+        root = ET.fromstring(zf.read("Metadata/slice_info.config").decode())
+    except (KeyError, ET.ParseError, ValueError):  # ValueError covers decode and defusedxml refusals
+        return False
+    table = _group_extruder_indices(_plates_in_scope(root, plate_id))
+    if table and len(set(table.values())) < len(table):
+        logger.warning(
+            "Omitting nozzle_mapping: groups %s share extruders %s, so the plate needs more than "
+            "one nozzle from the rack and their dock positions are not derivable from the file",
+            sorted(table),
+            sorted(set(table.values())),
+        )
+        return True
+    return False
 
 
 def _plates_in_scope(si_root: XmlElement, plate_id: int | None) -> list[XmlElement]:

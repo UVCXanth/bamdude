@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQueries, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import type { Order, PlanRow as PlanRowData } from '../../api/client';
 import { formatMoney } from '../../utils/currency';
 import { formatDuration } from '../../utils/date';
 import { normalizeModelName } from '../../utils/printer';
+import { modelCompatibility } from '../../utils/modelCompatibility';
 import { Button } from '../Button';
 import { PrintModal } from '../PrintModal';
 import { chosenPlate, parseCount, projectRow, splitIsOff, type ChosenPlate } from './planMath';
@@ -112,15 +113,25 @@ export function PlanRow({
   const plate = chosenPlate(row, chosen);
   const hasAlternatives = row.alternatives.length > 0;
 
-  // ⚠️ Gated, and the gate is the point: a plan with no alternatives asks
-  // nothing about printers, which keeps "routing is not dispatching" true of
-  // the ordinary block. What the list is for is matching a MODEL to a file —
-  // nothing here reads a printer's state, and nothing here may start to.
+  // A plan with no alternatives does not need a printer picker.
   const { data: allPrinters } = useQuery({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
     enabled: canPrint && hasAlternatives,
   });
+  const { data: modelMatrix } = useQuery({
+    queryKey: ['modelCompatibility'], queryFn: api.getModelCompatibility,
+    enabled: canPrint && hasAlternatives, staleTime: 60 * 60 * 1000,
+  });
+  const statusQueries = useQueries({
+    queries: (allPrinters ?? []).map((printer) => ({
+      queryKey: ['printerStatus', printer.id],
+      queryFn: ({ signal }: { signal: AbortSignal }) => api.getPrinterStatus(printer.id, signal),
+      staleTime: 5000,
+    })),
+  });
+  const effectiveModel = (printerId: number, model: string | null) =>
+    statusQueries[(allPrinters ?? []).findIndex((printer) => printer.id === printerId)]?.data?.effective_model || model;
   // ⚠️ Parked printers are not offered. `getPrinters` already leaves ARCHIVED
   // ones out server-side, but Maintenance Mode (`is_active === false`) is the
   // independent axis: the card stays visible on the printers page and the
@@ -148,8 +159,13 @@ export function PlanRow({
   const printers = useMemo(() => {
     const active = (allPrinters ?? []).filter((p) => p.is_active);
     if (models.size === 0) return active;
-    return active.filter((p) => models.has(normalizeModelName(p.model).toLowerCase()));
-  }, [allPrinters, models]);
+    return active.filter((p) => plateOptions(row).some((option) =>
+      ['exact', 'compatible'].includes(modelCompatibility(
+        option.printer_model, effectiveModel(p.id, p.model), modelMatrix?.models,
+      ))
+    ));
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- status queries determine live effective models
+  }, [allPrinters, models, row, modelMatrix, statusQueries]);
 
   const tooMany = count > MAX_PER_PLATE;
   const atZero = count === 0;
@@ -179,7 +195,12 @@ export function PlanRow({
     const matches = options.filter(
       (o) => normalizeModelName(o.printer_model).toLowerCase() === wanted,
     );
-    return matches.length === 1 ? matches[0] : plate;
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) return plate;
+    const compatible = options.filter((option) =>
+      modelCompatibility(option.printer_model, model, modelMatrix?.models) === 'compatible'
+    );
+    return compatible.length === 1 ? compatible[0] : plate;
   };
 
   return (
@@ -356,7 +377,7 @@ export function PlanRow({
                 const printer = printers.find((p) => p.id === Number(e.currentTarget.value));
                 if (!printer) return;
                 setPickingPrinter(false);
-                setPrinting({ plate: fileForPrinter(printer.model), printerId: printer.id });
+                setPrinting({ plate: fileForPrinter(effectiveModel(printer.id, printer.model)), printerId: printer.id });
               }}
             >
               <option value="">{t('orders.plan.row.toPrinter')}</option>

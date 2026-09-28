@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -40,6 +41,33 @@ async def test_preview_uses_strict_reader_and_never_exposes_paths(
     )
     assert strict.json()["plates"][0]["groups"][0]["compatible"] == 0
     assert strict.json()["plates"][0]["groups"][0]["reasons"][0]["code"] == "color_mismatch"
+
+
+async def test_auto_preview_honors_explicit_compatible_target_without_fallback_setting(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch
+):
+    source, printer, _, _ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    printer.model = "P1S"
+    await db_session.commit()
+    snapshot = replace(printer_manager.get_feed_snapshot(printer.id), model="P1S")
+    monkeypatch.setattr(printer_manager, "get_feed_snapshot", lambda _: snapshot)
+
+    body = {"library_file_id": source.id, "plate_ids": [15]}
+    automatic = await committing_client.post("/api/v1/auto-queue/routing-preview", json=body)
+    assert automatic.status_code == 200, automatic.text
+    assert automatic.json()["plates"][0]["groups"] == []
+
+    explicit = await committing_client.post("/api/v1/auto-queue/routing-preview", json={**body, "target_model": "P1S"})
+    assert explicit.status_code == 200, explicit.text
+    assert explicit.json()["plates"][0]["model"] == "P1P"
+    assert explicit.json()["plates"][0]["target_model"] == "P1S"
+    assert explicit.json()["plates"][0]["groups"][0]["compatible"] == 1
+
+    queued = await committing_client.post(
+        "/api/v1/auto-queue/", json={"library_file_id": source.id, "plate_id": 15, "target_model": "P1S"}
+    )
+    assert queued.status_code == 200, queued.text
+    assert queued.json()["target_model"] == "P1S"
 
 
 async def test_printer_preview_checks_actual_manual_source_and_feed_policy(

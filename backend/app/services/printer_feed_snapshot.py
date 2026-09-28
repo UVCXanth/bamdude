@@ -9,6 +9,7 @@ import json
 from dataclasses import asdict, dataclass, field
 
 from backend.app.services.ams_advertised_overlay import matches_live, slot_key
+from backend.app.utils.model_compatibility import effective_model_for_state
 from backend.app.utils.printer_models import is_dual_nozzle_model, is_nozzle_rack_model, normalize_model_name
 
 
@@ -54,6 +55,30 @@ def _integer(value, default=None):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+# What the firmware puts in a hotend's serial when no nozzle is mounted on it.
+_EMPTY_NOZZLE_SERIAL = "N/A"
+
+
+def _hotend_states_empty(entry: dict) -> bool:
+    """A hotend entry of ``device.nozzle.info`` that SAYS nothing is mounted.
+
+    A hotend that parked its nozzle back in the rack keeps reporting that
+    nozzle's diameter — measured on an H2C at idle: diameter "0.4", serial
+    "N/A", no temperature rating (upstream #2885). The diameter is therefore no
+    sign of presence. Emptiness has to be stated: the serial must be the
+    firmware's "N/A" AND the rating absent; a firmware that reports neither has
+    said nothing, and reading that as empty would switch the nozzle check off.
+    Rack docks (ids 16+) are not asked — an empty dock is absent altogether.
+    """
+    serial = str(entry.get("serial_number") or entry.get("sn") or "").strip().upper()
+    if serial != _EMPTY_NOZZLE_SERIAL:
+        return False
+    try:
+        return float(entry.get("max_temp") or entry.get("tm") or 0) <= 0
+    except (TypeError, ValueError):
+        return False
 
 
 @dataclass
@@ -198,16 +223,15 @@ class FeedTelemetry:
                     nid = _integer(entry.get("id"))
                     if nid is None:
                         continue
-                    if is_nozzle_rack_model(model):
-                        from backend.app.utils.printer_models import (
-                            FIXED_CARRIAGE_PHYSICAL_ID,
-                            NOZZLE_RACK_EXTRUDER_INDEX,
-                        )
+                    if nid < 16 and _hotend_states_empty(entry):
+                        continue
+                    # ids 0/1 are the hotends on MQTT extruders 0/1 on every H2,
+                    # the H2C included; only a dock needs placing — on the
+                    # carriage that fetches from it (upstream 45dc139c).
+                    if nid >= 16 and is_nozzle_rack_model(model):
+                        from backend.app.utils.printer_models import NOZZLE_RACK_EXTRUDER_INDEX
 
-                        if nid >= 16:
-                            nid = NOZZLE_RACK_EXTRUDER_INDEX
-                        elif nid == FIXED_CARRIAGE_PHYSICAL_ID:
-                            nid = 1 - NOZZLE_RACK_EXTRUDER_INDEX
+                        nid = NOZZLE_RACK_EXTRUDER_INDEX
                     self._diameter(nid, entry.get("diameter"))
         for key, nid in (
             ("nozzle_diameter", 0),
@@ -230,6 +254,7 @@ class FeedTelemetry:
 
 def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None) -> PrinterFeedSnapshot:
     normalized = normalize_model_name(model)
+    routing_model = effective_model_for_state(model, state)
     dual = is_dual_nozzle_model(normalized)
     telemetry = getattr(state, "feed_telemetry", None)
     if not isinstance(telemetry, FeedTelemetry):
@@ -294,7 +319,7 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
     )
     diameters = {k: tuple(sorted(v)) for k, v in telemetry.nozzles.items()}
     payload = {
-        "model": normalized,
+        "model": routing_model,
         "ams_known": telemetry.ams_known,
         "ams_present": telemetry.ams_present,
         "external_known": telemetry.external_known,
@@ -313,7 +338,7 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
     revision = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     return PrinterFeedSnapshot(
         printer_id,
-        normalized,
+        routing_model,
         bool(state and state.connected),
         getattr(state, "connection_generation", 0),
         revision,

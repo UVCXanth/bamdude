@@ -1,5 +1,5 @@
 import { AlertTriangle, Check, Cloud, CloudOff, Cog, Loader2, RefreshCw, XCircle } from 'lucide-react';
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -31,6 +31,12 @@ import {
 } from '../utils/presetPickerUtils';
 import { useSlicerHealth, type SlicerKind } from '../hooks/useSlicerHealth';
 import { useIsWideLayout } from '../hooks/useIsWideLayout';
+import { defaultDesignKeys, designOverridesField } from '../lib/slicerSettings';
+import {
+  colourInputValue,
+  filamentColoursPayload,
+  resizeColourOverrides,
+} from '../utils/sliceFilamentColours';
 import { Select } from './Select';
 import {
   EMPTY_COMPATIBILITY_INDEX,
@@ -44,6 +50,7 @@ import {
   pickDefault,
   pickFilamentForSlot,
   pickProcessDefault,
+  statesDifferentMaterial,
 } from '../utils/slicePresetPicker';
 
 export type SliceSource =
@@ -236,6 +243,14 @@ interface PresetDropdownProps {
   disabled?: boolean;
   // Optional colour swatch (multi-color plate filament slots).
   swatchColor?: string;
+  // When set, the swatch becomes an editable colour control for this slot
+  // (upstream 4f10d155, #2977). Filament presets carry no colour of their own,
+  // so for an STL — or any source whose plate was never given one — this is
+  // the only place the colour recorded in the sliced file can come from.
+  onSwatchColorChange?: (colour: string) => void;
+  // Accessible name for that control. Required alongside the handler because
+  // the visible label belongs to the preset select, not to the swatch.
+  swatchColorLabel?: string;
   // 3-state owner filter applied per-section: 'all' shows everything,
   // 'custom' keeps user-imported + user-cloud, 'builtin' keeps standard
   // + bundled cloud presets. Empty tiers collapse out.
@@ -259,10 +274,16 @@ function PresetDropdown({
   onChange,
   disabled,
   swatchColor,
+  onSwatchColorChange,
+  swatchColorLabel,
   selectedPrinterName,
   compatIndex,
 }: PresetDropdownProps) {
   const { t } = useTranslation();
+  // A `<div>` with explicit `htmlFor` labels, not one wrapping `<label>`: the
+  // colour control is a label of its own, and labels do not nest.
+  const selectId = useId();
+  const colourId = `${selectId}-colour`;
 
   // Tier sections (imported → cloud → standard) after the owner filter, plus
   // — for a process / filament slot with a selected printer — a trailing
@@ -278,8 +299,12 @@ function PresetDropdown({
     const filterByPrinter = slot !== 'printer';
     const compatSections: { tierLabel: string; entries: UnifiedPreset[] }[] = [];
     const other: UnifiedPreset[] = [];
+    // The same sections with the printer filter never applied, for the
+    // all-filtered-out case below.
+    const unfiltered: { tierLabel: string; entries: UnifiedPreset[] }[] = [];
     for (const { key, label: lk, fallback } of tiers) {
       const entries = (data[key] as UnifiedPresetsBySlot)[slot];
+      if (entries.length > 0) unfiltered.push({ tierLabel: t(lk, fallback), entries });
       if (!filterByPrinter) {
         if (entries.length > 0) compatSections.push({ tierLabel: t(lk, fallback), entries });
         continue;
@@ -304,6 +329,15 @@ function PresetDropdown({
         compatSections.push({ tierLabel: t(lk, fallback), entries: compatible });
       }
     }
+    // A filter that leaves nothing at all is a statement about our matching,
+    // not about the presets (upstream e9daa212, #2982): a P1S has ten usable
+    // process presets and read as having none, because each is named for an
+    // X1C and says "P1S" only in a `compatible_printers` list an older sidecar
+    // does not report. So an emptied list is shown unfiltered — a visible
+    // preset for the wrong printer can be changed, an empty dropdown cannot.
+    if (compatSections.length === 0 && other.length > 0) {
+      return { sections: unfiltered, otherEntries: [] };
+    }
     return { sections: compatSections, otherEntries: other };
   }, [data, slot, t, selectedPrinterName, compatIndex]);
 
@@ -311,19 +345,23 @@ function PresetDropdown({
     sections.reduce((sum, s) => sum + s.entries.length, 0) + otherEntries.length;
 
   return (
-    <label className="block">
-      <span className="flex items-center gap-2 text-xs text-bambu-gray mb-1">
-        {swatchColor && (
+    <div className="block">
+      <label htmlFor={selectId} className="flex items-center gap-2 text-xs text-bambu-gray mb-1">
+        {/* Read-only dot for a row with no editable colour; filament rows carry
+            a real control beside the dropdown instead. */}
+        {!onSwatchColorChange && swatchColor && (
           <span
             className="inline-block w-3 h-3 rounded-full border border-bambu-dark-tertiary"
-            style={{ backgroundColor: swatchColor || 'transparent' }}
+            style={{ backgroundColor: swatchColor }}
             aria-hidden
           />
         )}
         <span>{label}</span>
-      </span>
+      </label>
+      <div className="flex items-stretch gap-2">
       <Select
-        className="w-full"
+        id={selectId}
+        className="flex-1 min-w-0"
         value={toRefValue(value)}
         onChange={(e) => onChange(fromRefValue(e.target.value))}
         disabled={disabled || totalEntries === 0}
@@ -352,7 +390,36 @@ function PresetDropdown({
           </optgroup>
         )}
       </Select>
-    </label>
+      {/* The colour control sits beside the dropdown, styled like it and the
+          same height, because that is what makes it read as a control: a bare
+          swatch in the label row looks exactly like the read-only dot above.
+          The whole label opens the picker, so the hex is a hit target and not
+          a caption. */}
+      {onSwatchColorChange && (
+        <label
+          htmlFor={colourId}
+          title={swatchColorLabel}
+          className={`flex items-center gap-2 px-2.5 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-sm ${
+            disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-bambu-gray transition-colors'
+          }`}
+        >
+          <input
+            id={colourId}
+            type="color"
+            value={colourInputValue(swatchColor)}
+            onChange={(e) => onSwatchColorChange(e.target.value.toUpperCase())}
+            disabled={disabled}
+            aria-label={swatchColorLabel}
+            // Painted explicitly as well as through the native swatch, so an
+            // engine that did not fill the swatch still shows the colour.
+            style={{ backgroundColor: colourInputValue(swatchColor) }}
+            className="slice-colour-swatch w-4 h-4 shrink-0 rounded-full border border-bambu-dark-tertiary p-0 disabled:cursor-not-allowed enabled:cursor-pointer"
+          />
+          <span className="font-mono text-xs text-white tracking-tight">{colourInputValue(swatchColor)}</span>
+        </label>
+      )}
+      </div>
+    </div>
   );
 }
 
@@ -541,6 +608,18 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // entry per AMS slot the plate uses. Pre-pick (effect below) initialises
   // each slot from the source plate's required (type, colour).
   const [filamentPresets, setFilamentPresets] = useState<(PresetRef | null)[]>([]);
+  // Per-slot colour picks, plate-slot-ordered alongside `filamentPresets`
+  // (upstream 4f10d155, #2977). `null` means "not picked", not "no colour": the
+  // slot then falls through to the source plate's colour and, past that, to the
+  // backend's own fallbacks. Storing a colour for every slot up front would
+  // defeat that chain — a sent colour outranks the preset's own default.
+  const [filamentColours, setFilamentColours] = useState<(string | null)[]>([]);
+  // Slots the user chose a filament for by hand, or by applying a pipeline
+  // (upstream e9daa212, #2982). The pre-pick re-picks a slot whose preset
+  // states the wrong material, and without this it would do so to a deliberate
+  // choice too — printing PETG on a plate a designer labelled PLA is a thing
+  // people do on purpose. A ref, not state: it must not re-trigger the pre-pick.
+  const explicitFilamentSlots = useRef<Set<number>>(new Set());
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Bed plate override sent to the slicer as ``--curr-bed-type``. Default
@@ -870,7 +949,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // Pre-tick design intent once the source's list arrives; machine-coupled keys
   // wait for the user to opt in.
   useEffect(() => {
-    setDesignKeys(new Set(designOverrides.filter((o) => !o.printer_coupled).map((o) => o.key)));
+    setDesignKeys(defaultDesignKeys(designOverrides));
   }, [designOverrides]);
 
   // The toggle is offered only when the source carries embedded settings (a
@@ -924,6 +1003,20 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     });
   }, [presetsQuery.data, selectedPrinterName, compatIndex, embeddedProcess]);
 
+  // A plate switch renumbers the slots, so the colour picks are dropped when
+  // the slot count changes (see `resizeColourOverrides`).
+  useEffect(() => {
+    setFilamentColours((current) => {
+      if (current.length !== filamentSlots.length) {
+        // A renumbered slot list invalidates the record of which slots the
+        // user chose for the same reason: slot 2 of the new plate is not slot 2
+        // of the old one.
+        explicitFilamentSlots.current = new Set();
+      }
+      return resizeColourOverrides(current, filamentSlots.length);
+    });
+  }, [filamentSlots]);
+
   // Filament pre-pick: re-runs when the active filament-slot count changes
   // (plate selection, single-plate metadata arriving) or the selected printer
   // changes. Each slot scores every available filament preset against the
@@ -938,7 +1031,13 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         const cur = current[i] ?? null;
         if (cur) {
           const p = findPreset(data, cur, 'filament');
-          if (p && presetCompatibility(p, 'filament', selectedPrinterName, compatIndex) !== 'mismatch') {
+          // Compatible with the printer is not on its own a reason to keep a
+          // pick: a preset stating another base material than the plate asks
+          // for is the wrong preset however well it fits the machine, and
+          // holding onto one is how a PETG profile survived on a PLA plate
+          // through every re-pick (#2982). An explicit choice is exempt.
+          const wrongMaterial = p && !explicitFilamentSlots.current.has(i) && statesDifferentMaterial(p, slot.type);
+          if (p && !wrongMaterial && presetCompatibility(p, 'filament', selectedPrinterName, compatIndex) !== 'mismatch') {
             return cur;
           }
         }
@@ -971,6 +1070,10 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         // backend validator prefers `filament_presets` when both are set.
         filament_preset: filamentPresets[0] as PresetRef,
         filament_presets: filamentPresets as PresetRef[],
+        // The colour each slot is printed in, so the sliced file stops recording
+        // the CLI's #00AE42 whatever was picked (#2977). An untouched slot sends
+        // the source plate's colour, or "" when it has none.
+        filament_colours: filamentColoursPayload(filamentSlots, filamentColours),
         // Always send a concrete plate number when the source is multi-plate;
         // omit otherwise so the backend default applies for STL / single-plate
         // 3MF sources where the concept doesn't apply.
@@ -993,7 +1096,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         // Carried design settings are patched onto the resolved process JSON,
         // which the embedded-settings path never sends — so the two are
         // mutually exclusive by construction (#2622).
-        ...(!useEmbedded && designKeys.size > 0 ? { design_overrides: [...designKeys] } : {}),
+        ...designOverridesField(useEmbedded, designOverrides, designKeys),
         // The user's own edits from the settings panel. Like design_overrides
         // these patch the resolved process JSON, so the embedded-settings path
         // — which sends no process JSON at all — cannot carry them.
@@ -1116,6 +1219,9 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       const ref = picked.filament_presets[i];
       if (resolved(ref, 'filament')) {
         nextFilaments[i] = ref;
+        // Applying a pipeline is as deliberate as picking from the dropdown,
+        // so the slots it fills are exempt from the material re-pick too.
+        explicitFilamentSlots.current.add(i);
       } else {
         unresolved.push(
           nextFilaments.length > 1
@@ -1502,6 +1608,14 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                               {t('slice.designSettingsPrinterCoupled')}
                             </span>
                           )}
+                          {!o.printer_coupled && o.preset_defining && (
+                            <span
+                              className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-700 dark:bg-amber-500/20 dark:text-amber-400"
+                              title={t('slice.designSettingsOverridesPresetHint')}
+                            >
+                              {t('slice.designSettingsOverridesPreset')}
+                            </span>
+                          )}
                         </span>
                       </label>
                     ))}
@@ -1578,6 +1692,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                     data={presetsQuery.data}
                     value={filamentPresets[idx] ?? null}
                     onChange={(ref) => {
+                      explicitFilamentSlots.current.add(idx);
                       setUnresolvedBundleSlots(null);
                       setFilamentPresets((current) => {
                         const next = current.length === filamentSlots.length
@@ -1588,7 +1703,18 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                       });
                     }}
                     disabled={isEnqueuing || !isUsed || useEmbedded}
-                    swatchColor={filamentSlots.length > 1 ? slot.color : undefined}
+                    // Every filament row, single-slot ones included: an STL
+                    // is exactly the source with no colour anywhere else to
+                    // inherit.
+                    swatchColor={filamentColours[idx] ?? slot.color}
+                    swatchColorLabel={t('slice.filamentColour')}
+                    onSwatchColorChange={(colour) =>
+                      setFilamentColours((current) => {
+                        const next = resizeColourOverrides([...current], filamentSlots.length);
+                        next[idx] = colour;
+                        return next;
+                      })
+                    }
                     selectedPrinterName={selectedPrinterName}
                     compatIndex={compatIndex}
                   />
@@ -1644,6 +1770,20 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                       presetValuesResolved={presetValuesResolved}
                       presetValuesReason={presetValuesReason}
                       disabled={isEnqueuing}
+                      // The designer's settings and which of them are on — the
+                      // same state as the list above, so a tick in either place
+                      // is one tick. The panel's greying rules need it: a file
+                      // value that is on is one the slice runs with (#2942).
+                      sourceOverrides={designOverrides}
+                      sourceSelected={designKeys}
+                      onToggleSource={(key, on) =>
+                        setDesignKeys((prev) => {
+                          const next = new Set(prev);
+                          if (on) next.add(key);
+                          else next.delete(key);
+                          return next;
+                        })
+                      }
                     />
                   </div>
                 )}

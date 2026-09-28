@@ -280,6 +280,33 @@ class TestDownload:
         assert local.exists()
         client.disconnect()
 
+    def test_a_short_download_is_refused(self, ftp_client_factory, ftp_server, tmp_path):
+        """Fewer bytes than the printer says the file holds is a failed download,
+        not a file: a truncated 3MF attached to an archive fails later, far from
+        the cause (upstream 55cc64c8). The partial copy is removed."""
+        ftp_server.add_file("cache/short.3mf", b"only part of it")
+        local = tmp_path / "short.3mf"
+        client = ftp_client_factory()
+        client.connect()
+        client._ftp.size = lambda path: 4096
+        assert client.download_to_file("/cache/short.3mf", local) is False
+        assert not local.exists()
+        client.disconnect()
+
+    def test_a_download_the_printer_cannot_size_is_kept(self, ftp_client_factory, ftp_server, tmp_path):
+        """No SIZE answer is no evidence either way — the download stands as before."""
+        import ftplib
+
+        content = b"whole file"
+        ftp_server.add_file("cache/nosize.3mf", content)
+        local = tmp_path / "nosize.3mf"
+        client = ftp_client_factory()
+        client.connect()
+        client._ftp.size = lambda path: (_ for _ in ()).throw(ftplib.error_perm("502 SIZE not implemented."))
+        assert client.download_to_file("/cache/nosize.3mf", local) is True
+        assert local.read_bytes() == content
+        client.disconnect()
+
     def test_zero_byte_download_returns_false(self, ftp_client_factory, ftp_server, tmp_path):
         """0-byte download returns False and cleans up (regression test)."""
         ftp_server.add_file("cache/empty.bin", b"")
@@ -479,6 +506,16 @@ class TestVoidrespErrorTransientVsTruncated:
 
         return ftplib.error_temp("426 Failure reading network stream.")
 
+    def _client_426(self, ftp_client_factory, server_size: int):
+        """A connected client whose STOR ends in a 426 and whose SIZE answers
+        ``server_size`` — one per upload, since a 426 leaves the session
+        mid-reply."""
+        client = ftp_client_factory()
+        client.connect()
+        client._ftp.voidresp = lambda: (_ for _ in ()).throw(self._make_426())
+        client._ftp.size = lambda path: server_size
+        return client
+
     def test_upload_file_intact_treats_426_as_transient(self, ftp_client_factory, ftp_server, tmp_path):
         """SIZE matches → 426 is noise from TLS race; upload_file returns True.
 
@@ -546,6 +583,48 @@ class TestVoidrespErrorTransientVsTruncated:
         result = client.upload_bytes(data, "/cache/truncated_bytes.bin")
         assert result is False
         client.disconnect()
+
+    def test_verified_426_logs_at_info_not_warning(self, ftp_client_factory, ftp_server, tmp_path, caplog):
+        """A 426 whose bytes the SIZE probe verified is how Bambu FTPS
+        normally ends a transfer, not a fault, so it must not be a WARNING
+        (upstream #2987: 54 of them in one support bundle, every one followed
+        by a completed upload, burying the handshake failures that actually
+        cost prints). Both upload paths."""
+        import logging
+
+        content = b"data" * 256
+        local = tmp_path / "intact.3mf"
+        local.write_bytes(content)
+        with caplog.at_level(logging.INFO, logger="backend.app.services.bambu_ftp"):
+            client = self._client_426(ftp_client_factory, len(content))
+            assert client.upload_file(local, "/cache/intact.3mf") is True
+            client.disconnect()
+            client = self._client_426(ftp_client_factory, len(content))
+            assert client.upload_bytes(content, "/cache/intact_bytes.bin") is True
+            client.disconnect()
+
+        intact = [r for r in caplog.records if "file intact" in r.getMessage()]
+        assert len(intact) == 2, "the proceed path must still say why it proceeded"
+        assert [r.levelno for r in intact] == [logging.INFO, logging.INFO]
+
+    def test_unverified_426_still_logs_an_error(self, ftp_client_factory, ftp_server, tmp_path, caplog):
+        """The half that must stay loud: bytes that did not verify."""
+        import logging
+
+        content = b"data" * 256
+        local = tmp_path / "truncated.3mf"
+        local.write_bytes(content)
+        with caplog.at_level(logging.INFO, logger="backend.app.services.bambu_ftp"):
+            client = self._client_426(ftp_client_factory, 100)
+            assert client.upload_file(local, "/cache/truncated.3mf") is False
+            client.disconnect()
+            client = self._client_426(ftp_client_factory, 100)
+            assert client.upload_bytes(content, "/cache/truncated_bytes.bin") is False
+            client.disconnect()
+
+        rejected = [r for r in caplog.records if "rejected by printer" in r.getMessage()]
+        assert len(rejected) == 2
+        assert all(r.levelno == logging.ERROR for r in rejected)
 
 
 # ---------------------------------------------------------------------------

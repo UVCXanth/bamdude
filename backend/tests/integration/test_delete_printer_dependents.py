@@ -134,7 +134,9 @@ async def test_the_archive_files_go_with_the_rows(async_client: AsyncClient, pri
 
     printer = await printer_factory(name="Doomed five")
     printer_id = printer.id
-    archive_dir = settings.archive_dir / "20260818_120000_doomed"
+    # Two levels deep, as the archiver lays it out: one level up is the
+    # printer's folder, which the delete refuses to take (upstream #2968).
+    archive_dir = settings.archive_dir / str(printer_id) / "20260818_120000_doomed"
     archive_dir.mkdir(parents=True, exist_ok=True)
     threemf = archive_dir / "job.gcode.3mf"
     threemf.write_bytes(b"not really a zip, but it is on disk")
@@ -186,7 +188,7 @@ async def test_an_archive_already_in_the_trash_goes_too(async_client: AsyncClien
 
     printer = await printer_factory(name="Doomed six")
     printer_id = printer.id
-    archive_dir = settings.archive_dir / "20260818_150000_trashed"
+    archive_dir = settings.archive_dir / str(printer_id) / "20260818_150000_trashed"
     archive_dir.mkdir(parents=True, exist_ok=True)
     threemf = archive_dir / "job.gcode.3mf"
     threemf.write_bytes(b"trashed but still on disk")
@@ -235,7 +237,7 @@ async def test_a_file_another_printer_still_points_at_survives(async_client: Asy
     keeper = await printer_factory(name="Stays")
     doomed_id, keeper_id = doomed.id, keeper.id
 
-    shared_dir = settings.archive_dir / "20260818_130000_shared"
+    shared_dir = settings.archive_dir / str(doomed_id) / "20260818_130000_shared"
     shared_dir.mkdir(parents=True, exist_ok=True)
     shared_file = shared_dir / "same-bytes.gcode.3mf"
     shared_file.write_bytes(b"one file, two archives")

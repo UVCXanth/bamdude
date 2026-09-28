@@ -35,6 +35,12 @@ function stub(status: ZigbeeStatus, sensors: ZigbeeSensor[]) {
   vi.spyOn(api, 'getZigbeeSensors').mockResolvedValue({ sensors });
   vi.spyOn(api, 'getZigbeeDevices').mockResolvedValue({ devices: [] });
   vi.spyOn(api, 'getPrinterLocations').mockResolvedValue({ locations: [] });
+  vi.spyOn(api, 'getHASensors').mockResolvedValue([]);
+  vi.spyOn(api, 'getLocationHASensors').mockResolvedValue([]);
+  vi.spyOn(api, 'getHASensorManagementReadings').mockResolvedValue({ configured: false, readings: [] });
+  vi.spyOn(api, 'getLocationHASensorManagementReadings').mockResolvedValue({ configured: false, readings: [] });
+  vi.spyOn(api, 'getPrinters').mockResolvedValue([]);
+  vi.spyOn(api, 'getLocations').mockResolvedValue([]);
 }
 
 describe('SensorsSection', () => {
@@ -46,6 +52,38 @@ describe('SensorsSection', () => {
     render(<SensorsSection adoptDevice={null} onAdoptHandled={() => {}} />);
 
     expect(await screen.findByText('Майстерня')).toBeInTheDocument();
+  });
+
+  it('groups one HA entity across printer and storage without mixing their readings', async () => {
+    stub(UP, []);
+    vi.mocked(api.getHASensors).mockResolvedValue([{ id: 1, printer_id: 3, name: 'Room probe',
+      entity_id: 'sensor.room_temperature', kind: 'numeric', device_class: 'temperature', unit: '°C',
+      show_on_printer_card: false }] as never);
+    vi.mocked(api.getLocationHASensors).mockResolvedValue([{ id: 1, location_id: 5, name: 'Drybox probe',
+      entity_id: 'sensor.room_temperature', kind: 'numeric', device_class: 'temperature', unit: '°C',
+      show_on_card: true }] as never);
+    vi.mocked(api.getHASensorManagementReadings).mockResolvedValue({ configured: true, readings: [{
+      id: 1, printer_id: 3, name: 'Room probe', entity_id: 'sensor.room_temperature',
+      kind: 'numeric', device_class: 'temperature', unit: '°C', state: '23.1', value: 23.1,
+      reachable: true, fresh: true, alerting: false, block_print: false,
+      show_on_printer_card: false, last_changed: null, last_checked: null, observed_at: null,
+    }] });
+    vi.mocked(api.getLocationHASensorManagementReadings).mockResolvedValue({ configured: true, readings: [{
+      id: 1, location_id: 5, name: 'Drybox probe', entity_id: 'sensor.room_temperature',
+      kind: 'numeric', device_class: 'temperature', unit: '°C', state: '19.2', value: 19.2,
+      reachable: true, fresh: true, alerting: false, alert_state: null, alert_above: null,
+      alert_below: null, show_on_card: true, last_changed: null, last_checked: null, observed_at: null,
+    }] });
+    render(<SensorsSection adoptDevice={null} onAdoptHandled={() => {}} />);
+    expect(await screen.findByText('sensor.room_temperature')).toBeInTheDocument();
+    expect(screen.getAllByText('sensor.room_temperature')).toHaveLength(1);
+    await userEvent.click(screen.getByText(/2 places using this entity/));
+    expect(screen.getByText('23.1 °C')).toBeInTheDocument();
+    expect(screen.getByText('19.2 °C')).toBeInTheDocument();
+    expect(screen.getByText('Hidden on card')).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Filter by place' }), 'storage');
+    expect(screen.getByText('19.2 °C')).toBeInTheDocument();
+    expect(screen.queryByText('23.1 °C')).not.toBeInTheDocument();
   });
 
   it('says nothing is added yet rather than looking broken', async () => {
@@ -66,6 +104,28 @@ describe('SensorsSection', () => {
     expect(await screen.findByText('Майстерня')).toBeInTheDocument();
     expect(screen.getByText('Склад')).toBeInTheDocument();
     expect(screen.getByText(/radio is down/i)).toBeInTheDocument();
+  });
+
+  it('can add Home Assistant sensors while the Zigbee radio is down', async () => {
+    stub(DOWN, []);
+    vi.mocked(api.getHASensorManagementReadings).mockResolvedValue({ configured: true, readings: [] });
+    vi.mocked(api.getLocationHASensorManagementReadings).mockResolvedValue({ configured: true, readings: [] });
+    render(<SensorsSection adoptDevice={null} onAdoptHandled={() => {}} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Add sensor/i }));
+    expect(screen.getByRole('button', { name: 'Zigbee' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Home Assistant' }));
+    expect(screen.getByRole('button', { name: 'Printer' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Spool storage' })).toBeEnabled();
+  });
+
+  it('keeps Zigbee controls usable when a Home Assistant readings request fails', async () => {
+    stub(UP, [sensor()]);
+    vi.mocked(api.getHASensorManagementReadings).mockRejectedValue(new Error('HA batch unavailable'));
+    render(<SensorsSection adoptDevice={null} onAdoptHandled={() => {}} />);
+    expect(await screen.findByText('Майстерня')).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not be loaded/i);
+    expect(screen.getByRole('combobox', { name: 'Filter by source' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Add sensor/i })).toBeEnabled();
   });
 
   it('the unbind confirmation names the boundary it does not cross', async () => {

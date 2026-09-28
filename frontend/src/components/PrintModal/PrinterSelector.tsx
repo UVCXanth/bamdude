@@ -21,6 +21,8 @@ import {
 import type { PrinterSelectorProps } from './types';
 import type { PrinterMappingResult, PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
 import type { FilamentRequirement } from '../../hooks/useFilamentMapping';
+import { useSlotSpoolNames } from '../../hooks/useSlotSpoolNames';
+import { modelCompatibility } from '../../utils/modelCompatibility';
 
 interface PrinterSelectorWithMappingProps extends PrinterSelectorProps {
   /** Per-printer mapping results (only used when multiple printers selected) */
@@ -50,6 +52,8 @@ function InlineMappingEditor({
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  // Assigned slots are named after their spool (upstream d5c70477).
+  const slotNames = useSlotSpoolNames(printerResult.printerId);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const handleSlotChange = (slotId: number, value: string) => {
@@ -159,7 +163,7 @@ function InlineMappingEditor({
               : filterFilamentsByNozzle(printerResult.loadedFilaments, req.nozzle_id))
               .map((f) => (
               <option key={f.globalTrayId} value={f.globalTrayId} className="bg-bambu-dark text-white">
-                {f.label}: {f.traySubBrands || f.type} ({f.colorName})
+                {f.label}: {slotNames.get(f.globalTrayId) ?? `${f.traySubBrands || f.type} (${f.colorName})`}
               </option>
             ))}
           </select>
@@ -199,6 +203,7 @@ export function PrinterSelector({
   onAutoConfigurePrinter,
   onUpdatePrinterConfig,
   slicedForModel,
+  modelMatrix,
   swapCompatible,
   pausedQueuePrinterIds,
 }: PrinterSelectorWithMappingProps) {
@@ -272,12 +277,16 @@ export function PrinterSelector({
 
     // Filter by sliced model
     if (slicedForModel && !showAllPrinters) {
-      const matching = filtered.filter((p) => p.model === slicedForModel);
+      const matching = filtered.filter((p) =>
+        ['exact', 'compatible'].includes(modelCompatibility(
+          slicedForModel, printerStatusMap.get(p.id)?.effective_model || p.model, modelMatrix,
+        ))
+      );
       if (matching.length > 0) filtered = matching;
     }
 
     return filtered;
-  }, [activePrinters, slicedForModel, swapCompatible, showAllPrinters]);
+  }, [activePrinters, slicedForModel, swapCompatible, showAllPrinters, modelMatrix, printerStatusMap]);
 
   // Check if there are hidden printers due to model filtering
   const hiddenPrinterCount = activePrinters.length - displayPrinters.length;

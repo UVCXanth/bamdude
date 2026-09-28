@@ -12,21 +12,45 @@ from pydantic import BaseModel, Field, model_validator
 from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
 
 
+class SensorBindingIn(BaseModel):
+    printer_id: int | None = None
+    printer_location_id: int | None = None
+    storage_location_id: int | None = None
+    display_name: str | None = Field(default=None, max_length=100)
+    visible: bool = True
+    sort_order: int = 0
+    notify_enabled: bool = False
+
+    @model_validator(mode="after")
+    def _one_target(self):
+        if (
+            sum(value is not None for value in (self.printer_id, self.printer_location_id, self.storage_location_id))
+            != 1
+        ):
+            raise ValueError("A binding needs exactly one target.")
+        return self
+
+
 class SmartSensorCreate(BaseModel):
     zigbee_ieee: str = Field(min_length=1, max_length=23)
     name: str = Field(min_length=1, max_length=100)
     # The place it stands in — the same entity a printer points at, so a sensor
     # and the printers around it can be asked about together.
     location_id: int | None = None
-    # ⚠️ Or the printer it belongs TO — an enclosure probe, a door contact.
-    # Exclusive with ``location_id``: the route clears whichever was not sent.
-    # See ``SmartSensor`` for why they cannot both hold.
+    # Legacy 0/1-binding input. New clients use /sensors/{id}/bindings.
     printer_id: int | None = None
+    initial_binding: SensorBindingIn | None = None
 
     @model_validator(mode="before")
     @classmethod
     def _no_legacy_location(cls, values):
         return reject_legacy_key(values, "location", "location_id")
+
+    @model_validator(mode="after")
+    def _single_initial_target(self):
+        if self.initial_binding is not None and ({"location_id", "printer_id"} & self.model_fields_set):
+            raise ValueError("initial_binding cannot be combined with legacy target fields")
+        return self
 
 
 class SmartSensorUpdate(BaseModel):
@@ -49,6 +73,7 @@ class SmartSensorOut(BaseModel):
     # The printer's name, so a sensor list can say what it is bound to without
     # a second request per row.
     printer_name: str | None = None
+    bindings: list[dict] = Field(default_factory=list)
     zigbee_ieee: str
     created_at: datetime
 

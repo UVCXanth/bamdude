@@ -141,6 +141,6 @@ function platePreviewVerdict(
   }
   // With a complete preview, no groups means no active target in the chosen
   // model/location scope — not missing telemetry from an existing target.
-  if (plate.groups.length === 0) return { state: 'no_target', model: plate.model };
+  if (plate.groups.length === 0) return { state: 'no_target', model: plate.target_model ?? plate.model };
   return UNKNOWN;
 }

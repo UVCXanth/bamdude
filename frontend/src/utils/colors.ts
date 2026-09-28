@@ -12,10 +12,16 @@
 // arrives instead of staying stuck on the HSL fallback.
 
 let runtimeColorCatalog: Record<string, string> = {};
+// Names a plain hex lookup cannot reach, keyed "<material>|<hex>". A hex is not
+// one colour in Bambu's range -- #FFFFFF is Jade White in PLA Basic and Ivory
+// White in PLA Matte -- so a caller that knows the material (an AMS slot knows
+// it as tray_sub_brands) gets the right one instead of whichever row the
+// backend's collapse happened to keep (#2875).
+let runtimeMaterialCatalog: Record<string, string> = {};
 let catalogVersion = 0;
 const catalogListeners = new Set<() => void>();
 
-export function setColorCatalog(map: Record<string, string>): void {
+export function setColorCatalog(map: Record<string, string>, byMaterial?: Record<string, string>): void {
   // Normalize keys to lowercase 6-char hex (no '#'), defensively. Backend already
   // does this, but the frontend contract is explicit so callers from tests or
   // future integrations can't accidentally break lookups.
@@ -25,7 +31,19 @@ export function setColorCatalog(map: Record<string, string>): void {
     const hex = key.replace('#', '').toLowerCase().slice(0, 6);
     if (hex.length === 6) normalized[hex] = value;
   }
+  const normalizedByMaterial: Record<string, string> = {};
+  for (const [key, value] of Object.entries(byMaterial || {})) {
+    if (!key || !value) continue;
+    // Split on the LAST separator: a material is free text (users edit the
+    // catalog) and may itself contain a '|'.
+    const cut = key.lastIndexOf('|');
+    if (cut <= 0) continue;
+    const material = key.slice(0, cut).trim().toLowerCase();
+    const cleanHex = key.slice(cut + 1).replace('#', '').toLowerCase().slice(0, 6);
+    if (material && cleanHex.length === 6) normalizedByMaterial[`${material}|${cleanHex}`] = value;
+  }
   runtimeColorCatalog = normalized;
+  runtimeMaterialCatalog = normalizedByMaterial;
   catalogVersion += 1;
   // Snapshot listeners to avoid mutation-during-iteration if a listener unsubscribes.
   for (const listener of Array.from(catalogListeners)) {
@@ -47,6 +65,7 @@ export function getColorCatalogVersion(): number {
 /** Test-only hook: reset the catalog to empty so unit tests can exercise fallbacks. */
 export function __resetColorCatalogForTests(): void {
   runtimeColorCatalog = {};
+  runtimeMaterialCatalog = {};
   catalogVersion = 0;
   catalogListeners.clear();
 }
@@ -237,15 +256,61 @@ export function colorSortKey(rgba: string | null | undefined): string {
 /**
  * Get color name from hex color.
  * Looks up the runtime color catalog (backend-sourced), then falls back to HSL.
+ *
+ * Pass `material` whenever the caller knows which variant the colour belongs to
+ * -- for an AMS slot that is the printer's own `tray_sub_brands` ("PLA Matte").
+ * Without it a white Matte spool reads "Jade White", the PLA Basic name that
+ * shares its hex, because the flat map can only keep one name per hex (#2875).
+ * An unknown material falls through to the flat lookup, so passing one can only
+ * ever improve the answer.
  */
-export function getColorName(hexColor: string): string {
+export function getColorName(hexColor: string, material?: string | null): string {
   if (!hexColor) return hexToColorName(hexColor);
   const clean = hexColor.replace('#', '').toLowerCase();
   if (clean.length === 8 && clean.substring(6, 8) === '00') return 'Clear';
   const hex = clean.substring(0, 6);
+  if (material) {
+    const qualified = runtimeMaterialCatalog[`${material.trim().toLowerCase()}|${hex}`];
+    if (qualified) return qualified;
+  }
   const mapped = runtimeColorCatalog[hex];
   if (mapped) return mapped;
   return hexToColorName(hexColor);
+}
+
+/**
+ * Label two colours so a reader can tell which is which (upstream #2941).
+ *
+ * `getColorName` falls back to a coarse family bucket for a hex the catalogue
+ * does not hold, so a slicer profile's near-pure `#0028FF` and Bambu's navy
+ * `#0A2989` are both "Blue", and a mismatch warning between them reads as a
+ * contradiction of the two identical names either side of it. When the names
+ * collide the hex — what actually differs — is appended to both. Distinct names
+ * come back untouched; a side with no name falls back to its hex; a pair with no
+ * usable hex keeps the bare names rather than growing an empty "()".
+ */
+export function disambiguateColorNames(
+  first: { name?: string | null; hex?: string | null },
+  second: { name?: string | null; hex?: string | null },
+): [string, string] {
+  const hexLabel = (hex?: string | null): string => {
+    const clean = (hex ?? '').replace('#', '').trim().slice(0, 6).toUpperCase();
+    return /^[0-9A-F]{6}$/.test(clean) ? `#${clean}` : '';
+  };
+
+  const firstName = (first.name ?? '').trim();
+  const secondName = (second.name ?? '').trim();
+  const firstHex = hexLabel(first.hex);
+  const secondHex = hexLabel(second.hex);
+
+  if (!firstName || !secondName) return [firstName || firstHex, secondName || secondHex];
+  if (firstName.toLowerCase() !== secondName.toLowerCase()) return [firstName, secondName];
+  if (!firstHex && !secondHex) return [firstName, secondName];
+
+  return [
+    firstHex ? `${firstName} (${firstHex})` : firstName,
+    secondHex ? `${secondName} (${secondHex})` : secondName,
+  ];
 }
 
 /**
@@ -284,10 +349,29 @@ export function resolveMultiColorName(cols: string[] | null | undefined): string
   return names.join(' + ');
 }
 
-export function resolveSpoolColorName(colorName: string | null, rgba: string | null): string | null {
-  // If color_name looks like a readable name (no pattern like "X00-Y0"), use it directly
-  if (colorName && !/^[A-Z]\d+-[A-Z]\d+$/.test(colorName)) {
-    return colorName;
+/**
+ * The colour NAME to show for a spool.
+ *
+ * Tries: a stored name the user (or their tag) set → the runtime catalogue via
+ * rgba → a synthesised name after all → null.
+ *
+ * Two kinds of stored name are not answers and defer to the hex:
+ * - a Bambu internal code ("A06-D0") some RFID tags carry instead of a name —
+ *   not unique across material families, so untranslatable on its own (#857);
+ * - a name synthesised from the spool's subtype because the inventory backend
+ *   had none (upstream e4a9ef45, #3090): Spoolman has no colour-name field, so
+ *   every Spoolman spool arrives with its subtype in `color_name` and
+ *   `color_name_is_synthesized` set. "Silk+" is not a colour — a weaker answer
+ *   than the catalogue, still better than nothing when the hex resolves to none.
+ */
+export function resolveSpoolColorName(
+  colorName: string | null,
+  rgba: string | null,
+  colorNameIsSynthesized = false,
+): string | null {
+  const readable = colorName && !/^[A-Z]\d+-[A-Z]\d+$/.test(colorName) ? colorName : null;
+  if (readable && !colorNameIsSynthesized) {
+    return readable;
   }
   // Try hex color lookup from rgba via the runtime catalog
   if (rgba && rgba.length >= 6) {
@@ -299,6 +383,9 @@ export function resolveSpoolColorName(colorName: string | null, rgba: string | n
     const mapped = runtimeColorCatalog[hex];
     if (mapped) return mapped;
   }
+  // A synthesised subtype is a poor colour name and a fine last resort — it at
+  // least says what the spool is. A bare code never is.
+  if (readable) return readable;
   // Return null (displayed as "-") - better than showing a code
   return null;
 }
@@ -311,6 +398,11 @@ export function resolveSpoolColorName(colorName: string | null, rgba: string | n
  * `FilamentSwatch` already paints a richer checkerboard underlay automatically;
  * use this only when retro-fitting an existing simple swatch site.
  */
+// The transparency checkerboard, shared by every swatch that shows a
+// translucent colour, so the fully- and partly-transparent branches cannot
+// drift apart.
+const CHECKERBOARD = 'repeating-conic-gradient(#979797 0% 25%, #f5f5f5 0% 50%)';
+
 export function getSwatchStyle(rgba: string | null | undefined): {
   backgroundColor?: string;
   backgroundImage?: string;
@@ -319,11 +411,24 @@ export function getSwatchStyle(rgba: string | null | undefined): {
   if (!rgba) return { backgroundColor: '#808080' };
   const clean = rgba.replace(/^#/, '');
   if (clean.length < 6) return { backgroundColor: '#808080' };
-  if (clean.length >= 8 && clean.substring(6, 8).toLowerCase() === '00') {
-    return {
-      backgroundImage: 'repeating-conic-gradient(#979797 0% 25%, #f5f5f5 0% 50%)',
-      backgroundSize: '8px 8px',
-    };
+  if (clean.length >= 8) {
+    const alpha = clean.substring(6, 8).toLowerCase();
+    if (alpha === '00') {
+      return { backgroundImage: CHECKERBOARD, backgroundSize: '8px 8px' };
+    }
+    if (alpha !== 'ff') {
+      // Partly translucent (upstream 73912d4f, #2912): the colour at its real
+      // alpha OVER the checkerboard, so the swatch shows both the tint and that
+      // it is see-through. Dropping to the RGB prefix drew a 10%-alpha spool as
+      // an opaque one. Two image layers rather than backgroundColor: a
+      // background colour paints UNDER the image, which would put the
+      // checkerboard on top of the tint.
+      const translucent = `#${clean.substring(0, 8)}`;
+      return {
+        backgroundImage: `linear-gradient(${translucent}, ${translucent}), ${CHECKERBOARD}`,
+        backgroundSize: '100% 100%, 8px 8px',
+      };
+    }
   }
   return { backgroundColor: `#${clean.substring(0, 6)}` };
 }

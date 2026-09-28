@@ -32,6 +32,7 @@ class LocationResponse(BaseModel):
     name: str
     identifier: str | None = None
     spool_count: int = 0
+    sensor_count: int = 0
     created_at: datetime
     updated_at: datetime
 

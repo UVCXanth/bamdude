@@ -53,6 +53,7 @@ from backend.app.services.queue_wait_reason import set_wait_reason
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable, require_source_file
 from backend.app.services.stagger_groups import GroupKey, StaggerGroupResolver, StaggerSplit
+from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.filament_types import canonical_filament_type
 from backend.app.utils.material_keys import resolve_material_key
 
@@ -401,6 +402,20 @@ class PrintScheduler:
             # PrintQueueItem and also catches external / direct prints that
             # don't have a corresponding item row.
             busy_printers = await active_claim_printer_ids(db)
+            from backend.app.services.ha_sensor_manager import ha_sensor_manager
+
+            ha_interlocks = await ha_sensor_manager.blocked_printers(db)
+            # Why each printer sits out this pass — a claim and an obstruction
+            # are opposite facts, and the summary below must not call a printer
+            # this pass just dispatched to "not available" (upstream #3018).
+            busy_reasons: dict[int, str] = {}
+
+            def mark_busy(pid: int, reason: str) -> None:
+                busy_printers.add(pid)
+                busy_reasons.setdefault(pid, reason)
+
+            for claimed_printer_id in busy_printers:
+                busy_reasons[claimed_printer_id] = "claimed"
 
             # Defense-in-depth (#1157): augment busy_printers with any printer
             # still inside its post-dispatch hold window. The DB seed above can
@@ -411,7 +426,7 @@ class PrintScheduler:
             # doesn't depend on DB row visibility or completion-callback timing.
             for held_printer_id in list(self._dispatch_holds.keys()):
                 if self._printer_in_dispatch_hold(held_printer_id):
-                    busy_printers.add(held_printer_id)
+                    mark_busy(held_printer_id, "dispatch_hold")
 
             # ⚠️ Snapshot taken HERE, before the item loop adds anything.
             #
@@ -467,6 +482,14 @@ class PrintScheduler:
                 # Get printer_id from queue
                 printer_id = item.queue.printer_id if item.queue else None
                 if not printer_id:
+                    continue
+
+                # Hold only this printer's pending work; a reachable HA sensor
+                # in its configured alert state is an operator-defined gate.
+                if printer_id in ha_interlocks:
+                    if set_wait_reason(item, "ha_sensor", f"Sensor alert: {ha_interlocks[printer_id]}"):
+                        await db.commit()
+                    skip_reasons["ha_sensor"] = skip_reasons.get("ha_sensor", 0) + 1
                     continue
 
                 # ⚠️ A timelapse that was asked for and has nowhere to go PAUSES
@@ -563,10 +586,10 @@ class PrintScheduler:
                             printer_idle = self._is_printer_idle(printer_id, require_plate_clear=rpc)
                         else:
                             logger.warning("Could not power on printer %s via smart plug", printer_id)
-                            busy_printers.add(printer_id)
+                            mark_busy(printer_id, "power_on_failed")
                             continue
                     else:
-                        busy_printers.add(printer_id)
+                        mark_busy(printer_id, "offline")
                         continue
 
                 # Check if printer is idle (busy with another print)
@@ -582,7 +605,7 @@ class PrintScheduler:
                 # between. It now runs where the decision is actually made,
                 # just before dispatch.
                 if not printer_idle:
-                    busy_printers.add(printer_id)
+                    mark_busy(printer_id, "not_idle")
                     continue
 
                 # Drying blocks the queue, if the user asked it to. A hold is a
@@ -596,7 +619,7 @@ class PrintScheduler:
                 if self._drying_in_progress.get(printer_id) and await self._get_bool_setting(db, "queue_drying_block"):
                     if set_wait_reason(item, "drying", "Drying in progress"):
                         await db.commit()
-                    busy_printers.add(printer_id)
+                    mark_busy(printer_id, "drying")
                     continue
 
                 # Staggered start: check if we have a free slot
@@ -680,9 +703,16 @@ class PrintScheduler:
                 # mid-print cap (spec, owner's decision 6). It resumes when the printer
                 # is free, within its window.
                 if printer_id in self._scheduled_drying_printers:
-                    await scheduled_drying.preempt_for_print(
-                        db, printer_id, datetime.now(timezone.utc).replace(tzinfo=None)
-                    )
+                    # Its own session, like the tick: a failure here must not leave the
+                    # queue's session unusable for the print it is about to start.
+                    try:
+                        async with async_session() as drying_db:
+                            await scheduled_drying.preempt_for_print(
+                                drying_db, printer_id, datetime.now(timezone.utc).replace(tzinfo=None)
+                            )
+                    except Exception as exc:  # noqa: BLE001 - the print must not depend on drying
+                        # The tick's follow sees the print and takes the cycle back.
+                        logger.warning("Scheduled drying: preemption failed on printer %d: %s", printer_id, exc)
                     self._scheduled_drying_printers.discard(printer_id)
                     self._drying_in_progress.pop(printer_id, None)
 
@@ -695,7 +725,7 @@ class PrintScheduler:
                 if item.status != "printing":
                     continue
                 dispatched = True
-                busy_printers.add(printer_id)
+                mark_busy(printer_id, "dispatched")
                 # ⚠️ The one addition the narrow set DOES take: this print is
                 # imminent. The printer's own state still reads IDLE for a few
                 # seconds after dispatch, so without this the drying pass at the
@@ -706,25 +736,37 @@ class PrintScheduler:
             if skip_reasons:
                 logger.info("Queue skip summary: %s", skip_reasons)
             if busy_printers:
-                # Log why each printer was busy (first time it was checked)
-                for pid in busy_printers:
-                    state = printer_manager.get_status(pid)
-                    connected = printer_manager.is_connected(pid)
-                    awaiting_plate_clear = printer_manager.is_awaiting_plate_clear(pid)
-                    state_name = state.state if state else "NO_STATUS"
-                    logger.info(
-                        "Queue: printer %d not available - connected=%s, state=%s, awaiting_plate_clear=%s",
-                        pid,
-                        connected,
-                        state_name,
-                        awaiting_plate_clear,
-                    )
+                self._log_busy_printers(busy_printers, busy_reasons)
 
             # Scheduled drying first: the units it reserves are off-limits to auto-drying.
             await self._tick_scheduled_drying(dispatching_printers)
             # Auto-drying: start drying on idle printers that have no pending queue items
             await self._check_auto_drying(db, items, dispatching_printers)
             return dispatched
+
+    @staticmethod
+    def _log_busy_printers(busy_printers: set[int], busy_reasons: dict[int, str]) -> None:
+        """Why each printer sat out this pass (upstream #3018).
+
+        A printer the pass dispatched to is a reservation, not an obstruction.
+        For the rest the recorded reason is the cause; the live fields are read
+        NOW, after the decision, and are labelled so — they answered "IDLE" for
+        a printer one line before it was sent a job.
+        """
+        for pid in sorted(busy_printers):
+            reason = busy_reasons.get(pid, "unknown")
+            if reason == "dispatched":
+                logger.info("Queue: printer %d reserved - dispatched this pass", pid)
+                continue
+            state = printer_manager.get_status(pid)
+            logger.info(
+                "Queue: printer %d skipped this pass: %s (now: connected=%s, state=%s, awaiting_plate_clear=%s)",
+                pid,
+                reason,
+                printer_manager.is_connected(pid),
+                state.state if state else "NO_STATUS",
+                printer_manager.is_awaiting_plate_clear(pid),
+            )
 
     async def _get_filament_requirements(self, db: AsyncSession, item: PrintQueueItem) -> list[dict] | None:
         """Read the same exact plate evidence as intake and auto assignment."""
@@ -1641,7 +1683,8 @@ class PrintScheduler:
         if not queue_drying_enabled and not ambient_drying_enabled:
             # Stop active drying on all printers if both features disabled
             if self._drying_in_progress:
-                for pid in list(self._drying_in_progress):
+                # A scheduled cycle's hold is the schedule's: nothing of ours to stop there.
+                for pid in [p for p in self._drying_in_progress if p not in self._scheduled_drying_printers]:
                     logger.info("Auto-drying: printer %d - stopping, auto-drying disabled", pid)
                     await self._stop_drying(pid)
             return
@@ -1669,7 +1712,7 @@ class PrintScheduler:
         # (But skip this short-circuit when print_drying_enabled is on — busy printers
         # may still be eligible for mid-print drying regardless of queue state.)
         if not ambient_drying_enabled and not printers_with_scheduled and not print_drying_enabled:
-            for pid in list(self._drying_in_progress):
+            for pid in [p for p in self._drying_in_progress if p not in self._scheduled_drying_printers]:
                 logger.info("Auto-drying: printer %d - stopping, no scheduled prints in queue", pid)
                 await self._stop_drying(pid)
             return
@@ -1724,7 +1767,7 @@ class PrintScheduler:
             if not mid_print:
                 # In queue-only mode, only dry printers that have scheduled prints
                 if not ambient_drying_enabled and pid not in printers_with_scheduled:
-                    if self._drying_in_progress.get(pid):
+                    if self._drying_in_progress.get(pid) and pid not in self._scheduled_drying_printers:
                         logger.info("Auto-drying: printer %d - stopping, no scheduled prints for this printer", pid)
                         await self._stop_drying(pid)
                     logger.debug("Auto-drying: printer %d skipped - no scheduled prints", pid)
@@ -1770,21 +1813,12 @@ class PrintScheduler:
 
                 dry_time = int(ams_data.get("dry_time") or 0)
 
-                # Read humidity - prefer humidity_raw (actual %) over humidity (index 1-5)
-                humidity = None
-                h_raw = ams_data.get("humidity_raw")
-                if h_raw is not None:
-                    try:
-                        humidity = int(h_raw)
-                    except (ValueError, TypeError):
-                        pass
-                if humidity is None:
-                    h_idx = ams_data.get("humidity")
-                    if h_idx is not None:
-                        try:
-                            humidity = int(h_idx)
-                        except (ValueError, TypeError):
-                            pass
+                # Read humidity as a percentage. The 1-5 index is never
+                # substituted: it runs the other way, and being unable to exceed
+                # any threshold it would read as "dry" forever (upstream #3140).
+                # ``None`` already means "skip this unit" everywhere below.
+                humidity_pct = ams_humidity_percent(ams_data)
+                humidity = int(round(humidity_pct)) if humidity_pct is not None else None
 
                 # Resolve per-filament humidity threshold for this AMS unit (#1605).
                 # Most-restrictive of all loaded tray types; falls back to the
@@ -2547,6 +2581,15 @@ class PrintScheduler:
         # them, and this barrier must preserve that existing behavior.
         now = datetime.now(timezone.utc)
         async with queue_claim_scope(db, item.queue_id):
+            from backend.app.services.ha_sensor_manager import ha_sensor_manager
+
+            # Recheck at the final claim: the sensor may have alerted while
+            # archive/routing preparation was running outside the queue lock.
+            ha_interlocks = await ha_sensor_manager.blocked_printers(db)
+            if printer.id in ha_interlocks:
+                await db.rollback()
+                logger.info("Queue item %s: HA sensor alert on printer %s", item.id, printer.id)
+                return
             try:
                 require_scheduler_claim(await read_queue_occupancy(db, item.queue_id, for_update=True))
             except PrinterOccupancyConflict as exc:
@@ -2632,6 +2675,10 @@ class PrintScheduler:
             # parses + injects it only for dual-nozzle models, so a null on
             # every other model is a transparent pass-through.
             "nozzle_mapping": item.nozzle_mapping,
+            # The operator's rack-position pick (upstream #1784), the column's
+            # JSON text as is; the dispatcher reads it after the upload, against
+            # the rack as it stands then.
+            "nozzle_rack_choice": item.nozzle_rack_choice,
             "execute_swap_macros": item.execute_swap_macros,
             "swap_macro_events": swap_events,
             # Which macros the operator ticked for this job. None means no

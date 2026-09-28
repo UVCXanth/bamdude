@@ -15,6 +15,7 @@ export interface LibraryScanState {
   updated: number;
   removed: number;
   skippedDeletions: boolean;
+  warnings: number;
   error?: string | null;
 }
 
@@ -29,6 +30,7 @@ interface ScanEventDetail {
     files_updated?: number;
     files_removed?: number;
     skipped_deletions?: boolean;
+    warnings?: number;
     error?: string | null;
   };
 }
@@ -43,6 +45,7 @@ function toState(data: NonNullable<ScanEventDetail['data']>, status: LibraryScan
     updated: data.files_updated ?? 0,
     removed: data.files_removed ?? 0,
     skippedDeletions: Boolean(data.skipped_deletions),
+    warnings: data.warnings ?? 0,
     error: data.error ?? null,
   };
 }
@@ -101,6 +104,7 @@ export function useLibraryScanProgress(onFinished?: (folderId: number, state: Li
         updated: 0,
         removed: 0,
         skippedDeletions: false,
+        warnings: 0,
         error: null,
       },
     }));

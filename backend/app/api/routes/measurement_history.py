@@ -11,10 +11,11 @@ says so in its own docstring — the two must not be tidied into one shape.
 
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.api_key_scope import sensor_in_key_scope
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -129,6 +130,7 @@ async def get_plug_power_history(
 @router.get("/zigbee/sensors/{sensor_id}/history")
 async def get_sensor_history(
     sensor_id: int,
+    request: Request,
     kind: str = Query(description="Which quantity — temperature, humidity, battery, …"),
     hours: int = Query(default=24, ge=1, le=_MAX_HOURS, description="Hours of history (1-168)"),
     db: AsyncSession = Depends(get_db),
@@ -157,6 +159,8 @@ async def get_sensor_history(
         raise HTTPException(status_code=400, detail=f"Unknown quantity: {kind}.")
     if await db.get(SmartSensor, sensor_id) is None:
         raise HTTPException(status_code=404, detail="No such sensor.")
+    if not await sensor_in_key_scope(request, db, sensor_id):
+        raise HTTPException(status_code=403, detail="API key does not have access to this sensor.")
 
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     bucket = bucket_seconds_for(hours)

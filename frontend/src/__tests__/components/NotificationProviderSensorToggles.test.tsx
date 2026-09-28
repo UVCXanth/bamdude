@@ -39,6 +39,8 @@ function provider(over: Partial<NotificationProvider> = {}): NotificationProvide
     on_ams_ht_temperature_high: false,
     on_sensor_threshold: false,
     on_sensor_silent: false,
+    on_ha_sensor_alert: false,
+    on_location_ha_sensor_alert: false,
     on_plate_not_empty: true,
     on_bed_cooled: false,
     on_first_layer_complete: false,

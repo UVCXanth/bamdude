@@ -31,7 +31,7 @@ import { getCurrencySymbol } from '../../utils/currency';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
 import { getBedTypeInfo } from '../../utils/bedType';
 import { filamentColorMatches, filamentTypesCompatible, getGlobalTrayId, isPlaceholderDate } from '../../utils/amsHelpers';
-import { isGcodeCompatible } from '../../utils/printer';
+import { modelCompatibility } from '../../utils/modelCompatibility';
 import { splitRoundRobin } from '../../lib/quantitySplit';
 import { AutoModeOptions } from './AutoModeOptions';
 import {
@@ -99,6 +99,9 @@ interface SubmitOptions {
  * source is add-to-queue only: it preserves saved bytes and cannot enter the
  * auto-queue or immediate-reprint routes, which require an archive/library id.
  */
+/** No rack pick at all — one shared object, so the mapping panel's memo keeps. */
+const NO_RACK_CHOICE: Record<number, number> = {};
+
 export function PrintModal({
   mode,
   archiveId,
@@ -402,6 +405,7 @@ export function PrintModal({
     archive_id: isArchiveSource ? archiveId : undefined,
     library_file_id: isLibraryFile ? libraryFileId : undefined,
     plate_ids: selectedPlates.size ? [...selectedPlates].sort((a, b) => a - b) : [0],
+    target_model: autoModeOptions.target_model,
     target_location_id: autoModeOptions.target_location_id,
     feed_policy: autoModeOptions.feed_policy ?? 'auto',
     force_color_match: autoModeOptions.force_color_match,
@@ -447,6 +451,11 @@ export function PrintModal({
   const { data: printers, isLoading: loadingPrinters, isFetched: printersFetched } = useQuery({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
+  });
+  const { data: modelMatrix } = useQuery({
+    queryKey: ['modelCompatibility'],
+    queryFn: api.getModelCompatibility,
+    staleTime: 60 * 60 * 1000,
   });
 
   // The ONLY thing that fills an empty printer selection by itself. Named here
@@ -998,6 +1007,31 @@ export function PrintModal({
   // are different prints and may want different trays.
   const [manualMappingsByPlate, setManualMappingsByPlate] = useState<Record<number, Record<number, number>>>({});
 
+  // Rack position per filament group on an H2C (upstream #1784), per plate (key
+  // 0 when no plate is chosen) and for ONE printer: a pick names a hotend on
+  // that machine's rack and means nothing on another, so it stays with the
+  // printer it was made for and is not sent to any other.
+  const [rackPick, setRackPick] = useState<{ printerId: number | null; byPlate: Record<number, Record<number, number>> }>(() => {
+    // Re-opening an item shows the positions it was queued with, so editing one
+    // filament does not silently drop the rest.
+    if (mode === 'edit-queue-item' && queueItem?.nozzle_rack_choice && queueItem.printer_id != null) {
+      const seeded: Record<number, number> = {};
+      for (const [groupId, position] of Object.entries(queueItem.nozzle_rack_choice)) {
+        const group = Number(groupId);
+        if (Number.isInteger(group) && Number.isInteger(position)) seeded[group] = position;
+      }
+      return { printerId: queueItem.printer_id, byPlate: { [queueItem.plate_id ?? 0]: seeded } };
+    }
+    return { printerId: null, byPlate: {} };
+  });
+  const rackChoiceFor = (plateId: number | null | undefined): Record<number, number> =>
+    (rackPick.printerId === effectivePrinterId ? rackPick.byPlate[plateId ?? 0] : undefined) ?? NO_RACK_CHOICE;
+  const setRackChoiceFor = (plateId: number | null | undefined, choice: Record<number, number>) =>
+    setRackPick((prev) => ({
+      printerId: effectivePrinterId,
+      byPlate: { ...(prev.printerId === effectivePrinterId ? prev.byPlate : {}), [plateId ?? 0]: choice },
+    }));
+
   // Only ever computed for a single target printer: a global tray id names a
   // different spool on a different machine, so a fan-out must not reuse these.
   const perPlateAmsMappings = useMemo(() => {
@@ -1046,12 +1080,17 @@ export function PrintModal({
     setPerPrinterConfigs
   );
 
-  // Auto-select first plate when plates load (single or multi-plate)
+  // Keep a library selection valid when an external file is replaced in place
+  // and its refreshed plate list is shorter or has different real indices.
   useEffect(() => {
-    if (platesData?.plates && platesData.plates.length >= 1 && selectedPlates.size === 0) {
-      setSelectedPlates(new Set([platesData.plates[0].index]));
-    }
-  }, [platesData, selectedPlates.size]);
+    if (!platesData?.plates?.length) return;
+    const available = new Set(platesData.plates.map(plate => plate.index));
+    setSelectedPlates(current => {
+      const valid = isLibraryFile ? new Set([...current].filter(index => available.has(index))) : current;
+      if (valid.size === current.size && valid.size > 0) return current;
+      return valid.size ? valid : new Set([platesData.plates[0].index]);
+    });
+  }, [platesData, isLibraryFile, selectedPlates.size]);
 
   // --- Which ORDER this print is filed under -------------------------------
   // ⚠️ The dialog asks only when nobody has already answered. A caller that
@@ -1993,6 +2032,13 @@ export function PrintModal({
       return { execute_swap_macros: true, swap_macro_events: swapMacros.events };
     };
 
+    // The rack pick goes only to the one printer the picker was shown for.
+    const rackChoiceForSubmit = (printerId: number, plateId: number | null | undefined) => {
+      if (selectedPrinters.length !== 1 || rackPick.printerId !== printerId) return undefined;
+      const choice = rackPick.byPlate[plateId ?? 0];
+      return choice && Object.keys(choice).length > 0 ? choice : undefined;
+    };
+
     // Common queue data for add-to-queue and edit modes
     const getQueueData = (printerId: number, plateOverride?: number | null): PrintQueueItemCreate => {
       const plateId = plateOverride !== undefined ? plateOverride : selectedPlate;
@@ -2012,6 +2058,9 @@ export function PrintModal({
         !Object.values(perPrinterConfigs).some(config => !config.useDefault && !config.autoConfigured)
         ? undefined : getMappingForPrinter(printerId, plateId),
       manual_mapping: isManualMapping(printerId, plateId),
+      // Rack positions per filament group (upstream #1784); omitted, the
+      // dispatcher assigns them against the rack as it stands then.
+      nozzle_rack_choice: rackChoiceForSubmit(printerId, plateId),
       ...{
         feed_policy: autoModeOptions.feed_policy,
         force_color_match: autoModeOptions.force_color_match,
@@ -2102,6 +2151,7 @@ export function PrintModal({
                 plate_id: selectedPlate ?? undefined,
                 plate_name: selectedPlateName,
                 ams_mapping: printerMapping,
+                nozzle_rack_choice: rackChoiceForSubmit(printerId, plateId),
                 manual_mapping: isManualMapping(printerId, plateId),
                 feed_policy: autoModeOptions.feed_policy,
                 force_color_match: autoModeOptions.force_color_match,
@@ -2123,6 +2173,7 @@ export function PrintModal({
                 plate_id: selectedPlate ?? undefined,
                 plate_name: selectedPlateName,
                 ams_mapping: printerMapping,
+                nozzle_rack_choice: rackChoiceForSubmit(printerId, plateId),
                 manual_mapping: isManualMapping(printerId, plateId),
                 feed_policy: autoModeOptions.feed_policy,
                 force_color_match: autoModeOptions.force_color_match,
@@ -2144,6 +2195,10 @@ export function PrintModal({
               manual_start: scheduleOptions.scheduleType === 'manual',
               require_previous_success: scheduleOptions.requirePreviousSuccess,
               ams_mapping: mappingReviewed ? printerMapping : undefined,
+              // null, not undefined: a pick that was cleared — or one made for
+              // the printer this item is moving away from — means "assign them
+              // again", and undefined would leave the stale one on the row.
+              nozzle_rack_choice: rackChoiceForSubmit(printerId, plateId) ?? null,
               // ⚠️ The same routing answers `getQueueData` sends on the add
               // path. The PATCH merges only what arrives (`exclude_unset=True`),
               // so leaving them out kept the stored answer and the operator's
@@ -2329,8 +2384,19 @@ export function PrintModal({
 
   const isPending = isSubmitting || updateQueueMutation.isPending || addNextQueueBlockMutation.isPending;
 
+  const incompatibleModelSelection = !!slicedForModel && (
+    isAutoMode
+      ? !!autoModeOptions.target_model && modelCompatibility(slicedForModel, autoModeOptions.target_model, modelMatrix?.models) === 'incompatible'
+      : selectedPrinters.some((id, index) => {
+          const printer = printers?.find((candidate) => candidate.id === id);
+          const target = timelapseStatuses[index]?.data?.effective_model || printer?.model;
+          return modelCompatibility(slicedForModel, target, modelMatrix?.models) === 'incompatible';
+        })
+  );
+
   const canSubmit = useMemo(() => {
     if (isPending) return false;
+    if (incompatibleModelSelection) return false;
     // The payload names only this queue row. Until its source profile has
     // arrived, or after it has refused, there is no safe substitute source.
     if (isSnapshotSource && (!queueSourceProfile || queueSourceProfileError)) return false;
@@ -2368,6 +2434,7 @@ export function PrintModal({
     queueSourceProfileError,
     perPlateReqsPending,
     perPlateReqsFailed,
+    incompatibleModelSelection,
   ]);
 
   // --- Self-submit for a grouped run ------------------------------------
@@ -2622,11 +2689,15 @@ export function PrintModal({
 
   return (
     <>
+      {/* 4xl rather than 2xl (upstream #1784): a filament row carries the most
+          horizontal content in the dialog — the required name, a rack-position
+          picker on an H2C, and an AMS slot dropdown naming type, colour and
+          remaining weight — and anything narrower truncated the name. */}
       <Modal
         onClose={onClose}
         closeDisabled={isSubmitting}
         labelledBy={headingId}
-        size="2xl"
+        size="4xl"
         header={
           <>
             <TitleIcon className="w-5 h-5 text-bambu-green" />
@@ -2843,6 +2914,7 @@ export function PrintModal({
                 onChange={setAutoModeOptions}
                 printers={printers}
                 slicedForModel={slicedForModel}
+                modelMatrix={modelMatrix?.models}
                 locked={lockAutoTarget}
               />
             )}
@@ -2878,23 +2950,22 @@ export function PrintModal({
                 onAutoConfigurePrinter={multiPrinterMapping.autoConfigurePrinter}
                 onUpdatePrinterConfig={multiPrinterMapping.updatePrinterConfig}
                 slicedForModel={slicedForModel}
+                modelMatrix={modelMatrix?.models}
                 swapCompatible={swapCompatible}
               />
             )}
 
-            {/* Compatibility warning when sliced model doesn't match selected printer.
-                ⚠️ `isGcodeCompatible`, never a raw `!==`: the feasibility block above
-                answers with the family mirror (an X1C plate runs on a P1S), and a
-                stricter question here would paint a yellow warning over a print the
-                machine accepts — while the block beside it says nothing at all. */}
+            {/* Compatibility is directed and comes from the backend mirror. */}
             {!isAutoMode && slicedForModel && selectedPrinters.length === 1 && (() => {
               const selectedPrinter = printers?.find(p => p.id === selectedPrinters[0]);
-              if (selectedPrinter && selectedPrinter.model && !isGcodeCompatible(slicedForModel, selectedPrinter.model)) {
+              const targetModel = selectedPrinter && (printerStatus?.effective_model || selectedPrinter.model);
+              const verdict = modelCompatibility(slicedForModel, targetModel, modelMatrix?.models);
+              if (selectedPrinter && verdict !== 'exact') {
                 return (
                   <div className="p-3 mb-2 bg-yellow-50 dark:bg-yellow-500/10 border border-yellow-300 dark:border-yellow-500/30 rounded-lg flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
                     <span className="text-sm text-yellow-700 dark:text-yellow-400">
-                      {t('printModal.slicedForWarning', { slicedModel: slicedForModel, printerModel: selectedPrinter.model })}
+                      {t(verdict === 'compatible' ? 'printModal.compatibleModelWarning' : verdict === 'unknown' ? 'printModal.unknownModelWarning' : 'printModal.slicedForWarning', { slicedModel: slicedForModel, printerModel: targetModel })}
                     </span>
                   </div>
                 );
@@ -2937,6 +3008,8 @@ export function PrintModal({
                 defaultExpanded={!!initialSelectedPrinterIds?.length || (settings?.per_printer_mapping_expanded ?? false)}
                 currencySymbol={currencySymbol}
                 defaultCostPerKg={defaultCostPerKg}
+                nozzleRackChoice={rackChoiceFor(selectedPlate)}
+                onNozzleRackChoiceChange={(choice) => setRackChoiceFor(selectedPlate, choice)}
               />
             )}
 
@@ -2962,6 +3035,8 @@ export function PrintModal({
                   defaultExpanded={false}
                   currencySymbol={currencySymbol}
                   defaultCostPerKg={defaultCostPerKg}
+                  nozzleRackChoice={rackChoiceFor(plateId)}
+                  onNozzleRackChoiceChange={(choice) => setRackChoiceFor(plateId, choice)}
                 />
               );
             })}

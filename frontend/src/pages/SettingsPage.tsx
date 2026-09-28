@@ -74,6 +74,7 @@ import { PrinterTagsCard } from '../components/settings/PrinterTagsCard';
 import { CloudLinkSettings } from '../components/settings/CloudLinkSettings';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
 import { adoptUntouchedServerChanges } from '../utils/settingsReconcile';
+import { summarizePlugEnergy } from '../utils/plugEnergySummary';
 
 const validTabs = ['general', 'slicing', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
@@ -98,7 +99,7 @@ registerSettingsSearch({ labelKey: 'labelEditor.title', tab: 'filament', subTab:
 registerSettingsSearch({ labelKey: 'labelSheets.title', tab: 'filament', subTab: 'marking', keywords: 'sheet sheets avery paper page grid columns rows margin gap label stickers a4 a5 letter', anchor: 'card-label-sheets' });
 registerSettingsSearch({ labelKey: 'settings.tabs.filament', tab: 'filament', keywords: 'filament checks warning runout remaining print modal custom mapping ams thresholds humidity temperature history retention spoolman tracking inventory sync remote integration spool catalog color catalog brand material import export', anchor: 'tab-filament' });
 registerSettingsSearch({ labelKey: 'settings.tabs.notifications', tab: 'notifications', keywords: 'notifications providers telegram discord email webhook ntfy pushover home assistant message templates notification text edit digest log viewer', anchor: 'tab-notifications' });
-registerSettingsSearch({ labelKey: 'settings.tabs.smartPlugs', tab: 'plugs', keywords: 'smart plugs energy power automation tapo kasa tplink shelly tasmota discovery kwh monitoring', anchor: 'tab-plugs' });
+registerSettingsSearch({ labelKey: 'settings.tabs.smartPlugs', tab: 'plugs', keywords: 'smart plugs sensors датчики Zigbee Home Assistant storage температура вологість energy power automation tapo kasa tplink shelly tasmota discovery kwh monitoring', anchor: 'tab-plugs' });
 registerSettingsSearch({ labelKey: 'settings.tabs.network', tab: 'network', keywords: 'network external url reverse proxy public notification link ftp retry upload retries backoff home assistant ha hass mqtt publishing broker topic integration prometheus metrics grafana monitoring bearer token', anchor: 'tab-network' });
 registerSettingsSearch({ labelKey: 'settings.tabs.cloudLink', tab: 'network', keywords: 'cloud link portal remote pairing publish', anchor: 'card-cloud-link' });
 registerSettingsSearch({ labelKey: 'settings.tabs.virtualPrinter', tab: 'virtual-printer', keywords: 'virtual printer proxy archive slicer bambustudio orcaslicer ip bind port', anchor: 'tab-virtual-printer' });
@@ -505,33 +506,9 @@ export function SettingsPage() {
         })
       );
 
-      // Aggregate energy data
-      let totalPower = 0;
-      let totalToday = 0;
-      let totalYesterday = 0;
-      let totalLifetime = 0;
-      let reachableCount = 0;
-
-      for (const { plug, status } of statuses) {
-        // For MQTT plugs, consider reachable if we have power data
-        const hasMqttData = plug.plug_type === 'mqtt' && (status?.energy?.power != null);
-        const isReachable = (status?.reachable || hasMqttData) && status?.energy;
-
-        if (isReachable) {
-          reachableCount++;
-          if (status.energy?.power != null) totalPower += status.energy.power;
-          if (status.energy?.today != null) totalToday += status.energy.today;
-          if (status.energy?.yesterday != null) totalYesterday += status.energy.yesterday;
-          if (status.energy?.total != null) totalLifetime += status.energy.total;
-        }
-      }
-
+      // Online = answers; energy is summed from those that meter (upstream #2859).
       return {
-        totalPower,
-        totalToday,
-        totalYesterday,
-        totalLifetime,
-        reachableCount,
+        ...summarizePlugEnergy(statuses),
         totalPlugs: smartPlugs.filter(p => p.enabled).length,
       };
     },
@@ -1305,6 +1282,7 @@ export function SettingsPage() {
       (baseline.queue_drying_enabled ?? false) !== (localSettings.queue_drying_enabled ?? false) ||
       (baseline.queue_shortest_first ?? false) !== (localSettings.queue_shortest_first ?? false) ||
       (baseline.auto_queue_rebalance_models ?? false) !== (localSettings.auto_queue_rebalance_models ?? false) ||
+      (baseline.auto_queue_compatible_models ?? false) !== (localSettings.auto_queue_compatible_models ?? false) ||
       (baseline.auto_order_for_batches ?? false) !== (localSettings.auto_order_for_batches ?? false) ||
       (baseline.queue_drying_block ?? false) !== (localSettings.queue_drying_block ?? false) ||
       (baseline.ambient_drying_enabled ?? false) !== (localSettings.ambient_drying_enabled ?? false) ||
@@ -1426,6 +1404,7 @@ export function SettingsPage() {
         queue_drying_enabled: localSettings.queue_drying_enabled,
         queue_shortest_first: localSettings.queue_shortest_first,
         auto_queue_rebalance_models: localSettings.auto_queue_rebalance_models,
+        auto_queue_compatible_models: localSettings.auto_queue_compatible_models,
         auto_order_for_batches: localSettings.auto_order_for_batches,
         queue_drying_block: localSettings.queue_drying_block,
         ambient_drying_enabled: localSettings.ambient_drying_enabled,
@@ -3201,6 +3180,7 @@ export function SettingsPage() {
                     ? t('settings.cameraOverlayDescription')
                     : t('settings.cameraWindowDescription')}
                 </p>
+                <p className="text-xs text-bambu-gray mt-1">{t('settings.cameraViewModeDefaultHint')}</p>
               </div>
 
               {/* The chamber light for the camera (backend services/camera_light).
@@ -3957,6 +3937,21 @@ export function SettingsPage() {
                       type="checkbox"
                       checked={localSettings.auto_queue_rebalance_models ?? false}
                       onChange={(e) => updateSetting('auto_queue_rebalance_models', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block text-sm text-white">{t('settings.autoQueueCompatibleModels')}</label>
+                    <p className="text-xs text-bambu-gray mt-0.5">{t('settings.autoQueueCompatibleModelsDescription')}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.auto_queue_compatible_models ?? false}
+                      onChange={(e) => updateSetting('auto_queue_compatible_models', e.target.checked)}
                       className="sr-only peer"
                     />
                     <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>

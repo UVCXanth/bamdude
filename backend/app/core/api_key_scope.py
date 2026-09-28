@@ -88,6 +88,28 @@ def in_key_scope(request: Request | None, printer_id: int | None) -> bool:
     return scope is None or printer_id in scope
 
 
+async def sensor_in_key_scope(request: Request, db: AsyncSession, sensor_id: int) -> bool:
+    """A restricted key may read a sensor only through an allowed printer target."""
+    scope = key_printer_scope(request)
+    if scope is None:
+        return True
+    if not scope:
+        return False
+    from backend.app.models.smart_sensor import SmartSensor
+    from backend.app.models.smart_sensor_binding import SmartSensorBinding
+
+    bound = await db.scalar(select(SmartSensorBinding.id).where(SmartSensorBinding.sensor_id == sensor_id).limit(1))
+    if bound is not None:
+        allowed = await db.scalar(
+            select(SmartSensorBinding.id)
+            .where(SmartSensorBinding.sensor_id == sensor_id, SmartSensorBinding.printer_id.in_(scope))
+            .limit(1)
+        )
+        return allowed is not None
+    legacy_printer = await db.scalar(select(SmartSensor.printer_id).where(SmartSensor.id == sensor_id))
+    return legacy_printer in scope
+
+
 def _allowed(api_key: Any) -> frozenset[int] | None:
     if api_key.printer_ids is None:
         return None

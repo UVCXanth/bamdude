@@ -76,6 +76,8 @@ class NotificationProviderBase(BaseModel):
         default=False, description="Notify when a sensor reading leaves or returns to its limits"
     )
     on_sensor_silent: bool = Field(default=False, description="Notify when a sensor stops or resumes reporting")
+    on_ha_sensor_alert: bool = Field(default=False, description="Notify when a printer HA sensor alerts")
+    on_location_ha_sensor_alert: bool = Field(default=False, description="Notify when a storage HA sensor alerts")
 
     # Event triggers - Build plate detection
     on_plate_not_empty: bool = Field(default=True, description="Notify when objects detected on plate before print")
@@ -184,6 +186,8 @@ class NotificationProviderUpdate(BaseModel):
     # Event triggers - Zigbee sensor alerts
     on_sensor_threshold: bool | None = None
     on_sensor_silent: bool | None = None
+    on_ha_sensor_alert: bool | None = None
+    on_location_ha_sensor_alert: bool | None = None
 
     # Event triggers - Build plate detection
     on_plate_not_empty: bool | None = None

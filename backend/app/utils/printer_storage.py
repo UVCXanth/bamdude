@@ -52,9 +52,10 @@ def _model_allows_printing_without_a_card(model: str | None) -> bool:
     ``ParseVal(print_json, "support_print_without_sd", …)`` — off the config
     root it answers ``None`` for every model, i.e. "no machine can".
 
-    Measured across all fifteen mirrored configs: true for X2D, P2S, H2C, H2D,
-    H2D Pro, H2S, X1, X1 Carbon and X1E; false for P1P, P1S, A1 mini, A1 and
-    A2L. (``support_save_remote_print_file_to_storage`` tracks it everywhere
+    Measured across the fifteen earlier mirrored model configs: true for X2D,
+    P2S, H2C, H2D, H2D Pro, H2S, X1, X1 Carbon and X1E; false for P1P, P1S,
+    A1 mini, A1 and A2L. The new N8 config does not specify this flag.
+    (``support_save_remote_print_file_to_storage`` tracks it everywhere
     except X1E, where it is absent — so the two are close but not the same
     question, and only this one is used here.)
     """

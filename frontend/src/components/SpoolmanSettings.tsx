@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Check, X, RefreshCw, Link2, Link2Off, Database, Info, AlertTriangle, Package, ExternalLink } from 'lucide-react';
+import { Loader2, Check, X, RefreshCw, Link2, Database, Info, AlertTriangle, Package, ExternalLink } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type { SpoolmanSyncResult, Printer } from '../api/client';
 import { invalidateSpoolViews } from '../utils/queryInvalidation';
@@ -26,6 +26,11 @@ export function SpoolmanSettings() {
   const [showAllSkipped, setShowAllSkipped] = useState(false);
   const [showAmsSyncConfirm, setShowAmsSyncConfirm] = useState(false);
   const [showSpoolmanAmsSyncConfirm, setShowSpoolmanAmsSyncConfirm] = useState(false);
+  // The mode the operator clicked, waiting for the confirmation. Switching clears
+  // every slot assignment of the mode being left, so it is never auto-saved
+  // (audit D4, upstream #2812: a look at the page, four clicks, and a farm's
+  // assignments were gone).
+  const [pendingMode, setPendingMode] = useState<boolean | null>(null);
 
   // Fetch Spoolman settings
   const { data: settings, isLoading: settingsLoading } = useQuery({
@@ -64,8 +69,8 @@ export function SpoolmanSettings() {
   useEffect(() => {
     if (!isInitialized || !settings) return;
 
+    // ⚠️ The mode is not here: it is saved only through the confirmation below.
     const hasChanges =
-      (settings.spoolman_enabled === 'true') !== localEnabled ||
       (settings.spoolman_url || '') !== localUrl ||
       (settings.spoolman_sync_mode || 'auto') !== localSyncMode ||
       (settings.spoolman_disable_weight_sync === 'true') !== localDisableWeightSync ||
@@ -79,13 +84,12 @@ export function SpoolmanSettings() {
       return () => clearTimeout(timeoutId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [localEnabled, localUrl, localSyncMode, localDisableWeightSync, localReportPartialUsage, localAutoAddUnknownRfid, isInitialized]);
+  }, [localUrl, localSyncMode, localDisableWeightSync, localReportPartialUsage, localAutoAddUnknownRfid, isInitialized]);
 
   // Save mutation
   const saveMutation = useMutation({
     mutationFn: () =>
       api.updateSpoolmanSettings({
-        spoolman_enabled: localEnabled ? 'true' : 'false',
         spoolman_url: localUrl,
         spoolman_sync_mode: localSyncMode,
         spoolman_disable_weight_sync: localDisableWeightSync ? 'true' : 'false',
@@ -105,20 +109,39 @@ export function SpoolmanSettings() {
     },
   });
 
-  // Connect mutation
-  const connectMutation = useMutation({
-    mutationFn: api.connectSpoolman,
-    onSuccess: () => {
-      refetchStatus();
+  // What the pending switch takes away — asked when the confirmation opens.
+  const { data: switchPreview, isLoading: switchPreviewLoading } = useQuery({
+    queryKey: ['spoolman-mode-switch-preview', pendingMode],
+    queryFn: () => api.getSpoolmanModeSwitchPreview(pendingMode === true),
+    enabled: pendingMode !== null,
+    staleTime: 0,
+  });
+
+  const modeSwitchMutation = useMutation({
+    mutationFn: (enable: boolean) => api.updateSpoolmanSettings({ spoolman_enabled: enable ? 'true' : 'false' }),
+    onSuccess: (_data, enable) => {
+      setLocalEnabled(enable);
+      setPendingMode(null);
+      queryClient.invalidateQueries({ queryKey: ['spoolman-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['spoolman-status'] });
+      queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['spoolman-inventory-filaments'] });
+      showToast(t('settings.toast.settingsSaved'));
     },
     onError: () => {
       showToast(t('settings.toast.saveFailed'), 'error');
     },
   });
 
-  // Disconnect mutation
-  const disconnectMutation = useMutation({
-    mutationFn: api.disconnectSpoolman,
+  const requestMode = (enable: boolean) => {
+    if (enable === localEnabled) return;
+    setPendingMode(enable);
+  };
+
+  // Connect mutation
+  const connectMutation = useMutation({
+    mutationFn: api.connectSpoolman,
     onSuccess: () => {
       refetchStatus();
     },
@@ -239,7 +262,7 @@ export function SpoolmanSettings() {
           {/* Built-in Inventory */}
           <button
             type="button"
-            onClick={() => setLocalEnabled(false)}
+            onClick={() => requestMode(false)}
             className={`p-3 rounded-lg border-2 text-left transition-colors ${
               !localEnabled
                 ? 'border-bambu-green bg-bambu-green/10'
@@ -266,7 +289,7 @@ export function SpoolmanSettings() {
           {/* Spoolman */}
           <button
             type="button"
-            onClick={() => setLocalEnabled(true)}
+            onClick={() => requestMode(true)}
             className={`p-3 rounded-lg border-2 text-left transition-colors ${
               localEnabled
                 ? 'border-bambu-green bg-bambu-green/10'
@@ -464,21 +487,13 @@ export function SpoolmanSettings() {
                   )}
                 </div>
                 <div className="flex gap-2">
-                  {status?.connected ? (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => disconnectMutation.mutate()}
-                      disabled={disconnectMutation.isPending}
-                    >
-                      {disconnectMutation.isPending ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Link2Off className="w-4 h-4" />
-                      )}
-                      {t('settings.disconnect')}
-                    </Button>
-                  ) : (
+                  {/* Retry affordance only (upstream 4e40a502). Spoolman is a
+                      stateless HTTP API with no session to hold open, so there
+                      is nothing for a Disconnect button to disconnect: it closed
+                      this process's client, any other request rebuilt it lazily,
+                      and the status above silently flipped back. The enable
+                      toggle is what turns the integration off. */}
+                  {!status?.connected && (
                     <Button
                       size="sm"
                       onClick={() => connectMutation.mutate()}
@@ -496,9 +511,9 @@ export function SpoolmanSettings() {
               </div>
 
               {/* Error display */}
-              {(connectMutation.isError || disconnectMutation.isError) && (
+              {connectMutation.isError && (
                 <div className="mb-3 p-2 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-sm text-red-700 dark:text-red-400">
-                  {((connectMutation.error || disconnectMutation.error) as Error).message}
+                  {(connectMutation.error as Error).message}
                 </div>
               )}
 
@@ -656,6 +671,37 @@ export function SpoolmanSettings() {
           onConfirm={() => amsSyncMutation.mutate()}
           onCancel={() => setShowAmsSyncConfirm(false)}
         />
+      )}
+
+      {pendingMode !== null && (
+        <ConfirmModal
+          title={t('settings.trackingModeSwitch.title')}
+          message={t(pendingMode ? 'settings.trackingModeSwitch.toSpoolman' : 'settings.trackingModeSwitch.toBuiltIn')}
+          confirmText={t('settings.trackingModeSwitch.confirm')}
+          variant="warning"
+          isLoading={modeSwitchMutation.isPending}
+          onConfirm={() => modeSwitchMutation.mutate(pendingMode)}
+          onCancel={() => setPendingMode(null)}
+        >
+          <div className="space-y-2 text-sm text-bambu-gray">
+            {switchPreviewLoading || !switchPreview ? (
+              <p>{t('settings.trackingModeSwitch.checking')}</p>
+            ) : (
+              <>
+                <p>
+                  {switchPreview.assignments > 0
+                    ? t('settings.trackingModeSwitch.assignments', { count: switchPreview.assignments })
+                    : t('settings.trackingModeSwitch.noAssignments')}
+                </p>
+                {switchPreview.printing.length > 0 && (
+                  <p className="text-yellow-400">
+                    {t('settings.trackingModeSwitch.printing', { printers: switchPreview.printing.join(', ') })}
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        </ConfirmModal>
       )}
 
       {showSpoolmanAmsSyncConfirm && (

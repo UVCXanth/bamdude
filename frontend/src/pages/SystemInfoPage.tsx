@@ -662,6 +662,18 @@ export function SystemInfoPage() {
         )}
       </Section>
 
+      <Section title={t('system.libraryFileWorker.title')} icon={Activity}>
+        <p className={systemInfo.library_file_worker?.state === 'ready' ? 'text-bambu-green' : 'text-yellow-400'}>
+          {t(`system.libraryFileWorker.states.${systemInfo.library_file_worker?.state ?? 'unavailable'}`)}
+        </p>
+        <p className="text-sm text-bambu-gray mt-2">{t('system.libraryFileWorker.scope')}</p>
+        {systemInfo.library_file_worker?.reason && (
+          <p className="text-sm text-bambu-gray mt-2">
+            {t('system.libraryFileWorker.reason')}: <code>{systemInfo.library_file_worker.reason}</code>
+          </p>
+        )}
+      </Section>
+
       <Section title={t('system.database', 'Database')} icon={Database}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <StatCard

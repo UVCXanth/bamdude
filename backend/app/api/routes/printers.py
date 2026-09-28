@@ -9,16 +9,16 @@ import zlib
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.core import database
 from backend.app.core.api_key_scope import in_key_scope
 from backend.app.core.auth import (
-    RequireCameraStreamToken,
     RequireOverlayToken,
     RequirePermission,
+    require_media_permission,
     require_permission,
 )
 from backend.app.core.config import settings
@@ -30,6 +30,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.printer_tag import PrinterTag
+from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.archive import ArchivePartRow
 from backend.app.schemas.printer import (
@@ -43,6 +44,7 @@ from backend.app.schemas.printer import (
     HmsActionBody,
     HMSErrorResponse,
     HmsMuteBody,
+    ModelCompatibilityResponse,
     MQTTRecordingRequest,
     NozzleInfoResponse,
     NozzleRackSlot,
@@ -108,9 +110,11 @@ from backend.app.services.printer_manager import (
 )
 from backend.app.services.printer_status_context import current_archive_ids, printers_with_waiting_rows
 from backend.app.services.printer_tag_service import delete_links_for_printer, replace_links
+from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.fila_switch import extruder_slots_payload, inlet_bindings, switch_ready
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.kprofile_lookup import build_slot_k_resolver
+from backend.app.utils.model_compatibility import compatibility_matrix, effective_model_for_state, model_compatibility
 from backend.app.utils.printer_configs import is_bed_slinger
 from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.slot_nozzle import slot_nozzle
@@ -365,9 +369,10 @@ async def get_available_filaments(
     # map was never reached and an internal code found no printers at all.
     normalized_model = normalize_model_name(model) or model
 
+    setting = await db.scalar(select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
+    allow_compatible = isinstance(setting, str) and setting.lower() == "true"
     query = (
         select(Printer)
-        .where(func.lower(Printer.model) == normalized_model.lower())
         .where(Printer.is_active == True)  # noqa: E712
         .where(Printer.archived.is_(False))
     )
@@ -378,7 +383,15 @@ async def get_available_filaments(
         query = query.where(Printer.location_id.in_(subtree_ids(tree, location_id)))
 
     result = await db.execute(query)
-    printers_list = list(result.scalars().all())
+    printers_list = []
+    for printer in result.scalars().all():
+        verdict = model_compatibility(normalized_model, printer.model)
+        if verdict != "exact":
+            verdict = model_compatibility(
+                normalized_model, effective_model_for_state(printer.model, printer_manager.get_status(printer.id))
+            )
+        if verdict == "exact" or (allow_compatible and verdict == "compatible"):
+            printers_list.append(printer)
 
     if not printers_list:
         return []
@@ -481,6 +494,12 @@ async def get_developer_mode_warnings(
                 }
             )
     return warnings
+
+
+@router.get("/model-compatibility", response_model=ModelCompatibilityResponse)
+async def get_model_compatibility(_=RequirePermission(Permission.PRINTERS_READ)) -> ModelCompatibilityResponse:
+    """Directed file-model lists from the mirrored Bambu Studio configs."""
+    return ModelCompatibilityResponse(models=compatibility_matrix())
 
 
 @router.get("/{printer_id}")
@@ -925,15 +944,39 @@ async def delete_printer(
     # provider or a usage-history row survives its printer with ``printer_id``
     # nulled, which is what ``ondelete="SET NULL"`` asks for and what the ORM
     # already does.
+    from backend.app.services.sensor_target_lock import lock_sensor_target
+
+    if not await lock_sensor_target(db, "printers", printer_id):
+        raise HTTPException(404, "Printer not found")
+    from backend.app.models.ha_sensor_history import HASensorHistory
+    from backend.app.models.printer_ha_sensor import PrinterHASensor
+
+    await db.execute(
+        sql_delete(HASensorHistory).where(
+            HASensorHistory.printer_sensor_id.in_(
+                select(PrinterHASensor.id).where(PrinterHASensor.printer_id == printer_id)
+            )
+        )
+    )
     for model in PRINTER_CASCADE_MODELS:
         await db.execute(sql_delete(model).where(model.printer_id == printer_id))
+
+    # A Zigbee device can measure more than this printer. Only this target's
+    # binding and rule state go; the physical sensor and other targets survive.
+    from backend.app.models.smart_sensor_binding import SmartSensorBinding, SmartSensorBindingThreshold
+
+    binding_ids = select(SmartSensorBinding.id).where(SmartSensorBinding.printer_id == printer_id)
+    await db.execute(
+        sql_delete(SmartSensorBindingThreshold).where(SmartSensorBindingThreshold.binding_id.in_(binding_ids))
+    )
+    await db.execute(sql_delete(SmartSensorBinding).where(SmartSensorBinding.printer_id == printer_id))
 
     # SQLite ignores ON DELETE CASCADE; the link rows go explicitly, like every
     # other child row above.
     await delete_links_for_printer(db, printer_id)
 
     # SQLite runs no FK actions: its drying rules and runs go in code.
-    await scheduled_drying.forget_printer(db, printer_id, archived=False)
+    await scheduled_drying.forget_printer(db, printer_id, archived=False, commit=False)
     await db.delete(printer)
     await db.commit()
 
@@ -971,6 +1014,7 @@ def _printer_cascade_models() -> tuple[type, ...]:
     from backend.app.models.firmware import FirmwareBatchItem
     from backend.app.models.hms_mute import HMSMutedEntry
     from backend.app.models.print_usage_event import PrintUsageEvent
+    from backend.app.models.printer_ha_sensor import PrinterHASensor
     from backend.app.models.printer_setting_audit import PrinterSettingAudit
     from backend.app.models.spool_assignment import SpoolAssignment
     from backend.app.models.spool_k_profile import SpoolKProfile
@@ -989,6 +1033,7 @@ def _printer_cascade_models() -> tuple[type, ...]:
         HMSMutedEntry,
         PrintUsageEvent,
         PrinterSettingAudit,
+        PrinterHASensor,
         SpoolAssignment,
         SpoolKProfile,
         SpoolmanKProfile,
@@ -1114,10 +1159,15 @@ async def _build_printer_status(
             id=printer_id,
             name=printer.name,
             connected=False,
+            effective_model=printer_manager.effective_model_for(printer_id, printer.model),
             # What the model is known to have, even with nobody home. The helper
             # answers from the mirrored config here and opens on the card,
             # because "no card reported" and "no card" are different things.
             storage_capability=storage_capability_for(printer.model, None),
+            # The plate gate is BamDude's own persisted flag, true with nobody
+            # home (upstream #2864): the schema default said "clean plate" and
+            # hid the one control that releases it on a switched-off printer.
+            awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
         )
 
     # Determine cover URL if there's an active print (including paused)
@@ -1233,22 +1283,11 @@ async def _build_printer_status(
                         exists=tray_data.get("exists"),
                     )
                 )
-            # Prefer humidity_raw (percentage) over humidity (index 1-5)
-            # humidity_raw is the actual percentage value from the sensor
-            humidity_raw = ams_data.get("humidity_raw")
-            humidity_idx = ams_data.get("humidity")
-            humidity_value = None
-
-            if humidity_raw is not None:
-                try:
-                    humidity_value = int(humidity_raw)
-                except (ValueError, TypeError):
-                    pass  # Skip unparseable humidity; will try index fallback
-            if humidity_value is None and humidity_idx is not None:
-                try:
-                    humidity_value = int(humidity_idx)
-                except (ValueError, TypeError):
-                    pass  # Skip unparseable humidity index; humidity remains None
+            # Percentage only. The 1-5 ``humidity`` index is never substituted
+            # for one -- it is inverted, so it would read as the opposite of
+            # what it means (#3140). See utils/ams_humidity.
+            humidity_pct = ams_humidity_percent(ams_data)
+            humidity_value = int(round(humidity_pct)) if humidity_pct is not None else None
             # AMS-HT has 1 tray, regular AMS has 4 trays
             is_ams_ht = len(trays) == 1
 
@@ -1437,6 +1476,7 @@ async def _build_printer_status(
         id=printer_id,
         name=printer.name,
         connected=state.connected,
+        effective_model=printer_manager.effective_model_for(printer_id, printer.model),
         state=state.state,
         current_print=state.current_print,
         subtask_name=state.subtask_name,
@@ -1805,12 +1845,15 @@ async def get_printer_cover(
     printer_id: int,
     view: str | None = None,
     db: AsyncSession = Depends(get_db),
-    _token: None = RequireCameraStreamToken,
+    _=Depends(require_media_permission(Permission.PRINTERS_READ)),
 ):
     """Get the cover image for the current print job.
 
-    Gated by ``?token=...`` query param (short-lived camera-stream token)
-    since ``<img src>`` cannot send Authorization headers.
+    Gated by a media token in ``?token=`` (or the ordinary headers — an API
+    key's printer list holds) under ``printers:read``, since ``<img src>``
+    cannot send Authorization headers (audit D9 a2). It used to take the camera
+    stream token: this is the job's picture, not the camera, and a user who may
+    see the printer card but not the live feed saw a broken image.
 
     Serves the thumbnail from a local archive (DB-tracked).  Does NOT
     initiate an FTP download from the printer — that would:
@@ -3282,34 +3325,39 @@ async def clear_plate(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
-    # re-Connect MQTT if stalled
-    if not await printer_manager.ensure_fresh_connection_for_printer(printer):
-        raise HTTPException(500, "Can`t re-connect printer MQTT")
+    # ⚠️ A printer that is switched off is answered too (upstream #2864).
+    # Clearing sends nothing to the printer: the gate is BamDude's own flag,
+    # persisted precisely so it survives an Auto Power Off cycle — which is the
+    # ordinary end of a print on such a farm. Refusing here (or trying to
+    # reconnect to an unplugged machine first) left the gate up until somebody
+    # powered each printer back on. Releasing it dispatches nothing: the
+    # scheduler still needs the printer connected and idle.
+    if printer_manager.is_connected(printer_id):
+        # re-Connect MQTT if stalled
+        if not await printer_manager.ensure_fresh_connection_for_printer(printer):
+            raise HTTPException(500, "Can`t re-connect printer MQTT")
 
-    if not printer_manager.is_connected(printer_id):
-        raise HTTPException(400, "Printer not connected")
-
-    # A stale-window reconnect (the ensure_fresh_connection call above)
-    # recreates the MQTT client with a fresh PrinterState — gcode_state
-    # stays at the "unknown" placeholder until the printer's first status
-    # push lands ~1s later. Without this wait, clear-plate reads the
-    # placeholder and 400s right after a reconnect even though the printer
-    # is actually FINISH/FAILED. Poll briefly for the first real push; the
-    # loop exits immediately when the state is already populated.
-    state = printer_manager.get_status(printer_id)
-    for _ in range(50):  # 50 × 100 ms = 5 s ceiling
-        if state and state.state != "unknown":
-            break
-        await asyncio.sleep(0.1)
+        # A stale-window reconnect (the ensure_fresh_connection call above)
+        # recreates the MQTT client with a fresh PrinterState — gcode_state
+        # stays at the "unknown" placeholder until the printer's first status
+        # push lands ~1s later. Without this wait, clear-plate reads the
+        # placeholder and 400s right after a reconnect even though the printer
+        # is actually FINISH/FAILED. Poll briefly for the first real push; the
+        # loop exits immediately when the state is already populated.
         state = printer_manager.get_status(printer_id)
-    # Accept the ACK in IDLE too — after an Auto Off power cycle the printer
-    # boots straight into IDLE, and the awaiting_plate_clear gate (persisted
-    # from before the cycle) still needs releasing.
-    if not state or state.state not in ("FINISH", "FAILED", "IDLE"):
-        raise HTTPException(
-            400,
-            f"Printer is not in FINISH, FAILED, or IDLE state (current: {state.state if state else 'unknown'})",
-        )
+        for _ in range(50):  # 50 × 100 ms = 5 s ceiling
+            if state and state.state != "unknown":
+                break
+            await asyncio.sleep(0.1)
+            state = printer_manager.get_status(printer_id)
+        # Accept the ACK in IDLE too — after an Auto Off power cycle the printer
+        # boots straight into IDLE, and the awaiting_plate_clear gate (persisted
+        # from before the cycle) still needs releasing.
+        if not state or state.state not in ("FINISH", "FAILED", "IDLE"):
+            raise HTTPException(
+                400,
+                f"Printer is not in FINISH, FAILED, or IDLE state (current: {state.state if state else 'unknown'})",
+            )
 
     defects = data.defects if data is not None else None
     write = (
@@ -4236,7 +4284,12 @@ async def get_printable_objects(
         # populated ``printable_objects``, but the archive copy already exists.
         # Falls back to an FTP pull from the printer only when no usable archive
         # file is found (the old behaviour, which fails for many slicer prints).
-        if not client.state.printable_objects:
+        # Anchored on the firmware's subtask_id, which it mints per print: the
+        # newest "printing" row could be a leftover whose completion was never
+        # seen, lending its objects to another job. Without an id the archive is
+        # not guessed at — the FTP fallback below asks the printer (upstream cfecfa36).
+        running_subtask = str(getattr(client.state, "subtask_id", "") or "").strip()
+        if not client.state.printable_objects and running_subtask not in ("", "0"):
             try:
                 ar = (
                     (
@@ -4245,6 +4298,7 @@ async def get_printable_objects(
                             .where(
                                 PrintArchive.printer_id == printer_id,
                                 PrintArchive.status == "printing",
+                                PrintArchive.subtask_id == running_subtask,
                                 PrintArchive.file_path != "",
                             )
                             .order_by(PrintArchive.id.desc())

@@ -9,12 +9,26 @@ from backend.app.utils.printer_configs import (
     device_calibration_availability,
     has_remote_storage_toggle,
     load_printer_config,
+    printer_config_codes,
     resolve_device_calibrations,
     supports_nozzle_flow_type,
 )
+from backend.app.utils.printer_models import PRINTER_MODEL_ID_MAP, normalize_model_name
 
 
 class TestLoader:
+    def test_every_mirrored_model_has_a_normalized_identity(self):
+        for code in printer_config_codes():
+            cfg = load_printer_config(code)
+            assert cfg and code in PRINTER_MODEL_ID_MAP
+            assert normalize_model_name(code) == normalize_model_name(cfg["display_name"])
+
+    def test_new_n8_description_is_available_by_code_and_name(self):
+        cfg = load_printer_config("N8")
+        assert cfg and cfg["display_name"] == "Bambu Lab N8"
+        assert cfg["model_id"] == "N8" and cfg["sn_prefix"] == "35F"
+        assert load_printer_config("Bambu Lab N8") == cfg
+
     def test_by_display_short(self):
         cfg = load_printer_config("X2D")
         assert cfg and cfg["display_name"] == "Bambu Lab X2D" and cfg["model_id"] == "N6"
@@ -26,8 +40,7 @@ class TestLoader:
         assert load_printer_config("Bambu Lab X2D")["model_id"] == "N6"
 
     def test_p1s_resolves_to_c12_not_x1(self):
-        # BS: C12 = P1S. Our stale PRINTER_MODEL_ID_MAP says C12=X1; the loader
-        # ignores it and keys off the JSON display_name, so P1S -> C12 correctly.
+        # BS: C12 = P1S. The loader keys off the JSON display_name.
         cfg = load_printer_config("P1S")
         assert cfg and cfg["model_id"] == "C12" and cfg["display_name"] == "Bambu Lab P1S"
 

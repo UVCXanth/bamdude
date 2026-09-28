@@ -22,6 +22,18 @@ def test_partial_update_retains_fields_but_new_generation_does_not():
     assert third.sources == ()
 
 
+def test_upgrade_kit_changes_model_and_revision_without_changing_physical_feed():
+    state = PrinterState(connected=True)
+    before = snapshot_from_state(1, "P1P", state)
+    state.upgrade_kit_supported = True
+    still_p1p = snapshot_from_state(1, "P1P", state)
+    assert still_p1p.model == "P1P" and still_p1p.revision == before.revision
+    state.upgrade_kit_installed = True
+    upgraded = snapshot_from_state(1, "P1P", state)
+    assert upgraded.model == "P1S" and upgraded.revision != before.revision
+    assert upgraded.nozzle_diameters == before.nozzle_diameters
+
+
 def test_explicit_empty_external_and_ams_units_clear_sources():
     state = PrinterState(connected=True)
     state.feed_telemetry.observe(
@@ -75,7 +87,34 @@ def test_h2c_rack_nozzles_and_fts_use_physical_capabilities():
     )
     snap = snapshot_from_state(1, "H2C", state)
     assert snap.fts and snap.sources[0].nozzles == (0, 1)
-    assert snap.nozzle_diameters == {0: (0.4,), 1: (0.4, 0.6)}
+    # The fixed hotend reports as id 1 and IS extruder 1; the docks belong to the
+    # rack carriage, extruder 0 (BambuStudio's MAIN; upstream 45dc139c).
+    assert snap.nozzle_diameters == {1: (0.4,), 0: (0.4, 0.6)}
+
+
+def test_h2c_hotend_ids_are_extruder_ids():
+    # nozzle.info ids 0/1 are the hotends on MQTT extruders 0 (right, the rack
+    # carriage) and 1 (left, fixed) — the same numbering as every H2. Only the
+    # docks (16-21) need placing: on the carriage that fetches from them, 0.
+    state = PrinterState(connected=True)
+    state.feed_telemetry.observe(
+        {
+            "print": {
+                "device": {
+                    "nozzle": {
+                        "info": [
+                            {"id": 0, "diameter": "0.2"},
+                            {"id": 1, "diameter": "0.6"},
+                            {"id": 18, "diameter": "0.8"},
+                        ]
+                    }
+                }
+            }
+        },
+        "H2C",
+    )
+    snap = snapshot_from_state(1, "H2C", state)
+    assert snap.nozzle_diameters == {0: (0.2, 0.8), 1: (0.6,)}
 
 
 def test_disconnected_unit_and_invalid_slot_cannot_survive_partial_update():
@@ -216,3 +255,33 @@ def test_a_strict_variant_job_does_not_match_the_generic_the_slot_advertises():
     strict = RoutingPolicy(force_color_match=True, allow_base_material_match=False)
     assert resolve_filament_routing(matte_job, strict, plain).status != "compatible"
     assert resolve_filament_routing(matte_job, strict, overlaid).status == "compatible"
+
+
+def _nozzle_state(info, model="H2C"):
+    state = PrinterState(connected=True)
+    state.feed_telemetry.observe({"print": {"device": {"nozzle": {"info": info}}}}, model)
+    return snapshot_from_state(1, model, state)
+
+
+def test_an_empty_hotend_does_not_count_its_last_nozzle():
+    # upstream 4961990a (#2885): a hotend that parked its nozzle back in the
+    # rack keeps reporting that nozzle's diameter, with serial "N/A" and no
+    # temperature rating. Counting it let a slice match a nozzle the machine
+    # did not have mounted.
+    snap = _nozzle_state(
+        [
+            {"id": 0, "diameter": "0.6", "sn": "N/A", "tm": 0},
+            {"id": 1, "diameter": "0.4", "sn": "SN123", "tm": 300},
+            {"id": 16, "diameter": "0.2"},
+        ]
+    )
+    assert snap.nozzle_diameters == {1: (0.4,), 0: (0.2,)}
+
+
+def test_emptiness_has_to_be_stated():
+    # A firmware that reports neither field has told us nothing: that is not
+    # an empty hotend, and reading it as one would switch the guard off.
+    snap = _nozzle_state(
+        [{"id": 0, "diameter": "0.4"}, {"id": 1, "diameter": "0.4", "serial_number": "N/A", "max_temp": 300}], "H2D"
+    )
+    assert snap.nozzle_diameters == {0: (0.4,), 1: (0.4,)}

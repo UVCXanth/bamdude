@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
+  disambiguateColorNames,
   getColorName,
   hexToColorName,
   resolveSpoolColorName,
@@ -7,6 +8,7 @@ import {
   __resetColorCatalogForTests,
   parseFilamentColor,
   isLightColor,
+  getSwatchStyle,
 } from '../../utils/colors';
 
 beforeEach(() => {
@@ -159,5 +161,128 @@ describe('isLightColor', () => {
   // as light for text-contrast purposes.
   it('treats alpha=00 as light', () => {
     expect(isLightColor('00000000')).toBe(true);
+  });
+});
+
+describe('getSwatchStyle (#1545, upstream 73912d4f #2912)', () => {
+  const CHECKERBOARD = 'repeating-conic-gradient(#979797 0% 25%, #f5f5f5 0% 50%)';
+
+  it('falls back to neutral grey for missing or unparseable input', () => {
+    expect(getSwatchStyle(null)).toEqual({ backgroundColor: '#808080' });
+    expect(getSwatchStyle(undefined)).toEqual({ backgroundColor: '#808080' });
+    expect(getSwatchStyle('')).toEqual({ backgroundColor: '#808080' });
+    expect(getSwatchStyle('ABC')).toEqual({ backgroundColor: '#808080' });
+  });
+
+  it('paints an opaque colour flat, with or without the FF byte', () => {
+    expect(getSwatchStyle('FF0000')).toEqual({ backgroundColor: '#FF0000' });
+    expect(getSwatchStyle('FF0000FF')).toEqual({ backgroundColor: '#FF0000' });
+    expect(getSwatchStyle('#FF0000FF')).toEqual({ backgroundColor: '#FF0000' });
+  });
+
+  it('shows the checkerboard alone for a fully transparent colour', () => {
+    expect(getSwatchStyle('00000000')).toEqual({ backgroundImage: CHECKERBOARD, backgroundSize: '8px 8px' });
+  });
+
+  it('layers a partly translucent colour over the checkerboard', () => {
+    // It used to fall through to the RGB prefix, so a 50%-alpha spool rendered
+    // identically to an opaque one — reachable now that Spoolman stores alpha.
+    const style = getSwatchStyle('FF000080');
+    expect(style.backgroundColor).toBeUndefined();
+    expect(style.backgroundImage).toBe(`linear-gradient(#FF000080, #FF000080), ${CHECKERBOARD}`);
+    expect(style.backgroundSize).toBe('100% 100%, 8px 8px');
+  });
+
+  it('treats the alpha byte case-insensitively', () => {
+    expect(getSwatchStyle('ff0000ff')).toEqual({ backgroundColor: '#ff0000' });
+    expect(getSwatchStyle('ff000000')).toEqual({ backgroundImage: CHECKERBOARD, backgroundSize: '8px 8px' });
+  });
+});
+
+// Upstream e4a9ef45 (#3090) — Spoolman has no colour-name field, so every
+// Spoolman-backed spool arrives with its subtype sitting in color_name. It reads
+// like a name and is not one.
+describe('resolveSpoolColorName — a name the backend synthesised from the subtype', () => {
+  beforeEach(() => {
+    setColorCatalog({ '5f6367': 'Titan Gray' });
+  });
+
+  it('loses to the catalog', () => {
+    expect(resolveSpoolColorName('Silk+', '5F6367FF', true)).toBe('Titan Gray');
+  });
+
+  it('still wins over nothing when the hex is unknown', () => {
+    // It at least says what is on the spool; the catalog covers only what
+    // someone put in it.
+    expect(resolveSpoolColorName('Silk+', '123456FF', true)).toBe('Silk+');
+  });
+
+  it('is not consulted when the flag is absent', () => {
+    // Every existing caller keeps the old behaviour: a stored name is the
+    // user's and is used as given.
+    expect(resolveSpoolColorName('Silk+', '5F6367FF')).toBe('Silk+');
+  });
+
+  it('does not resurrect a Bambu internal code', () => {
+    expect(resolveSpoolColorName('A99-Z9', '123456FF', true)).toBeNull();
+  });
+});
+
+describe('disambiguateColorNames', () => {
+  // upstream #2941: a slicer profile asked for a near-pure blue while the AMS slot held
+  // Bambu's navy Blue. Both resolve to the name "Blue", so the mismatch warning
+  // sat between two identical labels and read as a contradiction.
+  const SLICER_BLUE = '#0028FF';
+  const BAMBU_BLUE = '#0A2989';
+
+  it('qualifies both sides with hex when the names collide', () => {
+    expect(
+      disambiguateColorNames({ name: 'Blue', hex: SLICER_BLUE }, { name: 'Blue', hex: BAMBU_BLUE }),
+    ).toEqual(['Blue (#0028FF)', 'Blue (#0A2989)']);
+  });
+
+  it('treats names as colliding regardless of case', () => {
+    expect(disambiguateColorNames({ name: 'blue', hex: SLICER_BLUE }, { name: 'Blue', hex: BAMBU_BLUE })).toEqual([
+      'blue (#0028FF)',
+      'Blue (#0A2989)',
+    ]);
+  });
+
+  it('leaves distinct names alone', () => {
+    // Once the words separate them the hex is noise, not information.
+    expect(disambiguateColorNames({ name: 'Blue', hex: SLICER_BLUE }, { name: 'Navy', hex: BAMBU_BLUE })).toEqual([
+      'Blue',
+      'Navy',
+    ]);
+  });
+
+  it('falls back to the hex for a side with no name', () => {
+    expect(disambiguateColorNames({ hex: SLICER_BLUE }, { name: 'Blue', hex: BAMBU_BLUE })).toEqual([
+      '#0028FF',
+      'Blue',
+    ]);
+  });
+
+  it('keeps the bare names when neither side has a usable hex', () => {
+    // Better a repeated name than "Blue ()" twice.
+    expect(disambiguateColorNames({ name: 'Blue', hex: 'nonsense' }, { name: 'Blue' })).toEqual(['Blue', 'Blue']);
+  });
+
+  it('qualifies only the side that has a hex', () => {
+    expect(disambiguateColorNames({ name: 'Blue', hex: SLICER_BLUE }, { name: 'Blue' })).toEqual([
+      'Blue (#0028FF)',
+      'Blue',
+    ]);
+  });
+
+  it('normalizes hex form, so an 8-char rgba and a bare hex read alike', () => {
+    expect(disambiguateColorNames({ name: 'Blue', hex: '0028ffff' }, { name: 'Blue', hex: '#0a2989' })).toEqual([
+      'Blue (#0028FF)',
+      'Blue (#0A2989)',
+    ]);
+  });
+
+  it('returns empty labels when there is nothing to name', () => {
+    expect(disambiguateColorNames({}, {})).toEqual(['', '']);
   });
 });

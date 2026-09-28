@@ -6,6 +6,7 @@
     "help": "Help & commands",
     "cancel": "Cancel the current step"
   },
+  "model_compatible_warning": "Sliced for {file_model}; {printer_model} is compatible, but cooling may differ. Bambu recommends printing on the same model.",
   "start": {
     "welcome": "Bambu Lab 3D printer management.\n\nChoose an action:",
     "btn_printers": "Printers",
@@ -203,6 +204,7 @@
     "title": "Add to Queue",
     "select_file": "Select a file:",
     "select_target": "Select a target:",
+    "no_compatible_printers": "No compatible printers are available for this file.",
     "btn_any_model": "Any",
     "select_location": "Where should it run?",
     "btn_anywhere": "Anywhere",
@@ -220,6 +222,7 @@
     "select_printer": "Select a printer:",
     "no_files": "No printable files in library",
     "no_printers": "No idle printers available",
+    "no_compatible_printers": "No compatible idle printers are available for this file.",
     "confirm_title": "Confirm Print",
     "confirm_file": "File",
     "confirm_printer": "Printer",

@@ -15,11 +15,13 @@ from backend.app.api.routes.spoolman_inventory import _clear_stale_tag_links
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.websocket import ws_manager
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
+from backend.app.services.ams_slot_presence import spool_present
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.spoolman import (
     ArchivedTagIndex,
@@ -97,14 +99,39 @@ async def get_spoolman_status(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
-    """Get Spoolman integration status."""
+    """Get Spoolman integration status.
+
+    ``connected`` answers "does the CONFIGURED Spoolman respond?", which means
+    asking it (upstream 4e40a502). It used to answer "has an earlier request
+    left a client object behind?" — some twenty call sites build one lazily,
+    and saving the Settings page builds one as a side effect, so the flag
+    followed which page had loaded first. The UI reads it twice (Connect only
+    while disconnected, the AMS sync only while connected), so enabling
+    Spoolman there showed a sync that then failed on every slot. Resolved the
+    way every other route resolves a client, stale-URL check included, and
+    not probed at all while the integration is off.
+    """
     sm = await get_spoolman_settings(db)
     enabled, url = sm["enabled"], sm["url"]
 
-    client = await get_spoolman_client()
     connected = False
-    if client:
-        connected = await client.health_check()
+    if enabled and url:
+        client = await get_spoolman_client()
+        if not client or client.base_url != url.rstrip("/"):
+            try:
+                client = await init_spoolman_client(url)
+            except ValueError as exc:
+                # The admin's to correct — and actionable only if the log says so.
+                logger.warning("Spoolman URL %r rejected by SSRF guard during status check: %s", url, exc)
+                client = None
+            except Exception as exc:  # noqa: BLE001 — a status poll reports, it does not fail
+                # Replacing a client closes the previous one, and httpx's
+                # aclose() may raise. A poll answering 500 every 30 s is worse
+                # than one reporting what is true: Spoolman could not be reached.
+                logger.warning("Could not open a Spoolman client for %r during status check: %s", url, exc)
+                client = None
+        if client:
+            connected = await client.health_check()
 
     return SpoolmanStatus(
         enabled=enabled,
@@ -166,6 +193,36 @@ async def disconnect_spoolman(
     """Disconnect from Spoolman server."""
     await close_spoolman_client()
     return {"success": True, "message": "Disconnected from Spoolman"}
+
+
+async def _announce_slot_changes(
+    before: dict[tuple[int, int, int], int],
+    changes: list[tuple[int, int, int, int]],
+    empties: list[tuple[int, int, int]],
+) -> None:
+    """Tell open browsers which slots a sync just re-pointed or cleared.
+
+    The sync endpoints are what maintains ``spoolman_slot_assignments``, and the
+    printer card reads those rows — without an event every other tab kept the
+    previous spool (upstream 7363d5fd, whose AMS callback maintains the same
+    ledger and "announced nothing at all"). Called only after the commit, so a
+    failed write stays silent. Only rows that actually moved are named, as the
+    unassign route does: re-reading the spool already on file changes nothing.
+
+    ``before`` is the ledger as loaded, keyed ``(printer_id, ams_id, tray_id)``;
+    ``changes`` carry the spool each slot now holds.
+    """
+    moved = [(p, a, t) for p, a, t, spool_id in changes if before.get((p, a, t)) != spool_id]
+    moved += [slot for slot in empties if slot in before]
+    for printer_id, ams_id, tray_id in dict.fromkeys(moved):
+        await ws_manager.broadcast(
+            {
+                "type": "spool_assignment_changed",
+                "printer_id": printer_id,
+                "ams_id": ams_id,
+                "tray_id": tray_id,
+            }
+        )
 
 
 @router.post("/sync/{printer_id}", response_model=SyncResult)
@@ -316,7 +373,10 @@ async def sync_printer_ams(
             tray_id_raw = int(tray_data.get("id", 0))
             tray = client.parse_ams_tray(ams_id, tray_data)
             if not tray:
-                if not printing_now:
+                # A tray with no type is "empty" to parse_ams_tray, and a tag-less
+                # spool has none until configured: the presence bit decides
+                # (upstream #3100), as it does for the built-in inventory.
+                if not printing_now and spool_present(tray_data) is not True:
                     empty_slots.append((ams_id, tray_id_raw))
                 continue
 
@@ -407,6 +467,12 @@ async def sync_printer_ams(
             await db.rollback()
             logger.error("Error persisting Spoolman slot assignments for printer %s: %s", printer_id, e)
             errors.append(f"Failed to persist slot assignments: {type(e).__name__}")
+        else:
+            await _announce_slot_changes(
+                {(printer_id, a, t): s for (a, t), s in spoolman_slot_map.items()},
+                [(printer_id, a, t, s) for a, t, s in slot_changes],
+                [(printer_id, a, t) for a, t in empty_slots],
+            )
 
     return SyncResult(
         success=len(errors) == 0,
@@ -547,7 +613,8 @@ async def sync_all_printers(
                 tray_id_raw = int(tray_data.get("id", 0))
                 tray = client.parse_ams_tray(ams_id, tray_data)
                 if not tray:
-                    if not printing_now:
+                    # Presence bit first — see sync_printer (upstream #3100).
+                    if not printing_now and spool_present(tray_data) is not True:
                         all_empty_slots.append((printer.id, ams_id, tray_id_raw))
                     continue
 
@@ -633,6 +700,8 @@ async def sync_all_printers(
             await db.rollback()
             logger.error("Error persisting Spoolman slot assignments: %s", e)
             all_errors.append(f"Failed to persist slot assignments: {type(e).__name__}")
+        else:
+            await _announce_slot_changes(all_slot_map, all_slot_changes, all_empty_slots)
 
     return SyncResult(
         success=len(all_errors) == 0,

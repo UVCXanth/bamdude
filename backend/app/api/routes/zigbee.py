@@ -15,20 +15,24 @@ import contextlib
 import logging
 import math
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.api_key_scope import key_printer_scope, sensor_in_key_scope
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.websocket import ws_manager
 from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.smart_sensor import SmartSensor
+from backend.app.models.smart_sensor_binding import SmartSensorBinding, SmartSensorBindingThreshold
 from backend.app.models.user import User
 from backend.app.schemas.printer_location import PrinterLocationOut
-from backend.app.schemas.smart_sensor import SmartSensorCreate, SmartSensorOut, SmartSensorUpdate
+from backend.app.schemas.smart_sensor import SensorBindingIn, SmartSensorCreate, SmartSensorOut, SmartSensorUpdate
 from backend.app.schemas.zigbee_settings import DeviceSettingsUpdate
 
 # Imported as a module so the lock and the restart sequence are visibly the same
@@ -417,6 +421,7 @@ async def list_devices(
 
 @router.get("/sensors")
 async def list_sensors(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     # Sensors, not plugs. The two permissions travel together in all three
     # default groups, so the mismatch was invisible until this list started
@@ -424,6 +429,10 @@ async def list_sensors(
     # only smart_sensors:read would have got a 403 on every one of them.
     _: User | None = RequirePermission(Permission.SMART_SENSORS_READ),
 ):
+    return await sensor_payloads(request, db)
+
+
+async def sensor_payloads(request: Request, db: AsyncSession) -> dict:
     """Every adopted sensor with what it last told us.
 
     Built from the ``smart_sensors`` rows, with the live device enriching them.
@@ -456,21 +465,38 @@ async def list_sensors(
 
     app = zigbee_coordinator.app
     sensors = []
+    printer_scope = key_printer_scope(request)
     for row in rows:
+        if printer_scope is not None:
+            visible_bindings = [binding for binding in row.bindings if binding.printer_id in printer_scope]
+            if not visible_bindings and not (not row.bindings and row.printer_id in printer_scope):
+                continue
+        else:
+            visible_bindings = row.bindings
         ieee = str(row.zigbee_ieee).lower()
         device = _find_device(app, ieee) if app is not None else None
+        bindings = [_binding_out(binding) for binding in visible_bindings]
+        single = bindings[0] if len(bindings) == 1 else None
         entry = {
             "id": row.id,
             # What the operator calls it. The hardware's own name is a
             # different question, answered by the settings endpoint.
             "name": row.name,
             # The place, resolved -- one shape for a location everywhere.
-            "location": PrinterLocationOut.from_location(row.location),
-            # ⚠️ Or the printer it belongs to, exclusive with the place above.
-            # Both are sent so the settings list can show which binding was
-            # chosen without asking a second time.
-            "printer_id": row.printer_id,
-            "printer_name": row.printer.name if row.printer else None,
+            "location": single["location"]
+            if single
+            else PrinterLocationOut.from_location(row.location)
+            if not bindings
+            else None,
+            # Legacy scalar projection is populated only for one binding. The
+            # full target list below is authoritative for multi-bound sensors.
+            "printer_id": single["printer_id"] if single else row.printer_id if not bindings else None,
+            "printer_name": single["printer_name"]
+            if single
+            else row.printer.name
+            if row.printer and not bindings
+            else None,
+            "bindings": bindings,
             "ieee": ieee,
             "present": device is not None,
         }
@@ -542,6 +568,240 @@ async def list_sensors(
     return {"sensors": sensors}
 
 
+def _binding_out(binding: SmartSensorBinding) -> dict:
+    return {
+        "id": binding.id,
+        "sensor_id": binding.sensor_id,
+        "printer_id": binding.printer_id,
+        "printer_name": binding.printer.name if binding.printer else None,
+        "printer_location_id": binding.printer_location_id,
+        "location": PrinterLocationOut.from_location(binding.printer_location),
+        "storage_location_id": binding.storage_location_id,
+        "storage_location_name": binding.storage_location.name if binding.storage_location else None,
+        "display_name": binding.display_name,
+        "visible": binding.visible,
+        "sort_order": binding.sort_order,
+        "notify_enabled": binding.notify_enabled,
+    }
+
+
+class BindingThresholdIn(BaseModel):
+    kind: str
+    custom: bool = False
+    min_value: float | None = None
+    max_value: float | None = None
+    deadband: float = Field(default=0.0, ge=0)
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def _valid_rule(self):
+        from backend.app.services.zigbee.measurements import BY_KEY
+
+        if self.kind not in BY_KEY:
+            raise ValueError(f"Unknown quantity: {self.kind}.")
+        if self.custom and self.min_value is None and self.max_value is None:
+            raise ValueError("A custom threshold needs a minimum or maximum.")
+        return self
+
+
+class BindingThresholdsIn(BaseModel):
+    thresholds: list[BindingThresholdIn]
+
+
+async def _validate_binding_target(db, payload: SensorBindingIn) -> None:
+    from backend.app.models.location import Location
+    from backend.app.models.printer import Printer
+    from backend.app.services.sensor_target_lock import lock_sensor_target
+
+    model, table, target_id = (
+        (Printer, "printers", payload.printer_id)
+        if payload.printer_id is not None
+        else (PrinterLocation, "printer_locations", payload.printer_location_id)
+        if payload.printer_location_id is not None
+        else (Location, "locations", payload.storage_location_id)
+    )
+    if not await lock_sensor_target(db, table, target_id) or await db.get(model, target_id) is None:
+        raise HTTPException(status_code=422, detail="No such binding target.")
+
+
+async def _sync_legacy_targets(db, sensor: SmartSensor) -> None:
+    """Keep the old scalar columns as a 0/1-binding compatibility projection."""
+    bindings = (
+        (await db.execute(select(SmartSensorBinding).where(SmartSensorBinding.sensor_id == sensor.id))).scalars().all()
+    )
+    only = bindings[0] if len(bindings) == 1 else None
+    sensor.printer_id = only.printer_id if only else None
+    sensor.location_id = only.printer_location_id if only else None
+
+
+@router.post("/sensors/{sensor_id}/bindings", status_code=201)
+async def add_sensor_binding(
+    sensor_id: int,
+    payload: SensorBindingIn,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_SENSORS_UPDATE),
+):
+    sensor = await db.get(SmartSensor, sensor_id)
+    if sensor is None:
+        raise HTTPException(status_code=404, detail="No such sensor.")
+    await _validate_binding_target(db, payload)
+    binding = SmartSensorBinding(sensor_id=sensor_id, **payload.model_dump())
+    db.add(binding)
+    try:
+        await db.flush()
+        # Start at the current state. Adding another place for an already
+        # alarming device must not fabricate a fresh alarm transition.
+        from backend.app.models.smart_sensor_threshold import SmartSensorThreshold
+
+        defaults = (
+            await db.execute(select(SmartSensorThreshold).where(SmartSensorThreshold.sensor_id == sensor_id))
+        ).scalars()
+        for rule in defaults:
+            db.add(
+                SmartSensorBindingThreshold(
+                    binding_id=binding.id,
+                    kind=rule.kind,
+                    state=rule.state,
+                    state_since=rule.state_since,
+                    notified_at=rule.notified_at,
+                )
+            )
+        await _sync_legacy_targets(db, sensor)
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="This sensor is already bound to that target.") from exc
+    await db.refresh(binding)
+    await ws_manager.broadcast({"type": "sensor_bindings_changed"})
+    return _binding_out(binding)
+
+
+@router.patch("/sensors/{sensor_id}/bindings/{binding_id}")
+async def update_sensor_binding(
+    sensor_id: int,
+    binding_id: int,
+    payload: SensorBindingIn,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_SENSORS_UPDATE),
+):
+    binding = await db.get(SmartSensorBinding, binding_id)
+    if binding is None or binding.sensor_id != sensor_id:
+        raise HTTPException(status_code=404, detail="No such sensor binding.")
+    await _validate_binding_target(db, payload)
+    if binding.storage_location_id != payload.storage_location_id:
+        from backend.app.models.location_sensor_primary import LocationSensorPrimary
+
+        await db.execute(
+            delete(LocationSensorPrimary).where(
+                LocationSensorPrimary.source == "zigbee", LocationSensorPrimary.binding_id == binding_id
+            )
+        )
+    for key, value in payload.model_dump().items():
+        setattr(binding, key, value)
+    try:
+        await db.flush()
+        await _sync_legacy_targets(db, await db.get(SmartSensor, sensor_id))
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="This sensor is already bound to that target.") from exc
+    await db.refresh(binding)
+    await ws_manager.broadcast({"type": "sensor_bindings_changed"})
+    return _binding_out(binding)
+
+
+@router.delete("/sensors/{sensor_id}/bindings/{binding_id}")
+async def delete_sensor_binding(
+    sensor_id: int,
+    binding_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_SENSORS_UPDATE),
+):
+    binding = await db.get(SmartSensorBinding, binding_id)
+    if binding is None or binding.sensor_id != sensor_id:
+        raise HTTPException(status_code=404, detail="No such sensor binding.")
+    from backend.app.models.location_sensor_primary import LocationSensorPrimary
+
+    await db.execute(
+        delete(LocationSensorPrimary).where(
+            LocationSensorPrimary.source == "zigbee", LocationSensorPrimary.binding_id == binding_id
+        )
+    )
+    await db.delete(binding)
+    await db.flush()
+    await _sync_legacy_targets(db, await db.get(SmartSensor, sensor_id))
+    await db.commit()
+    await ws_manager.broadcast({"type": "sensor_bindings_changed"})
+    return {"deleted": binding_id}
+
+
+def _binding_thresholds_out(binding: SmartSensorBinding) -> dict:
+    return {
+        "thresholds": [
+            {
+                "kind": rule.kind,
+                "custom": rule.custom,
+                "min_value": rule.min_value,
+                "max_value": rule.max_value,
+                "deadband": rule.deadband,
+                "enabled": rule.enabled,
+                "state": rule.state,
+            }
+            for rule in binding.thresholds
+        ]
+    }
+
+
+@router.get("/sensors/{sensor_id}/bindings/{binding_id}/thresholds")
+async def get_binding_thresholds(
+    sensor_id: int,
+    binding_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_SENSORS_READ),
+):
+    binding = await db.get(SmartSensorBinding, binding_id)
+    if binding is None or binding.sensor_id != sensor_id:
+        raise HTTPException(status_code=404, detail="No such sensor binding.")
+    printer_scope = key_printer_scope(request)
+    if printer_scope is not None and binding.printer_id not in printer_scope:
+        raise HTTPException(status_code=403, detail="API key does not have access to this sensor binding.")
+    return _binding_thresholds_out(binding)
+
+
+@router.put("/sensors/{sensor_id}/bindings/{binding_id}/thresholds")
+async def put_binding_thresholds(
+    sensor_id: int,
+    binding_id: int,
+    payload: BindingThresholdsIn,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_SENSORS_UPDATE),
+):
+    binding = await db.get(SmartSensorBinding, binding_id)
+    if binding is None or binding.sensor_id != sensor_id:
+        raise HTTPException(status_code=404, detail="No such sensor binding.")
+    wanted = {rule.kind: rule for rule in payload.thresholds}
+    if len(wanted) != len(payload.thresholds):
+        raise HTTPException(status_code=422, detail="Duplicate threshold kind.")
+    existing = {rule.kind: rule for rule in binding.thresholds}
+    for kind, rule in existing.items():
+        if kind not in wanted:
+            await db.delete(rule)
+    for kind, value in wanted.items():
+        rule = existing.get(kind)
+        if rule is None:
+            rule = SmartSensorBindingThreshold(binding_id=binding_id, kind=kind)
+            db.add(rule)
+        rule.custom = value.custom
+        rule.min_value = value.min_value if value.custom else None
+        rule.max_value = value.max_value if value.custom else None
+        rule.deadband = value.deadband if value.custom else 0.0
+        rule.enabled = value.enabled if value.custom else True
+    await db.commit()
+    await db.refresh(binding, attribute_names=["thresholds"])
+    return _binding_thresholds_out(binding)
+
+
 class SensorThresholdIn(BaseModel):
     kind: str
     min_value: float | None = None
@@ -592,6 +852,7 @@ def _threshold_out(row) -> dict:
 @router.get("/sensors/{sensor_id}/thresholds")
 async def get_sensor_thresholds(
     sensor_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SMART_SENSORS_READ),
 ):
@@ -600,6 +861,8 @@ async def get_sensor_thresholds(
 
     if await db.get(SmartSensor, sensor_id) is None:
         raise HTTPException(status_code=404, detail="No such sensor.")
+    if not await sensor_in_key_scope(request, db, sensor_id):
+        raise HTTPException(status_code=403, detail="API key does not have access to this sensor.")
 
     rows = (
         (await db.execute(select(SmartSensorThreshold).where(SmartSensorThreshold.sensor_id == sensor_id)))
@@ -688,52 +951,72 @@ async def adopt_sensor(
         raise HTTPException(status_code=409, detail="This sensor has already been added.")
 
     sensor = SmartSensor(name=payload.name.strip(), zigbee_ieee=ieee)
-    await _bind_sensor(
-        db,
-        sensor,
-        location_id=payload.location_id,
-        printer_id=payload.printer_id,
-        set_location=True,
-        set_printer=True,
-    )
     db.add(sensor)
-    await db.commit()
+    try:
+        await db.flush()
+        if payload.initial_binding is not None:
+            await _validate_binding_target(db, payload.initial_binding)
+            db.add(SmartSensorBinding(sensor_id=sensor.id, **payload.initial_binding.model_dump()))
+            sensor.printer_id = payload.initial_binding.printer_id
+            sensor.location_id = payload.initial_binding.printer_location_id
+        else:
+            await _bind_sensor(
+                db,
+                sensor,
+                location_id=payload.location_id,
+                printer_id=payload.printer_id,
+                set_location=True,
+                set_printer=True,
+            )
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, "This sensor or target has already been added.") from exc
     await db.refresh(sensor)
+    await db.refresh(sensor, attribute_names=["bindings"])
+    await ws_manager.broadcast({"type": "sensor_bindings_changed"})
     return _sensor_out(sensor)
 
 
 async def _bind_sensor(db, sensor, *, location_id, printer_id, set_location: bool, set_printer: bool) -> None:
-    """Point a sensor at a place or at a printer, never at both.
+    """Compatibility writer for clients that can express one target only."""
+    if not (set_printer or set_location):
+        return
+    bindings = (
+        (await db.execute(select(SmartSensorBinding).where(SmartSensorBinding.sensor_id == sensor.id))).scalars().all()
+    )
+    if len(bindings) > 1:
+        raise HTTPException(status_code=409, detail="Use the sensor bindings API for a sensor with multiple targets.")
 
-    ⚠️ Exclusive by construction rather than by a check that could be forgotten:
-    setting either side clears the other. The two answer the same question —
-    where this reading belongs — and a printer already has a location, so a
-    sensor holding both could claim a place its printer is not in and appear in
-    two lists at once.
-
-    ``set_location`` / ``set_printer`` say whether the caller mentioned the
-    field at all, so an update that touches neither leaves the binding alone,
-    and one that sends an explicit null unbinds.
-    """
-    from backend.app.models.printer import Printer
-
+    current = bindings[0] if bindings else None
+    target_printer = current.printer_id if current else None
+    target_room = current.printer_location_id if current else None
     if set_printer and printer_id is not None:
-        if await db.get(Printer, printer_id) is None:
-            raise HTTPException(status_code=422, detail="No such printer.")
-        sensor.printer_id = printer_id
-        sensor.location_id = None
-        return
-    if set_location and location_id is not None:
-        if await db.get(PrinterLocation, location_id) is None:
-            raise HTTPException(status_code=422, detail="No such location.")
-        sensor.location_id = location_id
-        sensor.printer_id = None
-        return
-    # Explicit nulls: unbind whichever side was named.
-    if set_printer:
-        sensor.printer_id = None
-    if set_location:
-        sensor.location_id = None
+        target_printer, target_room = printer_id, None
+    elif set_location and location_id is not None:
+        target_printer, target_room = None, location_id
+    else:
+        if set_printer:
+            target_printer = None
+        if set_location:
+            target_room = None
+
+    if target_printer is not None or target_room is not None:
+        await _validate_binding_target(db, SensorBindingIn(printer_id=target_printer, printer_location_id=target_room))
+        if current is None:
+            current = SmartSensorBinding(
+                sensor_id=sensor.id, printer_id=target_printer, printer_location_id=target_room, notify_enabled=True
+            )
+            db.add(current)
+        else:
+            current.printer_id = target_printer
+            current.printer_location_id = target_room
+            current.storage_location_id = None
+    elif current is not None:
+        await db.delete(current)
+    # These columns serve old ORM callers; the bindings table owns the target.
+    sensor.printer_id = target_printer
+    sensor.location_id = target_room
 
 
 def _sensor_out(sensor) -> SmartSensorOut:
@@ -742,9 +1025,25 @@ def _sensor_out(sensor) -> SmartSensorOut:
     Read off the eager-loaded relationship, so a sensor list costs no extra
     query per row.
     """
-    payload = SmartSensorOut.model_validate(sensor, from_attributes=True)
-    payload.printer_name = sensor.printer.name if sensor.printer else None
-    return payload
+    bindings = sensor.bindings
+    only = bindings[0] if len(bindings) == 1 else None
+    return SmartSensorOut(
+        id=sensor.id,
+        name=sensor.name,
+        location_id=only.printer_location_id if only else sensor.location_id if not bindings else None,
+        location=PrinterLocationOut.from_location(
+            only.printer_location if only else sensor.location if not bindings else None
+        ),
+        printer_id=only.printer_id if only else sensor.printer_id if not bindings else None,
+        printer_name=only.printer.name
+        if only and only.printer
+        else sensor.printer.name
+        if sensor.printer and not bindings
+        else None,
+        zigbee_ieee=sensor.zigbee_ieee,
+        created_at=sensor.created_at,
+        bindings=[_binding_out(binding) for binding in bindings],
+    )
 
 
 @router.patch("/sensors/{sensor_id}", response_model=SmartSensorOut)
@@ -777,6 +1076,8 @@ async def rename_sensor(
     )
     await db.commit()
     await db.refresh(sensor)
+    await db.refresh(sensor, attribute_names=["bindings"])
+    await ws_manager.broadcast({"type": "sensor_bindings_changed"})
     return _sensor_out(sensor)
 
 
@@ -797,8 +1098,26 @@ async def drop_sensor(
     sensor = await db.get(SmartSensor, sensor_id)
     if sensor is None:
         raise HTTPException(status_code=404, detail="No such sensor.")
+    from backend.app.models.location_sensor_primary import LocationSensorPrimary
+    from backend.app.models.smart_sensor_history import SmartSensorHistory
+    from backend.app.models.smart_sensor_threshold import SmartSensorThreshold
+
+    await db.execute(
+        delete(LocationSensorPrimary).where(
+            LocationSensorPrimary.source == "zigbee",
+            LocationSensorPrimary.binding_id.in_(
+                select(SmartSensorBinding.id).where(SmartSensorBinding.sensor_id == sensor_id)
+            ),
+        )
+    )
+
+    # SQLite does not enforce the declared cascades. The adopted device is the
+    # owner of both history and default rules, so explicit unadopt removes them.
+    await db.execute(delete(SmartSensorHistory).where(SmartSensorHistory.sensor_id == sensor_id))
+    await db.execute(delete(SmartSensorThreshold).where(SmartSensorThreshold.sensor_id == sensor_id))
     await db.delete(sensor)
     await db.commit()
+    await ws_manager.broadcast({"type": "sensor_bindings_changed"})
     return {"deleted": sensor_id}
 
 

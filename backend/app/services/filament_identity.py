@@ -185,6 +185,39 @@ async def resolve_raw(db: AsyncSession, raw: str | None, *, owner_user_id: int |
     return _UNKNOWN
 
 
+def bambu_preset_id(row: UserFilamentPreset) -> str | None:
+    """The id a Bambu printer knows this mirror by, or ``None``.
+
+    A cloud mirror of the Bambu ecosystem is its ``PFUS…`` cloud id; a local
+    preset has one only once it was pushed to the Bambu cloud. An Orca profile's
+    uuid names nothing a printer can resolve.
+    """
+    if row.source == "cloud_bambu":
+        return row.cloud_id or None
+    if row.source == "local":
+        return row.pushed_cloud_id or None
+    return None
+
+
+async def family_user_presets(db: AsyncSession, family_id: str) -> list[UserFilamentPreset]:
+    """The user's own presets of a family that a printer can be told about, newest first.
+
+    A spool's identity is its family (the spool form writes nothing finer), so
+    for a family the user created — a P-hash the system catalogue does not know
+    — these are the only presets there are: one per printer and nozzle it was
+    made for, the variant named after the "@". Only mirrors with a Bambu id
+    (:func:`bambu_preset_id`). Newest first so a duplicate for the same printer
+    resolves to the one saved last, deterministically.
+    """
+    rows = (
+        (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.family_filament_id == family_id)))
+        .scalars()
+        .all()
+    )
+    usable = [row for row in rows if bambu_preset_id(row) is not None]
+    return sorted(usable, key=lambda row: (row.updated_time or "", row.id), reverse=True)
+
+
 async def resolve_spool(db: AsyncSession, spool) -> ResolvedFilament:
     """Family link -> RFID -> legacy string (spec A §5.1 precedence)."""
     family_id = getattr(spool, "filament_family_id", None)

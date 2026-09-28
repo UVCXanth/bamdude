@@ -97,7 +97,10 @@ export function LibraryPickerModal({
     return names;
   }, [folders]);
 
-  const offerable = useMemo(() => offerableFiles(files, printerModel), [files, printerModel]);
+  const { data: modelMatrix } = useQuery({
+    queryKey: ['modelCompatibility'], queryFn: api.getModelCompatibility, staleTime: 60 * 60 * 1000,
+  });
+  const offerable = useMemo(() => offerableFiles(files, printerModel, modelMatrix?.models), [files, printerModel, modelMatrix]);
 
   const visible = useMemo(() => {
     const needle = search.trim().toLowerCase();

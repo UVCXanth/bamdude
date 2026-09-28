@@ -22,6 +22,7 @@ from backend.app.models.camera import Camera
 from backend.app.models.printer import Printer
 from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.smart_sensor import SmartSensor
+from backend.app.models.smart_sensor_binding import SmartSensorBinding
 from backend.app.models.user import User
 from backend.app.schemas.printer_location import (
     PrinterLocationCreate,
@@ -77,6 +78,21 @@ async def _holders(db, location_id: int, *, count_archived_printers: bool = True
         counts.append(
             (await db.execute(select(func.count()).select_from(model).where(column == location_id))).scalar_one()
         )
+    bound_sensors = set(
+        (
+            await db.execute(
+                select(SmartSensorBinding.sensor_id).where(SmartSensorBinding.printer_location_id == location_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    legacy_sensors = set(
+        (await db.execute(select(SmartSensor.id).where(SmartSensor.location_id == location_id))).scalars().all()
+    )
+    # Legacy scalar columns mirror the sole binding. Count physical sensors
+    # once, even while that compatibility projection remains in the schema.
+    counts[1] = len(bound_sensors | legacy_sensors)
     return counts[0], counts[1], counts[2], counts[3]
 
 
@@ -206,6 +222,10 @@ async def delete_location(
 ):
     row = await db.get(PrinterLocation, location_id)
     if row is None:
+        raise HTTPException(status_code=404, detail="No such location.")
+    from backend.app.services.sensor_target_lock import lock_sensor_target
+
+    if not await lock_sensor_target(db, "printer_locations", location_id):
         raise HTTPException(status_code=404, detail="No such location.")
     if location_id in (await StaggerSplit.from_settings(db)).location_ids:
         raise HTTPException(

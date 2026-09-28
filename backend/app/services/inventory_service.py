@@ -88,8 +88,10 @@ _SEARCH_COLUMNS = (
 _TEMPLATE_TOKEN = re.compile(r"\{([a-z_0-9]+)\}")
 
 #: The template used when the setting is empty — the same default
-#: ``AppSettings.spool_display_template`` and the frontend both carry.
-DEFAULT_SPOOL_DISPLAY_TEMPLATE = "{brand} {material} {color_name}"
+#: ``AppSettings.spool_display_template`` and the frontend both carry. The
+#: subtype is in it (audit D3): PLA, PLA Matte and PLA Wood of one colour are
+#: different filaments and were named alike on every screen.
+DEFAULT_SPOOL_DISPLAY_TEMPLATE = "{brand} {material} {subtype} {color_name}"
 
 
 def _as_text(expr):
@@ -166,8 +168,36 @@ def display_name_expr(template: str | None):
     return composed
 
 
+def spool_search_filters(q: str | None, template: str | None) -> list:
+    """The spool search, one filter per token — every search of spools uses it.
+
+    Tokenised ilike: each token must match AT LEAST ONE column (OR), and every
+    token must match SOMETHING (AND across tokens) — so "SUN Bl" finds a
+    SUNLU-brand Black spool. The composed DISPLAY NAME is one of those columns
+    (2026-09-01), which is what makes a token spanning two fields ("LU PET")
+    match the way it did when the search ran over the rendered name.
+
+    ⚠️ The raw fields are searched too, whatever the template (audit D3): the
+    template is the operator's to change and only DISPLAY may hang on it. The
+    assignment picker searched the composed name alone, so with the default
+    template "Matte" found nothing, and without ``{brand}`` in it no brand did.
+    ``%`` and ``_`` in a token are literal characters, not wildcards.
+    """
+    if not q or not q.strip():
+        return []
+    composed = display_name_expr(template)
+    columns = (*_SEARCH_COLUMNS, composed) if composed is not None else _SEARCH_COLUMNS
+    filters = []
+    for token in q.strip().split():
+        escaped = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        filters.append(or_(*(col.ilike(f"%{escaped}%", escape="\\") for col in columns)))
+    return filters
+
+
 async def spool_display_template(db: AsyncSession) -> str:
-    """The operator's naming template, or the default when unset."""
+    """The operator's naming template, or the default when unset — the ONE
+    reader of the setting, so the default reaches every name (list, labels,
+    search) and a route never reads the setting raw."""
     # Deferred: the settings accessor lives in the routes package, and a
     # module-level import here would point a service at a router.
     from backend.app.api.routes.settings import get_setting
@@ -287,7 +317,7 @@ def _spool_sort_columns() -> dict[str, Any]:
     }
 
 
-def _spool_order_by(sort_by: str | None) -> tuple[list, bool]:
+def _spool_order_by(sort_by: str | None, condition_values: dict[int, float] | None = None) -> tuple[list, bool]:
     """Resolve ``sort_by`` (``<column>_asc``/``<column>_desc``) into ORDER BY
     clauses, plus whether the assignment/printer join is needed (``location``
     sort only).
@@ -310,6 +340,14 @@ def _spool_order_by(sort_by: str | None) -> tuple[list, bool]:
     sort_key, _, sort_dir = sort_by.rpartition("_")
     if sort_dir not in ("asc", "desc"):
         return [*_DEFAULT_ORDER, tiebreak], False
+
+    if sort_key in {"temperature", "humidity", "battery"} and condition_values is not None:
+        # Values are one live snapshot for this request, keyed by the spool's
+        # catalog location. SQL orders the whole filtered set before LIMIT /
+        # OFFSET, so spools on later pages can move to page one correctly.
+        value = case(condition_values, value=Spool.location_id, else_=None) if condition_values else literal(None)
+        clause = value.asc().nulls_last() if sort_dir == "asc" else value.desc().nulls_last()
+        return [clause, tiebreak], False
 
     if sort_key == "location":
         # OPERATOR RULING 2026-08-29: implemented server-side (the operator
@@ -517,19 +555,7 @@ async def build_spool_filters(
         filters.append(~select(SpoolAssignment.spool_id).where(SpoolAssignment.spool_id == Spool.id).exists())
 
     if q and q.strip():
-        # Tokenised ilike: each token must match AT LEAST ONE column (OR), and
-        # every token must match SOMETHING (AND across tokens) — so "SUN Bl"
-        # finds a SUNLU-brand Black spool.
-        #
-        # The composed DISPLAY NAME is one of those columns (2026-09-01), which
-        # is what makes a token spanning two fields — "LU PET" across brand and
-        # material — match again, the way it did when the search ran in the
-        # browser over the rendered name.
-        display_name = display_name_expr(await spool_display_template(db))
-        columns = (*_SEARCH_COLUMNS, display_name) if display_name is not None else _SEARCH_COLUMNS
-        for token in q.strip().split():
-            term = f"%{token}%"
-            filters.append(or_(*(col.ilike(term) for col in columns)))
+        filters.extend(spool_search_filters(q, await spool_display_template(db)))
 
     return filters
 
@@ -540,6 +566,7 @@ async def list_spools(
     include_archived: bool = False,
     filters: list | None = None,
     sort_by: str | None = None,
+    condition_values: dict[int, float] | None = None,
     limit: int | None = None,
     offset: int = 0,
     load_k_profiles: bool = True,
@@ -573,7 +600,7 @@ async def list_spools(
             query = query.where(Spool.archived_at.is_(None))
         query = query.order_by(*_DEFAULT_ORDER)
     else:
-        order_clauses, needs_location_join = _spool_order_by(sort_by)
+        order_clauses, needs_location_join = _spool_order_by(sort_by, condition_values)
         if needs_location_join:
             query = _join_first_assignment(query)
         query = query.where(*filters).order_by(*order_clauses)

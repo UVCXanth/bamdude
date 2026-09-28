@@ -39,6 +39,11 @@
     "title_template": "Missing Spool Assignment",
     "body_template": "{printer}: print started with missing spool assignments\nSlots: {missing_slots}\nExpected profile:\n{missing_slot_details}"
   },
+  "print_usage_not_recorded": {
+    "name": "Filament Not Charged",
+    "title_template": "Filament not charged",
+    "body_template": "{printer}: the print finished, but this filament reached no spool — the slot had no spool assigned by the end\n{missing_slot_details}"
+  },
   "printer_offline": {
     "name": "Printer Offline",
     "title_template": "Printer Offline",
@@ -228,6 +233,16 @@
     "name": "Sensor Reporting Again",
     "title_template": "Sensor Recovered",
     "body_template": "{location} — {sensor} is reporting again"
+  },
+  "ha_sensor_alert": {
+    "name": "Printer HA Sensor Alert",
+    "title_template": "Printer Sensor Alert",
+    "body_template": "{printer}: {sensor} reports {state}"
+  },
+  "location_ha_sensor_alert": {
+    "name": "Storage HA Sensor Alert",
+    "title_template": "Storage Sensor Alert",
+    "body_template": "{location}: {sensor} reports {state}"
   },
   "filament_deficit": {
     "name": "Filament Will Run Out",

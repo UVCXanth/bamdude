@@ -452,10 +452,15 @@ class PrintOptionsResponse(BaseModel):
     filament_tangle_detect: bool = False
 
 
+class ModelCompatibilityResponse(BaseModel):
+    models: dict[str, list[str]]
+
+
 class PrinterStatus(BaseModel):
     id: int
     name: str
     connected: bool
+    effective_model: str | None = None
     state: str | None = None
     current_print: str | None = None
     subtask_name: str | None = None
@@ -676,10 +681,14 @@ class PrinterStatus(BaseModel):
 class DiagnosticCheck(BaseModel):
     """One connection-diagnostic check result.
 
-    ``id`` is a stable key (port_mqtt, port_ftps, port_rtsps, network_mode,
-    subnet, mqtt_auth, developer_mode); the frontend renders the localized
-    title and fix text from id + status. ``params`` carries interpolation
-    values (e.g. network mode, IP addresses) for that text.
+    ``id`` is a stable key (port_mqtt, port_ftps, port_rtsps,
+    macos_local_network, network_mode, subnet, mqtt_auth, developer_mode, …);
+    the frontend renders the localized title and fix text from id + status.
+    ``params`` carries interpolation values (e.g. network mode, IP addresses)
+    for that text.
+
+    Not every check is emitted on every run: ``macos_local_network`` appears
+    only on macOS, the only platform it can say anything about.
     """
 
     id: str

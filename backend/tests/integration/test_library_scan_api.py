@@ -8,12 +8,14 @@ queries fail with ``database is locked``.
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models.library import LibraryFolder
+from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.library_scan import LibraryScanJob
 
 # ⚠️ Bound at import time, BEFORE the autouse fixture below replaces the module
@@ -228,3 +230,40 @@ class TestAFailureReachesTheTabs:
 
         await db_session.refresh(job)
         assert job.status == "failed"
+
+
+async def test_duplicate_on_mount_finishes_scan_without_creating_a_second_row(
+    db_session, external_folder, tmp_path, caplog, library_worker
+):
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    external_folder.external_path = str(mount)
+    content = b"solid duplicate\n"
+    (mount / "duplicate.stl").write_bytes(content)
+    managed = tmp_path / "managed.stl"
+    managed.write_bytes(content)
+    db_session.add(
+        LibraryFile(
+            filename=managed.name,
+            file_path=str(managed),
+            file_type="stl",
+            file_size=len(content),
+            file_hash=hashlib.sha256(content).hexdigest(),
+            is_external=False,
+        )
+    )
+    job = LibraryScanJob(folder_id=external_folder.id, status="queued")
+    db_session.add(job)
+    await db_session.commit()
+
+    with caplog.at_level("INFO", logger="backend.app.services.library_scan"):
+        await real_run_scan(job.id)
+
+    await db_session.refresh(job)
+    assert job.status == "finished", job.error
+    assert job.files_seen == 1
+    assert job.files_added == 0
+    assert (
+        await db_session.execute(select(LibraryFile).where(LibraryFile.is_external.is_(True)))
+    ).scalars().all() == []
+    assert "scan skipped 1 file(s) the library already holds" in caplog.text

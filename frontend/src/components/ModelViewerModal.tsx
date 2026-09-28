@@ -6,8 +6,8 @@ import { Modal } from './Modal';
 import { ModelViewer } from './ModelViewer';
 import { GcodePreview } from './GcodePreview';
 import { Button } from './Button';
-import { api } from '../api/client';
-import { openInSlicer, type SlicerType, isApiSliceableFileType } from '../utils/slicer';
+import { api, withMediaToken } from '../api/client';
+import { desktopSlicersFor, openInSlicer, type SlicerType, isApiSliceableFileType } from '../utils/slicer';
 import { useTheme } from '../contexts/ThemeContext';
 import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateMetadata } from '../types/plates';
 
@@ -262,7 +262,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
 
   const plates = useMemo(() => platesData?.plates ?? [], [platesData]);
   const hasMultiplePlates = (platesData?.is_multi_plate ?? false) && plates.length > 1;
-  const splitFullscreen = isFullscreen && hasMultiplePlates;
+  const splitFullscreen = isFullscreen && hasMultiplePlates && activeTab === '3d';
   const selectedPlate: PlateMetadata | null = selectedPlateId == null
     ? null
     : plates.find((plate) => plate.index === selectedPlateId) ?? null;
@@ -398,7 +398,15 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
     };
   }, [isDraggingDivider, dividerHeight, minPlateHeight, minViewerPx, minViewerRatio]);
 
-  const canOpenInSlicer = isLibrary ? (fileType || '').toLowerCase() === '3mf' : true;
+  // Which desktop slicers take this file over a link (upstream e2493132): an
+  // archive is always a 3MF; a library file may be an STL only OrcaSlicer takes.
+  const handoffSlicers: SlicerType[] = isLibrary
+    ? desktopSlicersFor(fileType, preferredSlicer)
+    : desktopSlicersFor('3mf', preferredSlicer);
+  const canOpenInSlicer = handoffSlicers.length > 0;
+  // The preferred slicer when it can take the file; otherwise the one that can,
+  // named on the button so nobody wonders why a different application opened.
+  const primarySlicer: SlicerType = handoffSlicers[0] ?? preferredSlicer;
 
   // With the in-app Slicer API enabled, route the header's slicer button into
   // BamDude's own SliceModal (same as the file-row Cog) instead of launching
@@ -416,10 +424,14 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
   // otherwise the primary already is the preferred one, and only the other is
   // worth listing.
   const slicerDropdownTypes: SlicerType[] = useBamDudeSlicer
-    ? ['bambu_studio', 'orcaslicer']
-    : [preferredSlicer === 'orcaslicer' ? 'bambu_studio' : 'orcaslicer'];
+    ? handoffSlicers
+    : handoffSlicers.filter((slicer) => slicer !== primarySlicer);
   const slicerName = (slicer: SlicerType) =>
     slicer === 'orcaslicer' ? t('settings.slicerOrcaSlicer') : t('settings.slicerBambuStudio');
+  const primaryHandoffLabel =
+    primarySlicer === preferredSlicer
+      ? t('modelViewer.openInSlicer')
+      : t('modelViewer.openInSlicerWith', { slicer: slicerName(primarySlicer) });
   const slicerDropdownItems = slicerDropdownTypes.map((slicer) => ({
     key: slicer,
     label: t('modelViewer.openInSlicerWith', { slicer: slicerName(slicer) }),
@@ -486,14 +498,20 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                   {t('slice.action')}
                 </Button>
               )
-            ) : canOpenInSlicer ? (
+            ) : canOpenInSlicer && slicerDropdownItems.length > 0 ? (
               <SlicerSplitButton
                 icon={<ExternalLink className="w-4 h-4" />}
-                label={t('modelViewer.openInSlicer')}
+                label={primaryHandoffLabel}
                 dropdownLabel={t('modelViewer.moreSlicerOptions')}
-                onPrimary={() => handleOpenInSlicer(preferredSlicer)}
+                onPrimary={() => handleOpenInSlicer(primarySlicer)}
                 items={slicerDropdownItems}
               />
+            ) : canOpenInSlicer ? (
+              // Only one slicer takes this file: no alternative for a chevron.
+              <Button variant="secondary" size="sm" onClick={() => handleOpenInSlicer(primarySlicer)}>
+                <ExternalLink className="w-4 h-4" />
+                {primaryHandoffLabel}
+              </Button>
             ) : (
               <Button variant="secondary" size="sm" onClick={() => handleOpenInSlicer(preferredSlicer)} disabled>
                 <ExternalLink className="w-4 h-4" />
@@ -517,7 +535,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
           on unsliced .3mf / .stl / .obj / .step. The whole bar only
           shows when there's at least one tab to render. */}
       {capabilities && (capabilities.has_model || capabilities.has_gcode) && (
-        <div className="flex items-center border-b border-bambu-dark-tertiary">
+        <div className="flex shrink-0 items-center border-b border-bambu-dark-tertiary">
           {capabilities.has_model && (
             <button
               onClick={() => setActiveTab('3d')}
@@ -563,8 +581,9 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
         </div>
       )}
 
-      {/* Viewer */}
-      <div className="flex-1 overflow-hidden p-4">
+      {/* Keep the viewer inside the modal; each plate list scrolls within its
+          height cap so a large export cannot push the canvas out of view. */}
+      <div className="min-h-0 flex-1 overflow-hidden p-4">
         {loading ? (
           <div className="w-full h-full flex items-center justify-center">
             <Loader2 className="w-8 h-8 animate-spin text-bambu-green" />
@@ -572,23 +591,23 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
         ) : activeTab === '3d' && capabilities ? (
           <div
             ref={splitContainerRef}
-            className={`w-full h-full flex flex-col ${splitFullscreen ? 'gap-0 min-h-0' : 'gap-3'}`}
+            className={`w-full h-full min-h-0 flex flex-col ${splitFullscreen ? 'gap-0' : 'gap-3'}`}
           >
             {hasMultiplePlates && (
               <div
                 ref={platesPanelRef}
                 style={splitFullscreen && platePanelHeight != null ? { height: platePanelHeight } : undefined}
-                className={`rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-3 ${splitFullscreen ? 'flex flex-col shrink-0' : ''}`}
+                className={`min-h-0 flex flex-col shrink-0 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-3 ${splitFullscreen ? 'max-h-[60%]' : 'max-h-[40%]'}`}
               >
-                <div className="flex items-center gap-2 text-sm text-bambu-gray mb-2">
+                <div className="flex shrink-0 items-center gap-2 text-sm text-bambu-gray mb-2">
                   <Layers className="w-4 h-4" />
                   {t('modelViewer.plates')}
                   {platesLoading && <Loader2 className="w-3 h-3 animate-spin" />}
                 </div>
-                <div className={splitFullscreen ? 'flex flex-col min-h-0 flex-1' : undefined}>
+                <div className="flex flex-col min-h-0 flex-1">
                     <div
                       ref={platesViewportRef}
-                      className={splitFullscreen ? 'min-h-0 overflow-hidden pr-1 flex-1' : undefined}
+                      className="min-h-0 overflow-y-auto overscroll-contain pr-1 flex-1"
                     >
                     <div
                       ref={platesGridRef}
@@ -644,7 +663,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                         >
                           {plate.has_thumbnail && plate.thumbnail_url ? (
                             <img
-                              src={plate.thumbnail_url}
+                              src={withMediaToken(plate.thumbnail_url)}
                               alt={`Plate ${plate.index}`}
                               className={`${splitFullscreen ? 'w-8 h-8' : 'w-10 h-10'} rounded object-cover bg-bambu-dark-tertiary`}
                             />
@@ -671,7 +690,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                     </div>
                   </div>
                   {(selectedPlate || shouldPaginatePlates) && (
-                    <div className="mt-auto pt-3 flex items-center gap-4 text-xs text-bambu-gray overflow-x-auto">
+                    <div className="mt-auto shrink-0 pt-3 flex items-center gap-4 text-xs text-bambu-gray overflow-x-auto">
                       {selectedPlate && (
                         <div className="flex items-center gap-3 whitespace-nowrap">
                           <span>{t('modelViewer.plateNumber', { number: selectedPlate.index })}</span>
@@ -787,14 +806,14 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                   setIsDraggingDivider(true);
                   setHasCustomSplit(true);
                 }}
-                className={`h-2 cursor-row-resize flex items-center justify-center ${
+                className={`h-2 shrink-0 cursor-row-resize flex items-center justify-center ${
                   isDraggingDivider ? 'bg-bambu-dark-tertiary' : 'bg-bambu-dark-secondary/60 hover:bg-bambu-dark-tertiary'
                 }`}
               >
                 <div className="w-12 h-1 rounded-full bg-bambu-gray/50" />
               </div>
             )}
-            <div className={`flex-1 ${splitFullscreen ? 'min-h-0' : ''}`}>
+            <div className="flex-1 min-h-0 overflow-hidden">
               {isLibrary && hasMultiplePlates && selectedPlateId == null ? (
                 <div className="w-full h-full flex items-center justify-center text-bambu-gray text-sm">
                   {t('modelViewer.pickPlatePrompt', { defaultValue: 'Pick a plate from the panel above to preview it.' })}
@@ -830,17 +849,17 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
           // endpoint doesn't accept plate_id and the artefact is by
           // definition a single print.
           isLibrary && hasMultiplePlates ? (
-            <div className="w-full h-full flex flex-col gap-3">
+            <div className="w-full h-full min-h-0 flex flex-col gap-3">
               <div
                 ref={platesPanelRef}
-                className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-3"
+                className="min-h-0 max-h-[40%] flex shrink-0 flex-col rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-3"
               >
-                <div className="flex items-center gap-2 text-sm text-bambu-gray mb-2">
+                <div className="flex shrink-0 items-center gap-2 text-sm text-bambu-gray mb-2">
                   <Layers className="w-4 h-4" />
                   {t('modelViewer.plates')}
                   {platesLoading && <Loader2 className="w-3 h-3 animate-spin" />}
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                <div className="min-h-0 overflow-y-auto overscroll-contain pr-1 grid grid-cols-2 md:grid-cols-3 gap-2">
                   {plates.map((plate) => (
                     <button
                       key={plate.index}
@@ -854,7 +873,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                     >
                       {plate.has_thumbnail && plate.thumbnail_url ? (
                         <img
-                          src={plate.thumbnail_url}
+                          src={withMediaToken(plate.thumbnail_url)}
                           alt={`Plate ${plate.index}`}
                           className="w-10 h-10 rounded object-cover bg-bambu-dark-tertiary"
                         />
@@ -878,7 +897,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                   ))}
                 </div>
               </div>
-              <div className="flex-1 min-h-0">
+              <div className="flex-1 min-h-0 overflow-hidden">
                 {selectedPlateId == null ? (
                   <div className="w-full h-full flex items-center justify-center text-bambu-gray text-sm">
                     {t('modelViewer.pickPlatePrompt', { defaultValue: 'Pick a plate from the panel above to preview it.' })}

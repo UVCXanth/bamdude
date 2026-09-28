@@ -17,8 +17,8 @@ const mockPrinters = [
 
 const mockUpdates = {
   updates: [
-    { printer_id: 1, current_version: '01.00.00.00', update_available: true },
-    { printer_id: 2, current_version: '01.00.00.00', update_available: true },
+    { printer_id: 1, current_version: '01.00.00.00', latest_version: '01.02.00.00', update_available: true },
+    { printer_id: 2, current_version: '01.00.00.00', latest_version: '01.02.00.00', update_available: true },
   ],
   updates_available: 2,
 };
@@ -75,6 +75,47 @@ describe('FirmwareUpdatePage', () => {
     expect(body.targets).toHaveLength(1);
     expect(body.targets[0].printer_id).toBe(1);
     expect(body.targets[0].version).toBe('01.02.00.00');
+  });
+
+  it('does not start a wiki-only update without an offline firmware file', async () => {
+    server.use(
+      http.get('/api/v1/firmware/updates', () => HttpResponse.json({
+        updates: [{ printer_id: 1, current_version: '01.02.00.00', latest_version: '01.03.00.00', update_available: true }],
+        updates_available: 1,
+      })),
+      http.post('/api/v1/firmware/batch/preview', () => HttpResponse.json({
+        groups: [{
+          model: 'P1S', printer_ids: [1], available_versions: ['01.02.00.00'],
+          cached_versions: [], default_version: '01.02.00.00', remote_apply: false,
+          skipped_printer_ids: [],
+        }],
+      })),
+    );
+
+    render(<FirmwareUpdatePage />);
+    expect(await screen.findByText(/01\.03\.00\.00 has been announced/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Upgrade \(0\)/i })).toBeDisabled();
+    expect(screen.queryByRole('option', { name: '01.03.00.00' })).not.toBeInTheDocument();
+  });
+
+  it('offers an older installable update when the newest announced version has no file', async () => {
+    server.use(
+      http.get('/api/v1/firmware/updates', () => HttpResponse.json({
+        updates: [{ printer_id: 1, current_version: '01.01.00.00', latest_version: '01.03.00.00', update_available: true }],
+        updates_available: 1,
+      })),
+      http.post('/api/v1/firmware/batch/preview', () => HttpResponse.json({
+        groups: [{
+          model: 'P1S', printer_ids: [1], available_versions: ['01.02.00.00'],
+          cached_versions: [], default_version: '01.02.00.00', remote_apply: false,
+          skipped_printer_ids: [],
+        }],
+      })),
+    );
+
+    render(<FirmwareUpdatePage />);
+    expect(await screen.findByRole('button', { name: /Upgrade \(1\)/i })).toBeEnabled();
+    expect(screen.getByText(/01\.03\.00\.00 has been announced/)).toBeInTheDocument();
   });
 
   it('shows past runs (incl. single-source) in the update log tab', async () => {

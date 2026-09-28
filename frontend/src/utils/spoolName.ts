@@ -9,6 +9,9 @@
  * in a template are left verbatim so typos surface in the live preview instead
  * of silently collapsing to empty.
  */
+
+import { resolveSpoolColorName } from './colors';
+
 /**
  * Exactly the fields the placeholders below read — nothing else.
  *
@@ -24,6 +27,8 @@ export interface SpoolNameFields {
   material?: string | null;
   subtype?: string | null;
   color_name?: string | null;
+  /** Spoolman has no colour name; its spools carry the subtype here instead. */
+  color_name_is_synthesized?: boolean;
   slicer_filament_name?: string | null;
   note?: string | null;
   label_weight?: number | null;
@@ -86,7 +91,12 @@ export const SPOOL_PLACEHOLDERS: SpoolPlaceholder[] = [
     label: 'Color',
     description: 'Human-readable colour name',
     example: 'Jade White',
-    format: (s) => s.color_name ?? '',
+    // A name synthesised from the subtype (Spoolman) is not a colour — printed
+    // here it doubled the subtype ("PLA Silk+ Silk+"). The swatch's catalogue
+    // name stands in, or nothing (upstream e4a9ef45, #3090). A stored name is
+    // printed exactly as it was.
+    format: (s) =>
+      s.color_name_is_synthesized ? (resolveSpoolColorName(null, s.rgba ?? null) ?? '') : (s.color_name ?? ''),
   },
   {
     key: 'slicer_filament_name',
@@ -178,7 +188,10 @@ export const SPOOL_PLACEHOLDERS: SpoolPlaceholder[] = [
   },
 ];
 
-export const DEFAULT_SPOOL_DISPLAY_TEMPLATE = '{brand} {material} {color_name}';
+// The subtype is in it (audit D3): PLA, PLA Matte and PLA Wood of one colour are
+// different filaments. Mirrors the backend default (inventory_service,
+// AppSettings) — the template stays the operator's to change.
+export const DEFAULT_SPOOL_DISPLAY_TEMPLATE = '{brand} {material} {subtype} {color_name}';
 
 const placeholderMap = new Map(SPOOL_PLACEHOLDERS.map((p) => [p.key, p]));
 

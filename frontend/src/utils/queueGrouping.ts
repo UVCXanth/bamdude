@@ -1,4 +1,5 @@
 import type { LibraryGroupingMetadata } from '../api/client';
+import { normalizeModelName } from './printer';
 
 /** One plate of one file — the unit a queue run distributes. */
 export interface PlateUnit {
@@ -57,7 +58,7 @@ export function groupSelection(
         // Ungroupable: a key nothing else can equal.
         ? `ungrouped:${file.file_id}`
         : JSON.stringify([
-            file.sliced_for_model,
+            normalizeModelName(file.sliced_for_model),
             file.nozzle_diameter,
             [...plate.filament_types].sort(),
             plate.bed_type ?? file.bed_type,
@@ -122,7 +123,7 @@ export function groupDecidedUnits(
     const key =
       row && plate
         ? JSON.stringify([
-            row.sliced_for_model,
+            normalizeModelName(row.sliced_for_model),
             row.nozzle_diameter,
             [...plate.filament_types].sort(),
             plate.bed_type ?? row.bed_type,

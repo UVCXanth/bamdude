@@ -10,6 +10,7 @@ async def test_rebalance_setting_defaults_off_and_round_trips(async_client):
     before = await async_client.get("/api/v1/settings/")
     assert before.status_code == 200, before.text
     assert before.json()["auto_queue_rebalance_models"] is False
+    assert before.json()["auto_queue_compatible_models"] is False
 
     put = await async_client.put("/api/v1/settings/", json={"auto_queue_rebalance_models": True})
     assert put.status_code == 200, put.text
@@ -17,3 +18,16 @@ async def test_rebalance_setting_defaults_off_and_round_trips(async_client):
 
     after = await async_client.get("/api/v1/settings/")
     assert after.json()["auto_queue_rebalance_models"] is True
+
+
+@pytest.mark.asyncio
+async def test_compatible_model_fallback_defaults_off_and_round_trips(async_client):
+    before = await async_client.get("/api/v1/settings/")
+    assert before.json()["auto_queue_compatible_models"] is False
+
+    put = await async_client.put("/api/v1/settings/", json={"auto_queue_compatible_models": True})
+    assert put.status_code == 200, put.text
+    assert put.json()["auto_queue_compatible_models"] is True
+
+    after = await async_client.get("/api/v1/settings/")
+    assert after.json()["auto_queue_compatible_models"] is True

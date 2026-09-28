@@ -229,6 +229,33 @@ class TestArchivesAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    @pytest.mark.parametrize("quantity", [-1, 10_001])
+    async def test_a_quantity_outside_its_range_is_refused(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session, quantity
+    ):
+        """It feeds order totals: a negative would subtract from them (upstream 30e530a8)."""
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id)
+
+        response = await async_client.patch(f"/api/v1/archives/{archive.id}", json={"quantity": quantity})
+
+        assert response.status_code == 422, response.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_quantity_of_zero_is_accepted(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id)
+
+        response = await async_client.patch(f"/api/v1/archives/{archive.id}", json={"quantity": 0})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["quantity"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_update_archive_notes(self, async_client: AsyncClient, archive_factory, printer_factory, db_session):
         """Verify archive notes can be updated."""
         printer = await printer_factory()
@@ -751,7 +778,75 @@ class TestNo3MFWarning:
         response = await async_client.get("/api/v1/archives/no-3mf-warning")
 
         assert response.status_code == 200
-        assert response.json() == {"has_fallback": True}
+        # A row marked before reasons were recorded names none.
+        assert response.json() == {"has_fallback": True, "reason": None, "reasons": [None]}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_names_the_most_urgent_reason(self, async_client: AsyncClient, archive_factory, printer_factory):
+        """A refused file connection outranks the rest (audit D6, upstream 6564c740):
+        it is the one fault the operator did not configure, and the banner is
+        dismissed one-shot, so a reason ranked below another is never shown."""
+        printer = await printer_factory()
+        await archive_factory(printer.id, extra_data={"no_3mf_available": True, "no_3mf_reason": "not_found"})
+        await archive_factory(printer.id, extra_data={"no_3mf_available": True, "no_3mf_reason": "unreachable"})
+        await archive_factory(printer.id, extra_data={"no_3mf_available": True, "no_3mf_reason": "ftps_refused"})
+        await archive_factory(printer.id, extra_data={"no_3mf_available": True, "no_3mf_reason": "auth_rejected"})
+
+        response = await async_client.get("/api/v1/archives/no-3mf-warning")
+
+        assert response.json()["reason"] == "ftps_refused"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_lists_every_reason_most_urgent_first(
+        self, async_client: AsyncClient, archive_factory, printer_factory
+    ):
+        """All of them, ranked, unknown last — so dismissing the banner for one
+        reason does not hide another behind it for the next thirty days."""
+        printer = await printer_factory()
+        await archive_factory(printer.id, extra_data={"no_3mf_available": True})
+        await archive_factory(printer.id, extra_data={"no_3mf_available": True, "no_3mf_reason": "not_found"})
+        await archive_factory(printer.id, extra_data={"no_3mf_available": True, "no_3mf_reason": "unreachable"})
+        await archive_factory(printer.id, extra_data={"no_3mf_available": True, "no_3mf_reason": "unreachable"})
+        await archive_factory(printer.id, extra_data={"no_3mf_available": True, "no_3mf_reason": "ftps_refused"})
+        # A reason this build does not know is an unknown one, not a new rank.
+        await archive_factory(printer.id, extra_data={"no_3mf_available": True, "no_3mf_reason": "from_the_future"})
+
+        response = await async_client.get("/api/v1/archives/no-3mf-warning")
+
+        assert response.json() == {
+            "has_fallback": True,
+            "reason": "ftps_refused",
+            "reasons": ["ftps_refused", "unreachable", "not_found", None],
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_reasons_rank_auth_then_unreachable_then_not_found(
+        self, async_client: AsyncClient, archive_factory, printer_factory
+    ):
+        printer = await printer_factory()
+        await archive_factory(printer.id, extra_data={"no_3mf_available": True, "no_3mf_reason": "not_found"})
+        await archive_factory(printer.id, extra_data={"no_3mf_available": True, "no_3mf_reason": "unreachable"})
+        assert (await async_client.get("/api/v1/archives/no-3mf-warning")).json()["reason"] == "unreachable"
+
+        await archive_factory(printer.id, extra_data={"no_3mf_available": True, "no_3mf_reason": "auth_rejected"})
+        assert (await async_client.get("/api/v1/archives/no-3mf-warning")).json()["reason"] == "auth_rejected"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_reason_without_the_marker_is_not_a_fallback(
+        self, async_client: AsyncClient, archive_factory, printer_factory
+    ):
+        printer = await printer_factory()
+        await archive_factory(printer.id, extra_data={"no_3mf_reason": "ftps_refused"})
+
+        assert (await async_client.get("/api/v1/archives/no-3mf-warning")).json() == {
+            "has_fallback": False,
+            "reason": None,
+            "reasons": [],
+        }
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -759,7 +854,7 @@ class TestNo3MFWarning:
         response = await async_client.get("/api/v1/archives/no-3mf-warning")
 
         assert response.status_code == 200
-        assert response.json() == {"has_fallback": False}
+        assert response.json() == {"has_fallback": False, "reason": None, "reasons": []}
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -775,7 +870,7 @@ class TestNo3MFWarning:
         response = await async_client.get("/api/v1/archives/no-3mf-warning")
 
         assert response.status_code == 200
-        assert response.json() == {"has_fallback": False}
+        assert response.json() == {"has_fallback": False, "reason": None, "reasons": []}
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -795,7 +890,7 @@ class TestNo3MFWarning:
         response = await async_client.get("/api/v1/archives/no-3mf-warning")
 
         assert response.status_code == 200
-        assert response.json() == {"has_fallback": False}
+        assert response.json() == {"has_fallback": False, "reason": None, "reasons": []}
         # Sanity: row really is in the DB, we just don't surface it.
         assert (await db_session.get(PrintArchive, archive.id)) is not None
 
@@ -815,7 +910,7 @@ class TestNo3MFWarning:
 
         assert response.status_code == 200
         # Soft-deleted fallbacks have been actioned. Stop nudging.
-        assert response.json() == {"has_fallback": False}
+        assert response.json() == {"has_fallback": False, "reason": None, "reasons": []}
 
 
 class TestArchiveDeleteImpact:

@@ -535,6 +535,16 @@ export function useWebSocket() {
     invalidationTimeoutRef.current = window.setTimeout(flushDueInvalidations, Math.max(0, firstDue - now));
   }, [flushDueInvalidations]);
 
+  // A slot's own rows skip the cascade debounce above (upstream 7363d5fd). The
+  // debounce exists for print completion, where one event fans out across half
+  // the app; a spool swap touches one slot and the user is standing at the
+  // printer looking at the card, and every further event restarted the wait.
+  // Both inventory backends' keys: TanStack refetches only the active ones.
+  const invalidateSlotQueries = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
+    queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments'] });
+  }, [queryClient]);
+
   /**
    * Everything a project page reads that a print moves.
    *
@@ -761,6 +771,7 @@ export function useWebSocket() {
       case 'library_file_added':
         debouncedInvalidate('library-files');
         debouncedInvalidate('library-stats');
+        debouncedInvalidate('product-files');
         break;
 
       // A scan of an external folder is now a background job, so its progress
@@ -782,6 +793,10 @@ export function useWebSocket() {
         debouncedInvalidate('library-files');
         debouncedInvalidate('library-folders');
         debouncedInvalidate('library-stats');
+        debouncedInvalidate('library-file-card');
+        debouncedInvalidate('library-file-plates');
+        debouncedInvalidate('library-file-filaments');
+        debouncedInvalidate('product-files');
         break;
 
       case 'library_file_notes_changed': {
@@ -818,9 +833,9 @@ export function useWebSocket() {
         // Spoolman queries the printer card reads (its own assign/unassign
         // mutations invalidate exactly these two). With only the internal key
         // here, the Spoolman assign route's broadcast (spec 2026-09-13 §3.3)
-        // arrived in the browser and refreshed nothing.
-        debouncedInvalidate('spool-assignments');
-        debouncedInvalidate('spoolman-slot-assignments');
+        // arrived in the browser and refreshed nothing. The slot rows go at
+        // once; the Spoolman spool list is not on the card's path and waits.
+        invalidateSlotQueries();
         debouncedInvalidate('spoolman-inventory-spools');
         break;
 
@@ -849,9 +864,10 @@ export function useWebSocket() {
       }
 
       case 'spool_auto_assigned':
-        // RFID tag matched - refresh inventory and assignment data
+        // RFID tag matched - refresh inventory and assignment data. The slot
+        // row was just rewritten, so it goes at once; the spool list waits.
         debouncedInvalidate('inventory-spools');
-        debouncedInvalidate('spool-assignments');
+        invalidateSlotQueries();
         break;
 
       case 'spool_usage_logged':
@@ -958,6 +974,15 @@ export function useWebSocket() {
         queryClient.invalidateQueries({ queryKey: ['zigbee-sensors'] });
         break;
 
+      case 'sensor_bindings_changed':
+        debouncedInvalidate(
+          'zigbee-sensors', 'haSensors', 'locationHaSensors',
+          'haSensorManagementReadings', 'locationHaSensorManagementReadings',
+          'haSensorReadings', 'locationHaSensorReadings', 'locationSensorPrimary',
+          inventoryLocationsQueryKey, 'inventory-spools', 'spoolman-inventory-spools',
+        );
+        break;
+
       case 'zigbee_status_changed':
         queryClient.invalidateQueries({ queryKey: ['zigbee-status'] });
         // A radio coming up or going down changes every sensor's readings at
@@ -979,7 +1004,7 @@ export function useWebSocket() {
         break;
 
     }
-  }, [queryClient, debouncedInvalidate, invalidateProjectViews, throttledPrinterStatusUpdate, showToast, t]);
+  }, [queryClient, debouncedInvalidate, invalidateSlotQueries, invalidateProjectViews, throttledPrinterStatusUpdate, showToast, t]);
 
   // Keep the ref updated with latest handleMessage
   useEffect(() => {

@@ -7,15 +7,17 @@ from datetime import date, datetime, timedelta
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
-from sqlalchemy import String, and_, case, cast, delete, func, literal, or_, select
+from sqlalchemy import and_, case, delete, func, literal, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.auth import RequireAnyPermission, RequirePermission
+from backend.app.core.api_key_scope import key_printer_scope
+from backend.app.core.auth import RequireAnyPermission, RequirePermission, require_permission
 from backend.app.core.catalog_defaults import DEFAULT_COLOR_CATALOG, DEFAULT_SPOOL_CATALOG
 from backend.app.core.config import APP_VERSION
 from backend.app.core.database import get_db
@@ -67,6 +69,7 @@ from backend.app.schemas.spool_usage import (
     SpoolUsageTotals,
 )
 from backend.app.services import forecast_engine, inventory_service, spool_usage_service
+from backend.app.services.ams_slot_presence import spool_present
 from backend.app.services.filament_needs import Needs
 from backend.app.services.location_service import (
     DUPLICATE_LOCATION_NAME,
@@ -86,6 +89,7 @@ from backend.app.services.spool_csv import (
     serialize,
 )
 from backend.app.services.spoolman import SpoolmanClient, get_spoolman_client, init_spoolman_client
+from backend.app.services.tag_conflict import tag_already_linked
 from backend.app.utils.filament_remaining import grams_used
 from backend.app.utils.tag_normalization import normalize_tag_uid, normalize_tray_uuid
 
@@ -223,13 +227,9 @@ async def apply_spool_to_slot_via_mqtt(
     state = printer_manager.get_status(printer_id)
 
     tray_type = spool.material
-    tray_sub_brands = (
-        f"{spool.brand} {spool.material} {spool.subtype}".strip()
-        if spool.brand
-        else f"{spool.material} {spool.subtype}"
-        if spool.subtype
-        else spool.material
-    )
+    # Join only the parts that exist: the branded branch used to interpolate
+    # a missing subtype as the string "None" (upstream #2987).
+    tray_sub_brands = " ".join(p for p in (spool.brand, spool.material, spool.subtype) if p) or spool.material
 
     # The nozzle THIS slot feeds: its diameter picks the preset below and, with
     # the flow type, the calibration — not "the printer's" first nozzle.
@@ -562,12 +562,13 @@ async def _spool_counts_for_locations(
     return counts
 
 
-def _location_to_response(location: Location, spool_count: int) -> LocationResponse:
+def _location_to_response(location: Location, spool_count: int, sensor_count: int = 0) -> LocationResponse:
     return LocationResponse(
         id=location.id,
         name=location.name,
         identifier=location.identifier,
         spool_count=spool_count,
+        sensor_count=sensor_count,
         created_at=location.created_at,
         updated_at=location.updated_at,
     )
@@ -583,7 +584,23 @@ async def list_locations(
     result = await db.execute(select(Location).order_by(Location.name))
     locations = list(result.scalars().all())
     counts = await _spool_counts_for_locations(db, locations, settings)
-    return [_location_to_response(loc, counts.get(loc.id, 0)) for loc in locations]
+    from backend.app.models.location_ha_sensor import LocationHASensor
+    from backend.app.models.smart_sensor_binding import SmartSensorBinding
+
+    sensor_counts = dict(
+        (
+            await db.execute(
+                select(SmartSensorBinding.storage_location_id, func.count())
+                .where(SmartSensorBinding.storage_location_id.is_not(None))
+                .group_by(SmartSensorBinding.storage_location_id)
+            )
+        ).all()
+    )
+    for storage_id, count in (
+        await db.execute(select(LocationHASensor.location_id, func.count()).group_by(LocationHASensor.location_id))
+    ).all():
+        sensor_counts[storage_id] = sensor_counts.get(storage_id, 0) + count
+    return [_location_to_response(loc, counts.get(loc.id, 0), sensor_counts.get(loc.id, 0)) for loc in locations]
 
 
 @router.post("/locations", response_model=LocationResponse, status_code=201)
@@ -662,8 +679,24 @@ async def update_location(
     await db.refresh(location)
     settings = await _load_settings_map(db)
     counts = await _spool_counts_for_locations(db, [location], settings)
+    from backend.app.models.smart_sensor_binding import SmartSensorBinding
+
+    sensor_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(SmartSensorBinding)
+            .where(SmartSensorBinding.storage_location_id == location_id)
+        )
+    ).scalar_one()
+    from backend.app.models.location_ha_sensor import LocationHASensor
+
+    sensor_count += (
+        await db.execute(
+            select(func.count()).select_from(LocationHASensor).where(LocationHASensor.location_id == location_id)
+        )
+    ).scalar_one()
     await ws_manager.broadcast({"type": "inventory_changed"})
-    return _location_to_response(location, counts.get(location.id, 0))
+    return _location_to_response(location, counts.get(location.id, 0), sensor_count)
 
 
 @router.delete("/locations/{location_id}")
@@ -681,6 +714,30 @@ async def delete_location(
     counts = await _spool_counts_for_locations(db, [location], settings)
     if counts.get(location.id, 0) > 0:
         raise HTTPException(status_code=409, detail="Location has spools assigned and cannot be deleted")
+
+    from backend.app.services.sensor_target_lock import lock_sensor_target
+
+    if not await lock_sensor_target(db, "locations", location_id):
+        raise HTTPException(status_code=404, detail="Location not found")
+
+    from backend.app.models.smart_sensor_binding import SmartSensorBinding
+
+    sensor_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(SmartSensorBinding)
+            .where(SmartSensorBinding.storage_location_id == location_id)
+        )
+    ).scalar_one()
+    from backend.app.models.location_ha_sensor import LocationHASensor
+
+    sensor_count += (
+        await db.execute(
+            select(func.count()).select_from(LocationHASensor).where(LocationHASensor.location_id == location_id)
+        )
+    ).scalar_one()
+    if sensor_count:
+        raise HTTPException(status_code=409, detail="Location has sensors assigned; detach them first")
 
     await db.delete(location)
     await db.commit()
@@ -716,6 +773,21 @@ async def get_color_name_map(
     Normalized to lowercase 6-char hex without '#'. When multiple catalog entries
     share the same hex (different materials or manufacturers), Bambu Lab wins,
     then default entries, then the first encountered.
+
+    ``by_material`` carries the names that collapsing loses. A hex is not one
+    colour in Bambu's range: #FFFFFF is Jade White in PLA Basic, Ivory White in
+    PLA Matte and plain White in six more, and #000000 is Black except in PLA
+    Matte where it is Charcoal. A caller that knows the material — an AMS slot
+    knows it as ``tray_sub_brands`` — looks up ``"<material>|<hex>"`` there
+    first and falls back to ``colors`` (#2875).
+
+    An entry is included only when it recovers a name the *same manufacturer's*
+    own range lost. Two conditions, both load-bearing: a name equal to the
+    collapsed one is pure weight, and a name from a different manufacturer is
+    not a recovery at all — it would put Prusament's "Pristine White" on every
+    generic white PLA slot in place of Bambu's "Jade White", trading one
+    arbitrary answer for another. What survives is the handful of cases this
+    exists for.
     """
     result = await db.execute(
         select(
@@ -723,24 +795,43 @@ async def get_color_name_map(
             ColorCatalogEntry.color_name,
             ColorCatalogEntry.manufacturer,
             ColorCatalogEntry.is_default,
+            ColorCatalogEntry.material,
         )
     )
-    mapping: dict[str, tuple[str, int]] = {}  # hex → (name, priority); higher priority wins
-    for hex_color, color_name, manufacturer, is_default in result.all():
+    # hex → (name, priority, manufacturer); higher priority wins, first on a tie
+    mapping: dict[str, tuple[str, int, str]] = {}
+    by_material: dict[str, tuple[str, int, str]] = {}  # "material|hex" → same
+    for hex_color, color_name, manufacturer, is_default, material in result.all():
         if not hex_color or not color_name:
             continue
         key = hex_color.lstrip("#").lower()[:6]
         if len(key) != 6:
             continue
+        brand = (manufacturer or "").strip().lower()
         priority = 0
-        if manufacturer and manufacturer.strip().lower() == "bambu lab":
+        if brand == "bambu lab":
             priority += 2
         if is_default:
             priority += 1
         existing = mapping.get(key)
         if existing is None or priority > existing[1]:
-            mapping[key] = (color_name, priority)
-    return {"colors": {k: v[0] for k, v in mapping.items()}}
+            mapping[key] = (color_name, priority, brand)
+        material_key = (material or "").strip().lower()
+        if material_key:
+            # Split on the LAST separator when reading these back: a material is
+            # free text and may itself contain a '|'.
+            qualified = f"{material_key}|{key}"
+            existing = by_material.get(qualified)
+            if existing is None or priority > existing[1]:
+                by_material[qualified] = (color_name, priority, brand)
+
+    colors = {k: v[0] for k, v in mapping.items()}
+    qualified_colors = {}
+    for qualified, (name, _, brand) in by_material.items():
+        flat = mapping.get(qualified.rsplit("|", 1)[1])
+        if flat and flat[0] != name and flat[2] == brand:
+            qualified_colors[qualified] = name
+    return {"colors": colors, "by_material": qualified_colors}
 
 
 @router.get("/colors/by-material", response_model=ColorByMaterialResult)
@@ -1200,6 +1291,7 @@ class SpoolGroupPage(BaseModel):
 
 @router.get("/spools", response_model=None)
 async def list_spools(
+    request: Request,
     include_archived: bool = False,
     archived: str | None = Query(None, description="'active' or 'archived' — paged mode only"),
     usage: str | None = Query(None, description="'used', 'new', or 'lowstock'"),
@@ -1229,7 +1321,9 @@ async def list_spools(
         None,
         description=(
             "<column>_asc|_desc — see inventory_service._spool_sort_columns plus "
-            "the special-cased 'display_name' and 'location' keys. Omitted keeps "
+            "the special-cased 'display_name', 'location', 'temperature', "
+            "'humidity' and 'battery' keys. Condition sorts require "
+            "smart_sensors:read. Omitted keeps "
             "the legacy material/brand/color_name ordering."
         ),
     ),
@@ -1368,8 +1462,27 @@ async def list_spools(
             ),
         )
 
+    condition_values = None
+    sort_key, _, sort_direction = (sort_by or "").rpartition("_")
+    if sort_key in {"temperature", "humidity", "battery"} and sort_direction in {"asc", "desc"}:
+        # Storage readings are a separate permission domain. A printer-scoped
+        # key cannot inspect storage at all, even indirectly through ordering.
+        if key_printer_scope(request) is not None:
+            raise HTTPException(403, "A printer-scoped API key cannot sort storage conditions")
+        authorization = request.headers.get("authorization", "")
+        bearer = authorization.split(" ", 1)[1] if authorization.lower().startswith("bearer ") else None
+        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=bearer) if bearer else None
+        await require_permission(Permission.SMART_SENSORS_READ)(
+            request, credentials=credentials, x_api_key=request.headers.get("x-api-key")
+        )
+        from backend.app.services.storage_condition_sort import current_condition_values
+
+        condition_values = await current_condition_values(db, request, sort_key)
+
     total = await inventory_service.count_spools(db, filters=filters)
-    spools = await inventory_service.list_spools(db, filters=filters, sort_by=sort_by, limit=limit, offset=offset)
+    spools = await inventory_service.list_spools(
+        db, filters=filters, sort_by=sort_by, condition_values=condition_values, limit=limit, offset=offset
+    )
 
     last_page = 1 if all else max(1, math.ceil(total / per_page))
     return SpoolListPage(
@@ -1606,11 +1719,10 @@ async def spool_picker(
             filters.append(or_(*checks))
 
     if q.strip():
-        display = inventory_service.display_name_expr(await inventory_service.spool_display_template(db))
-        haystack = cast(Spool.id, String) + literal(" ") + (display if display is not None else literal(""))
-        for token in q.strip().split():
-            escaped = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            filters.append(haystack.ilike(f"%{escaped}%", escape="\\"))
+        # The fields AND the composed name, as every spool search (audit D3) —
+        # the composed name alone made what the picker could find depend on the
+        # operator's template.
+        filters.extend(inventory_service.spool_search_filters(q, await inventory_service.spool_display_template(db)))
 
     total = await inventory_service.count_spools(db, filters=filters)
     spools = await inventory_service.list_spools(
@@ -2501,6 +2613,9 @@ async def assign_spool(
     fingerprint_type = None
     current_tray_info_idx = ""
     tray_state: int | None = None
+    # Firmware's tray_exist_bits answer for the slot, when the push carries
+    # one — it outranks tray_state below (services/ams_slot_presence).
+    tray_has_spool: bool | None = None
     state = printer_manager.get_status(data.printer_id)
     if state and state.raw_data:
         if data.ams_id == 255:
@@ -2537,6 +2652,7 @@ async def assign_spool(
                 raw_state = tray.get("state")
                 if isinstance(raw_state, int):
                     tray_state = raw_state
+                tray_has_spool = spool_present(tray)
 
     # Deliberate mid-pause replacement (the user answered the "replacement or
     # correction?" prompt with "replacement"): journal the manual runout NOW,
@@ -2636,7 +2752,16 @@ async def assign_spool(
     # config when a spool eventually appears — the weigh-then-assign
     # SpoolBuddy workflow keeps working, just without the optimisation of
     # skipping a no-op MQTT call.
-    slot_is_definitely_empty = tray_state == 9 or tray_state == 10
+    #
+    # ...except that ``state`` cannot carry that meaning on its own: an
+    # AMS-HT reports its LOADED tray as 9, and ``apply_tray_exist_bits``
+    # stamps 9 on a slot whose presence bit went to 0 and never takes it
+    # back when the bit returns — so a slot holding a freshly inserted
+    # non-RFID spool read "empty", nothing was published and the printer
+    # kept showing "?" (upstream #3084). The presence bit overrules the 9;
+    # a bit reading EMPTY deliberately does not start suppressing pushes
+    # (a wrong bit position would silently stop a slot configuring).
+    slot_is_definitely_empty = tray_has_spool is not True and (tray_state == 9 or tray_state == 10)
     configured = False
     pending_config = slot_is_definitely_empty
 
@@ -2778,7 +2903,11 @@ async def link_tag_to_spool(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
-    """Link an RFID tag_uid/tray_uuid to an existing spool."""
+    """Link an RFID tag_uid/tray_uuid to an existing spool.
+
+    A tag another active spool already carries is refused with the shared
+    ``tag_already_linked`` 409 naming that spool (upstream #3110).
+    """
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool_id))
     spool = result.scalar_one_or_none()
     if not spool:
@@ -2792,17 +2921,26 @@ async def link_tag_to_spool(
     _validate_tag_input(data.tag_uid, normalized_tag_uid, "tag_uid")
     _validate_tag_input(data.tray_uuid, normalized_tray_uuid, "tray_uuid", exact_len=32)
 
-    # Check for conflicts: tag already linked to another active spool
+    # Check for conflicts: tag already linked to another active spool.
+    #
+    # Ordered, and read with first() rather than scalar_one_or_none(): two active
+    # spools really can carry one tag — neither column has a unique index, PATCH
+    # /spools/{id} writes them unchecked and bulk create copies one payload into
+    # every row. scalar_one_or_none() raised MultipleResultsFound on that, which
+    # reached the caller as a 5xx instead of the 409 owed (upstream #3110).
     if normalized_tag_uid:
         conflict = await db.execute(
-            select(Spool).where(
+            select(Spool)
+            .where(
                 func.upper(Spool.tag_uid) == normalized_tag_uid,
                 Spool.id != spool_id,
                 Spool.archived_at.is_(None),
             )
+            .order_by(Spool.id)
         )
-        if conflict.scalar_one_or_none():
-            raise HTTPException(409, "Tag UID already linked to another active spool")
+        holder = conflict.scalars().first()
+        if holder:
+            raise tag_already_linked("tag_uid", holder.id)
         # Auto-clear from archived spools (tag recycling)
         archived_with_tag = await db.execute(
             select(Spool).where(
@@ -2816,14 +2954,17 @@ async def link_tag_to_spool(
 
     if normalized_tray_uuid:
         conflict = await db.execute(
-            select(Spool).where(
+            select(Spool)
+            .where(
                 func.upper(Spool.tray_uuid) == normalized_tray_uuid,
                 Spool.id != spool_id,
                 Spool.archived_at.is_(None),
             )
+            .order_by(Spool.id)
         )
-        if conflict.scalar_one_or_none():
-            raise HTTPException(409, "Tray UUID already linked to another active spool")
+        holder = conflict.scalars().first()
+        if holder:
+            raise tag_already_linked("tray_uuid", holder.id)
         archived_with_uuid = await db.execute(
             select(Spool).where(
                 func.upper(Spool.tray_uuid) == normalized_tray_uuid,

@@ -33,6 +33,8 @@ import { ColumnConfigModal, type ColumnConfig } from '../components/ColumnConfig
 import { LabelTemplatePickerModal } from '../components/LabelTemplatePickerModal';
 import { BulkEditSpoolsModal } from '../components/BulkEditSpoolsModal';
 import { LocationsModal } from '../components/LocationsModal';
+import { StorageLocationConditions } from '../components/zigbee/StorageLocationConditions';
+import { StorageConditionCell } from '../components/StorageConditionCell';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { resolveSpoolColorName } from '../utils/colors';
@@ -145,6 +147,7 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
  * and toggling Group ON resets an incompatible sort (never fire the 400).
  */
 const GROUP_SORT_COLUMNS = new Set(['display_name', 'material', 'brand', 'color_name']);
+const CONDITION_SORT_COLUMNS = new Set(['temperature', 'humidity', 'battery']);
 
 /**
  * Map a table column id to its server sort key.
@@ -187,6 +190,9 @@ const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: 'slicer_filament', label: 'Slicer Filament', visible: false },
   { id: 'location', label: 'Location', visible: true },
   { id: 'storage_location', label: 'Storage Location', visible: false },
+  { id: 'temperature', label: 'Temperature', visible: false },
+  { id: 'humidity', label: 'Humidity', visible: false },
+  { id: 'battery', label: 'Battery', visible: false },
   { id: 'purchase_location', label: 'Purchase Location', visible: false },
   { id: 'label_weight', label: 'Label', visible: true },
   { id: 'net', label: 'Net', visible: true },
@@ -359,6 +365,9 @@ const columnHeaders: Record<string, (t: TFn) => string> = {
   slicer_filament: (t) => t('inventory.columns.slicer_filament'),
   location: (t) => t('inventory.columns.location'),
   storage_location: (t) => t('inventory.storageLocation'),
+  temperature: (t) => t('inventory.temperature'),
+  humidity: (t) => t('inventory.humidity'),
+  battery: (t) => t('inventory.battery'),
   purchase_location: (t) => t('inventory.purchaseLocation'),
   label_weight: (t) => t('inventory.columns.label_weight'),
   net: (t) => t('inventory.columns.net'),
@@ -419,7 +428,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
     <span className="text-sm text-bambu-gray">{spool.subtype || '-'}</span>
   ),
   color_name: ({ spool }) => (
-    <span className="text-sm text-bambu-gray">{resolveSpoolColorName(spool.color_name, spool.rgba) || '-'}</span>
+    <span className="text-sm text-bambu-gray">{resolveSpoolColorName(spool.color_name, spool.rgba, spool.color_name_is_synthesized) || '-'}</span>
   ),
   // Merged cell for when both "rgba" swatch and "color_name" are visible —
   // see toRenderColumns(). Settings panel keeps the two separate entries so
@@ -432,7 +441,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
         title={spool.rgba ? `#${spool.rgba.substring(0, 6)}` : undefined}
       />
       <span className="text-sm text-bambu-gray truncate">
-        {resolveSpoolColorName(spool.color_name, spool.rgba) || '-'}
+        {resolveSpoolColorName(spool.color_name, spool.rgba, spool.color_name_is_synthesized) || '-'}
       </span>
     </div>
   ),
@@ -460,11 +469,20 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
   storage_location: ({ spool }) => {
     if (!spool.storage_location) return <span className="text-sm text-bambu-gray">-</span>;
     return (
-      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400">
-        {spool.storage_location}
+      <span className="inline-flex flex-wrap items-center gap-1">
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400">
+          {spool.storage_location}
+        </span>
+        {spool.location_id != null && <StorageLocationConditions locationId={spool.location_id} />}
       </span>
     );
   },
+  temperature: ({ spool }) => spool.location_id != null
+    ? <StorageConditionCell locationId={spool.location_id} category="temperature" /> : '—',
+  humidity: ({ spool }) => spool.location_id != null
+    ? <StorageConditionCell locationId={spool.location_id} category="humidity" /> : '—',
+  battery: ({ spool }) => spool.location_id != null
+    ? <StorageConditionCell locationId={spool.location_id} category="battery" /> : '—',
   purchase_location: ({ spool }) => {
     if (!spool.purchase_location) return <span className="text-sm text-bambu-gray">-</span>;
     return (
@@ -681,6 +699,12 @@ const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Re
     const expectedGross = Math.max(0, s.label_weight - s.weight_used) + s.core_weight;
     return Math.abs(s.last_scale_weight - expectedGross);
   },
+  // These markers enable the server sort; current storage values are resolved
+  // at request time, before pagination. They are deliberately disabled in
+  // client/Spoolman mode below, where this extractor cannot read sensor data.
+  temperature: () => 0,
+  humidity: () => 0,
+  battery: () => 0,
 };
 
 const SORT_STATE_KEY = 'bamdude-inventory-sort';
@@ -1012,8 +1036,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     if (!sortState) return undefined;
     const key = mapServerSortColumn(sortState.column);
     if (groupSimilar && !GROUP_SORT_COLUMNS.has(key)) return undefined;
+    if (CONDITION_SORT_COLUMNS.has(key) && !hasPermission('smart_sensors:read')) return undefined;
     return `${key}_${sortState.direction}`;
-  }, [sortState, groupSimilar]);
+  }, [sortState, groupSimilar, hasPermission]);
 
   // The filter params shared by the list, ids and label-set queries.
   // ⚠️ `archived` is ALWAYS sent: the paged branch ignores the legacy
@@ -1651,6 +1676,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // SQL as the behavioral spec in task 1). Spoolman proxies an external
   // system with its own API shape and deliberately keeps this path.
   const filteredSpools = useMemo(() => {
+    // The search below resolves colour names through the catalogue, which the
+    // linter cannot follow — named so the memo recomputes once it loads (#3090).
+    void colorCatalogVersion;
     let filtered = spoolmanMode ? spools || [] : [];
 
     // Archive filter
@@ -1689,7 +1717,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     // source of truth), so two near-identical hexes that map to the same
     // name (e.g. both "Black") filter together.
     if (colorFilter) {
-      filtered = filtered.filter((s) => resolveSpoolColorName(s.color_name, s.rgba) === colorFilter);
+      filtered = filtered.filter((s) => resolveSpoolColorName(s.color_name, s.rgba, s.color_name_is_synthesized) === colorFilter);
     }
 
     // Category dropdown (#729) — '__none__' picks uncategorised spools.
@@ -1755,6 +1783,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           s.brand?.toLowerCase().includes(q) ||
           s.material.toLowerCase().includes(q) ||
           s.color_name?.toLowerCase().includes(q) ||
+          // The name the list shows, not only the stored one (#3090).
+          resolveSpoolColorName(s.color_name, s.rgba, s.color_name_is_synthesized)?.toLowerCase().includes(q) ||
           s.subtype?.toLowerCase().includes(q) ||
           s.note?.toLowerCase().includes(q) ||
           s.slicer_filament_name?.toLowerCase().includes(q)
@@ -1763,7 +1793,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     }
 
     return filtered;
-  }, [spoolmanMode, spools, archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter, spoolFilter, storageLocationFilter, stockFilter, assignedFilter, assignmentMap, search, spoolDisplayTemplate, lowStockThreshold, storageLocations]);
+  }, [spoolmanMode, spools, archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter, spoolFilter, storageLocationFilter, stockFilter, assignedFilter, assignmentMap, search, spoolDisplayTemplate, lowStockThreshold, storageLocations, colorCatalogVersion]);
 
   // Reset page on filter changes
   const resetPage = () => setPageIndex(0);
@@ -1800,7 +1830,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     const set = new Set<string>();
     for (const s of spools || []) {
       if (s.archived_at) continue;
-      const name = resolveSpoolColorName(s.color_name, s.rgba);
+      const name = resolveSpoolColorName(s.color_name, s.rgba, s.color_name_is_synthesized);
       if (name) set.add(name);
     }
     return [...set].sort((a, b) => a.localeCompare(b));
@@ -1867,6 +1897,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
    */
   const isColumnSortable = (colId: string): boolean => {
     if (!columnSortValues[colId]) return false;
+    if (CONDITION_SORT_COLUMNS.has(colId)) return serverMode && !groupSimilar && hasPermission('smart_sensors:read');
     if (serverMode && groupSimilar) return GROUP_SORT_COLUMNS.has(mapServerSortColumn(colId));
     return true;
   };
@@ -2758,6 +2789,13 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             )}
           </Select>
         )}
+        {storageLocationFilter && storageLocationFilter !== '__none__' &&
+          Number.isFinite(Number(storageLocationFilter)) && (
+          <span className="inline-flex items-center gap-2 text-sm text-bambu-gray">
+            {t('locations.conditions')}
+            <StorageLocationConditions locationId={Number(storageLocationFilter)} />
+          </span>
+        )}
 
         {/* Spool name dropdown chip */}
         {/* `|| spoolFilter` — a restored filter whose catalog entry is gone
@@ -3294,7 +3332,7 @@ function SpoolCard({
     >
       <div className="h-14 flex items-center justify-center" style={{ backgroundColor: colorStyle }}>
         <span className="bg-white/90 text-gray-800 px-3 py-0.5 rounded-full text-sm font-medium">
-          {resolveSpoolColorName(spool.color_name, spool.rgba) || '-'}
+          {resolveSpoolColorName(spool.color_name, spool.rgba, spool.color_name_is_synthesized) || '-'}
         </span>
       </div>
       <div className="p-4 space-y-3">
@@ -3394,6 +3432,10 @@ function SpoolCard({
             {spool.note}
           </div>
         )}
+        {spool.location_id != null && <div className="flex flex-wrap items-center gap-2 text-xs text-bambu-gray">
+          <MapPin className="w-3 h-3" />{spool.storage_location}
+          <StorageLocationConditions locationId={spool.location_id} />
+        </div>}
       </div>
     </div>
   );
@@ -3457,7 +3499,7 @@ function SpoolCardGroup({
       >
         <div className="h-10 flex items-center px-4 gap-3" style={{ backgroundColor: colorStyle }}>
           <span className="bg-white/90 text-gray-800 px-3 py-0.5 rounded-full text-sm font-medium">
-            {resolveSpoolColorName(rep.color_name, rep.rgba) || '-'}
+            {resolveSpoolColorName(rep.color_name, rep.rgba, rep.color_name_is_synthesized) || '-'}
           </span>
         </div>
         <div className="px-4 py-3 flex items-center justify-between">

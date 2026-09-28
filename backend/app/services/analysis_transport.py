@@ -30,10 +30,10 @@ class AnalysisArtifact:
         return asdict(self)
 
     @classmethod
-    def parse(cls, data: dict, attempt_id: str):
+    def parse(cls, data: dict, attempt_id: str, suffix: str = "analysis"):
         if not isinstance(data, dict) or set(data) != {"key", "size", "digest"}:
             raise PreviewError("protocol_error")
-        if not _HEX.fullmatch(attempt_id) or data["key"] != f"{attempt_id}_analysis":
+        if not _HEX.fullmatch(attempt_id) or data["key"] != f"{attempt_id}_{suffix}":
             raise PreviewError("protocol_error")
         if type(data["size"]) is not int or not 0 < data["size"] <= ARTIFACT_BYTES:
             raise PreviewError("protocol_error")
@@ -65,7 +65,7 @@ class _AnalysisReader:
             self.stream.close()
 
 
-def describe(path: Path, attempt_id: str, deadline: int) -> AnalysisArtifact:
+def describe(path: Path, attempt_id: str, deadline: int, suffix: str = "analysis") -> AnalysisArtifact:
     digest = hashlib.sha256()
     size = 0
     with path.open("rb") as stream:
@@ -76,7 +76,7 @@ def describe(path: Path, attempt_id: str, deadline: int) -> AnalysisArtifact:
                 raise PreviewError("resource_limit")
             digest.update(block)
     return AnalysisArtifact.parse(
-        {"key": f"{attempt_id}_analysis", "size": size, "digest": digest.hexdigest()}, attempt_id
+        {"key": f"{attempt_id}_{suffix}", "size": size, "digest": digest.hexdigest()}, attempt_id, suffix
     )
 
 
