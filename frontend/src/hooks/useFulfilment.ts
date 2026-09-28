@@ -24,11 +24,3 @@ export function useStockOffers(orderId: number, enabled = true) {
     enabled,
   });
 }
-
-/** A customer's issues, one server page at a time. */
-export function useCustomerIssues(customerId: number, page: number, perPage: number) {
-  return useQuery({
-    queryKey: ['customer-issues', customerId, page, perPage],
-    queryFn: () => api.getCustomerIssues(customerId, { page, per_page: perPage }),
-  });
-}

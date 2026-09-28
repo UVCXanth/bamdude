@@ -181,6 +181,27 @@ describe('StockPage', () => {
     expect(screen.getByTestId('stock-adjust-submit')).toBeInTheDocument();
   });
 
+  it('the notes tab asks the server for one page and searches there', async () => {
+    // spec workshop-dispatch-notes, rule 20.
+    const getNotes = vi.spyOn(api, 'getDispatchNotes').mockResolvedValue({
+      items: [{
+        id: 7, code: 'DN-0007', created_at: '2026-09-28T10:00:00', project_id: 1, order_code: 'OR-0001',
+        order_name: 'Flasks', customer_id: 2, customer_name: 'ACME', units: 2, lines_count: 1,
+        summary: [{ product_name: 'Flask', part_name: null, quantity: 2 }], recipient_name: null,
+        recipient_phone: null, delivery_method: null, delivery_details: null, waybill: null, note: null,
+        created_by_name: 'olena',
+      }],
+      meta: { total: 1, current_page: 1, per_page: 24, last_page: 1 },
+    });
+    window.history.pushState({}, '', '/stock?tab=notes');
+    render(<StockPage />);
+    expect(await screen.findByRole('link', { name: 'DN-0007' })).toHaveAttribute('href', '/stock/dispatch-notes/7');
+    expect(screen.getByRole('tab', { name: 'Dispatch notes' })).toHaveAttribute('aria-selected', 'true');
+    expect(getNotes).toHaveBeenLastCalledWith({ sort_by: 'created-desc', page: 1, per_page: 24 });
+    fireEvent.change(screen.getByPlaceholderText(/Note, order, customer/), { target: { value: 'acme' } });
+    await waitFor(() => expect(getNotes).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'acme', page: 1 })));
+  });
+
   it('the journal tab reads both ledgers through the one endpoint', async () => {
     window.history.pushState({}, '', '/stock?tab=journal');
     render(<StockPage />);

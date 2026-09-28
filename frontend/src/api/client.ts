@@ -3150,6 +3150,8 @@ export interface FulfilmentResult {
   order: Order;
   /** The issue this batch opened; null when it issued nothing. */
   issue_id: number | null;
+  /** Its dispatch note, `DN-0042`. */
+  issue_code: string | null;
 }
 
 /** `GET /projects/{id}/stock-offers` — what the shelves could give for what nobody
@@ -3172,16 +3174,28 @@ export interface TakeStockResult {
   results: LineIntake[];
 }
 
-/** One issue on a customer's page (spec rule 22). */
+/** One line of «what was issued» in a list row. */
+export interface StockIssueSummaryLine {
+  product_name: string;
+  part_name: string | null;
+  quantity: number;
+}
+
+/** One issue = one dispatch note (spec workshop-dispatch-notes, rule 12) — its snapshot. */
 export interface StockIssueRow {
   id: number;
+  /** `DN-0042` — never built here. */
+  code: string;
   created_at: string;
-  /** null — a manual issue, without an order. */
+  /** null — a manual issue, or the order was deleted (`order_code` still says the basis). */
   project_id: number | null;
-  project_code: string | null;
+  order_code: string | null;
+  order_name: string | null;
   customer_id: number | null;
   customer_name: string;
   units: number;
+  lines_count: number;
+  summary: StockIssueSummaryLine[];
   recipient_name: string | null;
   recipient_phone: string | null;
   delivery_method: string | null;
@@ -3194,6 +3208,43 @@ export interface StockIssueRow {
 export interface StockIssuePage {
   items: StockIssueRow[];
   meta: PaginationMeta;
+}
+
+export interface DispatchNoteSupplier {
+  name: string;
+  address: string;
+  phone: string;
+  code: string;
+  iban: string;
+}
+
+export interface DispatchNoteLine {
+  position: number;
+  /** null — the product was deleted; the text stays. */
+  product_id: number | null;
+  product_name: string;
+  sku: string | null;
+  configuration: LineConfiguration;
+  /** A parts line's part; null for a product's row. */
+  part_name: string | null;
+  quantity: number;
+}
+
+/** `GET /stock-issues/{id}` — the document, drawn only from its snapshot. */
+export interface DispatchNote extends StockIssueRow {
+  supplier: DispatchNoteSupplier;
+  lines: DispatchNoteLine[];
+}
+
+/** `GET /stock-issues/` — every filter, the search and the sort run on the server. */
+export interface DispatchNotesParams {
+  q?: string;
+  customer_id?: number;
+  project_id?: number;
+  sort_by?: string;
+  page: number;
+  per_page?: number;
+  all?: boolean;
 }
 
 /** `PATCH /stock-issues/{id}` — the waybill (at most 24 characters) and the note. */
@@ -3264,6 +3315,9 @@ export interface StockItem {
  *  (a count that matched the shelf). */
 export interface StockMoveResult extends StockItem {
   moved: boolean;
+  /** An issue's dispatch note (spec workshop-dispatch-notes, rule 17). */
+  issue_id?: number | null;
+  issue_code?: string | null;
 }
 
 export interface StockItemsPage {
@@ -3383,6 +3437,8 @@ export interface StockJournalRow {
   note: string | null;
   customer: { id: number; name: string } | null;
   project: { id: number; code: string; name: string | null } | null;
+  /** The dispatch note of an issue movement. */
+  issue?: { id: number; code: string } | null;
   user: { id: number; username: string } | null;
 }
 
@@ -11771,10 +11827,14 @@ export const api = {
   getStockOffers: (orderId: number) => request<StockOffer[]>(`/projects/${orderId}/stock-offers`),
   takeStock: (orderId: number, body: TakeStockBody = {}) =>
     request<TakeStockResult>(`/projects/${orderId}/take-stock`, { method: 'POST', body: JSON.stringify(body) }),
-  getCustomerIssues: (customerId: number, params: { page: number; per_page: number }) =>
-    request<StockIssuePage>(
-      `/customers/${customerId}/issues?${new URLSearchParams({ page: String(params.page), per_page: String(params.per_page) })}`,
-    ),
+  getDispatchNotes: (params: DispatchNotesParams) => {
+    const search = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') search.set(key, String(value));
+    });
+    return request<StockIssuePage>(`/stock-issues/?${search}`);
+  },
+  getDispatchNote: (id: number) => request<DispatchNote>(`/stock-issues/${id}`),
   updateStockIssue: (id: number, body: StockIssueUpdate) =>
     request<StockIssueRow>(`/stock-issues/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   /** Many lines in one transaction; a refused line refuses the batch. */

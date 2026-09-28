@@ -29,6 +29,7 @@ import { ConfirmModal } from '../ConfirmModal';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
 import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 import { useOrderDetail } from '../../hooks/useOrderDetail';
+import { DispatchNotesSection } from '../stock/DispatchNotesSection';
 
 /**
  * One order: who it is for, what it asks for, and how much of it is printed.
@@ -242,6 +243,8 @@ export function OrderView({
       <OrderPrints order={order} canEdit={canEdit} />
 
       <OrderQueue orderId={order.id} />
+
+      <DispatchNotesSection projectId={order.id} canEdit={canEdit} hideWhenEmpty />
 
       <OrderTimeline orderId={order.id} />
 

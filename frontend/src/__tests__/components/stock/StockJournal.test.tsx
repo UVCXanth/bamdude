@@ -59,6 +59,14 @@ describe('StockJournal', () => {
     expect(within(part).getByText(/counted by the operator/)).toBeInTheDocument();
   });
 
+  it("links an issue's movement to its dispatch note", async () => {
+    // spec workshop-dispatch-notes, rule 23.
+    get.mockResolvedValue({ items: [{ ...page1.items[0], issue: { id: 7, code: 'DN-0007' } }], next_cursor: null });
+    render(<StockJournal />);
+    const row = await screen.findByTestId('journal-row-finished-4');
+    expect(within(row).getByRole('link', { name: 'DN-0007' })).toHaveAttribute('href', '/stock/dispatch-notes/7');
+  });
+
   it('a finished-goods note is shown as typed, even when it spells a server token', async () => {
     get.mockResolvedValue({
       items: [{ ...page1.items[0], note: 'assembled' }],

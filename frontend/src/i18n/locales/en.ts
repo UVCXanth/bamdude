@@ -6002,21 +6002,6 @@ export default {
   // status words from `orders.status.*` and its own figure-tile labels from
   // `customers.table.*` — the same counts under the same names in both places.
   customers: {
-    // spec workshop-order-issue, rule 22: a customer's issues.
-    issues: {
-      title: 'Issues',
-      empty: 'No issues yet.',
-      date: 'Date',
-      order: 'Order',
-      noOrder: 'without an order',
-      units: 'Units',
-      recipient: 'Recipient',
-      method: 'Delivery',
-      waybill: 'Waybill no.',
-      by: 'Issued by',
-      editWaybill: 'Edit the waybill',
-      items: 'issues',
-    },
     list: {
       title: 'Customers',
       subtitle: 'Contacts, agreements and order history',
@@ -6704,6 +6689,29 @@ export default {
       finished: 'Finished goods',
       parts: 'Free parts',
       journal: 'Movements',
+      notes: 'Dispatch notes',
+    },
+    // spec workshop-dispatch-notes, rules 20–22: the notes' table in three places.
+    notes: {
+      sectionTitle: 'Issues',
+      code: 'Note',
+      date: 'Date',
+      customer: 'Customer',
+      order: 'Order',
+      what: 'Issued',
+      units: 'Qty',
+      waybill: 'Waybill no.',
+      editWaybill: 'Edit the waybill',
+      by: 'Issued by',
+      noOrder: 'without an order',
+      more: '+{{count}} more',
+      partOf: '{{part}} — for {{product}}',
+      empty: 'No issues yet.',
+      emptyTab: 'No dispatch notes yet — each issue makes one.',
+      emptyFiltered: 'Nothing matches the search.',
+      search: 'Note, order, customer, product, SKU, waybill…',
+      items: 'notes',
+      error: 'Could not load the dispatch notes.',
     },
     finished: {
       product: 'Product',

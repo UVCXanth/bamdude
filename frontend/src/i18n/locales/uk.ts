@@ -6077,21 +6077,6 @@ export default {
   // status words from `orders.status.*` and its own figure-tile labels from
   // `customers.table.*` — the same counts under the same names in both places.
   customers: {
-    // spec workshop-order-issue, rule 22: видачі замовника.
-    issues: {
-      title: 'Видачі',
-      empty: 'Видач ще не було.',
-      date: 'Дата',
-      order: 'Замовлення',
-      noOrder: 'без замовлення',
-      units: 'Одиниць',
-      recipient: 'Одержувач',
-      method: 'Доставка',
-      waybill: 'Номер ТТН',
-      by: 'Видав',
-      editWaybill: 'Змінити ТТН',
-      items: 'видач',
-    },
     list: {
       title: 'Замовники',
       subtitle: 'Контакти, домовленості та історія замовлень',
@@ -6828,6 +6813,29 @@ export default {
       finished: 'Готові вироби',
       parts: 'Вільні деталі',
       journal: 'Журнал руху',
+      notes: 'Накладні',
+    },
+    // spec workshop-dispatch-notes, rules 20–22: таблиця накладних у трьох місцях.
+    notes: {
+      sectionTitle: 'Видачі',
+      code: 'Накладна',
+      date: 'Дата',
+      customer: 'Замовник',
+      order: 'Замовлення',
+      what: 'Що видано',
+      units: 'К-сть',
+      waybill: 'ТТН',
+      editWaybill: 'Змінити ТТН',
+      by: 'Видав',
+      noOrder: 'без замовлення',
+      more: 'ще {{count}}',
+      partOf: '{{part}} — до виробу {{product}}',
+      empty: 'Видач ще не було.',
+      emptyTab: 'Накладних ще немає — кожна видача оформлює свою.',
+      emptyFiltered: 'За пошуком нічого не знайдено.',
+      search: 'Накладна, замовлення, замовник, виріб, артикул, ТТН…',
+      items: 'накладних',
+      error: 'Не вдалося завантажити накладні.',
     },
     finished: {
       product: 'Виріб',

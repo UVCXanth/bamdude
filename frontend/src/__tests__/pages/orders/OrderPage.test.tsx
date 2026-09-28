@@ -172,8 +172,48 @@ describe('OrderPage', () => {
     vi.spyOn(api, 'getFulfilment').mockResolvedValue(fulfilmentState);
     vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
     vi.spyOn(api, 'getStockOffers').mockResolvedValue([]);
-    vi.spyOn(api, 'fulfilOrder').mockResolvedValue({ order: { ...order, status: 'completed' } as never, issue_id: 1 });
+    vi.spyOn(api, 'fulfilOrder').mockResolvedValue({
+      order: { ...order, status: 'completed' } as never,
+      issue_id: 1,
+      issue_code: 'DN-0001',
+    });
+    vi.spyOn(api, 'getDispatchNotes').mockResolvedValue({
+      items: [],
+      meta: { total: 0, current_page: 1, per_page: 20, last_page: 1 },
+    });
   });
+
+  it("lists the order's dispatch notes, and draws nothing while there are none", async () => {
+    // spec workshop-dispatch-notes, rule 21.
+    vi.spyOn(api, 'getOrder').mockResolvedValue(order as never);
+    window.history.pushState({}, '', '/projects/1');
+    const { unmount } = render(
+      <Routes>
+        <Route path="/projects/:id" element={<OrderPage />} />
+      </Routes>,
+    );
+    expect(await screen.findByText('Flask')).toBeInTheDocument();
+    await waitFor(() => expect(api.getDispatchNotes).toHaveBeenCalledWith(expect.objectContaining({ project_id: 1 })));
+    expect(screen.queryByTestId('dispatch-notes-section')).not.toBeInTheDocument();
+    unmount();
+
+    vi.spyOn(api, 'getDispatchNotes').mockResolvedValue({
+      items: [{
+        id: 7, code: 'DN-0007', created_at: '2026-09-28T10:00:00', project_id: 1, order_code: 'OR-0001',
+        order_name: 'Flasks', customer_id: 2, customer_name: 'ACME', units: 2, lines_count: 1,
+        summary: [{ product_name: 'Flask', part_name: null, quantity: 2 }], recipient_name: null,
+        recipient_phone: null, delivery_method: null, delivery_details: null, waybill: null, note: null,
+        created_by_name: 'olena',
+      }],
+      meta: { total: 1, current_page: 1, per_page: 20, last_page: 1 },
+    });
+    render(
+      <Routes>
+        <Route path="/projects/:id" element={<OrderPage />} />
+      </Routes>,
+    );
+    expect(await screen.findByRole('link', { name: 'DN-0007' })).toHaveAttribute('href', '/stock/dispatch-notes/7');
+  }, 15_000);
 
   it('offers a read-only viewer no way to change a line', async () => {
     // The NEGATIVE half of the lines table's permission gate, which nothing

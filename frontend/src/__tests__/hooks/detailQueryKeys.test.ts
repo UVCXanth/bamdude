@@ -49,7 +49,9 @@ const OWNER: Record<string, string> = {
   // header and banner, and the order form all read one order's state.
   'project-fulfilment': 'hooks/useFulfilment.ts',
   'project-stock-offers': 'hooks/useFulfilment.ts',
-  'customer-issues': 'hooks/useFulfilment.ts',
+  // Dispatch notes (spec workshop-dispatch-notes): the three lists and the document.
+  'dispatch-notes': 'hooks/useDispatchNotes.ts',
+  'dispatch-note': 'hooks/useDispatchNotes.ts',
 };
 
 /** The invalidation helper is allowed to spell any key out; it observes none.

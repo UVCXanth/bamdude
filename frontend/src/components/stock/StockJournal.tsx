@@ -228,6 +228,11 @@ function JournalContext({ row }: { row: StockJournalRow }) {
         {row.project.code}
       </Link>
     ) : null,
+    row.issue ? (
+      <Link key="dispatch-note" to={`/stock/dispatch-notes/${row.issue.id}`} className="text-bambu-green hover:underline">
+        {row.issue.code}
+      </Link>
+    ) : null,
     row.customer ? <span key="customer">{row.customer.name}</span> : null,
     note ? <span key="note" className="text-bambu-gray">{note}</span> : null,
   ].filter(Boolean);

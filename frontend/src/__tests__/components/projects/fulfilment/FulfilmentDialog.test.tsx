@@ -108,7 +108,7 @@ describe('FulfilmentDialog', () => {
       { id: 1, name: 'Nova Poshta', position: 0, contacts_count: 1 },
       { id: 2, name: 'Pickup', position: 1, contacts_count: 0 },
     ]);
-    fulfil = vi.spyOn(api, 'fulfilOrder').mockResolvedValue({ order: { id: 5 } as never, issue_id: 12 });
+    fulfil = vi.spyOn(api, 'fulfilOrder').mockResolvedValue({ order: { id: 5 } as never, issue_id: 12, issue_code: 'DN-0012' });
   });
 
   it('shows one row per line with the server numbers and expands a parts line', async () => {
@@ -245,7 +245,7 @@ describe('FulfilmentDialog · write-offs and closing to stock', () => {
   it('writing off asks for a note and sends it', async () => {
     const shelf = { ...state, lines: [{ ...state.lines[0], can_assemble: 0, can_receive: 0, held: 4 }] };
     vi.spyOn(api, 'getFulfilment').mockResolvedValue(shelf);
-    const fulfil = vi.spyOn(api, 'fulfilOrder').mockResolvedValue({ order: { id: 5 } as never, issue_id: null });
+    const fulfil = vi.spyOn(api, 'fulfilOrder').mockResolvedValue({ order: { id: 5 } as never, issue_id: null, issue_code: null });
     render(<FulfilmentDialog orderId={5} mode="receive" onClose={() => {}} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Write off…' }));
     fireEvent.change(screen.getByLabelText('Write off — Pipe'), { target: { value: '1' } });
@@ -306,7 +306,7 @@ describe('FulfilmentDialog · closing the write-off column', () => {
   it('drops what was typed there, so nothing hidden is written off', async () => {
     const shelf = { ...state, lines: [{ ...state.lines[0], can_assemble: 0, can_receive: 0, held: 4 }] };
     vi.spyOn(api, 'getFulfilment').mockResolvedValue(shelf);
-    const fulfil = vi.spyOn(api, 'fulfilOrder').mockResolvedValue({ order: { id: 5 } as never, issue_id: 3 });
+    const fulfil = vi.spyOn(api, 'fulfilOrder').mockResolvedValue({ order: { id: 5 } as never, issue_id: 3, issue_code: 'DN-0003' });
     render(<FulfilmentDialog orderId={5} onClose={() => {}} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Write off…' }));
     fireEvent.change(screen.getByLabelText('Write off — Pipe'), { target: { value: '1' } });

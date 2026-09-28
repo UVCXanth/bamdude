@@ -16,6 +16,8 @@ import { FinishedTiles } from '../../components/stock/FinishedTiles';
 import { StockDialogs } from '../../components/stock/StockDialogs';
 import type { StockDialogState } from '../../components/stock/StockDialogs';
 import { StockJournal } from '../../components/stock/StockJournal';
+import { DispatchNotesTable } from '../../components/stock/DispatchNotesTable';
+import { useDispatchNotes } from '../../hooks/useDispatchNotes';
 import { StockProductsTable } from '../../components/stock/StockProductsTable';
 import { StockTiles } from '../../components/stock/StockTiles';
 import { useListUrlState } from '../../hooks/useListUrlState';
@@ -25,7 +27,7 @@ import { useStockItems } from '../../hooks/useFinishedStock';
 import { useStockPage } from '../../hooks/useStock';
 import { invalidateStock } from '../../utils/queryInvalidation';
 
-const TABS = ['finished', 'parts', 'journal'] as const;
+const TABS = ['finished', 'parts', 'journal', 'notes'] as const;
 type StockTab = (typeof TABS)[number];
 const MODES: StockItemsMode[] = ['tracked', 'low', 'reserved', 'all'];
 
@@ -59,6 +61,7 @@ export function StockPage() {
     finished: t('stock.tabs.finished'),
     parts: t('stock.tabs.parts'),
     journal: t('stock.tabs.journal'),
+    notes: t('stock.tabs.notes'),
   };
 
   return (
@@ -102,9 +105,91 @@ export function StockPage() {
       {tab === 'finished' && <FinishedTab onDialog={setDialog} />}
       {tab === 'parts' && <PartsTab />}
       {tab === 'journal' && <StockJournal />}
+      {tab === 'notes' && <NotesTab />}
 
       <StockDialogs dialog={dialog} onClose={() => setDialog(null)} />
     </div>
+  );
+}
+
+/** Dispatch notes of the whole farm — searched, sorted and paged on the server (spec workshop-dispatch-notes, rule 20). */
+function NotesTab() {
+  const { t } = useTranslation();
+  const { hasPermission } = useAuth();
+  const { page, q, sort, setPage, setQ, setSort, resetFilters, clampToLastPage } = useListUrlState({
+    defaults: { sort: 'created-desc' },
+  });
+  const { typed, setTyped, forget } = useSearchBox(q, setQ);
+  const [perPage, setPerPage] = usePersistedState<number>('bamdude-dispatch-notes-perPage', 24, parsePageSize);
+  const { data, isError, isPlaceholderData } = useDispatchNotes({
+    ...(q ? { q } : {}),
+    sort_by: sort,
+    page,
+    ...(perPage === -1 ? { all: true } : { per_page: perPage }),
+  });
+  useEffect(() => {
+    if (data && !isPlaceholderData) clampToLastPage(data.meta.last_page);
+  }, [data, isPlaceholderData, clampToLastPage]);
+  const total = data?.meta.total ?? 0;
+
+  return (
+    <>
+      <div className="flex items-center gap-3 flex-wrap mb-4">
+        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('stock.notes.search')} />
+      </div>
+      {!data ? (
+        isError ? (
+          <p className="text-sm text-red-500" data-testid="notes-error">{t('stock.notes.error')}</p>
+        ) : (
+          <p className="flex items-center gap-2 text-sm text-bambu-gray"><Loader2 className="w-4 h-4 animate-spin" />{t('common.loading')}</p>
+        )
+      ) : total === 0 ? (
+        q ? (
+          <div className="flex items-center gap-3 text-sm text-bambu-gray" data-testid="notes-empty">
+            <span>{t('stock.notes.emptyFiltered')}</span>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                forget();
+                resetFilters();
+              }}
+            >
+              {t('list.empty.reset')}
+            </Button>
+          </div>
+        ) : (
+          <p className="text-sm text-bambu-gray" data-testid="notes-empty">{t('stock.notes.emptyTab')}</p>
+        )
+      ) : (
+        <div
+          data-testid="list-body"
+          aria-busy={isPlaceholderData}
+          className={`transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
+        >
+          <DispatchNotesTable
+            items={data.items}
+            sort={sort}
+            onSortChange={setSort}
+            canEdit={hasPermission('projects:update')}
+            footer={
+              <PaginationBar
+                page={data.meta.current_page}
+                totalPages={data.meta.last_page}
+                perPage={perPage}
+                total={total}
+                onPageChange={setPage}
+                onPerPageChange={(n) => {
+                  setPerPage(n);
+                  setPage(1);
+                }}
+                items={t('stock.notes.items')}
+                variant="card"
+              />
+            }
+          />
+        </div>
+      )}
+    </>
   );
 }
 

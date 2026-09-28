@@ -112,7 +112,7 @@ describe('CustomerPage', () => {
     vi.restoreAllMocks();
     localStorage.clear();
     // The page lists the customer's issues too (spec workshop-order-issue, rule 30).
-    vi.spyOn(api, 'getCustomerIssues').mockResolvedValue({
+    vi.spyOn(api, 'getDispatchNotes').mockResolvedValue({
       items: [],
       meta: { total: 0, current_page: 1, per_page: 20, last_page: 1 },
     });
