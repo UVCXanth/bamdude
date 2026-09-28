@@ -2841,8 +2841,13 @@ export type StockNoteToken = (typeof STOCK_NOTE_TOKENS)[number];
 export interface StockBalance {
   part_id: number;
   name: string;
+  /** 0 = out of the kit: the part has a shelf but makes no kit (spec
+   *  workshop-order-issue-followups, rule 34). */
   qty_per_unit: number;
   balance: number;
+  /** Held by orders' parts lines — neither free nor reserved (followups, rule 49).
+   *  Sent by `GET /products/{id}/stock`; the stock tab's rows leave it null. */
+  held_for_orders?: number | null;
 }
 
 /**

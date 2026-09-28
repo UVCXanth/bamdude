@@ -833,6 +833,24 @@ def part_held(row: ProjectLinePartStock) -> int:
     return row.received - row.issued - row.returned - row.written_off
 
 
+async def held_for_orders(db: AsyncSession, product_id: int) -> dict[int, int]:
+    """``part_id → parts its orders' parts lines hold on the shelf`` (spec
+    workshop-order-issue-followups, rule 49) — neither free nor a kit reservation; one read."""
+    held = (
+        ProjectLinePartStock.received
+        - ProjectLinePartStock.issued
+        - ProjectLinePartStock.returned
+        - ProjectLinePartStock.written_off
+    )
+    rows = await db.execute(
+        select(ProjectLinePartStock.part_id, func.sum(held))
+        .join(ProductPart, ProductPart.id == ProjectLinePartStock.part_id)
+        .where(ProductPart.product_id == product_id)
+        .group_by(ProjectLinePartStock.part_id)
+    )
+    return {part_id: int(total) for part_id, total in rows.all() if (total or 0) > 0}
+
+
 async def line_part_stock(db: AsyncSession, line_ids: Sequence[int]) -> dict[int, dict[int, ProjectLinePartStock]]:
     """``line_id → {part_id → counters}`` for many parts lines — one statement."""
     ids = sorted(set(line_ids))

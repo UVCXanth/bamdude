@@ -564,6 +564,10 @@ class StockBalanceOut(BaseModel):
     name: str
     qty_per_unit: int
     balance: int
+    #: Held by orders' parts lines — neither free nor reserved (spec
+    #: workshop-order-issue-followups, rule 49). Only the product page's stock asks it;
+    #: the stock tab's rows leave it null rather than claim a zero nobody counted.
+    held_for_orders: int | None = None
 
 
 class ProductKitsOut(BaseModel):

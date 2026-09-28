@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
@@ -431,5 +431,29 @@ describe('ProductStock', () => {
         expect(bundle.stock.reason[reason]).toBeTruthy();
       }
     }
+  });
+});
+
+describe('ProductStock · parts held for orders and parts out of the kit', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // spec workshop-order-issue-followups, rules 34 and 49.
+  it('shows what orders hold and puts out-of-kit parts in their own group', async () => {
+    vi.spyOn(api, 'getProductStock').mockResolvedValue({
+      balances: [
+        { part_id: 1, name: 'shade', qty_per_unit: 1, balance: 4, held_for_orders: 3 },
+        { part_id: 2, name: 'handle', qty_per_unit: 0, balance: 5, held_for_orders: 0 },
+      ],
+      kits_available: 4,
+      movements: [],
+    });
+    render(<ProductStock productId={5} canEdit={false} />);
+    expect(await screen.findByTestId('stock-held-1')).toHaveTextContent('3');
+    const group = screen.getByTestId('stock-out-of-kit');
+    expect(within(group).getByText('Out of kit')).toBeInTheDocument();
+    expect(within(group).getByText('handle')).toBeInTheDocument();
+    expect(within(group).queryByText('shade')).not.toBeInTheDocument();
   });
 });

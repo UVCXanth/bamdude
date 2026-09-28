@@ -6505,6 +6505,8 @@ export default {
     part: 'Part',
     perUnit: 'Per unit',
     balance: 'On the shelf',
+    heldForOrders: 'Held for orders',
+    outOfKit: 'Out of kit',
     movements: 'Movements',
     noMovements: 'Nothing has moved yet.',
     showingLast_one: 'Showing the last {{count}} movement.',

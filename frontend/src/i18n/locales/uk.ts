@@ -6619,6 +6619,8 @@ export default {
     part: 'Деталь',
     perUnit: 'На виріб',
     balance: 'На полиці',
+    heldForOrders: 'Під замовленнями',
+    outOfKit: 'Поза комплектом',
     movements: 'Рухи',
     noMovements: 'Рухів поки не було.',
     showingLast_one: 'Показано останній {{count}} рух.',

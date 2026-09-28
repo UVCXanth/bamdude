@@ -1593,6 +1593,7 @@ async def get_product_stock(
     """
     product = await _get(db, product_id)
     part_balances = await part_stock.balances(db, product.id)
+    held = await part_stock.held_for_orders(db, product.id)
     rows = await part_stock.movements(db, product.id, limit=limit)
     # Every movement's part is one of this product's own — ``part_stock.movements``
     # joins ``product_parts`` on this very product — so the names cost nothing.
@@ -1600,7 +1601,13 @@ async def get_product_stock(
     orders = await orders_of_lines(db, {r.project_line_id for r in rows if r.project_line_id is not None})
     return ProductStockOut(
         balances=[
-            StockBalanceOut(part_id=p.id, name=p.name, qty_per_unit=p.qty_per_unit, balance=part_balances[p.id])
+            StockBalanceOut(
+                part_id=p.id,
+                name=p.name,
+                qty_per_unit=p.qty_per_unit,
+                balance=part_balances[p.id],
+                held_for_orders=held.get(p.id, 0),
+            )
             for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))
             if p.id in part_balances
         ],

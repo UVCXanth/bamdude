@@ -159,3 +159,21 @@ async def test_the_add_to_order_parts_list_leaves_ignored_parts_out(committing_c
     assert r.status_code == 200, r.text
     names = {row["name"] for row in r.json()["items"]}
     assert {"shade", "handle"} <= names and "cube" not in names
+
+
+@pytest.mark.asyncio
+async def test_the_product_page_shows_what_orders_hold(committing_client, db_session, lamp):
+    # spec workshop-order-issue-followups, rule 49.
+    order = Project(name="O")
+    db_session.add(order)
+    await db_session.flush()
+    line = ProjectLine(project_id=order.id, product_id=lamp["product"].id, quantity=1, mode="parts")
+    db_session.add(line)
+    await db_session.flush()
+    await line_config.seed_line(db_session, line, choices=None, counts={lamp["handle"].id: 2})
+    await part_stock.receive_parts_for_line(db_session, line, {lamp["handle"].id: 2}, created_by=None)
+    await db_session.commit()
+    r = await committing_client.get(f"/api/v1/products/{lamp['product'].id}/stock")
+    assert r.status_code == 200, r.text
+    rows = {row["name"]: (row["qty_per_unit"], row["balance"], row["held_for_orders"]) for row in r.json()["balances"]}
+    assert rows == {"shade": (1, 0, 0), "handle": (0, 0, 2)}

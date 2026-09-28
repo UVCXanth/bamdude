@@ -55,6 +55,8 @@ export function ProductStock({ productId, canEdit }: ProductStockProps) {
   const dateFormat = (settings?.date_format || 'system') as DateFormat;
 
   const balances = data?.balances ?? [];
+  const inKit = balances.filter((b) => b.qty_per_unit > 0);
+  const outOfKit = balances.filter((b) => b.qty_per_unit === 0);
   const movements = data?.movements ?? [];
 
   // ⚠️ **One query, so ONE unsettled state for the whole section.** The shelf
@@ -120,28 +122,66 @@ export function ProductStock({ productId, canEdit }: ProductStockProps) {
           </p>
           <p className="text-xs text-bambu-gray">{t('stock.kitsHint')}</p>
 
-          <div className="overflow-x-auto rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-xs text-bambu-gray text-left">
-                  <th className="font-normal p-2">{t('stock.part')}</th>
-                  <th className="font-normal p-2">{t('stock.perUnit')}</th>
-                  <th className="font-normal p-2">{t('stock.balance')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {balances.map((b) => (
-                  <tr key={b.part_id} className="border-t border-bambu-dark-tertiary text-white">
-                    <td className="p-2">{b.name}</td>
-                    <td className="p-2 tabular-nums">{b.qty_per_unit}</td>
-                    <td className="p-2 tabular-nums" data-testid={`stock-balance-${b.part_id}`}>
-                      {b.balance}
-                    </td>
+          {inKit.length > 0 && (
+            <div className="overflow-x-auto rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-bambu-gray text-left">
+                    <th className="font-normal p-2">{t('stock.part')}</th>
+                    <th className="font-normal p-2">{t('stock.perUnit')}</th>
+                    <th className="font-normal p-2">{t('stock.balance')}</th>
+                    <th className="font-normal p-2">{t('stock.heldForOrders')}</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {inKit.map((b) => (
+                    <tr key={b.part_id} className="border-t border-bambu-dark-tertiary text-white">
+                      <td className="p-2">{b.name}</td>
+                      <td className="p-2 tabular-nums">{b.qty_per_unit}</td>
+                      <td className="p-2 tabular-nums" data-testid={`stock-balance-${b.part_id}`}>
+                        {b.balance}
+                      </td>
+                      <td className="p-2 tabular-nums" data-testid={`stock-held-${b.part_id}`}>
+                        {b.held_for_orders ?? 0}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* A zero in the kit is a part out of the kit: it has a shelf and makes no kit
+              (spec workshop-order-issue-followups, rule 34) — its own group, no per-unit column. */}
+          {outOfKit.length > 0 && (
+            <div className="space-y-1" data-testid="stock-out-of-kit">
+              <h4 className="text-xs text-bambu-gray">{t('stock.outOfKit')}</h4>
+              <div className="overflow-x-auto rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-bambu-gray text-left">
+                      <th className="font-normal p-2">{t('stock.part')}</th>
+                      <th className="font-normal p-2">{t('stock.balance')}</th>
+                      <th className="font-normal p-2">{t('stock.heldForOrders')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {outOfKit.map((b) => (
+                      <tr key={b.part_id} className="border-t border-bambu-dark-tertiary text-white">
+                        <td className="p-2">{b.name}</td>
+                        <td className="p-2 tabular-nums" data-testid={`stock-balance-${b.part_id}`}>
+                          {b.balance}
+                        </td>
+                        <td className="p-2 tabular-nums" data-testid={`stock-held-${b.part_id}`}>
+                          {b.held_for_orders ?? 0}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
