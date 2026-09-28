@@ -13,7 +13,7 @@ from backend.app.models.location_ha_sensor import LocationHASensor
 from backend.app.models.location_sensor_primary import LocationSensorPrimary
 from backend.app.models.printer_ha_sensor import PrinterHASensor
 
-version = 190
+version = 188
 name = "home_assistant_sensor_bindings"
 
 
