@@ -82,6 +82,10 @@ add here while the branch is unreleased:
   ``stock_issue_lines`` hold its snapshot (only services/stock_issues.py writes them).
 """
 
+import json
+
+from sqlalchemy import text
+
 from backend.app.migrations.helpers import add_column, column_exists, table_exists
 
 version = 188
@@ -476,6 +480,107 @@ async def upgrade(conn):
     if await column_exists(conn, "product_parts", "ignored") and await column_exists(conn, "product_parts", "kind"):
         await conn.exec_driver_sql(
             "UPDATE product_parts SET ignored = FALSE WHERE ignored = TRUE AND kind <> 'printed'"
+        )
+
+    # WS-12 (spec workshop-dispatch-notes, rule 4): every issue written before the note existed
+    # gets its lines once — from its movements, with today's names; the configuration is not
+    # rebuilt (only dev databases hold WS-11 issues). An issue that has lines is left alone.
+    if await table_exists(conn, "stock_issue_lines"):
+        await _backfill_dispatch_notes(conn)
+
+
+_SUPPLIER_KEYS = ("name", "address", "phone", "code", "iban")
+
+
+async def _backfill_dispatch_notes(conn):
+    """Named columns only — never models: this migration is frozen once released."""
+    issues = (
+        await conn.execute(
+            text(
+                "SELECT id, project_id, created_by FROM stock_issues"
+                " WHERE id NOT IN (SELECT issue_id FROM stock_issue_lines) ORDER BY id"
+            )
+        )
+    ).all()
+    if not issues:
+        return
+    supplier = dict.fromkeys(_SUPPLIER_KEYS, "")
+    if await table_exists(conn, "settings"):
+        for key, value in (
+            await conn.execute(text("SELECT key, value FROM settings WHERE key LIKE 'document_supplier_%'"))
+        ).all():
+            short = key.removeprefix("document_supplier_")
+            if short in supplier:
+                supplier[short] = (value or "").strip()
+    finished_rows = await column_exists(conn, "stock_item_movements", "stock_issue_id")
+    parts_rows = await column_exists(conn, "product_part_stock_movements", "stock_issue_id")
+    for issue_id, project_id, created_by in issues:
+        rows = []
+        if finished_rows:
+            rows += (
+                await conn.execute(
+                    text(
+                        "SELECT p.id, p.name, p.sku, NULL, -SUM(m.delta_on_hand) FROM stock_item_movements m"
+                        " JOIN stock_items i ON i.id = m.item_id JOIN products p ON p.id = i.product_id"
+                        " WHERE m.stock_issue_id = :issue GROUP BY m.item_id, p.id, p.name, p.sku"
+                        " ORDER BY MIN(m.id)"
+                    ),
+                    {"issue": issue_id},
+                )
+            ).all()
+        if parts_rows:
+            rows += (
+                await conn.execute(
+                    text(
+                        "SELECT p.id, p.name, p.sku, pp.name, -SUM(m.delta) FROM product_part_stock_movements m"
+                        " JOIN product_parts pp ON pp.id = m.product_part_id JOIN products p ON p.id = pp.product_id"
+                        " WHERE m.stock_issue_id = :issue AND m.reason = 'issued_for_order'"
+                        " GROUP BY m.product_part_id, p.id, p.name, p.sku, pp.name ORDER BY MIN(m.id)"
+                    ),
+                    {"issue": issue_id},
+                )
+            ).all()
+        rows = [row for row in rows if (row[4] or 0) > 0]
+        for position, (product_id, name, sku, part_name, quantity) in enumerate(rows, start=1):
+            await conn.execute(
+                text(
+                    "INSERT INTO stock_issue_lines"
+                    " (issue_id, position, product_id, product_name, sku, configuration, part_name, quantity)"
+                    " VALUES (:issue, :position, :product, :name, :sku, '{}', :part, :quantity)"
+                ),
+                {
+                    "issue": issue_id,
+                    "position": position,
+                    "product": product_id,
+                    "name": name,
+                    "sku": sku,
+                    "part": part_name,
+                    "quantity": int(quantity),
+                },
+            )
+        who = None
+        if created_by is not None:
+            who = (await conn.execute(text("SELECT username FROM users WHERE id = :id"), {"id": created_by})).scalar()
+        order_name = None
+        if project_id is not None:
+            order_name = (
+                await conn.execute(text("SELECT name FROM projects WHERE id = :id"), {"id": project_id})
+            ).scalar()
+        # OR-%04d is entity_codes.code_for's format, spelled out: a frozen migration must not
+        # follow a later change of the code.
+        await conn.execute(
+            text(
+                "UPDATE stock_issues SET units = :units, created_by_name = :who, supplier = :supplier,"
+                " order_code = :code, order_name = :order_name WHERE id = :issue"
+            ),
+            {
+                "units": sum(int(row[4]) for row in rows),
+                "who": who,
+                "supplier": json.dumps(supplier, ensure_ascii=False),
+                "code": f"OR-{project_id:04d}" if project_id is not None else None,
+                "order_name": order_name,
+                "issue": issue_id,
+            },
         )
 
 

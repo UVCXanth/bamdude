@@ -299,3 +299,72 @@ async def test_the_dispatch_note_schema(engine):
                     " VALUES (1, 1, 'Lamp', '{}', 0)"
                 )
             )
+
+
+@pytest.mark.asyncio
+async def test_existing_issues_get_their_notes_once(engine):
+    # spec workshop-dispatch-notes, rule 4: lines from the movements, today's names, configuration {}.
+    async with engine.begin() as conn:
+        for ddl in (
+            "CREATE TABLE products (id INTEGER PRIMARY KEY, name VARCHAR(255))",
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, name VARCHAR(255))",
+            "CREATE TABLE settings (id INTEGER PRIMARY KEY, key VARCHAR(100), value TEXT)",
+            "CREATE TABLE product_parts (id INTEGER PRIMARY KEY, product_id INTEGER, name VARCHAR(512),"
+            " kind VARCHAR(16) NOT NULL DEFAULT 'printed', qty_per_unit INTEGER NOT NULL DEFAULT 1)",
+            "CREATE TABLE product_part_stock_movements (id INTEGER PRIMARY KEY, product_part_id INTEGER,"
+            " delta INTEGER NOT NULL DEFAULT 0, reason VARCHAR(32))",
+        ):
+            await conn.execute(text(ddl))
+    await _run(engine)  # creates stock_items / stock_item_movements / stock_issues on this schema
+    async with engine.begin() as conn:
+        await conn.execute(text("INSERT INTO products (id, name, sku) VALUES (1, 'Lamp', 'LMP-1'), (2, 'Pipe', NULL)"))
+        await conn.execute(text("INSERT INTO product_parts (id, product_id, name) VALUES (7, 2, 'flask')"))
+        await conn.execute(text("INSERT INTO users (id, username) VALUES (3, 'clerk')"))
+        await conn.execute(text("INSERT INTO settings (key, value) VALUES ('document_supplier_name', 'Workshop')"))
+        await conn.execute(text("INSERT INTO stock_items (id, product_id, config_key) VALUES (5, 1, '')"))
+        await conn.execute(
+            text("INSERT INTO stock_issues (id, project_id, customer_name, created_by) VALUES (1, 1, 'Acme', 3)")
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO stock_item_movements (item_id, kind, delta_on_hand, delta_reserved, stock_issue_id)"
+                " VALUES (5, 'issue', -2, -2, 1), (5, 'issue', -1, -1, 1)"
+            )
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO product_part_stock_movements (product_part_id, delta, reason, stock_issue_id)"
+                " VALUES (7, 4, 'hold_released', 1), (7, -4, 'issued_for_order', 1)"
+            )
+        )
+        # An issue that already has its note is left alone.
+        await conn.execute(text("INSERT INTO stock_issues (id, customer_name, units) VALUES (2, 'Beta', 9)"))
+        await conn.execute(
+            text(
+                "INSERT INTO stock_issue_lines (issue_id, position, product_name, configuration, quantity)"
+                " VALUES (2, 1, 'Kept', '{}', 9)"
+            )
+        )
+    await _run(engine)
+    await _run(engine)  # idempotent: nothing doubles
+    async with engine.connect() as conn:
+        lines = (
+            await conn.execute(
+                text(
+                    "SELECT issue_id, position, product_id, product_name, sku, part_name, quantity, configuration"
+                    " FROM stock_issue_lines ORDER BY issue_id, position"
+                )
+            )
+        ).all()
+        assert [tuple(r) for r in lines] == [
+            (1, 1, 1, "Lamp", "LMP-1", None, 3, "{}"),
+            (1, 2, 2, "Pipe", None, "flask", 4, "{}"),
+            (2, 1, None, "Kept", None, None, 9, "{}"),
+        ]
+        issue = (
+            await conn.execute(
+                text("SELECT units, created_by_name, order_code, order_name, supplier FROM stock_issues WHERE id = 1")
+            )
+        ).one()
+        assert tuple(issue[:4]) == (7, "clerk", "OR-0001", "A")
+        assert '"name": "Workshop"' in issue[4]
