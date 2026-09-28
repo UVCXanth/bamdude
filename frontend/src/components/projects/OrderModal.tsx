@@ -122,11 +122,12 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
   // before `/auth/me` answers. An edit starts from the order's own value.
   const { user } = useAuth();
   const { data: assignees = [] } = useQuery({ queryKey: ['order-assignees'], queryFn: api.getOrderAssignees });
-  // An active order completes only fully issued (spec workshop-order-issue, rule 12): the
-  // option stays offered but closed until the issue state says so.
+  // An active order completes only fully issued (spec workshop-order-issue, rule 12) — or,
+  // without a customer, fully on the shelf (followups, rule 36): the option stays offered but
+  // closed until the server's `can_complete` says so.
   const activeId = order && order.status === 'active' ? order.id : null;
   const { data: fulfilment } = useFulfilment(activeId);
-  const completeRefused = activeId != null && !fulfilment?.fully_issued;
+  const completeRefused = activeId != null && !fulfilment?.can_complete;
   const responsibleFieldId = useId();
   const initialResponsibleId = order ? (order.responsible_id ?? null) : null;
   const [responsibleChoice, setResponsibleChoice] = useState<number | null | undefined>(

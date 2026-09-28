@@ -56,3 +56,17 @@ describe('the order journal · stock and issue', () => {
     );
   });
 });
+
+describe('the order journal · write-offs and closing to stock', () => {
+  it('says what was written off and what went to free stock', () => {
+    expect(journalText(event('goods_written_off', { line_id: 1, product: 'Pipe', units: 1, note: 'dropped' }), t)).toBe(
+      'Pipe: written off — 1 (dropped)',
+    );
+    expect(
+      journalText(event('goods_written_off', { line_id: 2, product: 'Lamp', parts: [['shade', 1]], note: 'warped' }), t),
+    ).toBe('Lamp: written off — shade × 1 (warped)');
+    expect(journalText(event('goods_stocked', { line_id: 1, product: 'Pipe', units: 3 }), t)).toBe(
+      'Pipe: moved to free stock — 3',
+    );
+  });
+});

@@ -56,13 +56,14 @@ export function CloseSuggestionBanner({ order, state, onFulfil }: CloseSuggestio
             {t('orders.close.receive', { count: state.can_receive })}
           </Button>
         )}
-        {state && state.can_issue > 0 && (
+        {/* No customer: nothing is issued — the order closes to stock (followups, rule 39). */}
+        {state && !state.closes_to_stock && state.can_issue > 0 && (
           <Button variant="secondary" data-testid="close-suggestion-issue" onClick={() => onFulfil('all', false)}>
             {t('orders.close.issue', { count: state.can_issue })}
           </Button>
         )}
         <Button data-testid="close-suggestion-complete" onClick={() => onFulfil('all', true)}>
-          {t('orders.close.action')}
+          {t(state?.closes_to_stock ? 'orders.close.toStock' : 'orders.close.action')}
         </Button>
       </div>
     </div>

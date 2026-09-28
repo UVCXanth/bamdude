@@ -12,7 +12,7 @@ export const ORDER_JOURNAL_KINDS = [
   'prints_filed', 'prints_unfiled', 'defects_recorded',
   'queue_items_filed', 'plan_enqueued', 'line_rebalanced',
   'surplus_banked', 'procurement_updated',
-  'kits_assembled', 'goods_received', 'goods_issued', 'stock_taken',
+  'kits_assembled', 'goods_received', 'goods_issued', 'stock_taken', 'goods_written_off', 'goods_stocked',
   'attachment_added', 'attachment_removed', 'cover_changed',
 ] as const;
 
@@ -100,6 +100,18 @@ export function journalText(event: TimelineEvent, t: TFunction): string | null {
             .join(', ')
         : text(m.units);
       return t('orders.timeline.events.goods_received', { product: named(m.product), units });
+    }
+    case 'goods_written_off':
+    case 'goods_stocked': {
+      // Per line, like `goods_received`; a parts line names its parts (followups, rules 38, 46).
+      const units = Array.isArray(m.parts)
+        ? m.parts
+            .filter((pair): pair is [unknown, unknown] => Array.isArray(pair) && pair.length === 2)
+            .map(([name, n]) => `${named(name)} × ${text(n)}`)
+            .join(', ')
+        : text(m.units);
+      const said = t(`orders.timeline.events.${event.event_type}`, { product: named(m.product), units });
+      return m.note ? `${said} (${text(m.note)})` : said;
     }
     case 'goods_issued': {
       const said = t('orders.timeline.events.goods_issued', { units: text(m.units) });

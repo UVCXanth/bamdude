@@ -421,6 +421,7 @@ describe('ProductStock', () => {
       'held_for_order',
       'hold_released',
       'issued_for_order',
+      'written_off_for_order',
     ]);
 
     for (const bundle of [en, uk]) {

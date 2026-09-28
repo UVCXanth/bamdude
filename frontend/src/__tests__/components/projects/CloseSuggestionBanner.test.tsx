@@ -14,6 +14,8 @@ const state: FulfilmentState = {
   can_assemble: 0,
   can_receive: 3,
   can_issue: 9,
+  closes_to_stock: false,
+  can_complete: false,
   recipient: { name: null, phone: null, delivery_method: null, delivery_details: null },
 };
 
@@ -44,5 +46,15 @@ describe('CloseSuggestionBanner', () => {
       <CloseSuggestionBanner order={{ ...order, status: 'completed' } as Order} state={state} onFulfil={() => {}} />,
     );
     expect(screen.queryByTestId('close-suggestion')).not.toBeInTheDocument();
+  });
+});
+
+describe('CloseSuggestionBanner · an order without a customer', () => {
+  it('is offered «Close to stock» and no issue button', () => {
+    const onFulfil = vi.fn();
+    render(<CloseSuggestionBanner order={order} state={{ ...state, closes_to_stock: true }} onFulfil={onFulfil} />);
+    expect(screen.queryByTestId('close-suggestion-issue')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Close to stock' }));
+    expect(onFulfil).toHaveBeenCalledWith('all', true);
   });
 });

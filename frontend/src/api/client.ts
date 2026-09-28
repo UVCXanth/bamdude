@@ -2806,6 +2806,8 @@ export const STOCK_REASONS = [
   'held_for_order',
   'hold_released',
   'issued_for_order',
+  // spec workshop-order-issue-followups, rule 45: broken while held, paired with hold_released.
+  'written_off_for_order',
 ] as const;
 
 export type StockReason = (typeof STOCK_REASONS)[number];
@@ -2815,7 +2817,16 @@ export type StockReason = (typeof STOCK_REASONS)[number];
  * `backend/app/models/finished_stock.py::MOVEMENT_KINDS`, each with a
  * `stock.journal.kind.*` label in both locales.
  */
-export const STOCK_ITEM_KINDS = ['receipt', 'stocktake', 'assembled', 'produced', 'reserve', 'release', 'issue'] as const;
+export const STOCK_ITEM_KINDS = [
+  'receipt',
+  'stocktake',
+  'assembled',
+  'produced',
+  'reserve',
+  'release',
+  'issue',
+  'written_off',
+] as const;
 
 /**
  * Every `note` the BACKEND writes — a closed set of tokens, never a sentence.
@@ -3065,6 +3076,8 @@ export interface FulfilmentPartState {
   /** On the shelf under the order now. */
   held: number;
   issued: number;
+  /** Written off under the order (spec workshop-order-issue-followups, rule 44). */
+  written_off: number;
 }
 
 /** What a line can assemble, receive and issue now — `order_fulfilment.state`, the
@@ -3080,6 +3093,8 @@ export interface FulfilmentLineState {
   can_receive: number;
   held: number;
   issued: number;
+  /** Written off under the order — a parts line sums its parts'. */
+  written_off: number;
   parts: FulfilmentPartState[];
 }
 
@@ -3095,6 +3110,11 @@ export interface FulfilmentState {
   can_assemble: number;
   can_receive: number;
   can_issue: number;
+  /** No customer: the order issues nothing and closes to stock once everything is received
+   *  (spec workshop-order-issue-followups, rules 35–36). */
+  closes_to_stock: boolean;
+  /** What completing asks, answered by the server — never derived here. */
+  can_complete: boolean;
   /** The order's contact, else the customer's main contact. */
   recipient: FulfilmentRecipient;
 }
@@ -3103,6 +3123,7 @@ export interface FulfilmentPartBody {
   part_id: number;
   receive: number;
   issue: number;
+  write_off?: number;
 }
 
 export interface FulfilmentLineBody {
@@ -3110,6 +3131,7 @@ export interface FulfilmentLineBody {
   assemble?: number;
   receive?: number;
   issue?: number;
+  write_off?: number;
   parts?: FulfilmentPartBody[];
 }
 
@@ -3120,6 +3142,8 @@ export interface FulfilmentBody {
   waybill: string | null;
   note: string | null;
   complete: boolean;
+  /** Why the batch writes something off — required when it does (followups, rule 46). */
+  write_off_note: string | null;
 }
 
 export interface FulfilmentResult {

@@ -271,6 +271,8 @@ describe('CustomerPage', () => {
       issued: 0,
       held: 0,
       fully_issued: true,
+      closes_to_stock: false,
+      can_complete: true,
       can_assemble: 0,
       can_receive: 0,
       can_issue: 0,

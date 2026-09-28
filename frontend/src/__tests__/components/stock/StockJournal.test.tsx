@@ -98,7 +98,16 @@ describe('the stock journal · every kind and reason has a label', () => {
   it('names each movement of both books in both languages', () => {
     // The backend's closed lists — models/finished_stock.py::MOVEMENT_KINDS and
     // services/part_stock.py::REASONS (spec workshop-order-issue, rules 5–6).
-    expect([...STOCK_ITEM_KINDS]).toEqual(['receipt', 'stocktake', 'assembled', 'produced', 'reserve', 'release', 'issue']);
+    expect([...STOCK_ITEM_KINDS]).toEqual([
+      'receipt',
+      'stocktake',
+      'assembled',
+      'produced',
+      'reserve',
+      'release',
+      'issue',
+      'written_off',
+    ]);
     for (const bundle of [en, uk]) {
       for (const kind of STOCK_ITEM_KINDS) expect(bundle.stock.journal.kind[kind]).toBeTruthy();
       for (const reason of STOCK_REASONS) expect(bundle.stock.reason[reason]).toBeTruthy();

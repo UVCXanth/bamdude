@@ -41,6 +41,8 @@ describe('OrderModal', () => {
       issued: 0,
       held: 0,
       fully_issued: false,
+      closes_to_stock: false,
+      can_complete: false,
       can_assemble: 0,
       can_receive: 0,
       can_issue: 0,
@@ -77,6 +79,8 @@ describe('OrderModal · completing', () => {
       issued: 0,
       held: 0,
       fully_issued: false,
+      closes_to_stock: false,
+      can_complete: false,
       can_assemble: 0,
       can_receive: 0,
       can_issue: 0,
@@ -94,11 +98,13 @@ describe('OrderModal · completing', () => {
       issued: 0,
       held: 0,
       fully_issued: false,
+      closes_to_stock: false,
+      can_complete: false,
       can_assemble: 0,
       can_receive: 0,
       can_issue: 0,
       recipient: { name: null, phone: null, delivery_method: null, delivery_details: null },
-    }, fully_issued: true });
+    }, fully_issued: true, can_complete: true });
     render(<OrderModal order={order} onClose={() => {}} />);
     await waitFor(() => expect(screen.getByRole('option', { name: 'Completed' })).toBeEnabled());
   });
