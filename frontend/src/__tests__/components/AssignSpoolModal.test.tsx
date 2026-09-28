@@ -179,6 +179,26 @@ describe('AssignSpoolModal', () => {
     ));
   });
 
+  it('stays on the page it was turned to when the search has not changed', async () => {
+    // The search debounce used to reset the page 250 ms after the dialog opened, typed
+    // or not: a page turned before then snapped back to page 1 (and the full suite, run
+    // slow enough, turned it before then).
+    const { fireEvent } = await import('@testing-library/react');
+    const farSpool = { ...manualSpool, id: 731, brand: 'Faraway' };
+    (api.getSpoolPicker as ReturnType<typeof vi.fn>).mockImplementation(async (params: { page: number }) => ({
+      items: params.page === 1 ? [manualSpool] : [farSpool],
+      meta: { total: 61, current_page: params.page, per_page: 60, last_page: 2 },
+    }));
+
+    render(<AssignSpoolModal {...defaultProps} />);
+    await waitFor(() => expect(screen.getByText(/Polymaker/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /Next page/i }));
+    await waitFor(() => expect(screen.getByText(/Faraway/)).toBeInTheDocument());
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(screen.getByText(/Faraway/)).toBeInTheDocument();
+    expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+  });
+
   it('a paused print asks "replacement or correction?" before assigning', async () => {
     // Mid-pause the same gesture means two opposite things (a physical swap
     // must split the usage at the current layer; a wrong-link fix must not).

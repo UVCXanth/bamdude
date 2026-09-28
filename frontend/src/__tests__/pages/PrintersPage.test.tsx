@@ -296,7 +296,9 @@ describe('PrintersPage', () => {
         release();
         view.unmount();
       }
-    }, 20_000);
+      // Fifty live cards re-rendered in jsdom: measured ~8.5 s alone (3.5 s of it the
+      // fifty RUNNING statuses landing), past 20 s in the four-worker full suite.
+    }, 60_000);
 
     it('virtualizes the dense S grid too', async () => {
       const fleet = Array.from({ length: 50 }, (_, i) => ({ ...mockPrinters[0], id: i + 1, name: `Small farm printer ${i + 1}` }));

@@ -90,12 +90,16 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   }, [isOpen]);
 
   useEffect(() => {
+    // Only a search that changed goes back to page 1. Armed on every render of an
+    // unchanged search, the timer reset a page the operator had just turned, 250 ms
+    // after the dialog opened.
+    if (searchFilter === debouncedSearch) return;
     const timer = setTimeout(() => {
       setDebouncedSearch(searchFilter);
       setPickerPage(1);
     }, 250);
     return () => clearTimeout(timer);
-  }, [searchFilter]);
+  }, [searchFilter, debouncedSearch]);
 
   useEffect(() => setPickerPage(1), [disableFiltering, trayInfo?.type, trayInfo?.profile]);
 
