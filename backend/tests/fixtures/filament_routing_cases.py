@@ -14,7 +14,7 @@ def write_routing_3mf(
     settings: dict | None = None,
     gcode_plates: list[int] | None = None,
     nozzle_groups: dict[int, int] | None = None,
-    prediction: int | None = 3600,
+    prediction: int | dict[int, int] | None = 3600,
     bed_type: str | None = None,
     plate_pngs: dict[int, bytes] | None = None,
 ) -> Path:
@@ -28,7 +28,8 @@ def write_routing_3mf(
     because a caller that also writes ``LibraryFile.file_metadata`` has to make
     the two agree: the plan reads the metadata, the writers read the file, and a
     row whose stored estimate came from a 3MF that says something else is a
-    fixture that proves nothing.
+    fixture that proves nothing. A dict gives each plate its own estimate (plate
+    id → seconds); a plate the dict does not name has none.
 
     ``prediction=None`` omits the key entirely, which is a real 3MF: a plate whose
     slicer wrote no estimate. It is not the same as ``0`` — a reader can tell "no
@@ -49,8 +50,9 @@ def write_routing_3mf(
     for plate_id, filaments in plates.items():
         plate = SubElement(root, "plate")
         facts = [("index", plate_id), ("printer_model_id", model)]
-        if prediction is not None:
-            facts.append(("prediction", prediction))
+        estimate = prediction.get(plate_id) if isinstance(prediction, dict) else prediction
+        if estimate is not None:
+            facts.append(("prediction", estimate))
         for key, value in facts:
             SubElement(plate, "metadata", key=key, value=str(value))
         if bed_type is not None:

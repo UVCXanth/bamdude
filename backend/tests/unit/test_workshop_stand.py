@@ -1,0 +1,438 @@
+"""The WS-13 comparison stand (vault 60-specs/workshop-ui-parity-e00-stand.md).
+
+The stand is a second BamDude on a scratch DATA_DIR, next to the operator's own
+instance on the same machine. Everything tested here is what keeps the two
+apart: the environment a stand process gets, the one folder a reset may delete,
+the lock, the instance marker, the ports.
+"""
+
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "workshop_stand"))
+
+import snapshot  # noqa: E402
+import stand  # noqa: E402
+
+
+def _parent_env(tmp_path: Path) -> dict[str, str]:
+    foreign = tmp_path / "foreign"
+    return {
+        "SYSTEMROOT": r"C:\Windows",
+        "PATH": r"C:\Windows\system32",
+        "USERPROFILE": r"C:\Users\someone",
+        "PROCESSOR_ARCHITECTURE": "AMD64",
+        "BACKEND_URL": "http://evil:1",
+        "BACKEND_PORT": "9",
+        "DATA_DIR": str(foreign / "data"),
+        "LOG_DIR": str(foreign / "logs"),
+        "TEMP_DIR": str(foreign / "tmp"),
+        "TEMP": str(foreign / "temp"),
+        "SOME_TOKEN": "secret",
+    }
+
+
+def test_a_stand_process_gets_the_stand_folders_and_nothing_it_inherited(tmp_path):
+    root = tmp_path / "temp" / "ws13-stand" / "baseline"
+    env = stand.build_env(_parent_env(tmp_path), root=root, instance="abc", mode="baseline")
+
+    assert env["DATA_DIR"] == str(root / "data")
+    assert env["LOG_DIR"] == str(root / "logs")
+    assert env["TEMP_DIR"] == str(root / "tmp")
+    assert env["TEMP"] == env["TMP"] == str(root / "tmp")
+    assert env["BAMDUDE_IGNORE_DOTENV"] == "1"
+    assert env["WS13_STAND_INSTANCE"] == "abc"
+    assert env["WS13_STAND_ROOT"] == str(root)
+    assert env["TZ"] == "Europe/Kyiv"
+    # The system variables Python and Node need come through…
+    assert env["SYSTEMROOT"] == r"C:\Windows"
+    assert env["PROCESSOR_ARCHITECTURE"] == "AMD64"
+    # …and nothing else does: an inherited proxy target or token never reaches a stand process.
+    for name in ("BACKEND_URL", "BACKEND_PORT", "SOME_TOKEN"):
+        assert name not in env
+
+
+def test_vite_is_pointed_at_this_modes_backend_on_loopback(tmp_path):
+    root = tmp_path / "temp" / "ws13-stand" / "edges"
+    env = stand.build_env(_parent_env(tmp_path), root=root, instance="abc", mode="edges", for_vite=True)
+
+    assert env["BACKEND_URL"] == "http://127.0.0.1:8101"
+    assert "BACKEND_PORT" not in env
+
+
+def test_a_database_url_in_the_operators_shell_is_refused(tmp_path):
+    parent = {**_parent_env(tmp_path), "DATABASE_URL": "postgresql://somewhere/db"}
+
+    with pytest.raises(stand.StandError, match="DATABASE_URL"):
+        stand.build_env(parent, root=tmp_path, instance="abc", mode="baseline")
+
+
+# ── The one folder a reset may delete (spec A9) ──────────────────────────────
+
+
+def _repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    (repo / "temp").mkdir(parents=True)
+    return repo
+
+
+def _junction(link: Path, target: Path) -> None:
+    import subprocess
+
+    target.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
+
+
+windows_only = pytest.mark.skipif(sys.platform != "win32", reason="junctions are a Windows reparse point")
+
+
+def test_a_first_run_creates_the_mode_root(tmp_path):
+    repo = _repo(tmp_path)
+
+    root = stand.check_root(stand.expected_root("baseline", repo), mode="baseline", repo=repo, create=True)
+
+    assert root == repo / "temp" / "ws13-stand" / "baseline"
+    assert root.is_dir()
+
+
+def test_a_path_that_is_not_the_modes_root_is_refused(tmp_path):
+    repo = _repo(tmp_path)
+    other = repo / "temp" / "ws13-stand" / "data"
+    other.mkdir(parents=True)
+
+    with pytest.raises(stand.StandError, match="not the stand root"):
+        stand.check_root(other, mode="baseline", repo=repo)
+
+
+@windows_only
+def test_a_junction_inside_an_existing_root_path_is_refused(tmp_path):
+    repo = _repo(tmp_path)
+    _junction(repo / "temp" / "ws13-stand", tmp_path / "elsewhere")
+    (tmp_path / "elsewhere" / "baseline").mkdir()
+
+    with pytest.raises(stand.StandError, match="link or junction"):
+        stand.check_root(stand.expected_root("baseline", repo), mode="baseline", repo=repo)
+
+
+@windows_only
+def test_a_junction_in_an_existing_ancestor_is_refused_on_the_first_run(tmp_path):
+    repo = _repo(tmp_path)
+    _junction(repo / "temp" / "ws13-stand", tmp_path / "elsewhere")
+
+    with pytest.raises(stand.StandError, match="link or junction"):
+        stand.check_root(stand.expected_root("baseline", repo), mode="baseline", repo=repo, create=True)
+    assert not (tmp_path / "elsewhere" / "baseline").exists()
+
+
+def test_reset_refuses_while_a_process_of_the_manifest_is_alive(tmp_path):
+    import os
+
+    repo = _repo(tmp_path)
+    root = stand.check_root(stand.expected_root("baseline", repo), mode="baseline", repo=repo, create=True)
+    me = stand.process_identity(os.getpid())
+    stand.write_manifest(root, {"instance_id": "x", "mode": "baseline", "processes": {"backend": me}})
+
+    with pytest.raises(stand.StandError, match="still running"):
+        stand.reset("baseline", repo=repo, init_db=False)
+    assert (root / "manifest.json").exists()
+
+
+def test_reset_gives_a_fresh_instance_and_forgets_the_old_one(tmp_path):
+    repo = _repo(tmp_path)
+    root = stand.check_root(stand.expected_root("baseline", repo), mode="baseline", repo=repo, create=True)
+    stand.write_manifest(root, {"instance_id": "old", "mode": "baseline", "state": "seeded", "processes": {}})
+    (root / "credentials.json").write_text('{"instance_id": "old"}')
+    (root / "mapping.json").write_text("{}")
+
+    manifest = stand.reset("baseline", repo=repo, init_db=False)
+
+    assert manifest["instance_id"] != "old"
+    assert manifest["state"] == "fresh"
+    assert not (root / "credentials.json").exists()
+    assert not (root / "mapping.json").exists()
+    for sub in ("data", "logs", "tmp", "run"):
+        assert (root / sub).is_dir()
+
+
+# ── One mutating command at a time (spec A7) ─────────────────────────────────
+
+
+def test_a_second_mutating_command_is_refused_while_the_lock_is_held(tmp_path):
+    repo = _repo(tmp_path)
+
+    with (
+        stand.lock("baseline", repo=repo),
+        pytest.raises(stand.StandError, match="already running"),
+        stand.lock("baseline", repo=repo),
+    ):
+        pass
+
+
+def test_the_lock_of_a_dead_process_is_taken_over(tmp_path, capsys):
+    repo = _repo(tmp_path)
+    path = stand.lock_path("baseline", repo)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"pid": 4000000000, "created": 1}')
+
+    with stand.lock("baseline", repo=repo):
+        pass
+
+    assert "stale lock" in capsys.readouterr().out
+    assert not path.exists()
+
+
+# ── Only this instance is ever written to (spec A6) ──────────────────────────
+
+
+def _server(tmp_path, marker: str | None):
+    """A loopback HTTP server that answers every request, with or without the stand marker."""
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def _answer(self):
+            self.send_response(200)
+            if marker is not None:
+                self.send_header("X-WS13-Stand", marker)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"setup_required": true}')
+
+        do_GET = do_POST = _answer
+
+        def log_message(self, *args):
+            pass
+
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd
+
+
+@pytest.mark.parametrize("marker", [None, "someone-else"])
+def test_a_listener_that_is_not_this_instance_gets_no_write(tmp_path, marker):
+    httpd = _server(tmp_path, marker)
+    try:
+        client = stand.StandClient(f"http://127.0.0.1:{httpd.server_address[1]}", instance="ours")
+        with pytest.raises(stand.StandError, match="not this stand"):
+            client.get("/api/v1/auth/status")
+    finally:
+        httpd.shutdown()
+
+
+def test_this_instance_answers_through(tmp_path):
+    httpd = _server(tmp_path, "ours")
+    try:
+        client = stand.StandClient(f"http://127.0.0.1:{httpd.server_address[1]}", instance="ours")
+        assert client.get("/api/v1/auth/status") == {"setup_required": True}
+    finally:
+        httpd.shutdown()
+
+
+def test_credentials_of_an_earlier_instance_are_refused(tmp_path):
+    repo = _repo(tmp_path)
+    root = stand.check_root(stand.expected_root("baseline", repo), mode="baseline", repo=repo, create=True)
+    (root / "credentials.json").write_text('{"instance_id": "old", "username": "a", "password": "b"}')
+
+    with pytest.raises(stand.StandError, match="earlier instance"):
+        stand.read_credentials(root, {"instance_id": "new"})
+
+
+# ── Ports (spec A2) ───────────────────────────────────────────────────────────
+
+
+def test_a_busy_port_is_refused_not_moved():
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen()
+        port = sock.getsockname()[1]
+        with pytest.raises(stand.StandError, match=f"{port} is in use"):
+            stand.require_free_port(port)
+
+
+# ── The stand server: minimal lifespan, marker, network/spawn guard (A4–A5) ──
+#
+# ``sys.addaudithook`` cannot be removed, so every test that installs it runs
+# in a throwaway child interpreter, never in the pytest worker.
+
+_STAND_DIR = Path(__file__).resolve().parents[3] / "scripts" / "workshop_stand"
+
+
+def _child(code: str, *, env: dict | None = None, timeout: float = 180) -> dict:
+    import json
+    import subprocess
+
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[3],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    assert out.returncode == 0, out.stderr[-3000:]
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_the_guard_blocks_and_logs_outbound_connections_and_process_spawns(tmp_path):
+    run = tmp_path / "run"
+    code = f"""
+import asyncio, json, socket, subprocess, sys
+sys.path.insert(0, {str(_STAND_DIR)!r})
+import stand_guard
+stand_guard.install({str(run)!r})
+result = {{}}
+def attempt(name, fn):
+    try:
+        fn()
+        result[name] = "allowed"
+    except PermissionError:
+        result[name] = "blocked"
+    except OSError as exc:
+        result[name] = type(exc).__name__
+def raw():
+    with socket.socket() as s:
+        s.settimeout(1)
+        s.connect(("192.0.2.1", 1883))
+def loopback():
+    with socket.socket() as s:
+        s.settimeout(1)
+        s.connect(("127.0.0.1", 9))
+def on_the_stand_loop():
+    async def go():
+        await asyncio.wait_for(asyncio.open_connection("192.0.2.1", 1883), 2)
+    asyncio.run(go(), loop_factory=asyncio.SelectorEventLoop)
+attempt("raw", raw)
+attempt("loopback", loopback)
+attempt("asyncio", on_the_stand_loop)
+attempt("dns", lambda: socket.getaddrinfo("example.com", 443))
+attempt("spawn", lambda: subprocess.run(["cmd", "/c", "echo", "hi"] if sys.platform == "win32" else ["true"]))
+print(json.dumps(result))
+"""
+    result = _child(code)
+
+    assert result["raw"] == "blocked"
+    assert result["asyncio"] == "blocked"
+    assert result["dns"] == "blocked"
+    assert result["spawn"] == "blocked"
+    assert result["loopback"] in ("ConnectionRefusedError", "TimeoutError", "allowed")
+    network = (run / "network.log").read_text(encoding="utf-8")
+    assert "192.0.2.1" in network and "example.com" in network and "127.0.0.1" not in network
+    assert (run / "spawn.log").read_text(encoding="utf-8").strip()
+
+
+def test_the_stand_app_runs_only_its_own_lifespan_and_marks_every_answer(tmp_path):
+    root = tmp_path / "temp" / "ws13-stand" / "baseline"
+    for sub in ("data", "logs", "tmp", "run"):
+        (root / sub).mkdir(parents=True)
+    import os
+
+    env = stand.build_env(os.environ | {"DATABASE_URL": ""}, root=root, instance="inst-1", mode="baseline")
+    code = f"""
+import json, sys
+sys.path.insert(0, {str(_STAND_DIR)!r})
+import stand_app
+import stand_guard
+from backend.app.core import database
+import backend.app.i18n as i18n
+calls = []
+async def fake_init_db():
+    calls.append("init_db")
+async def fake_language():
+    calls.append("language")
+    return "uk"
+class Engine:
+    async def dispose(self):
+        calls.append("dispose")
+database.init_db = fake_init_db
+database.engine = Engine()
+i18n.get_language = fake_language
+from backend.app.core.timezones import server_timezone
+from starlette.testclient import TestClient
+with TestClient(stand_app.app) as client:
+    answer = client.get("/api/v1/system/health")
+print(json.dumps({{
+    "calls": calls,
+    "marker": answer.headers.get("x-ws13-stand"),
+    "guard_before_main": stand_guard.INSTALLED_BEFORE_APP,
+    "lifespan_replaced": stand_app.bamdude_app.router.lifespan_context is stand_app.stand_lifespan,
+    "tz": getattr(server_timezone(), "key", None),
+}}))
+"""
+    result = _child(code, env=env)
+
+    assert result["calls"] == ["init_db", "language", "dispose"]
+    assert result["marker"] == "inst-1"
+    assert result["guard_before_main"] is True
+    assert result["lifespan_replaced"] is True
+    assert result["tz"] == "Europe/Kyiv"
+    # Importing the application and answering a request made no outbound call and spawned nothing.
+    assert not (root / "run" / "network.log").exists()
+    assert not (root / "run" / "spawn.log").exists()
+
+
+# ── B5: nothing changes in the stand without a command ──────────────────────
+
+
+def _snap():
+    return {
+        "print_queue": {"1": {"id": 1, "status": "pending", "quantity": 1}},
+        "print_archives": {"7": {"id": 7, "status": "printing", "project_line_id": 3}},
+        "customers": {"9": {"id": 9, "name": "edge:C1:three-contacts"}},
+        "stock_item_movements": {"1": {"id": 1, "delta_on_hand": 5}},
+        "stock_items": {"2": {"id": 2, "on_hand": 5, "eta": "2026-09-30"}},
+    }
+
+
+@pytest.mark.parametrize(
+    ("change", "table"),
+    [
+        (lambda s: s["print_queue"]["1"].update(status="printing"), "print_queue"),
+        (lambda s: s["print_archives"]["7"].update(status="completed"), "print_archives"),
+        (lambda s: s["customers"]["9"].update(name="changed"), "customers"),
+        # Two movements that cancel out: the balance is the same, the ledger is not.
+        (
+            lambda s: s["stock_item_movements"].update(
+                {"2": {"id": 2, "delta_on_hand": 3}, "3": {"id": 3, "delta_on_hand": -3}}
+            ),
+            "stock_item_movements",
+        ),
+    ],
+)
+def test_a_change_the_command_did_not_make_is_found(change, table):
+    before, after = _snap(), _snap()
+    change(after)
+
+    diffs = snapshot.compare(before, after)
+
+    assert diffs and all(d["table"] == table for d in diffs)
+
+
+def test_a_live_estimate_is_not_a_change():
+    before, after = _snap(), _snap()
+    after["stock_items"]["2"]["eta"] = "2026-10-01"
+
+    assert snapshot.compare(before, after) == []
+
+
+def test_the_snapshot_reads_every_row_of_every_table(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "bamdude.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE print_queue (id INTEGER PRIMARY KEY, status TEXT)")
+        conn.execute(
+            "CREATE TABLE project_line_choices (line_id INTEGER, group_id INTEGER, option_id INTEGER, "
+            "PRIMARY KEY (line_id, group_id))"
+        )
+        conn.execute("INSERT INTO print_queue VALUES (1, 'pending')")
+        conn.execute("INSERT INTO project_line_choices VALUES (4, 2, 9)")
+
+    taken = snapshot.take(db)
+
+    assert taken["print_queue"] == {"1": {"id": 1, "status": "pending"}}
+    assert taken["project_line_choices"] == {"4|2": {"line_id": 4, "group_id": 2, "option_id": 9}}
