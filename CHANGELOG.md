@@ -38,7 +38,7 @@
 
 ### Changed
 
-- **Local uploads and external-folder scans now share one background file-preparation service.** It extracts the full 3MF plate list and metadata, even from large multi-plate files on SMB shares, while keeping slow file reads and parsing out of the web server. The next external-folder scan fills missing metadata on existing files and refreshes changed files in place, including their plate lists and thumbnails; an unreadable file keeps its last good metadata. System shows the service's health separately.
+- **Local uploads and external-folder scans now share one background file-preparation service.** It extracts the full 3MF plate list and metadata, even from large multi-plate files on SMB shares, while keeping slow file reads and parsing out of the web server. The next external-folder scan fills missing metadata on existing files and refreshes changed files in place, including their plate lists and thumbnails; an unreadable file keeps its last good metadata. System shows the service's health separately. The server log now shows when its worker is ready and reports the start, result, plate count and duration of each file it parses.
 
 - **The Bambu Studio sidecar now defaults to the latest stable release, 02.08.02.61.** Build defaults, Compose settings and the example environment file use the same version; OrcaSlicer remains on its latest stable release, 2.4.2. Existing installations with a version pinned in `.env` need to update that pin and rebuild the sidecar.
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import zipfile
 
 import pytest
@@ -47,7 +48,7 @@ def test_present_but_broken_metadata_is_not_a_complete_snapshot(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_real_worker_prepares_and_walks_in_pages(tmp_path):
+async def test_real_worker_prepares_and_walks_in_pages(tmp_path, caplog):
     broker = LocalWorkerBroker(tmp_path / ".cache" / "preview-service")
     await broker.start()
     runtime = LibraryFileRuntime(tmp_path, broker)
@@ -55,8 +56,20 @@ async def test_real_worker_prepares_and_walks_in_pages(tmp_path):
         await runtime.start()
         file = tmp_path / "part.gcode.3mf"
         make_plates(file, range(1, 33))
-        result = await runtime.prepare(file, root=tmp_path)
+        with caplog.at_level(logging.INFO, logger="backend.app.services.library_file_runtime"):
+            result = await runtime.prepare(file, root=tmp_path)
         assert len(result.metadata["plates"]) == 32
+        assert "Library file worker parsing file='part.gcode.3mf'" in caplog.text
+        assert "outcome=ok plates=32" in caplog.text
+        broken = tmp_path / "broken.3mf"
+        broken.write_bytes(b"not a ZIP")
+        with (
+            caplog.at_level(logging.INFO, logger="backend.app.services.library_file_runtime"),
+            pytest.raises(RuntimeError, match="BadZipFile"),
+        ):
+            await runtime.prepare(broken, root=tmp_path)
+        assert "outcome=failed plates=-" in caplog.text
+        assert "reason='library file service BadZipFile'" in caplog.text
         token = await runtime.walk_start(tmp_path, False)
         entries = []
         while True:

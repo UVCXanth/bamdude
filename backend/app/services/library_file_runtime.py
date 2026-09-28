@@ -88,6 +88,7 @@ class LibraryFileRuntime:
                 reply = await self.rpc({"generation": self.generation, "epoch": self.epoch, "operation": "ready"}, 2)
                 if reply.get("outcome") == "ok" and reply.get("epoch") == self.epoch:
                     self.ready, self.reason = True, None
+                    logger.info("Library file worker ready pid=%s", self.worker.process.pid)
                     return
             except Exception:
                 pass
@@ -162,6 +163,12 @@ class LibraryFileRuntime:
                 "deadline_ns": time.monotonic_ns() + _REQUEST_SECONDS * 10**9,
                 "source": source,
             }
+            started = time.monotonic()
+            file_name = source.get("filename") or Path(source.get("path", "")).name
+            outcome = "failed"
+            failure = None
+            if operation == "prepare":
+                logger.info("Library file worker parsing file=%r attempt=%s", file_name, attempt[:8])
             self.active_task = asyncio.current_task()
             try:
                 reply = await self.rpc(command, _REQUEST_SECONDS)
@@ -170,8 +177,12 @@ class LibraryFileRuntime:
                 ref = AnalysisArtifact.parse(reply["artifact"], attempt, "library")
                 await disk(output.parent.mkdir, parents=True, exist_ok=True)
                 await get(self.store, ref, output, time.monotonic_ns() + 30 * 10**9)
-                return json.loads(await disk(output.read_text, encoding="utf-8"))
+                data = json.loads(await disk(output.read_text, encoding="utf-8"))
+                outcome = "ok"
+                return data
             except (TimeoutError, asyncio.CancelledError) as exc:
+                outcome = "canceled" if isinstance(exc, asyncio.CancelledError) else "timeout"
+                failure = type(exc).__name__
                 # A blocked SMB syscall cannot be canceled in a thread. The
                 # guarded process must be reaped before another operation.
                 try:
@@ -183,7 +194,22 @@ class LibraryFileRuntime:
                 if self.interrupted_task is asyncio.current_task():
                     raise RuntimeError("library file service unavailable") from exc
                 raise
+            except Exception as exc:
+                failure = str(exc) or type(exc).__name__
+                raise
             finally:
+                if operation == "prepare":
+                    plates = data.get("metadata", {}).get("plates") if outcome == "ok" else None
+                    log = logger.info if outcome == "ok" else logger.warning
+                    log(
+                        "Library file worker parse file=%r attempt=%s outcome=%s plates=%s elapsed_ms=%d%s",
+                        file_name,
+                        attempt[:8],
+                        outcome,
+                        len(plates) if isinstance(plates, list) else "-",
+                        (time.monotonic() - started) * 1000,
+                        f" reason={failure!r}" if failure else "",
+                    )
                 try:
                     await self.store.delete(f"{attempt}_library")
                 except Exception:
