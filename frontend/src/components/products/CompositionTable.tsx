@@ -147,7 +147,10 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
     const raw = field.value.trim();
     const next = Number(raw);
     if (raw !== '' && Number.isInteger(next) && next >= 0 && next !== part.qty_per_unit) {
-      save.mutate({ partId: part.id, data: { qty_per_unit: next } });
+      // A part in the kit is never «не рахувати»: a count on a marked part takes the mark off
+      // in the same request (spec workshop-order-issue-followups, rule 34; final review M8).
+      const data = part.ignored && next > 0 ? { qty_per_unit: next, ignored: false } : { qty_per_unit: next };
+      save.mutate({ partId: part.id, data });
       return;
     }
     // Nothing to send — cleared, fractional, negative, or unchanged.

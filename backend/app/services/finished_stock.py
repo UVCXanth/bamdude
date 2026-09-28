@@ -537,13 +537,17 @@ async def write_off_from_line(
         left -= take
 
 
-async def give_back_for_line(db: AsyncSession, line: ProjectLine, *, actor: User | None = None) -> int:
+async def give_back_for_line(
+    db: AsyncSession, line: ProjectLine, *, actor: User | None = None, keep_history: bool = False
+) -> int:
     """Cancel or delete: everything the line holds becomes free stock (rule 14). A line
     whose stock never moved behaves as in WS-10 — ``from_finished`` comes down, so a
     reactivation (allowed to it, rule 15) does not count what went back; a moved line
-    counts it in ``returned`` and keeps its counters as history. Returns the units."""
+    counts it in ``returned`` and keeps its counters as history. ``keep_history`` — closing
+    to stock (spec workshop-order-issue-followups, rule 37) — counts ``returned`` for a line
+    that never moved too: the order is completed and keeps its coverage. Returns the units."""
     await lock_line(db, line)
-    if not moved(line):
+    if not moved(line) and not keep_history:
         return await release_for_line(db, line, actor=actor)
     back = 0
     for item_id, holding in sorted((await held_by_item(db, line.id)).items()):

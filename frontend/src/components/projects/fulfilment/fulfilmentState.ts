@@ -1,4 +1,9 @@
-import type { FulfilmentLineBody, FulfilmentLineState, FulfilmentState } from '../../../api/client';
+import type {
+  FulfilmentLineBody,
+  FulfilmentLineState,
+  FulfilmentPartState,
+  FulfilmentState,
+} from '../../../api/client';
 
 /**
  * The issue dialog's draft (spec workshop-order-issue, rule 27) — pure, so the
@@ -36,6 +41,36 @@ export type Draft = Record<number, LineDraft>;
  *  what this batch assembles and receives, less what it writes off. */
 export function issueCeiling(line: FulfilmentLineState, draft: LineDraft): number {
   return line.held + draft.assemble + draft.receive - draft.writeOff;
+}
+
+/** A new write-off for a product line. An issue that followed its ceiling follows it back
+ *  when a write-off is taken back; one the operator chose stays (final review M10). */
+export function withLineWriteOff(line: FulfilmentLineState, d: LineDraft, writeOff: number): LineDraft {
+  const atCeiling = d.issue === issueCeiling(line, d);
+  return { ...d, writeOff, issue: atCeiling ? d.issue + d.writeOff - writeOff : d.issue };
+}
+
+/** The same for one part of a parts line. */
+export function withPartWriteOff(part: FulfilmentPartState, p: PartDraft, writeOff: number): PartDraft {
+  const atCeiling = p.issue === part.held + p.receive - p.writeOff;
+  return { ...p, writeOff, issue: atCeiling ? p.issue + p.writeOff - writeOff : p.issue };
+}
+
+/** Every write-off taken back — the column closed, so nothing hidden is written off (final
+ *  review I2). */
+export function withoutWriteOffs(state: FulfilmentState, draft: Draft): Draft {
+  const out: Draft = { ...draft };
+  for (const line of state.lines) {
+    const d = draft[line.line_id];
+    if (!d) continue;
+    const parts: Record<number, PartDraft> = { ...d.parts };
+    for (const part of line.parts) {
+      const p = d.parts[part.part_id];
+      if (p) parts[part.part_id] = withPartWriteOff(part, p, 0);
+    }
+    out[line.line_id] = { ...withLineWriteOff(line, d, 0), parts };
+  }
+  return out;
 }
 
 export function draftFrom(state: FulfilmentState, mode: FulfilmentMode): Draft {

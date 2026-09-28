@@ -224,7 +224,7 @@ async def test_zero_parts_are_marked_not_counted_once(engine):
         await conn.execute(
             text(
                 "CREATE TABLE product_parts (id INTEGER PRIMARY KEY, product_id INTEGER,"
-                " qty_per_unit INTEGER NOT NULL DEFAULT 1)"
+                " kind VARCHAR(16) NOT NULL DEFAULT 'printed', qty_per_unit INTEGER NOT NULL DEFAULT 1)"
             )
         )
         await conn.execute(text("CREATE TABLE project_lines (id INTEGER PRIMARY KEY, product_id INTEGER)"))
@@ -241,11 +241,15 @@ async def test_zero_parts_are_marked_not_counted_once(engine):
             )
         )
         # 1 in the kit · 2 a plain zero · 3 a zero with stock · 4 a zero a line wants · 5 a zero whose stock went
+        # · 6 a bought zero (never on a plate — final review I3)
         await conn.execute(
             text(
                 "INSERT INTO product_parts (id, product_id, qty_per_unit)"
                 " VALUES (1, 1, 1), (2, 1, 0), (3, 1, 0), (4, 1, 0), (5, 1, 0)"
             )
+        )
+        await conn.execute(
+            text("INSERT INTO product_parts (id, product_id, kind, qty_per_unit) VALUES (6, 1, 'purchased', 0)")
         )
         await conn.execute(
             text("INSERT INTO product_part_stock_movements (product_part_id, delta) VALUES (3, 2), (5, 2), (5, -2)")
@@ -254,7 +258,7 @@ async def test_zero_parts_are_marked_not_counted_once(engine):
     await _run(engine)
     async with engine.begin() as conn:
         rows = dict((await conn.execute(text("SELECT id, ignored FROM product_parts ORDER BY id"))).all())
-        assert rows == {1: 0, 2: 1, 3: 0, 4: 0, 5: 1}
+        assert rows == {1: 0, 2: 1, 3: 0, 4: 0, 5: 1, 6: 0}
         await conn.execute(text("UPDATE product_parts SET ignored = 0 WHERE id = 2"))
     await _run(engine)  # the column is there: nothing is marked again
     async with engine.connect() as conn:

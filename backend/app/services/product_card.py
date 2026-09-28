@@ -612,6 +612,17 @@ def _variant_manifest(groups: list[ProductVariantGroup]) -> tuple[list[dict], di
     return out, pair_of
 
 
+def imported_mark(raw: dict, kind: str, qty: int) -> bool:
+    """«Не рахувати» of an imported part (spec workshop-order-issue-followups, rule 34).
+
+    An old card has no mark: its zero meant "present on a plate, do not measure", so a
+    printed zero is marked. A part in the kit is never marked, and neither is a bought part
+    — it is never on a plate (final review I3)."""
+    if kind != "printed" or qty != 0:
+        return False
+    return bool(raw["ignored"]) if "ignored" in raw else True
+
+
 def _part_manifest(part: Any, variant: list[str] | None = None) -> dict:
     return {
         "kind": part.kind,
@@ -1146,9 +1157,7 @@ async def import_zip(
             # would invent a requirement the operator deliberately removed, on a round trip
             # whose whole job is to change nothing.
             qty = max(0, _whole(raw.get("qty_per_unit"), 1))
-            # An old card has no mark: its zero meant "present on a plate, do not measure"
-            # (spec workshop-order-issue-followups, rule 34). A part in the kit is never marked.
-            ignored = (bool(raw["ignored"]) if "ignored" in raw else qty == 0) and qty == 0
+            ignored = imported_mark(raw, kind, qty)
             db.add(
                 ProductPart(
                     product_id=product.id,

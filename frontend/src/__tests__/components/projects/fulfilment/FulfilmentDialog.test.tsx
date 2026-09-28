@@ -10,6 +10,8 @@ import {
   draftFrom,
   issuingUnits,
   requestFrom,
+  withLineWriteOff,
+  withoutWriteOffs,
   writingOff,
 } from '../../../../components/projects/fulfilment/fulfilmentState';
 
@@ -268,5 +270,59 @@ describe('FulfilmentDialog · write-offs and closing to stock', () => {
     expect(screen.queryByLabelText('Issue now — Pipe')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Recipient name')).not.toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: 'Close to stock' })).toBeChecked();
+  });
+});
+
+describe('fulfilmentState · taking a write-off back (final review M10, I2)', () => {
+  it('gives the issue back when it followed the ceiling, and leaves a chosen issue alone', () => {
+    let draft = draftFrom(state, 'all');
+    draft = clampDraft({ ...draft, 7: withLineWriteOff(state.lines[0], draft[7], 2) }, state);
+    expect(draft[7].issue).toBe(8);
+    draft = clampDraft({ ...draft, 7: withLineWriteOff(state.lines[0], draft[7], 0) }, state);
+    expect(draft[7].issue).toBe(10);
+    let receive = draftFrom(state, 'receive');
+    receive = clampDraft({ ...receive, 7: withLineWriteOff(state.lines[0], receive[7], 2) }, state);
+    receive = clampDraft({ ...receive, 7: withLineWriteOff(state.lines[0], receive[7], 0) }, state);
+    expect(receive[7].issue).toBe(0);
+  });
+
+  it('drops every write-off, parts included, and gives their issues back', () => {
+    const draft = draftFrom(state, 'all');
+    draft[7] = withLineWriteOff(state.lines[0], draft[7], 1);
+    draft[8] = { ...draft[8], parts: { ...draft[8].parts, 31: { ...draft[8].parts[31], writeOff: 1, issue: 2 } } };
+    const clean = clampDraft(withoutWriteOffs(state, clampDraft(draft, state)), state);
+    expect(writingOff(clean)).toBe(0);
+    expect(clean[7].issue).toBe(10);
+    expect(clean[8].parts[31].issue).toBe(3);
+  });
+});
+
+describe('FulfilmentDialog · closing the write-off column', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
+  });
+
+  it('drops what was typed there, so nothing hidden is written off', async () => {
+    const shelf = { ...state, lines: [{ ...state.lines[0], can_assemble: 0, can_receive: 0, held: 4 }] };
+    vi.spyOn(api, 'getFulfilment').mockResolvedValue(shelf);
+    const fulfil = vi.spyOn(api, 'fulfilOrder').mockResolvedValue({ order: { id: 5 } as never, issue_id: 3 });
+    render(<FulfilmentDialog orderId={5} onClose={() => {}} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Write off…' }));
+    fireEvent.change(screen.getByLabelText('Write off — Pipe'), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText('Why it is written off'), { target: { value: 'dropped' } });
+    expect(screen.getByLabelText('Issue now — Pipe')).toHaveValue(3);
+    fireEvent.click(screen.getByRole('button', { name: 'Write off…' }));
+    expect(screen.getByLabelText('Issue now — Pipe')).toHaveValue(4);
+    fireEvent.click(screen.getByRole('button', { name: 'Execute' }));
+    await waitFor(() =>
+      expect(fulfil).toHaveBeenCalledWith(
+        5,
+        expect.objectContaining({
+          lines: [{ line_id: 7, assemble: 0, receive: 0, issue: 4 }],
+          write_off_note: null,
+        }),
+      ),
+    );
   });
 });

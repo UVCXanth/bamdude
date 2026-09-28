@@ -107,6 +107,16 @@ describe('CompositionTable', () => {
     expect(within(screen.getByTestId('part-3-row')).queryByRole('checkbox', { name: 'Not counted' })).toBeNull();
   });
 
+  it('a count typed on a marked part takes the mark off in the same request', async () => {
+    // Final review M8: a part in the kit is never «not counted», so the count says so too.
+    const save = vi.spyOn(api, 'updateProductPart').mockResolvedValue({ ...product.parts[1], qty_per_unit: 2 });
+    render(<CompositionTable product={product} canEdit />);
+    const qty = within(screen.getByTestId('part-2-row')).getByLabelText('Per unit');
+    fireEvent.change(qty, { target: { value: '2' } });
+    fireEvent.blur(qty);
+    await waitFor(() => expect(save).toHaveBeenCalledWith(7, 2, { qty_per_unit: 2, ignored: false }));
+  });
+
   it('a viewer sees the hints and no box', () => {
     render(<CompositionTable product={product} canEdit={false} />);
     expect(within(screen.getByTestId('part-4-row')).getByText('out of kit')).toBeInTheDocument();

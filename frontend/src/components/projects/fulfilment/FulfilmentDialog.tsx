@@ -16,6 +16,9 @@ import {
   issueCeiling,
   issuingUnits,
   requestFrom,
+  withLineWriteOff,
+  withoutWriteOffs,
+  withPartWriteOff,
   writingOff,
 } from './fulfilmentState';
 import type { Draft, FulfilmentMode, LineDraft, PartDraft } from './fulfilmentState';
@@ -142,6 +145,14 @@ function FulfilmentForm({
   });
 
   const canSubmit = (lines.length > 0 || closing) && !noteMissing && !fulfil.isPending;
+  // Closing the column takes its numbers back — nothing hidden is written off (final review I2).
+  const toggleWriteOff = () => {
+    if (writeOffOpen) {
+      setDraft((prev) => clampDraft(withoutWriteOffs(state, clampDraft(prev, state)), state));
+      setWriteOffNote('');
+    }
+    setWriteOffOpen(!writeOffOpen);
+  };
   const completeLabel = t(issuing ? 'orders.fulfil.complete' : 'orders.fulfil.completeToStock');
   const completeHint = t(issuing ? 'orders.fulfil.completeHint' : 'orders.fulfil.completeToStockHint');
 
@@ -150,7 +161,7 @@ function FulfilmentForm({
       {lines.length === 0 && !completes && <p className="text-bambu-gray">{t('orders.fulfil.nothing')}</p>}
       {!issuing && <p className="text-sm text-bambu-gray">{t('orders.fulfil.noCustomer')}</p>}
       <div className="flex justify-end">
-        <Button variant="secondary" size="sm" onClick={() => setWriteOffOpen((open) => !open)}>
+        <Button variant="secondary" size="sm" onClick={toggleWriteOff}>
           {t('orders.fulfil.writeOffToggle')}
         </Button>
       </div>
@@ -339,7 +350,7 @@ function ProductLineRow({
             value={draft.writeOff}
             max={line.held + draft.assemble + draft.receive}
             label={t('orders.fulfil.writeOffLabel', { name })}
-            onChange={(n) => onChange(line.line_id, (d) => ({ ...d, writeOff: n }))}
+            onChange={(n) => onChange(line.line_id, (d) => withLineWriteOff(line, d, n))}
           />
         </td>
       )}
@@ -374,6 +385,11 @@ function PartsLineRows({
   const { t } = useTranslation();
   const setPart = (partId: number, field: keyof PartDraft, n: number) =>
     onChange(line.line_id, (d) => ({ ...d, parts: { ...d.parts, [partId]: { ...d.parts[partId], [field]: n } } }));
+  const setPartWriteOff = (part: FulfilmentLineState['parts'][number], n: number) =>
+    onChange(line.line_id, (d) => ({
+      ...d,
+      parts: { ...d.parts, [part.part_id]: withPartWriteOff(part, d.parts[part.part_id], n) },
+    }));
   return (
     <>
       <tr data-testid={`fulfil-line-${line.line_id}`} className="border-t border-bambu-dark-tertiary">
@@ -410,7 +426,7 @@ function PartsLineRows({
                   value={d.writeOff}
                   max={part.held + d.receive}
                   label={t('orders.fulfil.writeOffLabel', { name: part.name })}
-                  onChange={(n) => setPart(part.part_id, 'writeOff', n)}
+                  onChange={(n) => setPartWriteOff(part, n)}
                 />
               </td>
             )}

@@ -430,8 +430,17 @@ async def upgrade(conn):
                     "id NOT IN (SELECT product_part_id FROM product_part_stock_movements"
                     " GROUP BY product_part_id HAVING SUM(delta) <> 0)"
                 )
+            if await column_exists(conn, "product_parts", "kind"):
+                # A bought part is never on a plate (final review I3).
+                keep.append("kind = 'printed'")
             where = " AND ".join(["qty_per_unit = 0", *keep])
             await conn.exec_driver_sql(f"UPDATE product_parts SET ignored = TRUE WHERE {where}")
+    # An earlier run of this unreleased migration marked bought zeros too (final review I3);
+    # the API never lets a bought part be marked, so this is a no-op everywhere else.
+    if await column_exists(conn, "product_parts", "ignored") and await column_exists(conn, "product_parts", "kind"):
+        await conn.exec_driver_sql(
+            "UPDATE product_parts SET ignored = FALSE WHERE ignored = TRUE AND kind <> 'printed'"
+        )
 
 
 async def seed(session_factory):

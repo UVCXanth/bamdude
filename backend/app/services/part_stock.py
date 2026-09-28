@@ -296,7 +296,7 @@ def lock_part_stmt(part_id: int):
     final review of WS-09.) Take it through :func:`lock_part`, never alone.
 
     ``populate_existing`` because the identity map would otherwise hand back a
-    part loaded earlier in the same transaction, ``kind`` and ``qty_per_unit``
+    part loaded earlier in the same transaction, ``kind`` and ``ignored``
     as they were then — and those two ARE :func:`is_counted`, the question this
     SELECT is taken for. A route that edits a part and then moves stock on it
     would decide against the pre-edit row.
@@ -501,7 +501,7 @@ async def counted_parts_of(db: AsyncSession, product_ids: Sequence[int]) -> list
     in, so two transactions touching the same products can never take them the
     other way round and deadlock.
 
-    ``populate_existing`` because ``kind`` and ``qty_per_unit`` ARE
+    ``populate_existing`` because ``kind`` and ``ignored`` ARE
     :func:`is_counted`: a route that edited a part earlier in the same
     transaction must not have this question answered from the identity map's
     pre-edit copy.
@@ -593,7 +593,7 @@ async def release_for_line(db: AsyncSession, line: ProjectLine, *, note: str) ->
                 select(ProductPart)
                 .where(ProductPart.id.in_([pid for pid, _n in outstanding]))
                 # ``populate_existing`` for the same reason ``lock_part_stmt``
-                # carries it: ``kind`` and ``qty_per_unit`` ARE :func:`is_counted`,
+                # carries it: ``kind`` and ``ignored`` ARE :func:`is_counted`,
                 # and a route that edited a part earlier in this transaction
                 # would otherwise be answered from the identity map with the
                 # pre-edit row.
@@ -831,6 +831,19 @@ async def reserved_units_for_line(db: AsyncSession, line: ProjectLine) -> int:
 def part_held(row: ProjectLinePartStock) -> int:
     """What a parts line still holds of one part on the shelf (spec rule 7; followups, rule 44)."""
     return row.received - row.issued - row.returned - row.written_off
+
+
+async def reserved_for_part(db: AsyncSession, part_id: int) -> int:
+    """Parts of this part held in kits reserved for order lines — the net of the reservation
+    reasons, one read (spec workshop-order-issue-followups, rule 34: such a part is not «не
+    рахувати»; the free balance alone reads zero while every one of them is reserved)."""
+    total = await db.scalar(
+        select(func.coalesce(func.sum(ProductPartStockMovement.delta), 0)).where(
+            ProductPartStockMovement.product_part_id == part_id,
+            ProductPartStockMovement.reason.in_(_RESERVATION_REASONS),
+        )
+    )
+    return max(0, -int(total or 0))
 
 
 async def held_for_orders(db: AsyncSession, product_id: int) -> dict[int, int]:
@@ -1512,14 +1525,13 @@ async def adjust_unfiled_print(
             continue
         if not is_counted(part):
             # A genuinely different case: the part's own ``kind`` /
-            # ``qty_per_unit`` changed after the credit, so the product no longer
+            # ``ignored`` changed after the credit, so the product no longer
             # keeps a balance for it at all.
             logger.info(
-                "part_stock: part %s is no longer a counted part (kind=%s, qty_per_unit=%s); archive %s not "
-                "corrected on it",
+                "part_stock: part %s is no longer a counted part (kind=%s, ignored=%s); archive %s not corrected on it",
                 part_id,
                 part.kind,
-                part.qty_per_unit,
+                part.ignored,
                 archive.id,
             )
             continue

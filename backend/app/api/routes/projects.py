@@ -1214,9 +1214,14 @@ async def update_project(
         # Everything went out through the issue dialog — or, without a customer, goes to free
         # stock now; kits nobody assembled go back on the shelf, as the dialog's own completion
         # does (spec workshop-order-issue, rule 12; followups, rule 37).
-        await order_fulfilment.close(
-            db, project, lines, to_stock=closing_to_stock, actor=await acting_user(request, db, current_user)
-        )
+        try:
+            await order_fulfilment.close(
+                db, project, lines, to_stock=closing_to_stock, actor=await acting_user(request, db, current_user)
+            )
+        except order_fulfilment.FulfilmentError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from e
+        except (part_stock.PartStockError, finished_stock.FinishedStockError) as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
     changed = [label for column, label in _JOURNAL_FIELDS.items() if getattr(project, column) != before[column]]
     if changed:
         await order_journal.record(db, project.id, "fields_changed", {"fields": changed}, actor=current_user)
@@ -1652,8 +1657,10 @@ async def update_line(
         # ready units grew, past it: the KITS go back first — the ready units were
         # fitted above. Only ever downwards.
         kits = await part_stock.reserved_units_for_line(db, line)
-        # What the shelf already gave the line, assembled and received included.
-        fitted = max(0, line.quantity - line.from_finished - (line.assembled or 0) - (line.received or 0))
+        # What the shelf already gave the line, assembled and received included, less what was
+        # written off (it is needed again — spec workshop-order-issue-followups, rule 47): the
+        # same room both «take from stock» doors fill (final review I1).
+        fitted = max(0, line.quantity - finished_stock.covered_units(line))
         if kits > fitted:
             await _reserve(db, line, fitted, current_user)
     changes = {name: [before[name], getattr(line, name)] for name in tracked if getattr(line, name) != before[name]}

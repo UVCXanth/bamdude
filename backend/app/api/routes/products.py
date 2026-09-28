@@ -1163,6 +1163,8 @@ async def duplicate_product(
 # part that holds stock or that a line or a stock position wants.
 _NOT_IN_KIT = "A part that is not counted cannot be in the kit"
 _CANNOT_IGNORE = "This part holds stock or is ordered; it cannot be marked as not counted"
+# A bought part is never on a plate, so «not a part of it» never applies (final review I3).
+_PRINTED_ONLY = "Only a printed part can be marked as not counted"
 
 
 async def _part(db: AsyncSession, product: Product, part_id: int) -> ProductPart:
@@ -1180,6 +1182,8 @@ async def create_part(
     _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     product = await _get(db, product_id)
+    if data.ignored and data.kind != "printed":
+        raise HTTPException(status_code=422, detail=_PRINTED_ONLY)
     if data.ignored and data.qty_per_unit > 0:
         raise HTTPException(status_code=422, detail=_NOT_IN_KIT)
     if data.kind == "purchased":
@@ -1246,12 +1250,19 @@ async def update_part(
             raise HTTPException(status_code=409, detail="A part with this name already exists")
     ignored_after = data.ignored if "ignored" in data.model_fields_set else part.ignored
     qty_after = data.qty_per_unit if "qty_per_unit" in data.model_fields_set else part.qty_per_unit
+    if ignored_after and not part.ignored and part.kind != "printed":
+        raise HTTPException(status_code=422, detail=_PRINTED_ONLY)
     if ignored_after and qty_after > 0:
         raise HTTPException(status_code=422, detail=_NOT_IN_KIT)
     if ignored_after and not part.ignored:
-        # Only a part with nothing on its shelf and wanted by nobody (rule 34).
+        # Only a part with nothing on its shelf, in no reserved kit (final review M7) and
+        # wanted by nobody (rule 34).
         balance = (await part_stock.balances(db, product.id)).get(part.id, 0)
-        if balance != 0 or await line_config.part_in_use(db, part.id):
+        if (
+            balance != 0
+            or await part_stock.reserved_for_part(db, part.id) > 0
+            or await line_config.part_in_use(db, part.id)
+        ):
             raise HTTPException(status_code=409, detail=_CANNOT_IGNORE)
     for field_name in data.model_fields_set:
         setattr(part, field_name, getattr(data, field_name))
@@ -1307,6 +1318,11 @@ async def merge_part(
     target, source = await _part(db, product, part_id), await _part(db, product, data.source_part_id)
     if target is source:
         raise HTTPException(status_code=400, detail="A part cannot be merged into itself")
+    if target.ignored and not source.ignored and await line_config.part_in_use(db, source.id):
+        # A line would come to want a part marked «не рахувати» (final review M6).
+        raise HTTPException(
+            status_code=409, detail="A part that is ordered cannot be merged into one marked as not counted"
+        )
     merge_parts(target, source)
     # Free stock, unlike the procurement counts below, MOVES: it is parts on a
     # shelf, and the merge says those parts are these parts. Before the source

@@ -366,11 +366,19 @@ async def close(
     ordered = sorted(lines, key=lambda line: line.id)
     if to_stock:
         await finished_stock.lock_positions_for_lines(db, [line.id for line in ordered])
+        for line in ordered:
+            await finished_stock.lock_line(db, line)
+        # The PATCH door read the state before these locks (final review M4): a write-off or
+        # a close that committed meanwhile may have taken what the check counted.
+        if not (await state(db, project, to_stock=True)).can_complete:
+            raise FulfilmentError("Receive everything the order needs before closing it to stock")
         product_ids = {line.product_id for line in ordered}
         names = dict((await db.execute(select(Product.id, Product.name).where(Product.id.in_(product_ids)))).all())
         created_by = actor.id if actor is not None else None
         for line in ordered:
-            units = await finished_stock.give_back_for_line(db, line, actor=actor)
+            # Rule 37: ``returned += held`` for every line — one that only took ready units too,
+            # or the completed order would lose its coverage and could be reactivated (M5).
+            units = await finished_stock.give_back_for_line(db, line, actor=actor, keep_history=True)
             parts = await part_stock.return_parts_for_line(db, line, created_by=created_by)
             if units:
                 payload = {"line_id": line.id, "product": names.get(line.product_id), "units": units}
