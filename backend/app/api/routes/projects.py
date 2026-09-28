@@ -1175,11 +1175,25 @@ async def update_project(
         # What it gave back is free stock now and may be gone; its prints stay filed under
         # it, and a reactivated order would count them as coverage a second time (rule 15).
         raise HTTPException(status_code=409, detail="This order's stock has moved; duplicate it instead")
+    if data.status == "active" and project.status == "completed" and await order_fulfilment.stocked_line_ids(db, lines):
+        # Closed to stock (spec workshop-order-issue-followups, rule 41): what it held is free
+        # stock now and its prints stay filed under it — as a cancelled order's.
+        raise HTTPException(status_code=409, detail="This order's goods went to free stock; duplicate it instead")
+    closing_to_stock = False
     if data.status == "completed" and project.status != "completed":
         # An order completes only when everything it ordered went out (spec
-        # workshop-order-issue, rule 12) — refused before anything is written.
-        if not (await order_fulfilment.state(db, project)).fully_issued:
-            raise HTTPException(status_code=409, detail="Issue everything the order holds before completing it")
+        # workshop-order-issue, rule 12) — or, without a customer, is on the shelf (followups,
+        # rule 36) — refused before anything is written. Judged by the customer the order
+        # ends this request with.
+        customer_after = data.customer_id if "customer_id" in data.model_fields_set else project.customer_id
+        closing_to_stock = customer_after is None
+        if not (await order_fulfilment.state(db, project, to_stock=closing_to_stock)).can_complete:
+            raise HTTPException(
+                status_code=409,
+                detail="Receive everything the order needs before closing it to stock"
+                if closing_to_stock
+                else "Issue everything the order holds before completing it",
+            )
     # Read before the write: the journal records what actually changed, not what was sent.
     before = {column: getattr(project, column) for column in _JOURNAL_FIELDS}
     status_before = project.status
@@ -1197,10 +1211,12 @@ async def update_project(
     if responsible_change:
         await order_journal.record(db, project.id, "responsible_changed", responsible_change, actor=current_user)
     if project.status == "completed" and status_before != "completed":
-        # Everything went out through the issue dialog; kits nobody assembled go back
-        # on the shelf, as the dialog's own completion does (spec workshop-order-issue, rule 12).
-        for line in lines:
-            await part_stock.release_for_line(db, line, note=part_stock.NOTE_ORDER_COMPLETED)
+        # Everything went out through the issue dialog — or, without a customer, goes to free
+        # stock now; kits nobody assembled go back on the shelf, as the dialog's own completion
+        # does (spec workshop-order-issue, rule 12; followups, rule 37).
+        await order_fulfilment.close(
+            db, project, lines, to_stock=closing_to_stock, actor=await acting_user(request, db, current_user)
+        )
     changed = [label for column, label in _JOURNAL_FIELDS.items() if getattr(project, column) != before[column]]
     if changed:
         await order_journal.record(db, project.id, "fields_changed", {"fields": changed}, actor=current_user)
@@ -1289,6 +1305,8 @@ async def get_fulfilment(
         can_assemble=state.can_assemble,
         can_receive=state.can_receive,
         can_issue=state.can_issue,
+        closes_to_stock=state.closes_to_stock,
+        can_complete=state.can_complete,
         recipient=_recipient_out(recipient),
     )
 

@@ -11,7 +11,7 @@ EXPECTED_KINDS = (
     "prints_filed", "prints_unfiled", "defects_recorded",
     "queue_items_filed", "plan_enqueued", "line_rebalanced",
     "surplus_banked", "procurement_updated",
-    "kits_assembled", "goods_received", "goods_issued", "stock_taken", "goods_written_off",
+    "kits_assembled", "goods_received", "goods_issued", "stock_taken", "goods_written_off", "goods_stocked",
     "attachment_added", "attachment_removed", "cover_changed",
 )  # fmt: skip
 

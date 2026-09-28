@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.models.product import Product, ProductPart
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectLinePartStock
 from backend.app.models.stock_issue import StockIssue
@@ -72,6 +73,14 @@ class LineState:
             return all(part.issued >= part.wanted for part in self.parts)
         return self.issued >= self.ordered
 
+    @property
+    def fully_stocked(self) -> bool:
+        """Everything ordered is on the shelf for the order or issued (spec
+        workshop-order-issue-followups, rule 36) — what an order without a customer closes on."""
+        if self.mode == "parts":
+            return all(part.issued + part.held >= part.wanted for part in self.parts)
+        return self.issued + self.held >= self.ordered
+
 
 @dataclass(frozen=True, slots=True)
 class OrderState:
@@ -85,6 +94,11 @@ class OrderState:
     can_assemble: int = 0
     can_receive: int = 0
     can_issue: int = 0
+    #: No customer: the order closes into free stock once everything is received
+    #: (spec workshop-order-issue-followups, rules 35–36).
+    closes_to_stock: bool = False
+    #: What completing asks — fully issued, or fully on the shelf when it closes to stock (rule 40).
+    can_complete: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,9 +241,10 @@ async def moved_line_ids(db: AsyncSession, lines: Sequence[ProjectLine]) -> set[
     return moved
 
 
-async def state(db: AsyncSession, project: Project) -> OrderState:
+async def state(db: AsyncSession, project: Project, *, to_stock: bool | None = None) -> OrderState:
     """What each line can assemble, receive and issue now — the order's context and the
-    parts lines' counters read once each, whatever the order's size."""
+    parts lines' counters read once each, whatever the order's size. ``to_stock`` overrides
+    "has no customer" for a request that changes the customer as it completes (rule 35)."""
     ctx = await load_order_context(db, project.id)
     if ctx is None:
         raise FulfilmentError("Project not found", 404)
@@ -246,12 +261,16 @@ async def state(db: AsyncSession, project: Project) -> OrderState:
             lines.append(_parts_line(line, figures[line.id], name, counters.get(line.id, {}), room))
         else:
             lines.append(_product_line(ctx, line, figures[line.id], name, room))
+    closes = project.customer_id is None if to_stock is None else to_stock
+    fully_issued = all(row.fully_issued for row in lines)
     return OrderState(
         lines=lines,
         ordered=sum(row.ordered for row in lines),
         issued=sum(row.issued for row in lines),
         held=sum(row.held for row in lines),
-        fully_issued=all(row.fully_issued for row in lines),
+        fully_issued=fully_issued,
+        closes_to_stock=closes,
+        can_complete=all(row.fully_stocked for row in lines) if closes else fully_issued,
         can_assemble=sum(row.can_assemble for row in lines),
         can_receive=sum(row.can_receive + sum(p.can_receive for p in row.parts) for row in lines),
         can_issue=sum(
@@ -321,6 +340,63 @@ def _issued_after(row: LineState, request: LineRequest | None) -> bool:
     return row.issued + (request.issue if request is not None else 0) >= row.ordered
 
 
+def _stocked_after(row: LineState, request: LineRequest | None) -> bool:
+    """Would everything ``row`` ordered be on the shelf or issued once ``request`` is done (rule 36)?"""
+    if request is None:
+        return row.fully_stocked
+    if row.mode == "parts":
+        return all(
+            part.issued
+            + part.held
+            + request.parts.get(part.part_id, (0, 0))[0]
+            - request.parts_write_off.get(part.part_id, 0)
+            >= part.wanted
+            for part in row.parts
+        )
+    return row.issued + row.held + request.assemble + request.receive - request.write_off >= row.ordered
+
+
+async def close(
+    db: AsyncSession, project: Project, lines: Sequence[ProjectLine], *, to_stock: bool, actor: User | None
+) -> None:
+    """What completing does to the order's stock (spec workshop-order-issue, rule 12;
+    followups, rule 37): kits nobody assembled go back on the shelf; an order closing to stock
+    also puts everything it holds into free stock — the cancel's own doors, with the status
+    «completed». The caller sets the status and journals it."""
+    ordered = sorted(lines, key=lambda line: line.id)
+    if to_stock:
+        await finished_stock.lock_positions_for_lines(db, [line.id for line in ordered])
+        product_ids = {line.product_id for line in ordered}
+        names = dict((await db.execute(select(Product.id, Product.name).where(Product.id.in_(product_ids)))).all())
+        created_by = actor.id if actor is not None else None
+        for line in ordered:
+            units = await finished_stock.give_back_for_line(db, line, actor=actor)
+            parts = await part_stock.return_parts_for_line(db, line, created_by=created_by)
+            if units:
+                payload = {"line_id": line.id, "product": names.get(line.product_id), "units": units}
+                await order_journal.record(db, project.id, "goods_stocked", payload, actor=actor)
+            if parts:
+                part_names = dict(
+                    (await db.execute(select(ProductPart.id, ProductPart.name).where(ProductPart.id.in_(parts)))).all()
+                )
+                payload = {
+                    "line_id": line.id,
+                    "product": names.get(line.product_id),
+                    "parts": [[part_names.get(pid), n] for pid, n in sorted(parts.items())],
+                }
+                await order_journal.record(db, project.id, "goods_stocked", payload, actor=actor)
+    for line in ordered:
+        await part_stock.release_for_line(db, line, note=part_stock.NOTE_ORDER_COMPLETED)
+
+
+async def stocked_line_ids(db: AsyncSession, lines: Sequence[ProjectLine]) -> set[int]:
+    """Lines whose goods went back to free stock — a cancel or a close to stock (followups, rule 41)."""
+    out = {line.id for line in lines if line.mode != "parts" and (line.returned or 0) > 0}
+    counters = await part_stock.line_part_stock(db, [line.id for line in lines if line.mode == "parts"])
+    out |= {line_id for line_id, rows in counters.items() if any(row.returned > 0 for row in rows.values())}
+    return out
+
+
 async def apply(
     db: AsyncSession,
     project: Project,
@@ -369,8 +445,15 @@ async def apply(
     current = {row.line_id: row for row in (await state(db, project)).lines}
     for line_id in sorted(asked):
         _check(current[line_id], asked[line_id])
-    if complete and not all(_issued_after(row, asked.get(row.line_id)) for row in current.values()):
-        raise FulfilmentError("Issue everything the order holds before completing it")
+    to_stock = project.customer_id is None
+    if complete:
+        done = _stocked_after if to_stock else _issued_after
+        if not all(done(row, asked.get(row.line_id)) for row in current.values()):
+            raise FulfilmentError(
+                "Receive everything the order needs before closing it to stock"
+                if to_stock
+                else "Issue everything the order holds before completing it"
+            )
     issuing = sum(request.issue + sum(i for _r, i in request.parts.values()) for request in asked.values())
     if issuing and project.customer_id is None:
         raise FulfilmentError("An issue names its customer — set the order's customer first")
@@ -465,9 +548,9 @@ async def apply(
 
     if complete:
         project.status = "completed"
-        # Everything ordered went out; kits nobody assembled go back on the shelf (spec rule 12).
-        for line_id in sorted(lines):
-            await part_stock.release_for_line(db, lines[line_id], note=part_stock.NOTE_ORDER_COMPLETED)
+        # Everything ordered went out — or, without a customer, onto free stock; kits nobody
+        # assembled go back on the shelf (spec rule 12; followups, rule 37).
+        await close(db, project, list(lines.values()), to_stock=to_stock, actor=actor)
         await order_journal.record(db, project.id, "status_changed", {"from": "active", "to": "completed"}, actor=actor)
     await db.flush()
     return issue

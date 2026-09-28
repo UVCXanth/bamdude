@@ -871,6 +871,10 @@ class FulfilmentStateOut(BaseModel):
     can_assemble: int = 0
     can_receive: int = 0
     can_issue: int = 0
+    #: No customer: the order closes into free stock (spec workshop-order-issue-followups, rule 35).
+    closes_to_stock: bool = False
+    #: Can the order be closed now — fully issued, or fully on the shelf when it closes to stock.
+    can_complete: bool = False
     #: The order's contact person, else the customer's main contact (rule 18).
     recipient: RecipientOut
 
