@@ -148,6 +148,11 @@ class ProductPart(Base):
     aliases: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Still the seeded default; cleared by any operator edit.
     auto: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    # spec workshop-order-issue-followups, rule 34: «не рахувати» — not a part of this
+    # product at all (a test cube, an object of another plate of the file): no shelf, no
+    # need, no kit, and no line may want it. Only with ``qty_per_unit = 0``. A zero WITHOUT
+    # it is a part out of the kit, and it has a shelf (``line_composition.has_shelf``).
+    ignored: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     # purchased only
     unit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     sourcing_url: Mapped[str | None] = mapped_column(String(512), nullable=True)

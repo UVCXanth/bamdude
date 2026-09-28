@@ -20,6 +20,7 @@ class ProjectLine(Base):
         CheckConstraint("received >= 0", name="ck_project_lines_received"),
         CheckConstraint("issued >= 0", name="ck_project_lines_issued"),
         CheckConstraint("returned >= 0", name="ck_project_lines_returned"),
+        CheckConstraint("written_off >= 0", name="ck_project_lines_written_off"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -45,11 +46,14 @@ class ProjectLine(Base):
     # issued to the customer, returned to free stock (cancel / delete). Only ever
     # grow; written only by services/finished_stock.py with the movement that
     # explains them. Held on the shelf = from_finished + assembled + received
-    # − issued − returned (rule 7).
+    # − issued − returned − written_off (rule 7; spec workshop-order-issue-followups, rule 44).
     assembled: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     received: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     issued: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     returned: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # spec workshop-order-issue-followups, rule 44: units held for the order and written off
+    # (broken on the shelf) — the order needs them made again. Only grows.
+    written_off: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -60,13 +64,15 @@ class ProjectLine(Base):
 
 class ProjectLinePartStock(Base):
     """A parts line's part on the shelf under its order (spec workshop-order-issue,
-    rule 4) — written only by ``services/part_stock.py``."""
+    rule 4) — received, issued, returned and written off (spec workshop-order-issue-followups,
+    rule 44); written only by ``services/part_stock.py``."""
 
     __tablename__ = "project_line_part_stock"
     __table_args__ = (
         CheckConstraint("received >= 0", name="ck_project_line_part_stock_received"),
         CheckConstraint("issued >= 0", name="ck_project_line_part_stock_issued"),
         CheckConstraint("returned >= 0", name="ck_project_line_part_stock_returned"),
+        CheckConstraint("written_off >= 0", name="ck_project_line_part_stock_written_off"),
     )
 
     line_id: Mapped[int] = mapped_column(ForeignKey("project_lines.id", ondelete="CASCADE"), primary_key=True)
@@ -74,6 +80,7 @@ class ProjectLinePartStock(Base):
     received: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     issued: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     returned: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    written_off: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
 
 class ProjectProcurement(Base):

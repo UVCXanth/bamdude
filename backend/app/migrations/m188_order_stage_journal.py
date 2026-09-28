@@ -74,6 +74,9 @@ add here while the branch is unreleased:
   / received / issued / returned`` (written only by services/finished_stock.py);
   ``project_line_part_stock`` (a parts line's counters, only services/part_stock.py);
   ``stock_issue_id`` on both ledgers' movements.
+- WS-11a (spec workshop-order-issue-followups): ``written_off`` on both line counters;
+  ``product_parts.ignored`` — «не рахувати», set once on every existing zero that holds no
+  stock and that no line or stock position wants.
 """
 
 from backend.app.migrations.helpers import add_column, column_exists, table_exists
@@ -372,7 +375,7 @@ async def upgrade(conn):
         )
         await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_stock_issues_project_id ON stock_issues (project_id)")
     if await table_exists(conn, "project_lines"):
-        for col in ("assembled", "received", "issued", "returned"):
+        for col in ("assembled", "received", "issued", "returned", "written_off"):
             await add_column(
                 conn,
                 "project_lines",
@@ -387,19 +390,48 @@ async def upgrade(conn):
                     received INTEGER NOT NULL DEFAULT 0,
                     issued INTEGER NOT NULL DEFAULT 0,
                     returned INTEGER NOT NULL DEFAULT 0,
+                    written_off INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (line_id, part_id),
                     CONSTRAINT ck_project_line_part_stock_received CHECK (received >= 0),
                     CONSTRAINT ck_project_line_part_stock_issued CHECK (issued >= 0),
-                    CONSTRAINT ck_project_line_part_stock_returned CHECK (returned >= 0)
+                    CONSTRAINT ck_project_line_part_stock_returned CHECK (returned >= 0),
+                    CONSTRAINT ck_project_line_part_stock_written_off CHECK (written_off >= 0)
                 )
                 """
             )
+        # WS-11a: an install that already has the table (this migration ran before).
+        await add_column(
+            conn,
+            "project_line_part_stock",
+            "written_off INTEGER NOT NULL DEFAULT 0"
+            " CONSTRAINT ck_project_line_part_stock_written_off CHECK (written_off >= 0)",
+        )
     for table in ("stock_item_movements", "product_part_stock_movements"):
         if await table_exists(conn, table) and await table_exists(conn, "stock_issues"):
             await add_column(conn, table, "stock_issue_id INTEGER REFERENCES stock_issues(id) ON DELETE SET NULL")
             await conn.exec_driver_sql(
                 f"CREATE INDEX IF NOT EXISTS ix_{table}_stock_issue_id ON {table} (stock_issue_id)"
             )
+
+    # WS-11a (spec workshop-order-issue-followups, rule 34): «не рахувати». Until now every zero
+    # meant "present on a plate, do not measure" — each gets the mark ONCE, in the run that adds
+    # the column; a zero that holds stock or that a line or a stock position wants is a real part
+    # out of the kit and keeps its shelf. A later run finds the column and marks nothing.
+    if await table_exists(conn, "product_parts") and await add_column(
+        conn, "product_parts", "ignored BOOLEAN NOT NULL DEFAULT 0"
+    ):
+        if await column_exists(conn, "product_parts", "qty_per_unit"):
+            keep = []
+            for table in ("project_line_part_counts", "stock_item_part_counts"):
+                if await table_exists(conn, table):
+                    keep.append(f"id NOT IN (SELECT part_id FROM {table} WHERE qty > 0)")
+            if await column_exists(conn, "product_part_stock_movements", "delta"):
+                keep.append(
+                    "id NOT IN (SELECT product_part_id FROM product_part_stock_movements"
+                    " GROUP BY product_part_id HAVING SUM(delta) <> 0)"
+                )
+            where = " AND ".join(["qty_per_unit = 0", *keep])
+            await conn.exec_driver_sql(f"UPDATE product_parts SET ignored = TRUE WHERE {where}")
 
 
 async def seed(session_factory):

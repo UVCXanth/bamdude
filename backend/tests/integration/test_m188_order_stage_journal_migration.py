@@ -199,18 +199,63 @@ async def test_the_finished_goods_schema(engine):
             await conn.execute(text("UPDATE project_lines SET from_finished = -1 WHERE id = 1"))
         # WS-11 (spec workshop-order-issue, rules 1–6).
         line_cols = {r[1] for r in (await conn.execute(text("PRAGMA table_info(project_lines)"))).all()}
-        assert {"assembled", "received", "issued", "returned"} <= line_cols
+        assert {"assembled", "received", "issued", "returned", "written_off"} <= line_cols
         table_sql = (
             await conn.execute(text("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'project_lines'"))
         ).scalar()
-        for col in ("assembled", "received", "issued", "returned"):
+        for col in ("assembled", "received", "issued", "returned", "written_off"):
             assert f"ck_project_lines_{col}" in table_sql
         with pytest.raises(IntegrityError):
             await conn.execute(text("UPDATE project_lines SET issued = -1 WHERE id = 1"))
         issue_cols = {r[1] for r in (await conn.execute(text("PRAGMA table_info(stock_issues)"))).all()}
         assert {"project_id", "customer_id", "customer_name", "recipient_name", "waybill", "created_by"} <= issue_cols
         part_cols = {r[1] for r in (await conn.execute(text("PRAGMA table_info(project_line_part_stock)"))).all()}
-        assert part_cols == {"line_id", "part_id", "received", "issued", "returned"}
+        assert part_cols == {"line_id", "part_id", "received", "issued", "returned", "written_off"}
         for table in ("stock_item_movements", "product_part_stock_movements"):
             cols = {r[1] for r in (await conn.execute(text(f"PRAGMA table_info({table})"))).all()}
             assert "stock_issue_id" in cols
+
+
+@pytest.mark.asyncio
+async def test_zero_parts_are_marked_not_counted_once(engine):
+    # spec workshop-order-issue-followups, rule 34: every zero meant "do not measure" until now.
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE products (id INTEGER PRIMARY KEY, name VARCHAR(255))"))
+        await conn.execute(
+            text(
+                "CREATE TABLE product_parts (id INTEGER PRIMARY KEY, product_id INTEGER,"
+                " qty_per_unit INTEGER NOT NULL DEFAULT 1)"
+            )
+        )
+        await conn.execute(text("CREATE TABLE project_lines (id INTEGER PRIMARY KEY, product_id INTEGER)"))
+        await conn.execute(
+            text(
+                "CREATE TABLE product_part_stock_movements (id INTEGER PRIMARY KEY, product_part_id INTEGER,"
+                " delta INTEGER NOT NULL DEFAULT 0)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE TABLE project_line_part_counts (line_id INTEGER, part_id INTEGER, qty INTEGER NOT NULL,"
+                " PRIMARY KEY (line_id, part_id))"
+            )
+        )
+        # 1 in the kit · 2 a plain zero · 3 a zero with stock · 4 a zero a line wants · 5 a zero whose stock went
+        await conn.execute(
+            text(
+                "INSERT INTO product_parts (id, product_id, qty_per_unit)"
+                " VALUES (1, 1, 1), (2, 1, 0), (3, 1, 0), (4, 1, 0), (5, 1, 0)"
+            )
+        )
+        await conn.execute(
+            text("INSERT INTO product_part_stock_movements (product_part_id, delta) VALUES (3, 2), (5, 2), (5, -2)")
+        )
+        await conn.execute(text("INSERT INTO project_line_part_counts (line_id, part_id, qty) VALUES (1, 4, 2)"))
+    await _run(engine)
+    async with engine.begin() as conn:
+        rows = dict((await conn.execute(text("SELECT id, ignored FROM product_parts ORDER BY id"))).all())
+        assert rows == {1: 0, 2: 1, 3: 0, 4: 0, 5: 1}
+        await conn.execute(text("UPDATE product_parts SET ignored = 0 WHERE id = 2"))
+    await _run(engine)  # the column is there: nothing is marked again
+    async with engine.connect() as conn:
+        assert (await conn.execute(text("SELECT ignored FROM product_parts WHERE id = 2"))).scalar() == 0
