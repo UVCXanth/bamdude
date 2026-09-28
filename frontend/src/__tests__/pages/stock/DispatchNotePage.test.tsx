@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { fireEvent, screen, within } from '@testing-library/react';
 import { Route, Routes } from 'react-router';
 import { render } from '../../utils';
-import { api } from '../../../api/client';
+import { ApiError, api } from '../../../api/client';
+import { formatDateTime } from '../../../utils/date';
 import type { DispatchNote } from '../../../api/client';
 import { DispatchNotePage } from '../../../pages/stock/DispatchNotePage';
 
@@ -121,8 +122,47 @@ describe('DispatchNotePage', () => {
   });
 
   it('says so when the note does not exist', async () => {
-    vi.spyOn(api, 'getDispatchNote').mockRejectedValue(new Error('Dispatch note not found'));
+    vi.spyOn(api, 'getDispatchNote').mockRejectedValue(new ApiError('Dispatch note not found', 404));
     renderAt();
     expect(await screen.findByText('Dispatch note not found.')).toBeInTheDocument();
+  });
+
+  it('a failure that is not «not found» says it could not load (final review M4)', async () => {
+    vi.spyOn(api, 'getDispatchNote').mockRejectedValue(new ApiError('Internal Server Error', 500));
+    renderAt();
+    expect(await screen.findByText('Could not load the dispatch note.')).toBeInTheDocument();
+    expect(screen.queryByText('Dispatch note not found.')).not.toBeInTheDocument();
+  });
+
+  it('heads the page with the date and time and the way back to the stock (final review M3)', async () => {
+    vi.spyOn(api, 'getSettings').mockResolvedValue({} as never);
+    vi.spyOn(api, 'getDispatchNote').mockResolvedValue(note);
+    renderAt();
+    const controls = await screen.findByTestId('dispatch-note-controls');
+    expect(within(controls).getByText(formatDateTime('2026-09-28T09:30:00'))).toBeInTheDocument();
+    expect(within(controls).getByRole('link', { name: 'Stock' })).toHaveAttribute('href', '/stock');
+    expect(within(controls).getByRole('link', { name: 'Dispatch notes' })).toHaveAttribute('href', '/stock?tab=notes');
+  });
+
+  it('links a product that still exists, and names the parts a line changed (final review M10, M11)', async () => {
+    vi.spyOn(api, 'getDispatchNote').mockResolvedValue({
+      ...note,
+      lines: [
+        {
+          ...note.lines[0],
+          configuration: {
+            choices: [],
+            changed_parts: [{ part_id: 9, name: 'shade', qty: 2, standard_qty: 1 }],
+          },
+        },
+        note.lines[1],
+      ],
+    });
+    renderAt();
+    const sheet = await screen.findByTestId('dispatch-note-sheet');
+    expect(within(sheet).getByRole('link', { name: 'Lamp' })).toHaveAttribute('href', '/products/1');
+    // The deleted product (product_id null) is text, not a link.
+    expect(within(sheet).queryByRole('link', { name: /Pipe/ })).toBeNull();
+    expect(within(sheet).getByText('shade × 2')).toBeInTheDocument();
   });
 });

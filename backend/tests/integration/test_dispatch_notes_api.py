@@ -204,3 +204,15 @@ async def test_a_manual_issue_names_its_customer(committing_client, db_session, 
 async def test_the_customer_issues_route_is_gone(committing_client, db_session, shop):
     r = await committing_client.get(f"/api/v1/customers/{shop['acme'].id}/issues")
     assert r.status_code in (404, 405)
+
+
+@pytest.mark.asyncio
+async def test_newest_first_on_equal_times_is_the_higher_number_first(committing_client, db_session, shop):
+    # Final review M6: «newest first» with one timestamp still reads DN-0007 above DN-0006.
+    ids = [await _manual(committing_client, shop, shop["acme"].id) for _ in range(3)]
+    await db_session.execute(update(StockIssue).values(created_at=datetime(2026, 9, 28, 12, 0, 0)))
+    await db_session.commit()
+    newest = [r["id"] for r in (await _list(committing_client, page=1, sort_by="created-desc"))["items"]]
+    assert newest == sorted(ids, reverse=True)
+    oldest = [r["id"] for r in (await _list(committing_client, page=1, sort_by="created-asc"))["items"]]
+    assert oldest == sorted(ids)

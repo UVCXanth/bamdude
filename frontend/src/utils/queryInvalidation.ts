@@ -189,6 +189,9 @@ export const STOCK_KEYS: readonly (readonly string[])[] = [
   ['product'],
   ['products'],
   ['projects', 'nav-badges'],
+  // A manual issue makes a dispatch note (spec workshop-dispatch-notes; final review I1).
+  ['dispatch-notes'],
+  ['dispatch-note'],
 ];
 
 export function invalidateStock(qc: QueryClient): void {
@@ -205,12 +208,13 @@ const DELETE_KEYS: Record<DeletedKind, readonly string[]> = {
   // `ORDER_VIEW_KEYS` (Ruling 29): deleting an order releases every line's
   // reservation and re-credits its finished prints, so the shelf moves — and
   // the page that deleted it is usually a LIST, which knows no product at all.
-  order: ['projects', 'customers', 'customer', 'product-stock', 'product', 'products'],
+  // The dispatch notes keep their text but lose a link to what was deleted (all three kinds).
+  order: ['projects', 'customers', 'customer', 'product-stock', 'product', 'products', 'dispatch-notes', 'dispatch-note'],
   // An order card renders the product's cover off the `projects` query; the
   // catalog's filter choices and category counts lose the product too.
-  product: ['products', 'projects', 'product-facets', 'product-categories'],
+  product: ['products', 'projects', 'product-facets', 'product-categories', 'dispatch-notes', 'dispatch-note'],
   // The orders survive their customer and lose the denormalised name.
-  customer: ['customers', 'projects'],
+  customer: ['customers', 'projects', 'dispatch-notes', 'dispatch-note'],
 };
 
 /**

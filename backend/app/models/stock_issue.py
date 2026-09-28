@@ -3,8 +3,9 @@ or a manual issue off the stock page (spec workshop-order-issue, rule 1).
 
 Written only by ``services/stock_issues.py``. The issue keeps a SNAPSHOT of the
 customer's name, the recipient and the delivery, because the contact and the
-delivery directory may change or go; its lines are the issue movements of both
-ledgers that name it (``stock_issue_id``).
+delivery directory may change or go. What it handed over are the issue movements
+of both ledgers that name it (``stock_issue_id``); what it SHOWS is its dispatch
+note's snapshot below — a product delete takes the movements with it.
 
 WS-12: the issue IS the dispatch note ``DN-<id>``; ``stock_issues.seal`` writes its
 snapshot — lines, supplier, basis, performer, units — once (spec workshop-dispatch-notes).

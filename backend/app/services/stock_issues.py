@@ -4,7 +4,8 @@ An issue is one «Виконати» of an order's «Склад і видача�
 or a manual issue off the stock page. It is written with a SNAPSHOT — the
 customer's name, the recipient, the delivery — because the contact and the
 delivery directory may change or go; afterwards only the waybill number and the
-note may change. Its lines are the issue movements of both ledgers that name it.
+note may change. What it handed over are the issue movements of both ledgers that
+name it — and, once sealed, the lines of its dispatch note, which is what is shown.
 Since WS-12 the issue IS the dispatch note ``DN-<id>``: :func:`seal` writes its snapshot
 (lines, supplier, basis, performer, units) once, in the issuing transaction, after the
 movements (spec workshop-dispatch-notes).
@@ -140,10 +141,18 @@ SUPPLIER_KEYS = ("name", "address", "phone", "code", "iban")
 
 
 async def supplier_snapshot(db: AsyncSession) -> dict[str, str]:
-    """The supplier's details as they are set now; an unset one is ``""``."""
+    """The supplier's details as they are set now; an unset one is ``""``.
+
+    The settings route stores a JSON null as the text ``"None"`` — that is no detail
+    either, never a word on paper (final review M5).
+    """
     keys = {f"document_supplier_{key}": key for key in SUPPLIER_KEYS}
     rows = dict((await db.execute(select(Settings.key, Settings.value).where(Settings.key.in_(keys)))).all())
-    return {key: (rows.get(setting) or "").strip() for setting, key in keys.items()}
+    out = {}
+    for setting, key in keys.items():
+        value = (rows.get(setting) or "").strip()
+        out[key] = "" if value == "None" else value
+    return out
 
 
 async def _by_id(db: AsyncSession, model, ids) -> dict:

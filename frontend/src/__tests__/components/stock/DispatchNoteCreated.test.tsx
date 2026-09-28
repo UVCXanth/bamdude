@@ -16,6 +16,12 @@ describe('DispatchNoteCreated', () => {
     expect(navigate).toHaveBeenCalledWith('/stock/dispatch-notes/42');
   });
 
+  it('a manual issue is not said to be on an order card (final review M7)', () => {
+    render(<DispatchNoteCreated id={42} code="DN-0042" fromOrder={false} onClose={() => {}} />);
+    expect(screen.queryByText(/order's card/)).not.toBeInTheDocument();
+    expect(screen.getByText(/customer's page/)).toBeInTheDocument();
+  });
+
   it('closes without opening', () => {
     const onClose = vi.fn();
     navigate.mockClear();

@@ -29,7 +29,7 @@ const row = (over: Partial<StockIssueRow>): StockIssueRow => ({
 });
 const page = (items: StockIssueRow[], total = items.length, last = 1) => ({
   items,
-  meta: { total, current_page: 1, per_page: 20, last_page: last },
+  meta: { total, current_page: 1, per_page: 24, last_page: last },
 });
 
 describe('DispatchNotesSection', () => {
@@ -51,10 +51,10 @@ describe('DispatchNotesSection', () => {
     expect(within(fromOrder).getByRole('link', { name: 'OR-0005' })).toHaveAttribute('href', '/projects/5');
     expect(within(fromOrder).getByText('Lamp × 4')).toBeInTheDocument();
     expect(within(fromOrder).queryByText('ACME')).toBeNull(); // the customer's own page
-    expect(get).toHaveBeenCalledWith({ customer_id: 2, sort_by: 'created-desc', page: 1, per_page: 20 });
+    expect(get).toHaveBeenCalledWith({ customer_id: 2, sort_by: 'created-desc', page: 1, per_page: 24 });
     fireEvent.click(screen.getByRole('button', { name: /next/i }));
     await waitFor(() =>
-      expect(get).toHaveBeenLastCalledWith({ customer_id: 2, sort_by: 'created-desc', page: 2, per_page: 20 }),
+      expect(get).toHaveBeenLastCalledWith({ customer_id: 2, sort_by: 'created-desc', page: 2, per_page: 24 }),
     );
   });
 

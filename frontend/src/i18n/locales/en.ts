@@ -6750,6 +6750,9 @@ export default {
       notFound: 'Dispatch note not found.',
       createdTitle: 'Dispatch note {{code}} is made',
       createdBody: "It is on the order's card, the customer's page and the stock page's «Dispatch notes».",
+      createdBodyStock: "It is on the customer's page and the stock page's «Dispatch notes».",
+      loadError: 'Could not load the dispatch note.',
+      changedPart: '{{name}} × {{qty}}',
       open: 'Open',
     },
     finished: {

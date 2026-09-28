@@ -131,7 +131,7 @@ export function StockMoveDialog({
     move.mutate(body);
   };
 
-  if (created) return <DispatchNoteCreated id={created.id} code={created.code} onClose={onClose} />;
+  if (created) return <DispatchNoteCreated id={created.id} code={created.code} fromOrder={false} onClose={onClose} />;
   return (
     <Modal onClose={onClose} title={t(`stock.finished.action.${kind}`)} size="md">
       <div className="p-4 space-y-3">

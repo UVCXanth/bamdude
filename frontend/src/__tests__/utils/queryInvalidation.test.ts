@@ -155,6 +155,14 @@ describe('invalidateOrderViews', () => {
     const keys = spy.mock.calls.map(([filters]) => JSON.stringify(filters?.queryKey));
     expect(keys).toEqual(expect.arrayContaining(['["products"]', '["projects","nav-badges"]', '["stock-journal"]']));
   });
+
+  it('a manual issue refreshes the dispatch notes it made (final review I1)', () => {
+    const qc = new QueryClient();
+    seed(qc, [['dispatch-notes', { page: 1, sort_by: 'created-desc' }], ['dispatch-note', 7]]);
+    invalidateStock(qc);
+    expect(stale(qc, ['dispatch-notes', { page: 1, sort_by: 'created-desc' }])).toBe(true);
+    expect(stale(qc, ['dispatch-note', 7])).toBe(true);
+  });
 });
 
 describe('invalidateQueueViews', () => {
@@ -268,6 +276,16 @@ describe('invalidateAfterDelete', () => {
     expect(stale(qc, ['customers'])).toBe(true);
     expect(stale(qc, ['projects'])).toBe(true);
     expect(stale(qc, ['customer', 2])).toBe(false);
+  });
+
+  it('refreshes the dispatch notes whose links a deletion leaves dangling (final review I1)', () => {
+    for (const kind of ['order', 'customer', 'product'] as const) {
+      const qc = new QueryClient();
+      seed(qc, [['dispatch-notes', { page: 1 }], ['dispatch-note', 7]]);
+      invalidateAfterDelete(qc, kind);
+      expect(stale(qc, ['dispatch-notes', { page: 1 }])).toBe(true);
+      expect(stale(qc, ['dispatch-note', 7])).toBe(true);
+    }
   });
 
   // ⚠️ **Given an id, the row's own entry is REMOVED** — still never

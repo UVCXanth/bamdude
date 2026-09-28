@@ -15,7 +15,7 @@ from backend.app.models.user import User
 from backend.app.schemas.listing import DispatchNoteOut, StockIssuePage, StockIssueRow, StockIssueUpdate
 from backend.app.services import stock_issues
 from backend.app.services.entity_codes import id_from_query
-from backend.app.services.list_paging import SortSpec, apply_sql_sort, like_contains, page_meta, resolve_sort
+from backend.app.services.list_paging import SortSpec, like_contains, page_meta, resolve_sort
 from backend.app.services.stock_issue_views import issue_rows, note_out
 
 router = APIRouter(prefix="/stock-issues", tags=["stock"])
@@ -89,7 +89,13 @@ async def list_stock_issues(
         query = query.where(_search(q.strip()))
     total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
     key, direction, _computed = resolve_sort(_ISSUE_SORT, sort_by)
-    query = apply_sql_sort(query, _ISSUE_SORT, key, direction, StockIssue.id)
+    column, _nulls_last = _ISSUE_SORT.sql[key]
+    # Ties go the key's own way: «newest first» on one timestamp still reads DN-0007 above
+    # DN-0006 (final review M6). The id is unique, so pages never overlap either way.
+    if direction == "desc":
+        query = query.order_by(column.desc(), StockIssue.id.desc())
+    else:
+        query = query.order_by(column.asc(), StockIssue.id.asc())
     if not all:
         query = query.limit(per_page).offset((page - 1) * per_page)
     issues = (await db.execute(query)).scalars().all()

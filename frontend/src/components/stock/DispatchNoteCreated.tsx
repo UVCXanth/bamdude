@@ -4,8 +4,19 @@ import { FileText } from 'lucide-react';
 import { Modal } from '../Modal';
 import { Button } from '../Button';
 
-/** «Накладну DN-0042 оформлено» — shown where the issue was made (spec workshop-dispatch-notes, rule 24). */
-export function DispatchNoteCreated({ id, code, onClose }: { id: number; code: string; onClose: () => void }) {
+/** «Накладну DN-0042 оформлено» — shown where the issue was made (spec workshop-dispatch-notes, rule 24).
+ *  `fromOrder` says where else it is listed: a manual issue has no order card (final review M7). */
+export function DispatchNoteCreated({
+  id,
+  code,
+  fromOrder = true,
+  onClose,
+}: {
+  id: number;
+  code: string;
+  fromOrder?: boolean;
+  onClose: () => void;
+}) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   return (
@@ -30,7 +41,9 @@ export function DispatchNoteCreated({ id, code, onClose }: { id: number; code: s
         </>
       }
     >
-      <p className="text-sm text-bambu-gray">{t('stock.dispatchNote.createdBody')}</p>
+      <p className="text-sm text-bambu-gray">
+        {t(fromOrder ? 'stock.dispatchNote.createdBody' : 'stock.dispatchNote.createdBodyStock')}
+      </p>
     </Modal>
   );
 }

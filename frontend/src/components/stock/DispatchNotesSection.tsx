@@ -4,7 +4,8 @@ import { useDispatchNotes } from '../../hooks/useDispatchNotes';
 import { PaginationBar } from '../PaginationBar';
 import { DispatchNotesTable } from './DispatchNotesTable';
 
-const PER_PAGE = 20;
+// One of PaginationBar's own sizes, so its select shows it (final review M8).
+const PER_PAGE = 24;
 
 /**
  * «Видачі» — a customer's or an order's dispatch notes, one server page at a time

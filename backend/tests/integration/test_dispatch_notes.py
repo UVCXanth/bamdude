@@ -210,3 +210,12 @@ async def test_a_note_is_sealed_once_and_never_empty(db_session, shop):
     with pytest.raises(stock_issues.StockIssueError) as twice:
         await stock_issues.seal(db_session, issue, actor=None)
     assert (str(twice.value), twice.value.status) == ("This issue already has its dispatch note", 409)
+
+
+@pytest.mark.asyncio
+async def test_a_stored_null_is_no_supplier_detail(db_session, shop):
+    # Final review M5: the settings route stores a JSON null as the text "None" — never on paper.
+    (
+        await db_session.execute(select(Settings).where(Settings.key == "document_supplier_iban"))
+    ).scalar_one().value = "None"
+    assert (await stock_issues.supplier_snapshot(db_session))["iban"] == ""

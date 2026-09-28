@@ -16,7 +16,7 @@ PREFIXES: dict[str, str] = {
     "order": "OR",
     "product": "PR",
     "stock_item": "SK",  # WS-09 — reserved
-    "dispatch_note": "DN",  # WS-12 — reserved
+    "dispatch_note": "DN",  # WS-12 — an issue IS its dispatch note
 }
 _WIDTH = 4
 # The largest id a search may name. Past it SQLite's parameter binder raises

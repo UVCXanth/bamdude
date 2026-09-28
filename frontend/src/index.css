@@ -695,20 +695,23 @@ body {
 }
 
 /* A page that carries a printable sheet (the dispatch note, spec workshop-dispatch-notes,
-   rule 19) prints the sheet alone: the shell, its banners and the toasts are hidden, and the
-   sheet is laid out from the page's top-left corner. Every other page prints as it did. */
+   rule 19) prints the sheet alone: whatever is neither the sheet, inside it, nor one of the
+   containers it sits in (the shell's header and sidebar, banners, toasts, the controls) is
+   taken out of the layout, and those containers drop their offsets and their scrolling. The
+   sheet stays in flow, so a long note breaks onto as many pages as it needs in every browser
+   (an absolutely positioned box is not split across pages by all of them — final review I2).
+   Every other page prints as it did. */
 @media print {
-  body:has([data-print-sheet]) * {
-    visibility: hidden;
+  body:has([data-print-sheet]) *:not([data-print-sheet]):not([data-print-sheet] *):not(:has([data-print-sheet])) {
+    display: none;
   }
-  body:has([data-print-sheet]) [data-print-sheet],
-  body:has([data-print-sheet]) [data-print-sheet] * {
-    visibility: visible;
-  }
-  body:has([data-print-sheet]) [data-print-sheet] {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
+  body:has([data-print-sheet]) *:has([data-print-sheet]) {
+    margin: 0;
+    padding: 0;
+    overflow: visible;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    background: none;
   }
 }

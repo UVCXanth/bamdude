@@ -1,9 +1,24 @@
+import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import type { DispatchNote } from '../../api/client';
-import { lineConfigLabel } from '../projects/lineConfigLabel';
+import type { TFunction } from 'i18next';
+import type { DispatchNote, DispatchNoteLine } from '../../api/client';
 import { parseUTCDate } from '../../utils/date';
 
 const CELL = 'border border-gray-400 px-2 py-1.5';
+
+/** What the paper says of a line's configuration: the options that differ from the standard
+ *  and each changed part by name — a document names what was handed over, where the order
+ *  line's caption only counts the changes (final review M11). */
+function configurationText(line: DispatchNoteLine, t: TFunction): string {
+  if (line.part_name) return '';
+  const choices = line.configuration.choices ?? [];
+  const bits = choices.filter((c) => !c.is_default).map((c) => `${c.group_name}: ${c.option_name}`);
+  for (const part of line.configuration.changed_parts ?? []) {
+    bits.push(t('stock.dispatchNote.changedPart', { name: part.name, qty: part.qty }));
+  }
+  if (bits.length) return bits.join(' · ');
+  return choices.length ? t('orders.lineConfig.standard') : '';
+}
 
 /**
  * The dispatch note as paper (spec workshop-dispatch-notes, rule 19). ⚠️ The ONE place in
@@ -57,8 +72,8 @@ export function DispatchNoteSheet({ note }: { note: DispatchNote }) {
         <div data-testid="dispatch-note-supplier">
           <div className="text-xs text-gray-600">{t('stock.dispatchNote.supplier')}</div>
           <div className="font-semibold">{s.name || '—'}</div>
-          {supplierBits.map((bit) => (
-            <div key={bit} className="text-gray-600">
+          {supplierBits.map((bit, i) => (
+            <div key={i} className="text-gray-600">
               {bit}
             </div>
           ))}
@@ -98,14 +113,19 @@ export function DispatchNoteSheet({ note }: { note: DispatchNote }) {
             <tr key={line.position}>
               <td className={CELL}>{line.position}</td>
               <td className={CELL}>
-                {line.part_name
-                  ? t('stock.notes.partOf', { part: line.part_name, product: line.product_name })
-                  : line.product_name}
+                {line.part_name ? (
+                  t('stock.notes.partOf', { part: line.part_name, product: line.product_name })
+                ) : line.product_id != null ? (
+                  // A way to the product on screen (spec rule 3); on paper it is just the name.
+                  <Link to={`/products/${line.product_id}`} className="hover:underline print:no-underline">
+                    {line.product_name}
+                  </Link>
+                ) : (
+                  line.product_name
+                )}
               </td>
               <td className={CELL}>{line.sku || '—'}</td>
-              <td className={CELL}>
-                {(line.part_name ? '' : lineConfigLabel(line.configuration, 'product', t)) || '—'}
-              </td>
+              <td className={CELL}>{configurationText(line, t) || '—'}</td>
               <td className={CELL}>{t('stock.dispatchNote.pcs')}</td>
               <td className={`${CELL} text-right tabular-nums`}>{line.quantity}</td>
             </tr>
