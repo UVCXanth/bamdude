@@ -131,6 +131,21 @@
   out, a product's stock shows the parts its orders hold, and the activity log
   says what was assembled, received, written off, moved to stock, issued and
   taken.
+- **Every issue is a dispatch note.** Issuing goods — from an order or straight
+  off the stock page — makes a dispatch note numbered `DN-0042`: the supplier's
+  details (a new card, Settings → General → Details for documents), the
+  recipient and the delivery, the basis (the order, or an issue from stock),
+  one line per product with its SKU and configuration — an order of loose parts
+  lists each part — the quantities and their total, and «Issued by / Received
+  by». The note opens right after the issue, is a white sheet in any theme and
+  prints on its own, without the app around it. The Stock page lists every note
+  on a new «Dispatch notes» tab, searchable by number, order, customer,
+  recipient, product, SKU or waybill; an order shows its own under «Issues», a
+  customer's page lists theirs, and the stock movements link each issue to its
+  note. A note is a record of what was handed over: renaming or deleting the
+  product, the order or the customer, or changing the supplier's details later
+  never changes it — only the waybill and the note text can be added
+  afterwards.
 - **A zero in a product's parts means «out of the kit»; «Not counted» marks
   what is not a part at all.** A part the product lists with a count of 0 —
   a spare handle — is still a part: it has its own shelf, an order of loose
