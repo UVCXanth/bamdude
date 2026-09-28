@@ -23,7 +23,7 @@ from sqlalchemy.orm import selectinload
 from backend.app.models.finished_stock import StockItem
 from backend.app.models.product import Product, ProductOrigin, ProductPart
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
-from backend.app.services import finished_stock, part_stock, product_facets
+from backend.app.services import finished_stock, part_stock, product_facets, stock_issues
 
 
 async def delete_product(db: AsyncSession, product: Product) -> None:
@@ -36,6 +36,8 @@ async def delete_product(db: AsyncSession, product: Product) -> None:
     """
     # Finished goods first: a product still holding stock is refused before anything goes.
     await finished_stock.delete_for_product(db, product.id)
+    # A note's lines keep their text; only the link goes (spec workshop-dispatch-notes, rule 8).
+    await stock_issues.detach_product(db, product.id)
     product.library_files = []
     product.library_folders = []
     await db.execute(

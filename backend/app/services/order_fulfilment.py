@@ -546,6 +546,7 @@ async def apply(
             given = {pid: i for pid, (_r, i) in request.parts.items() if i > 0}
             if given:
                 await part_stock.issue_parts_for_line(db, line, given, stock_issue_id=issue.id, created_by=created_by)
+        await stock_issues.seal(db, issue, actor=actor)
         await order_journal.record(
             db,
             project.id,

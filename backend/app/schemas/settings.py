@@ -108,6 +108,12 @@ class AppSettings(BaseModel):
     default_filament_cost: float = Field(default=0.0, description="Default filament cost per kg (0 = unset)")
     currency: str = Field(default="USD", description="Currency for cost tracking")
     energy_cost_per_kwh: float = Field(default=0.15, description="Electricity cost per kWh for energy tracking")
+    # Dispatch notes (spec workshop-dispatch-notes, rule 10) — copied into each new note.
+    document_supplier_name: str = Field(default="", max_length=255, description="Supplier name on dispatch notes")
+    document_supplier_address: str = Field(default="", max_length=255, description="Supplier address")
+    document_supplier_phone: str = Field(default="", max_length=255, description="Supplier phone")
+    document_supplier_code: str = Field(default="", max_length=255, description="Supplier company / tax code")
+    document_supplier_iban: str = Field(default="", max_length=255, description="Supplier IBAN")
 
     # Spoolman integration
     spoolman_enabled: bool = Field(default=False, description="Enable Spoolman integration for filament tracking")
@@ -712,6 +718,11 @@ class AppSettingsUpdate(BaseModel):
     default_filament_cost: float | None = None
     currency: str | None = None
     energy_cost_per_kwh: float | None = None
+    document_supplier_name: str | None = Field(default=None, max_length=255)
+    document_supplier_address: str | None = Field(default=None, max_length=255)
+    document_supplier_phone: str | None = Field(default=None, max_length=255)
+    document_supplier_code: str | None = Field(default=None, max_length=255)
+    document_supplier_iban: str | None = Field(default=None, max_length=255)
     spoolman_enabled: bool | None = None
     zigbee_enabled: bool | None = None
     device_labels_enabled: bool | None = None

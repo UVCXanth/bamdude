@@ -59,7 +59,7 @@ from backend.app.services import (
     stock_pick,
 )
 from backend.app.services.configuration_views import configuration_out, groups_by_product
-from backend.app.services.entity_codes import id_from_query
+from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.line_composition import (
     LineConfig,
     composition,
@@ -592,6 +592,7 @@ async def move_stock(
         raise HTTPException(status_code=422, detail="An issue names its customer")
     qty = data.qty if data.qty is not None else 0
     moved = True
+    issue = None
     try:
         if data.kind == "receipt":
             await finished_stock.receive(db, item, qty, note=data.note, actor=actor)
@@ -626,9 +627,15 @@ async def move_stock(
                 actor=actor,
                 stock_issue_id=issue.id,
             )
+            await stock_issues.seal(db, issue, actor=actor)
     except (finished_stock.FinishedStockError, stock_issues.StockIssueError) as e:
         _raise(e)
-    return StockMoveOut(**(await _fresh_out(db, item)).model_dump(), moved=moved)
+    return StockMoveOut(
+        **(await _fresh_out(db, item)).model_dump(),
+        moved=moved,
+        issue_id=issue.id if issue is not None else None,
+        issue_code=code_for("dispatch_note", issue.id) if issue is not None else None,
+    )
 
 
 @router.post("/assemble", response_model=StockItemOut)

@@ -44,6 +44,9 @@ class StockMoveOut(StockItemOut):
     count that matched the shelf (spec rule 10: «без змін»)."""
 
     moved: bool = True
+    #: An issue's dispatch note (spec workshop-dispatch-notes, rule 17); None for every other kind.
+    issue_id: int | None = None
+    issue_code: str | None = None
 
 
 class StockSuggestLineIn(BaseModel):
