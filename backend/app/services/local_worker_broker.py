@@ -9,6 +9,7 @@ from pathlib import Path
 
 from backend.app.services.preview_artifacts import disk
 from backend.app.services.preview_protocol import CONTROL_SECONDS, STARTUP_SECONDS
+from backend.app.services.worker_containment import WorkerContainment, WorkerContainmentError
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,10 @@ class LocalWorkerBroker:
         self.token = secrets.token_urlsafe(32)
         self.server = None
         self.nc = None
+        # Ties nats-server to this process's lifetime (a kill-on-close Job Object on
+        # Windows). A hard stop runs no shutdown code; an untied child outlives it,
+        # keeps the broker's lifetime lease, and every later start refuses to recover.
+        self.containment: WorkerContainment | None = None
 
     @property
     def url(self) -> str:
@@ -44,6 +49,7 @@ class LocalWorkerBroker:
         try:
             async with asyncio.timeout(STARTUP_SECONDS):
                 await disk(self.server.start)
+                self._contain()
                 self.nc = await nats.connect(
                     self.server.url,
                     token=self.token,
@@ -59,6 +65,13 @@ class LocalWorkerBroker:
         if self.server.recovered_generation:
             logger.warning("Local worker broker recovered abandoned generation=%s", self.server.recovered_generation)
 
+    def _contain(self) -> None:
+        try:
+            self.containment = WorkerContainment.attach(self.server.pid)
+        except WorkerContainmentError as exc:
+            # The broker still serves; only a hard stop could now orphan it.
+            logger.warning("Local worker broker is not tied to BamDude's lifetime: %s", exc)
+
     async def stop(self) -> None:
         if self.nc:
             await self.nc.close()
@@ -68,6 +81,9 @@ class LocalWorkerBroker:
                 await disk(self.server.stop)
             finally:
                 self.server = None
+                if self.containment is not None:
+                    self.containment.close()
+                    self.containment = None
 
 
 _owner: LocalWorkerBroker | None = None
