@@ -693,3 +693,22 @@ body {
 .calendar-scroll::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in srgb, var(--text-muted) 80%, transparent);
 }
+
+/* A page that carries a printable sheet (the dispatch note, spec workshop-dispatch-notes,
+   rule 19) prints the sheet alone: the shell, its banners and the toasts are hidden, and the
+   sheet is laid out from the page's top-left corner. Every other page prints as it did. */
+@media print {
+  body:has([data-print-sheet]) * {
+    visibility: hidden;
+  }
+  body:has([data-print-sheet]) [data-print-sheet],
+  body:has([data-print-sheet]) [data-print-sheet] * {
+    visibility: visible;
+  }
+  body:has([data-print-sheet]) [data-print-sheet] {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+  }
+}

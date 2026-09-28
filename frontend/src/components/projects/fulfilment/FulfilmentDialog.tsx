@@ -8,6 +8,7 @@ import { useFulfilment } from '../../../hooks/useFulfilment';
 import { invalidateOrderViews } from '../../../utils/queryInvalidation';
 import { Button } from '../../Button';
 import { Modal } from '../../Modal';
+import { DispatchNoteCreated } from '../../stock/DispatchNoteCreated';
 import { RecipientFields } from './RecipientFields';
 import {
   clampDraft,
@@ -58,6 +59,9 @@ export function FulfilmentDialog({
 }) {
   const { t } = useTranslation();
   const { data: state, isLoading } = useFulfilment(orderId);
+  // The batch made a dispatch note: say so, with a way to open it (spec workshop-dispatch-notes, rule 24).
+  const [created, setCreated] = useState<{ id: number; code: string } | null>(null);
+  if (created) return <DispatchNoteCreated id={created.id} code={created.code} onClose={onClose} />;
   return (
     <Modal onClose={onClose} title={t('orders.fulfil.title')} size="6xl">
       {isLoading || !state ? (
@@ -70,6 +74,7 @@ export function FulfilmentDialog({
           complete={complete}
           onClose={onClose}
           onDone={onDone}
+          onIssued={setCreated}
         />
       )}
     </Modal>
@@ -83,6 +88,7 @@ function FulfilmentForm({
   complete: completeAsked,
   onClose,
   onDone,
+  onIssued,
 }: {
   orderId: number;
   state: FulfilmentState;
@@ -90,6 +96,8 @@ function FulfilmentForm({
   complete: boolean;
   onClose: () => void;
   onDone?: (result: FulfilmentResult) => void;
+  /** The batch opened an issue — its dispatch note replaces the dialog. */
+  onIssued: (note: { id: number; code: string }) => void;
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
@@ -133,8 +141,12 @@ function FulfilmentForm({
       }),
     onSuccess: (result) => {
       invalidateOrderViews(qc, { orderId });
-      showToast(t('orders.fulfil.done'));
       onDone?.(result);
+      if (result.issue_id != null && result.issue_code) {
+        onIssued({ id: result.issue_id, code: result.issue_code });
+        return;
+      }
+      showToast(t('orders.fulfil.done'));
       onClose();
     },
     // The server's sentence, and the numbers read again — the refusal means they moved.

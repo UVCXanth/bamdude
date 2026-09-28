@@ -8,6 +8,7 @@ import { useStockLookup } from '../../hooks/useFinishedStock';
 import { invalidateStock } from '../../utils/queryInvalidation';
 import { Button } from '../Button';
 import { Modal } from '../Modal';
+import { DispatchNoteCreated } from './DispatchNoteCreated';
 import { CustomerPicker } from '../pickers/CustomerPicker';
 import { RecipientFields } from '../projects/fulfilment/RecipientFields';
 import { signed } from '../products/stockMovementHelpers';
@@ -79,10 +80,16 @@ export function StockMoveDialog({
   const position = item ?? lookup?.item ?? null;
   const creates = CREATES.has(kind);
 
+  // An issue made a dispatch note: say so, with a way to open it (spec workshop-dispatch-notes, rule 24).
+  const [created, setCreated] = useState<{ id: number; code: string } | null>(null);
   const move = useMutation({
     mutationFn: (body: StockMoveBody) => api.moveStock(body),
     onSuccess: (result) => {
       invalidateStock(queryClient);
+      if (result.issue_id != null && result.issue_code) {
+        setCreated({ id: result.issue_id, code: result.issue_code });
+        return;
+      }
       showToast(t(result.moved ? 'stock.move.saved' : 'stock.move.nothingMoved'));
       onClose();
     },
@@ -124,6 +131,7 @@ export function StockMoveDialog({
     move.mutate(body);
   };
 
+  if (created) return <DispatchNoteCreated id={created.id} code={created.code} onClose={onClose} />;
   return (
     <Modal onClose={onClose} title={t(`stock.finished.action.${kind}`)} size="md">
       <div className="p-4 space-y-3">

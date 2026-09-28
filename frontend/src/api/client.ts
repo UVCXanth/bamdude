@@ -3789,6 +3789,12 @@ export interface AppSettings {
   archive_3mf_retention_days: number;
   default_filament_cost: number;
   currency: string;
+  /** Dispatch notes (spec workshop-dispatch-notes, rule 10) — copied into each new note. */
+  document_supplier_name: string;
+  document_supplier_address: string;
+  document_supplier_phone: string;
+  document_supplier_code: string;
+  document_supplier_iban: string;
   energy_cost_per_kwh: number;
   // Zigbee coordinator. Declared here as well as on the backend schema because
   // the settings PATCH is typed by this interface — an undeclared key would be

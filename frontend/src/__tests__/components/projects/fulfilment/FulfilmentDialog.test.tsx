@@ -146,7 +146,7 @@ describe('FulfilmentDialog', () => {
     expect(close).toBeDisabled();
   });
 
-  it('posts the batch, then invalidates and closes', async () => {
+  it('posts the batch, then names the dispatch note it made and closes from there', async () => {
     const onClose = vi.fn();
     render(<FulfilmentDialog orderId={5} onClose={onClose} />);
     fireEvent.change(await screen.findByLabelText('Issue now — Pipe'), { target: { value: '4' } });
@@ -171,7 +171,20 @@ describe('FulfilmentDialog', () => {
         write_off_note: null,
       }),
     );
+    // spec workshop-dispatch-notes, rule 24: the issue made DN-0012 — say so before closing.
+    expect(await screen.findByText('Dispatch note DN-0012 is made')).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Close' })[0]);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('closes at once when the batch issued nothing', async () => {
+    fulfil.mockResolvedValue({ order: { id: 5 } as never, issue_id: null, issue_code: null });
+    const onClose = vi.fn();
+    render(<FulfilmentDialog orderId={5} mode="receive" onClose={onClose} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Execute' }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(screen.queryByText(/is made/)).not.toBeInTheDocument();
   });
 
   it('keeps the dialog with the server sentence when it refuses', async () => {

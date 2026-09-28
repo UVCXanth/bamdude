@@ -91,6 +91,20 @@ describe('StockMoveDialog', () => {
     );
   });
 
+  it('an issue names the dispatch note it made', async () => {
+    // spec workshop-dispatch-notes, rule 24.
+    move.mockResolvedValue({ ...pipeItem, moved: true, issue_id: 7, issue_code: 'DN-0007' });
+    vi.spyOn(api, 'getCustomer').mockResolvedValue({ id: 9, name: 'ACME', contacts: [] } as never);
+    const onClose = vi.fn();
+    render(<StockMoveDialog kind="issue" item={pipeItem} onClose={onClose} />);
+    const customer = screen.getByLabelText('Customer');
+    await screen.findByRole('option', { name: 'CU-0009 · ACME' });
+    fireEvent.change(customer, { target: { value: '9' } });
+    fireEvent.click(screen.getByTestId('stock-move-submit'));
+    expect(await screen.findByText('Dispatch note DN-0007 is made')).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('a count that matches the shelf says nothing moved', async () => {
     move.mockResolvedValue({ ...pipeItem, moved: false });
     render(<StockMoveDialog kind="stocktake" item={pipeItem} onClose={() => {}} />);

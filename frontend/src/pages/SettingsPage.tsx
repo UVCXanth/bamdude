@@ -18,6 +18,7 @@ import { Modal } from '../components/Modal';
 import { LdapUserPicker } from '../components/LdapUserPicker';
 import { ZigbeeCoordinatorCard } from '../components/zigbee/ZigbeeCoordinatorCard';
 import { DryingSchedulesCard } from '../components/settings/DryingSchedulesCard';
+import { DocumentSupplierCard } from '../components/settings/DocumentSupplierCard';
 import { SensorsSection } from '../components/zigbee/SensorsSection';
 import { SmartPlugCard } from '../components/SmartPlugCard';
 import { AddSmartPlugModal } from '../components/AddSmartPlugModal';
@@ -86,7 +87,7 @@ type FilamentSubTab = 'general' | 'marking';
 // Module-level search registry. Tab-level entries only — see lib/settingsSearch.ts
 // for the design note. Adding a narrower `anchor="card-xyz"` entry + id on the
 // target Card is the upgrade path when keyword searches miss something.
-registerSettingsSearch({ labelKey: 'settings.tabs.general', tab: 'general', keywords: 'general language date time format printer model cards appearance theme dark light archive auto save thumbnails camera external video stream currency cost kwh price file manager disk updates version firmware beta sidebar links navigation', anchor: 'tab-general' });
+registerSettingsSearch({ labelKey: 'settings.tabs.general', tab: 'general', keywords: 'general language date time format printer model cards appearance theme dark light archive auto save thumbnails camera external video stream currency cost kwh price file manager disk updates version firmware beta sidebar links navigation dispatch note supplier requisites iban documents', anchor: 'tab-general' });
 registerSettingsSearch({ labelKey: 'settings.tabs.slicing', tab: 'slicing', keywords: 'slicing slicer sidecar orcaslicer bambu studio url api preset profile slice engine open desktop stall timeout', anchor: 'tab-slicing' });
 registerSettingsSearch({ labelKey: 'settings.preferredSlicer', tab: 'slicing', keywords: 'preferred slicer orcaslicer bambu studio desktop open in slicer slice engine', anchor: 'card-slicer-configuration' });
 registerSettingsSearch({ labelKey: 'settings.useSlicerApi', tab: 'slicing', keywords: 'server side slicing sidecar api url health timeout orcaslicer bambu studio', anchor: 'card-slicer-configuration' });
@@ -1269,6 +1270,11 @@ export function SettingsPage() {
       (baseline.archive_3mf_retention_days ?? 30) !== (localSettings.archive_3mf_retention_days ?? 30) ||
       baseline.default_filament_cost !== localSettings.default_filament_cost ||
       baseline.currency !== localSettings.currency ||
+      (baseline.document_supplier_name ?? '') !== (localSettings.document_supplier_name ?? '') ||
+      (baseline.document_supplier_address ?? '') !== (localSettings.document_supplier_address ?? '') ||
+      (baseline.document_supplier_phone ?? '') !== (localSettings.document_supplier_phone ?? '') ||
+      (baseline.document_supplier_code ?? '') !== (localSettings.document_supplier_code ?? '') ||
+      (baseline.document_supplier_iban ?? '') !== (localSettings.document_supplier_iban ?? '') ||
       baseline.energy_cost_per_kwh !== localSettings.energy_cost_per_kwh ||
       baseline.check_updates !== localSettings.check_updates ||
       (baseline.check_printer_firmware ?? true) !== (localSettings.check_printer_firmware ?? true) ||
@@ -1388,6 +1394,11 @@ export function SettingsPage() {
         archive_3mf_retention_days: localSettings.archive_3mf_retention_days,
         default_filament_cost: localSettings.default_filament_cost,
         currency: localSettings.currency,
+        document_supplier_name: localSettings.document_supplier_name,
+        document_supplier_address: localSettings.document_supplier_address,
+        document_supplier_phone: localSettings.document_supplier_phone,
+        document_supplier_code: localSettings.document_supplier_code,
+        document_supplier_iban: localSettings.document_supplier_iban,
         energy_cost_per_kwh: localSettings.energy_cost_per_kwh,
         check_updates: localSettings.check_updates,
         check_printer_firmware: localSettings.check_printer_firmware,
@@ -3455,6 +3466,18 @@ export function SettingsPage() {
               </CardContent>
             </Card>
           )}
+
+          {/* Details for documents — copied into each new dispatch note (spec workshop-dispatch-notes, rule 11) */}
+          <DocumentSupplierCard
+            values={{
+              name: localSettings.document_supplier_name ?? '',
+              address: localSettings.document_supplier_address ?? '',
+              phone: localSettings.document_supplier_phone ?? '',
+              code: localSettings.document_supplier_code ?? '',
+              iban: localSettings.document_supplier_iban ?? '',
+            }}
+            onChange={(key, value) => updateSetting(key, value)}
+          />
 
           {/* Cost Tracking */}
           <Card>
