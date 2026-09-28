@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Battery, Droplets, RotateCcw, Save, Settings2, Thermometer, X } from 'lucide-react';
+import { Battery, Droplets, RotateCcw, Save, Settings2, Thermometer } from 'lucide-react';
 import { api } from '../api/client';
 import type { AppSettingsUpdate } from '../api/client';
 import { Button } from './Button';
+import { Modal } from './Modal';
+import { Select } from './Select';
 import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -301,24 +303,17 @@ export function LocationSensorOptionsModal({ onClose }: Props) {
 
   return (
     <>
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div
-        className="bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary w-full max-w-lg max-h-[90vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-full bg-bambu-green/20 text-bambu-green">
-              <Settings2 className="w-5 h-5" />
-            </div>
-            <h2 className="text-lg font-semibold text-white">{t('locationHaSensors.options.title')}</h2>
-          </div>
-          <button onClick={onClose} className="text-bambu-gray hover:text-white transition-colors">
-            <X className="w-5 h-5" />
-          </button>
+    <Modal
+      onClose={onClose}
+      size="lg"
+      icon={
+        <div className="p-2 rounded-full bg-bambu-green/20 text-bambu-green">
+          <Settings2 className="w-5 h-5" />
         </div>
-
-        <form onSubmit={handleSave} className="px-6 pb-6 pt-3 space-y-4">
+      }
+      title={t('locationHaSensors.options.title')}
+    >
+      <form onSubmit={handleSave} className="px-6 pb-6 pt-3 space-y-4">
           <p className="text-xs text-bambu-gray">{t('locationHaSensors.options.description')}</p>
 
           {canManageServer ? <div className="space-y-3">
@@ -367,45 +362,45 @@ export function LocationSensorOptionsModal({ onClose }: Props) {
               <label className="block text-xs text-bambu-gray" htmlFor="location-sensor-above-color">
                 {t('locationHaSensors.options.aboveColor')}
               </label>
-              <select
+              <Select
                 id="location-sensor-below-color"
                 value={belowColor}
                 onChange={(e) => setBelowColor(e.target.value as LocationSensorAlertColor)}
                 disabled={!colorizeValues}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:cursor-not-allowed"
+                className="w-full"
               >
                 {LOCATION_SENSOR_ALERT_COLORS.map((color) => (
                   <option key={color} value={color}>
                     {t(`locationHaSensors.options.colors.${color}`)}
                   </option>
                 ))}
-              </select>
-              <select
+              </Select>
+              <Select
                 id="location-sensor-optimal-color"
                 value={optimalColor}
                 onChange={(e) => setOptimalColor(e.target.value as LocationSensorAlertColor)}
                 disabled={!colorizeValues}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:cursor-not-allowed"
+                className="w-full"
               >
                 {LOCATION_SENSOR_ALERT_COLORS.map((color) => (
                   <option key={color} value={color}>
                     {t(`locationHaSensors.options.colors.${color}`)}
                   </option>
                 ))}
-              </select>
-              <select
+              </Select>
+              <Select
                 id="location-sensor-above-color"
                 value={aboveColor}
                 onChange={(e) => setAboveColor(e.target.value as LocationSensorAlertColor)}
                 disabled={!colorizeValues}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:cursor-not-allowed"
+                className="w-full"
               >
                 {LOCATION_SENSOR_ALERT_COLORS.map((color) => (
                   <option key={color} value={color}>
                     {t(`locationHaSensors.options.colors.${color}`)}
                   </option>
                 ))}
-              </select>
+              </Select>
             </div>
           </div>
 
@@ -448,8 +443,7 @@ export function LocationSensorOptionsModal({ onClose }: Props) {
             </div>
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
 
     {showResetConfirm && (
       <ConfirmModal

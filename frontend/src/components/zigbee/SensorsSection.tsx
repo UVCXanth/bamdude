@@ -8,6 +8,7 @@ import type { HADisplayEntity, LocationHASensor, PrinterHASensor, ZigbeeDevice, 
 import { useAuth } from '../../contexts/AuthContext';
 import { invalidateSensorViews } from '../../utils/sensorQueryInvalidation';
 import { Button } from '../Button';
+import { Select } from '../Select';
 import { Card, CardContent, CardHeader } from '../Card';
 import { ConfirmModal } from '../ConfirmModal';
 import { Modal } from '../Modal';
@@ -169,21 +170,21 @@ export function SensorsSection({ adoptDevice, onAdoptHandled }: Props) {
         <p className="text-sm text-bambu-gray">{t('sensorSettings.empty')}</p>}
       {(sensors.length > 0 || groups.length > 0) &&
         <div className="mb-3 flex flex-wrap gap-2">
-          <select aria-label={t('sensorSettings.sourceFilter')} value={sourceFilter}
+          <Select aria-label={t('sensorSettings.sourceFilter')} value={sourceFilter}
             onChange={event => setSourceFilter(event.target.value as typeof sourceFilter)}
-            className="rounded border border-bambu-dark-tertiary bg-bambu-dark-secondary px-2 py-1 text-sm text-white">
+            size="sm" tone="raised">
             <option value="all">{t('sensorSettings.allSources')}</option>
             <option value="zigbee">Zigbee</option>
             <option value="ha">Home Assistant</option>
-          </select>
-          <select aria-label={t('sensorSettings.targetFilter')} value={targetFilter}
+          </Select>
+          <Select aria-label={t('sensorSettings.targetFilter')} value={targetFilter}
             onChange={event => setTargetFilter(event.target.value as typeof targetFilter)}
-            className="rounded border border-bambu-dark-tertiary bg-bambu-dark-secondary px-2 py-1 text-sm text-white">
+            size="sm" tone="raised">
             <option value="all">{t('sensorSettings.allTargets')}</option>
             <option value="printer">{t('sensorSettings.printer')}</option>
             <option value="storage">{t('sensorSettings.storage')}</option>
             <option value="room">{t('sensorSettings.room')}</option>
-          </select>
+          </Select>
         </div>}
       {(sensors.length > 0 || groups.length > 0) &&
         shownZigbee.length === 0 && shownGroups.length === 0 &&

@@ -10,6 +10,7 @@ import { sensorsForStorage } from '../../utils/sensorReadings';
 import { SensorChip } from './SensorChip';
 import { SensorHistoryModal } from './SensorHistoryModal';
 import { HASensorHistoryModal } from '../HASensorHistoryModal';
+import { Select } from '../Select';
 import { useStorageCondition } from '../../hooks/useStorageCondition';
 import type { ConditionCategory } from '../../utils/storageCondition';
 import { useToast } from '../../contexts/ToastContext';
@@ -31,17 +32,17 @@ function PrimarySelector({ locationId, category }: { locationId: number; categor
   if (candidates.length < 2 || !hasPermission('smart_sensors:update')) return null;
   return <label className="inline-flex items-center gap-1 text-xs text-bambu-gray" onClick={event => event.stopPropagation()}>
     {t(`inventory.${category}`)}: {t('haSensors.primary')}
-    <select aria-label={`${t(`inventory.${category}`)} ${t('haSensors.primary')}`}
+    <Select aria-label={`${t(`inventory.${category}`)} ${t('haSensors.primary')}`}
       value={primary ? `${primary.source}:${primary.binding_id}` : ''}
       onChange={event => {
         const chosen = candidates.find(item => `${item.source}:${item.binding_id}` === event.target.value);
         if (chosen) mutation.mutate({ location_id: locationId, category, source: chosen.source, binding_id: chosen.binding_id });
-      }} className="rounded bg-bambu-dark-tertiary px-1 py-0.5 text-white" disabled={mutation.isPending}>
+      }} size="xs" tone="raised" disabled={mutation.isPending}>
       <option value="">{t('haSensors.selectPrimary')}</option>
       {candidates.map(item => <option key={`${item.source}:${item.binding_id}`} value={`${item.source}:${item.binding_id}`}>
         {item.name} ({item.source === 'ha' ? 'HA' : 'Zigbee'})
       </option>)}
-    </select>
+    </Select>
   </label>;
 }
 

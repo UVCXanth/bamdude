@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Gauge, Loader2, Save, Search, X } from 'lucide-react';
+import { Gauge, Loader2, Save, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import type { HADisplayEntity, Printer, PrinterHASensor } from '../api/client';
 import { Button } from './Button';
+import { Modal } from './Modal';
+import { Select } from './Select';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { HA_SENSOR_BINARY_LABELS } from '../utils/haSensorDisplay';
@@ -48,14 +50,6 @@ export function HASensorModal({ sensor, printers, onClose, initialEntity, config
   const [blockPrint, setBlockPrint] = useState(sensor?.block_print ?? false);
   const [search, setSearch] = useState('');
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   // Same gate and the same wording as AddSmartPlugModal: without a configured
   // Home Assistant the picker can only return an error, so say why up front
@@ -168,26 +162,18 @@ export function HASensorModal({ sensor, printers, onClose, initialEntity, config
   const isPending = saveMutation.isPending || deleteMutation.isPending;
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div
-        className="bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary w-full max-w-lg max-h-[90vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-full bg-bambu-green/20 text-bambu-green">
-              <Gauge className="w-5 h-5" />
-            </div>
-            <h2 className="text-lg font-semibold text-white">
-              {isEditing ? t('haSensors.editTitle') : t('haSensors.addTitle')}
-            </h2>
-          </div>
-          <button onClick={onClose} className="text-bambu-gray hover:text-white transition-colors">
-            <X className="w-5 h-5" />
-          </button>
+    <Modal
+      onClose={onClose}
+      closeDisabled={isPending}
+      size="lg"
+      icon={
+        <div className="p-2 rounded-full bg-bambu-green/20 text-bambu-green">
+          <Gauge className="w-5 h-5" />
         </div>
-
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+      }
+      title={isEditing ? t('haSensors.editTitle') : t('haSensors.addTitle')}
+    >
+      <form onSubmit={handleSubmit} className="p-6 space-y-4">
           {error && (
             <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded-lg text-sm text-red-700 dark:text-red-400">
               {error}
@@ -197,17 +183,17 @@ export function HASensorModal({ sensor, printers, onClose, initialEntity, config
           {!isEditing && (
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('haSensors.printer')}</label>
-              <select
+              <Select
                 value={printerId}
                 onChange={(e) => setPrinterId(e.target.value === '' ? '' : Number(e.target.value))}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white"
+                className="w-full"
               >
                 {printers.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
                   </option>
                 ))}
-              </select>
+              </Select>
             </div>
           )}
 
@@ -285,22 +271,22 @@ export function HASensorModal({ sensor, printers, onClose, initialEntity, config
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white"
+              className="w-full"
             />
           </div>
 
           <div>
             <label className="block text-sm text-bambu-gray mb-1">{t('haSensors.alertWhen')}</label>
             {kind === 'binary' ? (
-              <select
+              <Select
                 value={alertState}
                 onChange={(e) => setAlertState(e.target.value as 'on' | 'off' | '')}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white"
+                className="w-full"
               >
                 <option value="">{t('haSensors.alertNever')}</option>
                 <option value="on">{stateLabel('on')}</option>
                 <option value="off">{stateLabel('off')}</option>
-              </select>
+              </Select>
             ) : (
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -312,7 +298,7 @@ export function HASensorModal({ sensor, printers, onClose, initialEntity, config
                     step="any"
                     value={alertAbove}
                     onChange={(e) => setAlertAbove(e.target.value)}
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white"
+                    className="w-full"
                   />
                 </div>
                 <div>
@@ -324,7 +310,7 @@ export function HASensorModal({ sensor, printers, onClose, initialEntity, config
                     step="any"
                     value={alertBelow}
                     onChange={(e) => setAlertBelow(e.target.value)}
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white"
+                    className="w-full"
                   />
                 </div>
               </div>
@@ -394,7 +380,6 @@ export function HASensorModal({ sensor, printers, onClose, initialEntity, config
             </div>
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
   );
 }

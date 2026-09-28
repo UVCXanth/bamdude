@@ -6,6 +6,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import { api } from '../api/client';
 import { parseUTCDate } from '../utils/date';
 import { Modal } from './Modal';
+import { Select } from './Select';
 
 interface Props {
   sensorId: number;
@@ -39,11 +40,11 @@ export function HASensorHistoryModal({ sensorId, source, name, onClose }: Props)
           className={`rounded px-3 py-1 text-sm ${hours === value ? 'bg-bambu-green text-black' : 'bg-bambu-dark-tertiary text-white'}`}>
           {value < 48 ? `${value}h` : `${value / 24}d`}
         </button>)}
-        {revisions.length > 1 && <select aria-label={t('haSensors.historyRevision')} value={revision}
+        {revisions.length > 1 && <Select aria-label={t('haSensors.historyRevision')} value={revision}
           onChange={event => setSelectedRevision(Number(event.target.value))}
-          className="rounded bg-bambu-dark-tertiary px-2 text-sm text-white">
+          size="sm" tone="raised">
           {revisions.map(value => <option value={value} key={value}>{t('haSensors.historyRevision')} {value}</option>)}
-        </select>}
+        </Select>}
       </div>
       {isLoading ? <p className="text-bambu-gray">{t('common.loading')}</p> : error ?
         <p className="text-red-400">{error.message}</p> : points.length === 0 ?
