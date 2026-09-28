@@ -313,6 +313,8 @@ class ProjectLineResponse(BaseModel):
     received: int = 0
     issued: int = 0
     held: int = 0
+    #: Written off under the order (spec workshop-order-issue-followups, rule 44).
+    written_off: int = 0
     #: Capped printed-plus-stock coverage for this line.  A production surplus
     #: stays visible in ``units_printed`` but cannot overfill this number.
     covered_units: int
@@ -809,6 +811,8 @@ class FulfilmentPartIn(BaseModel):
     part_id: int
     receive: int = Field(default=0, ge=0, le=MAX_QTY)
     issue: int = Field(default=0, ge=0, le=MAX_QTY)
+    #: Held parts written off (spec workshop-order-issue-followups, rule 46).
+    write_off: int = Field(default=0, ge=0, le=MAX_QTY)
 
 
 class FulfilmentLineIn(BaseModel):
@@ -816,6 +820,8 @@ class FulfilmentLineIn(BaseModel):
     assemble: int = Field(default=0, ge=0, le=MAX_QTY)
     receive: int = Field(default=0, ge=0, le=MAX_QTY)
     issue: int = Field(default=0, ge=0, le=MAX_QTY)
+    #: Held units written off (spec workshop-order-issue-followups, rule 46).
+    write_off: int = Field(default=0, ge=0, le=MAX_QTY)
     #: A parts line's numbers, part by part.
     parts: list[FulfilmentPartIn] = Field(default_factory=list, max_length=500)
 
@@ -826,6 +832,8 @@ class FulfilmentIn(BaseModel):
     waybill: str | None = Field(default=None, max_length=WAYBILL_MAX)
     note: str | None = Field(default=None, max_length=2000)
     complete: bool = False
+    #: Why the batch writes something off — required when it does (followups, rule 46).
+    write_off_note: str | None = Field(default=None, max_length=2000)
 
 
 class PartStateOut(BaseModel):
@@ -835,6 +843,7 @@ class PartStateOut(BaseModel):
     can_receive: int
     held: int
     issued: int
+    written_off: int = 0
 
 
 class LineStateOut(BaseModel):
@@ -848,6 +857,7 @@ class LineStateOut(BaseModel):
     can_receive: int
     held: int
     issued: int
+    written_off: int = 0
     parts: list[PartStateOut] = []
 
 

@@ -7,7 +7,7 @@ APP = Path(__file__).resolve().parents[2] / "app"
 ALLOWED = {APP / "services" / "part_stock.py", APP / "models" / "project_line.py"}
 #: The same names are a product line's counters, which services/finished_stock.py writes.
 SHARED_WITH_THE_LINE = APP / "services" / "finished_stock.py"
-COUNTERS = {"received", "issued", "returned"}
+COUNTERS = {"received", "issued", "returned", "written_off"}
 
 
 def _writes(tree: ast.AST, *, counters: bool = True) -> list[int]:

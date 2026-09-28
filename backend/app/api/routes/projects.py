@@ -258,12 +258,14 @@ def _line_counters(line: ProjectLine, parts: dict) -> dict[str, int]:
             "received": sum(row.received for row in rows),
             "issued": sum(row.issued for row in rows),
             "held": sum(part_stock.part_held(row) for row in rows),
+            "written_off": sum(row.written_off for row in rows),
         }
     return {
         "assembled": line.assembled or 0,
         "received": line.received or 0,
         "issued": line.issued or 0,
         "held": finished_stock.held_units(line),
+        "written_off": line.written_off or 0,
     }
 
 
@@ -1306,13 +1308,22 @@ async def fulfil_order(
     requests = []
     for line in data.lines:
         parts: dict[int, tuple[int, int]] = {}
+        parts_write_off: dict[int, int] = {}
         for part in line.parts:
             if part.part_id in parts:
                 raise HTTPException(status_code=422, detail="A part is named twice")
             parts[part.part_id] = (part.receive, part.issue)
+            if part.write_off:
+                parts_write_off[part.part_id] = part.write_off
         requests.append(
             order_fulfilment.LineRequest(
-                line_id=line.line_id, assemble=line.assemble, receive=line.receive, issue=line.issue, parts=parts
+                line_id=line.line_id,
+                assemble=line.assemble,
+                receive=line.receive,
+                issue=line.issue,
+                write_off=line.write_off,
+                parts=parts,
+                parts_write_off=parts_write_off,
             )
         )
     try:
@@ -1325,6 +1336,7 @@ async def fulfil_order(
             note=data.note,
             complete=data.complete,
             actor=await acting_user(request, db, current_user),
+            write_off_note=data.write_off_note,
         )
     except (order_fulfilment.FulfilmentError, stock_issues.StockIssueError, finished_stock.FinishedStockError) as e:
         raise HTTPException(status_code=e.status, detail=str(e)) from e

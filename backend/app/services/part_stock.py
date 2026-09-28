@@ -143,6 +143,8 @@ REASONS = (
     "held_for_order",
     "hold_released",
     "issued_for_order",
+    # spec workshop-order-issue-followups, rule 45 — broken while held, paired with hold_released.
+    "written_off_for_order",
 )
 
 #: Which way a reason is allowed to point. Banking a surplus, counting an
@@ -161,6 +163,7 @@ _REQUIRED_SIGN = {
     "held_for_order": -1,  # …and held off the free balance for that order
     "hold_released": 1,  # the hold lifted — paired with issued_for_order, or alone on cancel
     "issued_for_order": -1,  # handed to the customer under an issue
+    "written_off_for_order": -1,  # broken while held — paired with hold_released
     "manual": 0,  # either
 }
 
@@ -826,8 +829,8 @@ async def reserved_units_for_line(db: AsyncSession, line: ProjectLine) -> int:
 
 
 def part_held(row: ProjectLinePartStock) -> int:
-    """What a parts line still holds of one part on the shelf (spec rule 7)."""
-    return row.received - row.issued - row.returned
+    """What a parts line still holds of one part on the shelf (spec rule 7; followups, rule 44)."""
+    return row.received - row.issued - row.returned - row.written_off
 
 
 async def line_part_stock(db: AsyncSession, line_ids: Sequence[int]) -> dict[int, dict[int, ProjectLinePartStock]]:
@@ -928,6 +931,29 @@ async def issue_parts_for_line(
     await db.flush()
 
 
+async def write_off_parts_for_line(
+    db: AsyncSession, line: ProjectLine, counts: Mapping[int, int], *, note: str, created_by: int | None
+) -> None:
+    """A parts line's held parts written off (spec workshop-order-issue-followups, rule 45) —
+    a zero-sum pair, as an issue: the free balance never saw them."""
+    wanted = {pid: n for pid, n in counts.items() if n > 0}
+    if not wanted:
+        return
+    parts = await _locked_parts(db, list(wanted))
+    rows = (await line_part_stock(db, [line.id])).get(line.id, {})
+    for part in parts:
+        held = part_held(rows[part.id]) if part.id in rows else 0
+        if wanted[part.id] > held:
+            raise PartStockError(f"Only {held} of {part.name} on the shelf for this order")
+    for part in parts:
+        n = wanted[part.id]
+        common = {"project_line_id": line.id, "created_by": created_by, "note": note}
+        await move(db, part_id=part.id, delta=n, reason="hold_released", **common)
+        await move(db, part_id=part.id, delta=-n, reason="written_off_for_order", **common)
+        rows[part.id].written_off += n
+    await db.flush()
+
+
 async def return_parts_for_line(db: AsyncSession, line: ProjectLine, *, created_by: int | None) -> dict[int, int]:
     """Cancel or delete: what a parts line still holds becomes free stock (spec rule 14).
     Returns ``part_id → parts given back``."""
@@ -962,7 +988,13 @@ async def add_kits_for_line(db: AsyncSession, line: ProjectLine, kits: int, *, c
     await lock_parts(db, [part for part, _per in kit])
     # What the shelf, the kits and the prints already cover — the same room as the ready
     # units door's (final review M5).
-    covered = (line.from_finished or 0) + (line.assembled or 0) + (line.received or 0) - (line.returned or 0)
+    covered = (
+        (line.from_finished or 0)
+        + (line.assembled or 0)
+        + (line.received or 0)
+        - (line.returned or 0)
+        - (line.written_off or 0)
+    )
     room = line.quantity - covered - await reserved_units_for_line(db, line)
     take = min(kits, room, kits_of(await balances(db, line.product_id), kit))
     if take <= 0:

@@ -39,6 +39,7 @@
   "A tag with this name already exists.": "Тег з такою назвою вже існує.",
   "A threshold needs a minimum, a maximum, or both.": "Поріг має містити мінімум, максимум або обидва значення.",
   "A waybill number is at most 24 characters": "Номер ТТН — не довше 24 символів",
+  "A write-off needs a note": "Списання потребує примітки",
   "AMS data format not supported. Keys: {}": "Формат даних AMS не підтримується. Ключі: {}",
   "AMS reorder not supported on this printer": "Зміна порядку AMS не підтримується на цьому принтері",
   "API key does not have 'update_energy_cost' permission": "API-ключ не має дозволу «update_energy_cost»",
@@ -998,7 +999,9 @@
   "«{}» is received and issued part by part": "«{}» оприбутковується й видається по деталях",
   "«{}», {}: only {} can be issued": "«{}», {}: видати можна лише {}",
   "«{}», {}: only {} can be received": "«{}», {}: оприбуткувати можна лише {}",
+  "«{}», {}: only {} can be written off": "«{}», {}: списати можна лише {}",
   "«{}»: only {} can be assembled": "«{}»: зібрати можна лише {}",
   "«{}»: only {} can be issued": "«{}»: видати можна лише {}",
-  "«{}»: only {} can be received": "«{}»: оприбуткувати можна лише {}"
+  "«{}»: only {} can be received": "«{}»: оприбуткувати можна лише {}",
+  "«{}»: only {} can be written off": "«{}»: списати можна лише {}"
 }

@@ -134,7 +134,7 @@ async def _record(
     line's ``from_finished`` moves by ``d_line`` in the same flush (spec
     workshop-add-to-order, rule 1): a reserve adds, a release takes back, an
     issue leaves it — the units stay the line's. ``counters`` moves the line's
-    WS-11 counters (``assembled`` / ``received`` / ``issued`` / ``returned``) the
+    WS-11 counters (``assembled`` / ``received`` / ``issued`` / ``returned`` / ``written_off``) the
     same way; ``stock_issue_id`` names the issue an ``issue`` belongs to."""
     if kind not in MOVEMENT_KINDS:
         raise ValueError(f"unknown finished-goods movement {kind!r}")
@@ -410,15 +410,23 @@ async def move_for_line(db: AsyncSession, line: ProjectLine, *, actor: User | No
 
 
 def moved(line: ProjectLine) -> bool:
-    """Has the line's stock moved — anything assembled, received or issued (spec rule 13)?"""
-    return (line.assembled or 0) + (line.received or 0) + (line.issued or 0) > 0
+    """Has the line's stock moved — anything assembled, received, issued or written off (spec
+    rule 13; spec workshop-order-issue-followups, rule 44)?"""
+    return (line.assembled or 0) + (line.received or 0) + (line.issued or 0) + (line.written_off or 0) > 0
 
 
 def covered_units(line: ProjectLine) -> int:
     """Units of the line the shelf already gave or its prints already made: ready units,
-    assembled kits and received prints, less what went back — the room both «take from
-    stock» doors fill up to (with the live kits beside it)."""
-    return (line.from_finished or 0) + (line.assembled or 0) + (line.received or 0) - (line.returned or 0)
+    assembled kits and received prints, less what went back and what was written off (it is
+    to be made again) — the room both «take from stock» doors fill up to (with the live kits
+    beside it)."""
+    return (
+        (line.from_finished or 0)
+        + (line.assembled or 0)
+        + (line.received or 0)
+        - (line.returned or 0)
+        - (line.written_off or 0)
+    )
 
 
 def held_units(line: ProjectLine) -> int:
@@ -430,6 +438,7 @@ def held_units(line: ProjectLine) -> int:
         + (line.received or 0)
         - (line.issued or 0)
         - (line.returned or 0)
+        - (line.written_off or 0)
     )
 
 
@@ -497,6 +506,33 @@ async def issue_from_line(
             line=line,
             counters={"issued": take},
             stock_issue_id=stock_issue.id,
+        )
+        left -= take
+
+
+async def write_off_from_line(
+    db: AsyncSession, line: ProjectLine, units: int, *, note: str, actor: User | None = None
+) -> None:
+    """``units`` of what the line holds written off — broken on the shelf (spec
+    workshop-order-issue-followups, rules 44–47): off the shelf and out of the order's hold,
+    from its positions in id order like an issue; the order needs them made again."""
+    _at_least_one(units)
+    if not (note or "").strip():
+        raise FinishedStockError("A write-off needs a note", 422)
+    await lock_line(db, line)
+    held = held_units(line)
+    if units > held:
+        raise FinishedStockError(f"Only {held} held for this order")
+    left = units
+    for item_id, holding in sorted((await held_by_item(db, line.id)).items()):
+        if left == 0:
+            break
+        take = min(left, holding)
+        if take <= 0:
+            continue
+        item = await lock_item(db, item_id)
+        await _record(
+            db, item, "written_off", -take, -take, note=note, actor=actor, line=line, counters={"written_off": take}
         )
         left -= take
 

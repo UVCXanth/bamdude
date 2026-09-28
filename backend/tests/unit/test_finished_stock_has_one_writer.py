@@ -7,9 +7,19 @@ APP = Path(__file__).resolve().parents[2] / "app"
 ALLOWED = {APP / "services" / "finished_stock.py", APP / "models" / "finished_stock.py"}
 MODELS = {"StockItem", "StockItemMovement"}
 #: The balance and the position's parameters — no other module sets them.
-COLUMNS = {"on_hand", "reserved", "min_qty", "from_finished", "assembled", "received", "issued", "returned"}
+COLUMNS = {
+    "on_hand",
+    "reserved",
+    "min_qty",
+    "from_finished",
+    "assembled",
+    "received",
+    "issued",
+    "returned",
+    "written_off",
+}
 #: A parts line's counters share these names; services/part_stock.py writes those (WS-11, rule 9).
-PART_COUNTERS = {"received", "issued", "returned"}
+PART_COUNTERS = {"received", "issued", "returned", "written_off"}
 PART_WRITER = APP / "services" / "part_stock.py"
 
 

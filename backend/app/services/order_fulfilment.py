@@ -4,7 +4,7 @@
 :func:`state` is what the issue window shows and what :func:`apply` checks against: the same
 arithmetic for the display and for the act. ``apply`` reads it again under the locks, refuses any
 number above it with a sentence (409 — never clamped: an issue is physical units handed over) and
-writes nothing then; otherwise, per line, assemble → receive → issue, one :class:`StockIssue` for
+writes nothing then; otherwise, per line, assemble → receive → write off → issue, one :class:`StockIssue` for
 the whole request, the journal, and — asked and allowed — the order closed. It writes through the
 ledgers' own writers only (``finished_stock``, ``part_stock``, ``stock_issues``) and never commits.
 """
@@ -43,6 +43,8 @@ class PartState:
     can_receive: int
     held: int
     issued: int
+    #: Written off under the order (spec workshop-order-issue-followups, rule 44).
+    written_off: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +61,8 @@ class LineState:
     #: On the shelf under the order (spec rule 7).
     held: int
     issued: int
+    #: Written off under the order — a parts line sums its parts' (followups, rule 44).
+    written_off: int = 0
     #: A parts line's parts, each counted on its own; empty for a product line.
     parts: list[PartState] = field(default_factory=list)
 
@@ -91,9 +95,20 @@ class LineRequest:
     issue: int = 0
     #: A parts line's numbers: ``part_id → (receive, issue)``.
     parts: dict[int, tuple[int, int]] = field(default_factory=dict)
+    #: Units written off (spec workshop-order-issue-followups, rule 46).
+    write_off: int = 0
+    #: A parts line's write-offs: ``part_id → n``.
+    parts_write_off: dict[int, int] = field(default_factory=dict)
 
     def numbers(self) -> list[int]:
-        return [self.assemble, self.receive, self.issue, *(n for pair in self.parts.values() for n in pair)]
+        return [
+            self.assemble,
+            self.receive,
+            self.write_off,
+            self.issue,
+            *(n for pair in self.parts.values() for n in pair),
+            *self.parts_write_off.values(),
+        ]
 
 
 def _order_parts(
@@ -125,10 +140,12 @@ def _order_parts(
 def _product_line(ctx: OrderContext, line, figs: LineFigures, name: str, room: dict[int, int]) -> LineState:
     kits = ctx.reserved_by_line.get(line.id, 0)
     from_finished, assembled, received = line.from_finished or 0, line.assembled or 0, line.received or 0
+    written_off = line.written_off or 0
     # What the shelf and the kits already cover is not printed work to receive; what is
     # received covers the printed units from before (defects recorded later can make
     # ``units_printed`` smaller than ``received`` — then there is simply nothing more).
-    uncovered = line.quantity - from_finished - (kits + assembled)
+    # A written-off unit is to be made again (followups, rule 47).
+    uncovered = line.quantity - from_finished - (kits + assembled) + written_off
     kit = [pf for pf in figs.parts if pf.per > 0]
     if kit:
         can_receive = max(0, min(uncovered, figs.units_printed) - received)
@@ -142,7 +159,7 @@ def _product_line(ctx: OrderContext, line, figs: LineFigures, name: str, room: d
         can_receive = max(0, uncovered - received)
     # A kit is assembled only into a unit the order still needs: past the quantity it
     # would leave finished units held for an order that closes (spec rule 12).
-    covered = from_finished + assembled + received
+    covered = from_finished + assembled + received - written_off
     return LineState(
         line_id=line.id,
         product_name=name,
@@ -154,6 +171,7 @@ def _product_line(ctx: OrderContext, line, figs: LineFigures, name: str, room: d
         can_receive=can_receive,
         held=finished_stock.held_units(line),
         issued=line.issued or 0,
+        written_off=written_off,
     )
 
 
@@ -167,7 +185,9 @@ def _parts_line(
             continue
         row = counters.get(pf.part_id)
         received = row.received if row is not None else 0
-        can_receive = min(max(0, min(pf.per, pf.usable) - received), max(0, room[pf.part_id]))
+        written_off = row.written_off if row is not None else 0
+        # A written-off part is to be made again (followups, rule 47).
+        can_receive = min(max(0, min(pf.per + written_off, pf.usable) - received), max(0, room[pf.part_id]))
         room[pf.part_id] -= can_receive
         parts.append(
             PartState(
@@ -177,6 +197,7 @@ def _parts_line(
                 can_receive=can_receive,
                 held=part_stock.part_held(row) if row is not None else 0,
                 issued=row.issued if row is not None else 0,
+                written_off=written_off,
             )
         )
     return LineState(
@@ -190,6 +211,7 @@ def _parts_line(
         can_receive=0,
         held=sum(part.held for part in parts),
         issued=sum(part.issued for part in parts),
+        written_off=sum(part.written_off for part in parts),
         parts=parts,
     )
 
@@ -262,26 +284,33 @@ def _check(row: LineState, request: LineRequest) -> None:
     issue, because what is issued may come from the first two of the same request."""
     name = row.product_name
     if row.mode == "parts":
-        if request.assemble or request.receive or request.issue:
+        if request.assemble or request.receive or request.issue or request.write_off:
             raise FulfilmentError(f"«{name}» is received and issued part by part", 422)
         by_id = {part.part_id: part for part in row.parts}
-        for part_id, (receive, issue) in sorted(request.parts.items()):
+        for part_id in sorted(set(request.parts) | set(request.parts_write_off)):
             part = by_id.get(part_id)
             if part is None:
                 raise FulfilmentError(f"«{name}» does not count this part", 422)
+            receive, issue = request.parts.get(part_id, (0, 0))
+            write_off = request.parts_write_off.get(part_id, 0)
             if receive > part.can_receive:
                 raise FulfilmentError(f"«{name}», {part.name}: only {part.can_receive} can be received")
-            if issue > part.held + receive:
-                raise FulfilmentError(f"«{name}», {part.name}: only {part.held + receive} can be issued")
+            if write_off > part.held + receive:
+                raise FulfilmentError(f"«{name}», {part.name}: only {part.held + receive} can be written off")
+            if issue > part.held + receive - write_off:
+                raise FulfilmentError(f"«{name}», {part.name}: only {part.held + receive - write_off} can be issued")
         return
-    if request.parts:
+    if request.parts or request.parts_write_off:
         raise FulfilmentError(f"«{name}» is issued as whole units", 422)
     if request.assemble > row.can_assemble:
         raise FulfilmentError(f"«{name}»: only {row.can_assemble} can be assembled")
     if request.receive > row.can_receive:
         raise FulfilmentError(f"«{name}»: only {row.can_receive} can be received")
-    if request.issue > row.held + request.assemble + request.receive:
-        raise FulfilmentError(f"«{name}»: only {row.held + request.assemble + request.receive} can be issued")
+    on_shelf = row.held + request.assemble + request.receive
+    if request.write_off > on_shelf:
+        raise FulfilmentError(f"«{name}»: only {on_shelf} can be written off")
+    if request.issue > on_shelf - request.write_off:
+        raise FulfilmentError(f"«{name}»: only {on_shelf - request.write_off} can be issued")
 
 
 def _issued_after(row: LineState, request: LineRequest | None) -> bool:
@@ -302,6 +331,7 @@ async def apply(
     note: str | None,
     complete: bool,
     actor: User | None,
+    write_off_note: str | None = None,
 ) -> StockIssue | None:
     """Perform one batch in the caller's transaction; the issue it opened, or None."""
     if project.status != "active":
@@ -322,6 +352,10 @@ async def apply(
         asked[request.line_id] = request
     if not complete and not any(n > 0 for request in asked.values() for n in request.numbers()):
         raise FulfilmentError("Nothing to do", 422)
+    # A write-off says why (spec workshop-order-issue-followups, rule 46).
+    writing_off = any(r.write_off or any(r.parts_write_off.values()) for r in asked.values())
+    if writing_off and not (write_off_note or "").strip():
+        raise FulfilmentError("A write-off needs a note", 422)
 
     # Positions first, in ascending id, then the lines — the order every closing door
     # takes (WS-10 M4) — and only then the numbers, read fresh under the locks.
@@ -374,6 +408,31 @@ async def apply(
                     "line_id": line_id,
                     "product": name,
                     "parts": [[names[pid], n] for pid, n in sorted(received.items())],
+                },
+                actor=actor,
+            )
+        if request.write_off:
+            await finished_stock.write_off_from_line(db, line, request.write_off, note=write_off_note, actor=actor)
+            await order_journal.record(
+                db,
+                project.id,
+                "goods_written_off",
+                {"line_id": line_id, "product": name, "units": request.write_off, "note": write_off_note.strip()},
+                actor=actor,
+            )
+        written_off = {pid: n for pid, n in request.parts_write_off.items() if n > 0}
+        if written_off:
+            await part_stock.write_off_parts_for_line(db, line, written_off, note=write_off_note, created_by=created_by)
+            names = {part.part_id: part.name for part in current[line_id].parts}
+            await order_journal.record(
+                db,
+                project.id,
+                "goods_written_off",
+                {
+                    "line_id": line_id,
+                    "product": name,
+                    "parts": [[names[pid], n] for pid, n in sorted(written_off.items())],
+                    "note": write_off_note.strip(),
                 },
                 actor=actor,
             )

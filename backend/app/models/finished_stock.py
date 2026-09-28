@@ -16,7 +16,7 @@ from backend.app.core.database import Base
 
 #: The closed list of what may move a position (spec rule 4). WS-10/11 add their
 #: order-bound kinds here.
-MOVEMENT_KINDS = ("receipt", "stocktake", "assembled", "produced", "reserve", "release", "issue")
+MOVEMENT_KINDS = ("receipt", "stocktake", "assembled", "produced", "reserve", "release", "issue", "written_off")
 
 
 def utcnow() -> datetime:

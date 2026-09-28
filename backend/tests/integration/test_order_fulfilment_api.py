@@ -90,6 +90,7 @@ async def test_the_dialog_reads_the_orders_state_and_its_recipient(committing_cl
             "can_receive": 5,
             "held": 2,
             "issued": 0,
+            "written_off": 0,
             "parts": [],
         }
     ]
