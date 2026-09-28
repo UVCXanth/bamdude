@@ -263,3 +263,39 @@ async def test_zero_parts_are_marked_not_counted_once(engine):
     await _run(engine)  # the column is there: nothing is marked again
     async with engine.connect() as conn:
         assert (await conn.execute(text("SELECT ignored FROM product_parts WHERE id = 2"))).scalar() == 0
+
+
+@pytest.mark.asyncio
+async def test_the_dispatch_note_schema(engine):
+    # spec workshop-dispatch-notes, rules 2–3.
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE products (id INTEGER PRIMARY KEY, name VARCHAR(255))"))
+        await conn.execute(text("CREATE TABLE customers (id INTEGER PRIMARY KEY, name VARCHAR(255))"))
+    await _run(engine)
+    await _run(engine)  # idempotent
+    async with engine.begin() as conn:
+        issue_cols = {r[1] for r in (await conn.execute(text("PRAGMA table_info(stock_issues)"))).all()}
+        assert {"supplier", "created_by_name", "order_code", "order_name", "units"} <= issue_cols
+        line_cols = {r[1] for r in (await conn.execute(text("PRAGMA table_info(stock_issue_lines)"))).all()}
+        assert line_cols == {
+            "id",
+            "issue_id",
+            "position",
+            "product_id",
+            "product_name",
+            "sku",
+            "configuration",
+            "part_name",
+            "quantity",
+        }
+        indexes = {r[1] for r in (await conn.execute(text("PRAGMA index_list(stock_issue_lines)"))).all()}
+        assert {"ix_stock_issue_lines_issue_position", "ix_stock_issue_lines_product_id"} <= indexes
+        await conn.execute(text("INSERT INTO stock_issues (customer_name) VALUES ('Acme')"))
+        assert (await conn.execute(text("SELECT units FROM stock_issues"))).scalar() == 0
+        with pytest.raises(IntegrityError):
+            await conn.execute(
+                text(
+                    "INSERT INTO stock_issue_lines (issue_id, position, product_name, configuration, quantity)"
+                    " VALUES (1, 1, 'Lamp', '{}', 0)"
+                )
+            )

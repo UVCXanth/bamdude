@@ -77,6 +77,9 @@ add here while the branch is unreleased:
 - WS-11a (spec workshop-order-issue-followups): ``written_off`` on both line counters;
   ``product_parts.ignored`` — «не рахувати», set once on every existing zero that holds no
   stock and that no line or stock position wants.
+- WS-12 (spec workshop-dispatch-notes): the issue IS the dispatch note ``DN-<id>``;
+  ``stock_issues.supplier / created_by_name / order_code / order_name / units`` and
+  ``stock_issue_lines`` hold its snapshot (only services/stock_issues.py writes them).
 """
 
 from backend.app.migrations.helpers import add_column, column_exists, table_exists
@@ -374,6 +377,39 @@ async def upgrade(conn):
             "CREATE INDEX IF NOT EXISTS ix_stock_issues_customer_created ON stock_issues (customer_id, created_at)"
         )
         await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_stock_issues_project_id ON stock_issues (project_id)")
+        # WS-12 (spec workshop-dispatch-notes, rules 2–3): the dispatch note's snapshot.
+        for column in (
+            f"supplier {json_type}",
+            "created_by_name VARCHAR(255)",
+            "order_code VARCHAR(32)",
+            "order_name VARCHAR(255)",
+            "units INTEGER NOT NULL DEFAULT 0",
+        ):
+            await add_column(conn, "stock_issues", column)
+        if not await table_exists(conn, "stock_issue_lines"):
+            line_pk = "INTEGER PRIMARY KEY" if sqlite else "SERIAL PRIMARY KEY"
+            await conn.exec_driver_sql(
+                f"""
+                CREATE TABLE stock_issue_lines (
+                    id {line_pk},
+                    issue_id INTEGER NOT NULL REFERENCES stock_issues(id) ON DELETE CASCADE,
+                    position INTEGER NOT NULL,
+                    product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+                    product_name VARCHAR(255) NOT NULL,
+                    sku VARCHAR(64),
+                    configuration {json_type} NOT NULL,
+                    part_name VARCHAR(512),
+                    quantity INTEGER NOT NULL,
+                    CONSTRAINT ck_stock_issue_lines_quantity CHECK (quantity > 0)
+                )
+                """
+            )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_stock_issue_lines_issue_position ON stock_issue_lines (issue_id, position)"
+        )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_stock_issue_lines_product_id ON stock_issue_lines (product_id)"
+        )
     if await table_exists(conn, "project_lines"):
         for col in ("assembled", "received", "issued", "returned", "written_off"):
             await add_column(
