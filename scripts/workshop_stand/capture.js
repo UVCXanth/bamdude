@@ -55,6 +55,11 @@ async (page) => {
       dialog: dialog ? {...box(dialog), fields: dialog.querySelectorAll('input, select, textarea').length,
         buttons: [...dialog.querySelectorAll('button')].filter(visible).map(b => b.textContent.trim()).filter(Boolean).slice(-4)} : null,
       title: (document.querySelector('h1') || {}).textContent || null,
+      // The section headings this frame shows — what a frame is evidence OF.
+      headings: [...document.querySelectorAll('h1, h2, h3')].filter(h => {
+        const r = h.getBoundingClientRect();
+        return r.height > 0 && r.bottom > 0 && r.top < innerHeight;
+      }).map(h => h.textContent.trim().replace(/\s+/g, ' ')).slice(0, 20),
     };
   };
 
@@ -103,7 +108,18 @@ async (page) => {
       result.measures = await p.evaluate(measure);
       result.dpr = await p.evaluate(() => window.devicePixelRatio);
       const key = m => JSON.stringify([m.viewport, m.clientWidth, m.columns, m.layout && m.layout.tracks]);
-      const scroller = await p.evaluateHandle(() => {
+      // A dialog is covered by its OWN scroll body; the page behind it is not the recipe.
+      const scroller = await p.evaluateHandle((isDialog) => {
+        const scrollable = el => /(auto|scroll)/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight + 4;
+        if (isDialog) {
+          const dialog = [...document.querySelectorAll('[role="dialog"], dialog[open]')].pop();
+          if (!dialog) return document.scrollingElement;
+          let best = null;
+          for (const el of [dialog, ...dialog.querySelectorAll('*')]) {
+            if (scrollable(el) && (!best || el.clientHeight * el.clientWidth > best.clientHeight * best.clientWidth)) best = el;
+          }
+          return best || dialog;
+        }
         let best = document.scrollingElement;
         for (const el of document.querySelectorAll('main, main *, #app, #root *')) {
           const cs = getComputedStyle(el);
@@ -112,12 +128,12 @@ async (page) => {
               || best.scrollHeight <= best.clientHeight + 4) best = el;
         }
         return best;
-      });
+      }, shot.measure === 'dialog');
       const extent = await scroller.evaluate(el => ({height: el.scrollHeight, view: el.clientHeight}));
-      const step = Math.max(200, extent.view - 80);
-      const offsets = [];
-      for (let y = 0; y < extent.height - 4 && offsets.length < 12; y += step) offsets.push(y);
-      if (!offsets.length) offsets.push(0);
+      // The plan is the job server's (plan_offsets, tested there): overlapping frames to
+      // the very bottom, or an explicit "incomplete" when the safety limit is reached.
+      const plan = await (await page.request.post(`${base}/plan`, {data: extent})).json();
+      const offsets = plan.offsets;
       result.frames = [];
       result.stable = true;
       const reference = key(result.measures);
@@ -130,12 +146,14 @@ async (page) => {
         const after = await p.evaluate(measure);
         const stable = key(before) === reference && key(after) === reference;
         result.stable = result.stable && stable;
-        result.frames.push({file, scrollTop: at, stable,
+        result.frames.push({file, scrollTop: at, stable, headings: after.headings,
           clientWidth: after.clientWidth, columns: after.columns, tracks: after.layout && after.layout.tracks});
       }
       await scroller.evaluate(el => { el.scrollTop = 0; });
-      result.scroll = {height: extent.height, view: extent.view, frames: offsets.length, truncated: extent.height > offsets[offsets.length - 1] + extent.view + 4};
-      result.ok = result.steps.every(s => s.ok) && result.stable;
+      const lastEnd = offsets[offsets.length - 1] + extent.view;
+      result.scroll = {height: extent.height, view: extent.view, frames: offsets.length, container: shot.measure === 'dialog' ? 'dialog' : 'page',
+        complete: plan.complete && lastEnd >= extent.height - 4, truncated: !(plan.complete && lastEnd >= extent.height - 4)};
+      result.ok = result.steps.every(s => s.ok) && result.stable && result.scroll.complete;
     } catch (e) {
       result.ok = false;
       result.error = String(e.message || e).split('\n')[0].slice(0, 300);

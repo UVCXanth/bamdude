@@ -500,3 +500,30 @@ def test_a_note_line_moved_between_lines_with_the_same_sum_is_caught():
     assert checks.note_mismatches(expected, [(1, ("прямий",), 2), (1, ("кутовий",), 3)]) == []
     assert checks.note_mismatches(expected, [(1, ("кутовий",), 2), (1, ("прямий",), 3)])
     assert checks.note_mismatches(expected, [(7, ("кутовий",), 3), (1, ("прямий",), 2)])
+
+
+# ── V02 (review 2): a long page is covered to its end, or the recipe is not ok ─
+
+import capture_serve  # noqa: E402
+
+
+def test_the_scroll_plan_reaches_the_bottom_of_a_page_longer_than_twelve_screens():
+    height, view = 13 * 900 + 350, 900
+
+    offsets, complete = capture_serve.plan_offsets(height, view)
+
+    assert complete
+    assert offsets[0] == 0 and offsets[-1] == height - view
+    # Consecutive frames overlap: no strip of the page falls between two pictures.
+    assert all(b - a < view for a, b in zip(offsets, offsets[1:], strict=False))
+
+
+def test_a_page_that_fits_is_one_frame():
+    assert capture_serve.plan_offsets(880, 900) == ([0], True)
+
+
+def test_hitting_the_safety_limit_is_an_incomplete_recipe_not_an_ok_one():
+    offsets, complete = capture_serve.plan_offsets(100 * 900, 900, limit=12)
+
+    assert not complete
+    assert len(offsets) == 12

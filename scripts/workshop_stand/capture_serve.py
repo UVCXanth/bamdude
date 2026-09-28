@@ -27,6 +27,30 @@ sys.path.insert(0, str(HERE))
 import stand  # noqa: E402
 
 PORT = 8199
+# A frame overlaps the previous one by this much, so no strip falls between two pictures.
+FRAME_OVERLAP = 80
+# A safety net, not a sample size: reaching it makes the recipe incomplete (review V02).
+FRAME_LIMIT = 40
+
+
+def plan_offsets(height: int, view: int, *, overlap: int = FRAME_OVERLAP, limit: int = FRAME_LIMIT):
+    """Scroll offsets that cover a scroll container of ``height`` seen through ``view``.
+
+    Returns ``(offsets, complete)``: the frames start at 0, overlap each other, and the
+    last one ends exactly at the bottom. When the page needs more than ``limit`` frames
+    the plan stops there and says so — an incomplete recipe, never a quiet ok."""
+    bottom = max(0, height - view)
+    if bottom <= 4:
+        return [0], True
+    step = max(200, view - overlap)
+    offsets = list(range(0, bottom, step))
+    if offsets[-1] != bottom:
+        offsets.append(bottom)
+    if len(offsets) > limit:
+        return offsets[:limit], False
+    return offsets, True
+
+
 MOCKUP = stand.REPO / "temp" / "proj-ui-work" / "02-mockup-v2.html"
 MOCKUP_PREF_KEY = "bamdude-mockup-v2-ui"
 
@@ -72,6 +96,7 @@ def build_job(mode: str, stage: str, only: set[str] | None) -> tuple[dict, dict]
                         "url": url,
                         "storage": storage,
                         "actions": spec.get("actions", []),
+                        "measure": surface["measure"],
                         "file": str(file).replace("\\", "/"),
                     }
                 )
@@ -82,6 +107,7 @@ def build_job(mode: str, stage: str, only: set[str] | None) -> tuple[dict, dict]
         "out_dir": out_dir,
         "stage": stage,
         "mode": mode,
+        "only": only,
     }
     return {"token": client.token, "shots": shots}, context
 
@@ -128,6 +154,8 @@ def write_manifest(context: dict, results: list[dict]) -> Path:
     for surface in plan["surfaces"]:
         if surface.get("mode", "baseline") != context["mode"]:
             continue
+        if context["only"] and surface["id"] not in context["only"]:
+            continue  # a partial job reports only the recipes it was asked for
         if surface["app"].get("reuse"):
             rows.append(
                 {
@@ -185,7 +213,10 @@ def main() -> None:
 
         def do_POST(self):  # noqa: N802
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-            if self.path == "/result":
+            if self.path == "/plan":
+                offsets, complete = plan_offsets(int(body["height"]), int(body["view"]))
+                self._send(json.dumps({"offsets": offsets, "complete": complete}).encode())
+            elif self.path == "/result":
                 results.append(body)
                 self._send(b"{}")
             elif self.path == "/done":
