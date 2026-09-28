@@ -388,4 +388,6 @@ async def test_a_one_off_product_whose_units_were_issued_outlives_its_deleted_or
     assert (await committing_client.delete(f"/api/v1/projects/{order_id}")).status_code == 200
     assert await db_session.get(Product, plate.id, populate_existing=True) is not None
     issue = await db_session.get(StockIssue, issue_id, populate_existing=True)
-    assert (await stock_issue_views.units_by_issue(db_session, [issue.id]))[issue.id] == 2
+    # The dispatch note keeps what went out (spec workshop-dispatch-notes, rule 9).
+    [row] = await stock_issue_views.issue_rows(db_session, [issue])
+    assert (row.units, row.order_code, row.summary[0].product_name) == (2, f"OR-{order_id:04d}", plate.name)
