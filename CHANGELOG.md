@@ -110,8 +110,15 @@
   manual issue on the Stock page now names its customer the same way. An
   order is completed only once everything it ordered has been issued —
   «Mark completed», the order's menu and a drop onto «done» on the board all
-  open the issue dialog, and kits nobody assembled go back on the shelf. Once
-  a line's stock has moved, its ready units and kits are only added to:
+  open the issue dialog, and kits nobody assembled go back on the shelf. An
+  order without a customer — one made for stock — issues nothing: once
+  everything it ordered is on the shelf it is closed to stock, and what it held
+  becomes free stock; such an order is duplicated rather than reopened. A unit
+  that breaks on the shelf before it goes out is written off in the same
+  dialog, with a note saying why, and the order makes it again — the plan
+  prints one more, and the replacement is not counted as surplus. Once a
+  line's stock has moved, its ready units are only added to and its kits only
+  lowered — back onto the shelf, so the prints already made take their place:
   «Take from stock» on the order offers what the shelves hold for the part
   nobody has printed, is printing or has queued yet. Its configuration stays,
   and its quantity cannot go below what is issued and held; cancelling gives
@@ -120,8 +127,19 @@
   stays filed under it, so its parts are never counted a second time, and the
   order receives no more units than its prints made, however they are shared
   between its lines; a product made only of bought parts is received as its
-  units come. Lines, cards and the orders table say how much went out, and the
-  activity log says what was assembled, received, issued and taken.
+  units come. Lines, cards, the board and the orders table say how much went
+  out, a product's stock shows the parts its orders hold, and the activity log
+  says what was assembled, received, written off, moved to stock, issued and
+  taken.
+- **A zero in a product's parts means «out of the kit»; «Not counted» marks
+  what is not a part at all.** A part the product lists with a count of 0 —
+  a spare handle — is still a part: it has its own shelf, an order of loose
+  parts receives and issues it, a print without an order puts it on the shelf,
+  and the product's stock shows it apart from the kit. A test cube or an
+  object of another plate of the file is marked «Not counted» beside its zero:
+  it is counted nowhere and no order line can ask for it. Every zero a product
+  already had is marked «Not counted» on upgrade, unless it holds stock or an
+  order asks for it — so nothing changes until you unmark a spare part.
 - **An order's Queue section shows everything the order has in the queue.**
   It used to list only jobs already on a printer's queue, so work the order
   plan had just queued counted in the «In queue» tile but was nowhere in the
