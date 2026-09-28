@@ -195,9 +195,32 @@ def _reader(payload: dict) -> dict:
         out[check["key"]] = {
             "ok": req.status == "ok",
             "reason": req.reason,
+            "plate": req.resolved_plate_id,
             "model": req.model,
-            "print_time_seconds": req.print_time_seconds,
+            "seconds": req.print_time_seconds,
+            "filaments": [[f["type"], f["color"]] for f in req.used_filaments],
         }
+    return out
+
+
+async def _queue_sources(payload: dict) -> dict:
+    """Where each queue row's captured bytes live — the job's own source (spec C2)."""
+    from sqlalchemy import text
+
+    out = {}
+    async with database.async_session() as db:
+        for table, key in (("print_queue", "pq"), ("auto_queue_items", "aq")):
+            for item_id in payload.get(key, []):
+                row = (
+                    await db.execute(
+                        text(
+                            f"SELECT s.relative_path, q.plate_id FROM {table} q "
+                            "JOIN queue_sources s ON s.id = q.queue_source_id WHERE q.id = :id"
+                        ),
+                        {"id": item_id},
+                    )
+                ).first()
+                out[f"{key}:{item_id}"] = {"file_path": row[0], "plate": row[1]} if row else None
     return out
 
 
@@ -209,6 +232,8 @@ async def _run(command: str, payload: dict) -> dict:
             return await _archives(payload)
         if command == "reader":
             return _reader(payload)
+        if command == "queue_sources":
+            return await _queue_sources(payload)
         raise SystemExit(f"unknown command {command!r}")
     finally:
         await database.engine.dispose()

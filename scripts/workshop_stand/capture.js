@@ -41,6 +41,7 @@ async (page) => {
     const cardRow = cards.length ? cards.filter(c => Math.abs(c.getBoundingClientRect().y - cards[0].getBoundingClientRect().y) < 4).length : 0;
     return {
       viewport: innerWidth,
+      clientWidth: document.documentElement.clientWidth,
       scrollWidth: document.documentElement.scrollWidth,
       horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1,
       tableHeaders: heads.map(h => h.textContent.trim().replace(/\s+/g, ' ')).slice(0, 20),
@@ -95,10 +96,46 @@ async (page) => {
         }
         result.steps.push(step);
       }
+      // Spec F1/F5 and review V02: every frame is the FIXED viewport. A full-page shot
+      // resizes the viewport, drops the scrollbar and can cross a container breakpoint
+      // (the mockup's order page went from one column to two), so the picture would not
+      // be the layout that was measured. Lower parts are extra frames at a recorded scroll.
       result.measures = await p.evaluate(measure);
       result.dpr = await p.evaluate(() => window.devicePixelRatio);
-      await p.screenshot({path: shot.file, fullPage: true});
-      result.ok = result.steps.every(s => s.ok);
+      const key = m => JSON.stringify([m.viewport, m.clientWidth, m.columns, m.layout && m.layout.tracks]);
+      const scroller = await p.evaluateHandle(() => {
+        let best = document.scrollingElement;
+        for (const el of document.querySelectorAll('main, main *, #app, #root *')) {
+          const cs = getComputedStyle(el);
+          if (!/(auto|scroll)/.test(cs.overflowY) || el.scrollHeight <= el.clientHeight + 4) continue;
+          if (!best || el.clientHeight * el.clientWidth > best.clientHeight * best.clientWidth
+              || best.scrollHeight <= best.clientHeight + 4) best = el;
+        }
+        return best;
+      });
+      const extent = await scroller.evaluate(el => ({height: el.scrollHeight, view: el.clientHeight}));
+      const step = Math.max(200, extent.view - 80);
+      const offsets = [];
+      for (let y = 0; y < extent.height - 4 && offsets.length < 12; y += step) offsets.push(y);
+      if (!offsets.length) offsets.push(0);
+      result.frames = [];
+      result.stable = true;
+      const reference = key(result.measures);
+      for (const [k, y] of offsets.entries()) {
+        const at = await scroller.evaluate((el, top) => { el.scrollTop = top; return el.scrollTop; }, y);
+        await p.waitForTimeout(250);
+        const before = await p.evaluate(measure);
+        const file = k === 0 ? shot.file : shot.file.replace(/\.png$/, `.s${k}.png`);
+        await p.screenshot({path: file, fullPage: false});
+        const after = await p.evaluate(measure);
+        const stable = key(before) === reference && key(after) === reference;
+        result.stable = result.stable && stable;
+        result.frames.push({file, scrollTop: at, stable,
+          clientWidth: after.clientWidth, columns: after.columns, tracks: after.layout && after.layout.tracks});
+      }
+      await scroller.evaluate(el => { el.scrollTop = 0; });
+      result.scroll = {height: extent.height, view: extent.view, frames: offsets.length, truncated: extent.height > offsets[offsets.length - 1] + extent.view + 4};
+      result.ok = result.steps.every(s => s.ok) && result.stable;
     } catch (e) {
       result.ok = false;
       result.error = String(e.message || e).split('\n')[0].slice(0, 300);

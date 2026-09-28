@@ -328,14 +328,14 @@ class Seed:
         for line in order["lines"]:
             product = next(p for p in self.db["products"] if p["id"] == line["productId"])
             if product["origin"] == "adhoc_plate":
-                file = next(f for f in self.db["library"] if f["name"] == product["files"][0]["name"])
-                per_plate = sum((file["plates"][0].get("objects") or {"x": 1}).values())
+                # I02: pieces in the mockup, plates on the server — the dump proved it divides.
+                units = recipe.plate_units_for(self.dump, order["id"], line["id"])
                 lines.append(
                     {
                         "kind": "plate",
-                        "library_file_id": self.id(f"file:{file['name']}"),
-                        "plate_index": file["plates"][0]["index"],
-                        "copies": max(1, line["qty"] // max(1, per_plate)),
+                        "library_file_id": self.id(f"file:{units['file']}"),
+                        "plate_index": units["plate"],
+                        "copies": units["plates"],
                         "material": line.get("material"),
                         "color": line.get("color"),
                         "note": line.get("note") or None,
@@ -503,23 +503,6 @@ class Seed:
             "delivery_details": contact["delivery_details"],
         }
 
-    def _line_for_item(self, order: dict, item: dict) -> dict:
-        candidates = [ln for ln in order["lines"] if ln["productId"] == item["productId"]]
-        if len(candidates) == 1:
-            return candidates[0]
-        label = (item.get("label") or "").lower()
-        for line in candidates:
-            product = next(p for p in self.db["products"] if p["id"] == line["productId"])
-            names = [
-                o["name"].lower()
-                for g in product.get("variants") or []
-                for o in g["options"]
-                if (line.get("config") or {}).get(g["id"]) == o["id"]
-            ]
-            if names and all(n in label for n in names):
-                return line
-        raise RuntimeError(f"doc item {item} of order {order['id']} matches no single line")
-
     def issues(self) -> None:
         duplicates = {int(k): v for k, v in self.dump["meta"]["agreed_duplicates"].items()}
         received = defaultdict(int)
@@ -536,7 +519,7 @@ class Seed:
             order = next(o for o in self.db["orders"] if o["id"] == doc["orderId"])
             batch = {}
             for item in doc["items"]:
-                line = self._line_for_item(order, item)
+                line = recipe.line_for_doc_item(self.db, order, item)
                 key = (order["id"], line["id"])
                 held = line.get("fromFinished", 0) + received[key] - issued[key]
                 receive = max(0, item["qty"] - held)
@@ -558,9 +541,9 @@ class Seed:
                 },
             )
             self.put(f"doc:{doc['id']}", answer.get("issue_id"), answer.get("issue_code"))
-        # A completed order that issued nothing (found in E0, awaiting the review): the
-        # proposed replacement — receive and issue what it can, and complete it.
-        for conflict in self.dump["meta"].get("unagreed_completions") or []:
+        # C6 / I01 (agreed): a completed mockup order that issued nothing is received,
+        # issued and completed through the writers — one synthetic note.
+        for conflict in self.dump["meta"].get("agreed_completions") or []:
             order = next(o for o in self.db["orders"] if o["id"] == conflict["order"])
             oid = self.id(f"order:{order['id']}")
             state = self.c.get(f"/api/v1/projects/{oid}/fulfilment")
@@ -580,11 +563,13 @@ class Seed:
             for line, row in zip(order["lines"], batch, strict=False):
                 received[(order["id"], line["id"])] += row["receive"]
                 issued[(order["id"], line["id"])] += row["issue"]
-            self.put(f"unagreed:order:{order['id']}", answer.get("issue_id"), answer.get("issue_code"))
-            self.note(
-                f"UNAGREED order {order['id']}: the mockup completes it with nothing issued; "
-                f"proposed replacement applied — issued {sum(r['issue'] for r in batch)}, dispatch note "
-                f"{answer.get('issue_code')}, completed"
+            self.put(
+                f"agreed:order:{order['id']}",
+                answer.get("issue_id"),
+                answer.get("issue_code"),
+                replacement=conflict["replacement"],
+                origin="synthetic issue of an agreed replacement (C6 / I01), not a mockup document",
+                units=[u for u in self.dump["meta"]["plate_units"] if u["order"] == order["id"]],
             )
         self._received, self._issued = received, issued
 

@@ -1,5 +1,5 @@
 {
- "_": "WS-13 E0 capture recipes (spec F1, F3, F5). Entity refs {order:241} resolve through the stand's mapping.json. Each shot runs in a fresh browser context (viewport, DPR 1, uk-UA, Europe/Kyiv): the mockup with an empty localStorage (its demo DB lives there) plus the prefs below, the app with its auth token and the prefs below. Dialogs are opened and screenshotted, never submitted.",
+ "_": "WS-13 E0 capture recipes (spec F1, F3, F5). Entity refs {order:241} resolve through the stand's mapping.json. Each shot runs in a fresh browser context (viewport, DPR 1, uk-UA, Europe/Kyiv): the mockup with an empty localStorage (its demo DB lives there) plus the prefs below, the app with its auth token and the prefs below. Dialogs are opened and screenshotted, never submitted. Frames are the fixed viewport (review V02); a surface with `mode` runs only on that stand mode, `sides` limits the sides.",
  "mode": "baseline",
  "theme": {
   "mockup": {
@@ -641,6 +641,30 @@
     "actions": [
      {
       "click_button": "Зібрати з деталей"
+     }
+    ]
+   }
+  },
+  {
+   "id": "customers-table-contacts-edges",
+   "mode": "edges",
+   "sides": [
+    "app"
+   ],
+   "widths": "wide",
+   "measure": "list",
+   "note": "app-only check of several contacts (C1 edges); NOT a baseline pair — the baseline customers each have one contact",
+   "mockup": {
+    "route": "#/customers"
+   },
+   "app": {
+    "route": "/customers",
+    "storage": {
+     "bamdude-customers-view": "table"
+    },
+    "actions": [
+     {
+      "click": "td button[aria-expanded]"
      }
     ]
    }

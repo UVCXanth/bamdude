@@ -156,6 +156,25 @@ def test_reset_gives_a_fresh_instance_and_forgets_the_old_one(tmp_path):
         assert (root / sub).is_dir()
 
 
+def test_reset_refuses_a_database_url_before_it_deletes_anything(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    root = stand.check_root(stand.expected_root("baseline", repo), mode="baseline", repo=repo, create=True)
+    (root / "data").mkdir()
+    (root / "data" / "sentinel.db").write_bytes(b"do not delete")
+    stand.write_manifest(root, {"instance_id": "kept", "mode": "baseline", "state": "seeded", "processes": {}})
+    before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    monkeypatch.setenv("DATABASE_URL", "postgresql://somewhere/db")
+    started = []
+    monkeypatch.setattr(stand, "_init_database", lambda *a, **k: started.append(a))
+
+    with pytest.raises(stand.StandError, match="DATABASE_URL"):
+        stand.reset("baseline", repo=repo, init_db=True)
+
+    after = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    assert after == before
+    assert started == []
+
+
 # ── One mutating command at a time (spec A7) ─────────────────────────────────
 
 
@@ -412,11 +431,13 @@ def test_a_change_the_command_did_not_make_is_found(change, table):
     assert diffs and all(d["table"] == table for d in diffs)
 
 
-def test_a_live_estimate_is_not_a_change():
+def test_no_stored_field_is_ignored():
+    # A column in a table is a stored fact — `last_seen_at` of a device included.
+    # Live estimates are computed per request and never reach a table snapshot.
     before, after = _snap(), _snap()
-    after["stock_items"]["2"]["eta"] = "2026-10-01"
+    after["stock_items"]["2"]["last_seen_at"] = "2026-10-01T00:00:00"
 
-    assert snapshot.compare(before, after) == []
+    assert [d["table"] for d in snapshot.compare(before, after)] == ["stock_items"]
 
 
 def test_the_snapshot_reads_every_row_of_every_table(tmp_path):
@@ -436,3 +457,46 @@ def test_the_snapshot_reads_every_row_of_every_table(tmp_path):
 
     assert taken["print_queue"] == {"1": {"id": 1, "status": "pending"}}
     assert taken["project_line_choices"] == {"4|2": {"line_id": 4, "group_id": 2, "option_id": 9}}
+
+
+# ── V03: status compares what it promised, not only counts and sums ─────────
+
+import checks  # noqa: E402
+
+_PLATE = {"plate": 2, "model": "P1S", "seconds": 600, "filaments": [("PLA", "#FF0000"), ("PETG", "#00FF00")]}
+
+
+def test_the_reader_check_passes_an_exact_answer():
+    assert checks.reader_mismatches(_PLATE, {"ok": True, **_PLATE}) == []
+
+
+@pytest.mark.parametrize(
+    "wrong",
+    [
+        {"plate": 1},
+        {"model": "X1C"},
+        {"filaments": [("PLA", "#FF0000"), ("PETG", "#0000FF")]},
+        {"filaments": [("PLA", "#FF0000")]},
+        {"ok": False},
+    ],
+)
+def test_the_reader_check_catches_a_wrong_plate_model_or_filament_at_the_right_time(wrong):
+    got = {"ok": True, **_PLATE, **wrong}
+
+    assert checks.reader_mismatches(_PLATE, got)
+
+
+def test_a_queue_row_with_the_right_time_but_another_plate_is_caught():
+    expected = {"plate_id": 2, "print_time_seconds": 600, "filament_type": "PLA", "filament_color": "#FF0000"}
+
+    assert checks.row_mismatches(expected, {**expected}) == []
+    assert checks.row_mismatches(expected, {**expected, "plate_id": 1})
+    assert checks.row_mismatches(expected, {**expected, "filament_color": "#00ff00"})
+
+
+def test_a_note_line_moved_between_lines_with_the_same_sum_is_caught():
+    expected = [(1, ("кутовий",), 3), (1, ("прямий",), 2)]
+
+    assert checks.note_mismatches(expected, [(1, ("прямий",), 2), (1, ("кутовий",), 3)]) == []
+    assert checks.note_mismatches(expected, [(1, ("кутовий",), 2), (1, ("прямий",), 3)])
+    assert checks.note_mismatches(expected, [(7, ("кутовий",), 3), (1, ("прямий",), 2)])

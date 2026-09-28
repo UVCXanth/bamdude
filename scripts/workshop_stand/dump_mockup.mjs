@@ -26,13 +26,11 @@ const AUDITED_SHA256 = '6b91bc62b113221ae0430ab56fb6f9e5def2e43564d651b3935cf3a7
 const EXPECTED_COUNTS = {products: 105, orders: 41, customers: 10, fin: 107, docs: 32};
 // C6 — the one agreed exception: seedDocs issues order 245 twice.
 const AGREED_DUPLICATES = {90031: 90030};
-// Found while implementing E0 and NOT yet agreed by the review (spec C5): a completed
-// order that issued nothing. The seed applies the proposed replacement, and `status`
-// fails until the review moves it into an agreed list.
-const PROPOSED_COMPLETIONS = {
-  249: 'issue what the order printed, then complete it (one dispatch note the mockup does not have)',
-};
-export const RECIPE_VERSION = 1;
+// C6 / I01 (agreed in the review, vault 11a24dd): order 249 is completed in the mockup
+// with nothing issued; the stand receives and issues what its prints make and completes
+// it through the writers — one synthetic dispatch note the mockup does not have.
+const AGREED_COMPLETIONS = {249: 'received and issued through the writers, then completed; one synthetic note'};
+export const RECIPE_VERSION = 2;
 
 const sha256 = buf => createHash('sha256').update(buf).digest('hex');
 const fail = msg => {
@@ -95,15 +93,35 @@ for (const o of db.orders) {
 }
 if (conflicts.length) fail(`dispatch notes do not add up to what was issued: ${JSON.stringify(conflicts)}`);
 
-// A completed order with a customer must have issued every unit.
-const unagreed = [];
+// A completed order with a customer must have issued every unit — except the agreed 249.
+const agreedCompletions = [];
 for (const o of db.orders) {
   if (o.status !== 'completed' || !o.customerId) continue;
   const ordered = o.lines.reduce((a, l) => a + (l.mode === 'parts' ? 1 : l.qty), 0);
   const issued = o.lines.reduce((a, l) => a + (l.issued || 0), 0);
   if (issued >= ordered) continue;
-  if (!(o.id in PROPOSED_COMPLETIONS)) fail(`completed order ${o.id} issued ${issued} of ${ordered}.`);
-  unagreed.push({order: o.id, issued, ordered, proposal: PROPOSED_COMPLETIONS[o.id]});
+  if (!(o.id in AGREED_COMPLETIONS)) fail(`completed order ${o.id} issued ${issued} of ${ordered}.`);
+  agreedCompletions.push({order: o.id, issued, ordered, replacement: AGREED_COMPLETIONS[o.id]});
+}
+for (const id of Object.keys(AGREED_COMPLETIONS)) {
+  if (!agreedCompletions.some(c => c.order === +id)) fail(`agreed completion ${id} no longer needs a replacement.`);
+}
+
+// I02 (agreed): a line made from a one-off plate counts PLATES on the server and pieces in
+// the mockup. Every such line must divide exactly — pieces = plates × objects per plate.
+const plateUnits = [];
+for (const o of db.orders) {
+  for (const l of o.lines) {
+    const product = db.products.find(p => p.id === l.productId);
+    if (!product || product.origin !== 'adhoc_plate') continue;
+    const file = db.library.find(f => f.name === product.files[0].name);
+    const perPlate = Object.values(file.plates[0].objects || {}).reduce((a, n) => a + n, 0);
+    if (!perPlate || l.qty % perPlate !== 0) {
+      fail(`order ${o.id} line ${l.id}: ${l.qty} pieces do not divide into plates of ${perPlate}.`);
+    }
+    plateUnits.push({order: o.id, line: l.id, file: file.name, plate: file.plates[0].index,
+      mockup_units: l.qty, per_plate: perPlate, plates: l.qty / perPlate});
+  }
 }
 
 const constants = pick('({TODAY, USERS, FARM, PRINTERS, CATEGORIES, MATERIALS, COLORS, STAGES, CUSTOMER_TYPES, PRIORITIES, FIN_TYPES, PART_REASONS})');
@@ -115,7 +133,8 @@ const dump = {
     recipe_version: RECIPE_VERSION,
     counts: Object.fromEntries(Object.keys(EXPECTED_COUNTS).map(k => [k, db[k].length])),
     agreed_duplicates: AGREED_DUPLICATES,
-    unagreed_completions: unagreed,
+    agreed_completions: agreedCompletions,
+    plate_units: plateUnits,
   },
   constants,
   stages,

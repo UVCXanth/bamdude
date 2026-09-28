@@ -8,7 +8,7 @@ thought of: a queue row, an archive, a compensating pair of ledger movements
 (same balance, two new rows) all show up.
 
 Excluded: tables that change by merely signing in or reading (auth events and
-tokens), and live estimates that are not stored facts.
+tokens). No stored column is ignored.
 """
 
 from __future__ import annotations
@@ -25,9 +25,6 @@ VOLATILE_TABLES = frozenset(
         "sqlite_stat1",
     }
 )
-# Live, computed-from-now values. None is stored in a table today; the name list
-# keeps a future denormalised estimate from reading as a background write.
-LIVE_FIELDS = frozenset({"eta", "ready_at", "forecast", "remaining_seconds", "last_seen_at"})
 
 
 def take(db: Path) -> dict[str, dict[str, dict]]:
@@ -56,7 +53,10 @@ def take(db: Path) -> dict[str, dict[str, dict]]:
 
 
 def compare(before: dict, after: dict) -> list[dict]:
-    """Every row added, removed or changed between two snapshots, live fields aside."""
+    """Every row added, removed or changed between two snapshots — every stored column counts.
+
+    Live estimates (ETA, forecast) are computed per request and never stored, so a
+    table snapshot cannot hold them; nothing stored is ignored here."""
     diffs: list[dict] = []
     for table in sorted(set(before) | set(after)):
         old, new = before.get(table, {}), after.get(table, {})
@@ -69,7 +69,7 @@ def compare(before: dict, after: dict) -> list[dict]:
                 fields = {
                     f: (old[key].get(f), new[key].get(f))
                     for f in set(old[key]) | set(new[key])
-                    if f not in LIVE_FIELDS and old[key].get(f) != new[key].get(f)
+                    if old[key].get(f) != new[key].get(f)
                 }
                 if fields:
                     diffs.append({"table": table, "key": key, "change": "changed", "fields": fields})

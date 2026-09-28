@@ -65,6 +65,17 @@ class StandError(Exception):
     """A refusal: the stand will not act, and the message says why."""
 
 
+def preflight(parent: Mapping[str, str] | None = None) -> None:
+    """Refusals that do not depend on the stand's state, asked BEFORE anything is
+    touched — a reset must not delete a root and only then notice it may not run."""
+    parent = os.environ if parent is None else parent
+    if parent.get("DATABASE_URL"):
+        raise StandError(
+            "DATABASE_URL is set in this shell. The stand runs on its own SQLite file; "
+            "unset DATABASE_URL first — a stand pointed at another database is exactly what it must never be."
+        )
+
+
 def build_env(
     parent: Mapping[str, str],
     *,
@@ -74,11 +85,7 @@ def build_env(
     for_vite: bool = False,
 ) -> dict[str, str]:
     """The environment of a stand child process, built from an allowlist (spec A3)."""
-    if parent.get("DATABASE_URL"):
-        raise StandError(
-            "DATABASE_URL is set in this shell. The stand runs on its own SQLite file; "
-            "unset DATABASE_URL first — a stand pointed at another database is exactly what it must never be."
-        )
+    preflight(parent)
     env = {
         name: value
         for name, value in parent.items()
@@ -246,6 +253,7 @@ _ROOT_DIRS = ("data", "logs", "tmp", "run")
 
 def reset(mode: str, *, repo: Path = REPO, init_db: bool = True) -> dict:
     """Delete this mode's root and start a fresh instance (spec A9)."""
+    preflight()
     root = check_root(expected_root(mode, repo), mode=mode, repo=repo, create=True)
     running = live_processes(read_manifest(root))
     if running:
@@ -550,6 +558,7 @@ def _http_ok(url: str) -> bool:
 
 def up(mode: str, *, repo: Path = REPO) -> dict:
     """Start this mode's backend and Vite (spec A2, A7)."""
+    preflight()
     with lock(mode, repo=repo):
         root = check_root(expected_root(mode, repo), mode=mode, repo=repo)
         manifest = read_manifest(root)
@@ -760,6 +769,7 @@ def client_for(manifest: dict, token: str | None = None) -> StandClient:
 def seed(mode: str, *, repo: Path = REPO) -> dict:
     import seed_http
 
+    preflight()
     with lock(mode, repo=repo):
         root = check_root(expected_root(mode, repo), mode=mode, repo=repo)
         manifest = read_manifest(root)
@@ -906,7 +916,7 @@ def content_dump(client, mapping: dict) -> dict:
         elif key.startswith("fin:") or key.startswith("edge:S1:item:"):
             i = client.get(f"/api/v1/stock/items/{sid}")
             out[key] = {k: i.get(k) for k in ("code", "on_hand", "reserved", "min_qty", "location")}
-        elif key.startswith("doc:") or key.startswith("unagreed:") or key.startswith("edge:N1:note"):
+        elif key.startswith("doc:") or key.startswith("agreed:") or key.startswith("edge:N1:note"):
             n = client.get(f"/api/v1/stock-issues/{sid}")
             out[key] = {
                 "code": n["code"],
@@ -1096,7 +1106,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--snapshot", metavar="FILE")
     args = parser.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
-        stream.reconfigure(encoding="utf-8")
+        # Line by line: a long seed or smoke written to a file shows its progress as it goes.
+        stream.reconfigure(encoding="utf-8", line_buffering=True)
     try:
         COMMANDS[args.command](args)
     except StandError as exc:

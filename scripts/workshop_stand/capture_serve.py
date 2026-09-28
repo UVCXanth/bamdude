@@ -47,9 +47,11 @@ def build_job(mode: str, stage: str, only: set[str] | None) -> tuple[dict, dict]
     for surface in plan["surfaces"]:
         if only and surface["id"] not in only:
             continue
+        if surface.get("mode", "baseline") != mode:
+            continue
         widths = plan["widths"]["wide"] + (plan["widths"]["narrow"] if surface["widths"] == "all" else [])
         for width in widths:
-            for side in ("mockup", "app"):
+            for side in surface.get("sides", ("mockup", "app")):
                 spec = surface[side]
                 if side == "app" and spec.get("reuse"):
                     continue  # the same analogue as another surface — referenced, not re-shot
@@ -107,10 +109,25 @@ def write_manifest(context: dict, results: list[dict]) -> Path:
                 "ok": r.get("ok"),
                 "error": r.get("error"),
                 "steps": r.get("steps"),
+                # Fixed-viewport frames (V02): the first is `file`; each one's layout key was
+                # the same before and after the picture as when the measures were taken.
+                "stable": r.get("stable"),
+                "scroll": r.get("scroll"),
+                "frames": [
+                    {
+                        **frame,
+                        "file": str(Path(frame["file"]).relative_to(stand.REPO)).replace("\\", "/"),
+                        "sha256": hashlib.sha256(Path(frame["file"]).read_bytes()).hexdigest(),
+                    }
+                    for frame in r.get("frames") or []
+                    if Path(frame["file"]).exists()
+                ],
                 "measures": r.get("measures"),
             }
         )
     for surface in plan["surfaces"]:
+        if surface.get("mode", "baseline") != context["mode"]:
+            continue
         if surface["app"].get("reuse"):
             rows.append(
                 {

@@ -188,3 +188,37 @@ def customer_contact(customer: dict) -> dict:
 
 CUSTOMER_KINDS = {"company": "company", "regular": "regular", "private": "private"}
 ATTACHMENT_CATEGORIES = {"bom": "bom_docs", "assembly": "assembly", "other": "other"}
+
+
+def plate_units_for(dump: dict, order_id: int, line_id: int) -> dict:
+    """I02: the exact pieces → plates conversion of a one-off plate line, as the dump proved it."""
+    for units in dump["meta"]["plate_units"]:
+        if units["order"] == order_id and units["line"] == line_id:
+            return units
+    raise KeyError(f"no plate units for order {order_id} line {line_id}")
+
+
+def line_for_doc_item(db: dict, order: dict, item: dict) -> dict:
+    """The order line a mockup dispatch-note item was issued from — by product, then by
+    the configuration its label names."""
+    candidates = [ln for ln in order["lines"] if ln["productId"] == item["productId"]]
+    if len(candidates) == 1:
+        return candidates[0]
+    label = (item.get("label") or "").lower()
+    for line in candidates:
+        names = option_names(db, line)
+        if names and all(n.lower() in label for n in names):
+            return line
+    raise RuntimeError(f"doc item {item} of order {order['id']} matches no single line")
+
+
+def option_names(db: dict, line: dict) -> list[str]:
+    """The option names a mockup line chose, in its product's group order — a group the
+    line does not name is its default, as the server writes it."""
+    product = next(p for p in db["products"] if p["id"] == line["productId"])
+    config = line.get("config") or {}
+    names = []
+    for group in product.get("variants") or []:
+        chosen = config.get(group["id"], group.get("default"))
+        names += [o["name"] for o in group["options"] if o["id"] == chosen]
+    return names
