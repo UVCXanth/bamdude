@@ -4,7 +4,7 @@ parts with no shelf, bindings changed under saved orders, merges, and the
 impact the dry run reports."""
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
@@ -140,8 +140,11 @@ async def test_printed_parts_a_change_drops_become_bankable_surplus(committing_c
 
 
 @pytest.mark.asyncio
-async def test_a_zeroed_part_on_the_plate_still_counts_nowhere(committing_client, db_session, pipe):
-    # A part the product does not count (qty 0, no shelf) is not surplus of anybody.
+async def test_a_part_marked_not_counted_on_the_plate_counts_nowhere(committing_client, db_session, pipe):
+    # A part marked «не рахувати» (no shelf) is not surplus of anybody (spec
+    # workshop-order-issue-followups, rule 34).
+    pipe["parts"]["clip"].ignored = True
+    await db_session.commit()
     body = await _order(committing_client, [{"product_id": pipe["product"].id, "quantity": 1}])
     line_id = body["lines"][0]["id"]
     await _file(db_session, body["id"], line_id, clip=4)
@@ -149,11 +152,22 @@ async def test_a_zeroed_part_on_the_plate_still_counts_nowhere(committing_client
     assert "clip" not in {p["name"] for p in line["parts"]}
 
 
-# ---- a part with no shelf is never bankable ----
+@pytest.mark.asyncio
+async def test_an_out_of_kit_part_on_the_plate_is_the_lines_surplus(committing_client, db_session, pipe):
+    # A zero without the mark is a part out of the kit — made for this order, so it is
+    # the line's surplus and can be banked (spec workshop-order-issue-followups, rule 34).
+    body = await _order(committing_client, [{"product_id": pipe["product"].id, "quantity": 1}])
+    line_id = body["lines"][0]["id"]
+    await _file(db_session, body["id"], line_id, clip=4)
+    line = (await committing_client.get(f"/api/v1/projects/{body['id']}")).json()["lines"][0]
+    assert {p["name"]: p["surplus"] for p in line["parts"] if p["name"] == "clip"} == {"clip": 4}
+
+
+# ---- an out-of-kit part's surplus is bankable ----
 
 
 @pytest.mark.asyncio
-async def test_surplus_of_a_part_without_a_shelf_is_not_bankable(committing_client, db_session, pipe):
+async def test_surplus_of_an_out_of_kit_part_is_bankable(committing_client, db_session, pipe):
     clip = pipe["parts"]["clip"]
     body = await _order(
         committing_client, [{"product_id": pipe["product"].id, "mode": "parts", "part_counts": {str(clip.id): 2}}]
@@ -162,15 +176,13 @@ async def test_surplus_of_a_part_without_a_shelf_is_not_bankable(committing_clie
     await _file(db_session, body["id"], line_id, clip=4)
     order = (await committing_client.get(f"/api/v1/projects/{body['id']}")).json()
     assert {p["name"]: p["surplus"] for p in order["lines"][0]["parts"]} == {"clip": 2}
-    assert order["figures"]["bankable_surplus"] == 0
+    assert order["figures"]["bankable_surplus"] == 2
     r = await committing_client.post(f"/api/v1/projects/{body['id']}/bank-surplus")
-    assert r.status_code < 500
-    rows = (
-        await db_session.execute(
-            select(ProductPartStockMovement.id).where(ProductPartStockMovement.product_part_id == clip.id)
-        )
-    ).all()
-    assert rows == []
+    assert r.status_code == 200, r.text
+    total = await db_session.scalar(
+        select(func.sum(ProductPartStockMovement.delta)).where(ProductPartStockMovement.product_part_id == clip.id)
+    )
+    assert total == 2
 
 
 # ---- a binding changed under saved orders ----

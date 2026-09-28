@@ -769,6 +769,8 @@ async def list_product_parts(
         .outerjoin(ProductVariantGroup, ProductVariantGroup.id == ProductVariantOption.group_id)
         .where(
             ProductPart.kind == "printed",
+            # «Не рахувати» is not a part to order (spec workshop-order-issue-followups, rule 34).
+            ProductPart.ignored.is_(False),
             Product.origin == ProductOrigin.CATALOG.value,
             Product.is_active.is_(True),
         )
@@ -1119,6 +1121,7 @@ async def duplicate_product(
                 name=part.name,
                 name_key=part.name_key,
                 qty_per_unit=part.qty_per_unit,
+                ignored=part.ignored,
                 # NULL for a purchased part, and it stays NULL on the copy: the
                 # column is printed-only, and [] would read as "no aliases yet".
                 aliases=list(part.aliases) if part.aliases is not None else None,
@@ -1156,6 +1159,11 @@ async def duplicate_product(
 
 # ---------- parts ----------
 
+# spec workshop-order-issue-followups, rule 34: «не рахувати» only on a zero, and never on a
+# part that holds stock or that a line or a stock position wants.
+_NOT_IN_KIT = "A part that is not counted cannot be in the kit"
+_CANNOT_IGNORE = "This part holds stock or is ordered; it cannot be marked as not counted"
+
 
 async def _part(db: AsyncSession, product: Product, part_id: int) -> ProductPart:
     part = next((p for p in product.parts if p.id == part_id), None)
@@ -1172,6 +1180,8 @@ async def create_part(
     _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     product = await _get(db, product_id)
+    if data.ignored and data.qty_per_unit > 0:
+        raise HTTPException(status_code=422, detail=_NOT_IN_KIT)
     if data.kind == "purchased":
         key = purchased_name_key(data.name)
     else:
@@ -1184,6 +1194,7 @@ async def create_part(
         name=data.name.strip(),
         name_key=key,
         qty_per_unit=data.qty_per_unit,
+        ignored=data.ignored,
         aliases=[key] if data.kind == "printed" else None,
         auto=False,
         unit_price=data.unit_price,
@@ -1233,6 +1244,15 @@ async def update_part(
             p is not part and (new_key == p.name_key or new_key in (p.aliases or [])) for p in product.parts
         ):
             raise HTTPException(status_code=409, detail="A part with this name already exists")
+    ignored_after = data.ignored if "ignored" in data.model_fields_set else part.ignored
+    qty_after = data.qty_per_unit if "qty_per_unit" in data.model_fields_set else part.qty_per_unit
+    if ignored_after and qty_after > 0:
+        raise HTTPException(status_code=422, detail=_NOT_IN_KIT)
+    if ignored_after and not part.ignored:
+        # Only a part with nothing on its shelf and wanted by nobody (rule 34).
+        balance = (await part_stock.balances(db, product.id)).get(part.id, 0)
+        if balance != 0 or await line_config.part_in_use(db, part.id):
+            raise HTTPException(status_code=409, detail=_CANNOT_IGNORE)
     for field_name in data.model_fields_set:
         setattr(part, field_name, getattr(data, field_name))
     if new_key is not None:
@@ -1565,10 +1585,11 @@ async def get_product_stock(
 ):
     """The product's free stock: what is on the shelf, how many kits, how it got there.
 
-    ``balances`` lists the COUNTED parts only (printed, wanted in a quantity
-    greater than zero) — a purchased part is procurement and has no shelf. The
-    movements below are deliberately not filtered that way: a row written
-    before a part was zeroed still happened.
+    ``balances`` lists the COUNTED parts only (printed and not marked «не рахувати»,
+    out-of-kit zeros included — spec workshop-order-issue-followups, rule 34) — a
+    purchased part is procurement and has no shelf. The movements below are
+    deliberately not filtered that way: a row written before a part was marked still
+    happened.
     """
     product = await _get(db, product_id)
     part_balances = await part_stock.balances(db, product.id)

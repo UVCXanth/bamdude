@@ -146,6 +146,8 @@ class ProductPartCreate(BaseModel):
     kind: str = Field(pattern="^(printed|purchased)$")
     name: str = Field(min_length=1, max_length=512)
     qty_per_unit: int = Field(default=1, ge=0)
+    #: «Не рахувати» (spec workshop-order-issue-followups, rule 34) — only with a zero.
+    ignored: bool = False
     unit_price: float | None = None
     sourcing_url: str | None = None
     remarks: str | None = None
@@ -172,13 +174,16 @@ class ProductPartUpdate(BaseModel):
     #: configuration (spec workshop-product-variants, rule 19). The route
     #: refuses an option of another product.
     variant_option_id: int | None = None
+    #: «Не рахувати» (spec workshop-order-issue-followups, rule 34). The route refuses it on
+    #: a part in the kit (422) and on one that holds stock or is ordered (409).
+    ignored: bool | None = None
 
     @field_validator("name", mode="before")
     @classmethod
     def _name_is_never_null_and_is_clean(cls, v: Any) -> Any:
         return _clean_name(_never_null(v, "name"))
 
-    @field_validator("qty_per_unit", "sort_order")
+    @field_validator("qty_per_unit", "sort_order", "ignored")
     @classmethod
     def _number_is_never_null(cls, v: int | None) -> int | None:
         return _never_null(v, "value")
@@ -210,10 +215,11 @@ class ProductPartResponse(BaseModel):
     remarks: str | None = None
     sort_order: int = 0
     variant_option_id: int | None = None
+    ignored: bool = False
     # How many of this part are on the shelf (pass 8, Decision 6). A SUM over
     # the ledger, never a column — ``models/part_stock`` says why — so every
     # route answering with a part reads it, and ``0`` here means "no stock",
-    # not "not asked". A purchased part or one the product zeroed has no
+    # not "not asked". A purchased part or one marked «не рахувати» has no
     # balance to have and reads 0 for good.
     stock_balance: int = 0
 

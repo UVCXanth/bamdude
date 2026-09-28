@@ -126,12 +126,16 @@ async def test_a_part_turned_purchased_loses_its_balance_but_keeps_its_history(d
     assert written.id in {m.id for m in await movements(db_session, product.id)}
 
 
-async def test_a_part_the_product_zeroes_loses_its_balance_but_keeps_its_history(db_session):
-    """``qty_per_unit = 0`` is the product's own "do not measure me"."""
+async def test_a_part_marked_not_counted_loses_its_balance_but_keeps_its_history(db_session):
+    """«Не рахувати» is the product's own "not a part of me" (spec workshop-order-issue-followups,
+    rule 34) — a zero alone no longer is: that part is out of the kit and keeps its shelf."""
     product, parts = await _make_product(db_session, ("lid", "printed", 1), ("jig", "printed", 1))
     written = await move(db_session, part_id=parts["jig"].id, delta=9, reason="unfiled_print")
 
     parts["jig"].qty_per_unit = 0
+    await db_session.flush()
+    assert await balances(db_session, product.id) == {parts["lid"].id: 0, parts["jig"].id: 9}
+    parts["jig"].ignored = True
     await db_session.flush()
 
     assert await balances(db_session, product.id) == {parts["lid"].id: 0}
@@ -173,12 +177,14 @@ async def test_move_refuses_a_part_that_does_not_exist(db_session):
         await move(db_session, part_id=987654, delta=1, reason="manual")
 
 
-@pytest.mark.parametrize(("kind", "qty"), [("purchased", 4), ("printed", 0)])
-async def test_moving_stock_on_a_part_that_has_none_is_a_caller_error(db_session, kind, qty):
+@pytest.mark.parametrize(("kind", "qty", "ignored"), [("purchased", 4, False), ("printed", 0, True)])
+async def test_moving_stock_on_a_part_that_has_none_is_a_caller_error(db_session, kind, qty, ignored):
     """Only a counted part has a balance, so a movement against a purchased
-    part — or one the product zeroed — is a row nothing would ever read back.
+    part — or one marked «не рахувати» — is a row nothing would ever read back.
     Refused at the door rather than written and lost."""
     _p, parts = await _make_product(db_session, ("thing", kind, qty))
+    parts["thing"].ignored = ignored
+    await db_session.flush()
     with pytest.raises(ValueError, match="not a counted printed part"):
         await move(db_session, part_id=parts["thing"].id, delta=1, reason="manual")
 
@@ -438,9 +444,10 @@ async def test_only_a_finished_print_reaches_the_shelf(db_session, shelf, status
 
 
 async def test_an_object_no_product_counts_is_skipped_not_refused(db_session):
-    """A raft, a test cube, a part the product zeroed: attribution ignores it
+    """A raft, a test cube, a part marked «не рахувати»: attribution ignores it
     and so does stock. Silence, because it is a statement the product made."""
     product, parts = await _make_product(db_session, ("lid", "printed", 1), ("jig", "printed", 0))
+    parts["jig"].ignored = True
     db_session.add(ProductPlate(product_id=product.id, library_file_id=77, plate_index=0))
     archive = await _archive(db_session, file_id=77)
     await _rows(db_session, archive, ("lid", 2, 0), ("jig", 9, 0), ("calibration_cube", 3, 0))
@@ -549,6 +556,7 @@ async def test_a_part_that_stopped_counting_is_skipped_by_the_reversal(db_sessio
     _product, parts, archive = shelf
     await credit_unfiled_print(db_session, archive)
     parts["lid"].qty_per_unit = 0
+    parts["lid"].ignored = True
     await db_session.flush()
 
     written = await reverse_unfiled_print(db_session, archive, note=NOTE_FILED_UNDER_ORDER)

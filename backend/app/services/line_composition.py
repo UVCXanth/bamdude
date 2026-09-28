@@ -76,12 +76,12 @@ def standard_composition(parts: Sequence[ProductPart], default_option_ids: set[i
 
 
 def has_shelf(part: ProductPart) -> bool:
-    """Does this part have a stock balance at all — printed, and in the
-    product's own kit (``qty_per_unit > 0``). The stock ledger's definition
-    (``part_stock.is_counted`` delegates here), kept beside the reader so the
-    figures can ask it without importing the ledger. A line may bring in a
-    part the product does not count; it still has no shelf."""
-    return part.kind == "printed" and part.qty_per_unit > 0
+    """Does this part have a stock balance at all — printed, and not marked «не рахувати»
+    (spec workshop-order-issue-followups, rule 34). A zero in the product's kit does NOT take
+    the shelf away: that part is out of the kit and still a part. The stock ledger's
+    definition (``part_stock.is_counted`` delegates here), kept beside the reader so the
+    figures can ask it without importing the ledger."""
+    return part.kind == "printed" and not part.ignored
 
 
 def counted(comp: Iterable[tuple[ProductPart, int]]) -> Composition:

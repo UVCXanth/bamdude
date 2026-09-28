@@ -618,6 +618,7 @@ def _part_manifest(part: Any, variant: list[str] | None = None) -> dict:
         "name": part.name,
         "name_key": part.name_key,
         "qty_per_unit": part.qty_per_unit,
+        "ignored": bool(getattr(part, "ignored", False)),
         "aliases": list(part.aliases) if part.aliases is not None else None,
         "auto": bool(part.auto),
         "unit_price": part.unit_price,
@@ -1141,18 +1142,21 @@ async def import_zip(
                 continue
             seen.add(key)
             aliases = [a for a in (raw.get("aliases") or []) if isinstance(a, str) and a] if kind == "printed" else None
+            # ⚠️ Floors at 0, not at 1. ``qty_per_unit = 0`` is a value; raising it to 1 here
+            # would invent a requirement the operator deliberately removed, on a round trip
+            # whose whole job is to change nothing.
+            qty = max(0, _whole(raw.get("qty_per_unit"), 1))
+            # An old card has no mark: its zero meant "present on a plate, do not measure"
+            # (spec workshop-order-issue-followups, rule 34). A part in the kit is never marked.
+            ignored = (bool(raw["ignored"]) if "ignored" in raw else qty == 0) and qty == 0
             db.add(
                 ProductPart(
                     product_id=product.id,
                     kind=kind,
                     name=name,
                     name_key=key,
-                    # ⚠️ Floors at 0, not at 1. ``qty_per_unit = 0`` is the
-                    # "present on a plate but not part of the product" rule the
-                    # model documents; raising it to 1 here would invent a
-                    # requirement the operator deliberately removed, on a round
-                    # trip whose whole job is to change nothing.
-                    qty_per_unit=max(0, _whole(raw.get("qty_per_unit"), 1)),
+                    qty_per_unit=qty,
+                    ignored=ignored,
                     aliases=aliases,
                     auto=bool(raw.get("auto", False)),
                     unit_price=_price(raw.get("unit_price")),

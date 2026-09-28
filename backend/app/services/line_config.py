@@ -137,6 +137,9 @@ def _validate(
             raise LineConfigError("That part does not belong to this product")
         if not 0 <= qty <= MAX_COUNT:
             raise LineConfigError("A part count must be between 0 and 9999")
+        if qty > 0 and parts[pid].ignored:
+            # spec workshop-order-issue-followups, rule 34: «не рахувати» is not a part.
+            raise LineConfigError("That part is not counted")
     if mode == "parts":
         wanted = {pid: qty for pid, qty in counts.items() if qty > 0}
         if not wanted:
@@ -575,6 +578,16 @@ async def repoint_part(db: AsyncSession, source_id: int, target_id: int) -> None
     if rows:
         await db.execute(insert(ProjectLinePartCount), rows)
     await _rekey(db, line_ids)
+
+
+async def part_in_use(db: AsyncSession, part_id: int) -> bool:
+    """Does an order line or a stock position want this part — a stored count above zero?
+    (spec workshop-order-issue-followups, rule 34: such a part cannot be marked «не рахувати».)"""
+    for model in (ProjectLinePartCount, StockItemPartCount):
+        found = await db.scalar(select(model.part_id).where(model.part_id == part_id, model.qty > 0).limit(1))
+        if found is not None:
+            return True
+    return False
 
 
 async def forget_line(db: AsyncSession, line_id: int) -> None:

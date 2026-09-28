@@ -74,8 +74,10 @@ def _ctx(
     )
 
 
-def _part(pid, product_id, key, qty, kind="printed"):
-    p = ProductPart(product_id=product_id, kind=kind, name=key, name_key=key, qty_per_unit=qty, aliases=[key])
+def _part(pid, product_id, key, qty, kind="printed", ignored=False):
+    p = ProductPart(
+        product_id=product_id, kind=kind, name=key, name_key=key, qty_per_unit=qty, aliases=[key], ignored=ignored
+    )
     p.id = pid
     return p
 
@@ -129,7 +131,7 @@ def test_material_set_splits_the_joined_string():
 
 
 def test_units_printed_is_the_bottleneck_part():
-    parts = [_part(1, 10, "a", 1), _part(2, 10, "b", 2), _part(3, 10, "c", 88), _part(9, 10, "cube", 0)]
+    parts = [_part(1, 10, "a", 1), _part(2, 10, "b", 2), _part(3, 10, "c", 88), _part(9, 10, "cube", 0, ignored=True)]
     lines = [_line(100, 10, 2)]
     # one plate: 1 a + 2 b + 88 c + a cube nobody counts; printed twice, one c scrapped
     archives = [_archive(1, file_id=5, plate=1), _archive(2, file_id=5, plate=1)]
@@ -141,7 +143,7 @@ def test_units_printed_is_the_bottleneck_part():
     line = figs[100]
     by_key = {p.name: p for p in line.parts}
     assert by_key["c"].usable == 175 and by_key["c"].need == 176 and by_key["c"].remaining == 1
-    assert "cube" not in by_key  # qty_per_unit 0 is not measured
+    assert "cube" not in by_key  # marked «не рахувати»: not measured
     assert line.units_printed == 1  # 175 // 88
     assert line.progress == 0.5 and other == []
 

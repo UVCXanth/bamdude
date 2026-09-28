@@ -92,12 +92,16 @@ async def seed_parts_for_product(
         for key, n in counts.items():
             if key in idx:
                 continue
+            qty = n if origin_counts is None else origin_counts.get(key, 0)
             part = ProductPart(
                 product_id=product_id,
                 kind="printed",
                 name=display[key],
                 name_key=key,
-                qty_per_unit=n if origin_counts is None else origin_counts.get(key, 0),
+                qty_per_unit=qty,
+                # An object of another plate of the file is not a part of a one-off plate
+                # product (spec workshop-order-issue-followups, rule 34).
+                ignored=origin_counts is not None and qty == 0,
                 aliases=[key],
                 auto=True,
                 sort_order=next_sort,

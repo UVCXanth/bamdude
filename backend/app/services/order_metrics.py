@@ -619,8 +619,8 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
         configuration left out — a straight tail on a line switched to angled
         (spec workshop-product-variants, rule 14). The parts are real and were
         made for this order, so they read as the line's surplus and can be
-        banked; a part without a shelf (the product does not count it at all —
-        a calibration cube) stays uncounted, as before."""
+        banked; a part without a shelf (marked «не рахувати» — a calibration
+        cube; spec workshop-order-issue-followups, rule 34) stays uncounted."""
         part = indexes.get(line.product_id, {}).get(name_key)
         if part is None or not has_shelf(part):
             return None

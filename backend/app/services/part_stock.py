@@ -9,13 +9,12 @@ below zero, and what actually moved — and a caller that answers them for
 itself will answer at least one of them differently.
 
 **Counted parts.** A balance is kept only for a part the product actually
-counts: ``kind == "printed"`` AND ``qty_per_unit > 0``. That is the same
-predicate ``order_metrics._new_line_figures`` applies to a line's parts and
-``plan_engine.line_yield`` applies to a plate's yield — a purchased part is
-procurement, not stock, and ``qty_per_unit = 0`` is the product's own "present
-on the plate, do not measure me". The predicate is replicated here rather than
-imported because neither of those modules exposes it; :func:`is_counted` is
-this pass's spelling of it, and the three must move together.
+counts: ``kind == "printed"`` and not marked «не рахувати» (``ignored`` — spec
+workshop-order-issue-followups, rule 34). A purchased part is procurement, not
+stock; a marked part is the product's own "present on the plate, not a part of
+me". A zero in the kit is NOT that any more: such a part is out of the kit — it
+has a balance and makes no kit. :func:`is_counted` delegates to
+``line_composition.has_shelf``, the one definition the figures ask too.
 
 **Transactions belong to the caller.** :func:`move` adds and FLUSHES, it never
 commits. Editing a reservation is "release + reserve in one transaction"
@@ -172,14 +171,14 @@ class PartStockError(Exception):
 
 def counted_part_clause():
     """SQL twin of :func:`is_counted` — for a query that filters products by it."""
-    return and_(ProductPart.kind == "printed", ProductPart.qty_per_unit > 0)
+    return and_(ProductPart.kind == "printed", ProductPart.ignored.is_(False))
 
 
 def is_counted(part: ProductPart) -> bool:
     """Does this part have a stock balance at all.
 
-    Printed, and wanted in the product's own kit in a quantity greater than
-    zero — ``line_composition.has_shelf``, the one definition the figures ask too.
+    Printed, and not marked «не рахувати» (rule 34) — ``line_composition.has_shelf``,
+    the one definition the figures ask too.
     """
     return has_shelf(part)
 
@@ -190,13 +189,13 @@ async def balances(db: AsyncSession, product_id: int) -> dict[int, int]:
     Every counted part is in the answer, including the ones with no movement
     at all (0) — the caller asking for a product's stock wants a complete map,
     and a missing key is the shape that turns into a ``KeyError`` or a wrong
-    "no stock" somewhere downstream. A purchased part, or one the product
-    zeroed, is absent: it has no balance to have.
+    "no stock" somewhere downstream. A purchased part, or one marked «не
+    рахувати», is absent: it has no balance to have.
     """
     rows = await db.execute(
         select(ProductPart.id, func.coalesce(func.sum(ProductPartStockMovement.delta), 0))
         .outerjoin(ProductPartStockMovement, ProductPartStockMovement.product_part_id == ProductPart.id)
-        .where(ProductPart.product_id == product_id, ProductPart.kind == "printed", ProductPart.qty_per_unit > 0)
+        .where(ProductPart.product_id == product_id, counted_part_clause())
         .group_by(ProductPart.id)
     )
     return {part_id: int(total or 0) for part_id, total in rows.all()}
@@ -233,8 +232,7 @@ async def balances_for_products(db: AsyncSession, product_ids: Sequence[int]) ->
             .outerjoin(ProductPartStockMovement, ProductPartStockMovement.product_part_id == ProductPart.id)
             .where(
                 ProductPart.product_id.in_(product_ids[start : start + IN_CHUNK]),
-                ProductPart.kind == "printed",
-                ProductPart.qty_per_unit > 0,
+                counted_part_clause(),
             )
             .group_by(ProductPart.product_id, ProductPart.id)
         )
