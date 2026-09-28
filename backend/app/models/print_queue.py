@@ -11,7 +11,7 @@ class PrintQueueItem(Base):
 
     __tablename__ = "print_queue"
     # The order figures and the order's queue section read an order's pending
-    # rows (spec workshop-order-queue); measured plan in m188.
+    # rows (spec workshop-order-queue); measured plan in m191.
     __table_args__ = (Index("ix_print_queue_project_status", "project_id", "status"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)

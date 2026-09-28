@@ -26,8 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.migrations import (
     m158_products_and_orders as m158,
-    m187_customer_contacts as m187,
-    m188_order_stage_journal as m188,
+    m190_customer_contacts as m190,
+    m191_order_stage_journal as m191,
 )
 from backend.app.migrations.helpers import get_table_columns, table_exists
 from backend.app.models.archive import PrintArchive
@@ -202,9 +202,9 @@ async def _run_upgrade(engine):
         await m158.upgrade(conn)
         # The assertions read through the CURRENT ``Project`` model, so the
         # columns later migrations add to the table m158 rebuilds must exist too:
-        # ``contact_id`` (m187), ``stage`` and ``responsible_id`` (m188).
-        await m187.upgrade(conn)
-        await m188.upgrade(conn)
+        # ``contact_id`` (m190), ``stage`` and ``responsible_id`` (m191).
+        await m190.upgrade(conn)
+        await m191.upgrade(conn)
 
 
 @pytest.mark.asyncio

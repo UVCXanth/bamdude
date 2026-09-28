@@ -88,7 +88,7 @@ from sqlalchemy import text
 
 from backend.app.migrations.helpers import add_column, column_exists, table_exists
 
-version = 188
+version = 191
 name = "order_stage_journal"
 
 

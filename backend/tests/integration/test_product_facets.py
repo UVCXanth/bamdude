@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
-from backend.app.migrations import m188_order_stage_journal as m188
+from backend.app.migrations import m191_order_stage_journal as m191
 from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product, ProductFacet
 from backend.app.services import product_facets
@@ -106,7 +106,7 @@ async def test_the_seed_fills_existing_products(db_session, test_engine):
     await db_session.commit()
     assert await _facets(db_session, p.id) == set()
 
-    await m188.seed(async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False))
+    await m191.seed(async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False))
 
     assert await _facets(db_session, p.id) == {("material", "PLA"), ("color", "#00FF00"), ("model", "X1C")}
 

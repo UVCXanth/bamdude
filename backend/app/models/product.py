@@ -72,7 +72,7 @@ class Product(Base):
             sqlite_where=text("origin = 'adhoc_plate'"),
             postgresql_where=text("origin = 'adhoc_plate'"),
         ),
-        # Named as m188 names it, so create_all and a migrated database agree.
+        # Named as m191 names it, so create_all and a migrated database agree.
         Index("ix_products_sku_key", "sku_key", unique=True),
     )
 

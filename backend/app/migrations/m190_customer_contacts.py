@@ -13,8 +13,9 @@ delivery-method reference (spec workshop-customers, part B).
   that contact's note. Nothing is lost; the customer's own notes stay untouched.
   Then the column is dropped.
 
-Numbered 187, not 185: ``feature/v0.6.1-fixes`` took 185 and 186 while this was
-being built (``test_migration_versions_are_unique`` makes such a clash a red build).
+Numbered 190: the migrations run in one unbroken sequence, and ``feature/v0.6.1-fixes``
+holds 184–189; the workshop's two follow as 190 and 191
+(``test_migration_versions_are_unique`` makes a clash a red build).
 
 The move runs in ``upgrade`` because the drop does: a seed would read a column
 already gone. It is guarded on the column still existing and on the customer
@@ -33,7 +34,7 @@ from backend.app.migrations.helpers import add_column, column_exists, drop_colum
 
 logger = logging.getLogger(__name__)
 
-version = 187
+version = 190
 name = "customer_contacts"
 
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
@@ -156,7 +157,7 @@ async def upgrade(conn):
                 {"customer_id": customer_id, **fields},
             )
             moved += 1
-        logger.info("m187: moved %d old customer contact(s) into customer_contacts", moved)
+        logger.info("m190: moved %d old customer contact(s) into customer_contacts", moved)
         await drop_column(conn, "customers", "contact")
 
 

@@ -36,7 +36,7 @@ class AutoQueueItem(Base):
 
     __tablename__ = "auto_queue_items"
     # The order figures and the order's queue section read an order's
-    # undistributed rows (spec workshop-order-queue); measured plan in m188.
+    # undistributed rows (spec workshop-order-queue); measured plan in m191.
     __table_args__ = (Index("ix_auto_queue_items_project_status", "project_id", "status"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)

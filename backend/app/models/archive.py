@@ -31,7 +31,7 @@ class PrintArchive(Base):
         Index("ix_print_archives_active_created", "deleted_at", "created_at"),
         Index("ix_print_archives_printer_created", "printer_id", "created_at"),
         # An order's prints — the figures' loaders and the order's queue section
-        # (spec workshop-order-queue); measured plan in m188.
+        # (spec workshop-order-queue); measured plan in m191.
         Index("ix_print_archives_project_created", "project_id", "created_at"),
         # ⚠️ text(), not the mapped attributes: __table_args__ runs inside the
         # class body, where the columns are not attributes yet. The doubled

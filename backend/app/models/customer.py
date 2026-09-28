@@ -58,7 +58,7 @@ class DeliveryMethod(Base):
 class CustomerContact(Base):
     __tablename__ = "customer_contacts"
     # AUTOINCREMENT: a removed contact's CT code must never be handed to the next
-    # one (SQLite reuses max(id)+1 otherwise; m187 creates the table the same way).
+    # one (SQLite reuses max(id)+1 otherwise; m190 creates the table the same way).
     __table_args__ = (
         Index("ix_customer_contacts_customer_position", "customer_id", "position"),
         {"sqlite_autoincrement": True},

@@ -1,4 +1,4 @@
-"""m188 — order stage, responsible user and the order journal."""
+"""m191 — order stage, responsible user and the order journal."""
 
 import pytest
 import pytest_asyncio
@@ -6,7 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from backend.app.migrations import m188_order_stage_journal as m188
+from backend.app.migrations import m191_order_stage_journal as m191
 
 
 @pytest_asyncio.fixture
@@ -28,7 +28,7 @@ async def engine():
 
 async def _run(engine):
     async with engine.begin() as conn:
-        await m188.upgrade(conn)
+        await m191.upgrade(conn)
 
 
 @pytest.mark.asyncio

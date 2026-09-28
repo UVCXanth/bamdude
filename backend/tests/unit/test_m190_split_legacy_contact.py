@@ -1,6 +1,6 @@
 import pytest
 
-from backend.app.migrations.m187_customer_contacts import split_legacy_contact
+from backend.app.migrations.m190_customer_contacts import split_legacy_contact
 
 
 @pytest.mark.parametrize(

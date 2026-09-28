@@ -29,7 +29,7 @@ class ProductVariantGroup(Base):
     # NULL only between the group's insert and its first option's; the routes
     # keep it pointing at one of the group's own options (the standard option
     # cannot be deleted, a deleted group takes its options). Deliberately NO
-    # foreign key, as in m188: one would close a group ↔ option cycle, which
+    # foreign key, as in m191: one would close a group ↔ option cycle, which
     # the portable backup's DDL keeps out of its checked set, and a fresh
     # install would carry a constraint a migrated one does not.
     default_option_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
