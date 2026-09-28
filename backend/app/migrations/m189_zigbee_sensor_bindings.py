@@ -37,9 +37,14 @@ async def upgrade(conn):
             text("""
                 INSERT INTO smart_sensor_bindings
                     (sensor_id, printer_id, printer_location_id, notify_enabled)
-                VALUES (:sensor_id, :printer_id, :room_id, 1)
+                VALUES (:sensor_id, :printer_id, :room_id, :notify_enabled)
             """),
-            {"sensor_id": sensor_id, "printer_id": printer_id, "room_id": None if printer_id is not None else room_id},
+            {
+                "sensor_id": sensor_id,
+                "printer_id": printer_id,
+                "room_id": None if printer_id is not None else room_id,
+                "notify_enabled": True,
+            },
         )
         binding_id = await conn.scalar(
             text("SELECT id FROM smart_sensor_bindings WHERE sensor_id = :sensor_id LIMIT 1"),
@@ -49,8 +54,8 @@ async def upgrade(conn):
             text("""
                 INSERT INTO smart_sensor_binding_thresholds
                     (binding_id, kind, custom, state, state_since, notified_at)
-                SELECT :binding_id, kind, 0, state, state_since, notified_at
+                SELECT :binding_id, kind, :custom, state, state_since, notified_at
                 FROM smart_sensor_thresholds WHERE sensor_id = :sensor_id
             """),
-            {"binding_id": binding_id, "sensor_id": sensor_id},
+            {"binding_id": binding_id, "sensor_id": sensor_id, "custom": False},
         )

@@ -58,6 +58,8 @@
 
 ### Fixed
 
+- **Existing PostgreSQL installations start after the sensor update.** Migrating an existing Zigbee sensor's printer or room binding used SQLite-style numbers for boolean fields, which PostgreSQL rejected and stopped startup. The migration now writes proper boolean values and preserves the sensor's alert state.
+
 - **Multi-plate library cards keep their selection checkbox clear.** The plate counter now sits to the right of the checkbox, so it no longer covers the checkmark or blocks selecting the file.
 
 - **Large multi-plate exports stay usable in the preview dialog.** Plate lists now scroll within a bounded panel, leaving room for the selected plate's 3D or G-code preview in both normal and fullscreen mode. Files with many plates no longer hide the last plates or push the preview below the dialog.
