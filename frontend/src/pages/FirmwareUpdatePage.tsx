@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Cpu } from 'lucide-react';
-import { api, firmwareApi } from '../api/client';
+import { ApiError, api, firmwareApi } from '../api/client';
 import { Button } from '../components/Button';
 import { Select } from '../components/Select';
 import { useToast } from '../contexts/ToastContext';
+import { compareFwVersions } from '../utils/firmwareVersion';
 
 interface ItemProgress {
   status: string;
@@ -49,6 +50,13 @@ export function FirmwareUpdatePage() {
     enabled: allIds.length > 0,
   });
   const groups = useMemo(() => preview?.groups ?? [], [preview]);
+  const upgradableIds = useMemo(() => (updates?.updates ?? [])
+    .filter((u) => {
+      const group = groups.find((g) => g.printer_ids.includes(u.printer_id));
+      return u.update_available && !!u.current_version && !!group?.default_version &&
+        compareFwVersions(group.default_version, u.current_version) > 0;
+    })
+    .map((u) => u.printer_id), [updates, groups]);
 
   const skippedIds = useMemo(
     () => new Set(groups.flatMap((g) => g.skipped_printer_ids)),
@@ -71,11 +79,10 @@ export function FirmwareUpdatePage() {
 
   // Preselect printers that have an update available (once, when data loads).
   useEffect(() => {
-    if (didPreselect || !updates) return;
-    const ids = updates.updates.filter((u) => u.update_available).map((u) => u.printer_id);
-    setSelected(new Set(ids));
+    if (didPreselect || !updates || groups.length === 0) return;
+    setSelected(new Set(upgradableIds));
     setDidPreselect(true);
-  }, [updates, didPreselect]);
+  }, [updates, groups, upgradableIds, didPreselect]);
 
   // Live progress via the WebSocket CustomEvent bridge.
   useEffect(() => {
@@ -119,15 +126,15 @@ export function FirmwareUpdatePage() {
       return n;
     });
 
-  const updateAllAvailable = () => {
-    const ids = (updates?.updates ?? []).filter((u) => u.update_available).map((u) => u.printer_id);
-    setSelected(new Set(ids));
-  };
+  const updateAllAvailable = () => setSelected(new Set(upgradableIds));
 
   const launch = useMutation({
     mutationFn: () => {
       const targets = [...selected]
-        .filter((id) => !skippedIds.has(id))
+        .filter((id) => {
+          const group = groups.find((g) => g.printer_ids.includes(id));
+          return !skippedIds.has(id) && !!group && group.available_versions.includes(versionByModel[group.model] ?? '');
+        })
         .map((id) => ({ printer_id: id, version: versionByModel[modelOf(id)] }));
       return firmwareApi.startBatch(targets);
     },
@@ -136,7 +143,12 @@ export function FirmwareUpdatePage() {
       setProgress({});
       showToast(t('firmware.batchStarted'), 'success');
     },
-    onError: () => showToast(t('firmware.batchError'), 'error'),
+    onError: (error) => showToast(
+      t(error instanceof ApiError && error.code === 'firmware_file_unavailable'
+        ? 'firmware.offlineUnavailableError'
+        : 'firmware.batchError'),
+      'error',
+    ),
   });
 
   const downloadToStore = useMutation({
@@ -150,10 +162,17 @@ export function FirmwareUpdatePage() {
   });
 
   const activeGroup = groups.find((g) => g.model === activeModel) ?? null;
-  const launchableCount = [...selected].filter((id) => !skippedIds.has(id)).length;
+  const launchableCount = [...selected].filter((id) => {
+    const group = groups.find((g) => g.printer_ids.includes(id));
+    return !skippedIds.has(id) && !!group && group.available_versions.includes(versionByModel[group.model] ?? '');
+  }).length;
   const activeVersion = activeGroup ? versionByModel[activeGroup.model] : undefined;
   const activeVersionCached =
     !!activeGroup && !!activeVersion && (activeGroup.cached_versions ?? []).includes(activeVersion);
+  const unavailableAnnouncement = activeGroup && updates?.updates.find((u) =>
+    activeGroup.printer_ids.includes(u.printer_id) && u.update_available &&
+    !!u.latest_version && !activeGroup.available_versions.includes(u.latest_version),
+  )?.latest_version;
 
   const statusLabel = (id: number) => {
     const pr = progress[id];
@@ -263,6 +282,11 @@ export function FirmwareUpdatePage() {
 
       {activeGroup && (
         <div>
+          {unavailableAnnouncement && (
+            <p className="mb-3 rounded-lg border border-status-warning/40 px-3 py-2 text-sm text-status-warning" role="status">
+              {t('firmware.offlineUnavailable', { version: unavailableAnnouncement })}
+            </p>
+          )}
           <div className="flex items-center gap-3 mb-3">
             <label className="text-sm text-bambu-gray">{t('firmware.version')}</label>
             <Select
@@ -339,7 +363,7 @@ export function FirmwareUpdatePage() {
                       <input
                         type="checkbox"
                         checked={selected.has(id) && !skipped}
-                        disabled={skipped || runId != null}
+                        disabled={skipped || runId != null || activeGroup.available_versions.length === 0}
                         onChange={() => toggle(id)}
                       />
                     </td>

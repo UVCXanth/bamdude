@@ -2176,8 +2176,10 @@ export default {
     downloadToStore: 'Download to store',
     downloadedToStore: 'Firmware downloaded to the store',
     downloadStoreError: 'Could not download this firmware to the store',
+    offlineUnavailable: '{{version}} has been announced, but its offline firmware file is not available to this server. Check Bambu’s download page or try again later.',
+    offlineUnavailableError: 'The selected offline firmware file is unavailable. Refresh the page and try again later.',
     noPrinters: 'No printers to update.',
-    batchStarted: 'Firmware update started',
+    batchStarted: 'Firmware upload task created',
     batchError: 'Could not start the firmware update',
     status: {
       pending: 'Pending',
