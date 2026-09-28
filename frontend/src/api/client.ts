@@ -1824,6 +1824,9 @@ export interface ProjectLine {
   received: number;
   issued: number;
   held: number;
+  /** Written off under the order — made again (spec workshop-order-issue-followups, rule 44).
+   *  Anything but zero means the stock has moved, too. */
+  written_off: number;
   /** Printed-and-stock coverage, capped at this line's quantity. */
   covered_units: number;
   progress: number;

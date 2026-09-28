@@ -101,11 +101,25 @@ MOVED = "This line's stock has moved; take more from stock instead"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("body", [{"from_finished": 3}, {"from_stock_units": 1}, {"quantity": 6, "from_finished": 2}])
+@pytest.mark.parametrize("body", [{"from_finished": 3}, {"from_stock_units": 3}, {"quantity": 6, "from_finished": 2}])
 async def test_a_moved_lines_stock_numbers_are_refused(committing_client, db_session, shop, body):
     line_id = await _moved_line(committing_client, db_session, shop)
     r = await committing_client.patch(_line_url(shop, line_id), json=body)
     assert (r.status_code, r.json()["detail"]) == (409, MOVED)
+
+
+@pytest.mark.asyncio
+async def test_a_moved_lines_kits_come_down_and_go_back_to_the_shelf(committing_client, db_session, shop):
+    # spec workshop-order-issue-followups, rule 42: 2 kits still reserved on the moved line.
+    line_id = await _moved_line(committing_client, db_session, shop)
+    free = await _free(db_session, shop["flask"])
+    r = await committing_client.patch(_line_url(shop, line_id), json={"from_stock_units": 0})
+    assert r.status_code == 200, r.text
+    line = await db_session.get(ProjectLine, line_id, populate_existing=True)
+    assert await part_stock.reserved_units_for_line(db_session, line) == 0
+    assert await _free(db_session, shop["flask"]) == free + 2
+    state = (await committing_client.get(f"/api/v1/projects/{shop['order'].id}/fulfilment")).json()
+    assert state["lines"][0]["can_assemble"] == 0
 
 
 @pytest.mark.asyncio

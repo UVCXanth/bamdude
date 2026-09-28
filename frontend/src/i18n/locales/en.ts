@@ -5717,6 +5717,7 @@ export default {
       live: 'printing {{printing}} print(s) · queued {{queued}} job(s)',
       issuedHeld: 'Issued {{issued}} of {{ordered}} · on the shelf for the order {{held}}',
       moved: "This line's stock has moved — take more from stock instead",
+      movedKitsDown: 'Kits can only be lowered once the line’s stock has moved',
       actions: 'Actions',
       expand: 'Show parts',
       collapse: 'Hide parts',

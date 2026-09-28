@@ -38,11 +38,18 @@ interface Draft {
   fromFinished: number;
 }
 
-/** Has the line's stock moved — assembled, received or issued (spec workshop-order-issue,
- *  rule 13)? From then on its stock numbers are only added to, through «take from stock»,
- *  its configuration stays, and its quantity stays above what is issued and held. */
+/** Has the line's stock moved — assembled, received, issued or written off (spec
+ *  workshop-order-issue, rule 13; followups, rule 44)? From then on its ready units are only
+ *  added to, through «take from stock», its kits only come down (followups, rule 42), its
+ *  configuration stays, and its quantity stays above what is issued and held. */
 function stockMoved(line: ProjectLine): boolean {
-  return line.assembled > 0 || line.received > 0 || line.issued > 0;
+  return line.assembled > 0 || line.received > 0 || line.issued > 0 || (line.written_off ?? 0) > 0;
+}
+
+/** The kits the line still holds unassembled — what the kits box edits: `from_kit_units`
+ *  counts assembled kits too (spec workshop-order-issue, rule 23). */
+function liveKits(line: ProjectLine): number {
+  return Math.max(0, line.from_kit_units - (line.assembled ?? 0));
 }
 
 function draftOf(line: ProjectLine): Draft {
@@ -56,7 +63,7 @@ function draftOf(line: ProjectLine): Draft {
     // ⚠️ The KITS, not `from_stock_units`: in the figures that is every unit
     // from stock, ready units included (rule 14); the request field of the same
     // name is kits alone.
-    fromStock: line.from_kit_units,
+    fromStock: liveKits(line),
     fromFinished: line.from_finished,
   };
 }
@@ -105,7 +112,7 @@ function changedFields(line: ProjectLine, draft: Draft): ProjectLineUpdate {
   // (release + reserve in one server transaction) — so restating the current
   // value would burn a rewrite, and with it the ledger rows that record one,
   // on every save that touched a note.
-  if (draft.fromStock !== line.from_kit_units) patch.from_stock_units = draft.fromStock;
+  if (draft.fromStock !== liveKits(line)) patch.from_stock_units = draft.fromStock;
   // The same rule for the ready units: absent leaves them alone.
   if (draft.fromFinished !== line.from_finished) patch.from_finished = draft.fromFinished;
   return patch;
@@ -394,7 +401,35 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                       ? (() => {
                           if (line.mode === 'parts') return null;
                           if (moved) {
-                            return <p className="mt-1 text-xs text-bambu-gray">{t('orders.lines.moved')}</p>;
+                            // Kits only come DOWN after a movement — back onto the shelf,
+                            // the prints already made take their place (followups, rule 42).
+                            const live = liveKits(line);
+                            if (live === 0) {
+                              return <p className="mt-1 text-xs text-bambu-gray">{t('orders.lines.moved')}</p>;
+                            }
+                            return (
+                              <div className="mt-1 space-y-1">
+                                <label className="block text-xs text-bambu-gray" htmlFor={`line-${line.id}-from-stock`}>
+                                  {t('stock.line.kitsLabel')}
+                                </label>
+                                <input
+                                  id={`line-${line.id}-from-stock`}
+                                  data-testid={`line-${line.id}-from-stock`}
+                                  type="number"
+                                  min={0}
+                                  max={live}
+                                  value={editing.fromStock}
+                                  onChange={(e) =>
+                                    setDraft({
+                                      ...editing,
+                                      fromStock: Math.min(Math.max(0, Number(e.target.value) || 0), live),
+                                    })
+                                  }
+                                  className={`${FIELD_CLASS} w-20`}
+                                />
+                                <p className="text-xs text-bambu-gray">{t('orders.lines.movedKitsDown')}</p>
+                              </div>
+                            );
                           }
                           const pool = editFreeKits + line.from_kit_units;
                           // Ready units come first; kits fit under what is left

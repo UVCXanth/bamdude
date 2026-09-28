@@ -601,19 +601,43 @@ describe('OrderLinesTable · a line whose stock has moved', () => {
     expect(screen.queryByTestId('line-11-issued')).not.toBeInTheDocument();
   });
 
-  it('keeps its configuration and its stock numbers, and its quantity above what went out', async () => {
+  it('keeps its configuration and its ready units, and its quantity above what went out', async () => {
     const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(moved);
     render(<OrderLinesTable order={moved} canEdit />);
     expect(screen.getByTestId('line-10-configure')).toBeDisabled();
     expect(screen.getByTestId('line-10-configure')).toHaveAttribute('title', MOVED);
     fireEvent.click(screen.getByTestId('line-10-edit'));
     expect(screen.queryByTestId('line-10-from-finished')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('line-10-from-stock')).not.toBeInTheDocument();
-    expect(screen.getByText(MOVED)).toBeInTheDocument();
+    // One live kit (2 from kits, 1 of them assembled) — it may only come down (followups, rule 42).
+    expect(screen.getByTestId('line-10-from-stock')).toHaveAttribute('max', '1');
+    expect(screen.getByText('Kits can only be lowered once the line’s stock has moved')).toBeInTheDocument();
     const quantity = screen.getByLabelText('Quantity');
     expect(quantity).toHaveAttribute('min', '4');
     fireEvent.change(quantity, { target: { value: '8' } });
     fireEvent.click(screen.getByTestId('line-10-save'));
     await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 10, { quantity: 8 }));
+  });
+
+  it('lowers a moved line’s kits and never raises them', async () => {
+    const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(moved);
+    render(<OrderLinesTable order={moved} canEdit />);
+    fireEvent.click(screen.getByTestId('line-10-edit'));
+    const box = screen.getByTestId('line-10-from-stock');
+    fireEvent.change(box, { target: { value: '5' } });
+    expect(box).toHaveValue(1);
+    fireEvent.change(box, { target: { value: '0' } });
+    fireEvent.click(screen.getByTestId('line-10-save'));
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 10, { from_stock_units: 0 }));
+  });
+
+  it('a moved line with no live kits says why its stock numbers are closed', () => {
+    const noKits = {
+      ...moved,
+      lines: moved.lines.map((l) => (l.id === 10 ? { ...l, from_kit_units: 1 } : l)),
+    } as unknown as Order;
+    render(<OrderLinesTable order={noKits} canEdit />);
+    fireEvent.click(screen.getByTestId('line-10-edit'));
+    expect(screen.queryByTestId('line-10-from-stock')).not.toBeInTheDocument();
+    expect(screen.getByText(MOVED)).toBeInTheDocument();
   });
 });

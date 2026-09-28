@@ -1586,10 +1586,16 @@ async def update_line(
         if data.from_stock_units or data.from_finished:
             raise HTTPException(status_code=422, detail=_PARTS_LINE_NO_STOCK)
     if line.mode != "parts" and finished_stock.moved(line):
-        # After the first movement the stock numbers are only added to — through «take
-        # from stock» — and the quantity stays above what went out and what is held.
-        if "from_finished" in data.model_fields_set or "from_stock_units" in data.model_fields_set:
+        # After the first movement the ready units are only added to — through «take from
+        # stock» — the kits only come DOWN (spec workshop-order-issue-followups, rule 42: back
+        # onto the shelf, the prints already made take their place), and the quantity stays
+        # above what went out and what is held.
+        if "from_finished" in data.model_fields_set:
             raise HTTPException(status_code=409, detail=_LINE_MOVED)
+        if "from_stock_units" in data.model_fields_set:
+            live = await part_stock.reserved_units_for_line(db, line)
+            if data.from_stock_units is None or data.from_stock_units > live:
+                raise HTTPException(status_code=409, detail=_LINE_MOVED)
         if "quantity" in data.model_fields_set:
             await finished_stock.lock_line(db, line)
             floor = (line.issued or 0) + finished_stock.held_units(line)
