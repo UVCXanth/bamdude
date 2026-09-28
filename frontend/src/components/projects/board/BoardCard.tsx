@@ -74,6 +74,13 @@ export function BoardCard({ order, column, draggable }: BoardCardProps) {
         testId={`board-card-${order.id}-progress`}
       />
 
+      {/* The list card's line, the same rule (spec workshop-order-issue-followups, rule 50). */}
+      {order.status === 'active' && order.ordered > 0 && (
+        <p className="text-xs text-bambu-gray" data-testid={`board-card-${order.id}-issued`}>
+          {t('orders.card.issued', { issued: order.issued_units, ordered: order.ordered })}
+        </p>
+      )}
+
       {order.due_date && (
         <p data-testid={`board-card-${order.id}-due`} className={`text-xs ${overdue ? 'text-red-500' : 'text-bambu-gray'}`}>
           {new Date(order.due_date).toLocaleDateString()}

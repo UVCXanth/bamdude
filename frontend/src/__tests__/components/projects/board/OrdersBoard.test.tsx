@@ -18,7 +18,7 @@ const order = (over: Partial<OrderListItem>): OrderListItem => ({
   stage: 'prep', responsible_id: 7, responsible_name: 'Ira Koval', due_date: null, priority: 'normal', price: null,
   tags: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00Z', lines_count: 1, ordered: 10, printed: 4,
   covered_units: 4, remaining: 6, from_stock_units: 0, progress: 0.4, prints_in_progress: 0, prints_queued: 0,
-  line_products: [], ...over,
+  issued_units: 0, line_products: [], ...over,
 }) as OrderListItem;
 
 const board = (over: Partial<OrderBoard> = {}): OrderBoard => ({
@@ -63,6 +63,16 @@ describe('OrdersBoard', () => {
     expect(within(card).getByText('4 / 10')).toBeInTheDocument();
     expect(within(card).getByText('printing 1 print(s) · queued 3 job(s)')).toBeInTheDocument();
     expect(within(card).getByText('IK')).toBeInTheDocument();
+  });
+  // spec workshop-order-issue-followups, rule 50: the list card's line, the same rule.
+  it('an active card says how much went out; a done one does not', async () => {
+    vi.spyOn(api, 'getOrderBoard').mockResolvedValue(
+      board({ prep: { items: [order({ id: 1, issued_units: 4 })], total: 1 } }),
+    );
+    render(<OrdersBoard filters={{}} onOpenList={() => {}} />);
+    const card = await screen.findByTestId('board-card-1');
+    expect(within(card).getByTestId('board-card-1-issued')).toHaveTextContent('Issued 4 of 10');
+    expect(within(screen.getByTestId('board-card-3')).queryByTestId('board-card-3-issued')).not.toBeInTheDocument();
   });
   it('an overdue deadline is red, a future one is not', async () => {
     vi.spyOn(api, 'getOrderBoard').mockResolvedValue(
