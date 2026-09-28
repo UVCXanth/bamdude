@@ -15,7 +15,7 @@ from backend.app.models.stock_issue import WAYBILL_MAX
 from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.customer import CustomerResponse
 from backend.app.schemas.product import ProductListItem
-from backend.app.schemas.project import ProjectListResponse
+from backend.app.schemas.project import LineConfigurationOut, ProjectListResponse
 from backend.app.schemas.stock import StockListItem
 
 
@@ -210,16 +210,31 @@ class ProjectsNavBadges(BaseModel):
 # ---------- issues of goods (spec workshop-order-issue, rules 21–22) ----------
 
 
+class StockIssueSummaryLine(BaseModel):
+    product_name: str
+    #: A parts line's part; None for a product's row.
+    part_name: str | None = None
+    quantity: int
+
+
 class StockIssueRow(BaseModel):
+    """One issue = one dispatch note (spec workshop-dispatch-notes, rule 12) — from its snapshot."""
+
     id: int
+    #: ``DN-0042``.
+    code: str
     created_at: datetime
-    #: None — a manual issue, without an order.
+    #: None — a manual issue, or its order was deleted; ``order_code`` still says the basis.
     project_id: int | None = None
-    project_code: str | None = None
+    order_code: str | None = None
+    order_name: str | None = None
     customer_id: int | None = None
     customer_name: str = ""
-    #: Units, and a parts line's parts, the issue handed over — from its movements.
+    #: Units, and a parts line's parts, the issue handed over — the note's stored total.
     units: int = 0
+    lines_count: int = 0
+    #: The first lines, for «what was issued» in a list.
+    summary: list[StockIssueSummaryLine] = []
     recipient_name: str | None = None
     recipient_phone: str | None = None
     delivery_method: str | None = None
@@ -232,6 +247,32 @@ class StockIssueRow(BaseModel):
 class StockIssuePage(BaseModel):
     items: list[StockIssueRow]
     meta: PaginationMeta
+
+
+class DispatchNoteSupplier(BaseModel):
+    name: str = ""
+    address: str = ""
+    phone: str = ""
+    code: str = ""
+    iban: str = ""
+
+
+class DispatchNoteLine(BaseModel):
+    position: int
+    #: None — the product was deleted; the text stays.
+    product_id: int | None = None
+    product_name: str
+    sku: str | None = None
+    configuration: LineConfigurationOut
+    part_name: str | None = None
+    quantity: int
+
+
+class DispatchNoteOut(StockIssueRow):
+    """The document — drawn only from the snapshot (spec workshop-dispatch-notes, rule 14)."""
+
+    supplier: DispatchNoteSupplier
+    lines: list[DispatchNoteLine]
 
 
 class StockIssueUpdate(BaseModel):

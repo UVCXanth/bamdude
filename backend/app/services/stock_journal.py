@@ -36,6 +36,7 @@ from backend.app.models.project import Project
 from backend.app.models.user import User
 from backend.app.schemas.finished_stock import (
     StockJournalCustomer,
+    StockJournalIssue,
     StockJournalItemRef,
     StockJournalOrder,
     StockJournalPage,
@@ -65,6 +66,11 @@ def _sql_ts(column, sqlite: bool, legacy: bool):
 def _bind_ts(dt: datetime, sqlite: bool):
     """The cursor's timestamp in the same shape as :func:`_sql_ts`."""
     return literal(dt.strftime(_SQLITE_FORMAT)) if sqlite else literal(dt)
+
+
+def _issue_ref(issue_id: int | None) -> StockJournalIssue | None:
+    """The dispatch note an issue movement belongs to (spec workshop-dispatch-notes, rule 16)."""
+    return StockJournalIssue(id=issue_id, code=code_for("dispatch_note", issue_id)) if issue_id else None
 
 
 def encode_cursor(created_at: datetime, book: str, row_id: int) -> str:
@@ -216,6 +222,7 @@ async def journal(
                     if m.customer_id in customers
                     else None,
                     project=project,
+                    issue=_issue_ref(m.stock_issue_id),
                     user=user,
                 )
             )
@@ -236,6 +243,7 @@ async def journal(
                     project=StockJournalOrder(id=order[0], code=code_for("order", order[0]), name=order[1])
                     if order
                     else None,
+                    issue=_issue_ref(m.stock_issue_id),
                     user=user,
                 )
             )

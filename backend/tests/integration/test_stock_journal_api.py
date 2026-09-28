@@ -147,3 +147,21 @@ async def test_the_cursor_keeps_rows_whose_millisecond_would_round_up(committing
         ("finished", third.id),
         ("parts", legacy.id),
     ]
+
+
+@pytest.mark.asyncio
+async def test_an_issue_row_names_its_dispatch_note(committing_client, db_session, lamp):
+    # spec workshop-dispatch-notes, rule 16.
+    customer = Customer(name="Acme")
+    db_session.add(customer)
+    await db_session.commit()
+    body = {"kind": "receipt", "product_id": lamp["product"].id, "qty": 2}
+    assert (await committing_client.post("/api/v1/stock/moves", json=body)).status_code == 200
+    body = {"kind": "issue", "product_id": lamp["product"].id, "qty": 1, "customer_id": customer.id}
+    r = await committing_client.post("/api/v1/stock/moves", json=body)
+    assert r.status_code == 200, r.text
+    issue_id = r.json()["issue_id"]
+    rows = (await _page(committing_client))["items"]
+    by_kind = {row["kind"]: row for row in rows}
+    assert by_kind["issue"]["issue"] == {"id": issue_id, "code": f"DN-{issue_id:04d}"}
+    assert by_kind["receipt"]["issue"] is None

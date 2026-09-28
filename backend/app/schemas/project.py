@@ -883,6 +883,8 @@ class FulfilmentOut(BaseModel):
     order: ProjectResponse
     #: The issue this batch opened; None when it issued nothing.
     issue_id: int | None = None
+    #: Its dispatch note's code, «DN-0042».
+    issue_code: str | None = None
 
 
 # ---------- «take from stock» (spec workshop-order-issue, rules 17, 20) ----------

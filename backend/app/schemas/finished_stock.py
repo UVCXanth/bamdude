@@ -191,6 +191,13 @@ class StockJournalUser(BaseModel):
     username: str
 
 
+class StockJournalIssue(BaseModel):
+    """The dispatch note a movement belongs to (spec workshop-dispatch-notes, rule 16)."""
+
+    id: int
+    code: str
+
+
 class StockJournalRow(BaseModel):
     """One movement of either ledger. ``delta`` is a part row's; the two
     ``delta_*`` columns are a finished row's."""
@@ -209,6 +216,7 @@ class StockJournalRow(BaseModel):
     note: str | None = None
     customer: StockJournalCustomer | None = None
     project: StockJournalOrder | None = None
+    issue: StockJournalIssue | None = None
     user: StockJournalUser | None = None
 
 

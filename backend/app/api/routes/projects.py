@@ -1365,7 +1365,11 @@ async def fulfil_order(
         raise HTTPException(status_code=e.status, detail=str(e)) from e
     except part_stock.PartStockError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
-    return FulfilmentOut(order=await _response(db, project.id), issue_id=issue.id if issue is not None else None)
+    return FulfilmentOut(
+        order=await _response(db, project.id),
+        issue_id=issue.id if issue is not None else None,
+        issue_code=code_for("dispatch_note", issue.id) if issue is not None else None,
+    )
 
 
 @router.get("/{project_id}/stock-offers", response_model=list[StockOfferOut])
