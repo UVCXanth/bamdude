@@ -554,7 +554,10 @@ def _digest_of(spec: _FileSpec) -> str:
             stat = spec.path.stat()
         except OSError:
             stat = None
-        if stat is not None and not external_hash_is_stale(spec, size=stat.st_size, mtime=_mtime_to_utc(stat.st_mtime)):
+        # The whole nanoseconds, as the scan stored them: the float seconds round to another
+        # microsecond for about one file in sixteen, which would read an unmoved file in full.
+        mtime = _mtime_to_utc(stat.st_mtime_ns / 1e9) if stat is not None else None
+        if stat is not None and not external_hash_is_stale(spec, size=stat.st_size, mtime=mtime):
             return spec.file_hash
 
     digest = hashlib.sha256()

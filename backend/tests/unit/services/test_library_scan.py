@@ -10,6 +10,7 @@ library nobody touched.
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,10 @@ import pytest
 
 from backend.app.services import library_scan
 from backend.app.services.library_scan import BATCH_SIZE, EMPTY_WALK_GUARD, _Known
+
+#: 2026-09-21 14:13:20.0000006 UTC — `st_mtime` and `st_mtime_ns / 1e9` round it to different
+#: microseconds (measured: one file in sixteen shows such a split on NTFS).
+_SPLIT_MTIME_NS = 1_790_000_000_000_000_600
 
 
 @pytest.mark.asyncio
@@ -71,12 +76,16 @@ async def test_a_known_complete_file_that_has_not_moved_is_not_re_read(tmp_path,
 
     target = tmp_path / "part.stl"
     target.write_bytes(b"solid\n")
+    # A modification time whose float seconds and whole nanoseconds land on different
+    # microseconds — about one file in sixteen does — so the test cannot pass by luck.
+    os.utime(target, ns=(_SPLIT_MTIME_NS, _SPLIT_MTIME_NS))
     stat = target.stat()
     known = _Known(
         id=1,
         file_hash="deadbeef",
         file_size=stat.st_size,
-        fs_modified_at=_mtime_to_utc(stat.st_mtime),
+        # What the scan stores: from the whole nanoseconds, never the float seconds.
+        fs_modified_at=_mtime_to_utc(stat.st_mtime_ns / 1e9),
         extraction_version=EXTRACTION_VERSION,
         extraction_hash="deadbeef",
     )
