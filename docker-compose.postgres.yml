@@ -46,8 +46,13 @@ services:
     # Docker Desktop this is harmless; BamDude uses the service name instead.
     ports:
       - "127.0.0.1:5433:5432"
+    # The volume goes on /var/lib/postgresql, NOT /var/lib/postgresql/data: from
+    # 18 on the official image keeps its cluster in a per-major subdirectory
+    # (/var/lib/postgresql/18/docker) and refuses to start at all when something
+    # is mounted on the old .../data path. One mount on the parent also leaves
+    # room for a later `pg_upgrade --link` inside the same volume.
     volumes:
-      - bamdude_pgdata:/var/lib/postgresql/data
+      - bamdude_pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bamdude} -d ${POSTGRES_DB:-bamdude}"]
       interval: 10s

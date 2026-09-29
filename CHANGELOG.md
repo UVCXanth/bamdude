@@ -118,6 +118,7 @@
 
 ### Fixed
 
+- **The separate PostgreSQL container starts.** `docker-compose.postgres.yml` mounted its volume on `/var/lib/postgresql/data`, and the `postgres:18` image refuses to start when anything is mounted there — from 18 on it keeps its data in a per-version folder under `/var/lib/postgresql` — so choosing the separate PostgreSQL container in `docker-install.sh` gave a database that never came up. The volume now mounts on `/var/lib/postgresql`. There is nothing to migrate: with the old line the database could not have been created. If you already changed that line by hand, your file matches the new one.
 - **The page bar no longer hides its last buttons on a phone.** On a narrow screen the page-size selector, the arrows and «page N of M» stood on one line wider than the bar, and the «next» and «last» arrows were cut off behind the card's edge on every paged list. They now wrap inside the bar.
 
 - **A product's page shows its materials, colours, printer models and ready units.** They were empty on the product page while the catalog card showed them; the page and the card now read the same figures. A printer model is taken only from a file that can be printed, so an unsliced 3MF project no longer names a model or offers it in the filter.
