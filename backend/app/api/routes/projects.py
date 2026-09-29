@@ -144,6 +144,7 @@ from backend.app.services import (
     order_journal,
     part_stock,
     product_delete,
+    product_gate as product_gate_module,
     queue_rebalance,
     stock_issues,
     stock_offers,
@@ -941,6 +942,12 @@ _LINE_MOVED = "This line's stock has moved; take more from stock instead"
 _ORDER_BUSY = "This order is being changed right now — try again"
 
 
+def _product_busy() -> HTTPException:
+    """A one-off product's delete met a busy footprint (WS-13 E1 BL5) — the product
+    routes' own 409 body, never a wait and never a 500."""
+    return HTTPException(status_code=409, detail={"error": "product_busy", "message": product_gate_module.PRODUCT_BUSY})
+
+
 def _check_line_create(data: ProjectLineCreate) -> None:
     """A parts line has no kits and no ready units, so nothing to take off a shelf
     (rule 16) — the same answer its PATCH gives."""
@@ -1182,16 +1189,22 @@ async def update_project(
     current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     project = await _get_project(db, project_id)
-    if data.status == "completed" and project.status != "completed":
+    completing = data.status == "completed" and project.status != "completed"
+    gated = {line.product_id for line in project.lines}
+    if completing:
         # Completing may create positions (closing to stock): the gates of the order's
         # products come first, before the order row (WS-13 E1 BL3).
-        await product_gate(db, [line.product_id for line in project.lines])
+        await product_gate(db, sorted(gated))
     # The order row before anything is written or locked (WS-13 E1 BL0 / BL6): a cancel
     # or a completion goes on to the order's positions and lines, and the row taken
     # later — by the autoflushed UPDATE — would sit after them.
     await order_fulfilment.lock_order(db, project.id)
     project = await _get_project(db, project_id, fresh=True)
     lines = list(project.lines)
+    if completing and not {line.product_id for line in lines} <= gated:
+        # A line of another product arrived between the read and the gates (BL2): its
+        # gate would come after the order row, so the whole request starts over.
+        raise HTTPException(status_code=409, detail=order_fulfilment.ORDER_CHANGED)
     # Read BEFORE the fields are written: cancelling asks what the order was,
     # not what it is about to become (Ruling 25).
     was_completed = _consumed_its_stock(project.status)
@@ -1287,7 +1300,10 @@ async def update_project(
         # this order still outranks whoever is holding them now. The operator
         # re-enters the number in the line dialog, which asks the shelf afresh.
         # Positions, lines, parts of every line before the first is released (WS-13 E1 BL0).
-        await finished_stock.lock_lines_with_parts(db, lines)
+        try:
+            await finished_stock.lock_lines_with_parts(db, lines)
+        except finished_stock.FinishedStockError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from e
         for line in lines:
             await _release(db, line, part_stock.NOTE_ORDER_CANCELLED, await acting_user(request, db, current_user))
     return await _response(db, project.id)
@@ -1460,9 +1476,15 @@ async def delete_project(
 ):
     """Archives and queue rows survive, unlinked (SET NULL done explicitly — SQLite enforces nothing)."""
     project = await _get_project(db, project_id)
+    gated = {line.product_id for line in project.lines}
     # The gates of its products first (WS-13 E1 BL3): the cascade below may delete a
     # one-off product, which is a product writer.
-    await product_gate(db, [line.product_id for line in project.lines])
+    await product_gate(db, sorted(gated))
+    # …and the order read again behind them (BL2): a line added meanwhile is released
+    # and detached like the others — or, of a product not gated, the request starts over.
+    project = await _get_project(db, project_id, fresh=True)
+    if not {line.product_id for line in project.lines} <= gated:
+        raise HTTPException(status_code=409, detail=order_fulfilment.ORDER_CHANGED)
     # Its lines go with it, so they go through the same two steps a single
     # deleted line does (Ruling 10): the kits come back to the shelf, and the
     # history that named the line stops naming an id that will be reused.
@@ -1547,8 +1569,12 @@ async def delete_project(
         raise
     await db.delete(project)
     await db.flush()
-    # Decision 5: an adhoc product lives exactly as long as a line references it.
-    await product_delete.delete_orphaned_adhoc_products(db, line_products)
+    # Decision 5: an adhoc product lives exactly as long as a line references it. Its
+    # delete takes its footprint without waiting (BL5): busy is a 409, not a 500.
+    try:
+        await product_delete.delete_orphaned_adhoc_products(db, line_products)
+    except product_gate_module.ProductBusy as e:
+        raise _product_busy() from e
     return {"message": "Project deleted"}
 
 
@@ -1892,7 +1918,10 @@ async def delete_line(
     )
     project.lines.remove(line)  # delete-orphan turns this into the DELETE
     await db.flush()
-    await product_delete.delete_orphaned_adhoc_products(db, [line.product_id])
+    try:
+        await product_delete.delete_orphaned_adhoc_products(db, [line.product_id])
+    except product_gate_module.ProductBusy as e:
+        raise _product_busy() from e
     return await _response(db, project_id)
 
 
@@ -2896,9 +2925,13 @@ async def duplicate_project(
 ):
     """A reorder: lines, customer, notes, attachments come across; history never does; status is active."""
     source = await _get_project(db, project_id)
+    gated = {line.product_id for line in source.lines}
     # The gates of every product of the source before the copy is inserted (WS-13 E1
-    # BL3): the copied configurations are read behind them.
-    await product_gate(db, [line.product_id for line in source.lines])
+    # BL3): the copied configurations are read behind them — and so are the lines (BL2).
+    await product_gate(db, sorted(gated))
+    source = await _get_project(db, project_id, fresh=True)
+    if not {line.product_id for line in source.lines} <= gated:
+        raise HTTPException(status_code=409, detail=order_fulfilment.ORDER_CHANGED)
     taken = set((await db.execute(select(Project.name))).scalars().all())
     copy = Project(
         name=data.name or _duplicate_name(source.name, taken),

@@ -380,3 +380,20 @@ async def test_a_plate_product_seeds_its_own_parts_not_the_catalogue_products(db
 
     after = set(await db_session.scalars(select(ProductPart.name_key).where(ProductPart.product_id == catalogue.id)))
     assert after == before == {"flask"}, "the catalogue product got a part seeded behind its back"
+
+
+@pytest.mark.asyncio
+async def test_a_job_order_locks_its_files_prepares_its_product_then_takes_the_gates(db_session):
+    """Final review I3: the wizard's one-off product is the same preparation as a plate's."""
+    from backend.app.schemas.order_from_files import JobOrderIn
+
+    f = await _plate_file(db_session)
+    data = JobOrderIn(kind="job", name="Job", file_ids=[f.id], targets={"flask": 2})
+    log = await _record(db_session, lambda: routes.create_project_from_files(data, db_session, None))
+    first_order = next(i for i, (kind, table, _nw) in enumerate(log) if (kind, table) == ("INSERT", "projects"))
+    before = log[:first_order]
+    assert {table for _kind, table, _nw in before} <= _PREP_TABLES, before
+    lock = before.index(("UPDATE", "library_files", False))
+    made = before.index(("INSERT", "products", False))
+    assert lock < made, "the file is locked before the product is made"
+    assert all(table != "library_files" for _kind, table, _nw in log[first_order:]), "no file lock after the gates"

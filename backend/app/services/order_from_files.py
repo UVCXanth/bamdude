@@ -263,11 +263,19 @@ async def create_job_order(
     positive = {key: n for key, n in targets.items() if n > 0}
     if not positive:
         raise NoTargets()
+    # The one-off preparation of BL8 б, as for plates: the files first, ascending, then
+    # the product, whose sync seeds its own parts only — the other products the files
+    # belong to are not this transaction's to change (their gates are not held).
+    held = ledger(db)
+    for file_id in sorted({f.id for f in files}):
+        await take_write_lock(db, LibraryFile.__table__, file_id)
+        await db.execute(select(LibraryFile.id).where(LibraryFile.id == file_id).with_for_update())
+        held.note("library_files", file_id, LIBRARY_FILE)
     product = Product(name=name, origin=ProductOrigin.ADHOC_JOB.value)
     db.add(product)
     await db.flush()
     for f in files:
-        await _link(db, f.id, product.id)
+        await _link(db, f.id, product.id, seed_only_new=True)
     parts = (await db.execute(select(ProductPart).where(ProductPart.product_id == product.id))).scalars().all()
     unknown = sorted(positive.keys() - {part.name_key for part in parts})
     if unknown:

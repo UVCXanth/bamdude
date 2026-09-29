@@ -435,3 +435,14 @@ async def test_an_empty_composition_is_not_a_complete_estimate(async_client, db_
     pid = await _product_with(db_session, "Nothing", [("zero", "printed", 0, None)], [])
     body = await _estimate(async_client, pid)
     assert (body["complete"], body["reasons"]) == (False, [{"code": "empty_composition", "count": None}])
+
+
+@pytest.mark.asyncio
+async def test_a_printed_part_without_a_plate_is_no_known_zero(async_client, db_session):
+    """Final review I4 (Z8): nothing to plan for a printed part is unknown time and cost,
+    not 0 s and 0.00 — the known zero belongs to a product of bought parts alone."""
+    await _rate(db_session, "20")
+    pid = await _product_with(db_session, "Plateless", [("a", "printed", 1, None)], [])
+    body = await _estimate(async_client, pid)
+    assert (body["prints"], body["print_time_seconds"], body["filament_cost"]) == (0, None, None)
+    assert body["reasons"] == [{"code": "no_plate", "count": 1}] and body["complete"] is False

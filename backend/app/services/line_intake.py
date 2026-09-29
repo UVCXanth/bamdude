@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.library import LibraryFile
@@ -118,13 +119,18 @@ async def add_lines(
     """Add every line in ``specs`` to ``project`` with its configuration, stock and
     journal entry; never commits. ``visible`` is the caller's library ownership
     gate for plate lines — a file it rejects is the same 404 as a missing one."""
-    active = project.status == "active"
     sort_order = max((ln.sort_order for ln in project.lines), default=-1) + 1
     # Phase 1 — the products (one-off plate products made here); phase 2 — the gates
     # of all of them, ascending, before any line is inserted or configured (WS-13 E1
     # BL3); phase 3 — the lines, their configurations, stock and journal.
     product_ids = await _products_of(db, specs, visible)
     await product_gate(db, product_ids)
+    # The order as it stands behind the gates (BL2): deleted meanwhile is the same 404 as
+    # a missing one, and only an order still active takes stock.
+    status = await db.scalar(select(Project.status).where(Project.id == project.id))
+    if status is None:
+        raise LineIntakeError("Project not found", 404)
+    active = status == "active"
     out: list[Intake] = []
     for spec, product_id in zip(specs, product_ids, strict=True):
         line = _new_line(spec, product_id, sort_order)

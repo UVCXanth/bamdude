@@ -2037,12 +2037,14 @@ async def get_product_estimate(
     known = round(sum(per * part.unit_price for part, per in bought if part.unit_price is not None), 2)
     partial = counts["unknown_purchase_price"] > 0
     names = {part.id: part.name for part in product.parts}
+    # A product of bought parts alone prints nothing, a known zero (ES4); printed parts
+    # with no row at all are unknown time and cost, never 0 (Z8 — final review I4).
+    nothing_to_print = not printed
     return ProductEstimateOut(
         prints=totals.prints,
-        print_time_seconds=totals.print_time_seconds,
+        print_time_seconds=totals.print_time_seconds if rows or nothing_to_print else None,
         filament_grams=totals.filament_used_grams,
-        # Nothing to print costs a known nothing, once a rate exists (ES4).
-        filament_cost=0.0 if not rows and price_per_gram is not None else totals.cost,
+        filament_cost=(0.0 if price_per_gram is not None else None) if nothing_to_print else totals.cost,
         surplus=[
             EstimateSurplusOut(part_id=pid, name=names.get(pid, "?"), count=n) for pid, n in sorted(surplus.items())
         ],
