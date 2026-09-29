@@ -61,6 +61,7 @@ async def test_orders_summary_counts_the_active_orders(async_client, db_session,
         "queued": 3,
         "remaining": 8,
         "all_covered": 1,
+        "qc": 0,
     }
 
 
@@ -85,6 +86,7 @@ async def test_orders_summary_of_an_empty_farm_is_zeros(async_client):
         "queued": 0,
         "remaining": 0,
         "all_covered": 0,
+        "qc": 0,
     }
 
 
