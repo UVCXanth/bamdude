@@ -131,6 +131,7 @@ const plan: OrderPlan = {
           library_file_id: 5,
           plate_index: 1,
           filename: 'big.3mf',
+          hidden: false,
           count: 1,
           useful: [{ part_id: 1, name: 'Body', count: 10 }],
           print_time_seconds: 3600,
@@ -145,6 +146,7 @@ const plan: OrderPlan = {
           library_file_id: 6,
           plate_index: 0,
           filename: 'small.3mf',
+          hidden: false,
           count: 1,
           useful: [{ part_id: 1, name: 'Body', count: 2 }],
           print_time_seconds: 1800,
@@ -229,6 +231,7 @@ const spareRow: PlanRowData = {
   library_file_id: 9,
   plate_index: 2,
   filename: 'extra.3mf',
+  hidden: false,
   count: 2,
   useful: [{ part_id: 1, name: 'Body', count: 3 }],
   print_time_seconds: 900,
@@ -259,6 +262,7 @@ const otherModel: PlanAlternative = {
   library_file_id: 8,
   plate_index: 2,
   filename: 'big-p1s.3mf',
+  hidden: false,
   printer_model: 'P1S',
   print_time_seconds: 7200,
   filament_used_grams: 150,
@@ -622,6 +626,128 @@ describe('PlanBlock', () => {
     expect(screen.queryByTestId('plan-row-10-300-printer')).not.toBeInTheDocument();
     // The planned rows keep their printer.
     expect(screen.getByTestId('plan-row-10-100-printer')).toBeInTheDocument();
+  });
+
+  // ---- a file the reader may not open, named by the server (WS-13 E1 CL6) ----
+
+  /** The row's own X1C file and its alternative (P1S unless told), each hidden or not. */
+  const planHiding = (rowHidden: boolean, altHidden: boolean, altModel = 'P1S'): OrderPlan => ({
+    ...planWithAlternative,
+    lines: [
+      {
+        ...planWithAlternative.lines[0],
+        rows: [
+          {
+            ...plan.lines[0].rows[0],
+            filename: rowHidden ? null : 'big.3mf',
+            hidden: rowHidden,
+            alternatives: [
+              { ...otherModel, printer_model: altModel, filename: altHidden ? null : 'big-p1s.3mf', hidden: altHidden },
+            ],
+          },
+          plan.lines[0].rows[1],
+        ],
+      },
+    ],
+  });
+
+  const pickOption = (pick: HTMLElement, value: string) =>
+    pick.querySelector(`option[value="${value}"]`) as HTMLOptionElement;
+
+  it('labels a hidden server row and offers no printer for it', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue({
+      ...plan,
+      lines: [
+        {
+          ...plan.lines[0],
+          rows: [{ ...plan.lines[0].rows[0], filename: null, hidden: true }, plan.lines[0].rows[1]],
+        },
+      ],
+    });
+    render(<PlanBlock order={order} canEdit />);
+
+    const row = await screen.findByTestId('plan-row-10-100');
+    expect(within(row).getByText('File you cannot open')).toBeInTheDocument();
+    expect(row).not.toHaveTextContent('null');
+    expect(screen.queryByTestId('plan-row-10-100-printer')).not.toBeInTheDocument();
+    // Queueing is not a file action: the row still goes to the queue by its plate.
+    expect(screen.getByTestId('plan-row-10-100-queue')).toBeInTheDocument();
+    expect(screen.getByTestId('plan-row-10-200-printer')).toBeInTheDocument();
+  });
+
+  it('labels a hidden alternative in the file switch and in the split', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planHiding(false, true));
+    render(<PlanBlock order={order} canEdit />);
+
+    const files = await screen.findByTestId('plan-row-10-100-file');
+    expect([...files.querySelectorAll('option')].map((o) => o.textContent)).toEqual([
+      'big.3mf (X1C)',
+      'File you cannot open (P1S)',
+    ]);
+    fireEvent.click(screen.getByTestId('plan-row-10-100-split'));
+    const panel = screen.getByTestId('plan-row-10-100-split-panel');
+    expect(within(panel).getByText('File you cannot open (P1S)')).toBeInTheDocument();
+    expect(panel).not.toHaveTextContent('null');
+  });
+
+  it('sends a printer only a plate the reader may open: hidden row, visible alternative', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planHiding(true, false));
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
+    const pick = await screen.findByTestId('plan-row-10-100-printer-pick');
+    // The X1C would get the row's own file — hidden; the P1S gets the alternative.
+    expect(pickOption(pick, '1')).toBeDisabled();
+    expect(pickOption(pick, '1')).toHaveTextContent('File you cannot open');
+    expect(pickOption(pick, '2')).not.toBeDisabled();
+
+    fireEvent.change(pick, { target: { value: '1' } });
+    expect(printModal.props).toBeNull();
+
+    fireEvent.change(pick, { target: { value: '2' } });
+    expect(printModal.props).toMatchObject({ libraryFileId: 8, preselectedPlateId: 2, initialSelectedPrinterIds: [2] });
+  });
+
+  it('sends a printer only a plate the reader may open: visible row, hidden alternative', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planHiding(false, true));
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
+    const pick = await screen.findByTestId('plan-row-10-100-printer-pick');
+    expect(pickOption(pick, '2')).toBeDisabled();
+
+    fireEvent.change(pick, { target: { value: '2' } });
+    expect(printModal.props).toBeNull();
+
+    fireEvent.change(pick, { target: { value: '1' } });
+    expect(printModal.props).toMatchObject({ libraryFileId: 5, preselectedPlateId: 1, initialSelectedPrinterIds: [1] });
+  });
+
+  it('follows the file the operator chose: a visible alternative opens where the hidden row would not', async () => {
+    // Two X1C exports: the printer cannot tell them apart, so the row's CHOICE
+    // decides the plate — and the check is on that final plate.
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planHiding(true, false, 'X1C'));
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
+    const pick = await screen.findByTestId('plan-row-10-100-printer-pick');
+    expect(pickOption(pick, '1')).toBeDisabled();
+    fireEvent.change(pick, { target: { value: '1' } });
+    expect(printModal.props).toBeNull();
+
+    fireEvent.change(screen.getByTestId('plan-row-10-100-file'), { target: { value: '400' } });
+    const again = screen.getByTestId('plan-row-10-100-printer-pick');
+    expect(pickOption(again, '1')).not.toBeDisabled();
+    fireEvent.change(again, { target: { value: '1' } });
+    expect(printModal.props).toMatchObject({ libraryFileId: 8, initialSelectedPrinterIds: [1] });
+  });
+
+  it('offers no printer when every file of the row is hidden', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planHiding(true, true));
+    render(<PlanBlock order={order} canEdit />);
+
+    expect(await screen.findByTestId('plan-row-10-100-file')).toBeInTheDocument();
+    expect(screen.queryByTestId('plan-row-10-100-printer')).not.toBeInTheDocument();
   });
 
   // ---- the operator's edits vs. the farm's own events ----

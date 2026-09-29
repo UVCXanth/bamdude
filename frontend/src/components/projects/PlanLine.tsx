@@ -49,14 +49,15 @@ interface PlanLineProps {
  *  `useful` is empty on purpose: the greedy did not choose this plate, so it
  *  covers nothing "usefully" by the engine's reckoning — the surplus
  *  projection reads the plate's real yield either way. */
-function rowFromRecipe(plate: PlateRecipe, ratePerGram: number | null, hiddenLabel: string): PlanRowData {
+function rowFromRecipe(plate: PlateRecipe, ratePerGram: number | null): PlanRowData {
   return {
     plate_id: plate.id,
     library_file_id: plate.library_file_id,
     plate_index: plate.plate_index,
-    // A file the caller may not open is named by its label, and the row is marked so
-    // nothing that needs the file is offered on it (WS-13 E1 CL2).
-    filename: plate.filename ?? hiddenLabel,
+    // A file the caller may not open keeps no name and is marked, exactly as the
+    // server marks a planned row — the row labels it and offers nothing that needs
+    // the file (WS-13 E1 CL2 / CL6).
+    filename: plate.filename,
     hidden: plate.hidden,
     count: 1,
     useful: [],
@@ -311,7 +312,7 @@ export function PlanLine({
             aria-label={t('orders.plan.addPlate')}
             onChange={(e) => {
               const plate = addable.find((p) => p.id === Number(e.currentTarget.value));
-              if (plate) onAddPlate(rowFromRecipe(plate, ratePerGram, hiddenLabel));
+              if (plate) onAddPlate(rowFromRecipe(plate, ratePerGram));
             }}
           >
             <option value="">{t('orders.plan.addPlate')}</option>

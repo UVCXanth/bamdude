@@ -49,10 +49,17 @@ function plateOptions(row: PlanRowData): ChosenPlate[] {
   return [chosenPlate(row), ...row.alternatives];
 }
 
+/** The plate's file name, or the label for a file the reader may not open
+ *  (WS-13 E1 CL6) — never the name the server did not send, never «null». */
+function plateName(plate: ChosenPlate, hiddenLabel: string): string {
+  return plate.hidden || plate.filename == null ? hiddenLabel : plate.filename;
+}
+
 /** `filename (X1C)`, or the bare filename when the file names no model. The
  *  model is what tells two otherwise identically-named exports apart. */
-function optionLabel(plate: ChosenPlate): string {
-  return plate.printer_model ? `${plate.filename} (${plate.printer_model})` : plate.filename;
+function optionLabel(plate: ChosenPlate, hiddenLabel: string): string {
+  const name = plateName(plate, hiddenLabel);
+  return plate.printer_model ? `${name} (${plate.printer_model})` : name;
 }
 
 /**
@@ -109,9 +116,14 @@ export function PlanRow({
   const [pickingPrinter, setPickingPrinter] = useState(false);
   const [splitting, setSplitting] = useState(false);
 
+  const hiddenLabel = t('products.plates.hiddenFile');
   const options = plateOptions(row);
   const plate = chosenPlate(row, chosen);
   const hasAlternatives = row.alternatives.length > 0;
+  // «To printer» opens the FILE. Offered while at least one of the row's plates
+  // is one the reader may open; which one a printer gets is checked on the final
+  // plate below (WS-13 E1 CL6).
+  const anyOpenable = options.some((option) => !option.hidden);
 
   // A plan with no alternatives does not need a printer picker.
   const { data: allPrinters } = useQuery({
@@ -220,12 +232,12 @@ export function PlanRow({
           >
             {options.map((option) => (
               <option key={option.plate_id} value={option.plate_id}>
-                {optionLabel(option)}
+                {optionLabel(option, hiddenLabel)}
               </option>
             ))}
           </Select>
         ) : (
-          <p className="text-white truncate">{plate.filename}</p>
+          <p className="text-white truncate">{plateName(plate, hiddenLabel)}</p>
         )}
         <p className="text-xs text-bambu-gray">
           {plate.plate_index === 0
@@ -344,9 +356,9 @@ export function PlanRow({
               {t('orders.plan.row.applyFarmSplit')}
             </Button>
           )}
-          {/* «To printer» opens the file itself — not for a plate added by hand from a
-              file the caller may not open (WS-13 E1 CL2). */}
-          {canPrint && !row.hidden && (
+          {/* «To printer» opens the file itself — never for a plate the caller may not
+              open, planned or added by hand (WS-13 E1 CL2 / CL6). */}
+          {canPrint && anyOpenable && (
             <Button
               size="sm"
               variant="ghost"
@@ -378,8 +390,14 @@ export function PlanRow({
               onChange={(e) => {
                 const printer = printers.find((p) => p.id === Number(e.currentTarget.value));
                 if (!printer) return;
+                // ⚠️ The check is on the plate this printer would actually get —
+                // the row's own, the model's alternative or the operator's choice —
+                // not on the row: a hidden row does not bar an alternative the
+                // reader may open, and an openable row does not open a hidden one.
+                const target = fileForPrinter(effectiveModel(printer.id, printer.model));
+                if (target.hidden) return;
                 setPickingPrinter(false);
-                setPrinting({ plate: fileForPrinter(effectiveModel(printer.id, printer.model)), printerId: printer.id });
+                setPrinting({ plate: target, printerId: printer.id });
               }}
             >
               <option value="">{t('orders.plan.row.toPrinter')}</option>
@@ -391,11 +409,15 @@ export function PlanRow({
                   {t('orders.plan.row.noPrinterOfModel')}
                 </option>
               )}
-              {printers.map((printer) => (
-                <option key={printer.id} value={printer.id}>
-                  {printer.model ? `${printer.name} (${printer.model})` : printer.name}
-                </option>
-              ))}
+              {printers.map((printer) => {
+                const closed = fileForPrinter(effectiveModel(printer.id, printer.model)).hidden;
+                const name = printer.model ? `${printer.name} (${printer.model})` : printer.name;
+                return (
+                  <option key={printer.id} value={printer.id} disabled={closed}>
+                    {closed ? `${name} — ${hiddenLabel}` : name}
+                  </option>
+                );
+              })}
             </Select>
           </div>
         )}
@@ -411,7 +433,7 @@ export function PlanRow({
           >
             {options.map((option) => (
               <label key={option.plate_id} className="flex items-center justify-end gap-2">
-                <span className="text-bambu-gray-light truncate">{optionLabel(option)}</span>
+                <span className="text-bambu-gray-light truncate">{optionLabel(option, hiddenLabel)}</span>
                 <input
                   type="number"
                   min={0}
@@ -450,7 +472,8 @@ export function PlanRow({
           <PrintModal
             mode="add-to-queue"
             libraryFileId={printing.plate.library_file_id}
-            archiveName={printing.plate.filename}
+            // Only an openable plate gets here, so this is its file name.
+            archiveName={plateName(printing.plate, hiddenLabel)}
             preselectedPlateId={printing.plate.plate_index || undefined}
             projectId={order.id}
             projectLineId={lineId}

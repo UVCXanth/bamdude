@@ -24,6 +24,7 @@ const line: LinePlan = {
       library_file_id: 5,
       plate_index: 1,
       filename: 'big.3mf',
+      hidden: false,
       count: 1,
       useful: [{ part_id: 1, name: 'Body', count: 100 }],
       print_time_seconds: 36000,
@@ -39,6 +40,7 @@ const line: LinePlan = {
           library_file_id: 8,
           plate_index: 1,
           filename: 'big-p1s.3mf',
+          hidden: false,
           printer_model: 'P1S',
           print_time_seconds: 72000,
           filament_used_grams: 550,
@@ -52,6 +54,7 @@ const line: LinePlan = {
       library_file_id: 6,
       plate_index: 0,
       filename: 'small.3mf',
+      hidden: false,
       count: 2,
       useful: [
         { part_id: 1, name: 'Body', count: 20 },
@@ -183,6 +186,7 @@ describe('the file a row is set to print', () => {
       library_file_id: 8,
       plate_index: 1,
       filename: 'big-p1s.3mf',
+      hidden: false,
       printer_model: 'P1S',
       print_time_seconds: 72000,
       filament_used_grams: 550,
@@ -196,6 +200,15 @@ describe('the file a row is set to print', () => {
     // it, but a render between the two must not go blank or send a plate this
     // row cannot print.
     expect(chosenPlate(line.rows[0], 999).filename).toBe('big.3mf');
+  });
+
+  it('carries the server’s «hidden» with the plate it is set to print (WS-13 E1 CL6)', () => {
+    // A file the library would not show the reader comes with no name and the
+    // flag; whichever plate the row prints, the flag travels with THAT plate.
+    const row = { ...line.rows[0], filename: null, hidden: true };
+
+    expect(chosenPlate(row)).toMatchObject({ plate_id: 100, filename: null, hidden: true });
+    expect(chosenPlate(row, 400)).toMatchObject({ plate_id: 400, filename: 'big-p1s.3mf', hidden: false });
   });
 
   it('projects the chosen alternative’s per-print figures, not the row’s', () => {

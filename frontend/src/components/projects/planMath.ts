@@ -88,6 +88,9 @@ export function chosenPlate(row: PlanRow, chosen?: number): ChosenPlate {
     library_file_id: row.library_file_id,
     plate_index: row.plate_index,
     filename: row.filename,
+    // The row's own flag, so whatever reads the plate a row prints — its label,
+    // «to printer» — asks the plate, never the row (WS-13 E1 CL6).
+    hidden: row.hidden,
     printer_model: row.printer_model,
     print_time_seconds: row.print_time_seconds,
     filament_used_grams: row.filament_used_grams,

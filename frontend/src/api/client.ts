@@ -2300,7 +2300,13 @@ export interface PlanRow {
   library_file_id: number;
   /** 0 means the whole file rather than a numbered plate. */
   plate_index: number;
-  filename: string;
+  /** null with `hidden` for a file the library would not show the reader (WS-13 E1
+   *  LV5) — the plate's ids and figures are the plan's all the same. */
+  filename: string | null;
+  /** The server's answer for a planned row; a plate the operator added by hand
+   *  carries its plate list's own (WS-13 E1 CL2 / CL6). Nothing that needs the
+   *  file is offered for a hidden plate. */
+  hidden: boolean;
   count: number;
   useful: PlanPartCount[];
   print_time_seconds: number | null;
@@ -2315,10 +2321,6 @@ export interface PlanRow {
   /** The line's other candidate plates that make exactly the same counted
    *  parts. Empty is the ordinary case; see `PlanAlternative`. */
   alternatives: PlanAlternative[];
-  /** Client-side only, never on the wire: a plate the operator added by hand from a
-   *  file the library does not let them open (WS-13 E1 CL2) — `filename` then holds
-   *  the label, and nothing that needs the file is offered on the row. */
-  hidden?: boolean;
 }
 
 /**
@@ -2342,7 +2344,9 @@ export interface PlanAlternative {
   library_file_id: number;
   /** 0 means the whole file rather than a numbered plate. */
   plate_index: number;
-  filename: string;
+  /** null with `hidden`, exactly as on the row (WS-13 E1 LV5). */
+  filename: string | null;
+  hidden: boolean;
   printer_model: string | null;
   print_time_seconds: number | null;
   filament_used_grams: number | null;
