@@ -53,6 +53,11 @@ from backend.app.i18n.api_errors import is_code  # noqa: E402
 
 # Domain exceptions that routes forward verbatim (``detail=str(exc)``). Their
 # messages are API-facing by construction, so the guard demands a translation.
+# Forwarded refusals whose sentence is NOT the first argument: ``VariantError(status,
+# detail)`` and its builder ``_refusal(status, code, message)`` (services/product_variants,
+# WS-13 E1) — the index of the argument that carries the sentence (or ``{"message": …}``).
+FORWARDED_ARG_INDEX = {"VariantError": 1, "_refusal": 2}
+
 FORWARDED_EXCEPTIONS = frozenset(
     {
         "BambuCloudError",
@@ -139,6 +144,9 @@ def _sentences(expr: ast.expr | None, consts: dict[str, list[str]]) -> list[str]
         return [template] if template else []
     if isinstance(expr, ast.Name):
         return list(consts.get(expr.id, []))
+    if isinstance(expr, ast.Attribute):
+        # ``product_gate.PRODUCT_BUSY`` — a module's constant read through the module.
+        return list(consts.get(expr.attr, []))
     if isinstance(expr, ast.BoolOp):
         return [s for operand in expr.values for s in _sentences(operand, consts)]
     if isinstance(expr, ast.IfExp):
@@ -225,13 +233,14 @@ def scan(app_dir: Path = APP_DIR) -> dict[str, set[Site]]:
                     continue
             elif isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
                 name = _call_name(node.exc.func)
-                if name in FORWARDED_EXCEPTIONS:
+                index = FORWARDED_ARG_INDEX.get(name, 0)
+                if name in FORWARDED_EXCEPTIONS or name in FORWARDED_ARG_INDEX:
                     kind = "forwarded"
                 elif name == "ValueError":
                     kind = "value"
                 else:
                     continue
-                expr = node.exc.args[0] if node.exc.args else None
+                expr = node.exc.args[index] if len(node.exc.args) > index else None
             else:
                 continue
             for sentence in _sentences(expr, consts):

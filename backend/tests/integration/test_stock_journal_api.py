@@ -41,6 +41,8 @@ async def test_both_ledgers_newest_first(committing_client, db_session, lamp):
     await part_stock.move(
         db_session, part_id=lamp["shade"].id, delta=3, reason="manual", note="seed", created_by=person.id
     )
+    # A separate request, as in the app: the setup's locks are not the door's (WS-13 E1 BL2).
+    await db_session.commit()
     item = await finished_stock.item_for(db_session, lamp["product"].id, {}, create=True)
     await finished_stock.assemble(db_session, item, 2, actor=person)
     await finished_stock.issue(db_session, item, 1, customer_id=customer.id, actor=person)

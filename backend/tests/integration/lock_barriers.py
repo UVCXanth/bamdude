@@ -55,6 +55,8 @@ class Hold:
     """One session's stop: after its ``after``-th wrapped call it waits for ``release``."""
 
     after: int
+    #: Count only these helpers (by name); None — every wrapped call.
+    on: frozenset[str] | None = None
     reached: asyncio.Event = field(default_factory=asyncio.Event)
     release: asyncio.Event = field(default_factory=asyncio.Event)
     count: int = 0
@@ -66,9 +68,11 @@ class Barriers:
         self._holds: dict[int, Hold] = {}
         self._restore: list[tuple[object, str, object]] = []
 
-    def hold(self, db, *, after: int = 1) -> Hold:
-        """Stop the session ``db`` right after its ``after``-th wrapped call."""
-        hold = Hold(after=after)
+    def hold(self, db, *, after: int = 1, on: str | tuple[str, ...] | None = None) -> Hold:
+        """Stop the session ``db`` right after its ``after``-th wrapped call (of the
+        helpers named ``on``, when given)."""
+        names = (on,) if isinstance(on, str) else on
+        hold = Hold(after=after, on=frozenset(names) if names else None)
         self._holds[id(db)] = hold
         return hold
 
@@ -84,8 +88,10 @@ class Barriers:
             result = await original(db, *args, **kwargs)
             hold = self._holds.get(id(db))
             if hold is not None:
-                hold.count += 1
                 hold.trail.append(name)
+                if hold.on is not None and name not in hold.on:
+                    return result
+                hold.count += 1
                 if hold.count == hold.after:
                     hold.reached.set()
                     await hold.release.wait()

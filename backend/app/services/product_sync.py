@@ -139,7 +139,14 @@ async def _reconcile_links(db: AsyncSession, library_file_id: int, desired: set[
         )
 
 
-async def sync_product_for_file(db: AsyncSession, *, library_file_id: int, product_ids: list[int]) -> None:
+async def sync_product_for_file(
+    db: AsyncSession, *, library_file_id: int, product_ids: list[int], seed_parts_for: set[int] | None = None
+) -> None:
+    """Make the file's product links equal ``product_ids`` and reconcile the plates
+    (and stored facets) of every product it touches. Parts are seeded from the file's
+    objects for every desired product — or, with ``seed_parts_for``, only for those:
+    the one-off plate product created BEFORE its gate (WS-13 E1 BL8 б) must not seed
+    the catalogue product already linked to the same file, whose gate it does not hold."""
     row = (
         await db.execute(
             select(LibraryFile.file_type, LibraryFile.file_metadata).where(LibraryFile.id == library_file_id)
@@ -195,6 +202,8 @@ async def sync_product_for_file(db: AsyncSession, *, library_file_id: int, produ
                 await db.delete(plate)
         for plate_index in sorted(wanted - have.keys()):
             db.add(ProductPlate(product_id=product_id, library_file_id=library_file_id, plate_index=plate_index))
+        if seed_parts_for is not None and product_id not in seed_parts_for:
+            continue
         await seed_parts_for_product(
             db, product_id=product_id, meta=meta, plate_indices=wanted, origin_plate_index=origins.get(product_id)
         )

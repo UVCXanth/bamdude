@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import take_write_lock
-from backend.app.core.lock_ledger import ORDER, ledger
+from backend.app.core.lock_ledger import ORDER, before_lock, ledger
 from backend.app.models.product import Product, ProductPart
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectLinePartStock
@@ -27,7 +27,11 @@ from backend.app.models.stock_issue import StockIssue
 from backend.app.models.user import User
 from backend.app.services import finished_stock, order_journal, part_stock, stock_issues
 from backend.app.services.order_metrics import LineFigures, OrderContext, attribute, load_order_context
+from backend.app.services.product_gate import product_gate
 from backend.app.services.stock_issues import Recipient
+
+# WS-13 E1 BL2: the set of products changed between the read and the gates.
+ORDER_CHANGED = "The order changed while this was being saved — try again"
 
 
 async def lock_order(db: AsyncSession, project_id: int) -> None:
@@ -41,6 +45,7 @@ async def lock_order(db: AsyncSession, project_id: int) -> None:
     held = ledger(db)
     if held.holds("projects", project_id):
         return
+    before_lock(db, "projects", project_id, ORDER)  # the order monitor (WS-13 E1 BL2)
     await take_write_lock(db, Project.__table__, project_id)
     await db.execute(select(Project.id).where(Project.id == project_id).with_for_update(key_share=True))
     held.note("projects", project_id, ORDER)
@@ -381,14 +386,15 @@ async def close(
     followups, rule 37): kits nobody assembled go back on the shelf; an order closing to stock
     also puts everything it holds into free stock — the cancel's own doors, with the status
     «completed». The caller sets the status and journals it."""
-    # The order row before any position (WS-13 E1 BL0) — already held when the caller
-    # took it at its start (the PATCH door, the issue dialog), and then no statement.
+    # The gates and the order row before any position (WS-13 E1 BL0 / BL3) — already
+    # held when the caller took them at its start (the PATCH door, the issue dialog),
+    # and then no statement at all.
+    await product_gate(db, {line.product_id for line in lines})
     await lock_order(db, project.id)
     ordered = sorted(lines, key=lambda line: line.id)
+    # Positions, lines, parts — before the first line is handled (BL0).
+    await finished_stock.lock_lines_with_parts(db, ordered)
     if to_stock:
-        await finished_stock.lock_positions_for_lines(db, [line.id for line in ordered])
-        for line in ordered:
-            await finished_stock.lock_line(db, line)
         # The PATCH door read the state before these locks (final review M4): a write-off or
         # a close that committed meanwhile may have taken what the check counted.
         if not (await state(db, project, to_stock=True)).can_complete:
@@ -462,13 +468,18 @@ async def apply(
     if writing_off and not (write_off_note or "").strip():
         raise FulfilmentError("A write-off needs a note", 422)
 
-    # The order row, then positions in ascending id, then the lines — the order every
-    # closing door takes (WS-10 M4; WS-13 E1 BL0) — and only then the numbers, read
-    # fresh under the locks. The row first because completing ends in its UPDATE.
+    # The products' gates (an assembly or a receipt may create a position — WS-13 E1
+    # BL3), the order row, then positions in ascending id, then the lines — the order
+    # every closing door takes (WS-10 M4; BL0) — and only then the numbers, read fresh
+    # under the locks. The row before positions because completing ends in its UPDATE.
+    await product_gate(db, {line.product_id for line in lines.values()})
     await lock_order(db, project.id)
-    await finished_stock.lock_positions_for_lines(db, list(lines))
-    for line_id in sorted(lines):
-        await finished_stock.lock_line(db, lines[line_id])
+    if set(await db.scalars(select(ProjectLine.product_id).where(ProjectLine.project_id == project.id))) - {
+        line.product_id for line in lines.values()
+    }:
+        # A line of another product joined the order after the read above (BL2).
+        raise FulfilmentError(ORDER_CHANGED, 409)
+    await finished_stock.lock_lines_with_parts(db, lines.values())
     # The status read before the locks may be stale: a cancel that committed while this
     # request waited has given the shelf back (final review M1).
     if await db.scalar(select(Project.status).where(Project.id == project.id)) != "active":

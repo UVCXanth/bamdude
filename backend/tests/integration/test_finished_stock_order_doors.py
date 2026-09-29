@@ -9,6 +9,7 @@ from backend.app.models.product import Product, ProductOrigin, ProductPart
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import finished_stock, line_config, part_stock, stock_issues
+from backend.app.services.product_gate import product_gate
 
 pytestmark = pytest.mark.integration
 
@@ -84,6 +85,11 @@ async def test_received_units_go_on_the_shelf_reserved_for_the_order(db_session,
 async def test_assembling_reserved_kits_makes_units_for_the_order(db_session, shop):
     line = await _line(db_session, shop)
     assert await part_stock.reserve_for_line(db_session, line, 2) == 2
+    # A separate request, as in the app: the setup's locks are not the door's (WS-13 E1 BL2).
+    await db_session.commit()
+    # The door's own first step (the issue dialog takes the gate — WS-13 E1 BL3): the
+    # assembly may create the line's position.
+    await product_gate(db_session, [line.product_id])
     await finished_stock.assemble_for_line(db_session, line, 2, actor=None)
     position = await _position(db_session, shop)  # created in the line's configuration
     assert (position.on_hand, position.reserved, line.assembled) == (2, 2, 2)

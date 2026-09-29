@@ -368,6 +368,22 @@ def _clean_advertised_overlay():
 
 
 @pytest.fixture(autouse=True)
+def _lock_order_is_strict():
+    """The lock-order monitor raises in tests (WS-13 E1, spec BL2): a door that takes a
+    lower lock class after a higher one is a red test, not a log line.
+
+    ⚠️ Set by hand, not through ``monkeypatch``: requesting ``monkeypatch`` from an
+    autouse fixture that sorts before ``_no_dialect_check_leaks`` would make every
+    test's own monkeypatch outlive that guard's check."""
+    from backend.app.core import lock_ledger
+
+    previous = lock_ledger.STRICT
+    lock_ledger.STRICT = True
+    yield
+    lock_ledger.STRICT = previous
+
+
+@pytest.fixture(autouse=True)
 async def _cancel_leaked_asyncio_tasks():
     """Cancel asyncio tasks that leaked past the test body.
 

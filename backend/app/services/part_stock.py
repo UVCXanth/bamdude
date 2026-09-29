@@ -60,6 +60,7 @@ from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import take_write_lock
+from backend.app.core.lock_ledger import PART, before_lock, ledger
 from backend.app.models.archive import PrintArchive
 from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.product import Product, ProductPart, ProductPlate
@@ -309,8 +310,11 @@ def lock_part_stmt(part_id: int):
 async def lock_part(db: AsyncSession, part_id: int) -> ProductPart | None:
     """The part row, locked and read fresh: SQLite's write lock first
     (``take_write_lock``), then :func:`lock_part_stmt`."""
+    before_lock(db, "product_parts", part_id, PART)  # the order monitor (WS-13 E1 BL2)
     await take_write_lock(db, ProductPart.__table__, part_id)
-    return (await db.execute(lock_part_stmt(part_id))).scalar_one_or_none()
+    part = (await db.execute(lock_part_stmt(part_id))).scalar_one_or_none()
+    ledger(db).note("product_parts", part_id, PART)
+    return part
 
 
 async def lock_parts(db: AsyncSession, parts: Sequence[ProductPart]) -> None:

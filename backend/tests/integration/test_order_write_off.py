@@ -70,6 +70,8 @@ async def _print(db, shop, line, **parts):
 
 
 async def _apply(db, shop, requests, *, complete=False, write_off_note=None):
+    # A separate request, as in the app: the setup's locks are not the door's (WS-13 E1 BL2).
+    await db.commit()
     return await order_fulfilment.apply(
         db,
         shop["order"],

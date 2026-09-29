@@ -86,7 +86,8 @@ def _wipe(url: str) -> None:
 
 
 def _run(mode: str, data_dir: Path, url: str | None, *extra: str) -> dict:
-    env = {**os.environ, "DATA_DIR": str(data_dir)}
+    # The lock-order monitor raises in the scenarios too (WS-13 E1 BL2).
+    env = {**os.environ, "DATA_DIR": str(data_dir), "BAMDUDE_LOCK_ORDER_STRICT": "1"}
     if url:
         env["DATABASE_URL"] = _async_url(url)
     else:
@@ -567,3 +568,101 @@ class TestLineDoorLockOrder:
         assert "being changed right now" in result["b"], result
         assert result["order_exists"] is True, result
         assert result["lines"] == 1, result
+
+
+def _protocol(tmp_path_factory, name: str) -> dict:
+    url = _pg_url()
+    _wipe(url)
+    return _run(f"protocol:{name}", tmp_path_factory.mktemp(f"pg_protocol_{name}"), url)
+
+
+def _no_crash(outcome: str) -> None:
+    assert outcome != "deadlock" and not outcome.startswith("error:"), outcome
+
+
+class TestLockProtocol:
+    """WS-13 E1, spec BL / T1 scenarios a–i: the product gate, NOWAIT footprints and the
+    lock ledger under two real PostgreSQL sessions, each stopped inside its operation."""
+
+    def test_a_group_added_while_the_issue_dialog_creates_the_first_position(self, tmp_path_factory):
+        r = _protocol(tmp_path_factory, "a")
+        assert r["which"] == "waiting", r  # B waited at the gate A holds — no cycle to form
+        assert (r["a"], r["b"]) == ("ok", "ok"), r
+        assert r["positions"] == 1 and r["position_choices"] == 2, r  # Colour + the new Size
+        assert r["line_groups"] == 2 and r["line_key_ok"] and r["consistent"], r
+
+    def test_a_part_rebound_while_the_issue_dialog_creates_the_first_position(self, tmp_path_factory):
+        r = _protocol(tmp_path_factory, "b")
+        assert r["which"] == "waiting", r
+        assert (r["a"], r["b"]) == ("ok", "ok"), r
+        assert r["line_key_ok"] and r["consistent"], r
+
+    def test_completing_through_patch_against_completing_in_the_issue_dialog(self, tmp_path_factory):
+        r = _protocol(tmp_path_factory, "c")
+        assert r["which"] == "waiting", r
+        assert r["a"] == "ok", r
+        assert r["b"].startswith("http:409:") and "active order" in r["b"], r
+        assert r["status"] == "completed", r
+
+    def test_an_order_copy_against_a_new_line_of_the_same_product(self, tmp_path_factory):
+        r = _protocol(tmp_path_factory, "d")
+        assert r["which"] == "waiting", r
+        assert (r["a"], r["b"]) == ("ok", "ok"), r
+        assert r["lines"] == 3 and r["every_line_has_its_choices"], r
+
+    def test_deleting_a_one_off_products_last_line_against_configuring_it(self, tmp_path_factory):
+        r = _protocol(tmp_path_factory, "e")
+        assert r["which"] == "waiting", r
+        assert r["a"] == "ok", r
+        assert r["b"].startswith("http:404:"), r
+        assert r["product_left"] == 0, r
+
+    def test_configuration_writers_stay_fresh_behind_the_gate(self, tmp_path_factory):
+        r = _protocol(tmp_path_factory, "f")
+        for pair in ("group_then_configuration", "configuration_then_group", "group_then_new_line"):
+            assert r[pair]["which"] == "waiting", (pair, r[pair])
+            assert (r[pair]["a"], r[pair]["b"]) == ("ok", "ok"), (pair, r[pair])
+        g = r["group_then_configuration"]
+        assert g["has_size"] and g["kept_blue"] and g["key_ok"] and g["kit_unchanged_by_a_new_standard"], g
+        c = r["configuration_then_group"]
+        assert c["has_size"] and c["kept_blue"] and c["key_ok"], c
+        assert r["group_then_new_line"]["new_line_has_size"], r["group_then_new_line"]
+        won = r["choice_then_delete"]
+        assert won["a"] == "ok" and won["b"].startswith("http:409:") and "chosen in" in won["b"], won
+        assert won["line_keeps_blue"] is not None, won
+        lost = r["delete_then_choice"]
+        assert lost["a"] == "ok" and lost["b"].startswith("http:422:"), lost
+        assert lost["dangling"] == 0, lost
+
+    def test_every_class_of_every_footprint_answers_busy_at_once(self, tmp_path_factory):
+        r = _protocol(tmp_path_factory, "g")
+        after = r.pop("after")
+        for case, seen in r.items():
+            assert seen["outcome"].startswith("http:409:") and "product_busy" in seen["outcome"], (case, seen)
+            assert seen["seconds"] < 2, (case, seen)
+        # Every refused door rolled back whole.
+        assert after == {"groups": 1, "base_exists": 1, "doomed_exists": 1}, after
+
+    def test_the_ledger_follows_savepoints_and_the_real_caller(self, tmp_path_factory):
+        r = _protocol(tmp_path_factory, "i")
+        assert r["released_inside_savepoint"] and r["relocked_after_restore"], r
+        assert r["delete"] == "ok", r
+        assert r["gate_statements"] == 1, r  # the cascade re-entered the gate without SQL
+        assert r["product_left"] == 0, r
+        assert (r["first_credit"], r["second_credit"]) == (1, 0), r
+
+    def test_the_variants_draft_under_two_sessions(self, tmp_path_factory):
+        """T2: two drafts of one revision — exactly one wins; a single route first makes an
+        apply opened before it stale; a new group lands on the first position and on a
+        reconfigured line."""
+        r = _protocol(tmp_path_factory, "t2")
+        for pair in ("apply_vs_apply", "route_vs_apply"):
+            assert r[pair]["which"] == "waiting", r[pair]
+            assert r[pair]["a"] == "ok", r[pair]
+            assert r[pair]["b"].startswith("http:409:") and "variants_changed" in r[pair]["b"], r[pair]
+        first = r["apply_group_vs_first_position"]
+        assert first["which"] == "waiting" and (first["a"], first["b"]) == ("ok", "ok"), first
+        assert first["line_groups"] == 2, first
+        conf = r["apply_group_vs_configuration"]
+        assert conf["which"] == "waiting" and (conf["a"], conf["b"]) == ("ok", "ok"), conf
+        assert conf["line_groups"] == 2 and conf["kept_blue"] and conf["key_ok"], conf

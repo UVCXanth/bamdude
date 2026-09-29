@@ -79,6 +79,7 @@ from backend.app.services.list_paging import (
     slice_page,
     sort_computed,
 )
+from backend.app.services.product_gate import product_gate
 from backend.app.services.stock_views import movement_out, orders_of_lines
 
 router = APIRouter(prefix="/stock", tags=["stock"])
@@ -349,6 +350,10 @@ async def _resolve_item(
         return await _item_or_404(db, item_id)
     if product_id is None:
         raise HTTPException(status_code=422, detail="Name a stock position or a product")
+    if create:
+        # A position may be created: the product's gate before its configuration is
+        # read (WS-13 E1 BL3 / BL4).
+        await product_gate(db, [product_id])
     choices = await _choices_from_options(db, product_id, options)
     try:
         item = await finished_stock.item_for(db, product_id, choices, create=create)

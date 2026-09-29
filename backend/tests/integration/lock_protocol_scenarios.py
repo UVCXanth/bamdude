@@ -1,0 +1,913 @@
+"""The lock protocol under two real sessions (WS-13 E1, spec BL / T1 scenarios a–i).
+
+Run by ``postgres_scenario_runner`` in its own interpreter (``protocol:<name>``) —
+against PostgreSQL, and scenario f also against a file-backed SQLite. Every door is
+the real route function; the barriers (``lock_barriers``) stop operation A inside
+itself, right after a named lock, and the coordinator lets B run to its first lock or
+to a wait PostgreSQL reports before both go on. A 40P01, a 500 or a timeout is
+reported as such — never folded into "ok".
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+
+from sqlalchemy import func, select, text
+
+
+def _runner():
+    from backend.tests.integration import postgres_scenario_runner as runner
+
+    return runner
+
+
+def _install(barriers) -> None:
+    """Wrap every lock helper the protocol names, in every module that calls it."""
+    from backend.app.api.routes import projects, stock
+    from backend.app.services import (
+        finished_stock,
+        line_intake,
+        order_from_files,
+        order_fulfilment,
+        part_stock,
+        product_delete,
+        product_gate,
+        product_variants,
+    )
+
+    for module in (
+        product_gate,
+        line_intake,
+        order_from_files,
+        order_fulfilment,
+        finished_stock,
+        product_delete,
+        product_variants,
+        projects,
+        stock,
+    ):
+        barriers.wrap(module, "product_gate")
+    for name in ("lock_item", "lock_line"):
+        barriers.wrap(finished_stock, name)
+    barriers.wrap(part_stock, "lock_part")
+    barriers.wrap(order_fulfilment, "lock_order")
+
+
+def _dialect() -> str:
+    from backend.app.core.database import engine
+
+    return engine.dialect.name
+
+
+async def duel(a_call, b_call, *, a_on=None, a_after=1) -> dict:
+    """A runs to its barrier (``a_on`` / ``a_after``), B starts; the coordinator waits for B
+    at its first lock or waiting on one; both go on. PostgreSQL only (pg_stat_activity)."""
+    from backend.app.core.database import async_session, engine
+    from backend.tests.integration.lock_barriers import Barriers, backend_pid, first_of
+
+    runner = _runner()
+    barriers = Barriers()
+    _install(barriers)
+    holds: dict[str, object] = {}
+    pid_b: asyncio.Future = asyncio.get_running_loop().create_future()
+
+    async def run(name, call, *, on=None, after=1, pid=None):
+        async with async_session() as db:
+            holds[name] = barriers.hold(db, after=after, on=on)
+            if pid is not None:
+                pid.set_result(await backend_pid(db))
+            return await runner._outcome(db, lambda: call(db))
+
+    which = "a_never_stopped"
+    outcome_b = "not_started"
+    try:
+        task_a = asyncio.create_task(run("a", a_call, on=a_on, after=a_after))
+        hold_a = await runner._hold_of(holds, "a")
+        stopped = asyncio.ensure_future(hold_a.reached.wait())
+        done, _pending = await asyncio.wait({task_a, stopped}, timeout=15, return_when=asyncio.FIRST_COMPLETED)
+        if stopped in done:
+            task_b = asyncio.create_task(run("b", b_call, pid=pid_b))
+            which = await first_of(await runner._hold_of(holds, "b"), engine, pid_b)
+            barriers.release_all()
+            outcome_a, outcome_b = await asyncio.wait_for(asyncio.gather(task_a, task_b), timeout=60)
+        else:
+            stopped.cancel()
+            outcome_a = await asyncio.wait_for(task_a, timeout=60)
+    finally:
+        barriers.restore()
+    return {"which": which, "a": outcome_a, "b": outcome_b}
+
+
+async def serial(a_call, b_call) -> dict:
+    """A runs to its end without committing; B starts and must wait (SQLite: its write
+    lock; PostgreSQL: the gate); A commits; B finishes. The freshness recipe (spec T1 4)."""
+    from backend.app.core.database import async_session
+
+    runner = _runner()
+    async with async_session() as a:
+        outcome_a = "ok"
+        try:
+            await a_call(a)
+        except Exception as e:  # noqa: BLE001 — reported, not swallowed
+            outcome_a = f"error:{type(e).__name__}:{str(e)[:200]}"
+        b_task = None
+
+        async def run_b():
+            async with async_session() as b:
+                return await runner._outcome(b, lambda: b_call(b))
+
+        b_task = asyncio.create_task(run_b())
+        await asyncio.sleep(0.4)
+        b_waited = not b_task.done()
+        await a.commit()
+    outcome_b = await asyncio.wait_for(b_task, timeout=60)
+    return {"a": outcome_a, "b": outcome_b, "b_waited": b_waited}
+
+
+# ---------- setup ----------
+
+
+async def shop(*, customer: bool = True, group: bool = True, line_quantity: int = 3, kits: int = 0) -> dict:
+    """A lamp with two printed parts (shade, base) and a Colour group (red standard,
+    blue); an active order with one line of it; free parts on the shelf."""
+    from backend.app.core.database import async_session
+    from backend.app.models.customer import Customer
+    from backend.app.models.product import Product, ProductPart
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+    from backend.app.services import line_config, part_stock, product_variants
+
+    async with async_session() as db:
+        buyer = Customer(name="Protocol customer") if customer else None
+        lamp = Product(name="Protocol lamp")
+        db.add_all([x for x in (buyer, lamp) if x is not None])
+        await db.flush()
+        shade = ProductPart(product_id=lamp.id, kind="printed", name="shade", name_key="shade", qty_per_unit=1)
+        base = ProductPart(product_id=lamp.id, kind="printed", name="base", name_key="base", qty_per_unit=1)
+        db.add_all([shade, base])
+        await db.flush()
+        options: dict[str, int] = {}
+        group_id = None
+        if group:
+            colour = await product_variants.create_group(db, lamp.id, "Colour", ["red", "blue"], record_lines=False)
+            group_id = colour.id
+            for option in await product_variants.groups(db, lamp.id):
+                options.update({o.name: o.id for o in option.options})
+        for part in (shade, base):
+            await part_stock.move(db, part_id=part.id, delta=10, reason="manual", note="seed")
+        order = Project(name="Protocol order", status="active", customer_id=buyer.id if buyer else None)
+        db.add(order)
+        await db.flush()
+        line = ProjectLine(
+            project_id=order.id, product_id=lamp.id, quantity=line_quantity, mode="product", sort_order=0
+        )
+        db.add(line)
+        await db.flush()
+        await line_config.seed_line(db, line, choices=None, counts=None)
+        if kits:
+            await part_stock.reserve_for_line(db, line, kits)
+        await db.commit()
+        return {
+            "customer": buyer.id if buyer else None,
+            "product": lamp.id,
+            "shade": shade.id,
+            "base": base.id,
+            "group": group_id,
+            "options": options,
+            "order": order.id,
+            "line": line.id,
+        }
+
+
+async def _count(model, *conditions) -> int:
+    from backend.app.core.database import async_session
+
+    async with async_session() as db:
+        return int(await db.scalar(select(func.count()).select_from(model).where(*conditions)) or 0)
+
+
+async def _line_choices(line_id: int) -> dict[int, int]:
+    from backend.app.core.database import async_session
+    from backend.app.models.line_config import ProjectLineChoice
+
+    async with async_session() as db:
+        rows = await db.execute(
+            select(ProjectLineChoice.group_id, ProjectLineChoice.option_id).where(ProjectLineChoice.line_id == line_id)
+        )
+        return dict(rows.all())
+
+
+async def _line_key_matches(line_id: int) -> bool:
+    from backend.app.core.database import async_session
+    from backend.app.models.project_line import ProjectLine
+    from backend.app.services import line_config
+    from backend.app.services.line_composition import load_line_configs
+
+    async with async_session() as db:
+        line = await db.get(ProjectLine, line_id)
+        cfg = (await load_line_configs(db, [line_id]))[line_id]
+        return line.config_key == line_config.config_key(line.mode, cfg.choices, cfg.counts)
+
+
+def _req():
+    return _runner()._plain_request()
+
+
+# ---------- a · R07, b — the issue dialog creating the first position ----------
+
+
+async def scenario_a() -> dict:
+    """A assembles one unit (the line's position does not exist yet — the assembly
+    creates it) and stops after locking the line; B adds a variant group."""
+    from backend.app.api.routes import products as product_routes, projects as project_routes
+    from backend.app.models.finished_stock import StockItem, StockItemChoice
+    from backend.app.schemas.product import VariantGroupCreate
+    from backend.app.schemas.project import FulfilmentIn, FulfilmentLineIn
+
+    s = await shop(kits=2)
+    data = FulfilmentIn(lines=[FulfilmentLineIn(line_id=s["line"], assemble=1)])
+    result = await duel(
+        lambda db: project_routes.fulfil_order(s["order"], data, _req(), db, None),
+        lambda db: product_routes.create_variant_group(
+            s["product"], VariantGroupCreate(name="Size", options=["S", "L"]), db, None
+        ),
+        a_on="lock_line",
+    )
+    positions = await _count(StockItem, StockItem.product_id == s["product"])
+    size_on_positions = await _count(
+        StockItemChoice,
+        StockItemChoice.item_id.in_(select(StockItem.id).where(StockItem.product_id == s["product"])),
+    )
+    choices = await _line_choices(s["line"])
+    return {
+        **result,
+        "positions": positions,
+        "position_choices": size_on_positions,
+        "line_groups": len(choices),
+        "line_key_ok": await _line_key_matches(s["line"]),
+        "consistent": await _runner()._position_ledger_consistent(
+            await _ids(StockItem, StockItem.product_id == s["product"])
+        ),
+    }
+
+
+async def _ids(model, *conditions) -> list[int]:
+    from backend.app.core.database import async_session
+
+    async with async_session() as db:
+        return list(await db.scalars(select(model.id).where(*conditions)))
+
+
+async def scenario_b() -> dict:
+    """The same assembly against rebinding a part to an option."""
+    from backend.app.api.routes import products as product_routes, projects as project_routes
+    from backend.app.models.finished_stock import StockItem
+    from backend.app.schemas.product import ProductPartUpdate
+    from backend.app.schemas.project import FulfilmentIn, FulfilmentLineIn
+
+    s = await shop(kits=2)
+    data = FulfilmentIn(lines=[FulfilmentLineIn(line_id=s["line"], assemble=1)])
+    result = await duel(
+        lambda db: project_routes.fulfil_order(s["order"], data, _req(), db, None),
+        lambda db: product_routes.update_part(
+            s["product"], s["base"], ProductPartUpdate(variant_option_id=s["options"]["blue"]), db, None
+        ),
+        a_on="lock_line",
+    )
+    return {
+        **result,
+        "line_key_ok": await _line_key_matches(s["line"]),
+        "consistent": await _runner()._position_ledger_consistent(
+            await _ids(StockItem, StockItem.product_id == s["product"])
+        ),
+    }
+
+
+# ---------- c · R10 — completing through PATCH against completing in the issue dialog ----------
+
+
+async def scenario_c() -> dict:
+    from backend.app.api.routes import projects as project_routes
+    from backend.app.core.database import async_session
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+    from backend.app.schemas.project import FulfilmentIn, ProjectUpdate
+    from backend.app.services import finished_stock
+
+    s = await shop(customer=False, group=False, line_quantity=2)
+    async with async_session() as db:
+        item = await finished_stock.item_for(db, s["product"], {}, create=True)
+        await finished_stock.receive(db, item, 2)
+        line = await db.get(ProjectLine, s["line"])
+        await finished_stock.reserve_for_line(db, line, 2)
+        await db.commit()
+    result = await duel(
+        lambda db: project_routes.update_project(s["order"], ProjectUpdate(status="completed"), _req(), db, None),
+        lambda db: project_routes.fulfil_order(s["order"], FulfilmentIn(complete=True), _req(), db, None),
+        a_on="lock_order",
+    )
+    async with async_session() as db:
+        status = await db.scalar(select(Project.status).where(Project.id == s["order"]))
+    return {**result, "status": status}
+
+
+# ---------- d · R10 — an order copy against a line of the same product ----------
+
+
+async def scenario_d() -> dict:
+    from backend.app.api.routes import projects as project_routes
+    from backend.app.core.database import async_session
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+    from backend.app.schemas.project import ProjectDuplicate, ProjectLineCreate
+
+    s = await shop()
+    async with async_session() as db:
+        other = Project(name="Second order", status="active")
+        db.add(other)
+        await db.commit()
+        other_id = other.id
+    result = await duel(
+        lambda db: project_routes.duplicate_project(s["order"], ProjectDuplicate(), db, None),
+        lambda db: project_routes.add_line(other_id, ProjectLineCreate(product_id=s["product"], quantity=1), db, None),
+        a_on="product_gate",
+    )
+    line_ids = await _ids(ProjectLine, ProjectLine.product_id == s["product"])
+    complete = [len(await _line_choices(lid)) == 1 for lid in line_ids]
+    return {**result, "lines": len(line_ids), "every_line_has_its_choices": all(complete)}
+
+
+# ---------- e · R10 — deleting a one-off product's last line against configuring it ----------
+
+
+async def scenario_e() -> dict:
+    from backend.app.api.routes import projects as project_routes
+    from backend.app.core.database import async_session
+    from backend.app.models.product import Product, ProductOrigin
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+    from backend.app.schemas.project import LineConfigurationIn
+    from backend.app.services import line_config
+
+    async with async_session() as db:
+        oneoff = Product(name="One-off", origin=ProductOrigin.ADHOC_PLATE.value)
+        db.add(oneoff)
+        await db.flush()
+        order = Project(name="One-off order", status="active")
+        db.add(order)
+        await db.flush()
+        line = ProjectLine(project_id=order.id, product_id=oneoff.id, quantity=1, mode="product", sort_order=0)
+        db.add(line)
+        await db.flush()
+        await line_config.seed_line(db, line, choices=None, counts=None)
+        await db.commit()
+        ids = {"product": oneoff.id, "order": order.id, "line": line.id}
+    result = await duel(
+        lambda db: project_routes.delete_line(ids["order"], ids["line"], _req(), db, None),
+        lambda db: project_routes.configure_line(ids["order"], ids["line"], LineConfigurationIn(), db, None),
+        a_on="product_gate",
+    )
+    return {**result, "product_left": await _count(Product, Product.id == ids["product"])}
+
+
+# ---------- f · R08 — freshness of the configuration writers ----------
+
+
+async def scenario_f(recipe: str) -> dict:
+    """Four pairs, each with its outcome. ``recipe`` — ``duel`` (PostgreSQL) or ``serial``."""
+    from backend.app.api.routes import products as product_routes, projects as project_routes
+    from backend.app.schemas.product import VariantGroupCreate, VariantGroupUpdate
+    from backend.app.schemas.project import LineConfigurationIn, ProjectLineCreate
+
+    async def pair(a_call, b_call):
+        if recipe == "duel":
+            return await duel(a_call, b_call, a_on="product_gate")
+        return await serial(a_call, b_call)
+
+    out: dict[str, dict] = {}
+
+    # f1: a group added, then the line reconfigured — the new group's choice survives.
+    s = await shop()
+    size = {}
+
+    async def add_size(db):
+        await product_routes.create_variant_group(
+            s["product"], VariantGroupCreate(name="Size", options=["S", "L"]), db, None
+        )
+
+    choose_blue = LineConfigurationIn(choices={s["group"]: s["options"]["blue"]})
+    r = await pair(add_size, lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None))
+    size = await _group_by_name(s["product"], "Size")
+    choices = await _line_choices(s["line"])
+    kit_before = await _line_kit(s["line"])
+    if size:
+        await _set_standard(size["id"], size["options"]["L"], product_routes, VariantGroupUpdate, s["product"])
+    out["group_then_configuration"] = {
+        **r,
+        "has_size": size is not None and size["id"] in choices,
+        "kept_blue": choices.get(s["group"]) == s["options"]["blue"],
+        "key_ok": await _line_key_matches(s["line"]),
+        "kit_unchanged_by_a_new_standard": kit_before == await _line_kit(s["line"]),
+    }
+
+    # f2: the line reconfigured, then a group added — the group lands on it.
+    s = await shop()
+    choose_blue = LineConfigurationIn(choices={s["group"]: s["options"]["blue"]})
+    r = await pair(
+        lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None),
+        lambda db: product_routes.create_variant_group(
+            s["product"], VariantGroupCreate(name="Size", options=["S", "L"]), db, None
+        ),
+    )
+    size = await _group_by_name(s["product"], "Size")
+    choices = await _line_choices(s["line"])
+    out["configuration_then_group"] = {
+        **r,
+        "has_size": size is not None and size["id"] in choices,
+        "kept_blue": choices.get(s["group"]) == s["options"]["blue"],
+        "key_ok": await _line_key_matches(s["line"]),
+    }
+
+    # f3: a group added against a new line of the same product.
+    s = await shop()
+    r = await pair(
+        lambda db: product_routes.create_variant_group(
+            s["product"], VariantGroupCreate(name="Size", options=["S", "L"]), db, None
+        ),
+        lambda db: project_routes.add_line(
+            s["order"], ProjectLineCreate(product_id=s["product"], quantity=1), db, None
+        ),
+    )
+    from backend.app.models.project_line import ProjectLine
+
+    size = await _group_by_name(s["product"], "Size")
+    new_lines = [lid for lid in await _ids(ProjectLine, ProjectLine.project_id == s["order"]) if lid != s["line"]]
+    out["group_then_new_line"] = {
+        **r,
+        "new_line_has_size": bool(new_lines) and size is not None and size["id"] in await _line_choices(new_lines[0]),
+    }
+
+    # f4: an option deleted against a configuration choosing it — both orders.
+    s = await shop()
+    choose_blue = LineConfigurationIn(choices={s["group"]: s["options"]["blue"]})
+    r = await pair(
+        lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None),
+        lambda db: product_routes.delete_variant_option(s["product"], s["group"], s["options"]["blue"], db, None),
+    )
+    out["choice_then_delete"] = {**r, "line_keeps_blue": (await _line_choices(s["line"])).get(s["group"])}
+    s = await shop()
+    choose_blue = LineConfigurationIn(choices={s["group"]: s["options"]["blue"]})
+    r = await pair(
+        lambda db: product_routes.delete_variant_option(s["product"], s["group"], s["options"]["blue"], db, None),
+        lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None),
+    )
+    out["delete_then_choice"] = {**r, "dangling": await _dangling_choices()}
+    out["options"] = {"blue": s["options"]["blue"]}
+    return out
+
+
+async def _group_by_name(product_id: int, name: str) -> dict | None:
+    from backend.app.core.database import async_session
+    from backend.app.services import product_variants
+
+    async with async_session() as db:
+        for group in await product_variants.groups(db, product_id):
+            if group.name == name:
+                return {"id": group.id, "options": {o.name: o.id for o in group.options}}
+    return None
+
+
+async def _set_standard(group_id, option_id, product_routes, VariantGroupUpdate, product_id) -> None:  # noqa: N803
+    from backend.app.core.database import async_session
+
+    async with async_session() as db:
+        await product_routes.update_variant_group(
+            product_id, group_id, VariantGroupUpdate(default_option_id=option_id), db, None
+        )
+        await db.commit()
+
+
+async def _line_kit(line_id: int) -> list[tuple[int, int]]:
+    from backend.app.core.database import async_session
+    from backend.app.models.product import ProductPart
+    from backend.app.models.project_line import ProjectLine
+    from backend.app.services.line_composition import line_composition, load_line_configs
+    from backend.app.services.line_config import _defaults, load_products
+
+    async with async_session() as db:
+        line = await db.get(ProjectLine, line_id)
+        product = (await load_products(db, [line.product_id]))[line.product_id]
+        cfg = (await load_line_configs(db, [line_id]))[line_id]
+        parts = list(await db.scalars(select(ProductPart).where(ProductPart.product_id == line.product_id)))
+        return sorted((part.id, per) for part, per in line_composition(parts, line.mode, cfg, _defaults(product)))
+
+
+async def _dangling_choices() -> int:
+    from backend.app.core.database import async_session
+
+    async with async_session() as db:
+        return int(
+            await db.scalar(
+                text(
+                    "SELECT count(*) FROM project_line_choices c "
+                    "WHERE NOT EXISTS (SELECT 1 FROM product_variant_options o WHERE o.id = c.option_id)"
+                )
+            )
+            or 0
+        )
+
+
+# ---------- g, h · R11 — every class of every footprint, held by another session ----------
+
+
+async def _hold_rows(sql: str, params: dict):
+    """A session holding the rows ``sql`` selects FOR UPDATE; returns (session, rollback)."""
+    from backend.app.core.database import async_session
+
+    session = async_session()
+    await session.execute(text(sql + " FOR UPDATE"), params)
+    return session
+
+
+async def _busy_case(holder_sql: str, params: dict, door) -> dict:
+    from backend.app.core.database import async_session
+
+    holder = await _hold_rows(holder_sql, params)
+    try:
+        started = time.monotonic()
+        async with async_session() as db:
+            outcome = await asyncio.wait_for(_runner()._outcome(db, lambda: door(db)), timeout=10)
+        elapsed = time.monotonic() - started
+    finally:
+        await holder.rollback()
+        await holder.close()
+    return {"outcome": outcome, "seconds": round(elapsed, 2)}
+
+
+async def _busy_with_session(prepare, door) -> dict:
+    """The holder is a real door run without committing (``prepare(session)``)."""
+    from backend.app.core.database import async_session
+
+    holder = async_session()
+    try:
+        await prepare(holder)
+        started = time.monotonic()
+        async with async_session() as db:
+            outcome = await asyncio.wait_for(_runner()._outcome(db, lambda: door(db)), timeout=10)
+        elapsed = time.monotonic() - started
+    finally:
+        await holder.rollback()
+        await holder.close()
+    return {"outcome": outcome, "seconds": round(elapsed, 2)}
+
+
+async def scenario_g() -> dict:
+    from backend.app.api.routes import products as product_routes
+    from backend.app.core.database import async_session
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.customer import Customer
+    from backend.app.models.line_config import ProjectLinePartCount
+    from backend.app.models.product import Product, ProductPart
+    from backend.app.models.project_line import ProjectLine, ProjectLinePartStock, ProjectProcurement
+    from backend.app.schemas.product import ProductPartMerge, ProductPartUpdate, VariantGroupCreate
+    from backend.app.services import finished_stock, part_stock
+
+    out: dict[str, dict] = {}
+    s = await shop()
+    async with async_session() as db:
+        # A position with a changed count of «base»; a parts-mode line counting «base»;
+        # a procurement row; a parts-line counter; ledger rows tied to an archive and a customer.
+        item = await finished_stock.item_for(db, s["product"], {}, {s["base"]: 2}, create=True)
+        await finished_stock.receive(db, item, 1)
+        parts_line = ProjectLine(project_id=s["order"], product_id=s["product"], quantity=1, mode="parts", sort_order=1)
+        db.add(parts_line)
+        await db.flush()
+        db.add(ProjectLinePartCount(line_id=parts_line.id, part_id=s["base"], qty=1))
+        db.add(ProjectLinePartStock(line_id=parts_line.id, part_id=s["base"]))
+        db.add(ProjectProcurement(project_id=s["order"], product_part_id=s["base"], quantity_acquired=1))
+        archive = PrintArchive(filename="a.3mf", file_path="", file_size=0, status="completed")
+        db.add(archive)
+        await db.flush()
+        await part_stock.move(db, part_id=s["base"], delta=1, reason="unfiled_print", archive_id=archive.id)
+        buyer = await db.get(Customer, s["customer"])
+        await finished_stock.issue(db, item, 1, customer_id=buyer.id)
+        await db.commit()
+        ids = {"item": item.id, "parts_line": parts_line.id, "archive": archive.id, "customer": buyer.id}
+
+    add_group = lambda db: product_routes.create_variant_group(  # noqa: E731
+        s["product"], VariantGroupCreate(name="Size", options=["S", "L"]), db, None
+    )
+    rebind = lambda db: product_routes.update_part(  # noqa: E731
+        s["product"], s["shade"], ProductPartUpdate(variant_option_id=s["options"]["blue"]), db, None
+    )
+    delete_base = lambda db: product_routes.delete_part(s["product"], s["base"], db, None)  # noqa: E731
+    merge_base_into_shade = lambda db: product_routes.merge_part(  # noqa: E731
+        s["product"], s["shade"], ProductPartMerge(source_part_id=s["base"]), db, None
+    )
+
+    for door_name, door in (("add_group", add_group), ("rebind", rebind)):
+        out[f"{door_name}/stock_items"] = await _busy_case(
+            "SELECT id FROM stock_items WHERE id = :id", {"id": ids["item"]}, door
+        )
+        out[f"{door_name}/project_lines"] = await _busy_case(
+            "SELECT id FROM project_lines WHERE id = :id", {"id": s["line"]}, door
+        )
+        out[f"{door_name}/product_parts"] = await _busy_case(
+            "SELECT id FROM product_parts WHERE id = :id", {"id": s["base"]}, door
+        )
+    for door_name, door in (("delete_part", delete_base), ("merge/source", merge_base_into_shade)):
+        out[f"{door_name}/stock_items"] = await _busy_case(
+            "SELECT id FROM stock_items WHERE id = :id", {"id": ids["item"]}, door
+        )
+        out[f"{door_name}/parts_line"] = await _busy_case(
+            "SELECT id FROM project_lines WHERE id = :id", {"id": ids["parts_line"]}, door
+        )
+        out[f"{door_name}/product_parts"] = await _busy_case(
+            "SELECT id FROM product_parts WHERE id = :id", {"id": s["base"]}, door
+        )
+        out[f"{door_name}/procurement"] = await _busy_case(
+            "SELECT project_id FROM project_procurement WHERE product_part_id = :id", {"id": s["base"]}, door
+        )
+        out[f"{door_name}/parts_line_counter"] = await _busy_case(
+            "SELECT line_id FROM project_line_part_stock WHERE part_id = :id", {"id": s["base"]}, door
+        )
+
+        async def detach(db, archive_id=ids["archive"]):
+            await part_stock.detach_archive(db, archive_id)
+
+        out[f"{door_name}/ledger_by_detach_archive"] = await _busy_with_session(detach, door)
+    out["merge/target"] = await _busy_case(
+        "SELECT id FROM product_parts WHERE id = :id", {"id": s["shade"]}, merge_base_into_shade
+    )
+
+    # The product delete: a product of its own with every footprint class present.
+    async with async_session() as db:
+        doomed = Product(name="Doomed")
+        db.add(doomed)
+        await db.flush()
+        part = ProductPart(product_id=doomed.id, kind="printed", name="p", name_key="p", qty_per_unit=1)
+        db.add(part)
+        await db.flush()
+        await part_stock.move(db, part_id=part.id, delta=1, reason="manual", note="seed")
+        position = await finished_stock.item_for(db, doomed.id, {}, create=True)
+        await finished_stock.receive(db, position, 1)
+        await finished_stock.issue(db, position, 1, customer_id=ids["customer"])
+        await db.commit()
+        doomed_ids = {"product": doomed.id, "part": part.id, "position": position.id}
+    delete_doomed = lambda db: product_routes.delete_product(doomed_ids["product"], db, None)  # noqa: E731
+    out["delete_product/stock_items"] = await _busy_case(
+        "SELECT id FROM stock_items WHERE id = :id", {"id": doomed_ids["position"]}, delete_doomed
+    )
+    out["delete_product/product_parts"] = await _busy_case(
+        "SELECT id FROM product_parts WHERE id = :id", {"id": doomed_ids["part"]}, delete_doomed
+    )
+    out["delete_product/part_ledger"] = await _busy_case(
+        "SELECT id FROM product_part_stock_movements WHERE product_part_id = :id",
+        {"id": doomed_ids["part"]},
+        delete_doomed,
+    )
+
+    async def detach_customer(db, customer_id=ids["customer"]):
+        await finished_stock.detach_customer(db, customer_id)
+
+    out["delete_product/ledger_by_detach_customer"] = await _busy_with_session(detach_customer, delete_doomed)
+    out["delete_product/product_row_key_share"] = await _busy_case(
+        "SELECT id FROM products WHERE id = :id FOR KEY SHARE --", {"id": doomed_ids["product"]}, delete_doomed
+    )
+    # Nothing was written by any refused door.
+    out["after"] = {
+        "groups": len(await _groups_of(s["product"])),
+        "base_exists": await _count(ProductPart, ProductPart.id == s["base"]),
+        "doomed_exists": await _count(Product, Product.id == doomed_ids["product"]),
+    }
+    return out
+
+
+async def _groups_of(product_id: int) -> list:
+    from backend.app.core.database import async_session
+    from backend.app.services import product_variants
+
+    async with async_session() as db:
+        return await product_variants.groups(db, product_id)
+
+
+# ---------- i · savepoints on PostgreSQL ----------
+
+
+async def scenario_i() -> dict:
+    from backend.app.api.routes import projects as project_routes
+    from backend.app.core.database import async_session, engine
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.part_stock import ProductPartStockMovement
+    from backend.app.models.product import Product, ProductOrigin, ProductPart
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+    from backend.app.services import finished_stock, line_config, part_stock
+    from backend.app.services.product_gate import product_gate
+    from backend.tests.integration.lock_barriers import SqlRecorder
+
+    s = await shop(group=False)
+    async with async_session() as db:
+        item = await finished_stock.item_for(db, s["product"], {}, create=True)
+        await db.commit()
+        item_id = item.id
+
+    # (1) A lock taken only inside a rolled-back savepoint is released — and re-taken.
+    recorder = SqlRecorder(engine.sync_engine)
+    released = False
+    relocked = False
+    try:
+        async with async_session() as a:
+            await SqlRecorder.tag(a, "a")
+            await product_gate(a, [s["product"]])
+            try:
+                async with a.begin_nested():
+                    await finished_stock.lock_item(a, item_id)
+                    raise RuntimeError("the savepoint's work fails")
+            except RuntimeError:
+                pass
+            async with async_session() as b:
+                try:
+                    await b.execute(
+                        text("SELECT id FROM stock_items WHERE id = :id FOR UPDATE NOWAIT"), {"id": item_id}
+                    )
+                    released = True
+                finally:
+                    await b.rollback()
+            before = len(recorder.log.get("a", []))
+            await finished_stock.lock_item(a, item_id)
+            relocked = any(t == "stock_items" and k.startswith("LOCK") for k, t, _nw in recorder.log["a"][before:])
+            await SqlRecorder.untag(a)
+            await a.rollback()
+    finally:
+        recorder.close()
+
+    # (2) The real caller: deleting an order whose second credit fails inside its savepoint.
+    async with async_session() as db:
+        oneoff = Product(name="Credit one-off", origin=ProductOrigin.ADHOC_PLATE.value)
+        db.add(oneoff)
+        await db.flush()
+        part = ProductPart(product_id=oneoff.id, kind="printed", name="q", name_key="q", qty_per_unit=1)
+        db.add(part)
+        order = Project(name="Credit order", status="active")
+        db.add(order)
+        await db.flush()
+        line = ProjectLine(project_id=order.id, product_id=oneoff.id, quantity=1, mode="product", sort_order=0)
+        db.add(line)
+        await db.flush()
+        await line_config.seed_line(db, line, choices=None, counts=None)
+        first = PrintArchive(filename="1.3mf", file_path="", file_size=0, status="completed", project_id=order.id)
+        second = PrintArchive(filename="2.3mf", file_path="", file_size=0, status="completed", project_id=order.id)
+        db.add_all([first, second])
+        await db.commit()
+        ids = {"order": order.id, "product": oneoff.id, "part": part.id, "first": first.id, "second": second.id}
+
+    real_credit = part_stock.credit_unfiled_print
+
+    async def credit(db, archive, *, created_by=None, note=None):
+        # A real movement inside the savepoint — on a catalogue part, which outlives the
+        # one-off product the cascade deletes; the second one then fails at the DATABASE.
+        await part_stock.move(db, part_id=s["shade"], delta=1, reason="manual", archive_id=archive.id, note=note)
+        if archive.id == ids["second"]:
+            await db.execute(text("SELECT * FROM no_such_table_ws13"))
+        return []
+
+    part_stock.credit_unfiled_print = credit
+    recorder = SqlRecorder(engine.sync_engine)
+    try:
+        async with async_session() as db:
+            await SqlRecorder.tag(db, "d")
+            outcome = await _runner()._outcome(
+                db, lambda: project_routes.delete_project(ids["order"], _req(), db, None)
+            )
+            gate_statements = [
+                i for i, (k, t, nw) in enumerate(recorder.log["d"]) if t == "products" and k == "LOCK NO KEY UPDATE"
+            ]
+    finally:
+        part_stock.credit_unfiled_print = real_credit
+        recorder.close()
+    return {
+        "released_inside_savepoint": released,
+        "relocked_after_restore": relocked,
+        "delete": outcome,
+        "gate_statements": len(gate_statements),
+        "product_left": await _count(Product, Product.id == ids["product"]),
+        "first_credit": await _count(ProductPartStockMovement, ProductPartStockMovement.archive_id == ids["first"]),
+        "second_credit": await _count(ProductPartStockMovement, ProductPartStockMovement.archive_id == ids["second"]),
+    }
+
+
+SCENARIOS = {
+    "a": scenario_a,
+    "b": scenario_b,
+    "c": scenario_c,
+    "d": scenario_d,
+    "e": scenario_e,
+    "f": lambda: scenario_f("duel" if _dialect() == "postgresql" else "serial"),
+    "g": scenario_g,
+    "i": scenario_i,
+}
+
+
+# ---------- T2 — the atomic variants draft under two sessions ----------
+
+
+async def _revision_and_draft(product_id: int) -> tuple[str, list]:
+    from backend.app.core.database import async_session
+    from backend.app.services import product_variants
+
+    async with async_session() as db:
+        state = await product_variants.groups(db, product_id)
+        draft = [
+            {
+                "id": g.id,
+                "name": g.name,
+                "options": [{"id": o.id, "name": o.name} for o in sorted(g.options, key=lambda o: (o.position, o.id))],
+                "default": g.default_option_id,
+            }
+            for g in state
+        ]
+        return product_variants.revision(state), draft
+
+
+def _apply_door(product_id: int, revision: str, draft: list):
+    from backend.app.api.routes import products as product_routes
+    from backend.app.schemas.product import VariantsApplyIn
+
+    body = VariantsApplyIn(revision=revision, groups=draft)
+    return lambda db: product_routes.apply_variants(product_id, body, db, None)
+
+
+def _with_size(draft: list) -> list:
+    return [
+        *draft,
+        {
+            "temp_id": "size",
+            "name": "Size",
+            "options": [{"temp_id": "s", "name": "S"}, {"temp_id": "l", "name": "L"}],
+            "default": "s",
+        },
+    ]
+
+
+async def scenario_t2() -> dict:
+    from backend.app.api.routes import projects as project_routes
+    from backend.app.schemas.project import FulfilmentIn, FulfilmentLineIn, LineConfigurationIn
+
+    out: dict[str, dict] = {}
+
+    # Two applies with the same revision — exactly one wins.
+    s = await shop()
+    revision, draft = await _revision_and_draft(s["product"])
+    mine = [dict(draft[0], name="Hue")]
+    theirs = [dict(draft[0], name="Tint")]
+    out["apply_vs_apply"] = await duel(
+        _apply_door(s["product"], revision, mine), _apply_door(s["product"], revision, theirs), a_on="product_gate"
+    )
+
+    # A single route first, then an apply opened before it.
+    s = await shop()
+    revision, draft = await _revision_and_draft(s["product"])
+    from backend.app.api.routes import products as product_routes
+    from backend.app.schemas.product import VariantOptionUpdate
+
+    out["route_vs_apply"] = await duel(
+        lambda db: product_routes.update_variant_option(
+            s["product"], s["group"], s["options"]["blue"], VariantOptionUpdate(name="navy"), db, None
+        ),
+        _apply_door(s["product"], revision, [dict(draft[0], name="Hue")]),
+        a_on="product_gate",
+    )
+
+    # An apply adding a group against the issue dialog creating the first position.
+    s = await shop(kits=2)
+    revision, draft = await _revision_and_draft(s["product"])
+    data = FulfilmentIn(lines=[FulfilmentLineIn(line_id=s["line"], assemble=1)])
+    result = await duel(
+        lambda db: project_routes.fulfil_order(s["order"], data, _req(), db, None),
+        _apply_door(s["product"], revision, _with_size(draft)),
+        a_on="lock_line",
+    )
+    out["apply_group_vs_first_position"] = {**result, "line_groups": len(await _line_choices(s["line"]))}
+
+    # An apply adding a group against a configuration change of a line.
+    s = await shop()
+    revision, draft = await _revision_and_draft(s["product"])
+    choose_blue = LineConfigurationIn(choices={s["group"]: s["options"]["blue"]})
+    result = await duel(
+        lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None),
+        _apply_door(s["product"], revision, _with_size(draft)),
+        a_on="product_gate",
+    )
+    choices = await _line_choices(s["line"])
+    out["apply_group_vs_configuration"] = {
+        **result,
+        "line_groups": len(choices),
+        "kept_blue": choices.get(s["group"]) == s["options"]["blue"],
+        "key_ok": await _line_key_matches(s["line"]),
+    }
+    return out
+
+
+SCENARIOS["t2"] = scenario_t2

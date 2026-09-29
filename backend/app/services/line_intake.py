@@ -32,6 +32,7 @@ from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
 from backend.app.schemas.project import BatchPartsLineIn, BatchPlateLineIn, BatchProductLineIn, BatchStockIn
 from backend.app.services import finished_stock, line_config, order_from_files, order_journal, part_stock, stock_pick
+from backend.app.services.product_gate import product_gate
 
 
 class LineIntakeError(Exception):
@@ -58,24 +59,41 @@ _PLATE_ERRORS: dict[type, tuple[str, int]] = {
 }
 
 
-async def _new_line(
-    db: AsyncSession, spec, sort_order: int, visible: Callable[[LibraryFile], bool] | None
-) -> ProjectLine:
+async def _products_of(db: AsyncSession, specs: Sequence, visible: Callable[[LibraryFile], bool] | None) -> list[int]:
+    """Phase 1 (WS-13 E1 BL3 / BL8 б): the product of every spec, in order. A named
+    product must exist (read only); a plate's one-off product is made here — every
+    file locked, ascending, before the first product is inserted, and all of it
+    before the batch takes its gates."""
+    product_ids: list[int | None] = []
+    plates: list[tuple[int, tuple]] = []
+    for i, spec in enumerate(specs):
+        if isinstance(spec, BatchPlateLineIn):
+            try:
+                plates.append(
+                    (i, await order_from_files.plate_of(db, spec.library_file_id, spec.plate_index, visible=visible))
+                )
+            except order_from_files.OrderFromFilesError as e:
+                detail, status = _PLATE_ERRORS.get(type(e), ("Plate not found", 404))
+                raise LineIntakeError(detail, status) from e
+            product_ids.append(None)
+        else:
+            if await db.get(Product, spec.product_id) is None:
+                raise LineIntakeError("Product not found", 404)
+            product_ids.append(spec.product_id)
+    if plates:
+        made = await order_from_files.plate_products(db, [plate for _i, plate in plates])
+        for (i, _plate), product in zip(plates, made, strict=True):
+            product_ids[i] = product.id
+    return [pid for pid in product_ids if pid is not None]
+
+
+def _new_line(spec, product_id: int, sort_order: int) -> ProjectLine:
     common = {"material": spec.material, "color": spec.color, "note": spec.note, "sort_order": sort_order}
     if isinstance(spec, BatchPlateLineIn):
-        try:
-            product = await order_from_files.plate_product_for(
-                db, spec.library_file_id, spec.plate_index, visible=visible
-            )
-        except order_from_files.OrderFromFilesError as e:
-            detail, status = _PLATE_ERRORS.get(type(e), ("Plate not found", 404))
-            raise LineIntakeError(detail, status) from e
-        return ProjectLine(product_id=product.id, quantity=spec.copies, mode="product", **common)
-    if await db.get(Product, spec.product_id) is None:
-        raise LineIntakeError("Product not found", 404)
+        return ProjectLine(product_id=product_id, quantity=spec.copies, mode="product", **common)
     if isinstance(spec, BatchPartsLineIn):
-        return ProjectLine(product_id=spec.product_id, quantity=1, mode="parts", **common)
-    return ProjectLine(product_id=spec.product_id, quantity=spec.quantity, mode="product", **common)
+        return ProjectLine(product_id=product_id, quantity=1, mode="parts", **common)
+    return ProjectLine(product_id=product_id, quantity=spec.quantity, mode="product", **common)
 
 
 async def _asked(db: AsyncSession, line: ProjectLine, spec) -> tuple[int, int]:
@@ -102,9 +120,14 @@ async def add_lines(
     gate for plate lines — a file it rejects is the same 404 as a missing one."""
     active = project.status == "active"
     sort_order = max((ln.sort_order for ln in project.lines), default=-1) + 1
+    # Phase 1 — the products (one-off plate products made here); phase 2 — the gates
+    # of all of them, ascending, before any line is inserted or configured (WS-13 E1
+    # BL3); phase 3 — the lines, their configurations, stock and journal.
+    product_ids = await _products_of(db, specs, visible)
+    await product_gate(db, product_ids)
     out: list[Intake] = []
-    for spec in specs:
-        line = await _new_line(db, spec, sort_order, visible)
+    for spec, product_id in zip(specs, product_ids, strict=True):
+        line = _new_line(spec, product_id, sort_order)
         sort_order += 1
         project.lines.append(line)
         # Flushed first so the configuration, the movements and the journal have an id to name.

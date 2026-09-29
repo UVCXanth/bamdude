@@ -26,6 +26,8 @@ Modes:
     line_set_changed   a line's positions change between the door reading them and
                        locking the line: the door refuses (WS-13 E1, BL6)
     order_delete_busy  deleting an order another door is writing to refuses at once
+    protocol:<a…i>     the lock protocol's scenarios under two real sessions
+                       (lock_protocol_scenarios.py; WS-13 E1 T1)
 
 Usage: python -m backend.tests.integration.postgres_scenario_runner <mode>
 """
@@ -1036,6 +1038,10 @@ async def _main(mode: str) -> dict:
         return await _archive_attach_recovery()
     if mode == "line_door_deadlock":
         return await _line_door_deadlock()
+    if mode.startswith("protocol:"):
+        from backend.tests.integration.lock_protocol_scenarios import SCENARIOS
+
+        return await SCENARIOS[mode.split(":", 1)[1]]()
     if mode == "line_set_changed":
         return await _line_set_changed()
     if mode == "order_delete_busy":

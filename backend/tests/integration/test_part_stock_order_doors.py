@@ -73,6 +73,8 @@ async def _held_by_ledger(db, line, part):
 async def test_assembling_reserved_kits_turns_the_reservation_into_a_write_off(db_session, shop):
     line = await _line(db_session, shop)
     assert await part_stock.reserve_for_line(db_session, line, 3) == 3
+    # A separate request, as in the app: the setup's locks are not the door's (WS-13 E1 BL2).
+    await db_session.commit()
     position = await finished_stock.item_for(db_session, shop["pipe"].id, {}, create=True)
     free_before = await _free(db_session, shop["flask"])
     await part_stock.convert_reserved_kits(db_session, line, 2, stock_item_id=position.id, created_by=None)

@@ -8,7 +8,10 @@ touching each table gives the order the door took them in. The PostgreSQL scenar
 check the same doors against a real second session; this file checks every door
 cheaply, on every run.
 
-BL8 (в): the doors without product gates (BL6).
+BL8 (в): the doors without product gates (BL6). BL8 (а): a gated door's first write
+or lock is its gate (SQLite: the gate's no-op ``UPDATE products``). BL8 (б): the one-off
+plate preparation — the only statements allowed before the gates. BL8 (г): a re-entry
+sends no ``products`` statement.
 """
 
 import pytest
@@ -38,7 +41,7 @@ LOCK_CLASS = {
     "stock_items": 4,
     "project_lines": 5,
     "product_parts": 6,
-    "project_procurements": 7,
+    "project_procurement": 7,
 }
 
 
@@ -57,6 +60,18 @@ def first_touches(log, *, exempt=()) -> list[str]:
         if table not in order:
             order.append(table)
     return order
+
+
+def assert_gate_first(log) -> None:
+    """BL8 (а): nothing is written or locked before the gate, and a re-entry (BL8 г)
+    sends no ``products`` statement after the first lock of another class."""
+    assert log, "the door sent nothing"
+    assert log[0] == ("UPDATE", "products", False), f"the gate is not the first write or lock: {log[:6]}"
+    later = [i for i, (_kind, table, _nw) in enumerate(log) if table != "products"]
+    first_other = later[0] if later else len(log)
+    assert all(table != "products" or kind != "UPDATE" for kind, table, _nw in log[first_other:]), (
+        f"a gate statement after other locks: {log}"
+    )
 
 
 def assert_class_order(log, *, exempt=()) -> None:
@@ -151,7 +166,8 @@ async def test_an_issue_locks_the_order_row_before_positions_and_lines(db_sessio
     order, line = await _order(db_session)
     data = FulfilmentIn(lines=[FulfilmentLineIn(line_id=line.id, issue=1)])
     log = await _record(db_session, lambda: routes.fulfil_order(order.id, data, _request(), db_session, None))
-    assert first_touches(log)[:1] == ["projects"]
+    assert_gate_first(log)
+    assert first_touches(log)[:2] == ["products", "projects"]
     assert_class_order(log)
 
 
@@ -160,7 +176,8 @@ async def test_a_write_off_locks_the_order_row_before_positions_and_lines(db_ses
     order, line = await _order(db_session)
     data = FulfilmentIn(lines=[FulfilmentLineIn(line_id=line.id, write_off=1)], write_off_note="Broken on the shelf")
     log = await _record(db_session, lambda: routes.fulfil_order(order.id, data, _request(), db_session, None))
-    assert first_touches(log)[:1] == ["projects"]
+    assert_gate_first(log)
+    assert first_touches(log)[:2] == ["products", "projects"]
     assert_class_order(log)
 
 
@@ -169,7 +186,8 @@ async def test_completing_through_the_issue_dialog_locks_the_order_row_first(db_
     order, line = await _order(db_session, quantity=3, reserved=3)
     data = FulfilmentIn(lines=[FulfilmentLineIn(line_id=line.id, issue=3)], complete=True)
     log = await _record(db_session, lambda: routes.fulfil_order(order.id, data, _request(), db_session, None))
-    assert first_touches(log)[:1] == ["projects"]
+    assert_gate_first(log)
+    assert first_touches(log)[:2] == ["products", "projects"]
     assert_class_order(log)
 
 
@@ -178,3 +196,187 @@ async def test_taking_stock_locks_positions_before_lines(db_session):
     order, _line = await _order(db_session)
     log = await _record(db_session, lambda: routes.take_stock(order.id, _request(), None, db_session, None))
     assert_class_order(log)
+
+
+# ---------- BL8 (а) — the gated doors of spec BL3 ----------
+
+
+@pytest.mark.asyncio
+async def test_creating_an_order_with_lines_takes_the_gates_before_inserting_it(db_session):
+    from backend.app.schemas.project import ProjectCreate, ProjectLineCreate
+
+    lamp = Product(name="Gate lamp")
+    db_session.add(lamp)
+    await db_session.commit()
+    data = ProjectCreate(name="Gate order", lines=[ProjectLineCreate(product_id=lamp.id, quantity=2)])
+    log = await _record(db_session, lambda: routes.create_project(data, db_session, None))
+    assert_gate_first(log)
+
+
+@pytest.mark.asyncio
+async def test_adding_a_line_takes_the_gate_before_inserting_it(db_session):
+    from backend.app.schemas.project import ProjectLineCreate
+
+    order, line = await _order(db_session)
+    log = await _record(
+        db_session,
+        lambda: routes.add_line(order.id, ProjectLineCreate(product_id=line.product_id, quantity=1), db_session, None),
+    )
+    assert_gate_first(log)
+    assert_class_order(log)
+
+
+@pytest.mark.asyncio
+async def test_copying_an_order_takes_the_gates_before_inserting_the_copy(db_session):
+    from backend.app.schemas.project import ProjectDuplicate
+
+    order, _line = await _order(db_session)
+    log = await _record(db_session, lambda: routes.duplicate_project(order.id, ProjectDuplicate(), db_session, None))
+    assert_gate_first(log)
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_line_takes_its_products_gate_first(db_session):
+    order, line = await _order(db_session)
+    log = await _record(db_session, lambda: routes.delete_line(order.id, line.id, _request(), db_session, None))
+    assert_gate_first(log)
+    assert_class_order(log)
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_order_takes_its_products_gates_first(db_session):
+    order, _line = await _order(db_session)
+    log = await _record(db_session, lambda: routes.delete_project(order.id, _request(), db_session, None))
+    assert_gate_first(log)
+    assert_class_order(log, exempt={("DELETE", "projects"), ("DELETE", "products")})
+
+
+@pytest.mark.asyncio
+async def test_closing_an_order_to_stock_takes_the_gates_before_the_order_row(db_session):
+    order, _line = await _order(db_session, quantity=3, reserved=3)
+    order.customer_id = None
+    await db_session.commit()
+    log = await _record(
+        db_session,
+        lambda: routes.update_project(order.id, ProjectUpdate(status="completed"), _request(), db_session, None),
+    )
+    assert_gate_first(log)
+    assert first_touches(log)[:2] == ["products", "projects"]
+    assert_class_order(log)
+
+
+@pytest.mark.asyncio
+async def test_a_receipt_that_creates_a_position_takes_the_gate_first(db_session):
+    from backend.app.api.routes import stock as stock_routes
+    from backend.app.schemas.finished_stock import StockMoveIn
+
+    lamp = Product(name="Receipt lamp")
+    db_session.add(lamp)
+    await db_session.commit()
+    data = StockMoveIn(kind="receipt", product_id=lamp.id, qty=2)
+    log = await _record(db_session, lambda: stock_routes.move_stock(data, _request(), db_session, None))
+    assert_gate_first(log)
+
+
+@pytest.mark.asyncio
+async def test_adding_a_variant_group_takes_the_gate_first(db_session):
+    from backend.app.api.routes import products as product_routes
+    from backend.app.schemas.product import VariantGroupCreate
+
+    _order_row, line = await _order(db_session)
+    data = VariantGroupCreate(name="Shade", options=["round", "square"])
+    log = await _record(
+        db_session, lambda: product_routes.create_variant_group(line.product_id, data, db_session, None)
+    )
+    assert_gate_first(log)
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_product_takes_the_gate_first(db_session):
+    from backend.app.api.routes import products as product_routes
+
+    lamp = Product(name="Doomed lamp")
+    db_session.add(lamp)
+    await db_session.commit()
+    log = await _record(db_session, lambda: product_routes.delete_product(lamp.id, db_session, None))
+    assert_gate_first(log)
+
+
+# ---------- BL8 (б) — the one-off plate preparation ----------
+
+_PLATE_FILE = {
+    "sliced_for_model": "P1S",
+    "plates": [
+        {
+            "index": 1,
+            "printable_objects": {"1": "flask", "2": "cap"},
+            "print_time_seconds": 3600,
+            "filaments": [{"slot_id": 1, "type": "PETG"}],
+        }
+    ],
+}
+# BL8 б: what may precede the gates — the file lock, the new products and the sync's writes.
+_PREP_TABLES = {"library_files", "products", "product_files", "product_plates", "product_facets", "product_parts"}
+
+
+async def _plate_file(db):
+    from backend.app.models.library import LibraryFile
+
+    f = LibraryFile(
+        filename="plate-job.gcode.3mf",
+        file_path="plate-job.gcode.3mf",
+        file_size=1,
+        file_type="3mf",
+        file_metadata=_PLATE_FILE,
+    )
+    db.add(f)
+    await db.commit()
+    return f
+
+
+@pytest.mark.asyncio
+async def test_an_order_from_a_plate_prepares_its_product_then_takes_the_gates(db_session):
+    from backend.app.schemas.order_from_files import PlateCopiesIn, PlatesOrderIn
+
+    f = await _plate_file(db_session)
+    data = PlatesOrderIn(kind="plates", library_file_id=f.id, plates=[PlateCopiesIn(plate_index=1, copies=2)])
+    log = await _record(db_session, lambda: routes.create_project_from_files(data, db_session, None))
+    first_order = next(i for i, (kind, table, _nw) in enumerate(log) if (kind, table) == ("INSERT", "projects"))
+    before = log[:first_order]
+    assert {table for _kind, table, _nw in before} <= _PREP_TABLES, before
+    assert ("UPDATE", "library_files", False) in before, "the file is locked before the product is made"
+    assert all(table != "library_files" for _kind, table, _nw in log[first_order:]), "no file lock after the gates"
+
+
+@pytest.mark.asyncio
+async def test_a_plate_product_seeds_its_own_parts_not_the_catalogue_products(db_session):
+    """Review round 5: the file already belongs to a catalogue product that lacks one of
+    the file's objects. Making the plate's one-off product links the file to both — and
+    must not seed the missing part into the catalogue product, whose gate it does not hold."""
+    from sqlalchemy import select
+
+    from backend.app.models.product import ProductPart
+    from backend.app.schemas.order_from_files import PlateCopiesIn, PlatesOrderIn
+    from backend.app.services.product_sync import sync_product_for_file
+
+    f = await _plate_file(db_session)
+    catalogue = Product(name="Catalogue flask")
+    db_session.add(catalogue)
+    await db_session.flush()
+    await sync_product_for_file(db_session, library_file_id=f.id, product_ids=[catalogue.id])
+    await db_session.flush()
+    cap = (
+        await db_session.execute(
+            select(ProductPart).where(ProductPart.product_id == catalogue.id, ProductPart.name_key == "cap")
+        )
+    ).scalar_one()
+    await db_session.delete(cap)
+    await db_session.commit()
+    before = set(await db_session.scalars(select(ProductPart.name_key).where(ProductPart.product_id == catalogue.id)))
+
+    data = PlatesOrderIn(kind="plates", library_file_id=f.id, plates=[PlateCopiesIn(plate_index=1, copies=1)])
+    await routes.create_project_from_files(data, db_session, None)
+    await db_session.commit()
+
+    after = set(await db_session.scalars(select(ProductPart.name_key).where(ProductPart.product_id == catalogue.id)))
+    assert after == before == {"flask"}, "the catalogue product got a part seeded behind its back"

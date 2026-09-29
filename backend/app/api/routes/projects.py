@@ -182,6 +182,7 @@ from backend.app.services.product_files import (
     IMAGE_CONTENT_TYPES,
     effective_cover,
 )
+from backend.app.services.product_gate import product_gate
 from backend.app.services.queue_batch import enqueue_batch_copies
 
 logger = logging.getLogger(__name__)
@@ -192,14 +193,16 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 # ---------- response building ----------
 
 
-async def _get_project(db: AsyncSession, project_id: int) -> Project:
-    project = (
-        await db.execute(
-            select(Project)
-            .options(selectinload(Project.lines), selectinload(Project.customer))
-            .where(Project.id == project_id)
-        )
-    ).scalar_one_or_none()
+async def _get_project(db: AsyncSession, project_id: int, *, fresh: bool = False) -> Project:
+    """``fresh`` — re-read behind a lock (WS-13 E1 BL2), not from the identity map."""
+    statement = (
+        select(Project)
+        .options(selectinload(Project.lines), selectinload(Project.customer))
+        .where(Project.id == project_id)
+    )
+    if fresh:
+        statement = statement.execution_options(populate_existing=True)
+    project = (await db.execute(statement)).scalar_one_or_none()
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
@@ -970,6 +973,9 @@ async def create_project(
         # Rule 10 of spec workshop-order-stage: an order without the field
         # belongs to whoever created it.
         responsible_id = current_user.id if current_user else None
+    # The gates of every product before the order is inserted (WS-13 E1 BL3); the
+    # intake below re-enters them.
+    await product_gate(db, [line.product_id for line in data.lines])
     project = Project(**data.model_dump(exclude={"lines", "responsible_id"}), responsible_id=responsible_id)
     # Set BEFORE the flush: on a pending row the collection starts empty without a
     # query, and the intake below appends to it — touching it after the flush would
@@ -1151,10 +1157,15 @@ async def update_project(
     current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     project = await _get_project(db, project_id)
+    if data.status == "completed" and project.status != "completed":
+        # Completing may create positions (closing to stock): the gates of the order's
+        # products come first, before the order row (WS-13 E1 BL3).
+        await product_gate(db, [line.product_id for line in project.lines])
     # The order row before anything is written or locked (WS-13 E1 BL0 / BL6): a cancel
     # or a completion goes on to the order's positions and lines, and the row taken
     # later — by the autoflushed UPDATE — would sit after them.
     await order_fulfilment.lock_order(db, project.id)
+    project = await _get_project(db, project_id, fresh=True)
     lines = list(project.lines)
     # Read BEFORE the fields are written: cancelling asks what the order was,
     # not what it is about to become (Ruling 25).
@@ -1250,7 +1261,8 @@ async def update_project(
         # again would be this route deciding, minutes or months later, that
         # this order still outranks whoever is holding them now. The operator
         # re-enters the number in the line dialog, which asks the shelf afresh.
-        await finished_stock.lock_positions_for_lines(db, [line.id for line in lines])
+        # Positions, lines, parts of every line before the first is released (WS-13 E1 BL0).
+        await finished_stock.lock_lines_with_parts(db, lines)
         for line in lines:
             await _release(db, line, part_stock.NOTE_ORDER_CANCELLED, await acting_user(request, db, current_user))
     return await _response(db, project.id)
@@ -1423,6 +1435,9 @@ async def delete_project(
 ):
     """Archives and queue rows survive, unlinked (SET NULL done explicitly — SQLite enforces nothing)."""
     project = await _get_project(db, project_id)
+    # The gates of its products first (WS-13 E1 BL3): the cascade below may delete a
+    # one-off product, which is a product writer.
+    await product_gate(db, [line.product_id for line in project.lines])
     # Its lines go with it, so they go through the same two steps a single
     # deleted line does (Ruling 10): the kits come back to the shelf, and the
     # history that named the line stops naming an id that will be reused.
@@ -1443,7 +1458,11 @@ async def delete_project(
     prints_are_free = still_owns_its_stock and not await order_fulfilment.moved_line_ids(db, list(project.lines))
     actor = await acting_user(request, db, current_user)
     if still_owns_its_stock:
-        await finished_stock.lock_positions_for_lines(db, [line.id for line in project.lines])
+        # Positions, lines, parts of every line before the first is released (WS-13 E1 BL0).
+        try:
+            await finished_stock.lock_lines_with_parts(db, project.lines)
+        except finished_stock.FinishedStockError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from e
     for line in list(project.lines):
         if still_owns_its_stock:
             await _release(db, line, part_stock.NOTE_PROJECT_DELETED, actor)
@@ -1589,8 +1608,9 @@ async def add_line(
     return await _response(db, project.id)
 
 
-async def _get_line(db: AsyncSession, project_id: int, line_id: int) -> ProjectLine:
-    line = await db.get(ProjectLine, line_id)
+async def _get_line(db: AsyncSession, project_id: int, line_id: int, *, fresh: bool = False) -> ProjectLine:
+    """``fresh`` — re-read behind a lock (WS-13 E1 BL2), not from the identity map."""
+    line = await db.get(ProjectLine, line_id, populate_existing=fresh)
     if line is None or line.project_id != project_id:
         raise HTTPException(status_code=404, detail="Order line not found")
     return line
@@ -1733,11 +1753,25 @@ async def configure_line(
     printed or queued, and the reservation before and after.
     """
     line = await _get_line(db, project_id, line_id)
+    # The product's gate before the configuration is read or written (WS-13 E1 BL3 / BL4):
+    # a variant group added meanwhile is then seen, not overwritten.
+    await product_gate(db, [line.product_id])
+    line = await _get_line(db, project_id, line_id, fresh=True)
     # A completed order answers with its own refusal (``line_config``); an active one
     # whose line has moved stock keeps the line's configuration (spec workshop-order-issue, rule 13).
     status = await db.scalar(select(Project.status).where(Project.id == project_id))
     if not data.dry_run and status != "completed" and await order_fulfilment.moved_line_ids(db, [line]):
         raise HTTPException(status_code=409, detail=_LINE_MOVED)
+    if not data.dry_run and line.mode == "product" and status != "completed":
+        # The positions of the old configuration AND the new one, then the line — before
+        # a byte of it is written (WS-13 E1 BL0): the reservation moves between them.
+        try:
+            key = await line_config.target_key(db, line, choices=data.choices, counts=data.part_counts)
+            await finished_stock.lock_line(db, line, also_keys=[key])
+        except line_config.LineConfigError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from e
+        except finished_stock.FinishedStockError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from e
     old_key = line.config_key
     finished_before = await finished_stock.held_for_line(db, line.id)
     try:
@@ -1801,6 +1835,8 @@ async def delete_line(
     current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     line = await _get_line(db, project_id, line_id)
+    # The gate of its product first (WS-13 E1 BL3): the cascade below may delete it.
+    await product_gate(db, [line.product_id])
     project = await _get_project(db, project_id)
     # Release BEFORE detaching, or the reservation becomes invisible to the
     # query that hands it back and the kits stay off the shelf for good.
@@ -2835,6 +2871,9 @@ async def duplicate_project(
 ):
     """A reorder: lines, customer, notes, attachments come across; history never does; status is active."""
     source = await _get_project(db, project_id)
+    # The gates of every product of the source before the copy is inserted (WS-13 E1
+    # BL3): the copied configurations are read behind them.
+    await product_gate(db, [line.product_id for line in source.lines])
     taken = set((await db.execute(select(Project.name))).scalars().all())
     copy = Project(
         name=data.name or _duplicate_name(source.name, taken),

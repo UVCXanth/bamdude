@@ -76,6 +76,8 @@ async def _acceptance_line(db, shop):
 
 
 async def _apply(db, shop, requests, *, complete=False, waybill=None):
+    # A separate request, as in the app: the setup's locks are not the door's (WS-13 E1 BL2).
+    await db.commit()
     return await order_fulfilment.apply(
         db,
         shop["order"],

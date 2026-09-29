@@ -24,6 +24,7 @@ from backend.app.models.finished_stock import StockItem
 from backend.app.models.product import Product, ProductOrigin, ProductPart
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.services import finished_stock, part_stock, product_facets, stock_issues
+from backend.app.services.product_gate import lock_product_delete, product_gate
 
 
 async def delete_product(db: AsyncSession, product: Product) -> None:
@@ -34,6 +35,11 @@ async def delete_product(db: AsyncSession, product: Product) -> None:
     SQLAlchemy emits its own secondary DELETEs at flush — a core DELETE racing
     them raises ``StaleDataError`` from the flush.
     """
+    # The gate (re-entrant for the route and the order cascades, which take it at
+    # their start) and everything that goes with the product, without waiting
+    # (WS-13 E1 BL3 / BL5): a held row is ProductBusy, never a wait.
+    await product_gate(db, [product.id])
+    await lock_product_delete(db, product.id)
     # Finished goods first: a product still holding stock is refused before anything goes.
     await finished_stock.delete_for_product(db, product.id)
     # A note's lines keep their text; only the link goes (spec workshop-dispatch-notes, rule 8).

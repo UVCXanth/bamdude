@@ -24,10 +24,14 @@ savepoint fires ``after_transaction_end``; a rolled-back one fires
 
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass, field
 
 from sqlalchemy import event
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 # spec BL0 — the classes a door waits on, in the only order it may take them.
 LIBRARY_FILE = 1
@@ -39,6 +43,19 @@ PART = 6
 PROCUREMENT = 7
 
 _KEY = "lock_ledger"
+
+#: Strict mode — the order monitor raises instead of logging (spec BL2). The test
+#: suite turns it on (``conftest``); the PostgreSQL scenario runner inherits it through
+#: the environment. The product gate's own preconditions do not depend on it.
+STRICT = os.environ.get("BAMDUDE_LOCK_ORDER_STRICT") == "1"
+
+_reported: set[tuple[str, int, int]] = set()
+
+
+class GateOrderError(RuntimeError):
+    """A programmer's error against the lock protocol (spec BL2): a door asked for a
+    lock the protocol forbids at that point. Never a domain refusal — the request
+    ends in a 500 and rolls back."""
 
 
 @dataclass
@@ -90,6 +107,27 @@ class LockLedger:
         self.created_rows.add((table, row_id))
 
 
+def before_lock(db, table: str, row_id: int, lock_class: int) -> bool:
+    """The diagnostic monitor of the lock helpers (spec BL2): called BEFORE a lock is
+    taken with waiting. Returns False when this transaction already holds the row (a
+    re-lock never waits and is not checked). A NEW row of a class lower than one
+    already taken is a violation: strict mode raises :class:`GateOrderError`, a
+    working process logs it once per (table, class, class) and carries on — an old
+    door with an unknown order must not stop production (review round 5)."""
+    held = ledger(db)
+    if held.holds(table, row_id) or (table, row_id) in held.created_rows:
+        return False
+    if lock_class < held.lock_class:
+        message = f"lock order: {table} #{row_id} (class {lock_class}) taken with waiting after a class-{held.lock_class} lock"
+        if STRICT:
+            raise GateOrderError(message)
+        key = (table, lock_class, held.lock_class)
+        if key not in _reported:
+            _reported.add(key)
+            logger.error(message)
+    return True
+
+
 def ledger(db) -> LockLedger:
     """The ledger of ``db``'s current transaction — an ``AsyncSession`` or a ``Session``."""
     info = db.info
@@ -97,6 +135,24 @@ def ledger(db) -> LockLedger:
     if found is None:
         found = info[_KEY] = LockLedger()
     return found
+
+
+# The tables whose rows the protocol locks — a row of one of them INSERTed by this
+# transaction is invisible to every other, so its lock can take part in no cycle.
+_TRACKED = {"library_files", "products", "projects", "stock_items", "project_lines", "product_parts"}
+
+
+@event.listens_for(Session, "after_flush")
+def _rows_created(session, _flush_context) -> None:
+    """Record the rows this flush INSERTed. ``session.new`` still lists them here —
+    SQLAlchemy resets it after this event — and their keys are already assigned."""
+    for obj in session.new:
+        table = getattr(obj, "__tablename__", None)
+        if table not in _TRACKED:
+            continue
+        row_id = getattr(obj, "id", None)
+        if isinstance(row_id, int):
+            ledger(session).note_created(table, row_id)
 
 
 @event.listens_for(Session, "after_transaction_create")

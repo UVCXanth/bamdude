@@ -24,7 +24,7 @@ from sqlalchemy import and_, delete, func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import take_write_lock
-from backend.app.core.lock_ledger import LINE, POSITION, ledger
+from backend.app.core.lock_ledger import LINE, POSITION, before_lock, ledger
 from backend.app.models.finished_stock import MOVEMENT_KINDS, StockItem, StockItemMovement
 from backend.app.models.product import Product, ProductOrigin, ProductPart
 from backend.app.models.project_line import ProjectLine
@@ -38,6 +38,7 @@ from backend.app.services.line_composition import (
     counted,
     load_line_configs,
 )
+from backend.app.services.product_gate import product_gate
 
 # spec WS-13 E1 BL6: a line's positions changed between reading them and locking the line.
 STOCK_CHANGED = "The order's stock changed while this was being saved — try again"
@@ -61,6 +62,7 @@ async def lock_item(db: AsyncSession, item_id: int) -> StockItem | None:
     """The position row, locked and read fresh — on SQLite after taking the write
     lock (``take_write_lock``), which is what its dialect's missing ``FOR UPDATE``
     leaves to us."""
+    before_lock(db, "stock_items", item_id, POSITION)  # the order monitor (WS-13 E1 BL2)
     await take_write_lock(db, StockItem.__table__, item_id)
     item = (await db.execute(lock_item_stmt(item_id))).scalar_one_or_none()
     ledger(db).note("stock_items", item_id, POSITION)
@@ -101,8 +103,10 @@ async def item_for(
     # The creation is serialised on the PRODUCT row instead, and the key looked up
     # again under that lock: the second one finds the position the first created.
     # (Not a savepoint: RELEASE of the outermost SAVEPOINT is a COMMIT on SQLite.)
-    await take_write_lock(db, Product.__table__, product_id)
-    await db.execute(select(Product.id).where(Product.id == product_id).with_for_update())
+    # The product gate (WS-13 E1 BL1): a re-entry in every door that took it at its
+    # start — the issue dialog, the stock page — and a GateOrderError in one that
+    # did not, instead of a product lock taken after positions and lines.
+    await product_gate(db, [product_id])
     item = await _find_item(db, product_id, key)
     if item is not None:
         return item
@@ -309,7 +313,7 @@ async def held_by_item(db: AsyncSession, line_id: int) -> dict[int, int]:
     return {item_id: int(n) for item_id, n in rows.all() if n}
 
 
-async def lock_line(db: AsyncSession, line: ProjectLine) -> None:
+async def lock_line(db: AsyncSession, line: ProjectLine, *, also_keys: Iterable[str] = ()) -> None:
     """The line row, locked and read fresh before any door reads what it holds
     (final review M3): two transactions releasing one line — two PATCHes, a
     cancel beside a delete — would both read the same holding and hand it back
@@ -327,13 +331,15 @@ async def lock_line(db: AsyncSession, line: ProjectLine) -> None:
     appears after a line lock was taken cannot be locked in order any more; it is
     the operator's retry (409), never a late lock."""
     held = ledger(db)
+    also_keys = tuple(also_keys)
     with db.no_autoflush:
-        new = await _line_position_ids(db, line) - held.held("stock_items")
+        new = await _line_position_ids(db, line, also_keys) - held.held("stock_items")
         if new and held.held_existing("project_lines"):
             raise FinishedStockError(STOCK_CHANGED, 409)
         for item_id in sorted(new):
             await lock_item(db, item_id)
     await db.flush()
+    before_lock(db, "project_lines", line.id, LINE)  # the order monitor (WS-13 E1 BL2)
     await take_write_lock(db, ProjectLine.__table__, line.id)
     await db.execute(
         select(ProjectLine).where(ProjectLine.id == line.id).with_for_update().execution_options(populate_existing=True)
@@ -350,11 +356,12 @@ async def lock_line(db: AsyncSession, line: ProjectLine) -> None:
             await lock_item(db, item_id)
 
 
-async def _line_position_ids(db: AsyncSession, line: ProjectLine) -> set[int]:
+async def _line_position_ids(db: AsyncSession, line: ProjectLine, also_keys: Iterable[str] = ()) -> set[int]:
     """The positions ``line`` holds a reservation in, and its own configuration's —
     the configuration read off the object, not the row: a door may have changed it
     in this transaction without flushing yet (``line_config`` writes ``config_key``
-    as an attribute)."""
+    as an attribute). ``also_keys`` — configurations the door is about to move the
+    line to, whose positions it must hold before the line."""
     held = set(
         (
             await db.execute(
@@ -365,10 +372,13 @@ async def _line_position_ids(db: AsyncSession, line: ProjectLine) -> set[int]:
             )
         ).scalars()
     )
-    own = await db.scalar(
-        select(StockItem.id).where(StockItem.product_id == line.product_id, StockItem.config_key == line.config_key)
+    keys = {line.config_key, *also_keys}
+    own = set(
+        await db.scalars(
+            select(StockItem.id).where(StockItem.product_id == line.product_id, StockItem.config_key.in_(keys))
+        )
     )
-    return held | ({own} if own is not None else set())
+    return held | own
 
 
 async def _position_ids_for_lines(db: AsyncSession, line_ids: Iterable[int]) -> set[int]:
@@ -419,6 +429,23 @@ async def lock_positions_for_lines(db: AsyncSession, line_ids: Iterable[int]) ->
             raise FinishedStockError(STOCK_CHANGED, 409)
         for item_id in sorted(new):
             await lock_item(db, item_id)
+
+
+async def lock_lines_with_parts(db: AsyncSession, lines: Iterable[ProjectLine]) -> None:
+    """Every lock a door over SEVERAL lines of an order will wait on, in class order
+    (WS-13 E1 BL0): the positions of all the lines, ascending; then the lines,
+    ascending; then every part of their products, ascending. The per-line work that
+    follows re-takes them without waiting. Handled line by line instead, the second
+    line was locked after the first line's parts — a lower class after a higher one,
+    which the lock-order monitor catches."""
+    ordered = sorted(lines, key=lambda line: line.id)
+    await lock_positions_for_lines(db, [line.id for line in ordered])
+    for line in ordered:
+        await lock_line(db, line)
+    product_ids = {line.product_id for line in ordered}
+    if product_ids:
+        parts = (await db.execute(select(ProductPart).where(ProductPart.product_id.in_(product_ids)))).scalars().all()
+        await part_stock.lock_parts(db, parts)
 
 
 async def release_for_line(db: AsyncSession, line: ProjectLine, *, actor: User | None = None) -> int:

@@ -8,7 +8,7 @@ translates.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import reduce
 from math import gcd
@@ -19,12 +19,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.core.database import take_write_lock
+from backend.app.core.lock_ledger import LIBRARY_FILE, ledger
 from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate, product_files
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import line_config
 from backend.app.services.product_composition import estimate_seconds, plate_key_counts, recipe_for
+from backend.app.services.product_gate import product_gate
 from backend.app.services.product_sync import is_plan_eligible, sync_product_for_file, wanted_plate_indices
 
 
@@ -201,17 +203,30 @@ async def _linked_product_ids(db: AsyncSession, library_file_id: int) -> set[int
     )
 
 
-async def _link(db: AsyncSession, library_file_id: int, product_id: int) -> None:
+async def _link(db: AsyncSession, library_file_id: int, product_id: int, *, seed_only_new: bool = False) -> None:
     """Add the file to the product through the one door, as a UNION with the
-    products it already belongs to (inv-product-links-single-writer)."""
+    products it already belongs to (inv-product-links-single-writer).
+
+    ``seed_only_new`` — the product was created a moment ago, before its gate
+    (WS-13 E1 BL8 б): the sync seeds parts for it alone, not for the other products
+    the file already belongs to, whose gates this transaction does not hold."""
     desired = await _linked_product_ids(db, library_file_id) | {product_id}
-    await sync_product_for_file(db, library_file_id=library_file_id, product_ids=sorted(desired))
+    await sync_product_for_file(
+        db,
+        library_file_id=library_file_id,
+        product_ids=sorted(desired),
+        seed_parts_for={product_id} if seed_only_new else None,
+    )
 
 
 async def _new_order(db: AsyncSession, *, name: str, lines: list[tuple[int, int]]) -> Project:
     """An active order with ``(product_id, quantity)`` lines. Lines are appended
     BEFORE the flush, like ``routes/projects.py::create_project`` does — the
-    cascade fills ``project_id`` and no lazy load is ever touched."""
+    cascade fills ``project_id`` and no lazy load is ever touched.
+
+    The gates of every product come first (WS-13 E1 BL3): before the order and its
+    lines are inserted and their configurations read."""
+    await product_gate(db, [product_id for product_id, _quantity in lines])
     project = Project(name=name, status="active", priority="normal")
     rows = [
         ProjectLine(product_id=product_id, quantity=quantity, sort_order=i)
@@ -307,8 +322,9 @@ async def _plate_product(db: AsyncSession, library_file_id: int, plate_index: in
     ).scalar_one_or_none()
 
 
-async def find_or_create_plate_product(db: AsyncSession, *, file: LibraryFile, plate_index: int, stem: str) -> Product:
-    """The ``adhoc_plate`` product for (file, plate), created on first use.
+async def plate_products(db: AsyncSession, wanted: Sequence[tuple[LibraryFile, int]]) -> list[Product]:
+    """The ``adhoc_plate`` products of these ``(file, normalised plate)`` pairs, in
+    order, each created on first use.
 
     Two dialogs can race to create the same one. The creation is serialised on
     the FILE row — SQLite's write lock taken before the second look
@@ -316,25 +332,47 @@ async def find_or_create_plate_product(db: AsyncSession, *, file: LibraryFile, p
     the winner's row on that look; the partial unique index stays as the
     backstop. ⚠️ Not a SAVEPOINT: on SQLite the RELEASE of the outermost one is
     a COMMIT, and this is often a request's first write (WS-09 review).
+
+    Every file that needs a creation is locked, ascending, before the FIRST product
+    is inserted, and never after a product gate (WS-13 E1 BL0 class 1, BL8 б) —
+    this is the one-off preparation that runs before the batch takes its gates.
     """
-    existing = await _plate_product(db, file.id, plate_index)
-    if existing is not None:
-        return existing
-    await take_write_lock(db, LibraryFile.__table__, file.id)
-    await db.execute(select(LibraryFile.id).where(LibraryFile.id == file.id).with_for_update())
-    existing = await _plate_product(db, file.id, plate_index)
-    if existing is not None:
-        return existing
-    product = Product(
-        name=stem if plate_index == 0 else f"{stem} · plate {plate_index}",
-        origin=ProductOrigin.ADHOC_PLATE.value,
-        origin_file_id=file.id,
-        origin_plate_index=plate_index,
-    )
-    db.add(product)
-    await db.flush()
-    await _link(db, file.id, product.id)
-    return product
+    found: dict[tuple[int, int], Product] = {}
+    missing: list[tuple[LibraryFile, int]] = []
+    for file, plate_index in wanted:
+        existing = await _plate_product(db, file.id, plate_index)
+        if existing is not None:
+            found[(file.id, plate_index)] = existing
+        else:
+            missing.append((file, plate_index))
+    held = ledger(db)
+    for file_id in sorted({file.id for file, _ in missing}):
+        await take_write_lock(db, LibraryFile.__table__, file_id)
+        await db.execute(select(LibraryFile.id).where(LibraryFile.id == file_id).with_for_update())
+        held.note("library_files", file_id, LIBRARY_FILE)
+    for file, plate_index in missing:
+        key = (file.id, plate_index)
+        if key in found:
+            continue  # the same plate twice in one batch
+        existing = await _plate_product(db, file.id, plate_index)
+        if existing is None:
+            stem = file_stem(file.filename)
+            existing = Product(
+                name=stem if plate_index == 0 else f"{stem} · plate {plate_index}",
+                origin=ProductOrigin.ADHOC_PLATE.value,
+                origin_file_id=file.id,
+                origin_plate_index=plate_index,
+            )
+            db.add(existing)
+            await db.flush()
+            await _link(db, file.id, existing.id, seed_only_new=True)
+        found[key] = existing
+    return [found[(file.id, plate_index)] for file, plate_index in wanted]
+
+
+async def find_or_create_plate_product(db: AsyncSession, *, file: LibraryFile, plate_index: int, stem: str) -> Product:
+    """One pair of :func:`plate_products` (``stem`` is the file's — kept for callers)."""
+    return (await plate_products(db, [(file, plate_index)]))[0]
 
 
 def _normalise_plate(file: LibraryFile, plate_index: int) -> int:
@@ -349,22 +387,21 @@ def _normalise_plate(file: LibraryFile, plate_index: int) -> int:
     raise PlateNotFound(plate_index)
 
 
-async def plate_product_for(
+async def plate_of(
     db: AsyncSession,
     library_file_id: int,
     plate_index: int,
     *,
     visible: Callable[[LibraryFile], bool] | None = None,
-) -> Product:
-    """The one-off product of a file's plate — the add-to-order dialog's third tab
-    (spec workshop-add-to-order, rule 11): the same checks and the same product the
-    print dialog's «order from plates» reaches — and the same ownership gate
-    (``visible``)."""
+) -> tuple[LibraryFile, int]:
+    """A file's plate as the add-to-order dialog's third tab names it (spec
+    workshop-add-to-order, rule 11): the same checks the print dialog's «order from
+    plates» makes — and the same ownership gate (``visible``) — and the plate index
+    normalised. Reads only: the product is made by :func:`plate_products`."""
     file = (await _active_files(db, [library_file_id], visible=visible))[0]
     if not is_plan_eligible(file.file_type):
         raise NotPlannable(file.id)
-    idx = _normalise_plate(file, plate_index)
-    return await find_or_create_plate_product(db, file=file, plate_index=idx, stem=file_stem(file.filename))
+    return file, _normalise_plate(file, plate_index)
 
 
 async def create_plates_order(
@@ -392,10 +429,8 @@ async def create_plates_order(
             raise DuplicatePlate(plate_index)
         copies_by_plate[idx] = copies
     stem = file_stem(file.filename)
-    lines: list[tuple[int, int]] = []
-    for idx, copies in copies_by_plate.items():
-        product = await find_or_create_plate_product(db, file=file, plate_index=idx, stem=stem)
-        lines.append((product.id, copies))
+    products = await plate_products(db, [(file, idx) for idx in copies_by_plate])
+    lines = [(product.id, copies) for product, copies in zip(products, copies_by_plate.values(), strict=True)]
     if not name:
         name = (
             f"{stem} ×{next(iter(copies_by_plate.values()))}"

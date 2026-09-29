@@ -333,6 +333,18 @@ async def seed_line(
     await _write(db, line, new_choices, new_counts)
 
 
+async def target_key(
+    db: AsyncSession, line: ProjectLine, *, choices: Mapping[int, int], counts: Mapping[int, int]
+) -> str:
+    """The key ``set_configuration`` would give ``line`` — read only, so the door can
+    lock the new configuration's position with the old one's, before the line (WS-13
+    E1 BL0). Refuses exactly as ``set_configuration`` would."""
+    product = await _product(db, line.product_id)
+    current = (await load_line_configs(db, [line.id])).get(line.id, LineConfig())
+    new_choices, new_counts = _validate(product, line.mode, {**current.choices, **choices}, counts)
+    return config_key(line.mode, new_choices, new_counts)
+
+
 async def set_configuration(
     db: AsyncSession,
     line: ProjectLine,

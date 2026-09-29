@@ -347,6 +347,48 @@ class VariantGroupOut(BaseModel):
     position: int = 0
     default_option_id: int | None = None
     options: list[VariantOptionOut] = []
+    #: What would refuse the group's delete, counted by the server exactly as the delete
+    #: guard counts (WS-13 E1 VR9): lines and positions with a choice in it, parts bound
+    #: to one of its options.
+    lines_count: int = 0
+    stock_count: int = 0
+    parts_count: int = 0
+
+
+class VariantOptionDraftIn(BaseModel):
+    """One option of a variants draft: an existing ``id`` (renamed in place) or a new
+    ``temp_id`` — exactly one of them (WS-13 E1 VR5)."""
+
+    id: int | None = None
+    temp_id: str | None = Field(default=None, max_length=64)
+    name: str = Field(min_length=1, max_length=128)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _name(cls, v: Any) -> Any:
+        return _clean_name(v)
+
+
+class VariantGroupDraftIn(BaseModel):
+    id: int | None = None
+    temp_id: str | None = Field(default=None, max_length=64)
+    name: str = Field(min_length=1, max_length=128)
+    options: list[VariantOptionDraftIn] = Field(default_factory=list, max_length=200)
+    #: The standard option — an ``id`` or a ``temp_id`` of THIS group's options.
+    default: int | str
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _name(cls, v: Any) -> Any:
+        return _clean_name(v)
+
+
+class VariantsApplyIn(BaseModel):
+    """``PUT /products/{id}/variants`` — the desired final state, in order, and the
+    revision the client saw (WS-13 E1 VR4–VR5)."""
+
+    revision: str = Field(max_length=128)
+    groups: list[VariantGroupDraftIn] = Field(default_factory=list, max_length=50)
 
 
 def _clean_variant_names(value: Any) -> Any:
@@ -456,6 +498,9 @@ class ProductListItem(BaseModel):
 
 
 class ProductResponse(ProductListItem):
+    #: The variants as the client sees them, hashed (WS-13 E1 VR4) — what
+    #: ``PUT …/variants`` checks its draft against.
+    variants_revision: str = ""
     description: str | None = None
     notes: str | None = None
     designer: str | None = None

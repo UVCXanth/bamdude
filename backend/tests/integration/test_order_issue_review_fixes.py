@@ -213,6 +213,8 @@ async def test_a_batch_locks_the_lines_positions_before_the_lines(db_session, pi
 async def test_assembling_locks_the_position_before_the_parts(db_session, pipe, monkeypatch):
     line = await _line(db_session, pipe)
     assert await part_stock.reserve_for_line(db_session, line, 2) == 2
+    # A separate request, as in the app: the setup's locks are not the door's (WS-13 E1 BL2).
+    await db_session.commit()
     await finished_stock.item_for(db_session, pipe["product"].id, {}, create=True)
     seen: list[str] = []
     lock_item, lock_parts = finished_stock.lock_item, part_stock.lock_parts

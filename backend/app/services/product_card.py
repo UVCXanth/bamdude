@@ -74,6 +74,7 @@ from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.product import Product, ProductPart, ProductPlate, product_files
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption, variant_key
 from backend.app.schemas.product import CardNote
+from backend.app.services import product_variants
 from backend.app.services.library_ingest import external_hash_is_stale, find_reusable_row
 from backend.app.services.order_metrics import grouped_figures, units_delivered
 from backend.app.services.part_names import canonicalize, name_key
@@ -1249,7 +1250,6 @@ async def _import_variant_groups(db: AsyncSession, product_id: int, raw_groups: 
     """
     option_by_pair: dict[tuple[str, str], int] = {}
     seen: set[str] = set()
-    position = 0
     for raw in raw_groups:
         if not isinstance(raw, dict):
             continue
@@ -1264,21 +1264,28 @@ async def _import_variant_groups(db: AsyncSession, product_id: int, raw_groups: 
         if not names:
             continue
         seen.add(variant_key(name))
-        group = ProductVariantGroup(product_id=product_id, name=name, position=position)
-        position += 1
-        db.add(group)
-        await db.flush()
-        options = [ProductVariantOption(group_id=group.id, name=n, position=i) for i, n in enumerate(names)]
-        db.add_all(options)
-        await db.flush()
         default = _text(raw.get("default"), 128)
-        group.default_option_id = next(
-            (o.id for o in options if default and variant_key(o.name) == variant_key(default)), options[0].id
+        default_index = next((i for i, n in enumerate(names) if default and variant_key(n) == variant_key(default)), 0)
+        # Through the one writer (WS-13 E1 VR1). The product is new — nothing to record on.
+        group = await product_variants.create_group(
+            db, product_id, name, names, default_index=default_index, record_lines=False
         )
-        for option in options:
+        for option in await _group_options(db, group.id):
             option_by_pair[(variant_key(name), variant_key(option.name))] = option.id
     await db.flush()
     return option_by_pair
+
+
+async def _group_options(db: AsyncSession, group_id: int) -> list[ProductVariantOption]:
+    return list(
+        (
+            await db.execute(
+                select(ProductVariantOption)
+                .where(ProductVariantOption.group_id == group_id)
+                .order_by(ProductVariantOption.position, ProductVariantOption.id)
+            )
+        ).scalars()
+    )
 
 
 def _variant_of(raw: Any, option_by_pair: dict[tuple[str, str], int]) -> int | None:

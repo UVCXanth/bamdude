@@ -66,6 +66,8 @@ async def _line(db, shop, product, *, quantity, mode="product", counts=None):
 
 
 async def _apply(db, shop, requests):
+    # A separate request, as in the app: the setup's locks are not the door's (WS-13 E1 BL2).
+    await db.commit()
     return await order_fulfilment.apply(
         db,
         shop["order"],
@@ -183,6 +185,8 @@ async def test_the_note_keeps_its_basis_and_supplier(db_session, shop):
 async def test_a_deleted_product_leaves_the_note_whole(db_session, shop):
     issue = await _manual_issue(db_session, shop, shop["position"], 3)
     await stock_issues.seal(db_session, issue, actor=None)
+    # The product's deletion is its own request (WS-13 E1 BL2): the issue's locks are not its own.
+    await db_session.commit()
     lamp = shop["lamp"]
     await db_session.refresh(lamp, ["library_files", "library_folders"])
     await product_delete.delete_product(db_session, lamp)
