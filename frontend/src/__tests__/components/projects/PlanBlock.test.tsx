@@ -1540,6 +1540,17 @@ describe('PlanBlock', () => {
   });
 
   // ---- filament needs (spec 2026-09-07) ----
+  // The block is the plan DIALOG's alone since WS-13 E3 (F06, R04): on the order
+  // page the side panel shows the same body. These run in the dialog variant.
+
+  it('leaves the filament to the side panel on the order page', async () => {
+    const need = vi.spyOn(api, 'getOrderFilament').mockResolvedValue(EMPTY_NEEDS);
+    render(<PlanBlock order={order} canEdit />);
+    await screen.findByTestId('plan-block');
+    expect(screen.queryByTestId('filament-needs')).toBeNull();
+    expect(need).not.toHaveBeenCalled();
+  });
+
 
   it('shows the filament the plan needs against the shelf, with the shortage in amber', async () => {
     vi.spyOn(api, 'getOrderFilament').mockResolvedValue({
@@ -1550,9 +1561,9 @@ describe('PlanBlock', () => {
         { material: 'PLA', colour: null, need_g: 400, have_g: 900, have_type_g: 900, short_g: 0, unknown_prints: 1 },
       ],
     });
-    render(<PlanBlock order={order} canEdit />);
+    render(<PlanBlock order={order} canEdit variant="dialog" />);
     const petg = await screen.findByTestId('filament-need-PETG-black');
-    expect(petg).toHaveTextContent('PETG · black');
+    expect(petg).toHaveTextContent('PETG black');
     expect(petg).toHaveTextContent('3.2kg');
     expect(petg).toHaveTextContent('1.1kg');
     expect(petg).toHaveTextContent('4.2kg of PETG in total');
@@ -1576,7 +1587,7 @@ describe('PlanBlock', () => {
       ...EMPTY_NEEDS,
       rows: [{ material: 'PETG', colour: null, need_g: 500, have_g: 900, have_type_g: 900, short_g: 0, unknown_prints: 0 }],
     });
-    render(<PlanBlock order={order} canEdit />);
+    render(<PlanBlock order={order} canEdit variant="dialog" />);
     expect(await screen.findByTestId('plan-empty')).toBeInTheDocument();
     expect(await screen.findByTestId('filament-need-PETG')).toHaveTextContent('500g');
   });
@@ -1586,7 +1597,7 @@ describe('PlanBlock', () => {
       ...EMPTY_NEEDS,
       rows: [{ material: 'PETG', colour: null, need_g: 0, have_g: 900, have_type_g: 900, short_g: 0, unknown_prints: 1 }],
     });
-    render(<PlanBlock order={order} canEdit />);
+    render(<PlanBlock order={order} canEdit variant="dialog" />);
     const row = await screen.findByTestId('filament-need-PETG');
     expect(row).toHaveTextContent('weight unknown');
     expect(row).toHaveTextContent('1 print without grams');
@@ -1598,7 +1609,7 @@ describe('PlanBlock', () => {
       ...EMPTY_NEEDS, stock_unavailable: true,
       rows: [{ material: 'PETG', colour: null, need_g: 500, have_g: null, have_type_g: null, short_g: null, unknown_prints: 0 }],
     });
-    render(<PlanBlock order={order} canEdit />);
+    render(<PlanBlock order={order} canEdit variant="dialog" />);
     const row = await screen.findByTestId('filament-need-PETG');
     expect(row).toHaveTextContent('500g');
     expect(screen.getByTitle('The shelf could not be read')).toBeInTheDocument();

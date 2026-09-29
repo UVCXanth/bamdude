@@ -4,6 +4,8 @@ import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { TimelineEvent } from '../../../api/client';
 import { OrderTimeline } from '../../../components/projects/OrderTimeline';
+import { ORDER_JOURNAL_KINDS } from '../../../components/projects/orderJournal';
+import { JOURNAL_ICONS } from '../../../components/projects/orderJournalIcons';
 
 const ev = (event_type: string, metadata: Record<string, unknown>, title = 'x'): TimelineEvent => ({
   event_type,
@@ -11,6 +13,12 @@ const ev = (event_type: string, metadata: Record<string, unknown>, title = 'x'):
   title,
   description: null,
   metadata,
+});
+
+describe('JOURNAL_ICONS (WS-13 E3 G05)', () => {
+  it('has an icon for every kind the journal writes — none is an empty dot', () => {
+    for (const kind of ORDER_JOURNAL_KINDS) expect(JOURNAL_ICONS[kind], kind).toBeDefined();
+  });
 });
 
 describe('OrderTimeline · the order journal', () => {

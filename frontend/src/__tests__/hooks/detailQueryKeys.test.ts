@@ -55,6 +55,8 @@ const OWNER: Record<string, string> = {
   // The order's print plan (WS-13 E3 F01): the plan block reads it, the tab strip
   // counts its rows from the same entry without fetching — one declaration, one set of options.
   'project-plan': 'hooks/useOrderPlan.ts',
+  // The filament need (WS-13 E3 G03): the side panel and the plan dialog's block.
+  'order-filament': 'hooks/useOrderFilament.ts',
 };
 
 /** The invalidation helper is allowed to spell any key out; it observes none.

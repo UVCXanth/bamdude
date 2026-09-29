@@ -15,6 +15,7 @@ import { MAX_PER_PLATE } from './PlanRow';
 import { projectPlan, rowDistribution, splitIsOff, type ChosenByRow, type SplitByRow } from './planMath';
 import { invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInvalidation';
 import { useOrderPlan } from '../../hooks/useOrderPlan';
+import { useOrderFilament } from '../../hooks/useOrderFilament';
 
 /**
  * What to print next for this order, per line.
@@ -44,6 +45,7 @@ import { useOrderPlan } from '../../hooks/useOrderPlan';
 export function PlanBlock({
   order,
   canEdit,
+  variant = 'page',
   onEnqueued,
   onDraftChanged,
 }: {
@@ -80,13 +82,9 @@ export function PlanBlock({
     staleTime: 30_000,
   });
 
-  // The filament this plan still needs against what is on the shelf.
-  const filament = useQuery({
-    queryKey: ['order-filament', order.id],
-    queryFn: () => api.getOrderFilament(order.id),
-    enabled: active,
-    staleTime: 30_000,
-  });
+  // The filament this plan still needs against what is on the shelf — in the
+  // dialog only: on the order page it is the side panel's (WS-13 E3 F06).
+  const filament = useOrderFilament(order.id, active && variant === 'dialog');
 
   const [counts, setCounts] = useState<Record<number, Record<number, number>>>({});
   const [added, setAdded] = useState<Record<number, PlanRowData[]>>({});
@@ -565,7 +563,7 @@ export function PlanBlock({
           the queue — and that was the state the table hid itself in (final
           review I2). The query is already gated on the order being active,
           which is the only gate this has. */}
-      {filament.data && <FilamentNeeds needs={filament.data} />}
+      {variant === 'dialog' && filament.data && <FilamentNeeds needs={filament.data} />}
     </section>
   );
 }

@@ -1,0 +1,62 @@
+import {
+  Boxes,
+  CircleDot,
+  Flag,
+  Image,
+  Link,
+  ListMinus,
+  ListPlus,
+  ListTodo,
+  PackageCheck,
+  PackageOpen,
+  PackagePlus,
+  PackageX,
+  Paperclip,
+  Pencil,
+  Plus,
+  Shuffle,
+  ShoppingCart,
+  SlidersHorizontal,
+  TriangleAlert,
+  Truck,
+  Unlink,
+  UserRound,
+  Warehouse,
+  type LucideIcon,
+} from 'lucide-react';
+import type { ORDER_JOURNAL_KINDS } from './orderJournal';
+
+/**
+ * One icon per order journal kind (spec workshop-order-stage, rule 35; WS-13 E3
+ * G05). Keyed by the journal's own closed list, so a kind added there without an
+ * icon is a compile error rather than an empty dot in the activity panel — the
+ * stock and issue kinds had none until E3.
+ */
+export const JOURNAL_ICONS: Record<(typeof ORDER_JOURNAL_KINDS)[number], LucideIcon> = {
+  order_created: Plus,
+  status_changed: CircleDot,
+  fields_changed: Pencil,
+  responsible_changed: UserRound,
+  stage_changed: Flag,
+  line_added: ListPlus,
+  line_changed: Pencil,
+  line_removed: ListMinus,
+  line_configured: SlidersHorizontal,
+  prints_filed: Link,
+  prints_unfiled: Unlink,
+  defects_recorded: TriangleAlert,
+  queue_items_filed: ListTodo,
+  plan_enqueued: ListTodo,
+  line_rebalanced: Shuffle,
+  surplus_banked: PackagePlus,
+  procurement_updated: ShoppingCart,
+  kits_assembled: Boxes,
+  goods_received: PackageCheck,
+  goods_issued: Truck,
+  stock_taken: Warehouse,
+  goods_written_off: PackageX,
+  goods_stocked: PackageOpen,
+  attachment_added: Paperclip,
+  attachment_removed: Paperclip,
+  cover_changed: Image,
+};

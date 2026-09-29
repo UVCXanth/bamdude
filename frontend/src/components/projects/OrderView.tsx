@@ -33,6 +33,8 @@ import { useOrderDetail } from '../../hooks/useOrderDetail';
 import { DispatchNotesSection } from '../stock/DispatchNotesSection';
 import { WorkshopPanel } from '../workshop/WorkshopPanel';
 import { forecastView } from './orderForecastView';
+import { OrderForecastPanel } from './OrderForecastPanel';
+import { OrderFilamentPanel } from './OrderFilamentPanel';
 import { ORDER_SECTIONS, sectionParam, type OrderSection } from './orderSections';
 import { WorkshopTabPanel, WorkshopTabs } from '../workshop/WorkshopTabs';
 import { useOrderPlan } from '../../hooks/useOrderPlan';
@@ -360,9 +362,19 @@ export function OrderView({
           </div>
         </WorkshopPanel>
 
+        {/* Forecast (active orders only), filament, queue, activity (WS-13 E3 G01). */}
         <div data-testid="order-side" className="order-view-side">
-          <OrderQueue orderId={order.id} />
-          <OrderTimeline orderId={order.id} />
+          {order.status === 'active' && (
+            <OrderForecastPanel
+              view={forecastNow}
+              remaining={order.figures.remaining}
+              onRetry={() => forecast.refetch()}
+              headingLevel={embedded ? 3 : 2}
+            />
+          )}
+          <OrderFilamentPanel orderId={order.id} active={order.status === 'active'} headingLevel={embedded ? 3 : 2} />
+          <OrderQueue orderId={order.id} headingLevel={embedded ? 3 : 2} />
+          <OrderTimeline orderId={order.id} headingLevel={embedded ? 3 : 2} />
         </div>
       </div>
 

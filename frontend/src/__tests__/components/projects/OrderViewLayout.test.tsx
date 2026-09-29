@@ -83,6 +83,24 @@ describe('OrderView composition', () => {
     expect(within(region).getByRole('table')).toBeInTheDocument();
   });
 
+  it('stacks the side panels as forecast → filament → queue → activity (G01)', async () => {
+    mockOrderDetailApi(makeOrder());
+    renderPage();
+
+    const side = await screen.findByTestId('order-side');
+    const titles = await within(side).findAllByRole('heading', { level: 2 });
+    expect(titles.map((h) => h.textContent)).toEqual(['Forecast', 'Filament', 'Queue', 'Activity']);
+  });
+
+  it('has no forecast for a closed order — three panels', async () => {
+    mockOrderDetailApi(makeOrder({ status: 'completed', stage: 'done' }));
+    renderPage();
+
+    const side = await screen.findByTestId('order-side');
+    const titles = await within(side).findAllByRole('heading', { level: 2 });
+    expect(titles.map((h) => h.textContent)).toEqual(['Filament', 'Queue', 'Activity']);
+  });
+
   it('puts the page under the Workshop scope', async () => {
     mockOrderDetailApi(makeOrder());
     renderPage();

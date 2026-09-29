@@ -69,16 +69,38 @@ describe('OrderQueue', () => {
     expect(strayZeroTextNodes()).toHaveLength(0);
   });
 
-  it('a closed order with nothing queued draws nothing; a leftover row keeps the section', async () => {
+  it('says so when nothing is queued — a closed order too — and keeps a leftover row (WS-13 E3 G04)', async () => {
     vi.spyOn(api, 'getOrder').mockResolvedValue({ ...order, status: 'completed' } as never);
     const get = vi.spyOn(api, 'getOrderQueue').mockResolvedValue(EMPTY as never);
     const { unmount } = mountWithClient(newClient());
-    await waitFor(() => expect(get).toHaveBeenCalled());
-    expect(screen.queryByText('Queue')).not.toBeInTheDocument();
+    expect(await screen.findByText('Nothing queued for this order.')).toBeInTheDocument();
     unmount();
     get.mockResolvedValue({ ...EMPTY, awaiting: [tiers.awaiting[1]] } as never);
     mountWithClient(newClient());
     expect(await screen.findByText('Foot')).toBeInTheDocument();
+  });
+
+  it('never says «nothing queued» before the answer, nor after a failed one (R02)', async () => {
+    let fail: (e: Error) => void = () => {};
+    vi.spyOn(api, 'getOrderQueue').mockReturnValue(new Promise((_, reject) => (fail = reject)) as never);
+    mountWithClient(newClient());
+    expect(await screen.findByText('Loading...')).toBeInTheDocument();
+    expect(screen.queryByText('Nothing queued for this order.')).toBeNull();
+    fail(new Error('boom'));
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.queryByText('Nothing queued for this order.')).toBeNull();
+  });
+
+  it('links to the real queue page, with no filter it would ignore', async () => {
+    vi.spyOn(api, 'getOrderQueue').mockResolvedValue(EMPTY as never);
+    mountWithClient(newClient());
+    expect(await screen.findByRole('link', { name: 'Open the queue' })).toHaveAttribute('href', '/queue');
+  });
+
+  it('explains the auto-queue when a row waits for it', async () => {
+    vi.spyOn(api, 'getOrderQueue').mockResolvedValue({ ...EMPTY, awaiting: [tiers.awaiting[0]] } as never);
+    mountWithClient(newClient());
+    expect(await screen.findByText(/not handed to a printer yet/)).toBeInTheDocument();
   });
 
   it('names a printing card after the order\'s print, not whatever the printer reports', async () => {
