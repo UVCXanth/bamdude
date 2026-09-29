@@ -187,3 +187,16 @@ async def test_assembling_a_kit_does_not_change_the_lines_coverage(committing_cl
     assert all(
         part["need"] == before_part["need"] for part, before_part in zip(after["parts"], before["parts"], strict=True)
     )
+
+
+@pytest.mark.asyncio
+async def test_the_order_figures_carry_issued_and_held_as_the_lines_sum_them(committing_client, order):
+    """WS-13 E1 OR8: the order page's «issued» / «held» tiles are the lines' own
+    counters summed on the server, and ``counts.issues`` counts the order's notes."""
+    body = {"lines": [{"line_id": order["line_id"], "assemble": 3, "receive": 5, "issue": 4}]}
+    assert (await committing_client.post(_url(order), json=body)).status_code == 200
+    detail = (await committing_client.get(f"/api/v1/projects/{order['id']}")).json()
+    lines = detail["lines"]
+    assert detail["figures"]["issued_units"] == sum(line["issued"] for line in lines) == 4
+    assert detail["figures"]["held_units"] == sum(line["held"] for line in lines) == 6
+    assert detail["counts"]["issues"] == 1

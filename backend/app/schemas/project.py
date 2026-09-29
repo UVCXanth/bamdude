@@ -343,6 +343,13 @@ class ProcurementOut(BaseModel):
     need: int
     acquired: int
     remaining: int
+    #: WS-13 E1 PR1–PR3. ``planned_cost`` = need × price (``None`` without a price);
+    #: ``acquired_cost`` = min(acquired, need) × price — 0.0 when nothing was bought,
+    #: ``None`` when something was bought at an unknown price.
+    unit_price: float | None = None
+    sourcing_url: str | None = None
+    planned_cost: float | None = None
+    acquired_cost: float | None = None
 
 
 class ProjectFiguresOut(BaseModel):
@@ -376,6 +383,25 @@ class ProjectFiguresOut(BaseModel):
     # tiers under it — rows on a line AND rows filed under the order alone.
     prints_in_progress: int = 0
     prints_queued: int = 0
+    #: WS-13 E1 OR8 — the lines' «issued» / «held» counters summed (the list row's own).
+    issued_units: int = 0
+    held_units: int = 0
+    #: WS-13 E1 PR4–PR7 — purchases beside the prints' ``total_cost`` / ``margin``,
+    #: which do not change. ``procurement_cost`` is ``None`` when one bought part has
+    #: no price; ``procurement_known_cost`` + ``procurement_partial`` say what is known.
+    procurement_cost: float | None = 0.0
+    procurement_known_cost: float = 0.0
+    procurement_partial: bool = False
+    cost_with_procurement: float | None = None
+    margin_with_procurement: float | None = None
+
+
+class ProjectCountsOut(BaseModel):
+    """WS-13 E1 CN1 — the order page's tab badges: its «Prints» tab's rows and its
+    dispatch notes."""
+
+    prints: int = 0
+    issues: int = 0
 
 
 class OrderContactOut(BaseModel):
@@ -417,6 +443,7 @@ class ProjectResponse(BaseModel):
     lines: list[ProjectLineResponse]
     procurement: list[ProcurementOut]
     figures: ProjectFiguresOut
+    counts: ProjectCountsOut = ProjectCountsOut()
     # Prints filed under this order that no line could take (spec §Line
     # resolution step 3), oldest first — the ids behind ``other_prints_count``.
     other_archive_ids: list[int] = []
@@ -574,6 +601,8 @@ class PlanTotalsOut(BaseModel):
     # costed (a rate exists, but nothing planned carries a weight to price).
     # 0.00 would read as "this plan is free" — see ``plan_engine._totals``.
     cost: float | None = None
+    #: WS-13 E1 OR9 — Σ the lines' rows: the «Print plan» tab's badge.
+    rows: int = 0
 
 
 class OrderPlanResponse(BaseModel):

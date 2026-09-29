@@ -44,6 +44,7 @@ from backend.app.models.printer import Printer
 from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate
 from backend.app.models.project import Project, ProjectEvent
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
+from backend.app.models.stock_issue import StockIssue
 from backend.app.models.user import User
 from backend.app.schemas.archive import ArchivePartRow
 from backend.app.schemas.auto_queue import AutoQueueItemCreate
@@ -111,6 +112,7 @@ from backend.app.schemas.project import (
     PlanTotalsOut,
     ProcurementOut,
     ProcurementUpdate,
+    ProjectCountsOut,
     ProjectCreate,
     ProjectDuplicate,
     ProjectFiguresOut,
@@ -167,6 +169,7 @@ from backend.app.services.order_metrics import (
     grouped_figures,
     load_order_context,
     procurement_figures,
+    procurement_totals,
     project_figures,
 )
 from backend.app.services.order_queue import (
@@ -335,6 +338,18 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
         for line in ctx.lines
     ]
     pf = project_figures(ctx, figs, other)
+    procurement = procurement_figures(ctx)
+    counters = [_line_counters(line, part_counters.get(line.id, {})) for line in ctx.lines]
+    # CN1: the «Prints» tab lists ``/archives`` — the order's prints outside the trash,
+    # whatever their status — and the badge counts exactly that.
+    prints_count = await db.scalar(
+        select(func.count())
+        .select_from(PrintArchive)
+        .where(PrintArchive.project_id == project.id, PrintArchive.deleted_at.is_(None))
+    )
+    issues_count = await db.scalar(
+        select(func.count()).select_from(StockIssue).where(StockIssue.project_id == project.id)
+    )
     return ProjectResponse(
         id=project.id,
         code=code_for("order", project.id),
@@ -369,11 +384,14 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
         created_at=project.created_at,
         updated_at=project.updated_at,
         lines=lines,
-        procurement=[
-            ProcurementOut(part_id=p.part_id, name=p.name, need=p.need, acquired=p.acquired, remaining=p.remaining)
-            for p in procurement_figures(ctx)
-        ],
-        figures=ProjectFiguresOut(**pf.__dict__),
+        procurement=[ProcurementOut(**p.__dict__) for p in procurement],
+        figures=ProjectFiguresOut(
+            **pf.__dict__,
+            issued_units=sum(c["issued"] for c in counters),
+            held_units=sum(c["held"] for c in counters),
+            **procurement_totals(procurement, pf.total_cost, project.price),
+        ),
+        counts=ProjectCountsOut(prints=prints_count or 0, issues=issues_count or 0),
         other_archive_ids=[a.id for a in other],
     )
 
@@ -3017,6 +3035,7 @@ def _plan_response(plan: OrderPlan, pending_auto: dict[int, int]) -> OrderPlanRe
             print_time_seconds=plan.totals.print_time_seconds,
             filament_used_grams=plan.totals.filament_used_grams,
             cost=plan.totals.cost,
+            rows=sum(len(line.rows) for line in plan.lines),
         ),
         truncated=plan.truncated,
     )

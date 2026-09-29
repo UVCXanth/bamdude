@@ -1073,7 +1073,13 @@ async def test_plan_subtracts_finished_and_queued_work(committing_client, db_ses
     assert row["cost"] is None and row["filament_used_grams"] is None
     assert line["surplus_after"] == [] and line["unsatisfiable"] == []
     assert line["candidates"] == [row["plate_id"]] and line["not_sliced"] == []
-    assert body["totals"] == {"prints": 1, "print_time_seconds": 100, "filament_used_grams": 0.0, "cost": None}
+    assert body["totals"] == {
+        "prints": 1,
+        "print_time_seconds": 100,
+        "filament_used_grams": 0.0,
+        "cost": None,
+        "rows": 1,
+    }
     # The plan ran to the end of its work, and says so on the wire — the flag is
     # what tells a complete plan from one the iteration guard cut short.
     assert body["truncated"] is False
@@ -3690,3 +3696,135 @@ async def test_the_card_chips_list_materials_and_products_in_line_order_once(com
         {"product_id": shelf, "has_cover": False},
     ]
     assert len(row["line_products"]) == 4
+
+
+# ---------- WS-13 E1 PR, CN1, OR9: procurement costs, tab counts, plan rows ----------
+
+
+async def _two_lamp_lines(client, catalog, *, price=None):
+    body = {"name": "Lamps", "price": price, "lines": [{"product_id": catalog["product"].id, "quantity": 2}]}
+    pid = (await client.post("/api/v1/projects/", json=body)).json()["id"]
+    r = await client.post(f"/api/v1/projects/{pid}/lines", json={"product_id": catalog["product"].id, "quantity": 1})
+    assert r.status_code in (200, 201), r.text
+    return pid
+
+
+async def _acquire(client, pid, part_id, n):
+    r = await client.patch(f"/api/v1/projects/{pid}/procurement/{part_id}", json={"quantity_acquired": n})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+@pytest.mark.asyncio
+async def test_procurement_prices_the_plan_and_what_was_bought_apart(committing_client, db_session, catalog):
+    """PR1–PR3, PR6, PR7: one row for both lines (need 4×3 = 12); the planned cost
+    prices the whole need, the acquired cost only what was bought, never past the need."""
+    screw = await db_session.get(ProductPart, catalog["screw"].id)
+    screw.unit_price, screw.sourcing_url = 0.5, "https://example.com/m3"
+    await db_session.commit()
+    pid = await _two_lamp_lines(committing_client, catalog, price=100.0)
+
+    body = await _acquire(committing_client, pid, screw.id, 8)
+    [row] = body["procurement"]
+    assert (row["need"], row["unit_price"], row["sourcing_url"]) == (12, 0.5, "https://example.com/m3")
+    assert (row["planned_cost"], row["acquired_cost"]) == (6.0, 4.0)
+    figures = body["figures"]
+    assert (figures["procurement_cost"], figures["procurement_known_cost"], figures["procurement_partial"]) == (
+        4.0,
+        4.0,
+        False,
+    )
+    assert figures["cost_with_procurement"] == round(figures["total_cost"] + 4.0, 2)
+    assert figures["margin_with_procurement"] == round(100.0 - figures["cost_with_procurement"], 2)
+    # The old two stay what they were: prints only.
+    assert figures["margin"] == round(100.0 - figures["total_cost"], 2)
+
+    [row] = (await _acquire(committing_client, pid, screw.id, 20))["procurement"]
+    assert row["acquired_cost"] == 6.0  # 12 needed of the 20 bought
+
+
+@pytest.mark.asyncio
+async def test_a_zero_price_is_a_price_and_no_price_is_unknown(committing_client, db_session, catalog):
+    screw = await db_session.get(ProductPart, catalog["screw"].id)
+    screw.unit_price = 0.0
+    await db_session.commit()
+    pid = await _two_lamp_lines(committing_client, catalog, price=10.0)
+    [row] = (await _acquire(committing_client, pid, screw.id, 5))["procurement"]
+    assert (row["planned_cost"], row["acquired_cost"]) == (0.0, 0.0)
+
+    screw.unit_price = None
+    await db_session.commit()
+    body = await _acquire(committing_client, pid, screw.id, 0)
+    [row] = body["procurement"]
+    # Nothing bought is a known zero; the plan without a price is unknown (Z8).
+    assert (row["planned_cost"], row["acquired_cost"], body["figures"]["procurement_cost"]) == (None, 0.0, 0.0)
+
+    body = await _acquire(committing_client, pid, screw.id, 3)
+    assert body["procurement"][0]["acquired_cost"] is None
+    figures = body["figures"]
+    assert (figures["procurement_cost"], figures["cost_with_procurement"], figures["margin_with_procurement"]) == (
+        None,
+        None,
+        None,
+    )
+    assert (figures["procurement_known_cost"], figures["procurement_partial"]) == (0.0, True)
+
+
+@pytest.mark.asyncio
+async def test_a_partly_priced_purchase_says_what_is_known(committing_client, db_session, catalog):
+    """PR4/PR5: one priced part, one not — the sum is unknown, its known part is not."""
+    washer = ProductPart(
+        product_id=catalog["product"].id, kind="purchased", name="Washer", name_key="purchased:washer", qty_per_unit=2
+    )
+    db_session.add(washer)
+    screw = await db_session.get(ProductPart, catalog["screw"].id)
+    screw.unit_price = 0.25
+    await db_session.commit()
+    pid = await _two_lamp_lines(committing_client, catalog)
+    await _acquire(committing_client, pid, screw.id, 12)
+    figures = (await _acquire(committing_client, pid, washer.id, 1))["figures"]
+    assert (figures["procurement_cost"], figures["procurement_known_cost"], figures["procurement_partial"]) == (
+        None,
+        3.0,
+        True,
+    )
+    assert figures["margin_with_procurement"] is None  # and the order has no price either
+
+
+@pytest.mark.asyncio
+async def test_without_an_order_price_there_is_no_margin_with_procurement(committing_client, db_session, catalog):
+    screw = await db_session.get(ProductPart, catalog["screw"].id)
+    screw.unit_price = 1.0
+    await db_session.commit()
+    pid = await _two_lamp_lines(committing_client, catalog)
+    figures = (await _acquire(committing_client, pid, screw.id, 2))["figures"]
+    assert figures["cost_with_procurement"] == round(figures["total_cost"] + 2.0, 2)
+    assert figures["margin_with_procurement"] is None and figures["margin"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_prints_tab_count_is_the_tabs_own_length(committing_client, db_session, catalog):
+    """CN1: ``counts.prints`` counts what ``/archives`` lists — an interrupted dispatch
+    too, a trashed print not; ``counts.issues`` is zero before anything went out."""
+    body = {"name": "Counted", "lines": [{"product_id": catalog["product"].id, "quantity": 1}]}
+    pid = (await committing_client.post("/api/v1/projects/", json=body)).json()["id"]
+    await _completed_print(db_session, pid, catalog["file"].id)
+    for status, deleted in (("cancelled", None), ("completed", datetime.now())):
+        db_session.add(
+            PrintArchive(
+                project_id=pid, filename="x", file_path="", file_size=0, status=status, quantity=1, deleted_at=deleted
+            )
+        )
+    await db_session.commit()
+    detail = (await committing_client.get(f"/api/v1/projects/{pid}")).json()
+    listed = (await committing_client.get(f"/api/v1/projects/{pid}/archives")).json()
+    assert detail["counts"] == {"prints": len(listed), "issues": 0}
+    assert len(listed) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_plan_totals_count_their_rows(committing_client, catalog):
+    body = {"name": "Planned", "lines": [{"product_id": catalog["product"].id, "quantity": 3}]}
+    pid = (await committing_client.post("/api/v1/projects/", json=body)).json()["id"]
+    plan = (await committing_client.get(f"/api/v1/projects/{pid}/plan")).json()
+    assert plan["totals"]["rows"] == sum(len(line["rows"]) for line in plan["lines"]) == 1

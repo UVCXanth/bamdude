@@ -201,6 +201,12 @@ class ProcurementFigures:
     need: int
     acquired: int
     remaining: int
+    #: WS-13 E1 PR1–PR3 — the part's own price and link, and the two costs off them:
+    #: the plan's (the whole need) and what was bought (never past the need).
+    unit_price: float | None = None
+    sourcing_url: str | None = None
+    planned_cost: float | None = None
+    acquired_cost: float | None = None
 
 
 @dataclass
@@ -820,12 +826,47 @@ def procurement_figures(ctx: OrderContext) -> list[ProcurementFigures]:
                 continue
             need = need_by_part[part.id]
             acquired = ctx.procurement_by_part.get(part.id, 0)
+            price = part.unit_price
             out.append(
                 ProcurementFigures(
-                    part_id=part.id, name=part.name, need=need, acquired=acquired, remaining=max(0, need - acquired)
+                    part_id=part.id,
+                    name=part.name,
+                    need=need,
+                    acquired=acquired,
+                    remaining=max(0, need - acquired),
+                    unit_price=price,
+                    sourcing_url=part.sourcing_url,
+                    planned_cost=None if price is None else round(need * price, 2),
+                    # Nothing bought is a KNOWN zero, priced or not (Z8); something
+                    # bought without a price is unknown, never free.
+                    acquired_cost=0.0
+                    if acquired <= 0
+                    else None
+                    if price is None
+                    else round(min(acquired, need) * price, 2),
                 )
             )
     return out
+
+
+def procurement_totals(rows: list[ProcurementFigures], total_cost: float, price: float | None) -> dict:
+    """WS-13 E1 PR4–PR7: what the order's purchases cost so far, beside the prints'
+    ``total_cost`` — never inside it, so ``total_cost`` / ``margin`` keep their meaning.
+    One unknown contribution makes the sum unknown; its known part and the flag say how
+    much of it is known. No purchases at all is a known 0.00."""
+    known = round(sum(row.acquired_cost or 0.0 for row in rows), 2)
+    partial = any(row.acquired_cost is None for row in rows)
+    cost = None if partial else known
+    with_procurement = None if cost is None else round(total_cost + cost, 2)
+    return {
+        "procurement_cost": cost,
+        "procurement_known_cost": known,
+        "procurement_partial": partial,
+        "cost_with_procurement": with_procurement,
+        "margin_with_procurement": None
+        if price is None or with_procurement is None
+        else round(price - with_procurement, 2),
+    }
 
 
 def _units_complete(ctx: OrderContext, line_figures: Mapping[int, LineFigures]) -> int:
