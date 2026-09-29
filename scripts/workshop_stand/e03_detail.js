@@ -483,12 +483,25 @@ async (page) => {
     await ctx.close();
     return { measured: { kept }, pass: /E3 чернетка/.test(kept ?? ''), screenshots: [file] };
   });
+  // After the send, the plan comes back as the server would have it — the line's rows answered — so the
+  // draft clears and only the forecast re-read stands between the send and the new numbers (review 1).
+  const planAfterSend = (plan) => ({ ...plan, lines: plan.lines.map((line) => ({ ...line, rows: [] })) });
+  const sendPlan = async (p, sent, forecastRoute) => {
+    await p.locator('[data-testid$="-inc"]').first().click();
+    await p.waitForTimeout(300);
+    await p.route(exact(`/projects/${A}/forecast`), forecastRoute);
+    sent.value = true;
+    await p.locator('[data-testid="plan-enqueue-all"]').click();
+  };
   await scenario('plan-draft-send-refresh', ['E3-E04', 'E3-G02', 'R03'], async () => {
+    const sent = { value: false };
     const { ctx, p } = await open(1440, {
       writes: [[/\/plan\/enqueue/, { created: [] }]],
+      rewrite: [[exact(`/projects/${A}/plan`), (plan) => (sent.value ? planAfterSend(plan) : plan)]],
     });
     await p.goto(detail(A), { waitUntil: 'networkidle' });
     await ready(p);
+    const tileBase = await text(p, '[data-testid="order-tile-ready"]');
     await p.locator('[data-testid$="-inc"]').first().click();
     await p.waitForTimeout(300);
     const tileDraft = await text(p, '[data-testid="order-tile-ready"]');
@@ -496,18 +509,43 @@ async (page) => {
     await p.getByRole('tab', { name: /^Нотатки/ }).click();
     await p.getByRole('tab', { name: /^План друку/ }).click();
     const tileStill = await text(p, '[data-testid="order-tile-ready"]');
-    // Hold the forecast re-read after the send: the gap must not show the previous plan's numbers.
-    await p.route(exact(`/projects/${A}/forecast`), async (route) => { await new Promise((r) => setTimeout(r, 2500)); await route.continue(); });
-    await p.locator('[data-testid="plan-enqueue-all"]').click();
-    await p.waitForTimeout(600);
+    // Undo the edit so `sendPlan` makes the same one, then send with the forecast re-read held 3 s.
+    await p.locator('[data-testid$="-dec"]').first().click();
+    await sendPlan(p, sent, async (route) => { await new Promise((r) => setTimeout(r, 3000)); await route.continue(); });
+    await p.waitForTimeout(800);
     const panelGap = await text(p, '[data-testid="order-forecast-panel"]');
     const tileGap = await text(p, '[data-testid="order-tile-ready"]');
     const file = await shoot(p, 'plan-draft-send-refresh');
+    await p.waitForTimeout(3500);
+    const panelAfter = await text(p, '[data-testid="order-forecast-panel"]');
+    const tileAfter = await text(p, '[data-testid="order-tile-ready"]');
     await ctx.close();
-    const m = { tileDraft, panelDraft, tileStill, panelGap, tileGap };
-    return { recipe: { actions: ['plan row +', 'tab away and back', 'send the plan (POST intercepted)', 'forecast re-read held 2.5 s'] }, measured: m,
+    const m = { tileBase, tileDraft, panelDraft, tileStill, panelGap, tileGap, panelAfter, tileAfter };
+    return { recipe: { actions: ['plan row +', 'tab away and back', 'send the plan (POST intercepted; the plan GET after it answers the rows)', 'forecast re-read held 3 s'] }, measured: m,
       pass: /план змінено/.test(tileDraft ?? '') && /попередньому плану/.test(panelDraft ?? '') && !/Машино-години/.test(panelDraft ?? '') &&
-        /план змінено/.test(tileStill ?? '') && !/Машино-години/.test(panelGap ?? '') && !/\d+ вер/.test(tileGap ?? ''), screenshots: [file] };
+        /план змінено/.test(tileStill ?? '') &&
+        /Завантаження/.test(panelGap ?? '') && !/Машино-години/.test(panelGap ?? '') && /…/.test(tileGap ?? '') && !/план змінено/.test(tileGap ?? '') &&
+        /Машино-години/.test(panelAfter ?? '') && tileAfter === tileBase, screenshots: [file] };
+  });
+  await scenario('plan-send-refresh-fails', ['E3-E04', 'E3-G02', 'R03'], async () => {
+    const sent = { value: false };
+    const { ctx, p } = await open(1440, {
+      writes: [[/\/plan\/enqueue/, { created: [] }]],
+      rewrite: [[exact(`/projects/${A}/plan`), (plan) => (sent.value ? planAfterSend(plan) : plan)]],
+    });
+    await p.goto(detail(A), { waitUntil: 'networkidle' });
+    await ready(p);
+    await sendPlan(p, sent, (route) => route.fulfill({ status: 500, json: { detail: 'e03 runner' } }));
+    await p.waitForTimeout(1500);
+    const panel = p.locator('[data-testid="order-forecast-panel"]');
+    const panelFailed = await panel.textContent();
+    const tileFailed = await text(p, '[data-testid="order-tile-ready"]');
+    const retry = await panel.getByRole('button', { name: 'Спробувати знову' }).count();
+    const file = await shoot(p, 'plan-send-refresh-fails');
+    await ctx.close();
+    const m = { panelFailed, tileFailed, retry };
+    return { recipe: { actions: ['plan row +', 'send the plan (POST intercepted)', 'forecast re-read → 500'] }, measured: m,
+      pass: retry === 1 && !/Завантаження|Машино-години/.test(panelFailed ?? '') && /—/.test(tileFailed ?? '') && !/…/.test(tileFailed ?? ''), screenshots: [file] };
   });
   await scenario('workspace-tabs-pick-open', ['E3-F03', 'E3-H02', 'R01'], async () => {
     const { ctx, p } = await open(1920, { storage: { 'projects.view': 'workspace' } });
