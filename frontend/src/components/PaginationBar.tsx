@@ -79,7 +79,10 @@ export function PaginationBar({
         {isShowAll ? `${total} ${items}` : t('common.showingRangeItems', { from, to, total, items })}
       </span>
 
-      <div className="flex items-center gap-2">
+      {/* ⚠️ The right block wraps too (WS-13 E2 E06): at 390 px its one line — size
+          select, four arrows, «page N of M» — was wider than the bar, and the last
+          two arrows sat clipped behind the card's edge, on every list. */}
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
         <span className="text-bambu-gray">{t('common.show')}</span>
         <Select
           size="sm"
