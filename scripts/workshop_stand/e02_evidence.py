@@ -1,7 +1,7 @@
 """WS-13 E2 acceptance evidence (spec §H) — a sidecar, loopback only, stdlib only.
 
     python scripts/workshop_stand/e02_evidence.py pairs
-    python scripts/workshop_stand/e02_evidence.py serve
+    python scripts/workshop_stand/e02_evidence.py serve [name]
 
 The universal E0 runner (``capture_serve.py`` + ``capture.js``) is used as it is and
 never extended:
@@ -16,7 +16,9 @@ never extended:
            app HEAD and dirty paths, the mockup HTML hash, the stand instance, and per
            record the primitive IDs, source (``test-fixture`` / ``app``), recipe,
            viewport / DPR / actual theme classes, rects and computed styles, the
-           interaction results, pass / fail and the SHA-256 of every picture.
+           interaction results, pass / fail and the SHA-256 of every picture. ``name``
+           (default ``primitives``) names the manifest, so a later runner adds its own
+           file beside an accepted one instead of overwriting it.
 The token reaches the browser only; nothing here prints it.
 """
 
@@ -99,7 +101,7 @@ def with_hashes(record: dict) -> dict:
     return {**record, "screenshots": shots}
 
 
-def serve() -> None:
+def serve(name: str = "primitives") -> None:
     root = stand.check_root(stand.expected_root("baseline"), mode="baseline")
     manifest = stand.read_manifest(root)
     mapping = json.loads((root / "mapping.json").read_text(encoding="utf-8"))
@@ -150,7 +152,7 @@ def serve() -> None:
     print(json.dumps({"serving": f"http://127.0.0.1:{PORT}"}), flush=True)
     finished.wait(timeout=2 * 3600)
     httpd.shutdown()
-    out = out_dir / "primitives.json"
+    out = out_dir / f"{name}.json"
     rows = [with_hashes(r) for r in records]
     out.write_text(json.dumps({**head, "records": rows}, ensure_ascii=False, indent=1), encoding="utf-8")
     failed = [r["id"] for r in rows if r.get("pass") is not True]
@@ -160,4 +162,7 @@ def serve() -> None:
 
 
 if __name__ == "__main__":
-    {"pairs": pairs, "serve": serve}[sys.argv[1]]()
+    if sys.argv[1] == "serve":
+        serve(*sys.argv[2:3])
+    else:
+        {"pairs": pairs}[sys.argv[1]]()
