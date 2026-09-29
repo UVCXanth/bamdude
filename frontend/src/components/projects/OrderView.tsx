@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -33,6 +33,9 @@ import { useOrderDetail } from '../../hooks/useOrderDetail';
 import { DispatchNotesSection } from '../stock/DispatchNotesSection';
 import { WorkshopPanel } from '../workshop/WorkshopPanel';
 import { forecastView } from './orderForecastView';
+import { ORDER_SECTIONS, sectionParam, type OrderSection } from './orderSections';
+import { WorkshopTabPanel, WorkshopTabs } from '../workshop/WorkshopTabs';
+import { useOrderPlan } from '../../hooks/useOrderPlan';
 
 /**
  * One order: who it is for, what it asks for, and how much of it is printed.
@@ -50,11 +53,16 @@ export function OrderView({
   id,
   onDeleted,
   embedded = false,
+  section: sectionProp,
+  onSectionChange,
 }: {
   id: number;
   onDeleted: () => void;
   /** Inside another page (the workspace's pane): no breadcrumb out of it, and not the page's heading. */
   embedded?: boolean;
+  /** The open section — the owner keeps it in its URL (WS-13 E3 F02); absent, the view keeps its own. */
+  section?: OrderSection;
+  onSectionChange?: (section: OrderSection) => void;
 }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -70,6 +78,23 @@ export function OrderView({
   // When the plan was last sent: until the forecast is read again after it, the
   // cached answer is the previous plan's and is not shown as current (R03).
   const [enqueuedAt, setEnqueuedAt] = useState<number | null>(null);
+
+  // The six sections (WS-13 E3 §F). Controlled by the owner's URL; a view with no
+  // owner keeps its own. A section is mounted on its first visit and KEPT — hidden
+  // — from then on, so a draft in the notes or the plan survives a look at another
+  // tab, and a section nobody opened asks the server nothing (F04).
+  const [ownSection, setOwnSection] = useState<OrderSection>('plan');
+  const section = sectionProp ?? ownSection;
+  const selectSection = (next: OrderSection) => {
+    if (onSectionChange) onSectionChange(next);
+    else setOwnSection(next);
+  };
+  const [visited, setVisited] = useState<ReadonlySet<OrderSection>>(() => new Set([section]));
+  if (!visited.has(section)) setVisited(new Set([...visited, section]));
+  const tabsId = useId();
+  // The plan tab's count READS the plan block's query and never fetches for itself
+  // (E1 CN2): no parentheses until the plan has been asked for, «(—)» while it is read.
+  const planForCount = useOrderPlan(id, false);
   // The issue dialog, and how it opens (spec workshop-order-issue, rules 26–28).
   const [fulfilling, setFulfilling] = useState<{ mode: FulfilmentMode; complete: boolean } | null>(null);
 
@@ -224,6 +249,31 @@ export function OrderView({
     isError: forecast.isError,
   });
 
+  function sectionBody(value: OrderSection) {
+    if (!order) return null;
+    switch (value) {
+      case 'plan':
+        return (
+          <PlanBlock
+            order={order}
+            canEdit={canEdit}
+            onDraftChanged={setPlanDraftChanged}
+            onEnqueued={() => setEnqueuedAt(Date.now())}
+          />
+        );
+      case 'prints':
+        return <OrderPrints order={order} canEdit={canEdit} />;
+      case 'procurement':
+        return <ProcurementChecklist order={order} canEdit={canEdit} />;
+      case 'issues':
+        return <DispatchNotesSection projectId={order.id} canEdit={canEdit} inTab />;
+      case 'notes':
+        return <OrderNotes order={order} canEdit={canEdit} />;
+      case 'files':
+        return <OrderAttachments order={order} canEdit={canEdit} />;
+    }
+  }
+
   // Zones in reading order (WS-13 E3 B01): head (title, facts, actions, the stage
   // row) → banners → the grid of ONE main panel and the side column. The grid's
   // columns are the named container's call (`.order-view*` in index.css), not
@@ -252,6 +302,7 @@ export function OrderView({
             bankingSurplus={bankSurplus.isPending}
             onCover={() => setCoverOpen(true)}
             embedded={embedded}
+            openHref={`/projects/${order.id}${sectionParam(section) ? `?section=${sectionParam(section)}` : ''}`}
           />
 
       <OrderStageStepper order={order} canEdit={canEdit} />
@@ -273,24 +324,39 @@ export function OrderView({
           <div className="space-y-6">
             <OrderFigures figures={order.figures} forecast={forecastNow} />
 
-            <OrderLinesTable order={order} canEdit={canEdit} />
+            <OrderLinesTable order={order} canEdit={canEdit} headingLevel={embedded ? 3 : 2} />
 
-            <PlanBlock
-              order={order}
-              canEdit={canEdit}
-              onDraftChanged={setPlanDraftChanged}
-              onEnqueued={() => setEnqueuedAt(Date.now())}
-            />
-
-            <ProcurementChecklist order={order} canEdit={canEdit} />
-
-            <OrderPrints order={order} canEdit={canEdit} />
-
-            <DispatchNotesSection projectId={order.id} canEdit={canEdit} hideWhenEmpty />
-
-            <OrderNotes order={order} canEdit={canEdit} />
-
-            <OrderAttachments order={order} canEdit={canEdit} />
+            <div>
+              <WorkshopTabs
+                idBase={tabsId}
+                ariaLabel={t('orders.detail.tabsLabel')}
+                value={section}
+                items={ORDER_SECTIONS.map((value) => ({
+                  value,
+                  label: t(`orders.detail.tabs.${value}`),
+                  count:
+                    value === 'plan'
+                      ? planForCount.data
+                        ? planForCount.data.totals.rows
+                        : planForCount.isFetching
+                          ? null
+                          : undefined
+                      : value === 'prints'
+                        ? order.counts.prints
+                        : value === 'issues'
+                          ? order.counts.issues
+                          : undefined,
+                }))}
+                onChange={selectSection}
+                size="detail"
+                panels="all"
+              />
+              {ORDER_SECTIONS.map((value) => (
+                <WorkshopTabPanel key={value} idBase={tabsId} value={value} hidden={value !== section} className="pt-4">
+                  {visited.has(value) && sectionBody(value)}
+                </WorkshopTabPanel>
+              ))}
+            </div>
           </div>
         </WorkshopPanel>
 

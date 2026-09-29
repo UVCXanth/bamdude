@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Download, Loader2, Paperclip, Trash2, Upload } from 'lucide-react';
+import { Download, Loader2, Trash2, Upload } from 'lucide-react';
 import { api, getAuthToken } from '../../api/client';
 import type { Order, ProjectAttachment } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
@@ -83,11 +83,8 @@ export function OrderAttachments({ order, canEdit }: OrderAttachmentsProps) {
 
   return (
     <section className="space-y-3">
-      <div className="flex items-center justify-between gap-4">
-        <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-          <Paperclip className="w-5 h-5" />
-          {t('orders.attachments.title')}
-        </h2>
+      {/* No heading of its own — the «Attachments» tab names it (WS-13 E3 F05). */}
+      <div className="flex items-center justify-end gap-4">
 
         {canEdit && (
           <>

@@ -56,6 +56,7 @@ const order = {
   updated_at: '2026-09-01T00:00:00Z',
   procurement: [],
   other_archive_ids: [],
+  counts: { prints: 0, issues: 0 },
   lines: [
     {
       id: 10,
@@ -183,10 +184,12 @@ describe('OrderPage', () => {
     });
   });
 
-  it("lists the order's dispatch notes, and draws nothing while there are none", async () => {
-    // spec workshop-dispatch-notes, rule 21.
+  it("lists the order's dispatch notes in the Issues tab, and says so while there are none", async () => {
+    // spec workshop-dispatch-notes, rule 21; WS-13 E3 F05 — the notes live in the
+    // «Issues» tab, which is always there and never stands blank (it used to draw
+    // nothing at all for an order without a note).
     vi.spyOn(api, 'getOrder').mockResolvedValue(order as never);
-    window.history.pushState({}, '', '/projects/1');
+    window.history.pushState({}, '', '/projects/1?section=issues');
     const { unmount } = render(
       <Routes>
         <Route path="/projects/:id" element={<OrderPage />} />
@@ -194,7 +197,7 @@ describe('OrderPage', () => {
     );
     expect(await screen.findByText('Flask')).toBeInTheDocument();
     await waitFor(() => expect(api.getDispatchNotes).toHaveBeenCalledWith(expect.objectContaining({ project_id: 1 })));
-    expect(screen.queryByTestId('dispatch-notes-section')).not.toBeInTheDocument();
+    expect(await screen.findByText('No issues yet.')).toBeInTheDocument();
     unmount();
 
     vi.spyOn(api, 'getDispatchNotes').mockResolvedValue({

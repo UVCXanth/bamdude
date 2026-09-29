@@ -10,17 +10,23 @@ const PER_PAGE = 24;
 /**
  * «Видачі» — a customer's or an order's dispatch notes, one server page at a time
  * (spec workshop-dispatch-notes, rules 21–22). An order's empty section is not drawn.
+ *
+ * `inTab` — the order page's «Issues» tab (WS-13 E3 F05, R04): the tab names it,
+ * so no heading; and a tab never stands blank, so the wait and the empty list are
+ * said in words. Without it (the customer page) the section is as it always was.
  */
 export function DispatchNotesSection({
   customerId,
   projectId,
   canEdit,
   hideWhenEmpty = false,
+  inTab = false,
 }: {
   customerId?: number;
   projectId?: number;
   canEdit: boolean;
   hideWhenEmpty?: boolean;
+  inTab?: boolean;
 }) {
   const { t } = useTranslation();
   const [page, setPage] = useState(1);
@@ -29,13 +35,13 @@ export function DispatchNotesSection({
   const filter = customerId != null ? { customer_id: customerId } : { project_id: projectId };
   const { data, isLoading } = useDispatchNotes({ ...filter, sort_by: sort, page, per_page: perPage });
 
-  if (isLoading) return null;
+  if (isLoading) return inTab ? <p className="text-sm text-bambu-gray">{t('common.loading')}</p> : null;
   const items = data?.items ?? [];
-  if (hideWhenEmpty && items.length === 0) return null;
+  if (hideWhenEmpty && !inTab && items.length === 0) return null;
 
   return (
     <section className="space-y-3" data-testid="dispatch-notes-section">
-      <h2 className="text-lg font-medium text-white">{t('stock.notes.sectionTitle')}</h2>
+      {!inTab && <h2 className="text-lg font-medium text-white">{t('stock.notes.sectionTitle')}</h2>}
       {items.length === 0 ? (
         <p className="text-bambu-gray text-sm">{t('stock.notes.empty')}</p>
       ) : (

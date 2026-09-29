@@ -5775,6 +5775,17 @@ export default {
       notFound: 'Замовлення не знайдено',
       loadFailed: 'Не вдалося завантажити замовлення:',
     },
+    detail: {
+      tabsLabel: 'Розділи замовлення',
+      tabs: {
+        plan: 'План друку',
+        prints: 'Друки',
+        procurement: 'Куповані деталі',
+        issues: 'Видачі',
+        notes: 'Нотатки',
+        files: 'Вкладення',
+      },
+    },
     header: {
       breadcrumb: 'Замовлення',
       breadcrumbLabel: 'Навігаційний ланцюжок',
@@ -5991,6 +6002,7 @@ export default {
     },
     procurement: {
       title: 'Куповані деталі',
+      empty: 'Куплених деталей у цьому замовленні немає.',
       part: 'Деталь',
       need: 'Потрібно',
       acquired: 'Придбано',

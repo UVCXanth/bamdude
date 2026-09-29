@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, ClipboardList, Loader2, Send } from 'lucide-react';
+import { AlertTriangle, Loader2, Send } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Order, PlanEnqueueItem, PlanRow as PlanRowData } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
@@ -14,6 +14,7 @@ import { PlanLine } from './PlanLine';
 import { MAX_PER_PLATE } from './PlanRow';
 import { projectPlan, rowDistribution, splitIsOff, type ChosenByRow, type SplitByRow } from './planMath';
 import { invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInvalidation';
+import { useOrderPlan } from '../../hooks/useOrderPlan';
 
 /**
  * What to print next for this order, per line.
@@ -43,7 +44,6 @@ import { invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInv
 export function PlanBlock({
   order,
   canEdit,
-  variant = 'page',
   onEnqueued,
   onDraftChanged,
 }: {
@@ -64,16 +64,7 @@ export function PlanBlock({
 
   const active = order.status === 'active';
 
-  const {
-    data: plan,
-    isLoading,
-    isError,
-    refetch,
-  } = useQuery({
-    queryKey: ['project-plan', order.id],
-    queryFn: () => api.getOrderPlan(order.id),
-    enabled: active,
-  });
+  const { data: plan, isLoading, isError, refetch } = useOrderPlan(order.id, active);
 
   // The app-wide currency, fetched the way every other money-showing screen
   // fetches it; `formatMoney` covers the unresolved first paint.
@@ -376,13 +367,9 @@ export function PlanBlock({
   const setRowSplit = (lineId: number, rowPlateId: number, next: Record<number, number>) =>
     setSplit((prev) => ({ ...prev, [lineId]: { ...(prev[lineId] ?? {}), [rowPlateId]: next } }));
 
-  const heading =
-    variant === 'dialog' ? null : (
-      <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-        <ClipboardList className="w-5 h-5" />
-        {t('orders.plan.title')}
-      </h2>
-    );
+  // No heading of its own: on the order page the «Print plan» tab names it (WS-13
+  // E3 F05), and the dialog has its own title.
+  const heading = null;
 
   // ⚠️ `plan-block` marks THE BLOCK, on every branch — it answers "is the plan
   // on this page", not "has the plan arrived". Carrying it on the loaded and

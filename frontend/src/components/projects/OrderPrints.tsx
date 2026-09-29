@@ -197,11 +197,8 @@ function OrderPrintsOf({ order, canEdit }: OrderPrintsProps) {
   }
 
   return (
+    // No heading of its own — the «Prints» tab names it (WS-13 E3 F05).
     <section className="space-y-3">
-      <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-        <Package className="w-5 h-5" />
-        {t('orders.prints.title')}
-      </h2>
 
       {truncated && (
         <button

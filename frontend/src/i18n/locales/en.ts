@@ -5724,6 +5724,17 @@ export default {
       notFound: 'Order not found',
       loadFailed: 'Could not load this order:',
     },
+    detail: {
+      tabsLabel: 'Order sections',
+      tabs: {
+        plan: 'Print plan',
+        prints: 'Prints',
+        procurement: 'Purchased parts',
+        issues: 'Issues',
+        notes: 'Notes',
+        files: 'Attachments',
+      },
+    },
     header: {
       breadcrumb: 'Orders',
       breadcrumbLabel: 'Breadcrumbs',
@@ -5922,6 +5933,7 @@ export default {
     },
     procurement: {
       title: 'Purchased parts',
+      empty: 'No purchased parts in this order.',
       part: 'Part',
       need: 'Need',
       acquired: 'Acquired',

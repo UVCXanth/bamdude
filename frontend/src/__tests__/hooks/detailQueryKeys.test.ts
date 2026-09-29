@@ -52,6 +52,9 @@ const OWNER: Record<string, string> = {
   // Dispatch notes (spec workshop-dispatch-notes): the three lists and the document.
   'dispatch-notes': 'hooks/useDispatchNotes.ts',
   'dispatch-note': 'hooks/useDispatchNotes.ts',
+  // The order's print plan (WS-13 E3 F01): the plan block reads it, the tab strip
+  // counts its rows from the same entry without fetching — one declaration, one set of options.
+  'project-plan': 'hooks/useOrderPlan.ts',
 };
 
 /** The invalidation helper is allowed to spell any key out; it observes none.

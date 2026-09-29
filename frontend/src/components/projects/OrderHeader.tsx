@@ -34,6 +34,8 @@ interface OrderHeaderProps {
   /** Drawn inside another page (the orders workspace): an h2 — the page has its own
    *  h1 — and «Open» to the full page as the first action. */
   embedded?: boolean;
+  /** Where «Open» leads — the full page, on the section open here (WS-13 E3 F03). */
+  openHref?: string;
 }
 
 /**
@@ -66,6 +68,7 @@ export function OrderHeader({
   onCover,
   fulfilment,
   embedded = false,
+  openHref,
 }: OrderHeaderProps) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -191,7 +194,7 @@ export function OrderHeader({
       <div data-testid="order-actions" className="flex flex-wrap items-center gap-2">
         {embedded && (
           <Link
-            to={`/projects/${order.id}`}
+            to={openHref ?? `/projects/${order.id}`}
             aria-label={t('orders.header.openFull', { code: order.code })}
             className="inline-flex items-center gap-1.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-tertiary px-3 py-1.5 text-sm font-medium text-white hover:bg-bambu-gray-dark"
           >

@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ShoppingCart } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Order, ProcurementRow } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
@@ -64,7 +63,10 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
 
   // Nothing bought means nothing to check off — an empty table with three
   // column headers is worse than no section at all.
-  if (order.procurement.length === 0) return null;
+  // The «Purchased parts» tab is always there, so it never stands blank (WS-13 E3 F05).
+  if (order.procurement.length === 0) {
+    return <p className="text-sm text-bambu-gray">{t('orders.procurement.empty')}</p>;
+  }
 
   const commit = (row: ProcurementRow, field: HTMLInputElement) => {
     const raw = field.value.trim();
@@ -83,13 +85,10 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
   };
 
   return (
+    // No heading and no card of its own — the «Purchased parts» tab names it, and
+    // the order's main panel is the frame (WS-13 E3 F05).
     <section className="space-y-3">
-      <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-        <ShoppingCart className="w-5 h-5" />
-        {t('orders.procurement.title')}
-      </h2>
-
-      <div className="overflow-x-auto rounded-xl border border-bambu-dark-tertiary">
+      <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-bambu-gray border-b border-bambu-dark-tertiary">

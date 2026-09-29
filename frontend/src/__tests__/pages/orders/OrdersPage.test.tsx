@@ -40,7 +40,7 @@ const orderDetail = {
   code: 'OR-0001', customer_id: 1, customer_name: 'ACME', description: null, color: null, status: 'active', stage: 'prep',
   responsible_id: null, responsible_name: null, notes: null, attachments: null, tags: null, due_date: null,
   priority: 'normal', price: null, url: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00Z',
-  updated_at: '2026-09-01T00:00:00Z', procurement: [], other_archive_ids: [], lines: [],
+  updated_at: '2026-09-01T00:00:00Z', procurement: [], other_archive_ids: [], counts: { prints: 0, issues: 0 }, lines: [],
   figures: { ordered: 0, printed: 0, covered_units: 0, complete: 0, remaining: 0, total_time_seconds: 0,
     total_filament_grams: 0, total_cost: 0, defective: 0, margin: null, progress: 0, other_prints_count: 0,
     all_printed: false, bankable_surplus: 0 },
@@ -373,6 +373,31 @@ describe('OrdersPage', () => {
       fireEvent.click(within(screen.getByRole('list', { name: 'Orders' })).getByRole('button', { name: /^OR-0001/ }));
       await waitFor(() => expect(window.location.search).toContain('order=1'));
       expect(await screen.findByRole('heading', { name: 'A' })).toBeInTheDocument();
+    });
+    it('opens the order the URL names on the tab the URL names (WS-13 E3 F03)', async () => {
+      window.history.pushState({}, '', '/projects?order=3&section=notes');
+      render(<OrdersPage />);
+      await screen.findByRole('heading', { name: 'C' });
+      expect(await screen.findByRole('tab', { name: /^Notes/ })).toHaveAttribute('aria-selected', 'true');
+    });
+    it('a tab named for another order is not carried over to the one shown (R01)', async () => {
+      // The URL names order 9, which is not on this page: the first row is shown, on the plan.
+      window.history.pushState({}, '', '/projects?order=9&section=notes');
+      render(<OrdersPage />);
+      await screen.findByRole('heading', { name: 'A' });
+      expect(await screen.findByRole('tab', { name: /^Print plan/ })).toHaveAttribute('aria-selected', 'true');
+      // …and the pair stays in the URL, harmless, for when that order is back.
+      expect(window.location.search).toContain('order=9');
+    });
+    it('a tab chosen on the first-row fallback writes that order and the tab in one go (R01)', async () => {
+      window.history.pushState({}, '', '/projects');
+      render(<OrdersPage />);
+      await screen.findByRole('heading', { name: 'A' });
+      const depth = window.history.length;
+      fireEvent.click(await screen.findByRole('tab', { name: /^Prints/ }));
+      await waitFor(() => expect(window.location.search).toBe('?order=1&section=prints'));
+      expect(window.history.length).toBe(depth);
+      expect(screen.getByRole('tab', { name: /^Prints/ })).toHaveAttribute('aria-selected', 'true');
     });
     it('deleting the shown order drops it from the URL and stays on the list', async () => {
       vi.spyOn(api, 'deleteOrder').mockResolvedValue(undefined as never);

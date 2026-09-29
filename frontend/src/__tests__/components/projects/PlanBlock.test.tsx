@@ -545,7 +545,8 @@ describe('PlanBlock', () => {
     render(<PlanBlock order={order} canEdit />);
 
     expect(await screen.findByTestId('plan-error')).toHaveTextContent(/could not load the plan/i);
-    expect(screen.getByRole('heading', { name: /what to print next/i })).toBeInTheDocument();
+    // The block stays on the page (its own heading went to the «Print plan» tab, WS-13 E3 F05).
+    expect(screen.getByTestId('plan-block')).toBeInTheDocument();
 
     get.mockResolvedValue(plan);
     fireEvent.click(screen.getByTestId('plan-retry'));
@@ -1524,7 +1525,7 @@ describe('PlanBlock', () => {
     expect(screen.getByTestId('plan-totals-time')).toHaveTextContent('1h 30m');
   });
 
-  it('drops the page heading in the dialog variant', () => {
+  it('carries no heading of its own in the dialog variant either', () => {
     render(<PlanBlock order={order} canEdit variant="dialog" />);
     expect(screen.queryByRole('heading', { name: /what to print next/i })).not.toBeInTheDocument();
     expect(screen.getByTestId('plan-block')).toBeInTheDocument();

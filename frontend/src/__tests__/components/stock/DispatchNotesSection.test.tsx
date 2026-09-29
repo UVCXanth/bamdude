@@ -37,6 +37,22 @@ describe('DispatchNotesSection', () => {
     vi.restoreAllMocks();
   });
 
+  it('keeps its heading and wrapper on the customer page — the tab mode is opt-in (WS-13 E3 R04)', async () => {
+    vi.spyOn(api, 'getDispatchNotes').mockResolvedValue(page([row({})]));
+    render(<DispatchNotesSection customerId={2} canEdit={false} />);
+    expect(await screen.findByRole('heading', { name: 'Issues' })).toBeInTheDocument();
+  });
+
+  it('in the order’s tab: no heading of its own, and the wait and the empty list in words', async () => {
+    let answer: (value: never) => void = () => {};
+    vi.spyOn(api, 'getDispatchNotes').mockReturnValue(new Promise((resolve) => (answer = resolve)) as never);
+    render(<DispatchNotesSection projectId={5} canEdit={false} inTab />);
+    expect(screen.getByText('Loading...')).toBeInTheDocument();
+    answer(page([]) as never);
+    expect(await screen.findByText('No issues yet.')).toBeInTheDocument();
+    expect(screen.queryByRole('heading')).toBeNull();
+  });
+
   it("lists a customer's notes the server pages, with codes as links", async () => {
     const get = vi
       .spyOn(api, 'getDispatchNotes')

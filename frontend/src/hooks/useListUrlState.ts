@@ -82,6 +82,20 @@ export function useListUrlState({ defaults: given }: { defaults: ListUrlDefaults
       }),
     [write, defaults],
   );
+  /** Several extras in ONE write (WS-13 E3 F03) — the workspace's order and its tab
+   *  change together: two `setExtra` calls in a row would each start from the same
+   *  stale URL, and the second would undo the first. */
+  const setExtras = useCallback(
+    (changes: Record<string, string>, { keepPage = false }: { keepPage?: boolean } = {}) =>
+      write((n) => {
+        for (const [key, value] of Object.entries(changes)) {
+          if (value && value !== defaults.extra?.[key]) n.set(key, value);
+          else n.delete(key);
+        }
+        if (!keepPage) n.delete('page');
+      }),
+    [write, defaults],
+  );
   /**
    * The empty state's «Reset»: search and every extra back to default, page 1,
    * sort kept — in ONE write. Two setters in a row would each start from the
@@ -105,5 +119,5 @@ export function useListUrlState({ defaults: given }: { defaults: ListUrlDefaults
     [page, setPage],
   );
 
-  return { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage };
+  return { page, q, sort, extra, setPage, setQ, setSort, setExtra, setExtras, resetFilters, clampToLastPage };
 }

@@ -6,6 +6,7 @@ import { useIsWideLayout } from '../../hooks/useIsWideLayout';
 import { isOverdue } from '../../utils/orderDates';
 import { PaginationBar } from '../PaginationBar';
 import { OrderView } from './OrderView';
+import { parseOrderSection, type OrderSection } from './orderSections';
 import { ProgressBar } from './ProgressBar';
 import { StageBadge } from './StageBadge';
 
@@ -19,6 +20,10 @@ interface OrdersWorkspaceProps {
   /** The order named in the URL, if any. */
   picked: number | null;
   onPick: (id: number | null) => void;
+  /** The URL's `section` — it belongs to the order the URL names (`picked`), no other. */
+  section?: string;
+  /** A tab chosen on the shown order: the owner writes that order AND the tab, in one go. */
+  onSection?: (orderId: number, section: OrderSection) => void;
 }
 
 /**
@@ -37,6 +42,8 @@ export function OrdersWorkspace({
   onPerPageChange,
   picked,
   onPick,
+  section,
+  onSection,
 }: OrdersWorkspaceProps) {
   const { t } = useTranslation();
   const wide = useIsWideLayout();
@@ -48,6 +55,12 @@ export function OrdersWorkspace({
   const skip = gone && gone.page === data ? gone.id : null;
   const items = (data?.items ?? []).filter((o) => o.id !== skip);
   const shown = picked != null && items.some((o) => o.id === picked) ? picked : (items[0]?.id ?? null);
+  // The tab shown is DERIVED, never reset by an effect (WS-13 E3 F03, R01): the
+  // URL's section is the tab of the order the URL names; any other order on the
+  // right — another page, a filter, a refetch, a deleted row, the first-row
+  // fallback — opens on the plan. A placeholder page shows the previous rows, so
+  // `shown` and the tab hold until the new answer.
+  const shownSection: OrderSection = picked != null && picked === shown ? parseOrderSection(section) : 'plan';
   const total = data?.meta.total ?? 0;
 
   if (isLoading || !data || items.length === 0) return null;
@@ -99,6 +112,8 @@ export function OrdersWorkspace({
             key={shown}
             id={shown}
             embedded
+            section={shownSection}
+            onSectionChange={(next) => onSection?.(shown, next)}
             onDeleted={() => {
               setGone({ id: shown, page: data });
               onPick(null);

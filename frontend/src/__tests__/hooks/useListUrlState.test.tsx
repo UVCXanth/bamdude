@@ -81,6 +81,22 @@ describe('useListUrlState', () => {
     expect(result.current.params.toString()).toBe('page=3');
   });
 
+  it('writes several places in ONE replace, keeping the page (WS-13 E3 F03)', () => {
+    const { result } = renderHook(
+      () => ({
+        state: useListUrlState({ defaults: { extra: { order: '', section: '' } } }),
+        params: useSearchParams()[0],
+      }),
+      { wrapper: wrapper('/projects?page=3&q=lamp&order=4&section=notes') },
+    );
+    // Two setExtra calls in a row would each start from the same stale URL and the
+    // second would undo the first — the order and its tab change together or not at all.
+    act(() => result.current.state.setExtras({ order: '7', section: '' }, { keepPage: true }));
+    expect(result.current.params.toString()).toBe('page=3&q=lamp&order=7');
+    act(() => result.current.state.setExtras({ order: '7', section: 'prints' }, { keepPage: true }));
+    expect(result.current.params.toString()).toBe('page=3&q=lamp&order=7&section=prints');
+  });
+
   it('clamps to the last page after the list shrank', () => {
     const { result } = renderHook(() => useListUrlState({ defaults: {} }), { wrapper: wrapper('/customers?page=9') });
     act(() => result.current.clampToLastPage(2));

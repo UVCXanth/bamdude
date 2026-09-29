@@ -26,7 +26,7 @@ const detail = (id: number, name: string) => ({
   id, code: `OR-000${id}`, name, customer_id: 2, customer_name: 'ACME', description: null, color: null, status: 'active',
   stage: 'prep', responsible_id: null, responsible_name: null, notes: null, attachments: null, tags: null,
   due_date: null, priority: 'normal', price: null, url: null, cover_image_filename: null,
-  created_at: '2026-09-01T00:00:00Z', updated_at: '2026-09-01T00:00:00Z', procurement: [], other_archive_ids: [],
+  created_at: '2026-09-01T00:00:00Z', updated_at: '2026-09-01T00:00:00Z', procurement: [], other_archive_ids: [], counts: { prints: 0, issues: 0 },
   lines: [],
   figures: { ordered: 0, printed: 0, covered_units: 0, complete: 0, remaining: 0, total_time_seconds: 0,
     total_filament_grams: 0, total_cost: 0, defective: 0, margin: null, progress: 0, other_prints_count: 0,

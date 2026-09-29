@@ -26,6 +26,7 @@ import { ListViewToggle } from '../../components/ListViewToggle';
 import { ListSortControl } from '../../components/ListSortControl';
 import { useOrdersViews } from '../../hooks/useOrdersViews';
 import { useListUrlState } from '../../hooks/useListUrlState';
+import { sectionParam } from '../../components/projects/orderSections';
 import { parseOrdersView, parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
 import type { OrdersView } from '../../hooks/usePersistedState';
 import { useSearchBox } from '../../hooks/useSearchBox';
@@ -66,8 +67,8 @@ export function OrdersPage() {
   const tabsId = useId();
   const views = useOrdersViews();
   const sortOptions = useOrderSortOptions();
-  const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
-    defaults: { sort: ORDERS_DEFAULT_SORT[view], extra: { tab: 'active', customer: '', responsible: '', stage: '', order: '', week: '0' } },
+  const { page, q, sort, extra, setPage, setQ, setSort, setExtra, setExtras, resetFilters, clampToLastPage } = useListUrlState({
+    defaults: { sort: ORDERS_DEFAULT_SORT[view], extra: { tab: 'active', customer: '', responsible: '', stage: '', order: '', section: '', week: '0' } },
   });
   // Another view is another default order, so the page it stood on means nothing there.
   const setView = (next: OrdersView) => {
@@ -338,6 +339,10 @@ export function OrdersPage() {
               }}
               picked={Number(extra.order) || null}
               onPick={(id) => setExtra('order', id ? String(id) : '', { keepPage: true })}
+              section={extra.section}
+              // The shown order and its tab in ONE write — also when the order was
+              // the first-row fallback and the URL did not name it yet (F03).
+              onSection={(orderId, next) => setExtras({ order: String(orderId), section: sectionParam(next) }, { keepPage: true })}
             />
           )}
         </WorkshopTabPanel>
