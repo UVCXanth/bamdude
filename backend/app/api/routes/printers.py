@@ -62,7 +62,12 @@ from backend.app.schemas.timelapse import TimelapseStorage
 from backend.app.services import ams_advertised_overlay, archive_parts, drying_preflight, scheduled_drying
 from backend.app.services.ams_backup_compatibility import NAMESPACE as AMS_BACKUP_COMPAT_NAMESPACE
 from backend.app.services.ams_backup_compatibility_apply import bulk_apply, forget_printer_rebuild
-from backend.app.services.archive import find_archive_for_sd_file, parse_plates_from_3mf, sd_stem
+from backend.app.services.archive import (
+    archive_has_something_on_disk,
+    find_archive_for_sd_file,
+    parse_plates_from_3mf,
+    sd_stem,
+)
 from backend.app.services.archive_defects import DefectsWrite
 from backend.app.services.bambu_ftp import (
     clear_sdcard_async,
@@ -1857,8 +1862,11 @@ async def get_printer_cover(
     stream token: this is the job's picture, not the camera, and a user who may
     see the printer card but not the live feed saw a broken image.
 
-    Serves the thumbnail from a local archive (DB-tracked).  Does NOT
-    initiate an FTP download from the printer — that would:
+    Serves the thumbnail of the running print's own archive, found by id —
+    the ``current_archive_id`` the status reports — and falls back to the
+    archive that matches the name on the card only while that archive has
+    nothing on disk yet.  Does NOT initiate an FTP download from the printer
+    — that would:
     (a) race with the on_print_start download flow,
     (b) race with the archive download-retry service,
     (c) waste bandwidth re-pulling a 20-30 MB 3MF every time the UI
@@ -1922,13 +1930,41 @@ async def get_printer_cover(
         if cache_key in _cover_cache[printer_id]:
             return Response(content=_cover_cache[printer_id][cache_key], media_type="image/png")
 
-    # Resolve the printing archive for this printer. The match (spaces folded,
-    # suffix variants, no status filter, newest row with its 3MF *or* its
-    # retention-surviving PNG on disk) lives in find_archive_for_sd_file — read
-    # its docstring for why each part is there; the file manager asks the same
-    # question through it.
+    # The print running now has its own archive, and BamDude knows it by id:
+    # the dispatcher creates it for a job it sends, ``on_print_start`` for a
+    # print started on the printer — the same ``current_archive_id`` the status
+    # reports. Its picture IS the cover. The card name is only the fallback for
+    # the window when that archive has nothing on disk yet (an external print's
+    # 3MF is still downloading): a library job carries the library's file name
+    # into its archive while the printer echoes the name it was uploaded under,
+    # and when the two did not fold into each other the card showed nothing
+    # with the print's own picture sitting in its archive.
     subtask_base = sd_stem(subtask_name)
-    archive = await find_archive_for_sd_file(db, printer_id, subtask_name)
+    archive = None
+    if state.state in ("RUNNING", "PAUSE"):
+        current_id = await resolve_current_archive_id(db, printer_id, state.subtask_id)
+        current = await db.get(PrintArchive, current_id) if current_id is not None else None
+        if (
+            current is not None
+            and current.deleted_at is None
+            and archive_has_something_on_disk(current.file_path, current.thumbnail_path)
+        ):
+            archive = current
+    # Only the print's own picture is cached: a fallback answer is some earlier
+    # print's, and cached under this print's name it would outlive the moment
+    # the print's own 3MF arrives.
+    own = archive is not None
+
+    def _remember(image_data: bytes) -> None:
+        if own:
+            _cover_cache.setdefault(printer_id, {})[(subtask_name, view_key)] = image_data
+
+    if archive is None:
+        # The match (spaces folded, suffix variants, no status filter, newest
+        # row with its 3MF *or* its retention-surviving PNG on disk) lives in
+        # find_archive_for_sd_file — read its docstring for why each part is
+        # there; the file manager asks the same question through it.
+        archive = await find_archive_for_sd_file(db, printer_id, subtask_name)
     if archive is None:
         raise HTTPException(404, f"No archive with a local 3MF yet for '{subtask_base}' on printer {printer_id}")
 
@@ -1940,9 +1976,7 @@ async def get_printer_cover(
         thumb_path = settings.base_dir / archive.thumbnail_path
         if thumb_path.is_file():
             image_data = thumb_path.read_bytes()
-            if printer_id not in _cover_cache:
-                _cover_cache[printer_id] = {}
-            _cover_cache[printer_id][(subtask_name, view_key)] = image_data
+            _remember(image_data)
             return Response(content=image_data, media_type="image/png")
 
     # 2. Otherwise open the 3MF from archive_dir and extract the thumbnail
@@ -2010,9 +2044,7 @@ async def get_printer_cover(
             for thumb_path in thumbnail_paths:
                 try:
                     image_data = zf.read(thumb_path)
-                    if printer_id not in _cover_cache:
-                        _cover_cache[printer_id] = {}
-                    _cover_cache[printer_id][(subtask_name, view_key)] = image_data
+                    _remember(image_data)
                     return Response(content=image_data, media_type="image/png")
                 except KeyError:
                     continue
@@ -2021,9 +2053,7 @@ async def get_printer_cover(
             for name in zf.namelist():
                 if name.startswith("Metadata/") and name.endswith(".png"):
                     image_data = zf.read(name)
-                    if printer_id not in _cover_cache:
-                        _cover_cache[printer_id] = {}
-                    _cover_cache[printer_id][(subtask_name, view_key)] = image_data
+                    _remember(image_data)
                     return Response(content=image_data, media_type="image/png")
 
     except zipfile.BadZipFile:

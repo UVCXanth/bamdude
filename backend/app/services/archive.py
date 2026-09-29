@@ -404,7 +404,10 @@ async def find_archive_for_sd_file(db: AsyncSession, printer_id: int, sd_name: s
     """The archive that still has something to show for a file on the card — or None.
 
     One owner for "printer file name → archive" (spec 2026-09-12 §3.1): the
-    printer-card cover and the file manager both ask here. An archive's
+    file manager asks here, and the printer-card cover asks here only as its
+    fallback — first it takes the running print's own archive by id
+    (``routes/printers.resolve_current_archive_id``), because a name is how to
+    find an archive when nobody knows which one it is. An archive's
     ``filename`` IS the card name for an external print (the download attaches
     the name it found) and DERIVES the card name for a dispatched one
     (``derive_remote_filename``: suffixes collapsed, spaces → underscores), so
@@ -448,9 +451,12 @@ async def find_archive_for_sd_file(db: AsyncSession, printer_id: int, sd_name: s
     ⚠️ Known hole, recorded rather than fixed: a #1542 doubled-suffix filename
     (``Model.gcode.3mf.gcode.3mf`` stored on the row) matches no arm — the stem
     of the card name is ``Model``, and folding spaces does not collapse the
-    extra suffix. The inline query this was lifted from had the same hole, and
-    the consequence is graceful: the plates route reads the file once, as it
-    does for a file that never printed.
+    extra suffix. The download stopped producing such names (2026-09-30,
+    ``archive_download.build_filename_candidates``); rows stored before keep
+    them, and a library file made from such a row carries them into every
+    archive dispatched from it. The consequence is graceful: the plates route
+    reads the file once, as it does for a file that never printed, and the
+    cover of a running print no longer depends on this match.
     """
     stem = sd_stem(sd_name)
     stem_us = stem.replace(" ", "_")
@@ -473,18 +479,22 @@ async def find_archive_for_sd_file(db: AsyncSession, printer_id: int, sd_name: s
         )
     ).all()
     for archive_id, file_path, thumbnail_path in candidates:
-        # ``base_dir / ""`` is base_dir itself — a directory, so is_file() is
-        # False — but check the column first and say so out loud. Both columns
-        # are persisted server-owned relative paths, written only by
-        # archive_print / attach_3mf_to_archive / the thumbnail extractor — never
-        # by a request; the card-name input selects rows, it never enters the join.
-        local_3mf = settings.base_dir / file_path if file_path else None  # SEC-PATH-OK: server-owned column
-        local_png = settings.base_dir / thumbnail_path if thumbnail_path else None  # SEC-PATH-OK: server-owned column
-        has_3mf = local_3mf is not None and local_3mf.is_file()
-        has_png = local_png is not None and local_png.is_file()
-        if has_3mf or has_png:
+        if archive_has_something_on_disk(file_path, thumbnail_path):
             return await db.get(PrintArchive, archive_id)
     return None
+
+
+def archive_has_something_on_disk(file_path: str | None, thumbnail_path: str | None) -> bool:
+    """True when an archive's 3MF or its extracted PNG is on disk — something to show.
+
+    ``base_dir / ""`` is base_dir itself — a directory, so is_file() is False —
+    but check the column first and say so out loud. Both columns are persisted
+    server-owned relative paths, written only by archive_print /
+    attach_3mf_to_archive / the thumbnail extractor — never by a request.
+    """
+    local_3mf = settings.base_dir / file_path if file_path else None  # SEC-PATH-OK: server-owned column
+    local_png = settings.base_dir / thumbnail_path if thumbnail_path else None  # SEC-PATH-OK: server-owned column
+    return (local_3mf is not None and local_3mf.is_file()) or (local_png is not None and local_png.is_file())
 
 
 def remove_swap_pending_event(archive: PrintArchive, event: str) -> bool:

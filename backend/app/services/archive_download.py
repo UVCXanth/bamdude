@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from backend.app.models.printer import Printer
+from backend.app.services.archive import sd_stem
 from backend.app.services.bambu_ftp import (
     BambuFTPClient,
     download_file_try_paths_async,
@@ -54,15 +55,24 @@ def last_download_failure_reason(printer_id: int) -> str | None:
 def build_filename_candidates(subtask_name: str | None, filename: str | None) -> list[str]:
     """Build the ordered list of filenames to probe.
 
-    - ``{subtask_name}.gcode.3mf`` / ``{subtask_name}.3mf``
+    - ``{stem}.gcode.3mf`` / ``{stem}.3mf`` of the subtask — and the subtask
+      itself first when it already is a card name
     - filename with variants (with/without .gcode, with/without .3mf)
     - space→underscore variants of every name above
+
+    ⚠️ An A1 printing from USB reports the card name, suffix included, as the
+    subtask (#1542). Appending suffixes to it probed paths that cannot exist
+    and, because the first candidate names the temp file, stored the archive
+    as ``X.gcode.3mf.gcode.3mf`` — and its ``print_name`` as ``X.gcode.3mf``.
     """
     names: list[str] = []
 
     if subtask_name:
-        names.append(f"{subtask_name}.gcode.3mf")
-        names.append(f"{subtask_name}.3mf")
+        if subtask_name.endswith(".3mf"):
+            names.append(subtask_name)
+        stem = sd_stem(subtask_name)
+        names.append(f"{stem}.gcode.3mf")
+        names.append(f"{stem}.3mf")
 
     if filename:
         fname = filename.split("/")[-1] if "/" in filename else filename
