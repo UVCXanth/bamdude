@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Loader2 } from 'lucide-react';
+import { ChevronRight, Loader2 } from 'lucide-react';
 import { api } from '../../api/client';
 import type { ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
@@ -13,7 +14,7 @@ import { OrderFigures } from './OrderFigures';
 import { OrderLinesTable } from './OrderLinesTable';
 import { PlanBlock } from './PlanBlock';
 import { OrderModal } from './OrderModal';
-import { OrderCover } from './OrderCover';
+import { OrderCoverDialog } from './OrderCover';
 import { ProcurementChecklist } from './ProcurementChecklist';
 import { OrderPrints } from './OrderPrints';
 import { OrderQueue } from './OrderQueue';
@@ -63,6 +64,7 @@ export function OrderView({
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
+  const [coverOpen, setCoverOpen] = useState(false);
   const [planDraftChanged, setPlanDraftChanged] = useState(false);
   // The issue dialog, and how it opens (spec workshop-order-issue, rules 26–28).
   const [fulfilling, setFulfilling] = useState<{ mode: FulfilmentMode; complete: boolean } | null>(null);
@@ -159,11 +161,31 @@ export function OrderView({
     onError: (e: Error) => showToast(e.message, 'error'),
   });
 
+  // The page's way back to the list (spec B03): above the header, outside it, and
+  // there in the loading and error states too (B05). The workspace has none — its
+  // list is beside it, and a crumb would lead to a bare /projects.
+  const crumbs = embedded ? null : (
+    <nav aria-label={t('orders.header.breadcrumbLabel')} className="mb-3 flex min-w-0 items-center gap-1 text-sm text-bambu-gray">
+      <Link to="/projects" className="shrink-0 hover:text-white transition-colors">
+        {t('orders.header.breadcrumb')}
+      </Link>
+      {order && (
+        <>
+          <ChevronRight className="w-4 h-4 shrink-0" aria-hidden />
+          <span className="min-w-0 truncate text-white">{order.name}</span>
+        </>
+      )}
+    </nav>
+  );
+
   if (isLoading) {
     return (
-      <div className="p-4 flex items-center gap-2 text-bambu-gray">
-        <Loader2 className="w-4 h-4 animate-spin" />
-        {t('common.loading')}
+      <div className="p-4">
+        {crumbs}
+        <div className="flex items-center gap-2 text-bambu-gray">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          {t('common.loading')}
+        </div>
       </div>
     );
   }
@@ -175,12 +197,17 @@ export function OrderView({
   // refetch blipped. With no data the two cases still read apart: a fetch that
   // FAILED is not an order that was deleted.
   if (!order) {
-    return isError ? (
-      <div className="p-4 text-sm text-red-500">
-        {t('orders.page.loadFailed')} {(error as Error)?.message}
+    return (
+      <div className="p-4">
+        {crumbs}
+        {isError ? (
+          <div className="text-sm text-red-500">
+            {t('orders.page.loadFailed')} {(error as Error)?.message}
+          </div>
+        ) : (
+          <div className="text-bambu-gray text-sm">{t('orders.page.notFound')}</div>
+        )}
       </div>
-    ) : (
-      <div className="p-4 text-bambu-gray text-sm">{t('orders.page.notFound')}</div>
     );
   }
 
@@ -192,12 +219,8 @@ export function OrderView({
   // the window's.
   return (
     <div data-testid="order-view" className="order-view p-4">
+      {crumbs}
       <div data-testid="order-head" className="border-b border-bambu-dark-tertiary pb-3 mb-4">
-      {/* The cover sits in the header's right column without OrderHeader
-          knowing about it — the header owns the actions row, this owns the
-          picture, and neither has to grow a slot for the other. */}
-      <div className="flex items-start gap-4 flex-wrap">
-        <div className="min-w-0 flex-1">
           <OrderHeader
             order={order}
             onEdit={() => setEditing(true)}
@@ -216,11 +239,9 @@ export function OrderView({
             }
             onBankSurplus={() => bankSurplus.mutate()}
             bankingSurplus={bankSurplus.isPending}
+            onCover={() => setCoverOpen(true)}
             embedded={embedded}
           />
-        </div>
-        <OrderCover order={order} canEdit={canEdit} />
-      </div>
 
       <OrderStageStepper order={order} canEdit={canEdit} />
       </div>
@@ -270,6 +291,8 @@ export function OrderView({
       {editing && <OrderModal order={order} onClose={() => setEditing(false)} />}
 
       {duplicating && <DuplicateOrderModal order={order} onClose={() => setDuplicating(false)} />}
+
+      {coverOpen && <OrderCoverDialog order={order} onClose={() => setCoverOpen(false)} />}
 
       {fulfilling && (
         <FulfilmentDialog

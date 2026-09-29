@@ -107,7 +107,8 @@ describe('OrdersWorkspace', () => {
     vi.spyOn(api, 'deleteOrder').mockResolvedValue(undefined as never);
     render(<OrdersWorkspace data={page(ROWS)} {...props} picked={null} onPick={onPick} />);
     await screen.findByRole('heading', { name: 'Ten flasks' });
-    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Order actions/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /^delete$/i }));
     fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
     await waitFor(() => expect(onPick).toHaveBeenCalledWith(null));
     // The list has not been read again yet — the deleted row is still in it — and the pane is already on the next.
@@ -117,7 +118,8 @@ describe('OrdersWorkspace', () => {
     vi.spyOn(api, 'deleteOrder').mockResolvedValue(undefined as never);
     const { rerender } = render(<OrdersWorkspace data={page(ROWS)} {...props} picked={2} onPick={() => {}} />);
     await screen.findByRole('heading', { name: 'Lamp' });
-    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Order actions/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /^delete$/i }));
     fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
     await waitFor(() => expect(api.deleteOrder).toHaveBeenCalledWith(2));
     // SQLite without AUTOINCREMENT gives the newest id to the next order created.

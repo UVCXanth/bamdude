@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import { Routes, Route } from 'react-router';
 import { render } from '../../utils';
+import { api } from '../../../api/client';
 import { OrderPage } from '../../../pages/orders/OrderPage';
 import { makeOrder, mockOrderDetailApi } from '../../fixtures/orderDetail';
 
@@ -49,6 +50,26 @@ describe('OrderView composition', () => {
     // The title and the stage row are the head's; the lines are the main panel's.
     expect(within(head).getByRole('heading', { level: 1, name: 'Ten flasks' })).toBeInTheDocument();
     expect(await within(main).findByText('Flask')).toBeInTheDocument();
+  });
+
+  it('puts the breadcrumbs above the header, outside it (spec B03)', async () => {
+    mockOrderDetailApi(makeOrder());
+    renderPage();
+
+    const view = await screen.findByTestId('order-view');
+    const crumbs = within(view).getByRole('navigation', { name: 'Breadcrumbs' });
+    expect(within(crumbs).getByRole('link', { name: 'Orders' })).toHaveAttribute('href', '/projects');
+    expect(await within(crumbs).findByText('Ten flasks')).toBeInTheDocument();
+    expect(precedes(crumbs, within(view).getByTestId('order-head'))).toBe(true);
+  });
+
+  it('keeps the way back to the list while the order is still loading (spec B05)', async () => {
+    mockOrderDetailApi(makeOrder());
+    vi.spyOn(api, 'getOrder').mockReturnValue(new Promise(() => {}));
+    renderPage();
+
+    const crumbs = await screen.findByRole('navigation', { name: 'Breadcrumbs' });
+    expect(within(crumbs).getByRole('link', { name: 'Orders' })).toBeInTheDocument();
   });
 
   it('puts the page under the Workshop scope', async () => {

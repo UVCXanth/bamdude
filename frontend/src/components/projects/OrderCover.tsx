@@ -1,83 +1,117 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Image as ImageIcon, Loader2, Trash2, Upload } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Order } from '../../api/client';
-import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
+import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
-interface OrderCoverProps {
-  order: Order;
-  canEdit: boolean;
+/**
+ * The order's cover as a 48 px picture at the head of the header (WS-13 E3 C05):
+ * for an editor a button that opens the cover dialog, for a reader the picture
+ * alone, named. No cover → nothing; an editor reaches the dialog from the menu.
+ *
+ * ⚠️ **The URL is bare — the response header is the single freshness rule.**
+ * Replacing a cover keeps the same URL; the endpoint answers
+ * `Cache-Control: private, no-cache`, so the browser revalidates, and a `?v=`
+ * counter here could only disagree with it. The media token is stamped by the
+ * app-wide sync, as on every other picture.
+ */
+export function OrderCoverThumb({ order, canEdit, onOpen }: { order: Order; canEdit: boolean; onOpen: () => void }) {
+  const { t } = useTranslation();
+  if (!order.cover_image_filename) return null;
+  const src = api.getProjectCoverImageUrl(order.id);
+  if (!canEdit) {
+    return (
+      <img
+        data-testid="order-cover-image"
+        src={src}
+        alt={t('orders.header.coverAlt', { name: order.name })}
+        className="h-12 w-12 shrink-0 rounded-lg object-cover"
+      />
+    );
+  }
+  return (
+    <button
+      type="button"
+      aria-label={t('orders.header.changeCover')}
+      onClick={onOpen}
+      className="shrink-0 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green"
+    >
+      <img data-testid="order-cover-image" src={src} alt="" className="h-12 w-12 rounded-lg object-cover" />
+    </button>
+  );
 }
 
 /**
- * The order's cover picture, beside the header.
- *
- * ⚠️ **The URL is bare — the response header is the single freshness rule.**
- * Replacing a cover keeps the same URL, which is why this used to carry a
- * `?v=` counter; the endpoint now answers `Cache-Control: private, no-cache`,
- * so the browser revalidates and a second rule here could only disagree with
- * it. (The counter also had to compute its own separator, because
- * `withStreamToken` returns the URL bare while the token is still loading —
- * one more thing that is simply gone.) The orders grid card renders the same
- * bare URL.
+ * Upload or remove the cover (WS-13 E3 C05) — the same two mutations the
+ * header's cover column used to carry, with the refusal and the wait in the
+ * dialog rather than behind it.
  */
-export function OrderCover({ order, canEdit }: OrderCoverProps) {
+export function OrderCoverDialog({ order, onClose }: { order: Order; onClose: () => void }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const { showToast } = useToast();
   const fileInput = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const refresh = () => invalidateOrderViews(queryClient, { orderId: order.id });
 
   const upload = useMutation({
     mutationFn: (file: File) => api.uploadProjectCoverImage(order.id, file),
+    onMutate: () => setError(null),
     onSuccess: refresh,
-    onError: (e: Error) => showToast(e.message, 'error'),
+    onError: (e: Error) => setError(e.message),
   });
 
   const remove = useMutation({
     mutationFn: () => api.deleteProjectCoverImage(order.id),
+    onMutate: () => setError(null),
     onSuccess: refresh,
-    onError: (e: Error) => showToast(e.message, 'error'),
+    onError: (e: Error) => setError(e.message),
   });
 
   const busy = upload.isPending || remove.isPending;
 
-  // Nothing to show and nothing to do: a read-only viewer gets an empty grey
-  // box otherwise, which reads as a picture that failed to load. `null`, not
-  // an empty fragment — React renders both as nothing, and only one of them
-  // says so.
-  if (!order.cover_image_filename && !canEdit) return null;
-
-  const coverSrc = api.getProjectCoverImageUrl(order.id);
-
   return (
-    <div className="flex items-start gap-2">
-      <div className="w-32 aspect-[3/2] rounded-lg bg-bambu-dark border border-bambu-dark-tertiary overflow-hidden flex items-center justify-center flex-shrink-0">
-        {order.cover_image_filename ? (
-          <img data-testid="order-cover-image" src={coverSrc} alt="" className="w-full h-full object-cover" />
-        ) : (
-          <ImageIcon className="w-6 h-6 text-bambu-gray" />
-        )}
-      </div>
-
-      {canEdit && (
-        <div className="flex flex-col gap-2">
-          <input
-            ref={fileInput}
-            type="file"
-            accept="image/jpeg,image/png,image/gif,image/webp"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) upload.mutate(file);
-              e.target.value = '';
-            }}
-          />
+    <WorkshopDialog
+      onClose={onClose}
+      title={t('orders.cover.title')}
+      subtitle={order.name}
+      size="sm"
+      pending={busy}
+      error={error}
+      footer={
+        <Button variant="secondary" onClick={onClose} disabled={busy}>
+          {t('common.close')}
+        </Button>
+      }
+    >
+      <div className="space-y-3">
+        <div className="flex aspect-[3/2] w-full items-center justify-center overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-bambu-dark">
+          {order.cover_image_filename ? (
+            <img data-testid="order-cover-preview" src={api.getProjectCoverImageUrl(order.id)} alt="" className="h-full w-full object-cover" />
+          ) : (
+            <span className="flex flex-col items-center gap-2 text-sm text-bambu-gray">
+              <ImageIcon className="h-6 w-6" />
+              {t('orders.cover.empty')}
+            </span>
+          )}
+        </div>
+        <input
+          ref={fileInput}
+          type="file"
+          accept="image/jpeg,image/png,image/gif,image/webp"
+          className="hidden"
+          data-testid="order-cover-input"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) upload.mutate(file);
+            e.target.value = '';
+          }}
+        />
+        <div className="flex flex-wrap gap-2">
           <Button variant="secondary" size="sm" onClick={() => fileInput.current?.click()} disabled={busy}>
             {upload.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
             {t('orders.cover.upload')}
@@ -89,7 +123,7 @@ export function OrderCover({ order, canEdit }: OrderCoverProps) {
             </Button>
           )}
         </div>
-      )}
-    </div>
+      </div>
+    </WorkshopDialog>
   );
 }

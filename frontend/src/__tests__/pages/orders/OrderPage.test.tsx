@@ -295,7 +295,9 @@ describe('OrderPage', () => {
         <Route path="/projects/:id" element={<OrderPage />} />
       </Routes>,
     );
-    fireEvent.click(await screen.findByRole('button', { name: 'Mark completed' }));
+    // The header's other actions live in its menu (WS-13 E3 C04).
+    fireEvent.click(await screen.findByRole('button', { name: /^Order actions/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mark completed' }));
     expect(await screen.findByRole('dialog', { name: 'Stock & issue' })).toBeInTheDocument();
     expect(update).not.toHaveBeenCalled();
   });
@@ -439,7 +441,8 @@ describe('OrderPage', () => {
     );
 
     expect(await screen.findByRole('heading', { name: 'Ten flasks' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Order actions/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /^delete$/i }));
     fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
 
     expect(await screen.findByText('order list')).toBeInTheDocument();

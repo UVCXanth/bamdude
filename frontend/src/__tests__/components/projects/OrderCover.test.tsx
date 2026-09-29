@@ -1,59 +1,93 @@
 /**
- * The cover URL is the bare one the client builds — no cache-buster.
+ * The order's cover: a 48 px picture at the head of the header and a dialog
+ * that uploads or removes it (WS-13 E3 C05). The mutations are the ones the old
+ * cover column carried; what moved is where the refusal and the wait show.
  *
- * It used to carry a `?v=` counter, because replacing a cover keeps the same
- * URL and the browser would otherwise show the old picture. The endpoint now
- * answers `Cache-Control: private, no-cache`, so the browser revalidates; a
- * second freshness rule in the component could only disagree with the first.
- * The counter also had to compute its own separator — `getProjectCoverImageUrl`
- * runs the URL through `withStreamToken`, which returns it BARE until the
- * stream token has loaded — and a hard-coded `&v=` had already produced
- * `…/cover-image&v=0` on a cold page once.
+ * The cover URL is the bare one the client builds — no cache-buster. It used to
+ * carry a `?v=` counter, because replacing a cover keeps the same URL; the
+ * endpoint now answers `Cache-Control: private, no-cache`, so the browser
+ * revalidates, and a second freshness rule here could only disagree with the
+ * first. A hard-coded `&v=` had already produced `…/cover-image&v=0` on a cold
+ * page once.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
-import type { Order } from '../../../api/client';
-import { OrderCover } from '../../../components/projects/OrderCover';
+import { OrderCoverDialog, OrderCoverThumb } from '../../../components/projects/OrderCover';
+import { makeOrder } from '../../fixtures/orderDetail';
 
-const order = { id: 1, cover_image_filename: 'cover.jpg' } as unknown as Order;
+const withCover = makeOrder({ cover_image_filename: 'cover.jpg' });
 
-describe('OrderCover', () => {
+describe('OrderCoverThumb', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
   it('renders the URL as it comes, with no token loaded yet', () => {
     vi.spyOn(api, 'getProjectCoverImageUrl').mockReturnValue('/api/v1/projects/1/cover-image');
-
-    render(<OrderCover order={order} canEdit />);
-
+    render(<OrderCoverThumb order={withCover} canEdit onOpen={() => {}} />);
     expect(screen.getByTestId('order-cover-image')).toHaveAttribute('src', '/api/v1/projects/1/cover-image');
   });
 
   it('adds nothing to the query string the token opened', () => {
     vi.spyOn(api, 'getProjectCoverImageUrl').mockReturnValue('/api/v1/projects/1/cover-image?token=x');
-
-    render(<OrderCover order={order} canEdit />);
-
+    render(<OrderCoverThumb order={withCover} canEdit onOpen={() => {}} />);
     const src = screen.getByTestId('order-cover-image').getAttribute('src') ?? '';
     expect(src).toBe('/api/v1/projects/1/cover-image?token=x');
     expect(src).not.toContain('v=');
   });
 
-  it('shows nothing at all to a viewer of an order with no cover', () => {
+  it('shows nothing at all without a cover, to an editor or a viewer', () => {
     // `null`, not an empty fragment: React renders both as nothing, and only
     // one of them says so to the next reader.
     render(
       <div data-testid="cover-slot">
-        <OrderCover order={{ id: 1, cover_image_filename: null } as unknown as Order} canEdit={false} />
+        <OrderCoverThumb order={makeOrder()} canEdit={false} onOpen={() => {}} />
+        <OrderCoverThumb order={makeOrder()} canEdit onOpen={() => {}} />
       </div>,
     );
-
-    expect(screen.queryByTestId('order-cover-image')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button')).not.toBeInTheDocument();
     expect(screen.getByTestId('cover-slot')).toBeEmptyDOMElement();
+  });
+});
+
+describe('OrderCoverDialog', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('uploads the picked file through the order’s cover endpoint', async () => {
+    const upload = vi.spyOn(api, 'uploadProjectCoverImage').mockResolvedValue({} as never);
+    render(<OrderCoverDialog order={makeOrder()} onClose={() => {}} />);
+
+    const file = new File(['x'], 'cover.png', { type: 'image/png' });
+    fireEvent.change(screen.getByTestId('order-cover-input'), { target: { files: [file] } });
+
+    await waitFor(() => expect(upload).toHaveBeenCalledWith(1, file));
+  });
+
+  it('removes a cover there is, and offers no removal when there is none', async () => {
+    const remove = vi.spyOn(api, 'deleteProjectCoverImage').mockResolvedValue({} as never);
+    const { unmount } = render(<OrderCoverDialog order={withCover} onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(1));
+    unmount();
+
+    render(<OrderCoverDialog order={makeOrder()} onClose={() => {}} />);
+    expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
+  });
+
+  it('shows a refusal inside the dialog, which stays open', async () => {
+    vi.spyOn(api, 'uploadProjectCoverImage').mockRejectedValue(new Error('File too large'));
+    const onClose = vi.fn();
+    render(<OrderCoverDialog order={makeOrder()} onClose={onClose} />);
+
+    fireEvent.change(screen.getByTestId('order-cover-input'), {
+      target: { files: [new File(['x'], 'big.png', { type: 'image/png' })] },
+    });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('File too large');
+    expect(onClose).not.toHaveBeenCalled();
   });
 });
