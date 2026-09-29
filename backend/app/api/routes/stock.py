@@ -57,6 +57,7 @@ from backend.app.services import (
     stock_issues,
     stock_journal,
     stock_pick,
+    stock_views,
 )
 from backend.app.services.configuration_views import configuration_out, groups_by_product
 from backend.app.services.entity_codes import code_for, id_from_query
@@ -84,18 +85,32 @@ from backend.app.services.stock_views import movement_out, orders_of_lines
 
 router = APIRouter(prefix="/stock", tags=["stock"])
 
-# All three keys are computed: the ``with_stock`` filter needs the balances, so
+# All the keys are computed: the ``with_stock`` filter needs the balances, so
 # the set is built in Python whole before it can be sorted or cut (spec
-# workshop-lists, rule 9). ``kits-desc`` is the flat answer's own order.
-_STOCK_SORT = SortSpec(sql={}, computed={"kits", "name", "reserved"}, default="kits-desc")
+# workshop-lists, rule 9). ``kits-desc`` is the flat answer's own order. ``shelf``
+# (WS-13 E1 ST4) reads ``parts_on_shelf``, already in hand before the cut.
+_STOCK_SORT = SortSpec(sql={}, computed={"kits", "name", "reserved", "shelf"}, default="kits-desc")
 _STOCK_KEYS = {
     "kits": lambda r: r.kits_available,
     "name": lambda r: r.name.lower(),
     "reserved": lambda r: r.reserved_kits,
+    "shelf": lambda r: r.parts_on_shelf,
 }
 
 
-async def _stock_rows(db: AsyncSession, *, q: str | None, with_stock: bool) -> list[StockProductOut]:
+def _stock_word(word: str):
+    """One search word against a shelf row: the product's name, its SKU or its code —
+    ``%`` and ``_`` taken literally (WS-13 E1 ST4)."""
+    needle = like_contains(word)
+    fields = [Product.name.ilike(needle, escape="\\"), Product.sku.ilike(needle, escape="\\")]
+    if (product_id := id_from_query("product", word)) is not None:
+        fields.append(Product.id == product_id)
+    return or_(*fields)
+
+
+async def _stock_rows(
+    db: AsyncSession, *, q: str | None, with_stock: bool, loaded: dict | None = None
+) -> list[StockProductOut]:
     """Every product with a shelf: its kits, its counted parts' balances, and
     the ACTIVE orders' lines holding its kits in reserve — kits descending,
     then name. The flat answer's rows, and the source of the paged list and
@@ -113,14 +128,17 @@ async def _stock_rows(db: AsyncSession, *, q: str | None, with_stock: bool) -> l
     stmt = (
         select(Product).options(selectinload(Product.parts)).where(Product.parts.any(part_stock.counted_part_clause()))
     )
-    if q and q.strip():
-        stmt = stmt.where(Product.name.ilike(f"%{q.strip()}%"))
+    for word in (q or "").split():
+        stmt = stmt.where(_stock_word(word))
     products = [p for p in (await db.execute(stmt)).scalars().all() if any(part_stock.is_counted(pt) for pt in p.parts)]
     if not products:
         return []
 
     ids = [p.id for p in products]
     balances = await part_stock.balances_for_products(db, ids)
+    if loaded is not None:
+        # What the page's enrichment needs after the cut, without reading it again.
+        loaded.update(products={p.id: p for p in products}, balances=balances)
 
     # Reservations: the lines of ACTIVE orders on these products, then ONE
     # ledger read for all of them — the same read the order pages use.
@@ -153,7 +171,13 @@ async def _stock_rows(db: AsyncSession, *, q: str | None, with_stock: bool) -> l
         kits = reads.reserved_units.get(line_id, 0)
         if kits > 0:
             reservations.setdefault(product_id, []).append(
-                StockReservationOut(line_id=line_id, order_id=order_id, order_name=order_name, kits=kits)
+                StockReservationOut(
+                    line_id=line_id,
+                    order_id=order_id,
+                    order_code=code_for("order", order_id),
+                    order_name=order_name,
+                    kits=kits,
+                )
             )
 
     out: list[StockProductOut] = []
@@ -179,6 +203,8 @@ async def _stock_rows(db: AsyncSession, *, q: str | None, with_stock: bool) -> l
                     if pt.id in part_balances
                 ],
                 reservations=held,
+                sku=p.sku,
+                parts_on_shelf=sum(part_balances.values()),
             )
         )
     out.sort(key=lambda row: (-row.kits_available, row.name.lower()))
@@ -200,13 +226,28 @@ async def stock_summary(
     switch every list of the section has (spec projects-lists-parity rule 1,
     workshop-lists rule 9): without it the flat ``{products}`` exactly as
     before; with it the envelope, whose rows also carry ``reserved_kits``."""
-    rows = await _stock_rows(db, q=q, with_stock=with_stock)
+    loaded: dict = {}
+    rows = await _stock_rows(db, q=q, with_stock=with_stock, loaded=loaded)
     if page is None:
         return StockSummaryOut(products=rows)
     key, direction, _computed = resolve_sort(_STOCK_SORT, sort_by)
     items = [StockListItem(**row.model_dump(), reserved_kits=sum(r.kits for r in row.reservations)) for row in rows]
     items = sort_computed(items, _STOCK_KEYS[key], direction, id_fn=lambda r: r.id)
-    return StockListPage(items=slice_page(items, page, per_page, all), meta=page_meta(len(items), page, per_page, all))
+    page_items = slice_page(items, page, per_page, all)
+    # Z3: the per-option kits and the parts' options are read for the page alone.
+    if page_items:
+        products = [loaded["products"][row.id] for row in page_items]
+        by_option = await stock_views.kits_by_option(db, products, loaded["balances"])
+        labels = await stock_views.option_labels(
+            db, {pt.variant_option_id for p in products for pt in p.parts if pt.variant_option_id is not None}
+        )
+        option_of = {pt.id: pt.variant_option_id for p in products for pt in p.parts}
+        for row in page_items:
+            row.kits_by_option = by_option.get(row.id, [])
+            for part in row.parts:
+                option = option_of.get(part.part_id)
+                part.variant = labels.get(option) if option is not None else None
+    return StockListPage(items=page_items, meta=page_meta(len(items), page, per_page, all))
 
 
 @router.get("/figures", response_model=StockFigures)

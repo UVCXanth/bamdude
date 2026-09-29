@@ -7,13 +7,85 @@ writer wrote (the frontend translates it). Nothing here writes: the ledger's
 single writer is ``services/part_stock.py``.
 """
 
+from collections.abc import Mapping, Sequence
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.part_stock import ProductPartStockMovement
+from backend.app.models.product import Product
+from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
-from backend.app.schemas.product import StockMovementOut
+from backend.app.schemas.product import KitsByOptionOut, ProductPartVariantOut, StockMovementOut
+from backend.app.services import part_stock
+from backend.app.services.line_composition import composition
+
+
+async def kits_by_option(
+    db: AsyncSession, products: Sequence[Product], balances: Mapping[int, Mapping[int, int]]
+) -> dict[int, list[KitsByOptionOut]]:
+    """``product_id → the kits of each option`` (WS-13 E1 ST4 / ST5, Q12): for every
+    option of every group, the kits the free shelf makes with THAT option and every other
+    group at its standard — ``line_composition.composition`` + ``part_stock.kits_of``,
+    the same arithmetic as the row's own ``kits_available``. One statement for all the
+    products given (``parts`` loaded); a product without groups gets ``[]``. The stock
+    page asks it for its page's rows only, the product page for its one product."""
+    out: dict[int, list[KitsByOptionOut]] = {p.id: [] for p in products}
+    if not out:
+        return out
+    rows = (
+        await db.execute(
+            select(
+                ProductVariantGroup.product_id,
+                ProductVariantGroup.id,
+                ProductVariantGroup.name,
+                ProductVariantGroup.default_option_id,
+                ProductVariantOption.id,
+                ProductVariantOption.name,
+            )
+            .join(ProductVariantOption, ProductVariantOption.group_id == ProductVariantGroup.id)
+            .where(ProductVariantGroup.product_id.in_(list(out)))
+            .order_by(
+                ProductVariantGroup.product_id,
+                ProductVariantGroup.position,
+                ProductVariantGroup.id,
+                ProductVariantOption.position,
+                ProductVariantOption.id,
+            )
+        )
+    ).all()
+    standard: dict[int, dict[int, int]] = {}
+    for product_id, group_id, _gname, default_id, _oid, _oname in rows:
+        if default_id is not None:
+            standard.setdefault(product_id, {})[group_id] = default_id
+    by_id = {p.id: p for p in products}
+    for product_id, group_id, group_name, default_id, option_id, option_name in rows:
+        others = {oid for gid, oid in standard.get(product_id, {}).items() if gid != group_id}
+        kit = composition(list(by_id[product_id].parts), "product", others | {option_id}, {})
+        out[product_id].append(
+            KitsByOptionOut(
+                group_id=group_id,
+                group_name=group_name,
+                option_id=option_id,
+                option_name=option_name,
+                is_default=option_id == default_id,
+                kits=part_stock.kits_of(balances.get(product_id, {}), kit),
+            )
+        )
+    return out
+
+
+async def option_labels(db: AsyncSession, option_ids: set[int]) -> dict[int, ProductPartVariantOut]:
+    """``option_id → {group, option}`` for the parts a page shows — one statement."""
+    if not option_ids:
+        return {}
+    rows = await db.execute(
+        select(ProductVariantOption.id, ProductVariantGroup.name, ProductVariantOption.name)
+        .join(ProductVariantGroup, ProductVariantGroup.id == ProductVariantOption.group_id)
+        .where(ProductVariantOption.id.in_(option_ids))
+    )
+    return {oid: ProductPartVariantOut(group=group, option=option) for oid, group, option in rows.all()}
 
 
 async def orders_of_lines(db: AsyncSession, line_ids: set[int]) -> dict[int, tuple[int, str]]:

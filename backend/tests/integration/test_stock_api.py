@@ -62,7 +62,13 @@ async def test_reservations_come_from_active_orders_only(committing_client, db_s
 
     lamp = next(p for p in (await committing_client.get("/api/v1/stock")).json()["products"] if p["id"] == pid)
     assert lamp["reservations"] == [
-        {"line_id": active.id, "order_id": active.project_id, "order_name": "Active order", "kits": 2}
+        {
+            "line_id": active.id,
+            "order_id": active.project_id,
+            "order_code": f"OR-{active.project_id:04d}",
+            "order_name": "Active order",
+            "kits": 2,
+        }
     ]
     # The shelf nets both reservations regardless: 5 lids − 3 reserved, 3 bases − 3.
     assert lamp["kits_available"] == 0
@@ -265,3 +271,138 @@ async def test_stock_figures_summarise_the_whole_shelf(committing_client, db_ses
     r = await committing_client.get("/api/v1/stock/figures?q=Lamp&with_stock=true")
     assert r.status_code == 200
     assert r.json() == {"kits": 2, "kit_products": 1, "parts": 8, "reserved_kits": 1, "incomplete": 1}
+
+
+# ---------- WS-13 E1 ST4 / ST5: the shelf row — options, parts on the shelf, codes ----------
+
+
+async def _shaded_lamp(client, db):
+    """The lamp plus a «Shade» group (round — the standard — or square) and a one-option
+    «Size» group; round shades 2 on the shelf, square 1. Kits: 5 lids, 3 bases."""
+    pid, ids = await _lamp_with_stock(client, db)
+    shade = (
+        await client.post(
+            f"/api/v1/products/{pid}/variant-groups", json={"name": "Shade", "options": ["round", "square"]}
+        )
+    ).json()["variant_groups"][0]
+    size = (
+        await client.post(f"/api/v1/products/{pid}/variant-groups", json={"name": "Size", "options": ["S"]})
+    ).json()["variant_groups"][1]
+    options = {o["name"]: o["id"] for o in shade["options"]}
+    for name, on_hand in (("round shade", 2), ("square shade", 1)):
+        r = await client.post(
+            f"/api/v1/products/{pid}/parts", json={"kind": "printed", "name": name, "qty_per_unit": 1}
+        )
+        assert r.status_code == 200, r.text
+        ids[name] = r.json()["id"]
+        r = await client.patch(
+            f"/api/v1/products/{pid}/parts/{ids[name]}", json={"variant_option_id": options[name.split()[0]]}
+        )
+        assert r.status_code == 200, r.text
+        await move(db, part_id=ids[name], delta=on_hand, reason="unfiled_print")
+        # Now: the next request through the client shares the connection and would
+        # roll an uncommitted move back.
+        await db.commit()
+    return pid, ids, shade, size, options
+
+
+@pytest.mark.asyncio
+async def test_kits_by_option_varies_one_group_at_a_time(committing_client, db_session):
+    """ST4 / Q12: each option of each group, every other group at its standard."""
+    pid, _ids, shade, size, options = await _shaded_lamp(committing_client, db_session)
+    plain, _ = await _lamp_with_stock(committing_client, db_session, name="Plain")
+    items = {r["id"]: r for r in (await committing_client.get("/api/v1/stock?page=1")).json()["items"]}
+    assert items[pid]["kits_by_option"] == [
+        {
+            "group_id": shade["id"],
+            "group_name": "Shade",
+            "option_id": options["round"],
+            "option_name": "round",
+            "is_default": True,
+            "kits": 2,
+        },
+        {
+            "group_id": shade["id"],
+            "group_name": "Shade",
+            "option_id": options["square"],
+            "option_name": "square",
+            "is_default": False,
+            "kits": 1,
+        },
+        {
+            "group_id": size["id"],
+            "group_name": "Size",
+            "option_id": size["options"][0]["id"],
+            "option_name": "S",
+            "is_default": True,
+            "kits": 2,
+        },
+    ]
+    assert items[plain]["kits_by_option"] == []
+    # ST5: the product page asks the same helper.
+    product_stock = (await committing_client.get(f"/api/v1/products/{pid}/stock")).json()
+    assert product_stock["kits_by_option"] == items[pid]["kits_by_option"]
+    # The bound parts say which option they belong to.
+    variants = {p["name"]: p["variant"] for p in items[pid]["parts"]}
+    assert variants["round shade"] == {"group": "Shade", "option": "round"} and variants["lid"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_row_counts_its_shelf_and_the_shelf_key_orders_by_it(committing_client, db_session):
+    """ST4: ``parts_on_shelf`` = Σ counted balances; ``shelf`` sorts by it, not by kits —
+    a pile of lids with no base leads the shelf and trails the kits."""
+    lids_only, _ = await _lamp_with_stock(committing_client, db_session, name="Zzz lids", lids=9, bases=0)
+    kits, _ = await _lamp_with_stock(committing_client, db_session, name="Aaa kits", lids=2, bases=2)
+    body = (await committing_client.get("/api/v1/stock?page=1&per_page=1&sort_by=shelf-desc")).json()
+    assert [(r["id"], r["parts_on_shelf"]) for r in body["items"]] == [(lids_only, 9)]
+    first_by_kits = (await committing_client.get("/api/v1/stock?page=1&per_page=1&sort_by=kits-desc")).json()["items"]
+    assert first_by_kits[0]["id"] == kits and first_by_kits[0]["parts_on_shelf"] == 4
+
+
+@pytest.mark.asyncio
+async def test_a_reservation_names_its_orders_code(committing_client, db_session):
+    pid, _ = await _lamp_with_stock(committing_client, db_session)
+    line = await _order_with_line(db_session, pid, name="Coded")
+    await reserve_for_line(db_session, line, 1)
+    await db_session.commit()
+    [row] = (await committing_client.get("/api/v1/stock?page=1")).json()["items"]
+    assert row["reservations"][0]["order_code"] == f"OR-{line.project_id:04d}"
+
+
+@pytest.mark.asyncio
+async def test_the_search_takes_words_across_name_sku_and_code(committing_client, db_session):
+    """ST4: every word must hit the name, the SKU or the product's code; ``%`` is a
+    literal, not a wildcard."""
+    pid, _ = await _lamp_with_stock(committing_client, db_session, name="Desk lamp")
+    other, _ = await _lamp_with_stock(committing_client, db_session, name="Wall lamp")
+    r = await committing_client.patch(f"/api/v1/products/{pid}", json={"sku": "LMP-7"})
+    assert r.status_code == 200, r.text
+
+    async def found(q):
+        return [
+            p["id"] for p in (await committing_client.get("/api/v1/stock", params={"page": 1, "q": q})).json()["items"]
+        ]
+
+    assert await found("lmp-7") == [pid]
+    assert await found(f"PR-{other:04d}") == [other]
+    assert await found("lamp desk") == [pid]
+    assert await found("%") == []
+
+
+@pytest.mark.asyncio
+async def test_kits_by_option_is_read_for_the_page_alone(committing_client, db_session, monkeypatch):
+    from backend.app.services import stock_views
+
+    first, *_ = await _shaded_lamp(committing_client, db_session)
+    for name in ("Second", "Third"):
+        await _lamp_with_stock(committing_client, db_session, name=name)
+    seen: list[list[int]] = []
+    real = stock_views.kits_by_option
+
+    async def spy(db, products, balances):
+        seen.append(sorted(p.id for p in products))
+        return await real(db, products, balances)
+
+    monkeypatch.setattr(stock_views, "kits_by_option", spy)
+    body = (await committing_client.get("/api/v1/stock?page=2&per_page=1&sort_by=name-asc")).json()
+    assert seen == [[body["items"][0]["id"]]]

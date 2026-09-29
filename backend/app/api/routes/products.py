@@ -120,6 +120,7 @@ from backend.app.services import (
     product_facets,
     product_gate,
     product_variants,
+    stock_views,
 )
 from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.filament_cost import default_rate_per_kg
@@ -1820,6 +1821,9 @@ async def get_product_stock(
     # joins ``product_parts`` on this very product — so the names cost nothing.
     names = {part.id: part.name for part in product.parts}
     orders = await orders_of_lines(db, {r.project_line_id for r in rows if r.project_line_id is not None})
+    labels = await stock_views.option_labels(
+        db, {p.variant_option_id for p in product.parts if p.variant_option_id is not None}
+    )
     return ProductStockOut(
         balances=[
             StockBalanceOut(
@@ -1828,11 +1832,14 @@ async def get_product_stock(
                 qty_per_unit=p.qty_per_unit,
                 balance=part_balances[p.id],
                 held_for_orders=held.get(p.id, 0),
+                variant=labels.get(p.variant_option_id) if p.variant_option_id is not None else None,
             )
             for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))
             if p.id in part_balances
         ],
         kits_available=await _standard_kits(db, product, part_balances),
+        # ST5: the stock page's own helper.
+        kits_by_option=(await stock_views.kits_by_option(db, [product], {product.id: part_balances}))[product.id],
         movements=[movement_out(row, names, orders) for row in rows],
     )
 

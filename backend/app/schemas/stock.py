@@ -8,7 +8,7 @@ from enum import Enum
 
 from pydantic import BaseModel
 
-from backend.app.schemas.product import StockBalanceOut, StockMovementOut
+from backend.app.schemas.product import KitsByOptionOut, StockBalanceOut, StockMovementOut
 from backend.app.services.part_stock import REASONS
 
 #: The five reasons as a query-parameter enum, built from the ledger's own
@@ -27,6 +27,8 @@ class StockReservationOut(BaseModel):
 
     line_id: int
     order_id: int
+    #: WS-13 E1 ST4 — ``OR-0042``.
+    order_code: str = ""
     order_name: str
     kits: int
 
@@ -44,6 +46,13 @@ class StockProductOut(BaseModel):
     #: product page's shelf shows.
     parts: list[StockBalanceOut] = []
     reservations: list[StockReservationOut] = []
+    #: WS-13 E1 ST4.
+    sku: str | None = None
+    #: Σ the counted parts' balances — what lies on the shelf, kits or not.
+    parts_on_shelf: int = 0
+    #: One option of one group at a time, the others at their standard (Q12); read
+    #: for the page's rows only — the flat answer leaves it empty.
+    kits_by_option: list[KitsByOptionOut] = []
 
 
 class StockListItem(StockProductOut):

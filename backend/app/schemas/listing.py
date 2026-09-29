@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from backend.app.models.stock_issue import WAYBILL_MAX
 from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.customer import CustomerResponse
-from backend.app.schemas.product import PartSourceOut, ProductListItem
+from backend.app.schemas.product import PartSourceOut, ProductListItem, ProductPartVariantOut
 from backend.app.schemas.project import LineConfigurationOut, ProjectListResponse
 from backend.app.schemas.stock import StockListItem
 
@@ -96,11 +96,6 @@ class CategoryCount(BaseModel):
     id: int
     name: str
     count: int
-
-
-class ProductPartVariantOut(BaseModel):
-    group: str
-    option: str
 
 
 class ProductPartProductOut(BaseModel):

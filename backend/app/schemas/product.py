@@ -696,6 +696,13 @@ class RereadResponse(BaseModel):
 # ---------- free stock (pass 8, Decision 6) ----------
 
 
+class ProductPartVariantOut(BaseModel):
+    """The option a part is bound to — «angled tail» belongs to «Tail: angled»."""
+
+    group: str
+    option: str
+
+
 class StockBalanceOut(BaseModel):
     """One counted part and what is on the shelf for it.
 
@@ -713,6 +720,20 @@ class StockBalanceOut(BaseModel):
     #: workshop-order-issue-followups, rule 49). Only the product page's stock asks it;
     #: the stock tab's rows leave it null rather than claim a zero nobody counted.
     held_for_orders: int | None = None
+    #: WS-13 E1 ST4 — the option the part is bound to, when it is.
+    variant: ProductPartVariantOut | None = None
+
+
+class KitsByOptionOut(BaseModel):
+    """WS-13 E1 ST4 / Q12 — the kits the free shelf makes with ONE option of one group,
+    every other group at its standard."""
+
+    group_id: int
+    group_name: str
+    option_id: int
+    option_name: str
+    is_default: bool
+    kits: int
 
 
 class ProductKitsOut(BaseModel):
@@ -756,6 +777,8 @@ class ProductStockOut(BaseModel):
 
     balances: list[StockBalanceOut] = []
     kits_available: int = 0
+    #: WS-13 E1 ST5 — the stock page's own helper, for this product.
+    kits_by_option: list[KitsByOptionOut] = []
     #: Newest first, capped by the request's ``limit`` (200 by default, 500 at
     #: most). Deliberately NOT filtered to counted parts: a movement written
     #: before a part was zeroed still happened, and a history that hides it is
