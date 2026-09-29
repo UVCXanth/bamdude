@@ -74,6 +74,16 @@
 
 ### Changed
 
+- **The workshop lists open as a table until you pick a view.** The orders list, the product catalog and a customer's orders used to open as cards for anyone who had never chosen; they now open as a table, and the orders table sorts by due date — so a shared link without a sort shows the nearest deadlines first to such a reader. A view you picked is kept, and a sort in the link still wins.
+
+- **The workshop's tabs work from the keyboard.** The order status tabs (on the orders list and a customer's page) and the stock sections are real tab strips: the arrow keys, Home and End move between tabs without loading anything, Enter or Space opens the one you are on, and a strip too wide for the screen scrolls inside itself. Before the first answer a tab's count reads «(—)» instead of pretending to be zero.
+
+- **The new-order dialog is the workshop's wider dialog.** Its Cancel and Save now sit in the dialog's own footer, which stays in place while the form scrolls; the fields and what they send are unchanged.
+
+- **The search box of a workshop list has a fixed width, and a picker's grows.** On a list page it is 280 px wide, and on a narrow screen it takes the whole row; in the «Add to order» tabs it fills the rest of its row. Clearing it puts the cursor back in it, and the browser's own second clear cross is gone.
+
+- **The view switch keeps its labels down to 761 px.** Below that only the icons show, each still named for screen readers and on hover.
+
 - **The add-to-order parts list no longer offers «All».** It is paged on the server, which now refuses a request for the whole list (`all=true` on `/products/parts` is 422).
 
 - **Making an order from files no longer adds parts to other products linked to the same file.** Adding a file's plate to an order, or an order from the files wizard, gives parts only to the one-off product it makes for them; a catalogue product that also uses the file keeps the parts it has.
@@ -105,6 +115,8 @@
 - **The Projects lists share one frame.** The cards/table switch of the orders, products and customers lists moved from the filter bar into the page header, beside the create button, and shows an icon — its label hides on a narrow screen. Every list page carries a one-line explanation under its title, and the search box of every list is the same one.
 
 ### Fixed
+
+- **The page bar no longer hides its last buttons on a phone.** On a narrow screen the page-size selector, the arrows and «page N of M» stood on one line wider than the bar, and the «next» and «last» arrows were cut off behind the card's edge on every paged list. They now wrap inside the bar.
 
 - **A product's page shows its materials, colours, printer models and ready units.** They were empty on the product page while the catalog card showed them; the page and the card now read the same figures. A printer model is taken only from a file that can be printed, so an unsliced 3MF project no longer names a model or offers it in the filter.
 
