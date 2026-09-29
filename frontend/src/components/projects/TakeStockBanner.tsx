@@ -48,6 +48,7 @@ export function TakeStockBanner({ orderId }: { orderId: number }) {
   });
 
   if (offers.length === 0) return null;
+  const offerTexts = offers.map((o) => t('orders.take.offer', { product: o.product_name, ready: o.from_finished, kits: o.kits }));
 
   // WS-13 E3 D05: the mockup's one-line note — «In stock for this order: «A» — N
   // ready + K kits; «B» — …. Take it — and print less.» — with the one action on
@@ -60,13 +61,15 @@ export function TakeStockBanner({ orderId }: { orderId: number }) {
       <p className="min-w-0 flex-1">
         <PackageCheck className="mr-1.5 inline h-4 w-4 align-[-3px] text-bambu-green" aria-hidden />
         {t('orders.take.title')}:{' '}
-        {offers.map((o, index) => (
-          <span key={o.line_id}>
+        {offerTexts.map((text, index) => (
+          <span key={offers[index].line_id}>
             {index > 0 && '; '}
-            <span>{t('orders.take.offer', { product: o.product_name, ready: o.from_finished, kits: o.kits })}</span>
+            <span>{text}</span>
           </span>
         ))}
-        . {t('orders.take.body')}
+        {/* One full stop: the Ukrainian offer already ends in «компл.». */}
+        {offerTexts[offerTexts.length - 1].endsWith('.') ? ' ' : '. '}
+        {t('orders.take.body')}
       </p>
       <Button size="sm" onClick={() => take.mutate(offers)} disabled={take.isPending}>
         {t('orders.take.action')}
