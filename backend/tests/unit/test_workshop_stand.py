@@ -527,3 +527,44 @@ def test_hitting_the_safety_limit_is_an_incomplete_recipe_not_an_ok_one():
 
     assert not complete
     assert len(offsets) == 12
+
+
+# ---- WS-13 E2 evidence sidecar (e02_evidence.py) ----
+
+import hashlib  # noqa: E402
+
+import e02_evidence  # noqa: E402
+
+
+def test_e02_narrow_plan_shoots_only_the_named_recipes_at_the_narrow_width():
+    """The unmodified E0 runner, fed this plan, shoots the E2 recipes at 390 and nothing wide."""
+    plan = {
+        "widths": {"wide": [1920, 1440, 1024], "narrow": [390]},
+        "surfaces": [
+            {"id": "products-table", "widths": "wide"},
+            {"id": "customer-detail", "widths": "wide"},
+            {"id": "orders-table", "widths": "all"},
+        ],
+    }
+    out = e02_evidence.narrow_plan(plan)
+
+    assert out["widths"] == {"wide": [], "narrow": [390]}
+    assert {s["id"]: s["widths"] for s in out["surfaces"]} == {
+        "products-table": "all",
+        "customer-detail": "all",
+        "orders-table": "all",
+    }
+    # The plan it was given is not the plan it returns.
+    assert plan["surfaces"][0]["widths"] == "wide" and plan["widths"]["wide"] == [1920, 1440, 1024]
+
+
+def test_e02_record_hashes_every_picture_and_marks_a_missing_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(e02_evidence.stand, "REPO", tmp_path)
+    shot = tmp_path / "temp" / "a.png"
+    shot.parent.mkdir()
+    shot.write_bytes(b"png")
+
+    out = e02_evidence.with_hashes({"id": "x", "screenshots": [str(shot), str(tmp_path / "gone.png")]})
+
+    assert out["screenshots"][0] == {"file": "temp/a.png", "sha256": hashlib.sha256(b"png").hexdigest()}
+    assert out["screenshots"][1]["sha256"] is None
