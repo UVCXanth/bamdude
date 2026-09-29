@@ -5428,7 +5428,7 @@ export default {
     // spec workshop-order-issue, rule 17: «take from stock» on the order card.
     take: {
       title: 'In stock for this order',
-      body: 'Take it and print less.',
+      body: 'Take it — and print less.',
       offer: '«{{product}}» — {{ready}} ready + {{kits}} kits',
       action: 'Take from stock',
       taken: 'Taken from stock',
@@ -5756,8 +5756,9 @@ export default {
     },
     close: {
       title: 'All lines are covered',
-      body: 'Close the order? Nothing closes it for you.',
-      action: 'Complete order',
+      body: 'Check the batch, assemble the reserved kits and receive the prints into stock (for this order), then issue them to the customer — in parts if you like. The order does not close by itself.',
+      toStockBody: 'No customer — nothing is issued: once closed, the assembled and printed units become free stock, and no dispatch note is made. The order does not close by itself.',
+      action: 'Mark completed',
       issuedLine: 'Issued {{issued}} of {{ordered}} · on the shelf for the order {{held}}',
       receive: 'Receive into stock ({{count}})…',
       issue: 'Issue to the customer ({{count}})…',

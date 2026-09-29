@@ -55,6 +55,17 @@ describe('TakeStockBanner', () => {
     expect(await screen.findByText(/The shelf changed: Pipe: ready 1 of 2/)).toBeInTheDocument();
   });
 
+  it('says the offers in one sentence, the way the mockup does (WS-13 E3 D05)', async () => {
+    vi.spyOn(api, 'getStockOffers').mockResolvedValue([
+      { line_id: 1, product_name: 'Lamp', from_finished: 2, kits: 2 },
+      { line_id: 2, product_name: 'Base', from_finished: 0, kits: 1 },
+    ]);
+    render(<TakeStockBanner orderId={1} />);
+    const banner = await screen.findByTestId('take-stock');
+    expect(banner.querySelector('ul')).toBeNull();
+    expect(banner).toHaveTextContent('In stock for this order: «Lamp» — 2 ready + 2 kits; «Base» — 0 ready + 1 kits. Take it — and print less.');
+  });
+
   it('draws nothing when there is nothing to take', async () => {
     vi.spyOn(api, 'getStockOffers').mockResolvedValue([]);
     render(<TakeStockBanner orderId={5} />);

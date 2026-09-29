@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Warehouse } from 'lucide-react';
+import { PackageCheck } from 'lucide-react';
 import { api } from '../../api/client';
 import type { StockOffer, TakeStockResult } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
@@ -49,26 +49,26 @@ export function TakeStockBanner({ orderId }: { orderId: number }) {
 
   if (offers.length === 0) return null;
 
+  // WS-13 E3 D05: the mockup's one-line note — «In stock for this order: «A» — N
+  // ready + K kits; «B» — …. Take it — and print less.» — with the one action on
+  // the right, under the text where the row is too narrow.
   return (
     <div
       data-testid="take-stock"
-      className="flex items-start justify-between gap-4 flex-wrap rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary p-4"
+      className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-xl border border-bambu-green/30 bg-bambu-green/10 px-4 py-3 text-sm leading-5 text-white"
     >
-      <div className="flex items-start gap-3 min-w-0">
-        <Warehouse className="w-5 h-5 text-bambu-green flex-shrink-0 mt-0.5" />
-        <div className="min-w-0">
-          <p className="text-white font-medium">{t('orders.take.title')}</p>
-          <ul className="text-sm text-bambu-gray">
-            {offers.map((o) => (
-              <li key={o.line_id}>
-                {t('orders.take.offer', { product: o.product_name, ready: o.from_finished, kits: o.kits })}
-              </li>
-            ))}
-          </ul>
-          <p className="text-xs text-bambu-gray mt-1">{t('orders.take.body')}</p>
-        </div>
-      </div>
-      <Button onClick={() => take.mutate(offers)} disabled={take.isPending}>
+      <p className="min-w-0 flex-1">
+        <PackageCheck className="mr-1.5 inline h-4 w-4 align-[-3px] text-bambu-green" aria-hidden />
+        {t('orders.take.title')}:{' '}
+        {offers.map((o, index) => (
+          <span key={o.line_id}>
+            {index > 0 && '; '}
+            <span>{t('orders.take.offer', { product: o.product_name, ready: o.from_finished, kits: o.kits })}</span>
+          </span>
+        ))}
+        . {t('orders.take.body')}
+      </p>
+      <Button size="sm" onClick={() => take.mutate(offers)} disabled={take.isPending}>
         {t('orders.take.action')}
       </Button>
     </div>

@@ -1,7 +1,6 @@
 import { useId, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Check } from 'lucide-react';
 import { api, ORDER_STAGES } from '../../api/client';
 import type { Order, OrderStage, OrderStageShown } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
@@ -15,6 +14,12 @@ const STEPS: readonly OrderStageShown[] = [...ORDER_STAGES, 'done'];
  * by hand only — whoever is on the farm, and the journal says who; «Done» is
  * reached by marking the order completed, so the select never offers it. A
  * cancelled order has no stage and no stepper.
+ *
+ * WS-13 E3 D01/D02: pills as in the mockup — every step up to the current one
+ * in the accent, the current one ringed — and the manual select at the row's
+ * right end. No «auto» option and no «manually» mark: there is no derived stage
+ * (E01). A passed step says «passed» to a screen reader, since the pills carry
+ * no visible mark and colour alone is not enough (WCAG 1.4.1).
  */
 export function OrderStageStepper({ order, canEdit }: { order: Order; canEdit: boolean }) {
   const { t } = useTranslation();
@@ -42,25 +47,24 @@ export function OrderStageStepper({ order, canEdit }: { order: Order; canEdit: b
   const current = STEPS.indexOf(order.stage);
   const shown = picked && picked.from === order.stage ? picked.to : order.stage;
   return (
-    <div className="flex items-center gap-3 flex-wrap">
-      <ol aria-label={t('orders.stage.steps')} className="flex items-center gap-2 flex-wrap text-xs">
-        {STEPS.map((step, index) => (
-          <li
-            key={step}
-            aria-current={index === current ? 'step' : undefined}
-            className={`inline-flex items-center gap-1 px-2 py-1 rounded ${
-              index === current
-                ? 'bg-bambu-green/20 text-bambu-green font-medium'
-                : index < current
-                  ? 'text-white'
-                  : 'text-bambu-gray'
-            }`}
-          >
-            {/* Passed is said by a mark, not by colour alone (WCAG 1.4.1). */}
-            {index < current && <Check role="img" aria-label={t('orders.stage.passed')} className="w-3 h-3" />}
-            {index + 1}. {t(`orders.stage.${step}`)}
-          </li>
-        ))}
+    <div data-testid="order-stage" className="mt-3.5 mb-1 flex flex-wrap items-center gap-1.5">
+      <ol aria-label={t('orders.stage.steps')} className="flex flex-wrap items-center gap-1.5">
+        {STEPS.map((step, index) => {
+          const state = index < current ? 'passed' : index === current ? 'current' : 'future';
+          return (
+            <li
+              key={step}
+              data-state={state}
+              aria-current={state === 'current' ? 'step' : undefined}
+              className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                state === 'future' ? 'bg-bambu-dark-tertiary text-bambu-gray' : 'bg-bambu-green/20 text-bambu-green'
+              } ${state === 'current' ? 'ring-1 ring-bambu-green' : ''}`}
+            >
+              {index + 1}. {t(`orders.stage.${step}`)}
+              {state === 'passed' && <span className="sr-only"> {t('orders.stage.passed')}</span>}
+            </li>
+          );
+        })}
       </ol>
       {canEdit && order.status === 'active' && (
         <>
@@ -69,6 +73,8 @@ export function OrderStageStepper({ order, canEdit }: { order: Order; canEdit: b
           </label>
           <Select
             id={selectId}
+            size="sm"
+            className="ml-auto min-w-0"
             value={shown}
             disabled={setStage.isPending}
             onChange={(e) => {

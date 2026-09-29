@@ -1,5 +1,4 @@
 import { useTranslation } from 'react-i18next';
-import { CheckCircle2 } from 'lucide-react';
 import type { FulfilmentState, Order } from '../../api/client';
 import type { FulfilmentMode } from './fulfilment/fulfilmentState';
 import { Button } from '../Button';
@@ -25,6 +24,11 @@ interface CloseSuggestionBannerProps {
  * `all_printed` is the server's own verdict (design decision 8), and the
  * counts are the server's totals (`can_receive`, `can_issue`) — this component
  * never adds lines up.
+ *
+ * WS-13 E3 D03/D04: the mockup's note — the text, then one row of actions under
+ * it with ONE primary: receiving while there are prints to receive, else
+ * issuing, else completing. An order without a customer is told what closing to
+ * stock means (E04) instead of being offered an issue.
  */
 export function CloseSuggestionBanner({ order, state, onFulfil }: CloseSuggestionBannerProps) {
   const { t } = useTranslation();
@@ -33,38 +37,58 @@ export function CloseSuggestionBanner({ order, state, onFulfil }: CloseSuggestio
   // `cancelled` is a decision this banner must not quietly undo.
   if (!order.figures.all_printed || order.status !== 'active') return null;
 
+  const toStock = Boolean(state?.closes_to_stock);
+  const canReceive = Boolean(state && state.can_receive > 0);
+  // No customer: nothing is issued — the order closes to stock (followups, rule 39).
+  const canIssue = Boolean(state && !toStock && state.can_issue > 0);
+  const lead = canReceive ? 'receive' : canIssue ? 'issue' : 'complete';
+  const emphasis = (which: typeof lead) => (lead === which ? 'primary' : 'secondary');
+
   return (
     <div
       data-testid="close-suggestion"
-      className="flex items-start justify-between gap-4 flex-wrap rounded-xl border border-bambu-green/40 bg-bambu-green/10 p-4"
+      className="rounded-xl border border-bambu-green/30 bg-bambu-green/10 px-4 py-3 text-sm leading-5 text-white"
     >
-      <div className="flex items-start gap-3 min-w-0">
-        <CheckCircle2 className="w-5 h-5 text-bambu-green flex-shrink-0 mt-0.5" />
-        <div className="min-w-0">
-          <p className="text-white font-medium">{t('orders.close.title')}</p>
-          <p className="text-sm text-bambu-gray">{t('orders.close.body')}</p>
-          {state && (
-            <p className="text-sm text-bambu-gray tabular-nums" data-testid="close-suggestion-issued">
-              {t('orders.close.issuedLine', { issued: state.issued, ordered: state.ordered, held: state.held })}
-            </p>
-          )}
-        </div>
-      </div>
-      <div className="flex items-center gap-2 flex-wrap">
-        {state && state.can_receive > 0 && (
-          <Button variant="secondary" data-testid="close-suggestion-receive" onClick={() => onFulfil('receive', false)}>
+      <p>
+        <b className="font-semibold">{t('orders.close.title')}.</b> {t(toStock ? 'orders.close.toStockBody' : 'orders.close.body')}
+      </p>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {canReceive && state && (
+          <Button
+            size="sm"
+            variant={emphasis('receive')}
+            data-emphasis={emphasis('receive')}
+            data-testid="close-suggestion-receive"
+            onClick={() => onFulfil('receive', false)}
+          >
             {t('orders.close.receive', { count: state.can_receive })}
           </Button>
         )}
-        {/* No customer: nothing is issued — the order closes to stock (followups, rule 39). */}
-        {state && !state.closes_to_stock && state.can_issue > 0 && (
-          <Button variant="secondary" data-testid="close-suggestion-issue" onClick={() => onFulfil('all', false)}>
+        {canIssue && state && (
+          <Button
+            size="sm"
+            variant={emphasis('issue')}
+            data-emphasis={emphasis('issue')}
+            data-testid="close-suggestion-issue"
+            onClick={() => onFulfil('all', false)}
+          >
             {t('orders.close.issue', { count: state.can_issue })}
           </Button>
         )}
-        <Button data-testid="close-suggestion-complete" onClick={() => onFulfil('all', true)}>
-          {t(state?.closes_to_stock ? 'orders.close.toStock' : 'orders.close.action')}
+        <Button
+          size="sm"
+          variant={emphasis('complete')}
+          data-emphasis={emphasis('complete')}
+          data-testid="close-suggestion-complete"
+          onClick={() => onFulfil('all', true)}
+        >
+          {t(toStock ? 'orders.close.toStock' : 'orders.close.action')}
         </Button>
+        {state && (
+          <small className="text-xs text-bambu-gray tabular-nums" data-testid="close-suggestion-issued">
+            {t('orders.close.issuedLine', { issued: state.issued, ordered: state.ordered, held: state.held })}
+          </small>
+        )}
       </div>
     </div>
   );

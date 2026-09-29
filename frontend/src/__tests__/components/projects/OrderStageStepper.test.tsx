@@ -26,8 +26,26 @@ describe('OrderStageStepper', () => {
   it('names its steps list, and marks a passed step by more than colour', () => {
     render(<OrderStageStepper order={order({ stage: 'qc' })} canEdit />);
     const steps = screen.getByRole('list', { name: 'Stages' });
-    // Two steps behind «Quality check» carry a check mark a screen reader can hear.
-    expect(within(steps).getAllByLabelText('passed')).toHaveLength(2);
+    // The two steps behind «Quality check» say «passed» to a screen reader
+    // (WS-13 E3 D01: the mockup's pills carry no visible mark, so the word does).
+    expect(within(steps).getAllByText('passed')).toHaveLength(2);
+    expect(within(steps).getAllByRole('listitem').map((step) => step.dataset.state)).toEqual([
+      'passed',
+      'passed',
+      'current',
+      'future',
+    ]);
+  });
+
+  it('never offers an «auto» stage — the stage is the operator’s alone (E01)', () => {
+    render(<OrderStageStepper order={order({})} canEdit />);
+    const select = screen.getByLabelText('Stage');
+    expect(within(select).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      'Preparation',
+      'Printing',
+      'Quality check',
+    ]);
+    expect(screen.queryByText(/auto/i)).toBeNull();
   });
 
   it('holds the chosen stage while the request is in flight, and refreshes the order when it is refused', async () => {

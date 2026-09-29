@@ -57,4 +57,30 @@ describe('CloseSuggestionBanner · an order without a customer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close to stock' }));
     expect(onFulfil).toHaveBeenCalledWith('all', true);
   });
+
+  it('explains what closing to stock does, and says nothing about issuing (WS-13 E3 D04, E04)', () => {
+    render(<CloseSuggestionBanner order={order} state={{ ...state, closes_to_stock: true }} onFulfil={() => {}} />);
+    const banner = screen.getByTestId('close-suggestion');
+    expect(banner).toHaveTextContent(/No customer — nothing is issued/);
+    expect(banner).toHaveTextContent(/no dispatch note/);
+  });
+});
+
+describe('CloseSuggestionBanner · one primary action (WS-13 E3 D04)', () => {
+  const primaries = () => screen.getAllByRole('button').filter((b) => b.dataset.emphasis === 'primary');
+
+  it('leads with receiving while there are prints to receive', () => {
+    render(<CloseSuggestionBanner order={order} state={state} onFulfil={() => {}} />);
+    expect(primaries().map((b) => b.dataset.testid)).toEqual(['close-suggestion-receive']);
+  });
+
+  it('leads with issuing once nothing is left to receive', () => {
+    render(<CloseSuggestionBanner order={order} state={{ ...state, can_receive: 0 }} onFulfil={() => {}} />);
+    expect(primaries().map((b) => b.dataset.testid)).toEqual(['close-suggestion-issue']);
+  });
+
+  it('leads with completing when that is all there is left', () => {
+    render(<CloseSuggestionBanner order={order} state={{ ...state, can_receive: 0, can_issue: 0 }} onFulfil={() => {}} />);
+    expect(primaries().map((b) => b.dataset.testid)).toEqual(['close-suggestion-complete']);
+  });
 });
