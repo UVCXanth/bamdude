@@ -480,10 +480,18 @@ async def apply(
         # A line of another product joined the order after the read above (BL2).
         raise FulfilmentError(ORDER_CHANGED, 409)
     await finished_stock.lock_lines_with_parts(db, lines.values())
-    # The status read before the locks may be stale: a cancel that committed while this
-    # request waited has given the shelf back (final review M1).
-    if await db.scalar(select(Project.status).where(Project.id == project.id)) != "active":
+    # The order as it stands behind its lock (BL2, implementation review V03): the status —
+    # a cancel that committed while this request waited has given the shelf back (final
+    # review M1) — and the customer the issue is written to and the mode is judged by.
+    seen_customer = project.customer_id
+    await db.refresh(project, ["status", "customer_id", "contact_id"])
+    if project.status != "active":
         raise FulfilmentError("Only an active order can be fulfilled")
+    if project.customer_id != seen_customer:
+        # The operator confirmed this batch for the customer the request read; an issue
+        # silently written to another one — or a close to stock the order no longer asks
+        # for — is refused whole: nothing moved, no document.
+        raise FulfilmentError(ORDER_CHANGED, 409)
     current = {row.line_id: row for row in (await state(db, project)).lines}
     for line_id in sorted(asked):
         _check(current[line_id], asked[line_id])

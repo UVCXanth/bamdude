@@ -228,3 +228,220 @@ async def test_a_job_order_seeds_its_own_parts_not_the_catalogue_products(commit
     assert r.status_code in (200, 201), r.text
     kept = set(await db_session.scalars(select(ProductPart.name_key).where(ProductPart.product_id == catalogue.id)))
     assert kept == {"flask"}, "the catalogue product got a part seeded behind its back"
+
+
+# ---------- implementation review, round 1 (Codex): stale reads behind the gates ----------
+
+
+@pytest.fixture
+async def shade_lamp(db_session):
+    """«Lamp»: a Colour group (red standard, blue); part «shade» bound to red, part «base»."""
+    from backend.app.services import product_variants
+
+    lamp = Product(name="Shade lamp")
+    db_session.add(lamp)
+    await db_session.flush()
+    group = await product_variants.create_group(db_session, lamp.id, "Colour", ["red", "blue"], record_lines=False)
+    red, blue = [o.id for o in group.options]
+    shade = ProductPart(
+        product_id=lamp.id, kind="printed", name="shade", name_key="shade", qty_per_unit=1, variant_option_id=red
+    )
+    base = ProductPart(product_id=lamp.id, kind="printed", name="base", name_key="base", qty_per_unit=1)
+    db_session.add_all([shade, base])
+    await db_session.commit()
+    return {"lamp": lamp.id, "group": group.id, "red": red, "blue": blue, "shade": shade.id, "base": base.id}
+
+
+@pytest.mark.asyncio
+async def test_the_revision_describes_the_groups_the_same_response_returns(committing_client, db_session, monkeypatch):
+    """V01: a group committed between the response's read of the groups and the end of
+    the GET must not ride into its revision — an unchanged draft from that response is
+    409 and the unseen group survives."""
+    from backend.app.api.routes import products as product_routes
+    from backend.app.services import product_variants
+
+    lamp = Product(name="Snapshot lamp")
+    db_session.add(lamp)
+    await db_session.commit()
+    real = product_routes._variant_groups_out
+    injected = []
+
+    async def meanwhile(db, *args):
+        result = await real(db, *args)
+        if not injected:
+            injected.append(True)
+            await product_variants.create_group(db, lamp.id, "Unseen", ["default"], record_lines=False)
+        return result
+
+    monkeypatch.setattr(product_routes, "_variant_groups_out", meanwhile)
+    state = (await committing_client.get(f"/api/v1/products/{lamp.id}")).json()
+    assert state["variant_groups"] == []
+    saved = await committing_client.put(
+        f"/api/v1/products/{lamp.id}/variants", json={"revision": state["variants_revision"], "groups": []}
+    )
+    assert saved.status_code == 409 and saved.json()["detail"]["error"] == "variants_changed", saved.text
+    assert [
+        g["name"] for g in (await committing_client.get(f"/api/v1/products/{lamp.id}")).json()["variant_groups"]
+    ] == ["Unseen"]
+
+
+@pytest.mark.asyncio
+async def test_a_rename_after_the_read_is_not_overwritten_by_the_old_name(
+    committing_client, db_session, shade_lamp, monkeypatch
+):
+    """V01: the response's names and its token belong to one snapshot — a rename that
+    lands after the read cannot be undone by sending the response back unchanged."""
+    from backend.app.api.routes import products as product_routes
+    from backend.app.models.product_variant import ProductVariantOption
+
+    real = product_routes._variant_groups_out
+    injected = []
+
+    async def meanwhile(db, *args):
+        result = await real(db, *args)
+        if not injected:
+            injected.append(True)
+            await db.execute(
+                update(ProductVariantOption.__table__)
+                .where(ProductVariantOption.id == shade_lamp["red"])
+                .values(name="crimson")
+            )
+        return result
+
+    monkeypatch.setattr(product_routes, "_variant_groups_out", meanwhile)
+    state = (await committing_client.get(f"/api/v1/products/{shade_lamp['lamp']}")).json()
+    monkeypatch.setattr(product_routes, "_variant_groups_out", real)
+    [group] = state["variant_groups"]
+    assert [o["name"] for o in group["options"]] == ["red", "blue"]
+    draft = [
+        {
+            "id": group["id"],
+            "name": group["name"],
+            "default": group["default_option_id"],
+            "options": [{"id": o["id"], "name": o["name"]} for o in group["options"]],
+        }
+    ]
+    saved = await committing_client.put(
+        f"/api/v1/products/{shade_lamp['lamp']}/variants",
+        json={"revision": state["variants_revision"], "groups": draft},
+    )
+    assert saved.status_code == 409, saved.text
+    names = [
+        o["name"]
+        for o in (await committing_client.get(f"/api/v1/products/{shade_lamp['lamp']}")).json()["variant_groups"][0][
+            "options"
+        ]
+    ]
+    assert names == ["crimson", "blue"]
+
+
+@pytest.mark.asyncio
+async def test_a_rebinding_reads_the_part_again_behind_the_gate(committing_client, db_session, shade_lamp, monkeypatch):
+    """V02: another writer rebinds the part to blue and commits while this request waits
+    at the gate; this request asked for red and must leave red — never 200 with blue."""
+    from backend.app.services import product_gate as gate_module
+
+    real = gate_module.product_gate
+
+    async def meanwhile(db, ids):
+        await db.execute(
+            update(ProductPart.__table__)
+            .where(ProductPart.id == shade_lamp["shade"])
+            .values(variant_option_id=shade_lamp["blue"])
+        )
+        await real(db, ids)
+
+    monkeypatch.setattr(gate_module, "product_gate", meanwhile)
+    r = await committing_client.patch(
+        f"/api/v1/products/{shade_lamp['lamp']}/parts/{shade_lamp['shade']}",
+        json={"variant_option_id": shade_lamp["red"]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["variant_option_id"] == shade_lamp["red"]
+    stored = await db_session.scalar(
+        select(ProductPart.variant_option_id)
+        .where(ProductPart.id == shade_lamp["shade"])
+        .execution_options(populate_existing=True)
+    )
+    assert stored == shade_lamp["red"]
+
+
+@pytest.mark.asyncio
+async def test_a_merge_reads_both_parts_again_behind_the_gate(committing_client, db_session, shade_lamp, monkeypatch):
+    """V02's neighbour: an alias another writer gave the source while this merge waited
+    is merged, not lost to the copy read before the gate."""
+    from backend.app.services import product_gate as gate_module
+
+    real = gate_module.product_gate
+
+    async def meanwhile(db, ids):
+        await db.execute(
+            update(ProductPart.__table__).where(ProductPart.id == shade_lamp["base"]).values(aliases=["plinth"])
+        )
+        await real(db, ids)
+
+    monkeypatch.setattr(gate_module, "product_gate", meanwhile)
+    r = await committing_client.post(
+        f"/api/v1/products/{shade_lamp['lamp']}/parts/{shade_lamp['shade']}/merge",
+        json={"source_part_id": shade_lamp["base"]},
+    )
+    assert r.status_code == 200, r.text
+    assert "plinth" in r.json()["aliases"]
+
+
+async def _issue_ready_order(db):
+    """An active order of ACME with two ready units reserved on its line."""
+    from backend.app.models.customer import Customer
+    from backend.app.services import finished_stock, line_config
+
+    pipe = Product(name="Pipe for issue")
+    acme, other = Customer(name="ACME issue"), Customer(name="Beta issue")
+    db.add_all([pipe, acme, other])
+    await db.flush()
+    db.add(ProductPart(product_id=pipe.id, kind="printed", name="pipe", name_key="pipe", qty_per_unit=1))
+    await db.commit()
+    item = await finished_stock.item_for(db, pipe.id, {}, create=True)
+    await finished_stock.receive(db, item, 2)
+    await db.commit()
+    order = Project(name="Issue order", status="active", customer_id=acme.id)
+    db.add(order)
+    await db.flush()
+    line = ProjectLine(project_id=order.id, product_id=pipe.id, quantity=2)
+    db.add(line)
+    await db.flush()
+    await line_config.seed_line(db, line, choices=None, counts=None)
+    await db.commit()
+    await finished_stock.reserve_for_line(db, line, 2)
+    await db.commit()
+    return {"order": order.id, "line": line.id, "other": other.id}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("to_customer", ["another", "none"])
+async def test_an_issue_refuses_when_the_customer_changed_behind_the_lock(
+    committing_client, db_session, monkeypatch, to_customer
+):
+    """V03: the order's customer changed (or was taken away) and committed while this
+    issue waited for the order row — no issue on the old customer, no movement: 409."""
+    from backend.app.models.finished_stock import StockItemMovement
+    from backend.app.models.stock_issue import StockIssue
+
+    shop = await _issue_ready_order(db_session)
+    target = shop["other"] if to_customer == "another" else None
+    real = order_fulfilment.lock_order
+
+    async def meanwhile(db, project_id):
+        await db.execute(
+            update(Project.__table__).where(Project.id == project_id).values(customer_id=target, contact_id=None)
+        )
+        await real(db, project_id)
+
+    monkeypatch.setattr(order_fulfilment, "lock_order", meanwhile)
+    movements_before = len((await db_session.execute(select(StockItemMovement.id))).all())
+    r = await committing_client.post(
+        f"/api/v1/projects/{shop['order']}/fulfilment",
+        json={"lines": [{"line_id": shop["line"], "issue": 1}], "recipient": {"name": "Typed by hand"}},
+    )
+    assert (r.status_code, r.json()["detail"]) == (409, _ORDER_CHANGED), r.text
+    assert (await db_session.execute(select(StockIssue.id))).all() == []
+    assert len((await db_session.execute(select(StockItemMovement.id))).all()) == movements_before

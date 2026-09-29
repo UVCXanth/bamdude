@@ -189,8 +189,14 @@ _LOAD = (
 )
 
 
-async def _get(db: AsyncSession, product_id: int) -> Product:
-    product = (await db.execute(select(Product).options(*_LOAD).where(Product.id == product_id))).scalar_one_or_none()
+async def _get(db: AsyncSession, product_id: int, *, fresh: bool = False) -> Product:
+    """``fresh`` — read again behind the product gate (WS-13 E1 BL2 / BL4): the row and
+    its eager collections overwrite what the identity map holds, so a value another
+    writer committed while this request waited is the one checked and written over."""
+    statement = select(Product).options(*_LOAD).where(Product.id == product_id)
+    if fresh:
+        statement = statement.execution_options(populate_existing=True)
+    product = (await db.execute(statement)).scalar_one_or_none()
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found")
     return product
@@ -349,9 +355,10 @@ async def _variant_groups(db: AsyncSession, product_id: int) -> list[ProductVari
     )
 
 
-async def _variant_groups_out(db: AsyncSession, product_id: int) -> list[VariantGroupOut]:
-    """Groups on the wire, each option with what would refuse its delete — two grouped reads."""
-    groups = await _variant_groups(db, product_id)
+async def _variant_groups_out(db: AsyncSession, groups: list[ProductVariantGroup]) -> list[VariantGroupOut]:
+    """``groups`` on the wire, each option with what would refuse its delete — grouped
+    reads of the counters only. The caller reads the groups ONCE and builds the
+    revision from the same objects (WS-13 E1 VR4, implementation review V01)."""
     option_ids = [o.id for g in groups for o in g.options]
     lines: dict[int, int] = {}
     parts: dict[int, int] = {}
@@ -428,6 +435,7 @@ async def _response(db: AsyncSession, product: Product, *, reload_links: bool = 
     # kit count — the two are the same numbers asked twice, and reading them
     # apart is how they would start to disagree on the same screen.
     part_balances = await part_stock.balances(db, product.id)
+    groups = await _variant_groups(db, product.id)
     return ProductResponse(
         id=product.id,
         code=code_for("product", product.id),
@@ -449,8 +457,12 @@ async def _response(db: AsyncSession, product: Product, *, reload_links: bool = 
         attachments=sorted_attachments(product),
         kits_available=await _standard_kits(db, product, part_balances),
         parts=[_with_balance(p, part_balances) for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))],
-        variant_groups=await _variant_groups_out(db, product.id),
-        variants_revision=product_variants.revision(await _variant_groups(db, product.id)),
+        # ⚠️ One read, one snapshot (implementation review V01): the fields a draft is
+        # built from and the token it is applied against describe the same groups.
+        # Two reads let a group committed in between ride into the token unseen — and an
+        # unchanged draft then deleted it.
+        variant_groups=await _variant_groups_out(db, groups),
+        variants_revision=product_variants.revision(groups),
         library_file_ids=sorted(f.id for f in product.library_files),
         library_folder_ids=sorted(f.id for f in product.library_folders),
         units_printed_total=await units_printed_total(db, product.id),
@@ -1465,6 +1477,10 @@ async def update_part(
             await product_gate.lock_configurations(db, product.id)
         except product_gate.ProductBusy as e:
             raise _busy(e) from e
+        # Behind the gate, the part as it stands (BL2 / BL4, implementation review V02):
+        # a binding another writer committed while this request waited is the «old» one
+        # ``freeze_binding`` freezes from, and the one the new value is written over.
+        product = await _get(db, product_id, fresh=True)
     part = await _part(db, product, part_id)
     if "variant_option_id" in data.model_fields_set and data.variant_option_id is not None:
         owner = await db.scalar(
@@ -1539,6 +1555,7 @@ async def delete_part(
         await product_gate.lock_part_edit(db, product.id, [part_id])
     except product_gate.ProductBusy as e:
         raise _busy(e) from e
+    product = await _get(db, product_id, fresh=True)  # the part as it stands behind the gate
     part = await _part(db, product, part_id)
     # ``project_procurement.product_part_id`` is ON DELETE CASCADE, which
     # PostgreSQL honours and SQLite does not — this codebase never sets
@@ -1572,6 +1589,9 @@ async def merge_part(
         await product_gate.lock_part_edit(db, product.id, [part_id, data.source_part_id])
     except product_gate.ProductBusy as e:
         raise _busy(e) from e
+    # Both parts as they stand behind the gate: aliases or a «not counted» mark another
+    # writer committed meanwhile are merged, not lost to the copies read before it.
+    product = await _get(db, product_id, fresh=True)
     target, source = await _part(db, product, part_id), await _part(db, product, data.source_part_id)
     if target is source:
         raise HTTPException(status_code=400, detail="A part cannot be merged into itself")

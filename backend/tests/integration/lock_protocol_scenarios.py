@@ -971,3 +971,204 @@ async def scenario_journal() -> dict:
 
 
 SCENARIOS["journal"] = scenario_journal
+
+
+# ---------- implementation review round 1 (Codex): stale reads behind the gates ----------
+#
+# Not deadlock tests: session A is stopped BEFORE its read behind the gate (or before
+# the GET's second step), session B — the real writer, its own session — commits, and
+# A goes on. What A writes or answers must describe the state B left.
+
+
+async def _stale_revision() -> dict:
+    from fastapi import HTTPException
+
+    from backend.app.api.routes import products as product_routes
+    from backend.app.core.database import async_session
+    from backend.app.models.product import Product
+    from backend.app.schemas.product import VariantsApplyIn
+    from backend.app.services import product_variants
+
+    async with async_session() as db:
+        product = Product(name="Stale revision")
+        db.add(product)
+        await db.commit()
+        pid = product.id
+    real = product_routes._variant_groups_out
+    injected = []
+
+    async def meanwhile(db, *args):
+        result = await real(db, *args)
+        if not injected:
+            injected.append(True)
+            async with async_session() as other:
+                await product_variants.create_group(other, pid, "Unseen", ["default"], record_lines=False)
+                await other.commit()
+        return result
+
+    product_routes._variant_groups_out = meanwhile
+    try:
+        async with async_session() as db:
+            opened = await product_routes.get_product(pid, db=db, _=None)
+    finally:
+        product_routes._variant_groups_out = real
+    outcome = "ok"
+    async with async_session() as db:
+        try:
+            await product_routes.apply_variants(
+                pid, VariantsApplyIn(revision=opened.variants_revision, groups=[]), db=db, _=None
+            )
+            await db.commit()
+        except HTTPException as e:
+            await db.rollback()
+            outcome = (
+                f"http:{e.status_code}:{(e.detail or {}).get('error') if isinstance(e.detail, dict) else e.detail}"
+            )
+    async with async_session() as db:
+        left = len(await product_variants.groups(db, pid))
+    return {"groups_seen": len(opened.variant_groups), "outcome": outcome, "groups_left": left}
+
+
+async def _stale_binding() -> dict:
+    from backend.app.api.routes import products as product_routes
+    from backend.app.core.database import async_session
+    from backend.app.models.product import ProductPart
+    from backend.app.models.project_line import ProjectLine
+    from backend.app.schemas.product import ProductPartUpdate
+    from backend.app.services import line_composition, product_gate as gate_module
+
+    s = await shop(customer=False)
+    red, blue = s["options"]["red"], s["options"]["blue"]
+    async with async_session() as db:
+        shade = await db.get(ProductPart, s["shade"])
+        shade.variant_option_id = red
+        await db.commit()
+
+    async def kit_of_line() -> dict[int, int]:
+        async with async_session() as db:
+            line = await db.get(ProjectLine, s["line"])
+            parts = list(await db.scalars(select(ProductPart).where(ProductPart.product_id == s["product"])))
+            comp = await line_composition.compositions_for_lines(db, [line], {s["product"]: parts})
+            return {part.id: per for part, per in comp[line.id]}
+
+    before = await kit_of_line()
+    real = gate_module.product_gate
+    injected = []
+
+    async def meanwhile(db, ids):
+        if not injected:
+            injected.append(True)
+            async with async_session() as other:
+                await product_routes.update_part(
+                    s["product"], s["shade"], ProductPartUpdate(variant_option_id=blue), db=other, _=None
+                )
+                await other.commit()
+        return await real(db, ids)
+
+    gate_module.product_gate = meanwhile
+    try:
+        async with async_session() as db:
+            result = await product_routes.update_part(
+                s["product"], s["shade"], ProductPartUpdate(variant_option_id=red), db=db, _=None
+            )
+            await db.commit()
+    finally:
+        gate_module.product_gate = real
+    async with async_session() as db:
+        stored = await db.scalar(select(ProductPart.variant_option_id).where(ProductPart.id == s["shade"]))
+    return {
+        "requested": red,
+        "answered": result.variant_option_id,
+        "stored": stored,
+        "kit_before": before,
+        "kit_after": await kit_of_line(),
+    }
+
+
+async def _stale_customer(to_none: bool) -> dict:
+    from backend.app.api.routes import projects as project_routes
+    from backend.app.core.database import async_session
+    from backend.app.models.customer import Customer
+    from backend.app.models.finished_stock import StockItemMovement
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+    from backend.app.models.stock_issue import StockIssue
+    from backend.app.schemas.project import ProjectUpdate
+    from backend.app.services import finished_stock, order_fulfilment
+    from backend.app.services.stock_issues import Recipient
+
+    s = await shop(group=False)
+    async with async_session() as db:
+        other = Customer(name="Protocol customer 2")
+        db.add(other)
+        await db.commit()
+        target = None if to_none else other.id
+    async with async_session() as db:
+        item = await finished_stock.item_for(db, s["product"], {}, create=True)
+        await finished_stock.receive(db, item, 2)
+        await db.commit()
+    async with async_session() as db:
+        line = await db.get(ProjectLine, s["line"])
+        await finished_stock.reserve_for_line(db, line, 2)
+        await db.commit()
+    movements = await _count(StockItemMovement)
+    real = order_fulfilment.lock_order
+    injected = []
+
+    async def meanwhile(db, project_id):
+        if not injected:
+            injected.append(True)
+            async with async_session() as other_db:
+                await project_routes.update_project(
+                    project_id,
+                    ProjectUpdate(customer_id=target, contact_id=None),
+                    _req(),
+                    db=other_db,
+                    current_user=None,
+                )
+                await other_db.commit()
+        return await real(db, project_id)
+
+    order_fulfilment.lock_order = meanwhile
+    outcome = "ok"
+    try:
+        async with async_session() as db:
+            project = await db.get(Project, s["order"])
+            try:
+                await order_fulfilment.apply(
+                    db,
+                    project,
+                    [order_fulfilment.LineRequest(line_id=s["line"], issue=1)],
+                    recipient=Recipient(name="Typed by hand"),
+                    waybill=None,
+                    note=None,
+                    complete=False,
+                    actor=None,
+                )
+                await db.commit()
+            except order_fulfilment.FulfilmentError as e:
+                await db.rollback()
+                outcome = f"refused:{e.status}:{e}"
+    finally:
+        order_fulfilment.lock_order = real
+    async with async_session() as db:
+        current = await db.scalar(select(Project.customer_id).where(Project.id == s["order"]))
+    return {
+        "outcome": outcome,
+        "issues": await _count(StockIssue),
+        "movements_moved": await _count(StockItemMovement) - movements,
+        "customer_now": current,
+        "customer_wanted": target,
+    }
+
+
+async def scenario_stale_reads() -> dict:
+    return {
+        "revision": await _stale_revision(),
+        "binding": await _stale_binding(),
+        "customer": await _stale_customer(to_none=False),
+        "customer_removed": await _stale_customer(to_none=True),
+    }
+
+
+SCENARIOS["stale_reads"] = scenario_stale_reads

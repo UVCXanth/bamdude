@@ -678,3 +678,32 @@ class TestStockJournalPages:
         assert r["rows"] == r["unique"] == r["total"] == 7 + 7 + 2, r
         assert r["parts_total"] == 9, r
         assert r["products"] == ["Protocol lamp"], r
+
+
+class TestStaleReadsBehindTheGates:
+    """WS-13 E1 implementation review, round 1 (V01–V03): another session's writer commits
+    while this request waits; what the request writes or answers must describe the state
+    that writer left — two real PostgreSQL sessions, real writers, nothing mocked but the
+    pause."""
+
+    @pytest.fixture(scope="class")
+    def result(self, tmp_path_factory) -> dict:
+        return _protocol(tmp_path_factory, "stale_reads")
+
+    def test_an_unchanged_draft_from_an_older_snapshot_is_refused(self, result):
+        r = result["revision"]
+        assert r["groups_seen"] == 0, r
+        assert r["outcome"] == "http:409:variants_changed", r
+        assert r["groups_left"] == 1, r  # the group nobody saw survives
+
+    def test_a_rebinding_writes_what_was_asked_and_keeps_saved_kits(self, result):
+        r = result["binding"]
+        assert r["answered"] == r["stored"] == r["requested"], r
+        assert r["kit_after"] == r["kit_before"], r  # the saved line's kit never moved
+
+    @pytest.mark.parametrize("case", ["customer", "customer_removed"])
+    def test_an_issue_never_goes_to_a_customer_the_order_no_longer_has(self, result, case):
+        r = result[case]
+        assert r["outcome"].startswith("refused:409:"), r
+        assert (r["issues"], r["movements_moved"]) == (0, 0), r
+        assert r["customer_now"] == r["customer_wanted"], r
