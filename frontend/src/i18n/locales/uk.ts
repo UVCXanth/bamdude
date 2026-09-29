@@ -5448,6 +5448,7 @@ export default {
   list: {
     view: { label: 'Вигляд', cards: 'Картки', table: 'Таблиця' },
     search: { clear: 'Очистити пошук' },
+    tabs: { countLoading: 'кількість завантажується' },
     empty: { noMatch: 'Нічого не збігається з пошуком або фільтрами.', reset: 'Скинути' },
     sort: { label: 'Сортування', asc: 'За зростанням', desc: 'За спаданням', updated: 'Остання зміна', created: 'Дата створення' },
     tiles: { failed: 'Не вдалося завантажити' },

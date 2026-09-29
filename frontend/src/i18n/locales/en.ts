@@ -5419,6 +5419,7 @@ export default {
   list: {
     view: { label: 'View', cards: 'Cards', table: 'Table' },
     search: { clear: 'Clear search' },
+    tabs: { countLoading: 'count is loading' },
     empty: { noMatch: 'Nothing matches your search or filters.', reset: 'Reset' },
     sort: { label: 'Sort by', asc: 'Ascending', desc: 'Descending', updated: 'Last updated', created: 'Created' },
     tiles: { failed: 'Could not load' },
