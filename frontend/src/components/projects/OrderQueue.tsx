@@ -2,11 +2,12 @@ import { useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
-import { Clock, ExternalLink, Play } from 'lucide-react';
+import { Clock, ExternalLink, Package, Play } from 'lucide-react';
 import { api } from '../../api/client';
 import type { AutoQueueItem, OrderQueuePrinting, PrintQueueItem } from '../../api/client';
 import { farmPollInterval, farmStatusPollInterval } from '../../api/farmReadBudget';
 import { useOrderDetail } from '../../hooks/useOrderDetail';
+import { useQueueRowPicture } from '../../hooks/useQueueRowPicture';
 import { formatDuration } from '../../utils/date';
 import { Button } from '../Button';
 import { WorkshopPanel } from '../workshop/WorkshopPanel';
@@ -210,12 +211,43 @@ function PrintingRow({ print, lineName }: { print: OrderQueuePrinting; lineName:
   );
 }
 
-/** A job in a printer's queue: the printer, the estimated time, then what it is. */
+/**
+ * A row's small picture (28 px). ⚠️ **A queued job shows ITSELF** (m173, spec
+ * §4 / A09): it keeps an immutable copy of the bytes it prints, so it must still
+ * show itself after its library file or archive is deleted, and its own render
+ * outranks a surviving original that may have been re-sliced since (A03). The
+ * compact rows of WS-13 E3 G04 keep this picture for that reason — without it an
+ * independent job would be a pictureless row. `archive_thumbnail` /
+ * `library_file_thumbnail` are the server's DISK paths: they say a picture
+ * exists, the id says where to ask for it. No picture → nothing is drawn.
+ */
+function RowPicture({ src }: { src: string | null }) {
+  return src ? (
+    <img src={src} alt="" className="mt-0.5 h-7 w-7 shrink-0 rounded bg-bambu-dark object-contain" />
+  ) : (
+    <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded bg-bambu-dark" aria-hidden>
+      <Package className="h-3.5 w-3.5 text-bambu-gray" />
+    </span>
+  );
+}
+
+function originalPicture(item: { archive_id: number | null; archive_thumbnail?: string | null; library_file_id: number | null; library_file_thumbnail?: string | null }) {
+  return item.archive_id != null && item.archive_thumbnail
+    ? api.getArchiveThumbnail(item.archive_id)
+    : item.library_file_id != null && item.library_file_thumbnail
+      ? api.getLibraryFileThumbnailUrl(item.library_file_id)
+      : null;
+}
+
+/** A job in a printer's queue: its picture, the printer, the estimated time, then what it is. */
 function PendingRow({ item, lineName }: { item: PrintQueueItem; lineName: string | undefined }) {
   const { t } = useTranslation();
+  const picture = useQueueRowPicture(item.source_thumbnail ? item.id : null, originalPicture(item));
   const name = item.archive_name || item.library_file_name || `#${item.id}`;
   return (
-    <li className={ROW}>
+    <li className={`${ROW} flex gap-2`}>
+      <RowPicture src={picture} />
+      <div className="min-w-0 flex-1">
       <div className="flex items-center justify-between gap-2">
         <span className="inline-flex min-w-0 items-center gap-1.5 text-white">
           <Clock className="h-3.5 w-3.5 shrink-0 text-bambu-gray" aria-hidden />
@@ -232,6 +264,7 @@ function PendingRow({ item, lineName }: { item: PrintQueueItem; lineName: string
           lineName && t('orders.queue.line', { name: lineName }),
         ]}
       />
+      </div>
     </li>
   );
 }
@@ -246,8 +279,11 @@ function AwaitingRow({ item, lineName }: { item: AutoQueueItem; lineName: string
   const name = item.archive_name || item.library_file_name || `#${item.id}`;
   const target =
     [item.target_model, item.target_location?.name].filter(Boolean).join(' · ') || t('orders.queue.anyPrinter');
+  // The original's picture only: an auto-queue row has no `source-thumbnail` route of its own.
   return (
-    <li className={ROW}>
+    <li className={`${ROW} flex gap-2`}>
+      <RowPicture src={originalPicture(item)} />
+      <div className="min-w-0 flex-1">
       <div className="flex items-center justify-between gap-2">
         <span className="inline-flex min-w-0 items-center gap-1.5 text-white">
           <Clock className="h-3.5 w-3.5 shrink-0 text-bambu-gray" aria-hidden />
@@ -265,6 +301,7 @@ function AwaitingRow({ item, lineName }: { item: AutoQueueItem; lineName: string
         ]}
       />
       {item.waiting_reason && <small className="mt-0.5 block text-xs text-amber-400">{item.waiting_reason}</small>}
+      </div>
     </li>
   );
 }
