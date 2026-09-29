@@ -353,3 +353,39 @@ async def test_q_matches_tags_too(async_client, db_session):
     body = (await async_client.get("/api/v1/projects/?page=1&q=ПРОМО")).json()
     assert [o["name"] for o in body["items"]] == ["Plain"]
     assert body["totals"]["all"] == 1  # the tabs follow the same search
+
+
+@pytest.mark.asyncio
+async def test_the_list_asks_as_many_statements_for_thirty_orders_as_for_three(async_client, db_session, test_engine):
+    """WS-13 E1 Z2: the card's new chips (``materials``, ``products``) ride the page's
+    batch — the number of statements does not grow with the rows."""
+    from backend.app.models.product import Product
+    from backend.app.models.project import ProjectLine
+    from backend.tests.unit.services.test_product_composition import counting_statements
+
+    products = [Product(name=f"P{i}") for i in range(3)]
+    db_session.add_all(products)
+    await db_session.commit()
+
+    async def add_orders(n):
+        for i in range(n):
+            order = await _order(db_session, f"Order {i}")
+            db_session.add_all(
+                [
+                    ProjectLine(project_id=order.id, product_id=products[i % 3].id, quantity=1, material="PETG"),
+                    ProjectLine(project_id=order.id, product_id=products[(i + 1) % 3].id, quantity=2, sort_order=1),
+                ]
+            )
+        await db_session.commit()
+
+    async def statements():
+        await async_client.get("/api/v1/projects/?page=1&page_size=100")  # warm any per-process cache
+        with counting_statements(test_engine) as seen:
+            body = (await async_client.get("/api/v1/projects/?page=1&page_size=100")).json()
+        assert all(row["products"] and row["materials"] == ["PETG"] for row in body["items"])
+        return len(seen)
+
+    await add_orders(3)
+    few = await statements()
+    await add_orders(27)
+    assert await statements() == few

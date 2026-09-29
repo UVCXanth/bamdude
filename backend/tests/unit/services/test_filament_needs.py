@@ -7,6 +7,7 @@ per key from a spool list; the type total always beside a colour figure.
 from backend.app.services.filament_needs import (
     FilamentLine,
     NeedKey,
+    NeedRow,
     QueuedNeed,
     SpoolStock,
     _lines_of,
@@ -261,3 +262,29 @@ def test_coloured_index_compares_materials_like_the_line_filter():
     assert coloured_index(plate, None) == 1  # the untyped 50 g is no candidate at all
     assert coloured_index([], "PETG") is None
     assert coloured_index([FilamentLine("PLA", None)], None) == 0
+
+
+def test_the_farm_strip_puts_the_biggest_shortage_first():
+    """WS-13 E1 K6: ``short_g`` ↓, then ``need_g`` ↓, then material, colour — an unknown
+    shortage (no shelf for the key) after every known one, never read as zero."""
+
+    def row(material, colour, need, have):
+        short = None if have is None else round(max(0.0, need - have), 1)
+        return NeedRow(material, colour, need, have, have, short, 0)
+
+    farm = farm_of(
+        {
+            1: [row("ABS", None, 50.0, 0.0), row("PETG", "black", 1000.0, 800.0), row("PLA", "red", 30.0, None)],
+            2: [row("ASA", None, 400.0, 400.0), row("PETG", "white", 200.0, 0.0), row("PC", None, 90.0, 90.0)],
+        },
+        unknown_prints=0,
+        stock_unavailable=False,
+    )
+    assert [(r.material, r.colour, r.short_g) for r in farm.rows] == [
+        ("PETG", "black", 200.0),
+        ("PETG", "white", 200.0),  # the same shortage: the bigger need (1000 g) goes first
+        ("ABS", None, 50.0),
+        ("ASA", None, 0.0),
+        ("PC", None, 0.0),
+        ("PLA", "red", None),
+    ]

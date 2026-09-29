@@ -31,6 +31,7 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project import Project
 from backend.app.models.settings import Settings
 from backend.app.services.filament_intake import loaded_descriptor
+from backend.app.services.order_deadlines import eta_is_late
 from backend.app.services.order_filing import priority_rank
 from backend.app.services.order_queue import awaiting_auto_row_conditions
 from backend.app.services.plan_engine import FleetCapacity, FleetMachine, OrderPlan, plan_for_orders
@@ -186,6 +187,14 @@ class OrderForecast:
     lines: list[LineForecast] = field(default_factory=list)
     #: What the snapshot could not model — the hint every surface shows (spec §8).
     assumptions: list[str] = field(default_factory=list)
+    #: WS-13 E1 OR5 — whether the PRODUCTION estimate is whole, apart from
+    #: ``eta_complete`` (the simulation's own flag, unchanged): ``(code, count)`` in
+    #: the fixed order of :data:`REASON_ORDER`; empty = complete.
+    incomplete_reasons: list[tuple[str, int | None]] = field(default_factory=list)
+    #: OR4 — the deadlines' own rule on this forecast.
+    late: bool = False
+    #: OR6 — the plan's machine-hours per printer model (the detail's panel).
+    by_model: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -559,6 +568,55 @@ def _eta(now: datetime, seconds: float | None) -> tuple[datetime | None, int | N
     return now + timedelta(seconds=whole), whole
 
 
+#: WS-13 E1 OR5a — the reasons in the order a surface lists them.
+REASON_ORDER = ("unknown_time", "unroutable", "material_mismatch", "needs_slicing", "no_plate", "truncated")
+
+
+def incomplete_reasons(plan: OrderPlan | None, unknown: int, unroutable: int) -> list[tuple[str, int | None]]:
+    """Why the production estimate of an order is not whole (OR5a): prints without an
+    estimate, prints no machine takes, the parts no plan covers — each by the one rule
+    ``plan_engine`` gave it, counted in part units — and a plan the guard stopped."""
+    units = dict.fromkeys(("material_mismatch", "needs_slicing", "no_plate"), 0)
+    for line in plan.lines if plan else []:
+        for pid, code in line.unsatisfiable_reasons.items():
+            units[code] += line.outstanding_before.get(pid, 0)
+    found: dict[str, int | None] = {"unknown_time": unknown, "unroutable": unroutable, **units}
+    reasons: list[tuple[str, int | None]] = [(code, found[code]) for code in REASON_ORDER[:-1] if found[code]]
+    if plan is not None and plan.truncated:
+        reasons.append(("truncated", None))
+    return reasons
+
+
+def by_model(plan: OrderPlan | None, accepting: dict[str | None, int]) -> list[dict]:
+    """OR6: Σ prints and Σ ``count × print_time`` of the plan's rows per model key —
+    ``seconds`` None as soon as one row of that model has no estimate, never a partial
+    sum. ``accepting_printers``: machines of that model the snapshot lets take work."""
+    groups: dict[str | None, dict] = {}
+    for line in plan.lines if plan else []:
+        for row in line.rows:
+            key = model_key(row.printer_model)
+            group = groups.setdefault(
+                key,
+                {"name": normalize_model_name(row.printer_model) or None, "prints": 0, "seconds": 0, "unknown": False},
+            )
+            group["prints"] += row.count
+            if row.print_time_seconds and row.print_time_seconds > 0:
+                group["seconds"] += row.count * row.print_time_seconds
+            else:
+                group["unknown"] = True
+    rows = [
+        {
+            "model": group["name"],
+            "prints": group["prints"],
+            "seconds": None if group["unknown"] else group["seconds"],
+            "accepting_printers": accepting.get(key, 0),
+        }
+        for key, group in groups.items()
+    ]
+    rows.sort(key=lambda r: (r["seconds"] is None, -(r["seconds"] or 0), r["model"] or ""))
+    return rows
+
+
 def _order_result(
     order_id: int,
     plan: OrderPlan | None,
@@ -617,6 +675,7 @@ def _order_result(
         ahead_count=ahead,
         lines=lines,
         assumptions=list(state.assumptions),
+        incomplete_reasons=incomplete_reasons(plan, state.unknown[order_id], state.unroutable[order_id]),
     )
 
 
@@ -944,9 +1003,12 @@ async def forecast_projects(
     # wanted ids are active, and the answer needs to know which of the rest
     # exist at all.
     status_rows = (
-        (await db.execute(select(Project.id, Project.status).where(Project.id.in_(wanted)))).all() if wanted else []
+        (await db.execute(select(Project.id, Project.status, Project.due_date).where(Project.id.in_(wanted)))).all()
+        if wanted
+        else []
     )
-    status_of: dict[int, str | None] = dict(status_rows)
+    status_of: dict[int, str | None] = {row.id: row.status for row in status_rows}
+    due_of = {row.id: row.due_date for row in status_rows}
     active_targets = {pid for pid in wanted if status_of.get(pid) == "active"}
     walk = ranked[: max((i for i, pid in enumerate(ranked) if pid in active_targets), default=-1) + 1]
     plans: dict[int, OrderPlan] = (
@@ -956,4 +1018,13 @@ async def forecast_projects(
     for pid in wanted:
         if pid not in out and pid in status_of:
             out[pid] = _empty_forecast(pid)
+    accepting: dict[str | None, int] = {}
+    for machine in snapshot.printers:
+        if machine.accepts_new_work:
+            key = model_key(machine.model)
+            accepting[key] = accepting.get(key, 0) + 1
+    for pid, forecast in out.items():
+        # OR4 — the rule /deadlines applies, on the same numbers; OR6 from the plan in hand.
+        forecast.late = eta_is_late(forecast.now_eta if forecast.eta_complete else None, due_of.get(pid))
+        forecast.by_model = by_model(plans.get(pid), accepting)
     return simulate_farm(snapshot), out

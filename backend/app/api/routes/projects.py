@@ -48,9 +48,11 @@ from backend.app.models.user import User
 from backend.app.schemas.archive import ArchivePartRow
 from backend.app.schemas.auto_queue import AutoQueueItemCreate
 from backend.app.schemas.farm_forecast import (
+    EstimateReasonOut,
     FarmForecastOut,
     ForecastBatchOut,
     LineForecastOut,
+    ModelHoursOut,
     OrderForecastDetailOut,
     OrderForecastOut,
     RowForecastOut,
@@ -627,6 +629,10 @@ async def _list_rows(db: AsyncSession, projects: Sequence[Project]) -> list[Proj
         pf = figures.get(project.id)
         if pf is None:  # deleted between the two statements; nothing to report
             continue
+        # ``(sort_order, id)`` — the order every figure path puts the lines in. The
+        # relationship's own order is the database's, so the cover strip on the card
+        # would otherwise be free to differ from the line list on the order page it opens.
+        lines = sorted(project.lines, key=lambda line: (line.sort_order, line.id))
         out.append(
             ProjectListResponse(
                 id=project.id,
@@ -660,13 +666,15 @@ async def _list_rows(db: AsyncSession, projects: Sequence[Project]) -> list[Proj
                 prints_in_progress=pf.prints_in_progress,
                 prints_queued=pf.prints_queued,
                 progress=pf.progress,
-                # ``(sort_order, id)`` — the order every figure path puts the
-                # lines in. The relationship's own order is the database's, so
-                # the cover strip on the card would otherwise be free to differ
-                # from the line list on the order page it opens.
                 line_products=[
-                    LineProductOut(product_id=line.product_id, has_cover=line.product_id in covered)
-                    for line in sorted(project.lines, key=lambda line: (line.sort_order, line.id))
+                    LineProductOut(product_id=line.product_id, has_cover=line.product_id in covered) for line in lines
+                ],
+                materials=list(
+                    dict.fromkeys(line.material for line in lines if line.material and line.material.strip())
+                ),
+                products=[
+                    LineProductOut(product_id=product_id, has_cover=product_id in covered)
+                    for product_id in dict.fromkeys(line.product_id for line in lines)
                 ],
             )
         )
@@ -688,7 +696,9 @@ async def orders_summary(
     of today (rule 11); a deadline of today is not overdue yet.
     """
     rows = (
-        await db.execute(select(Project.id, Project.due_date, Project.priority).where(Project.status == "active"))
+        await db.execute(
+            select(Project.id, Project.due_date, Project.priority, Project.stage).where(Project.status == "active")
+        )
     ).all()
     start_of_today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     figures = await grouped_figures(db, project_ids=[row.id for row in rows]) if rows else []
@@ -700,6 +710,7 @@ async def orders_summary(
         queued=sum(f.prints_queued for f in figures),
         remaining=sum(f.remaining for f in figures),
         all_covered=sum(1 for f in figures if f.all_printed),
+        qc=sum(1 for row in rows if row.stage == "qc"),
     )
 
 
@@ -1066,6 +1077,8 @@ def _order_forecast_fields(f: farm_forecast.OrderForecast) -> dict:
         "eta_complete": f.eta_complete,
         "ahead_count": f.ahead_count,
         "assumptions": list(f.assumptions),
+        "incomplete_reasons": [EstimateReasonOut(code=code, count=count) for code, count in f.incomplete_reasons],
+        "late": f.late,
     }
 
 
@@ -3107,6 +3120,7 @@ async def get_order_forecast(
     f = orders[project_id]
     return OrderForecastDetailOut(
         **_order_forecast_fields(f),
+        by_model=[ModelHoursOut(**row) for row in f.by_model],
         lines=[
             LineForecastOut(
                 line_id=line.line_id,

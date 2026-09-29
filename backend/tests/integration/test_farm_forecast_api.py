@@ -392,3 +392,122 @@ async def test_the_snapshot_reads_the_stagger_policy(db_session, farm):
     assert policy.resolver.groups_for(p1.id) == {(None, None)}
     machines = {m.printer_id: m for m in snapshot.printers}
     assert machines[p1.id].stagger_interval_seconds == 120 and machines[p2.id].stagger_interval_seconds is None
+
+
+# ---------- WS-13 E1 OR4–OR6: late, the reasons, machine-hours per model ----------
+
+
+@pytest.mark.asyncio
+async def test_a_covered_order_has_no_reason(db_session, farm):
+    mine, _line = await _order(db_session, farm["product"].id, 3, name="Covered")
+    _farm, out = await farm_forecast.forecast_projects(db_session, [mine], NOW)
+    assert out[mine].incomplete_reasons == []
+
+
+@pytest.mark.asyncio
+async def test_a_part_without_a_plate_is_a_reason_counted_in_units(db_session, farm):
+    product = farm["product"]
+    db_session.add(ProductPart(product_id=product.id, kind="printed", name="cap", name_key="cap", qty_per_unit=2))
+    await db_session.commit()
+    mine, _line = await _order(db_session, product.id, 3, name="Capless")
+    _farm, out = await farm_forecast.forecast_projects(db_session, [mine], NOW)
+    assert out[mine].incomplete_reasons == [("no_plate", 6)]
+    assert out[mine].eta_complete is True  # the old field keeps its meaning (Q1)
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_plan_is_a_reason_even_with_nothing_unsatisfiable(db_session, farm, monkeypatch):
+    from backend.app.services import plan_engine
+
+    monkeypatch.setattr(plan_engine, "MAX_ITERATIONS", 1)
+    mine, _line = await _order(db_session, farm["product"].id, 3, name="Stopped")
+    _farm, out = await farm_forecast.forecast_projects(db_session, [mine], NOW)
+    assert ("truncated", None) in out[mine].incomplete_reasons
+
+
+def _file(filename: str, model: str, obj: str, seconds: int | None) -> LibraryFile:
+    plate = {"index": 1, "printable_objects": {"1": obj}, "filaments": [{"slot_id": 1, "type": "PETG"}]}
+    if seconds is not None:
+        plate["print_time_seconds"] = seconds
+    return LibraryFile(
+        filename=filename,
+        file_path=filename,
+        file_size=1,
+        file_type="gcode",
+        file_metadata={"sliced_for_model": model, "plates": [plate]},
+    )
+
+
+async def _kit(db, files: list[LibraryFile], parts: tuple[str, ...]) -> Product:
+    kit = Product(name="Kit")
+    db.add_all([kit, *[f for f in files if f.id is None]])
+    await db.flush()
+    for name in parts:
+        db.add(ProductPart(product_id=kit.id, kind="printed", name=name, name_key=name, qty_per_unit=1, aliases=[name]))
+    for f in files:
+        db.add(ProductPlate(product_id=kit.id, library_file_id=f.id, plate_index=0))
+    await db.commit()
+    return kit
+
+
+@pytest.mark.asyncio
+async def test_machine_hours_per_model_and_a_parked_printer(db_session, farm):
+    _p1, p2, _x1 = farm["printers"]
+    (await db_session.get(PrinterQueue, p2.id)).status = "paused"
+    cap_x1c = _file("cap-x1c.gcode.3mf", "X1C", "cap", 2 * H)
+    kit = await _kit(db_session, [farm["files"][0], cap_x1c], ("hook", "cap"))
+    mine, _line = await _order(db_session, kit.id, 2, name="Kit order")
+    _farm, out = await farm_forecast.forecast_projects(db_session, [mine], NOW)
+    # One of the two P1S is parked: it still owes its work but takes no new one.
+    assert out[mine].by_model == [
+        {"model": "X1C", "prints": 2, "seconds": 4 * H, "accepting_printers": 1},
+        {"model": "P1S", "prints": 2, "seconds": 2 * H, "accepting_printers": 1},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_model_whose_row_has_no_estimate_has_no_machine_hours(db_session, farm):
+    kit = await _kit(db_session, [_file("cap-x1c.gcode.3mf", "X1C", "cap", None)], ("cap",))
+    mine, _line = await _order(db_session, kit.id, 2, name="Timeless")
+    _farm, out = await farm_forecast.forecast_projects(db_session, [mine], NOW)
+    assert out[mine].by_model == [{"model": "X1C", "prints": 2, "seconds": None, "accepting_printers": 1}]
+    assert ("unknown_time", 2) in out[mine].incomplete_reasons
+
+
+@pytest.mark.asyncio
+async def test_a_part_the_fleet_cannot_place_is_not_a_complete_estimate(db_session, farm):
+    """A plate the fleet cannot schedule (no estimate) is the only one making «cap»,
+    while «hook» has a scheduled plate: the planner used to drop it, and the estimate
+    read complete over an uncovered part (WS-13 E1 T3)."""
+    kit = await _kit(db_session, [farm["files"][0], _file("cap-x1c.gcode.3mf", "X1C", "cap", None)], ("hook", "cap"))
+    mine, _line = await _order(db_session, kit.id, 2, name="Half placed")
+    _farm, out = await farm_forecast.forecast_projects(db_session, [mine], NOW)
+    assert out[mine].incomplete_reasons == [("unknown_time", 2)]
+
+
+@pytest.mark.asyncio
+async def test_late_is_the_deadlines_own_rule(committing_client, db_session, farm):
+    from backend.app.services.order_deadlines import eta_is_late
+
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    past, _l1 = await _order(
+        db_session, farm["product"].id, 3, name="Due yesterday", due_date=today - timedelta(days=1)
+    )
+    later, _l2 = await _order(db_session, farm["product"].id, 3, name="Due later", due_date=today + timedelta(days=30))
+    body = (await committing_client.get(f"/api/v1/projects/forecast?ids={past},{later}")).json()
+    rows = {row["project_id"]: row for row in body["orders"]}
+    assert rows[past]["late"] is True and rows[later]["late"] is False
+    for pid, due in ((past, today - timedelta(days=1)), (later, today + timedelta(days=30))):
+        eta = datetime.fromisoformat(rows[pid]["now_eta"].replace("Z", "+00:00")).replace(tzinfo=None)
+        assert rows[pid]["late"] is eta_is_late(eta if rows[pid]["eta_complete"] else None, due)
+    detail = (await committing_client.get(f"/api/v1/projects/{past}/forecast")).json()
+    assert detail["late"] is True and detail["by_model"] and detail["incomplete_reasons"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_plate_for_a_model_the_farm_lacks_is_unroutable(db_session, farm):
+    kit = await _kit(db_session, [_file("cap-h2d.gcode.3mf", "H2D", "cap", 2 * H)], ("cap",))
+    mine, _line = await _order(db_session, kit.id, 2, name="Nowhere")
+    _farm, out = await farm_forecast.forecast_projects(db_session, [mine], NOW)
+    assert out[mine].incomplete_reasons == [("unroutable", 2)]
+    assert out[mine].by_model == [{"model": "H2D", "prints": 2, "seconds": 4 * H, "accepting_printers": 0}]

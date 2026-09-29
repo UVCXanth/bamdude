@@ -163,6 +163,9 @@ class OrdersSummary(BaseModel):
     queued: int
     remaining: int
     all_covered: int
+    #: WS-13 E1 OR1 — active orders the operator moved to the «qc» stage. Not
+    #: ``all_covered``: that one is what the prints cover, this is where the order is.
+    qc: int = 0
 
 
 class CustomersSummary(BaseModel):

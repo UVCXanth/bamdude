@@ -3627,3 +3627,66 @@ async def test_the_list_reads_the_queues_once_for_every_order(committing_client,
         r = await committing_client.get("/api/v1/projects/")
     assert r.status_code == 200
     assert len(pq) == 1 and len(aq) == 1
+
+
+# ---------- WS-13 E1 OR1–OR3: the summary's «QC» tile and the card's chips ----------
+
+
+@pytest.mark.asyncio
+async def test_the_qc_tile_counts_the_stage_not_the_coverage(committing_client, db_session, catalog):
+    """OR1: ``qc`` = active orders at stage «qc». ``all_covered`` stays what it was — on
+    this data the two disagree both ways, so neither can stand in for the other."""
+    product = catalog["product"].id
+    ids = []
+    for name in ("At QC, nothing printed", "Covered, still prep", "QC but closed"):
+        body = {"name": name, "lines": [{"product_id": product, "quantity": 1}]}
+        ids.append((await committing_client.post("/api/v1/projects/", json=body)).json()["id"])
+    at_qc, covered, closed = ids
+    for pid in (at_qc, closed):
+        assert (await committing_client.put(f"/api/v1/projects/{pid}/stage", json={"stage": "qc"})).status_code == 200
+    line = (await db_session.execute(select(ProjectLine).where(ProjectLine.project_id == covered))).scalar_one()
+    await _completed_print(db_session, covered, catalog["file"].id, line.id)
+    (await db_session.get(Project, closed)).status = "cancelled"
+    await db_session.commit()
+
+    summary = (await committing_client.get("/api/v1/projects/summary")).json()
+    assert summary["qc"] == 1
+    assert summary["all_covered"] == 1
+
+
+@pytest.mark.asyncio
+async def test_the_card_chips_list_materials_and_products_in_line_order_once(committing_client, db_session, catalog):
+    """OR2 / OR3: distinct non-empty materials and distinct products, in ``(sort_order,
+    id)``; a line without a material adds nothing. ``line_products`` stays one per line."""
+    lamp = catalog["product"].id
+    stool = (await committing_client.post("/api/v1/products/", json={"name": "Stool"})).json()["id"]
+    shelf = (await committing_client.post("/api/v1/products/", json={"name": "Shelf"})).json()["id"]
+    lines = [
+        {"product_id": stool, "quantity": 1, "material": "PETG"},
+        {"product_id": lamp, "quantity": 1},
+        {"product_id": stool, "quantity": 2, "material": "PLA"},
+        {"product_id": shelf, "quantity": 1, "material": "PETG"},
+    ]
+    pid = (await committing_client.post("/api/v1/projects/", json={"name": "Chips", "lines": lines})).json()["id"]
+    stool_first = (
+        (
+            await db_session.execute(
+                select(ProjectLine)
+                .where(ProjectLine.project_id == pid, ProjectLine.material == "PETG")
+                .order_by(ProjectLine.id)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    stool_first.sort_order = 9  # the first line moves last: the chips follow
+    await db_session.commit()
+
+    row = next(p for p in (await committing_client.get("/api/v1/projects/")).json() if p["id"] == pid)
+    assert row["materials"] == ["PLA", "PETG"]
+    assert row["products"] == [
+        {"product_id": lamp, "has_cover": False},
+        {"product_id": stool, "has_cover": False},
+        {"product_id": shelf, "has_cover": False},
+    ]
+    assert len(row["line_products"]) == 4

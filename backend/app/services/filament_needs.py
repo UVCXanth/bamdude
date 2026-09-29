@@ -311,7 +311,12 @@ def farm_of(per_order: dict[int, list[NeedRow]], *, unknown_prints: int, stock_u
                 row.orders_count += 1
     for row in acc.values():
         row.short_g = None if row.have_g is None else round(max(0.0, row.need_g - row.have_g), 1)
-    ordered = sorted(acc.values(), key=lambda k: (k.material, k.colour or ""))
+    # WS-13 E1 K6: the biggest shortage first, then the biggest need; an unknown
+    # shortage (no shelf for the key) after every known one — never read as zero.
+    ordered = sorted(
+        acc.values(),
+        key=lambda k: (k.short_g is None, -(k.short_g or 0.0), -k.need_g, k.material, k.colour or ""),
+    )
     return FarmNeeds(ordered, len(per_order), unknown_prints, stock_unavailable)
 
 

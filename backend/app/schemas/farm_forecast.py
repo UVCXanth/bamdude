@@ -67,6 +67,23 @@ class LineForecastOut(BaseModel):
     rows: list[RowForecastOut] = []
 
 
+class EstimateReasonOut(BaseModel):
+    """Why an estimate is not whole (WS-13 E1 OR5 / ES3) — a code from a closed list
+    and its count (``None`` where a count means nothing, e.g. ``truncated``)."""
+
+    code: str
+    count: int | None = None
+
+
+class ModelHoursOut(BaseModel):
+    """OR6 — one printer model's share of an order's plan."""
+
+    model: str | None
+    prints: int
+    seconds: int | None
+    accepting_printers: int
+
+
 class OrderForecastOut(BaseModel):
     project_id: int
     now_eta: UTCDatetime
@@ -79,10 +96,16 @@ class OrderForecastOut(BaseModel):
     eta_complete: bool
     ahead_count: int
     assumptions: list[str]
+    #: WS-13 E1 OR5 — the production estimate's completeness; empty = whole.
+    incomplete_reasons: list[EstimateReasonOut] = []
+    #: OR4 — the forecast lands after the deadline day (the /deadlines rule).
+    late: bool = False
 
 
 class OrderForecastDetailOut(OrderForecastOut):
     lines: list[LineForecastOut] = []
+    #: OR6 — machine-hours per printer model of the plan.
+    by_model: list[ModelHoursOut] = []
 
 
 class ForecastBatchOut(BaseModel):

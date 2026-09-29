@@ -462,6 +462,12 @@ class ProjectListResponse(BaseModel):
     # ``ordered``, which stay uncapped.
     progress: float
     line_products: list["LineProductOut"] = []
+    #: WS-13 E1 OR2 — the lines' distinct materials, in line order; a line with no
+    #: material («any») adds nothing.
+    materials: list[str] = []
+    #: WS-13 E1 OR3 — the distinct products, in line order, the whole list (the card
+    #: draws the first three and «+N» off its length). ``line_products`` stays per line.
+    products: list["LineProductOut"] = []
 
 
 class TimelineEvent(BaseModel):

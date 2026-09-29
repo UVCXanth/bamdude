@@ -639,3 +639,63 @@ def test_a_line_covered_entirely_from_stock_plans_nothing():
     lp = plan_lines(ctx, attribute(ctx)[0], {10: [_cand(1, 10, {1: 2})]}, {}, None).lines[0]
 
     assert lp.outstanding_before == {} and lp.rows == [] and lp.unsatisfiable == []
+
+
+# ---------- WS-13 E1 OR5a — why a part has no plan ----------
+
+
+def test_an_unplanned_part_says_why_one_reason_each():
+    """A PLA line: «a» comes only on a PETG plate (material), «b» only on an unsliced
+    plate (slice it), «c» on no plate at all."""
+    a, b, c = _part(1, 10, "a", 1), _part(2, 10, "b", 1), _part(3, 10, "c", 1)
+    line = _line(100, 10, 2, material="PLA")
+    ctx = _ctx([line], [a, b, c])
+    figures = {line.id: _figs(line, [a, b, c], {1: 2, 2: 2, 3: 2})}
+    petg = _cand(1, 10, {1: 1}, materials=("PETG",))
+    raw = _cand(2, 10, {2: 1}, secs=None, sliced=False, index=2)
+    lp = plan_lines(ctx, figures, {10: [petg, raw]}, {}, None).lines[0]
+    assert lp.unsatisfiable == [1, 2, 3]
+    assert lp.unsatisfiable_reasons == {1: "material_mismatch", 2: "needs_slicing", 3: "no_plate"}
+
+
+def test_an_unsliced_alternative_beside_a_covering_plate_is_no_reason():
+    p = _part(1, 10, "a", 1)
+    line = _line(100, 10, 2)
+    ctx = _ctx([line], [p])
+    ready = _cand(1, 10, {1: 1})
+    raw = _cand(2, 10, {1: 5}, secs=None, sliced=False, index=2)
+    lp = plan_lines(ctx, {line.id: _figs(line, [p], {1: 2})}, {10: [ready, raw]}, {}, None).lines[0]
+    assert lp.unsatisfiable == [] and lp.unsatisfiable_reasons == {}
+    assert lp.not_sliced == [2]  # still listed for the operator — just not a reason
+
+
+def test_a_covered_line_has_no_reason_at_all():
+    p = _part(1, 10, "a", 1)
+    line = _line(100, 10, 2)
+    ctx = _ctx([line], [p])
+    lp = plan_lines(ctx, {line.id: _figs(line, [p], {1: 0})}, {10: []}, {}, None).lines[0]
+    assert lp.unsatisfiable_reasons == {}
+
+
+def test_a_part_only_an_unplaceable_recipe_makes_stays_in_the_plan():
+    """The per-part form of the rule above: another part's recipe having a lane must
+    not hide the only recipe of this one — neither an absent model nor a plate with
+    no estimate (WS-13 E1 T3: the forecast then said «complete» over an uncovered part)."""
+    hook, cap, clip = _part(1, 10, "hook", 1), _part(2, 10, "cap", 1), _part(3, 10, "clip", 1)
+    line = _line(100, 10, 2)
+    ctx = _ctx([line], [hook, cap, clip])
+    a1 = _cand(1, 10, {1: 1}, secs=3600, model="A1MINI")
+    absent = _cand(2, 10, {2: 1}, secs=3600, model="P1S", file_id=2)
+    timeless = _cand(3, 10, {3: 1}, secs=None, model="A1MINI", file_id=3)
+    plan = plan_lines(
+        ctx,
+        {line.id: _figs(line, [hook, cap, clip], {1: 2, 2: 2, 3: 2})},
+        {10: [a1, absent, timeless]},
+        {},
+        None,
+        FleetCapacity([FleetMachine(1, "A1 mini")]),
+    )
+    lp = plan.lines[0]
+    assert sorted((row.plate_id, row.count) for row in lp.rows) == [(1, 2), (2, 2), (3, 2)]
+    assert lp.unsatisfiable == [] and plan.truncated is False
+    assert plan.totals.print_time_seconds is None  # a row without an estimate voids the sum

@@ -212,6 +212,10 @@ class LinePlan:
     rows: list[PlanRow] = field(default_factory=list)
     surplus_after: dict[int, int] = field(default_factory=dict)
     unsatisfiable: list[int] = field(default_factory=list)
+    #: Why each ``unsatisfiable`` part has no plan (WS-13 E1 OR5a) — exactly one of
+    #: ``material_mismatch`` (a sliced plate makes it, in another material),
+    #: ``needs_slicing`` (only an unsliced plate makes it) or ``no_plate``.
+    unsatisfiable_reasons: dict[int, str] = field(default_factory=dict)
     candidates: list[int] = field(default_factory=list)  # ProductPlate ids eligible for this line
     not_sliced: list[int] = field(default_factory=list)
 
@@ -456,48 +460,64 @@ def cover(
     )
     rows: dict[int, PlanRow] = {}
     order: list[int] = []
-    truncated = True
-    for _ in range(MAX_ITERATIONS):
-        best: tuple[tuple, ProductPlate, LibraryFile, PlateRecipe, dict[int, int]] | None = None
-        for plate, file, recipe in candidates:
-            gain = {pid: min(n, remaining.get(pid, 0)) for pid, n in yields[plate.id].items()}
-            useful = sum(gain.values())
-            if useful <= 0:
-                continue
-            waste = sum(max(0, n - remaining.get(pid, 0)) for pid, n in yields[plate.id].items())
-            schedule = capacity.preview(recipe) if fleet_can_choose and capacity is not None else None
-            if fleet_can_choose and schedule is None:
-                continue
-            # Calendar finish is the objective when there is real capacity.
-            # The established useful/waste/time/id ordering remains the stable
-            # tie-break, and remains the whole rule where a farm cannot inform
-            # the decision at all.
-            key = (
-                (schedule[0], *_pick_key(useful, waste, seconds[plate.id], plate.id))
-                if schedule is not None
-                else _pick_key(useful, waste, seconds[plate.id], plate.id)
-            )
-            if best is None or key < best[0]:
-                best = (key, plate, file, recipe, gain)
-        if best is None:
-            truncated = False
-            break  # nothing left that covers anything: the plan is complete
-        _key, plate, file, recipe, gain = best
-        if fleet_can_choose and capacity is not None:
-            # ``schedule`` above came from this unchanged ledger; reserve the
-            # same earliest machine immediately so later prints — including a
-            # later line of this order — see the load this choice created.
-            capacity.reserve(recipe)
-        row = rows.get(plate.id)
-        if row is None:
-            row = rows[plate.id] = _row_for(plate, file, recipe, price_per_gram)
-            order.append(plate.id)
-        row.count += 1
-        for pid, n in gain.items():
-            if not n:
-                continue
-            row.useful[pid] = row.useful.get(pid, 0) + n
-            remaining[pid] = max(0, remaining[pid] - n)
+    # One budget for both passes below: the guard means "more prints than one plan
+    # shows", whichever pass would have printed them.
+    budget = MAX_ITERATIONS
+
+    def greedy(scheduled: bool) -> bool:
+        """Pick prints until nothing helps; True when the budget ran out first."""
+        nonlocal budget
+        while budget > 0:
+            budget -= 1
+            best: tuple[tuple, ProductPlate, LibraryFile, PlateRecipe, dict[int, int]] | None = None
+            for plate, file, recipe in candidates:
+                gain = {pid: min(n, remaining.get(pid, 0)) for pid, n in yields[plate.id].items()}
+                useful = sum(gain.values())
+                if useful <= 0:
+                    continue
+                waste = sum(max(0, n - remaining.get(pid, 0)) for pid, n in yields[plate.id].items())
+                schedule = capacity.preview(recipe) if scheduled and capacity is not None else None
+                if scheduled and schedule is None:
+                    continue
+                # Calendar finish is the objective when there is real capacity.
+                # The established useful/waste/time/id ordering remains the stable
+                # tie-break, and remains the whole rule where a farm cannot inform
+                # the decision at all.
+                key = (
+                    (schedule[0], *_pick_key(useful, waste, seconds[plate.id], plate.id))
+                    if schedule is not None
+                    else _pick_key(useful, waste, seconds[plate.id], plate.id)
+                )
+                if best is None or key < best[0]:
+                    best = (key, plate, file, recipe, gain)
+            if best is None:
+                return False  # nothing left that covers anything
+            _key, plate, file, recipe, gain = best
+            if scheduled and capacity is not None:
+                # ``schedule`` above came from this unchanged ledger; reserve the
+                # same earliest machine immediately so later prints — including a
+                # later line of this order — see the load this choice created.
+                capacity.reserve(recipe)
+            row = rows.get(plate.id)
+            if row is None:
+                row = rows[plate.id] = _row_for(plate, file, recipe, price_per_gram)
+                order.append(plate.id)
+            row.count += 1
+            for pid, n in gain.items():
+                if not n:
+                    continue
+                row.useful[pid] = row.useful.get(pid, 0) + n
+                remaining[pid] = max(0, remaining[pid] - n)
+        return True
+
+    truncated = greedy(fleet_can_choose)
+    if fleet_can_choose and not truncated and any(remaining.values()):
+        # ⚠️ What the scheduled pass leaves is made ONLY by recipes no lane takes
+        # (an absent or parked model, a plate with no estimate) — the per-part form
+        # of the rule above. Skipping them hid the part: no row, not unsatisfiable,
+        # not truncated, and the forecast read «complete» over it (WS-13 E1 T3). The
+        # rows planned here are what the forecast counts as unroutable / unknown.
+        truncated = greedy(False)
     planned = [rows[plate_id] for plate_id in order]
     if fleet_can_choose:
         # Scheduling can deliberately reserve equal-yield variants on different
@@ -623,6 +643,17 @@ def plan_lines(
         yielded: set[int] = set()
         for _plate, _file, recipe in candidates:
             yielded |= set(line_yield(recipe, counted))
+        unsatisfiable = sorted(pid for pid, n in outstanding.items() if n > 0 and pid not in yielded)
+        # WS-13 E1 OR5a: an unsliced plate next to a covering one is no reason — only
+        # a part that NO candidate yields gets one, from the first rule that fits.
+        made_sliced: set[int] = set()
+        made_unsliced: set[int] = set()
+        for _plate, _file, recipe in recipes:
+            (made_sliced if recipe.sliced else made_unsliced).update(line_yield(recipe, counted))
+        reasons = {
+            pid: "material_mismatch" if pid in made_sliced else "needs_slicing" if pid in made_unsliced else "no_plate"
+            for pid in unsatisfiable
+        }
         plans.append(
             LinePlan(
                 line_id=line.id,
@@ -631,7 +662,8 @@ def plan_lines(
                 outstanding_before={pid: n for pid, n in sorted(outstanding.items()) if n > 0},
                 rows=rows,
                 surplus_after=surplus,
-                unsatisfiable=sorted(pid for pid, n in outstanding.items() if n > 0 and pid not in yielded),
+                unsatisfiable=unsatisfiable,
+                unsatisfiable_reasons=reasons,
                 candidates=[plate.id for plate, _file, _recipe in candidates],
                 not_sliced=not_sliced,
             )
