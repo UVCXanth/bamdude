@@ -88,6 +88,32 @@ async def test_real_worker_prepares_and_walks_in_pages(tmp_path, caplog):
 
 
 @pytest.mark.asyncio
+async def test_a_restart_drops_the_previous_generations_bucket_only(tmp_path):
+    # Every start names a fresh bucket that reserves its max_bytes against the
+    # broker's max_file_store, and the store outlives the process: without the
+    # sweep, the third leftover filled the 3 GB store beside preview + analysis
+    # and the next start failed with "insufficient storage resources available".
+    # Another consumer's bucket must survive the sweep.
+    from nats.js.api import ObjectStoreConfig
+
+    broker = LocalWorkerBroker(tmp_path / ".cache" / "preview-service")
+    await broker.start()
+    try:
+        js = broker.nc.jetstream()
+        await js.create_object_store(
+            bucket="foreign", config=ObjectStoreConfig(bucket="foreign", max_bytes=1024**2, storage="file")
+        )
+        for _ in range(2):
+            runtime = LibraryFileRuntime(tmp_path, broker)
+            await runtime.start()
+            await runtime.stop()
+        names = sorted(stream.config.name for stream in await js.streams_info())
+        assert names == sorted(["OBJ_foreign", f"OBJ_{runtime.bucket}"])
+    finally:
+        await broker.stop()
+
+
+@pytest.mark.asyncio
 async def test_worker_crash_restarts_without_restarting_broker(tmp_path):
     broker = LocalWorkerBroker(tmp_path / ".cache" / "preview-service")
     await broker.start()

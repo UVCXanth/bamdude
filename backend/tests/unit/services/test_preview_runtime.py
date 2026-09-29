@@ -196,6 +196,34 @@ async def test_empty_retired_preview_skeleton_is_not_warned_on_two_starts(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_a_restart_drops_the_previous_generations_bucket_only(tmp_path):
+    # Production shares the lifespan broker, which outlives this runtime's
+    # stop. Every start names a fresh bucket that reserves its max_bytes against
+    # max_file_store, so a leftover per restart fills the store. Another
+    # consumer's bucket must survive the sweep.
+    from nats.js.api import ObjectStoreConfig
+
+    from backend.app.services.local_worker_broker import LocalWorkerBroker
+
+    root = tmp_path / ".cache" / "preview-service"
+    broker = LocalWorkerBroker(root)
+    await broker.start()
+    try:
+        js = broker.nc.jetstream()
+        await js.create_object_store(
+            bucket="foreign", config=ObjectStoreConfig(bucket="foreign", max_bytes=1024**2, storage="file")
+        )
+        for _ in range(2):
+            runtime = PreviewRuntime(root, shared_broker=broker)
+            await runtime.start()
+            await runtime.stop()
+        names = sorted(stream.config.name for stream in await js.streams_info())
+        assert names == sorted(["OBJ_foreign", f"OBJ_{runtime.bucket}"])
+    finally:
+        await broker.stop()
+
+
+@pytest.mark.asyncio
 async def test_private_authenticated_broker_policy(local_runtime):
     from urllib.parse import urlparse
 

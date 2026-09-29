@@ -52,6 +52,12 @@ class LibraryFileRuntime:
                 closed_cb=self.disconnected,
             )
             js = self.nc.jetstream(timeout=5)
+            # The broker's store outlives the process and each bucket reserves
+            # max_bytes against max_file_store, so a previous generation's
+            # bucket must go before this one is created.
+            for stream in await js.streams_info():
+                if stream.config.name.startswith("OBJ_bamdude_library_"):
+                    await js.delete_stream(stream.config.name)
             self.store = await js.create_object_store(
                 bucket=self.bucket,
                 config=ObjectStoreConfig(bucket=self.bucket, max_bytes=256 * 1024 * 1024, ttl=900, storage="file"),

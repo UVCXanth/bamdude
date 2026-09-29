@@ -231,6 +231,31 @@ async def test_empty_retired_analysis_skeleton_is_not_warned_on_two_starts(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_a_restart_drops_the_previous_generations_bucket_only(tmp_path):
+    # Every start names a fresh bucket that reserves its max_bytes against the
+    # shared broker's max_file_store, and the store outlives the process: a
+    # leftover per restart fills it. Another consumer's bucket must survive.
+    from nats.js.api import ObjectStoreConfig
+
+    (tmp_path / "archive").mkdir()
+    broker = LocalWorkerBroker(tmp_path / ".cache" / "preview-service")
+    await broker.start()
+    try:
+        js = broker.nc.jetstream()
+        await js.create_object_store(
+            bucket="foreign", config=ObjectStoreConfig(bucket="foreign", max_bytes=1024**2, storage="file")
+        )
+        for _ in range(2):
+            runtime = AnalysisRuntime(tmp_path, broker)
+            await runtime.start()
+            await runtime.stop()
+        names = sorted(stream.config.name for stream in await js.streams_info())
+        assert names == sorted(["OBJ_foreign", f"OBJ_{runtime.bucket}"])
+    finally:
+        await broker.stop()
+
+
+@pytest.mark.asyncio
 async def test_cancel_after_terminal_run_acknowledges_settled_ownership(tmp_path):
     from backend.app.analysis_service import Service
 
