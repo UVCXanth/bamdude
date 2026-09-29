@@ -1,4 +1,4 @@
-import { useRef, type KeyboardEvent, type ReactNode } from 'react';
+import { useRef, useState, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
 export interface WorkshopTabItem<V extends string> {
@@ -51,9 +51,15 @@ interface WorkshopTabsProps<V extends string> {
  *
  * ⚠️ **Manual activation.** The arrows, Home and End only MOVE focus (skipping a
  * disabled tab, wrapping round); Enter, Space or a click activates. An arrow
- * that activated would fire a request — and a URL write — per key press. One tab
- * is in the Tab order, the selected one, so a value changed from outside moves
- * the Tab stop without taking the focus from wherever it is.
+ * that activated would fire a request — and a URL write — per key press.
+ *
+ * ⚠️ **One Tab stop, and it follows the focus while the focus is inside.** Coming
+ * into the strip lands on the selected tab; once the arrows have moved the focus,
+ * the focused tab is the stop, so Tab and Shift+Tab leave the strip from where the
+ * focus is (E2-V01: tied to the selection, Tab after Home went back to the
+ * selected tab further down the same strip). Leaving the strip — or a value
+ * changed from outside — puts the stop back on the selection, without taking the
+ * focus from wherever it is.
  */
 export function WorkshopTabs<V extends string>({
   idBase,
@@ -68,6 +74,11 @@ export function WorkshopTabs<V extends string>({
   const { t } = useTranslation();
   const scroller = useRef<HTMLDivElement>(null);
   const tabs = useRef(new Map<V, HTMLButtonElement>());
+  // Where the arrows left the focus, remembered FOR a selection: once the value
+  // changes, the remembered stop no longer applies and the selection is the stop.
+  const [roving, setRoving] = useState<{ at: V; forValue: V } | null>(null);
+  const movable = (v: V) => items.some((item) => item.value === v && !item.disabled);
+  const stop = roving && roving.forValue === value && movable(roving.at) ? roving.at : value;
 
   /** Focus a tab and bring it into the strip's own view — the strip scrolls, the page never does. */
   const focusTab = (target: V) => {
@@ -99,7 +110,13 @@ export function WorkshopTabs<V extends string>({
               : undefined;
     if (!next) return;
     e.preventDefault();
+    setRoving({ at: next.value, forValue: value });
     focusTab(next.value);
+  };
+
+  // The focus left the strip: the next entry is on the selected tab again.
+  const onBlur = (e: FocusEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setRoving(null);
   };
 
   const pad = size === 'filter' ? 'px-4 py-2' : 'px-3.5 py-2';
@@ -111,6 +128,7 @@ export function WorkshopTabs<V extends string>({
       aria-label={ariaLabel}
       aria-busy={busy || undefined}
       onKeyDown={onKeyDown}
+      onBlur={onBlur}
       // The strip's line is an INSET shadow, not a border the tabs overlap with a
       // negative margin: a horizontally scrolling box clips anything that hangs
       // out of it, the underline included.
@@ -130,7 +148,7 @@ export function WorkshopTabs<V extends string>({
             id={workshopTabId(idBase, item.value)}
             aria-selected={selected}
             aria-controls={selected || panels === 'all' ? workshopTabPanelId(idBase, item.value) : undefined}
-            tabIndex={selected ? 0 : -1}
+            tabIndex={item.value === stop ? 0 : -1}
             disabled={item.disabled}
             onClick={() => onChange(item.value)}
             className={`shrink-0 whitespace-nowrap rounded-none border-b-2 bg-transparent text-sm font-normal transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-bambu-green disabled:cursor-not-allowed disabled:opacity-40 ${pad} ${

@@ -138,6 +138,64 @@ describe('WorkshopTabs', () => {
     expect(onChange).toHaveBeenCalledTimes(3);
   });
 
+  // ---- E2-V01: the Tab stop follows the focus while inside the strip ----
+
+  it('after the arrows moved the focus, Tab leaves the strip forward — it does not revisit the selected tab (E2-V01)', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <Harness initial="all" />
+        <button type="button">after</button>
+      </>,
+    );
+    tab(/All/).focus();
+
+    await user.keyboard('{Home}');
+    expect(tab(/Active/)).toHaveFocus();
+    await user.tab();
+
+    expect(screen.getByRole('button', { name: 'after' })).toHaveFocus();
+  });
+
+  it('after the arrows moved the focus, Shift+Tab leaves the strip backward (E2-V01)', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <button type="button">before</button>
+        <Harness initial="active" />
+      </>,
+    );
+    tab(/Active/).focus();
+
+    await user.keyboard('{End}');
+    expect(tab(/All/)).toHaveFocus();
+    await user.tab({ shift: true });
+
+    expect(screen.getByRole('button', { name: 'before' })).toHaveFocus();
+  });
+
+  it('coming back into the strip lands on the selected tab, not where the focus was last (E2-V01)', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <button type="button">before</button>
+        <Harness initial="completed" />
+        <button type="button">after</button>
+      </>,
+    );
+    tab(/Completed/).focus();
+
+    // Past the disabled «Cancelled» to «All», then out and back in.
+    await user.keyboard('{ArrowRight}');
+    expect(tab(/All/)).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'after' })).toHaveFocus();
+    await user.tab({ shift: true });
+
+    expect(tab(/Completed/)).toHaveFocus();
+    expect(screen.getAllByRole('tab').filter((t) => t.tabIndex === 0)).toEqual([tab(/Completed/)]);
+  });
+
   it('follows a value changed from outside without taking the focus', () => {
     function Outside() {
       const [value, setValue] = useState<Key>('active');
