@@ -68,6 +68,12 @@ export interface ModalProps {
   closeDisabled?: boolean;
   /** No X — only when the body carries its own Cancel/Close button. */
   hideClose?: boolean;
+  /** Between the header and the body, outside the body's scroll (WS-13 E2 R01) — a
+   *  subtitle that stays put while the fields scroll. Absent → no node at all. */
+  subheader?: ReactNode;
+  /** Between the body and the footer, outside the body's scroll — an error the
+   *  operator must see beside the button that caused it. Absent → no node at all. */
+  alert?: ReactNode;
   footer?: ReactNode;
   panelClassName?: string;
   /** Inline panel style for geometry that is computed, not a class — a width derived from an image size. Beats every class. */
@@ -89,6 +95,8 @@ export function Modal({
   variant = 'dialog',
   closeDisabled = false,
   hideClose = false,
+  subheader,
+  alert,
   footer,
   panelClassName = '',
   panelStyle,
@@ -192,7 +200,21 @@ export function Modal({
             )}
           </div>
         )}
+        {/* ⚠️ The slots are bounded and scroll on their own: an unbounded shrink-0
+            block would push the fields and the primary button out of the panel.
+            Their content gets the ancestry context too — a dialog opened from a
+            slot must stack above this one. */}
+        {subheader !== undefined && (
+          <div className="max-h-[20vh] shrink-0 overflow-y-auto">
+            <ModalAncestryContext.Provider value={childAncestry}>{subheader}</ModalAncestryContext.Provider>
+          </div>
+        )}
         <div className={`min-h-0 flex-1 overflow-y-auto ${bodyClassName}`}>{body}</div>
+        {alert !== undefined && (
+          <div className="max-h-[25vh] shrink-0 overflow-y-auto">
+            <ModalAncestryContext.Provider value={childAncestry}>{alert}</ModalAncestryContext.Provider>
+          </div>
+        )}
         {footer !== undefined && (
           <div className="flex shrink-0 items-center justify-end gap-2 border-t border-bambu-dark-tertiary px-4 py-3">
             {footer}

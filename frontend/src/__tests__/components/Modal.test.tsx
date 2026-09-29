@@ -428,4 +428,57 @@ describe('Modal', () => {
     await user.click(screen.getByRole('button', { name: 'inner' }));
     expect(ancestor).not.toHaveBeenCalled();
   });
+
+  // ---- the two optional slots (WS-13 E2 R01) ----
+
+  it('without the slots the panel is exactly header, body and footer — no new node for anyone', () => {
+    render(
+      <Modal onClose={vi.fn()} title="T" footer={<button>Save</button>}>
+        <p>body</p>
+      </Modal>,
+    );
+    expect(screen.getByRole('dialog').children).toHaveLength(3);
+  });
+
+  it('puts the subheader under the header and the alert before the footer, both outside the body', () => {
+    render(
+      <Modal
+        onClose={vi.fn()}
+        title="T"
+        subheader={<p>sub</p>}
+        alert={<p role="alert">bad</p>}
+        footer={<button>Save</button>}
+      >
+        <p>body</p>
+      </Modal>,
+    );
+    const parts = [...screen.getByRole('dialog').children];
+    expect(parts.map((part) => part.textContent)).toEqual(['T', 'sub', 'body', 'bad', 'Save']);
+  });
+
+  it('a dialog opened from a slot stacks above the dialog that holds the slot', () => {
+    // Same commit: React runs the slot's effects first, so without the ancestry
+    // context in the slot the holder would register LAST and paint on top.
+    render(
+      <Modal
+        onClose={vi.fn()}
+        title="Holder"
+        subheader={
+          <Modal onClose={vi.fn()} title="From subheader">
+            s
+          </Modal>
+        }
+        alert={
+          <Modal onClose={vi.fn()} title="From alert">
+            a
+          </Modal>
+        }
+      >
+        body
+      </Modal>,
+    );
+    const z = (name: string) => Number((screen.getByRole('dialog', { name }).parentElement as HTMLElement).style.zIndex);
+    expect(z('From subheader')).toBeGreaterThan(z('Holder'));
+    expect(z('From alert')).toBeGreaterThan(z('Holder'));
+  });
 });
