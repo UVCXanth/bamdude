@@ -64,6 +64,61 @@ describe('OrderModal', () => {
     // comparison would have flagged as "changed".
     await waitFor(() => expect(update).toHaveBeenCalledWith(5, {}));
   });
+
+  // ---- WS-13 E2 T4: the Workshop frame, nothing else ----
+
+  it('sits in the Workshop frame, with its actions in the dialog footer and the submit bound to the one form', () => {
+    render(<OrderModal order={order} onClose={() => {}} />);
+
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveClass('workshop');
+    const save = screen.getByRole('button', { name: /save/i }) as HTMLButtonElement;
+    const form = screen.getByLabelText(/name/i).closest('form') as HTMLFormElement;
+    // Outside the form (the footer is the dialog's, not the scrolling body's)…
+    expect(form.contains(save)).toBe(false);
+    // …and still its submit button.
+    expect(save.form).toBe(form);
+    expect(dialog.querySelectorAll('form')).toHaveLength(1);
+  });
+
+  it('a refusal keeps the dialog and what was typed, says why, and lets the operator try again', async () => {
+    const onClose = vi.fn();
+    const update = vi
+      .spyOn(api, 'updateOrder')
+      .mockRejectedValueOnce(new Error('The order changed while you were editing it'))
+      .mockResolvedValueOnce(order);
+    render(<OrderModal order={order} onClose={onClose} />);
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'Twelve flasks' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    expect(await screen.findByText('The order changed while you were editing it')).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByLabelText(/name/i)).toHaveValue('Twelve flasks');
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(update).toHaveBeenCalledTimes(2);
+    expect(update).toHaveBeenLastCalledWith(5, { name: 'Twelve flasks' });
+  });
+
+  it('sends one request however often the button is pressed while it is pending', async () => {
+    let answer!: (value: never) => void;
+    const update = vi.spyOn(api, 'updateOrder').mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    render(<OrderModal order={order} onClose={() => {}} />);
+    const save = screen.getByRole('button', { name: /save/i });
+
+    fireEvent.click(save);
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    fireEvent.click(save);
+    fireEvent.submit(screen.getByLabelText(/name/i).closest('form') as HTMLFormElement);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    // …and the way out is locked while it is in flight.
+    expect(screen.getByRole('button', { name: 'Close' })).toBeDisabled();
+    answer(order);
+  });
 });
 
 describe('OrderModal · completing', () => {

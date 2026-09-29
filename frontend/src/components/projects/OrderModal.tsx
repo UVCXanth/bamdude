@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import type { Order, OrderCreate, OrderListItem, OrderUpdate, ProjectPriority, ProjectStatus } from '../../api/client';
 import { Button } from '../Button';
-import { Modal } from '../Modal';
+import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { CustomerPicker } from '../pickers/CustomerPicker';
 import { contactOption } from '../customers/contactFormat';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
@@ -207,21 +207,44 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
   });
 
   const canSubmit = name.trim() !== '' && !mutation.isPending;
+  const formId = useId();
 
+  // WS-13 E2 T4 — the Workshop frame only: the fields, their order, validation,
+  // permissions and the toast on a refusal are this form's and did not move. The
+  // actions are the dialog's footer now, outside the scrolling body, and the
+  // submit reaches the one form through its `form` attribute (Enter in a field
+  // still submits it; a textarea still takes a new line). F01's layout is E6's.
   return (
-    <Modal
+    <WorkshopDialog
       onClose={onClose}
       title={isEdit ? t('orders.modal.editTitle') : t('orders.modal.createTitle')}
       size="lg"
-      closeDisabled={mutation.isPending}
+      pending={mutation.isPending}
+      footer={
+        <>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={mutation.isPending}>
+            {t('common.cancel')}
+          </Button>
+          <Button type="submit" form={formId} disabled={!canSubmit}>
+            {mutation.isPending ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : isEdit ? (
+              t('orders.modal.save')
+            ) : (
+              t('orders.modal.create')
+            )}
+          </Button>
+        </>
+      }
     >
       <form
+        id={formId}
         onSubmit={(e) => {
           e.preventDefault();
           if (canSubmit) mutation.mutate();
         }}
       >
-        <div className="p-4 space-y-4">
+        <div className="space-y-4">
           <div>
             <label className={LABEL_CLASS} htmlFor="order-name">
               {t('orders.modal.name')}
@@ -435,22 +458,7 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
             </div>
           )}
         </div>
-
-        <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark-tertiary">
-          <Button type="button" variant="secondary" onClick={onClose} disabled={mutation.isPending}>
-            {t('common.cancel')}
-          </Button>
-          <Button type="submit" disabled={!canSubmit}>
-            {mutation.isPending ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : isEdit ? (
-              t('orders.modal.save')
-            ) : (
-              t('orders.modal.create')
-            )}
-          </Button>
-        </div>
       </form>
-    </Modal>
+    </WorkshopDialog>
   );
 }
