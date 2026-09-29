@@ -35,7 +35,12 @@ export function ProgressBar({ value, max, progress, label, caption = 'ratio', te
     <div data-testid={testId} className="space-y-1">
       <div className="flex items-center justify-between text-xs text-bambu-gray">
         {label ? <span>{label}</span> : <span />}
-        <span className="tabular-nums">{caption === 'percent' ? `${percentDown(progress ?? value / max)}%` : `${value} / ${max}`}</span>
+        <span className="tabular-nums">
+          {caption === 'percent'
+            ? // The server rounds its fraction: a big order one unit short can arrive as 1.0.
+              `${value < max ? Math.min(99, percentDown(progress ?? value / max)) : percentDown(progress ?? value / max)}%`
+            : `${value} / ${max}`}
+        </span>
       </div>
       <div className="h-2 rounded-full bg-bambu-dark-tertiary overflow-hidden">
         <div

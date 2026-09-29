@@ -6,7 +6,7 @@ import { api } from '../../api/client';
 import type { Order, ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatMoney } from '../../utils/currency';
-import { formatDateOnly } from '../../utils/date';
+import { formatCalendarDate, formatDateOnly } from '../../utils/date';
 import { isOverdue } from '../../utils/orderDates';
 import { Button } from '../Button';
 import { CardActionMenu, CardActionMenuItem } from '../CardActionMenu';
@@ -133,7 +133,11 @@ export function OrderHeader({
               </span>
             )}
             <span data-fact="due" data-overdue={overdue ? 'true' : undefined} className={overdue ? 'text-red-500' : ''}>
-              {t('orders.header.due', { date: order.due_date ? shortDate(order.due_date) : '—' })}
+              {t('orders.header.due', {
+                date: order.due_date
+                  ? formatCalendarDate(order.due_date, { day: 'numeric', month: 'short' }, settings?.date_format)
+                  : '—',
+              })}
               {overdue && ` · ${t('orders.header.overdue')}`}
             </span>
             <span data-fact="responsible" className="inline-flex items-center">

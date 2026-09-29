@@ -417,6 +417,52 @@ describe('OrdersPage', () => {
       expect(window.location.search).toBe('?order=3&section=notes');
       expect(screen.getByRole('tab', { name: /^Notes/ })).toHaveAttribute('aria-selected', 'true');
     });
+    it('a click on the row shown only as the fallback pins it (review 3)', async () => {
+      // The URL names order 9, which is not on this page; the first row stands in.
+      window.history.pushState({}, '', '/projects?order=9&section=notes');
+      render(<OrdersPage />);
+      await screen.findByRole('heading', { name: 'A' });
+      fireEvent.click(within(screen.getByRole('list', { name: 'Orders' })).getByRole('button', { name: /^OR-0001/ }));
+      await waitFor(() => expect(window.location.search).toBe('?order=1'));
+    });
+    it('another page opens on its first order’s plan, and waits on the previous page meanwhile (R01)', async () => {
+      const rowD = { ...rowA, id: 4, name: 'D', code: 'OR-0004' };
+      let second: (value: unknown) => void = () => {};
+      vi.spyOn(api, 'getOrder').mockImplementation(async (id: number) => ({ ...orderDetail, id, name: ({ 1: 'A', 3: 'C', 4: 'D' } as Record<number, string>)[id] }) as never);
+      vi.spyOn(api, 'getOrdersPaged').mockImplementation(((params: { page?: number }) =>
+        (params?.page ?? 1) > 1
+          ? new Promise((resolve) => (second = resolve))
+          : Promise.resolve(pageOf([{ ...rowA, code: 'OR-0001' }, rowC], { meta: { total: 4, last_page: 2 } }))) as never);
+      window.history.pushState({}, '', '/projects?order=3&section=notes');
+      render(<OrdersPage />);
+      await screen.findByRole('heading', { name: 'C' });
+      expect(await screen.findByRole('tab', { name: /^Notes/ })).toHaveAttribute('aria-selected', 'true');
+
+      fireEvent.click(screen.getAllByRole('button', { name: 'Next page' })[0]);
+      // The placeholder is the previous page: C and its tab hold until the new answer.
+      expect(screen.getByRole('heading', { name: 'C' })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /^Notes/ })).toHaveAttribute('aria-selected', 'true');
+
+      second(pageOf([rowD, { ...rowA, id: 5, name: 'E', code: 'OR-0005' }], { meta: { total: 4, current_page: 2, last_page: 2 } }));
+      expect(await screen.findByRole('heading', { name: 'D' })).toBeInTheDocument();
+      expect(await screen.findByRole('tab', { name: /^Print plan/ })).toHaveAttribute('aria-selected', 'true');
+      // The pair stays, harmless, for when order 3 is on screen again.
+      expect(window.location.search).toContain('order=3');
+      expect(window.location.search).toContain('section=notes');
+    });
+    it('Back from the full page restores the workspace’s order and tab (R01)', async () => {
+      window.history.pushState({}, '', '/projects?order=3&section=notes');
+      render(<OrdersPage />);
+      await screen.findByRole('heading', { name: 'C' });
+      // The fixture's detail keeps one code for every id; the link is the shown order's.
+      fireEvent.click(screen.getByRole('link', { name: /^Open the full page of order/ }));
+      await waitFor(() => expect(window.location.pathname).toBe('/projects/3'));
+      window.history.back();
+      await waitFor(() => expect(window.location.search).toBe('?order=3&section=notes'));
+      // The router hears the popstate after the location moved: wait for the render too.
+      await waitFor(() => expect(screen.getByRole('tab', { name: /^Notes/ })).toHaveAttribute('aria-selected', 'true'));
+      expect(screen.getByRole('heading', { name: 'C' })).toBeInTheDocument();
+    });
     it('deleting the shown order drops it and its tab from the URL', async () => {
       vi.spyOn(api, 'deleteOrder').mockResolvedValue(undefined as never);
       window.history.pushState({}, '', '/projects?order=3&section=notes');

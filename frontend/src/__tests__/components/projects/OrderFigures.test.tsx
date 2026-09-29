@@ -120,6 +120,7 @@ describe('OrderFigures · «Ready ≈»', () => {
       withData({ now_eta: '2026-09-26T09:37:00Z', late: true, incomplete_reasons: [{ code: 'no_plate', count: 1 }] }),
     );
     expect(ready().querySelector('[data-tone]')).toHaveAttribute('data-tone', 'late');
+    expect(ready()).toHaveTextContent('later than the deadline');
     expect(within(ready()).getByRole('img', { name: 'Incomplete estimate' })).toBeInTheDocument();
   });
 

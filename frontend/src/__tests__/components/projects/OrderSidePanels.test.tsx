@@ -65,6 +65,17 @@ describe('OrderForecastPanel', () => {
     expect(rows[1]).toHaveTextContent('—');
   });
 
+  it('groups every key with its value, so the list is a valid <dl> (review 10)', () => {
+    forecast(withData());
+    const dl = panel().querySelector('dl') as HTMLElement;
+    expect(dl.querySelectorAll(':scope > dt, :scope > dd')).toHaveLength(0);
+  });
+
+  it('says nothing for a closed order, rather than «loading»', () => {
+    forecast({ kind: 'closed' });
+    expect(panel()).not.toHaveTextContent('Loading');
+  });
+
   it('lists why the estimate is incomplete', () => {
     forecast(withData({ incomplete_reasons: [{ code: 'no_plate', count: 3 }, { code: 'truncated', count: null }] }));
     const reasons = screen.getAllByTestId('order-forecast-reason');
@@ -155,6 +166,13 @@ describe('OrderFilamentPanel', () => {
     expect(r).toHaveTextContent('on the shelf —');
     expect(r).not.toHaveTextContent(/enough|short/);
     expect(panel()).toHaveTextContent('The shelf could not be read');
+  });
+
+  it('says nothing is short when the shelf is unknown, even if a shortfall came along (review 12)', async () => {
+    filament(makeNeeds({ rows: [need({ have_g: null, short_g: 900 })] }));
+    const r = await screen.findByTestId('filament-need-PETG');
+    expect(r).not.toHaveTextContent(/short|enough/);
+    expect(r).toHaveAttribute('data-short', 'false');
   });
 
   it('says what is short, at least when weights are missing', async () => {

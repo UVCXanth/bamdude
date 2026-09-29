@@ -39,6 +39,11 @@ describe('ProgressBar', () => {
     expect(screen.getByText('29%')).toBeInTheDocument();
   });
 
+  it('never reads 100% while something is still left, whatever the rounded fraction says', () => {
+    render(<ProgressBar value={19999} max={20000} progress={1} caption="percent" testId="bar" />);
+    expect(screen.getByText('99%')).toBeInTheDocument();
+  });
+
   it('shows 100% only once the server fraction reaches one', () => {
     render(<ProgressBar value={10} max={10} progress={1} caption="percent" testId="bar" />);
     expect(screen.getByText('100%')).toBeInTheDocument();

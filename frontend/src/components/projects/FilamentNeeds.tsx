@@ -38,7 +38,8 @@ export function FilamentNeedsRows({ needs }: { needs: OrderNeeds }) {
 
 function NeedRowItem({ row }: { row: NeedRow }) {
   const { t } = useTranslation();
-  const short = row.short_g != null && row.short_g > 0;
+  // A shortfall is a verdict about the shelf: none without one (R02, review 12).
+  const short = row.have_g != null && row.short_g != null && row.short_g > 0;
   const shelfKnown = row.have_g != null && row.short_g != null;
   const partial = row.unknown_prints > 0;
   const colourIsHex = row.colour != null && HEX.test(row.colour);

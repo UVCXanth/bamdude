@@ -79,9 +79,10 @@ export function OrdersWorkspace({
                 <button
                   type="button"
                   aria-current={order.id === shown ? 'true' : undefined}
-                  // Picking the order already shown writes nothing — its tab stays (F03).
+                  // Picking the order the URL already names writes nothing — its tab stays
+                  // (F03); a row shown only as the fallback is pinned by the click (review 3).
                   onClick={() => {
-                    if (order.id !== shown) onPick(order.id);
+                    if (order.id !== picked) onPick(order.id);
                   }}
                   className={rowClass(order.id === shown)}
                 >

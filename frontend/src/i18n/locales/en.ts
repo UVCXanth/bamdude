@@ -5427,7 +5427,7 @@ export default {
   orders: {
     // spec workshop-order-issue, rule 17: «take from stock» on the order card.
     take: {
-      title: 'In stock for this order',
+      title: 'In stock for this order:',
       body: 'Take it — and print less.',
       offer: '«{{product}}» — {{ready}} ready + {{kits}} kits',
       action: 'Take from stock',
@@ -5762,7 +5762,6 @@ export default {
       due: 'Deadline {{date}}',
       overdue: 'overdue',
       price: 'Price',
-      margin: 'Margin',
       marginShort: 'margin',
       marginUnknown: 'The price of some purchased parts is unknown',
       edit: 'Edit',
@@ -5782,7 +5781,7 @@ export default {
       coverAlt: 'Cover of {{name}}',
     },
     close: {
-      title: 'All lines are covered',
+      title: 'All lines are covered.',
       body: 'Check the batch, assemble the reserved kits and receive the prints into stock (for this order), then issue them to the customer — in parts if you like. The order does not close by itself.',
       toStockBody: 'No customer — nothing is issued: once closed, the assembled and printed units become free stock, and no dispatch note is made. The order does not close by itself.',
       action: 'Mark completed',
@@ -5889,7 +5888,6 @@ export default {
       none: 'No printed parts counted — set quantities on the product.',
     },
     plan: {
-      title: 'What to print next',
       loadFailed: 'Could not load the plan',
       retry: 'Retry',
       closed: 'This order is closed — nothing is planned for it.',
@@ -5955,7 +5953,6 @@ export default {
       },
     },
     procurement: {
-      title: 'Purchased parts',
       empty: 'No purchased parts in this order.',
       part: 'Part',
       need: 'Need',
@@ -5963,7 +5960,6 @@ export default {
       remaining: 'Remaining',
     },
     prints: {
-      title: 'Prints',
       otherPrints: 'Other prints',
       unlisted: 'Not filed under any group',
       explicit: 'Filed',
@@ -6003,6 +5999,7 @@ export default {
     timeline: {
       title: 'Activity',
       empty: 'No activity yet.',
+      error: 'Could not load the activity.',
       showMore: 'Show {{count}} more',
       showLess: 'Show less',
       stock: {
@@ -6076,13 +6073,11 @@ export default {
       },
     },
     notes: {
-      title: 'Notes',
       placeholder: 'Anything worth remembering about this order…',
       save: 'Save notes',
       empty: 'No notes yet.',
     },
     attachments: {
-      title: 'Attachments',
       upload: 'Upload',
       delete: 'Delete attachment',
       empty: 'No attachments yet.',

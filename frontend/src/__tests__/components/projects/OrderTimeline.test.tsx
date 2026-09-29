@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { TimelineEvent } from '../../../api/client';
@@ -13,6 +13,19 @@ const ev = (event_type: string, metadata: Record<string, unknown>, title = 'x'):
   title,
   description: null,
   metadata,
+});
+
+describe('OrderTimeline · a failed read (WS-13 E3, review 7)', () => {
+  it('says the activity could not be read and offers a retry — not «no activity»', async () => {
+    const get = vi.spyOn(api, 'getProjectTimeline').mockRejectedValue(new Error('boom'));
+    vi.spyOn(api, 'getSettings').mockResolvedValue({} as never);
+    render(<OrderTimeline orderId={1} />);
+    const retry = await screen.findByRole('button', { name: 'Retry' });
+    expect(screen.queryByText(/No activity/i)).toBeNull();
+    get.mockResolvedValue([]);
+    retry.click();
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+  });
 });
 
 describe('JOURNAL_ICONS (WS-13 E3 G05)', () => {

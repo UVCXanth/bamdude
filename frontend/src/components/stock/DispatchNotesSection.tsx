@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDispatchNotes } from '../../hooks/useDispatchNotes';
+import { Button } from '../Button';
 import { PaginationBar } from '../PaginationBar';
 import { DispatchNotesTable } from './DispatchNotesTable';
 
@@ -33,9 +34,20 @@ export function DispatchNotesSection({
   const [perPage, setPerPage] = useState(PER_PAGE);
   const [sort, setSort] = useState('created-desc');
   const filter = customerId != null ? { customer_id: customerId } : { project_id: projectId };
-  const { data, isLoading } = useDispatchNotes({ ...filter, sort_by: sort, page, per_page: perPage });
+  const { data, isLoading, isError, refetch } = useDispatchNotes({ ...filter, sort_by: sort, page, per_page: perPage });
 
   if (isLoading) return inTab ? <p className="text-sm text-bambu-gray">{t('common.loading')}</p> : null;
+  // In the order's tab a list that could not be read is not an empty one (review 7).
+  if (inTab && isError && !data) {
+    return (
+      <div className="flex flex-wrap items-center gap-2 text-sm text-red-400">
+        <span>{t('stock.notes.error')}</span>
+        <Button size="sm" variant="secondary" onClick={() => void refetch()}>
+          {t('common.retry')}
+        </Button>
+      </div>
+    );
+  }
   const items = data?.items ?? [];
   if (hideWhenEmpty && !inTab && items.length === 0) return null;
 

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Ban, CheckCircle, CircleDot, ListTodo, Plus, Printer, Shuffle, XCircle, type LucideIcon } from 'lucide-react';
 import { api } from '../../api/client';
 import { formatDateTime, type DateFormat, type TimeFormat } from '../../utils/date';
+import { Button } from '../Button';
 import { LoadingBlock } from '../LoadingBlock';
 import { WorkshopPanel } from '../workshop/WorkshopPanel';
 import { journalText } from './orderJournal';
@@ -43,7 +44,7 @@ export function OrderTimeline({ orderId, headingLevel = 2 }: OrderTimelineProps)
   const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(false);
 
-  const { data: timeline, isLoading } = useQuery({
+  const { data: timeline, isLoading, isError, refetch } = useQuery({
     queryKey: ['project-timeline', orderId],
     queryFn: () => api.getProjectTimeline(orderId),
   });
@@ -65,6 +66,14 @@ export function OrderTimeline({ orderId, headingLevel = 2 }: OrderTimelineProps)
       <div className="px-4 py-3">
         {isLoading ? (
           <LoadingBlock label={t('common.loading')} className="py-4 text-bambu-gray" />
+        ) : isError && !timeline ? (
+          // A journal that could not be read is not an empty one (review 7).
+          <div className="flex flex-wrap items-center gap-2 text-sm text-red-400">
+            <span>{t('orders.timeline.error')}</span>
+            <Button size="sm" variant="secondary" onClick={() => void refetch()}>
+              {t('common.retry')}
+            </Button>
+          </div>
         ) : timeline && timeline.length > 0 ? (
           <>
             <ol>

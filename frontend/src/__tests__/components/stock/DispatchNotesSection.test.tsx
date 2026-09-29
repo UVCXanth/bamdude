@@ -43,6 +43,16 @@ describe('DispatchNotesSection', () => {
     expect(await screen.findByRole('heading', { name: 'Issues' })).toBeInTheDocument();
   });
 
+  it('in the order’s tab a failed read says so, with a retry — not «no issues»', async () => {
+    const get = vi.spyOn(api, 'getDispatchNotes').mockRejectedValue(new Error('boom'));
+    render(<DispatchNotesSection projectId={5} canEdit={false} inTab />);
+    const retry = await screen.findByRole('button', { name: 'Retry' });
+    expect(screen.queryByText('No issues yet.')).toBeNull();
+    get.mockResolvedValue(page([]));
+    fireEvent.click(retry);
+    expect(await screen.findByText('No issues yet.')).toBeInTheDocument();
+  });
+
   it('in the order’s tab: no heading of its own, and the wait and the empty list in words', async () => {
     let answer: (value: never) => void = () => {};
     vi.spyOn(api, 'getDispatchNotes').mockReturnValue(new Promise((resolve) => (answer = resolve)) as never);

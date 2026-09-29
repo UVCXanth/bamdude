@@ -79,6 +79,11 @@ describe('CloseSuggestionBanner · one primary action (WS-13 E3 D04)', () => {
     expect(primaries().map((b) => b.dataset.testid)).toEqual(['close-suggestion-issue']);
   });
 
+  it('leads with nothing while the order’s issue state is still being read', () => {
+    render(<CloseSuggestionBanner order={order} state={undefined} onFulfil={() => {}} />);
+    expect(primaries()).toHaveLength(0);
+  });
+
   it('leads with completing when that is all there is left', () => {
     render(<CloseSuggestionBanner order={order} state={{ ...state, can_receive: 0, can_issue: 0 }} onFulfil={() => {}} />);
     expect(primaries().map((b) => b.dataset.testid)).toEqual(['close-suggestion-complete']);

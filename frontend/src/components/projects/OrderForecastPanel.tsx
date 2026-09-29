@@ -39,7 +39,8 @@ export function OrderForecastPanel({
   const body = () => {
     if (remaining === 0) return <p className="text-sm text-bambu-green">{t('orders.forecast.allCovered')}</p>;
     if (view.kind === 'draft') return <p className="text-sm text-bambu-gray-light">{t('orders.plan.forecastStale')}</p>;
-    if (view.kind === 'loading' || view.kind === 'closed') return <p className="text-sm text-bambu-gray">{t('common.loading')}</p>;
+    if (view.kind === 'closed') return null;
+    if (view.kind === 'loading') return <p className="text-sm text-bambu-gray">{t('common.loading')}</p>;
     if (view.kind === 'error') {
       return (
         <div className="flex flex-wrap items-center gap-2 text-sm text-red-400">
@@ -93,8 +94,10 @@ export function OrderForecastPanel({
         )}
 
         <dl className="grid grid-cols-[1fr_auto] gap-x-3.5 gap-y-1.5 text-bambu-gray-light">
-          <dt>{t('orders.forecast.machineHours')}</dt>
-          <dd className="text-right font-medium text-white tabular-nums">{hoursMinutes(f.machine_seconds)}</dd>
+          <div className="contents">
+            <dt>{t('orders.forecast.machineHours')}</dt>
+            <dd className="text-right font-medium text-white tabular-nums">{hoursMinutes(f.machine_seconds)}</dd>
+          </div>
           {f.by_model.map((m, index) => (
             <div key={`${m.model ?? ''}-${index}`} data-testid="order-forecast-model" className="contents">
               <dt>

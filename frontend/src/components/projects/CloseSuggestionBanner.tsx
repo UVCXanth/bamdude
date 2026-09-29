@@ -41,8 +41,9 @@ export function CloseSuggestionBanner({ order, state, onFulfil }: CloseSuggestio
   const canReceive = Boolean(state && state.can_receive > 0);
   // No customer: nothing is issued — the order closes to stock (followups, rule 39).
   const canIssue = Boolean(state && !toStock && state.can_issue > 0);
-  const lead = canReceive ? 'receive' : canIssue ? 'issue' : 'complete';
-  const emphasis = (which: typeof lead) => (lead === which ? 'primary' : 'secondary');
+  // No lead until the issue state has come — the emphasis would jump when it does.
+  const lead = !state ? null : canReceive ? 'receive' : canIssue ? 'issue' : 'complete';
+  const emphasis = (which: 'receive' | 'issue' | 'complete') => (lead === which ? 'primary' : 'secondary');
 
   return (
     <div
@@ -50,7 +51,7 @@ export function CloseSuggestionBanner({ order, state, onFulfil }: CloseSuggestio
       className="rounded-xl border border-bambu-green/30 bg-bambu-green/10 px-4 py-3 text-sm leading-5 text-white"
     >
       <p>
-        <b className="font-semibold">{t('orders.close.title')}.</b> {t(toStock ? 'orders.close.toStockBody' : 'orders.close.body')}
+        <b className="font-semibold">{t('orders.close.title')}</b> {t(toStock ? 'orders.close.toStockBody' : 'orders.close.body')}
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         {canReceive && state && (

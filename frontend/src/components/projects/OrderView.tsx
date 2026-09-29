@@ -211,7 +211,7 @@ export function OrderView({
 
   if (isLoading) {
     return (
-      <div className="p-4">
+      <div className={embedded ? '' : 'p-4'}>
         {crumbs}
         <div className="flex items-center gap-2 text-bambu-gray">
           <Loader2 className="w-4 h-4 animate-spin" />
@@ -229,7 +229,7 @@ export function OrderView({
   // FAILED is not an order that was deleted.
   if (!order) {
     return (
-      <div className="p-4">
+      <div className={embedded ? '' : 'p-4'}>
         {crumbs}
         {isError ? (
           <div className="text-sm text-red-500">
@@ -246,7 +246,9 @@ export function OrderView({
   const forecastNow = forecastView({
     active: order.status === 'active',
     draft: planDraftChanged,
-    refreshing: enqueuedAt != null && forecast.dataUpdatedAt < enqueuedAt,
+    sentAt: enqueuedAt,
+    dataUpdatedAt: forecast.dataUpdatedAt,
+    errorUpdatedAt: forecast.errorUpdatedAt,
     data: forecast.data,
     isError: forecast.isError,
   });
@@ -330,7 +332,7 @@ export function OrderView({
 
             <OrderLinesTable order={order} canEdit={canEdit} headingLevel={embedded ? 3 : 2} />
 
-            <div>
+            <div className="!mt-5">
               <WorkshopTabs
                 idBase={tabsId}
                 ariaLabel={t('orders.detail.tabsLabel')}

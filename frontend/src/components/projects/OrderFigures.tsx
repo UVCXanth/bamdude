@@ -148,6 +148,7 @@ function ReadyValue({
   return (
     <Value tone={eta && late ? 'late' : undefined} className="text-base leading-7">
       {eta ? formatDateOnly(eta, { day: 'numeric', month: 'short' }, dateFormat) : '—'}
+      {eta && late && <span className="sr-only"> ({t('orders.forecast.late')})</span>}
       {reasons.length > 0 && (
         <AlertTriangle
           role="img"

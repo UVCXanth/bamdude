@@ -60,7 +60,7 @@ export function TakeStockBanner({ orderId }: { orderId: number }) {
     >
       <p className="min-w-0 flex-1">
         <PackageCheck className="mr-1.5 inline h-4 w-4 align-[-3px] text-bambu-green" aria-hidden />
-        {t('orders.take.title')}:{' '}
+        {t('orders.take.title')}{' '}
         {offerTexts.map((text, index) => (
           <span key={offers[index].line_id}>
             {index > 0 && '; '}

@@ -256,6 +256,24 @@ export function formatDateOnly(
 }
 
 /**
+ * Format a CALENDAR date — a day, not an instant (an order's deadline) — as that
+ * day in the user's format. `parseUTCDate` would read a naive midnight as UTC and
+ * show the previous day west of UTC, where `isOverdue` and every list read the
+ * same string as the local day (WS-13 E3, review 1). Only the date part is read.
+ */
+export function formatCalendarDate(
+  dateStr: string | null | undefined,
+  options?: Intl.DateTimeFormatOptions,
+  dateFormat: DateFormat = 'system'
+): string {
+  const match = dateStr ? /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr) : null;
+  if (!match) return '';
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  if (dateFormat !== 'system') return formatDateInput(date, dateFormat);
+  return date.toLocaleDateString(undefined, options ?? { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+/**
  * Format a UTC date string to a localized date/time string with time format support.
  *
  * @param dateStr - Date string from backend
