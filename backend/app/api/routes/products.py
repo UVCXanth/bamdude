@@ -34,7 +34,7 @@ from sqlalchemy.orm import selectinload
 from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
-from backend.app.api.routes.library import library_file_name_visible
+from backend.app.api.routes.library import file_name_visible, library_file_name_visible
 from backend.app.core.auth import RequirePermission, library_name_scope, require_media_permission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -72,6 +72,8 @@ from backend.app.schemas.product import (
     CoverPickRequest,
     FileLinkRequest,
     FolderLinkRequest,
+    PartSourceOut,
+    PartSourcesOut,
     PlateRecipeResponse,
     PlateUnassignedEntry,
     PlateYieldEntry,
@@ -79,6 +81,8 @@ from backend.app.schemas.product import (
     ProductCategoryRef,
     ProductCreate,
     ProductDuplicate,
+    ProductFileOut,
+    ProductFilesOut,
     ProductImportResponse,
     ProductKitsOut,
     ProductListItem,
@@ -88,6 +92,7 @@ from backend.app.schemas.product import (
     ProductPartResponse,
     ProductPartUpdate,
     ProductResponse,
+    ProductSourcesOut,
     ProductStockOut,
     ProductUpdate,
     RereadResponse,
@@ -133,12 +138,16 @@ from backend.app.services.product_card import (
     usable_title,
 )
 from backend.app.services.product_composition import (
+    PartSource,
     add_alias,
     estimate_seconds,
     merge_parts,
+    part_sources,
     purchased_name_key,
     recipes_for_product,
+    recipes_for_products,
     remove_alias,
+    source_summary,
 )
 from backend.app.services.product_files import (
     ATTACHMENT_CATEGORIES,
@@ -157,7 +166,7 @@ from backend.app.services.product_files import (
     safe_attachment_name,
     sorted_attachments,
 )
-from backend.app.services.product_sync import apply_folder_products, sync_product_for_file
+from backend.app.services.product_sync import apply_folder_products, is_plan_eligible, sync_product_for_file
 from backend.app.services.stock_views import movement_out, orders_of_lines
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.printer_models import normalize_model_name
@@ -911,33 +920,66 @@ _PART_SORT = SortSpec(
 )
 
 
-def _part_word_matches(word: str):
-    """One search word against a part: its name, its product's name, SKU or code."""
+def _part_word_matches(word: str, name_visible):
+    """One search word against a part: its name, its product's name, SKU or code — and
+    the name of a file its product prints from, where the library shows that file to
+    this caller (WS-13 E1 PS3, LV3)."""
     needle = like_contains(word)
     fields = [
         ProductPart.name.ilike(needle, escape="\\"),
         Product.name.ilike(needle, escape="\\"),
         Product.sku.ilike(needle, escape="\\"),
+        exists().where(
+            ProductPlate.product_id == Product.id,
+            LibraryFile.id == ProductPlate.library_file_id,
+            name_visible,
+            LibraryFile.filename.ilike(needle, escape="\\"),
+        ),
     ]
     if (product_id := id_from_query("product", word)) is not None:
         fields.append(Product.id == product_id)
     return or_(*fields)
 
 
+_PARTS_NO_ALL = "all is not available for the parts picker"
+
+
+def _source_out(source: PartSource) -> PartSourceOut:
+    return PartSourceOut(**source.__dict__)
+
+
+async def _folder_names(db: AsyncSession, files: Sequence[LibraryFile]) -> dict[int, str]:
+    """The folders of these files by id — one statement."""
+    ids = sorted({f.folder_id for f in files if f.folder_id is not None})
+    if not ids:
+        return {}
+    return dict((await db.execute(select(LibraryFolder.id, LibraryFolder.name).where(LibraryFolder.id.in_(ids)))).all())
+
+
 @router.get("/parts", response_model=ProductPartsPage)
 async def list_product_parts(
+    request: Request,
     q: str | None = Query(None, max_length=200),
-    model: str | None = Query(None, max_length=64),
+    model: str | None = Query(None, max_length=64, description="A printer model, or 'none': nothing is sliced"),
     sort_by: str | None = Query(None, description="'<part|product>-<asc|desc>'; unknown → product-asc"),
     page: int = Query(1, ge=1),
     per_page: int = Query(24, ge=1, le=200),
-    all: bool = Query(False),
+    all: bool = Query(False, description="Refused: the picker is paged"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    user: User | None = RequirePermission(Permission.PROJECTS_READ),
 ):
     """Printed parts of active catalogue products, searched, filtered and paged in SQL —
     the add-to-order dialog's «parts of a product» tab (spec workshop-add-to-order, rule 16).
-    Declared above ``/{product_id}``."""
+    Declared above ``/{product_id}``.
+
+    Each row carries its sources (WS-13 E1 PS2) off ONE ``recipes_for_products`` for
+    the page — one read of the library — named only where the library shows the file
+    to this caller. The model filter is the product's (K2); ``none`` keeps products
+    nothing is sliced for. The whole list (``all``) is refused (K7)."""
+    if all:
+        raise HTTPException(status_code=422, detail=_PARTS_NO_ALL)
+    scope = await library_name_scope(request, db, user)
+    name_visible = library_file_name_visible(scope, user.id if user is not None else None)
     query = (
         select(ProductPart, Product, ProductVariantGroup.name, ProductVariantOption.name)
         .join(Product, Product.id == ProductPart.product_id)
@@ -952,16 +994,34 @@ async def list_product_parts(
         )
     )
     for word in (q or "").split():
-        query = query.where(_part_word_matches(word))
+        query = query.where(_part_word_matches(word, name_visible))
     if model and model.strip():
-        query = query.where(_has_facet("model", model))
+        query = query.where(~_SLICED if model.strip().casefold() == "none" else _has_facet("model", model))
     total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
     key, direction, _computed = resolve_sort(_PART_SORT, sort_by)
     query = apply_sql_sort(query, _PART_SORT, key, direction, ProductPart.id)
-    if not all:
-        query = query.limit(per_page).offset((page - 1) * per_page)
-    rows = (await db.execute(query)).all()
-    facets = await _facets_by_product(db, sorted({product.id for _part, product, _g, _o in rows}))
+    rows = (await db.execute(query.limit(per_page).offset((page - 1) * per_page))).all()
+    product_ids = sorted({product.id for _part, product, _g, _o in rows})
+    products = (
+        (
+            await db.execute(
+                select(Product)
+                .options(selectinload(Product.plates), selectinload(Product.parts))
+                .where(Product.id.in_(product_ids))
+            )
+        )
+        .scalars()
+        .all()
+        if product_ids
+        else []
+    )
+    recipes = await recipes_for_products(db, products)
+    recipe_rows = [row for pid in product_ids for row in recipes.get(pid, [])]
+    sources = part_sources(
+        recipe_rows,
+        lambda f: file_name_visible(f, user, scope),
+        await _folder_names(db, [f for _p, f, _r in recipe_rows]),
+    )
     return ProductPartsPage(
         items=[
             ProductPartRow(
@@ -971,11 +1031,12 @@ async def list_product_parts(
                 product=ProductPartProductOut(
                     id=product.id, code=code_for("product", product.id), name=product.name, sku=product.sku
                 ),
-                models=facets.get(product.id, {}).get("model", []),
+                sources=[_source_out(s) for s in sources.get(part.id, [])],
+                **source_summary(sources.get(part.id, [])),
             )
             for part, product, group, option in rows
         ],
-        meta=page_meta(total, page, per_page, all),
+        meta=page_meta(total, page, per_page, False),
     )
 
 
@@ -1858,44 +1919,130 @@ async def adjust_product_stock(
 # ---------- plates ----------
 
 
+def _plate_out(plate: ProductPlate, file: LibraryFile, r, names: dict[int, str], shown: bool) -> PlateRecipeResponse:
+    """One plate on the wire — ``/plates`` and ``/files`` alike. A file the library
+    would not show keeps its plate and loses its name (WS-13 E1 K5, LV4)."""
+    return PlateRecipeResponse(
+        id=plate.id,
+        library_file_id=plate.library_file_id,
+        filename=file.filename if shown else None,
+        hidden=not shown,
+        plate_index=plate.plate_index,
+        sliced=r.sliced,
+        **{
+            "yield": [
+                PlateYieldEntry(part_id=pid, name=names.get(pid, "?"), count=n)
+                for pid, n in sorted(r.yield_by_part.items())
+            ]
+        },
+        unassigned=[PlateUnassignedEntry(name_key=k, count=n) for k, n in sorted(r.unassigned.items())],
+        materials=sorted(r.materials),
+        colors=sorted(r.colors),
+        printer_model=r.printer_model,
+        # ⚠️ `estimate_seconds`, not the raw column: a 0 is a file that
+        # carries no estimate, and the plan engine has always read it
+        # that way. Emitting the 0 here made the same plate say "0s" in
+        # the "+ plate" menu and "unknown" once the plan held it.
+        print_time_seconds=estimate_seconds(r),
+        filament_used_grams=r.filament_used_grams,
+    )
+
+
 @router.get("/{product_id}/plates", response_model=list[PlateRecipeResponse])
 async def list_plates(
-    product_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
+    product_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.PROJECTS_READ),
 ):
     product = await _get(db, product_id)
     names = {p.id: p.name for p in product.parts}
-    out: list[PlateRecipeResponse] = []
+    scope = await library_name_scope(request, db, user)
     # ``recipes_for_product`` is the shared loop (it drops a trashed file's
     # plates); it hands rows back in plate-id order, this list is by file then
     # plate for the operator.
     rows = await recipes_for_product(db, product)
-    for plate, file, r in sorted(rows, key=lambda row: (row[0].library_file_id, row[0].plate_index)):
+    return [
+        _plate_out(plate, file, r, names, file_name_visible(file, user, scope))
+        for plate, file, r in sorted(rows, key=lambda row: (row[0].library_file_id, row[0].plate_index))
+    ]
+
+
+@router.get("/{product_id}/sources", response_model=ProductSourcesOut)
+async def get_product_sources(
+    product_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """Every printed part's sources — the composition tab (WS-13 E1 PS6)."""
+    product = await _get(db, product_id)
+    scope = await library_name_scope(request, db, user)
+    rows = await recipes_for_product(db, product)
+    sources = part_sources(
+        rows, lambda f: file_name_visible(f, user, scope), await _folder_names(db, [f for _p, f, _r in rows])
+    )
+    out: list[PartSourcesOut] = []
+    for part in sorted(product.parts, key=lambda p: (p.sort_order, p.id)):
+        if part.kind != "printed":
+            continue
+        summary = source_summary(sources.get(part.id, []))
+        summary.pop("models")
         out.append(
-            PlateRecipeResponse(
-                id=plate.id,
-                library_file_id=plate.library_file_id,
-                filename=file.filename,
-                plate_index=plate.plate_index,
-                sliced=r.sliced,
-                **{
-                    "yield": [
-                        PlateYieldEntry(part_id=pid, name=names.get(pid, "?"), count=n)
-                        for pid, n in sorted(r.yield_by_part.items())
-                    ]
-                },
-                unassigned=[PlateUnassignedEntry(name_key=k, count=n) for k, n in sorted(r.unassigned.items())],
-                materials=sorted(r.materials),
-                colors=sorted(r.colors),
-                printer_model=r.printer_model,
-                # ⚠️ `estimate_seconds`, not the raw column: a 0 is a file that
-                # carries no estimate, and the plan engine has always read it
-                # that way. Emitting the 0 here made the same plate say "0s" in
-                # the "+ plate" menu and "unknown" once the plan held it.
-                print_time_seconds=estimate_seconds(r),
-                filament_used_grams=r.filament_used_grams,
-            )
+            PartSourcesOut(part_id=part.id, sources=[_source_out(s) for s in sources.get(part.id, [])], **summary)
         )
-    return out
+    return ProductSourcesOut(parts=out)
+
+
+@router.get("/{product_id}/files", response_model=ProductFilesOut)
+async def get_product_files(
+    product_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """Every file linked to the product outside the trash — STL / STEP without plates
+    too — with its folder (one join) and its plates (WS-13 E1 PS7). A file the library
+    would not show this caller is listed without its name, after the named ones."""
+    product = await _get(db, product_id)
+    scope = await library_name_scope(request, db, user)
+    linked = (
+        await db.execute(
+            select(LibraryFile, LibraryFolder.name)
+            .join(product_files, product_files.c.library_file_id == LibraryFile.id)
+            .outerjoin(LibraryFolder, LibraryFolder.id == LibraryFile.folder_id)
+            .where(product_files.c.product_id == product_id, LibraryFile.deleted_at.is_(None))
+            .order_by(LibraryFile.id)
+        )
+    ).all()
+    names = {p.id: p.name for p in product.parts}
+    plates: dict[int, list] = {}
+    for row in sorted(
+        await recipes_for_product(db, product), key=lambda row: (row[0].library_file_id, row[0].plate_index)
+    ):
+        plates.setdefault(row[1].id, []).append(row)
+    named: list[ProductFileOut] = []
+    hidden: list[ProductFileOut] = []
+    for file, folder_name in linked:
+        shown = file_name_visible(file, user, scope)
+        file_plates = [_plate_out(plate, f, r, names, shown) for plate, f, r in plates.get(file.id, [])]
+        raw_model = (file.file_metadata or {}).get("sliced_for_model")
+        entry = ProductFileOut(
+            library_file_id=file.id,
+            filename=file.filename if shown else None,
+            hidden=not shown,
+            folder_id=file.folder_id if shown else None,
+            folder_name=folder_name if shown else None,
+            file_type=file.file_type,
+            plan_eligible=is_plan_eligible(file.file_type),
+            printer_model=normalize_model_name(raw_model) if isinstance(raw_model, str) else None,
+            sliced_any=any(p.sliced for p in file_plates),
+            plates=file_plates,
+        )
+        (named if shown else hidden).append(entry)
+    # Named files by name; the hidden ones after them, by id — their order says nothing.
+    named.sort(key=lambda f: ((f.filename or "").casefold(), f.library_file_id))
+    return ProductFilesOut(files=named + hidden, hidden_files=len(hidden))
 
 
 # ---------- links ----------

@@ -17,7 +17,7 @@ raw name), which is what every count here reads first.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -278,6 +278,89 @@ async def recipes_for_product(
     N+1 it exists to have removed.
     """
     return (await recipes_for_products(db, [product]))[product.id]
+
+
+@dataclass
+class PartSource:
+    """One plate a part can be printed from (WS-13 E1 PS1). A file the caller may not
+    see in the library keeps every number — plate, model, yield, time, grams (Z7) —
+    and loses its name and folder (``hidden``, LV4)."""
+
+    plate_id: int
+    library_file_id: int
+    filename: str | None
+    folder_id: int | None
+    folder_name: str | None
+    hidden: bool
+    plate_index: int
+    printer_model: str | None
+    sliced: bool
+    yield_: int
+    print_time_seconds: int | None
+    filament_used_grams: float | None
+    recommended: bool = False
+
+
+def part_sources(
+    rows: Iterable[tuple[ProductPlate, LibraryFile, PlateRecipe]],
+    visible: Callable[[LibraryFile], bool],
+    folder_names: Mapping[int, str] | None = None,
+) -> dict[int, list[PartSource]]:
+    """``part_id → its sources`` over :func:`recipes_for_products` rows — pure.
+
+    A plate is a source of every part it yields. Sliced plates come first, in the
+    plan's order (``plan_engine.rank_key`` on the part's own yield), the first of them
+    ``recommended``; unsliced plates after, by plate id — shown, never recommended.
+    ``visible`` is the library's rule for this caller (``library.file_name_visible``);
+    ``folder_names`` names the files' folders, read by the caller in one statement.
+    """
+    from backend.app.services.plan_engine import rank_key
+
+    folders = folder_names or {}
+    by_part: dict[int, list[PartSource]] = {}
+    for plate, file, recipe in rows:
+        shown = visible(file)
+        for part_id, n in recipe.yield_by_part.items():
+            if n <= 0:
+                continue
+            by_part.setdefault(part_id, []).append(
+                PartSource(
+                    plate_id=plate.id,
+                    library_file_id=file.id,
+                    filename=file.filename if shown else None,
+                    folder_id=file.folder_id if shown else None,
+                    folder_name=folders.get(file.folder_id) if shown and file.folder_id is not None else None,
+                    hidden=not shown,
+                    plate_index=plate.plate_index,
+                    printer_model=recipe.printer_model,
+                    sliced=recipe.sliced,
+                    yield_=n,
+                    print_time_seconds=estimate_seconds(recipe),
+                    filament_used_grams=recipe.filament_used_grams,
+                )
+            )
+    for sources in by_part.values():
+        sources.sort(
+            key=lambda s: (0, rank_key(s.yield_, s.print_time_seconds, s.plate_id)) if s.sliced else (1, (s.plate_id,))
+        )
+        if sources and sources[0].sliced:
+            sources[0].recommended = True
+    return by_part
+
+
+def source_summary(sources: Iterable[PartSource]) -> dict:
+    """What a part's row says about its sources (PS2): whether one is sliced, the
+    sliced yields' range, how many are hidden, and the models they are sliced for
+    (K3) — hidden ones included, a model is no file name (Z7)."""
+    sources = list(sources)
+    sliced = [s for s in sources if s.sliced]
+    return {
+        "has_sliced_source": bool(sliced),
+        "yield_min": min((s.yield_ for s in sliced), default=None),
+        "yield_max": max((s.yield_ for s in sliced), default=None),
+        "hidden_sources": sum(1 for s in sources if s.hidden),
+        "models": sorted({s.printer_model for s in sliced if s.printer_model}),
+    }
 
 
 def merge_parts(target: ProductPart, source: ProductPart) -> None:

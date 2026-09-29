@@ -155,7 +155,7 @@ async def test_a_part_in_the_kit_cannot_be_marked(committing_client, lamp):
 
 @pytest.mark.asyncio
 async def test_the_add_to_order_parts_list_leaves_ignored_parts_out(committing_client, lamp):
-    r = await committing_client.get("/api/v1/products/parts", params={"all": True})
+    r = await committing_client.get("/api/v1/products/parts", params={"per_page": 200})
     assert r.status_code == 200, r.text
     names = {row["name"] for row in r.json()["items"]}
     assert {"shade", "handle"} <= names and "cube" not in names

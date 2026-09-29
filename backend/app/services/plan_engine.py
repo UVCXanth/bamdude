@@ -336,6 +336,14 @@ def _pick_key(useful: int, waste: int, secs: int | None, plate_id: int) -> tuple
     return (-(useful / (secs or 1)), waste, (secs is None, secs or 0), plate_id)
 
 
+def rank_key(useful: int, secs: int | None, plate_id: int) -> tuple:
+    """The plan's own order of the plates that make ONE part (WS-13 E1 PS1):
+    :func:`_pick_key` with no waste — most of the part per hour of print first, then
+    the shorter print, then the plate id. A part's sources are listed in the order the
+    planner would reach for them, and the first is the one it recommends."""
+    return _pick_key(useful, 0, secs, plate_id)
+
+
 def _figures(recipe: PlateRecipe, price_per_gram: float | None) -> tuple[int | None, float | None, float | None]:
     """``(seconds, grams, cost)`` for ONE print of this plate.
 

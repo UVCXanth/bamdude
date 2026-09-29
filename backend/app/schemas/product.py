@@ -249,7 +249,10 @@ class PlateUnassignedEntry(BaseModel):
 class PlateRecipeResponse(BaseModel):
     id: int
     library_file_id: int
-    filename: str
+    #: WS-13 E1 K5 / LV4 — ``None`` with ``hidden`` for a file the library would not
+    #: show this caller; the plate's numbers stay (Z7).
+    filename: str | None
+    hidden: bool = False
     plate_index: int
     sliced: bool
     yield_: list[PlateYieldEntry] = Field(default_factory=list, alias="yield")
@@ -263,6 +266,66 @@ class PlateRecipeResponse(BaseModel):
 
     class Config:
         populate_by_name = True
+
+
+class PartSourceOut(BaseModel):
+    """One plate a part can be printed from (WS-13 E1 PS1) — ``filename`` / folder
+    ``None`` with ``hidden`` for a file the library would not show this caller."""
+
+    plate_id: int
+    library_file_id: int
+    filename: str | None = None
+    folder_id: int | None = None
+    folder_name: str | None = None
+    hidden: bool = False
+    plate_index: int
+    printer_model: str | None = None
+    sliced: bool
+    yield_: int = Field(alias="yield")
+    print_time_seconds: int | None = None
+    filament_used_grams: float | None = None
+    #: The first sliced source, in the plan's order.
+    recommended: bool = False
+
+    class Config:
+        populate_by_name = True
+
+
+class PartSourcesOut(BaseModel):
+    """PS6 — a part's sources and what they add up to: ``yield_*`` over the sliced
+    ones, visible and hidden alike; ``hidden_sources`` counted by the server."""
+
+    part_id: int
+    sources: list[PartSourceOut] = []
+    has_sliced_source: bool = False
+    yield_min: int | None = None
+    yield_max: int | None = None
+    hidden_sources: int = 0
+
+
+class ProductSourcesOut(BaseModel):
+    parts: list[PartSourcesOut] = []
+
+
+class ProductFileOut(BaseModel):
+    """PS7 — one file linked to the product, with its plates."""
+
+    library_file_id: int
+    filename: str | None = None
+    hidden: bool = False
+    folder_id: int | None = None
+    folder_name: str | None = None
+    file_type: str | None = None
+    #: A container a plan can use (3MF / gcode); STL / STEP must be sliced first.
+    plan_eligible: bool = False
+    printer_model: str | None = None
+    sliced_any: bool = False
+    plates: list[PlateRecipeResponse] = []
+
+
+class ProductFilesOut(BaseModel):
+    files: list[ProductFileOut] = []
+    hidden_files: int = 0
 
 
 class FileLinkRequest(BaseModel):

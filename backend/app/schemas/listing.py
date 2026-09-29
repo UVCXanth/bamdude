@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from backend.app.models.stock_issue import WAYBILL_MAX
 from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.customer import CustomerResponse
-from backend.app.schemas.product import ProductListItem
+from backend.app.schemas.product import PartSourceOut, ProductListItem
 from backend.app.schemas.project import LineConfigurationOut, ProjectListResponse
 from backend.app.schemas.stock import StockListItem
 
@@ -119,8 +119,14 @@ class ProductPartRow(BaseModel):
     #: The option the part is bound to, when it is — «angled tail» belongs to «Tail: angled».
     variant: ProductPartVariantOut | None = None
     product: ProductPartProductOut
-    #: The product's printer models (stored facets).
+    #: WS-13 E1 K3 — the models THIS part's sliced sources are sliced for.
     models: list[str] = []
+    #: PS2 — where the part can be printed from, and what that adds up to.
+    sources: list[PartSourceOut] = []
+    has_sliced_source: bool = False
+    yield_min: int | None = None
+    yield_max: int | None = None
+    hidden_sources: int = 0
 
 
 class ProductPartsPage(BaseModel):

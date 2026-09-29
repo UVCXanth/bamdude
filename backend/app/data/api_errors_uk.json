@@ -44,6 +44,7 @@
   "A threshold needs a minimum, a maximum, or both.": "Поріг має містити мінімум, максимум або обидва значення.",
   "A waybill number is at most 24 characters": "Номер ТТН — не довше 24 символів",
   "A write-off needs a note": "Списання потребує примітки",
+  "all is not available for the parts picker": "all недоступний для вибору деталей",
   "AMS data format not supported. Keys: {}": "Формат даних AMS не підтримується. Ключі: {}",
   "AMS reorder not supported on this printer": "Зміна порядку AMS не підтримується на цьому принтері",
   "An existing option cannot move to another group": "Наявну опцію не можна перенести в іншу групу",

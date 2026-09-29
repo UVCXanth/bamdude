@@ -123,7 +123,7 @@ async def test_parts_are_searched_by_their_name_the_product_and_its_sku(committi
 
 @pytest.mark.asyncio
 async def test_bought_parts_and_one_off_products_are_never_listed(committing_client, pipe):
-    names = [r["name"] for r in (await _parts(committing_client, all=True))["items"]]
+    names = [r["name"] for r in (await _parts(committing_client, per_page=200))["items"]]
     assert "screw" not in names and "tail of a job" not in names
 
 
@@ -137,6 +137,6 @@ async def test_the_model_filter_reads_the_products_facets(committing_client, pip
 async def test_parts_page_and_sort_on_the_server(committing_client, pipe, seeded_catalog):
     first = await _parts(committing_client, per_page=2, sort_by="product-asc")
     assert first["meta"]["total"] >= 4 and len(first["items"]) == 2
-    desc = await _parts(committing_client, all=True, sort_by="product-desc")
+    desc = await _parts(committing_client, per_page=200, sort_by="product-desc")
     products = [r["product"]["name"] for r in desc["items"]]
     assert products == sorted(products, key=str.casefold, reverse=True)
