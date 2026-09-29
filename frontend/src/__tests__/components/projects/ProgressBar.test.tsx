@@ -26,6 +26,29 @@ describe('ProgressBar', () => {
     expect(strayZeroTextNodes()).toHaveLength(0);
   });
 
+  it('captions a percentage of the server fraction on request, rounded down (WS-13 E3 E03)', () => {
+    render(<ProgressBar value={9} max={10} progress={0.9999} caption="percent" label="Covered" testId="bar" />);
+    // 99.99 % is not done: rounding up would call an unfinished order complete.
+    expect(screen.getByText('99%')).toBeInTheDocument();
+    expect(screen.queryByText('9 / 10')).toBeNull();
+    expect(screen.getByText('Covered')).toBeInTheDocument();
+  });
+
+  it('does not lose a percent to floating point (0.29 × 100 = 28.999…)', () => {
+    render(<ProgressBar value={29} max={100} progress={0.29} caption="percent" testId="bar" />);
+    expect(screen.getByText('29%')).toBeInTheDocument();
+  });
+
+  it('shows 100% only once the server fraction reaches one', () => {
+    render(<ProgressBar value={10} max={10} progress={1} caption="percent" testId="bar" />);
+    expect(screen.getByText('100%')).toBeInTheDocument();
+  });
+
+  it('falls back to value / max for the percentage when there is no server fraction', () => {
+    render(<ProgressBar value={2} max={3} caption="percent" testId="bar" />);
+    expect(screen.getByText('66%')).toBeInTheDocument();
+  });
+
   it('caps the fill at 100% and prints value / max', () => {
     render(<ProgressBar value={7} max={5} testId="bar" />);
     expect(screen.getByTestId('bar-fill').style.width).toBe('100%');

@@ -176,11 +176,14 @@ export function WorkshopTabPanel<V extends string>({
   idBase,
   value,
   className,
+  hidden,
   children,
 }: {
   idBase: string;
   value: V;
   className?: string;
+  /** A panel kept mounted while another is shown (`panels="all"`) — its drafts live on. */
+  hidden?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -189,6 +192,7 @@ export function WorkshopTabPanel<V extends string>({
       id={workshopTabPanelId(idBase, value)}
       aria-labelledby={workshopTabId(idBase, value)}
       className={className}
+      hidden={hidden}
     >
       {children}
     </div>

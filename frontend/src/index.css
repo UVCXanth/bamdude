@@ -626,6 +626,37 @@ body {
   line-height: 1.5;
 }
 
+/* The order detail (WS-13 E3 B02): its OWN named container decides the columns,
+   never the window — the page and the workspace pane give it different room at the
+   same viewport. Main | side clamp(320px, 22vw, 440px); at a container of 1150 px
+   AND BELOW (the mockup's `max-width: 1150px`, inclusive — Tailwind's
+   `@max-[1150px]` would be `< 1150`) the side drops under the main panel and lays
+   its panels out at least 300 wide, or the whole row where there is less. */
+.order-view {
+  container: order-view / inline-size;
+  min-width: 0;
+}
+.order-view-grid {
+  display: grid;
+  gap: 16px;
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr) clamp(320px, 22vw, 440px);
+}
+.order-view-side {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  min-width: 0;
+}
+@container order-view (max-width: 1150px) {
+  .order-view-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .order-view-side {
+    grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+  }
+}
+
 /* Hide scrollbar but keep functionality */
 .scrollbar-hide {
   -ms-overflow-style: none;

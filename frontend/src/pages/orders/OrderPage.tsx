@@ -5,5 +5,11 @@ import { OrderView } from '../../components/projects/OrderView';
 export function OrderPage() {
   const { id: idParam } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  return <OrderView id={Number(idParam)} onDeleted={() => navigate('/projects')} />;
+  // `workshop` — the section's 14/21 text scope (WS-13 E2 B02); keyed by id, so
+  // another order starts from nothing: its tabs, drafts and dialogs (E3 F03).
+  return (
+    <div className="workshop">
+      <OrderView key={idParam} id={Number(idParam)} onDeleted={() => navigate('/projects')} />
+    </div>
+  );
 }

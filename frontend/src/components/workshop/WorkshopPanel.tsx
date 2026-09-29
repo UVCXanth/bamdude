@@ -11,6 +11,8 @@ interface WorkshopPanelProps extends Omit<HTMLAttributes<HTMLDivElement>, 'title
   footer?: ReactNode;
   /** No body padding — for a table, whose rows run to the frame's edges. */
   flush?: boolean;
+  /** The heading's level: 2 on a page, 3 under a title that is itself an h2 (the workspace). */
+  headingLevel?: 2 | 3;
   children: ReactNode;
 }
 
@@ -20,12 +22,22 @@ interface WorkshopPanelProps extends Omit<HTMLAttributes<HTMLDivElement>, 'title
  * (16 px, or flush) and a footer. A composition and nothing more: it fetches
  * nothing, sizes nothing and knows no schema.
  */
-export function WorkshopPanel({ title, actions, footer, flush = false, children, className = '', ...rest }: WorkshopPanelProps) {
+export function WorkshopPanel({
+  title,
+  actions,
+  footer,
+  flush = false,
+  headingLevel = 2,
+  children,
+  className = '',
+  ...rest
+}: WorkshopPanelProps) {
+  const Heading = headingLevel === 3 ? 'h3' : 'h2';
   return (
     <Card className={`overflow-hidden ${className}`} {...rest}>
       {(title !== undefined || actions !== undefined) && (
         <div className="flex items-center justify-between gap-3 border-b border-bambu-dark-tertiary px-4 py-3">
-          {title !== undefined && <h2 className="min-w-0 text-base font-semibold text-white">{title}</h2>}
+          {title !== undefined && <Heading className="min-w-0 text-base font-semibold text-white">{title}</Heading>}
           {actions !== undefined && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
         </div>
       )}

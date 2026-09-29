@@ -23,6 +23,22 @@ describe('WorkshopPanel', () => {
     expect(within(panel).getByRole('heading', { name: 'Lines' })).toBeInTheDocument();
   });
 
+  it('names its heading at level 2 unless the page says the panel sits one level deeper (WS-13 E3 B06)', () => {
+    render(
+      <>
+        <WorkshopPanel title="Forecast">
+          <p>a</p>
+        </WorkshopPanel>
+        <WorkshopPanel title="Queue" headingLevel={3}>
+          <p>b</p>
+        </WorkshopPanel>
+      </>,
+    );
+
+    expect(screen.getByRole('heading', { name: 'Forecast', level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Queue', level: 3 })).toBeInTheDocument();
+  });
+
   it('keeps a table in its own named, focusable scroll region and the footer outside it', () => {
     render(
       <WorkshopPanel data-testid="panel" flush footer={<nav>pages</nav>}>

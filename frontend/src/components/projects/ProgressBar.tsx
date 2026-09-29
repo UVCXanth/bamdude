@@ -4,6 +4,9 @@ interface ProgressBarProps {
   /** Server-calculated fraction, when `value / max` has a different meaning. */
   progress?: number;
   label?: string;
+  /** The caption on the right: `value / max` (the default) or the percentage — of the
+   *  server's `progress` when given, rounded DOWN, so 99.99 % never reads «100%». */
+  caption?: 'ratio' | 'percent';
   testId?: string;
 }
 
@@ -16,7 +19,12 @@ interface ProgressBarProps {
  * inside this component: a caller that prints its own numbers beside the bar is
  * the second source of truth this component exists to remove.
  */
-export function ProgressBar({ value, max, progress, label, testId = 'progress' }: ProgressBarProps) {
+/** A fraction as a whole percent rounded DOWN — with an epsilon, because 0.29 × 100 is 28.999… in floating point. */
+function percentDown(fraction: number): number {
+  return Math.min(100, Math.max(0, Math.floor(fraction * 100 + 1e-9)));
+}
+
+export function ProgressBar({ value, max, progress, label, caption = 'ratio', testId = 'progress' }: ProgressBarProps) {
   if (max <= 0) return null;
   // Keep the server's fractional result exact.  Rounding 0.9999 to 100 would
   // make an unfinished order look complete, even though its caption says so.
@@ -27,7 +35,7 @@ export function ProgressBar({ value, max, progress, label, testId = 'progress' }
     <div data-testid={testId} className="space-y-1">
       <div className="flex items-center justify-between text-xs text-bambu-gray">
         {label ? <span>{label}</span> : <span />}
-        <span className="tabular-nums">{`${value} / ${max}`}</span>
+        <span className="tabular-nums">{caption === 'percent' ? `${percentDown(progress ?? value / max)}%` : `${value} / ${max}`}</span>
       </div>
       <div className="h-2 rounded-full bg-bambu-dark-tertiary overflow-hidden">
         <div

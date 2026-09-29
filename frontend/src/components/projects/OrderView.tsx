@@ -30,6 +30,7 @@ import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryIn
 import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 import { useOrderDetail } from '../../hooks/useOrderDetail';
 import { DispatchNotesSection } from '../stock/DispatchNotesSection';
+import { WorkshopPanel } from '../workshop/WorkshopPanel';
 
 /**
  * One order: who it is for, what it asks for, and how much of it is printed.
@@ -185,8 +186,13 @@ export function OrderView({
 
   const canEdit = hasPermission('projects:update');
 
+  // Zones in reading order (WS-13 E3 B01): head (title, facts, actions, the stage
+  // row) → banners → the grid of ONE main panel and the side column. The grid's
+  // columns are the named container's call (`.order-view*` in index.css), not
+  // the window's.
   return (
-    <div className="@container p-4 space-y-4">
+    <div data-testid="order-view" className="order-view p-4">
+      <div data-testid="order-head" className="border-b border-bambu-dark-tertiary pb-3 mb-4">
       {/* The cover sits in the header's right column without OrderHeader
           knowing about it — the header owns the actions row, this owns the
           picture, and neither has to grow a slot for the other. */}
@@ -217,40 +223,49 @@ export function OrderView({
       </div>
 
       <OrderStageStepper order={order} canEdit={canEdit} />
+      </div>
 
-      {canEdit && (
-        <CloseSuggestionBanner
-          order={order}
-          state={fulfilment.data}
-          onFulfil={(mode, complete) => setFulfilling({ mode, complete })}
-        />
-      )}
+      <div data-testid="order-banners" className="space-y-4 [&:not(:empty)]:mb-4">
+        {canEdit && (
+          <CloseSuggestionBanner
+            order={order}
+            state={fulfilment.data}
+            onFulfil={(mode, complete) => setFulfilling({ mode, complete })}
+          />
+        )}
+        {canEdit && order.status === 'active' && <TakeStockBanner orderId={order.id} />}
+      </div>
 
-      {canEdit && order.status === 'active' && <TakeStockBanner orderId={order.id} />}
+      <div data-testid="order-grid" className="order-view-grid">
+        <WorkshopPanel data-testid="order-main" className="min-w-0">
+          <div className="space-y-6">
+            <OrderFigures
+              figures={order.figures}
+              forecast={order.status === 'active' ? forecast.data ?? null : null}
+              forecastStale={order.status === 'active' && planDraftChanged}
+            />
 
-      <OrderFigures
-        figures={order.figures}
-        forecast={order.status === 'active' ? forecast.data ?? null : null}
-        forecastStale={order.status === 'active' && planDraftChanged}
-      />
+            <OrderLinesTable order={order} canEdit={canEdit} />
 
-      <OrderLinesTable order={order} canEdit={canEdit} />
+            <PlanBlock order={order} canEdit={canEdit} onDraftChanged={setPlanDraftChanged} />
 
-      <PlanBlock order={order} canEdit={canEdit} onDraftChanged={setPlanDraftChanged} />
+            <ProcurementChecklist order={order} canEdit={canEdit} />
 
-      <ProcurementChecklist order={order} canEdit={canEdit} />
+            <OrderPrints order={order} canEdit={canEdit} />
 
-      <OrderPrints order={order} canEdit={canEdit} />
+            <DispatchNotesSection projectId={order.id} canEdit={canEdit} hideWhenEmpty />
 
-      <OrderQueue orderId={order.id} />
+            <OrderNotes order={order} canEdit={canEdit} />
 
-      <DispatchNotesSection projectId={order.id} canEdit={canEdit} hideWhenEmpty />
+            <OrderAttachments order={order} canEdit={canEdit} />
+          </div>
+        </WorkshopPanel>
 
-      <OrderTimeline orderId={order.id} />
-
-      <OrderNotes order={order} canEdit={canEdit} />
-
-      <OrderAttachments order={order} canEdit={canEdit} />
+        <div data-testid="order-side" className="order-view-side">
+          <OrderQueue orderId={order.id} />
+          <OrderTimeline orderId={order.id} />
+        </div>
+      </div>
 
       {editing && <OrderModal order={order} onClose={() => setEditing(false)} />}
 

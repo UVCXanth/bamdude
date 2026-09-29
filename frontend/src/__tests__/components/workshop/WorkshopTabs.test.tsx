@@ -237,4 +237,23 @@ describe('WorkshopTabs', () => {
 
     expect(screen.getByRole('tablist')).toHaveAttribute('aria-busy', 'true');
   });
+
+  it('keeps an inactive panel in the DOM but hidden, and leaves a panel without the prop as it was (WS-13 E3 F04)', () => {
+    render(
+      <>
+        <WorkshopTabPanel idBase="k" value="notes" hidden>
+          kept draft
+        </WorkshopTabPanel>
+        <WorkshopTabPanel idBase="k" value="plan">
+          shown
+        </WorkshopTabPanel>
+      </>,
+    );
+
+    const kept = screen.getByText('kept draft');
+    expect(kept).toHaveAttribute('hidden');
+    // A hidden panel is out of the accessibility tree: only the shown one is a tabpanel.
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
+    expect(screen.getByText('shown')).not.toHaveAttribute('hidden');
+  });
 });
