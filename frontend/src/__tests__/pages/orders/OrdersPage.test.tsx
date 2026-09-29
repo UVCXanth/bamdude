@@ -6,6 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
@@ -125,6 +126,51 @@ describe('OrdersPage', () => {
     expect(screen.getByRole('tab', { name: /active/i }).textContent).toContain('1');
     expect(screen.getByRole('tab', { name: /completed/i }).textContent).toContain('5');
     expect(screen.getByRole('tab', { name: /all/i }).textContent).toContain('6');
+  });
+  it('shows an unknown count as a dash until the totals arrive, never a zero (WS-13 E2 C05)', async () => {
+    let answer!: (page: never) => void;
+    vi.spyOn(api, 'getOrdersPaged').mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    window.history.pushState({}, '', '/projects');
+    render(<OrdersPage />);
+    const all = await screen.findByRole('tab', { name: /^All/ });
+    expect(all).toHaveTextContent('(—)');
+    expect(all).not.toHaveTextContent('(0)');
+    await act(async () => answer(pageOf([rowA], { totals: { active: 1, completed: 0, cancelled: 0, all: 1 } })));
+    // A real zero is a zero.
+    await waitFor(() => expect(screen.getByRole('tab', { name: /completed/i })).toHaveTextContent('(0)'));
+  });
+  it('the status tabs move focus on the arrows without asking the server; Enter asks once, on page 1, in place (WS-13 E2 C03/C06)', async () => {
+    const user = userEvent.setup();
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA], { meta: { current_page: 3, last_page: 3, total: 60 } }));
+    window.history.pushState({}, '', '/projects?page=3');
+    render(<OrdersPage />);
+    await screen.findByText('A');
+    const list = screen.getByRole('tablist', { name: 'Order status' });
+    const calls = get.mock.calls.length;
+    within(list).getByRole('tab', { name: /active/i }).focus();
+    await user.keyboard('{ArrowRight}');
+    expect(within(list).getByRole('tab', { name: /completed/i })).toHaveFocus();
+    expect(get.mock.calls.length).toBe(calls);
+    expect(window.location.search).toBe('?page=3');
+    const before = window.history.length;
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'completed', page: 1 })));
+    expect(get.mock.calls.length).toBe(calls + 1);
+    expect(window.location.search).toBe('?tab=completed');
+    // Replaced, not pushed: a tab is not a step of the history.
+    expect(window.history.length).toBe(before);
+  });
+  it("the list is the active tab's panel, and the filters are not in it (WS-13 E2 C02)", async () => {
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    window.history.pushState({}, '', '/projects');
+    render(<OrdersPage />);
+    await screen.findByText('A');
+    const panel = screen.getByRole('tabpanel');
+    const active = screen.getByRole('tab', { name: /active/i });
+    expect(panel).toHaveAttribute('aria-labelledby', active.id);
+    expect(active).toHaveAttribute('aria-controls', panel.id);
+    expect(within(panel).getByText('A')).toBeInTheDocument();
+    expect(within(panel).queryByRole('searchbox')).not.toBeInTheDocument();
   });
   it('reads tab, customer, search and page from the URL', async () => {
     const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowB]));

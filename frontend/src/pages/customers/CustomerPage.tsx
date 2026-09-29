@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -28,6 +28,7 @@ import { useCardsTableViews } from '../../hooks/useCardsTableViews';
 import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 import { useListUrlState } from '../../hooks/useListUrlState';
 import { parseListView, parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
+import { WorkshopTabPanel } from '../../components/workshop/WorkshopTabs';
 
 /**
  * One customer: its figures (three tiles) and one server page of its orders —
@@ -52,6 +53,7 @@ export function CustomerPage() {
   const forgetCustomer = useForgetOnUnmount(['customer', id]);
 
   const [view, setViewPref] = usePersistedState<ListView>('bamdude-customer-orders-view', 'cards', parseListView);
+  const tabsId = useId();
   const views = useCardsTableViews();
   const sortOptions = useOrderSortOptions();
   const { page, sort, extra, setPage, setSort, setExtra, clampToLastPage } = useListUrlState({
@@ -270,35 +272,44 @@ export function CustomerPage() {
         </div>
 
         <div className="flex items-center gap-4 flex-wrap">
-          <OrderStatusTabs tab={tab} totals={ordersQuery.data?.totals} onChange={(key) => setExtra('tab', key)} />
+          <OrderStatusTabs
+            idBase={tabsId}
+            tab={tab}
+            totals={ordersQuery.data?.totals}
+            busy={ordersQuery.isPlaceholderData}
+            onChange={(key) => setExtra('tab', key)}
+          />
           {/* A table sorts from its headers; the cards need a control of their own. */}
           {view === 'cards' && <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />}
         </div>
 
-        {!ordersQuery.isLoading && ordersTotal === 0 ? (
-          <p className="text-bambu-gray text-sm">{t(`orders.list.empty.${tab}`)}</p>
-        ) : (
-          <OrdersListView
-            data={ordersQuery.data}
-            isLoading={ordersQuery.isLoading}
-            isPlaceholderData={ordersQuery.isPlaceholderData}
-            view={view}
-            sort={sort}
-            onSortChange={setSort}
-            perPage={perPage}
-            onPageChange={setPage}
-            onPerPageChange={(n) => {
-              setPerPage(n);
-              setPage(1);
-            }}
-            onEdit={setEditingOrder}
-            onDuplicate={(o) => duplicateOrder.mutate(o.id)}
-            onSetStatus={(o, status) =>
-              status === 'completed' ? openFulfilment(o.id) : setOrderStatus.mutate({ orderId: o.id, status })
-            }
-            onDelete={setDeletingOrder}
-          />
-        )}
+        {/* The tab's panel is the orders list or its empty state (WS-13 E2 C02). */}
+        <WorkshopTabPanel idBase={tabsId} value={tab}>
+          {!ordersQuery.isLoading && ordersTotal === 0 ? (
+            <p className="text-bambu-gray text-sm">{t(`orders.list.empty.${tab}`)}</p>
+          ) : (
+            <OrdersListView
+              data={ordersQuery.data}
+              isLoading={ordersQuery.isLoading}
+              isPlaceholderData={ordersQuery.isPlaceholderData}
+              view={view}
+              sort={sort}
+              onSortChange={setSort}
+              perPage={perPage}
+              onPageChange={setPage}
+              onPerPageChange={(n) => {
+                setPerPage(n);
+                setPage(1);
+              }}
+              onEdit={setEditingOrder}
+              onDuplicate={(o) => duplicateOrder.mutate(o.id)}
+              onSetStatus={(o, status) =>
+                status === 'completed' ? openFulfilment(o.id) : setOrderStatus.mutate({ orderId: o.id, status })
+              }
+              onDelete={setDeletingOrder}
+            />
+          )}
+        </WorkshopTabPanel>
       </section>
 
       {editingCustomer && <CustomerModal customer={customer} onClose={() => setEditingCustomer(false)} />}

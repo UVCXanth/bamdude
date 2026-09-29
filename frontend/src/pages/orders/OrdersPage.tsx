@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
@@ -30,6 +30,7 @@ import { parseOrdersView, parsePageSize, usePersistedState } from '../../hooks/u
 import type { OrdersView } from '../../hooks/usePersistedState';
 import { useSearchBox } from '../../hooks/useSearchBox';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
+import { WorkshopTabPanel } from '../../components/workshop/WorkshopTabs';
 
 const GROUP_STORAGE_KEY = 'projects.groupByCustomer';
 const VIEW_STORAGE_KEY = 'projects.view';
@@ -60,6 +61,7 @@ export function OrdersPage() {
   const navigate = useNavigate();
 
   const [view, setViewPref] = usePersistedState<OrdersView>(VIEW_STORAGE_KEY, 'cards', parseOrdersView);
+  const tabsId = useId();
   const views = useOrdersViews();
   const sortOptions = useOrderSortOptions();
   const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
@@ -207,7 +209,15 @@ export function OrdersPage() {
       )}
 
       <div className="flex items-center gap-4 mb-4 flex-wrap">
-        {paged && <OrderStatusTabs tab={tab} totals={data?.totals} onChange={(key) => setExtra('tab', key)} />}
+        {paged && (
+          <OrderStatusTabs
+            idBase={tabsId}
+            tab={tab}
+            totals={data?.totals}
+            busy={isPlaceholderData}
+            onChange={(key) => setExtra('tab', key)}
+          />
+        )}
 
         <ListSearchBox value={typed} onChange={setTyped} placeholder={t('orders.list.searchPlaceholder')} />
 
@@ -270,45 +280,65 @@ export function OrdersPage() {
         )}
       </div>
 
-      {paged && !isLoading && total === 0 && (
-        filtered ? (
-          <div className="flex items-center gap-3 text-bambu-gray text-sm">
-            <span>{t('list.empty.noMatch')}</span>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                forget();
-                resetFilters(['tab']);
-              }}
-            >
-              {t('list.empty.reset')}
-            </Button>
-          </div>
-        ) : (
-          <p className="text-bambu-gray text-sm">{t(`orders.list.empty.${tab}`)}</p>
-        )
-      )}
+      {/* The tab's panel is the list and its empty state — not the filters above it (WS-13 E2 C02). */}
+      {paged && (
+        <WorkshopTabPanel idBase={tabsId} value={tab}>
+          {!isLoading && total === 0 && (
+            filtered ? (
+              <div className="flex items-center gap-3 text-bambu-gray text-sm">
+                <span>{t('list.empty.noMatch')}</span>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    forget();
+                    resetFilters(['tab']);
+                  }}
+                >
+                  {t('list.empty.reset')}
+                </Button>
+              </div>
+            ) : (
+              <p className="text-bambu-gray text-sm">{t(`orders.list.empty.${tab}`)}</p>
+            )
+          )}
 
-      {listLike && (
-        <OrdersListView
-          data={data}
-          isLoading={isLoading}
-          isPlaceholderData={isPlaceholderData}
-          view={view}
-          sort={sort}
-          onSortChange={setSort}
-          perPage={perPage}
-          onPageChange={setPage}
-          onPerPageChange={(n) => {
-            setPerPage(n);
-            setPage(1);
-          }}
-          groupByCustomer={groupByCustomer}
-          onEdit={setEditing}
-          onDuplicate={(o) => duplicate.mutate(o.id)}
-          onSetStatus={(o, status) => (status === 'completed' ? openFulfilment(o.id) : setStatus.mutate({ id: o.id, status }))}
-          onDelete={setDeleting}
-        />
+          {listLike && (
+            <OrdersListView
+              data={data}
+              isLoading={isLoading}
+              isPlaceholderData={isPlaceholderData}
+              view={view}
+              sort={sort}
+              onSortChange={setSort}
+              perPage={perPage}
+              onPageChange={setPage}
+              onPerPageChange={(n) => {
+                setPerPage(n);
+                setPage(1);
+              }}
+              groupByCustomer={groupByCustomer}
+              onEdit={setEditing}
+              onDuplicate={(o) => duplicate.mutate(o.id)}
+              onSetStatus={(o, status) => (status === 'completed' ? openFulfilment(o.id) : setStatus.mutate({ id: o.id, status }))}
+              onDelete={setDeleting}
+            />
+          )}
+          {view === 'workspace' && (
+            <OrdersWorkspace
+              data={data}
+              isLoading={isLoading}
+              isPlaceholderData={isPlaceholderData}
+              perPage={perPage}
+              onPageChange={setPage}
+              onPerPageChange={(n) => {
+                setPerPage(n);
+                setPage(1);
+              }}
+              picked={Number(extra.order) || null}
+              onPick={(id) => setExtra('order', id ? String(id) : '', { keepPage: true })}
+            />
+          )}
+        </WorkshopTabPanel>
       )}
       {view === 'kanban' && (
         <OrdersBoard
@@ -318,21 +348,6 @@ export function OrdersPage() {
             forget();
             resetFilters(['tab']);
           }}
-        />
-      )}
-      {view === 'workspace' && (
-        <OrdersWorkspace
-          data={data}
-          isLoading={isLoading}
-          isPlaceholderData={isPlaceholderData}
-          perPage={perPage}
-          onPageChange={setPage}
-          onPerPageChange={(n) => {
-            setPerPage(n);
-            setPage(1);
-          }}
-          picked={Number(extra.order) || null}
-          onPick={(id) => setExtra('order', id ? String(id) : '', { keepPage: true })}
         />
       )}
       {view === 'deadlines' && (

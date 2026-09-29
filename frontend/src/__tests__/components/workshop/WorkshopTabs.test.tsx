@@ -23,7 +23,15 @@ const items: WorkshopTabItem<Key>[] = [
   { value: 'all', label: 'All', count: null },
 ];
 
-function Harness({ onChange = () => {}, initial = 'active' as Key, idBase = 'orders' }) {
+function Harness({
+  onChange = () => {},
+  initial = 'active',
+  idBase = 'orders',
+}: {
+  onChange?: (next: Key) => void;
+  initial?: Key;
+  idBase?: string;
+}) {
   const [value, setValue] = useState<Key>(initial);
   return (
     <>

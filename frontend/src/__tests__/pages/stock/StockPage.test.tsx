@@ -6,6 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { StockFigures, StockItem, StockItemsPage, StockListPage } from '../../../api/client';
@@ -110,6 +111,27 @@ describe('StockPage', () => {
     await waitFor(() => expect(getPage).toHaveBeenLastCalledWith({ sort_by: 'kits-desc', page: 1, per_page: 24 }));
     fireEvent.click(screen.getByRole('tab', { name: 'Finished goods' }));
     await waitFor(() => expect(window.location.search).toBe(''));
+  });
+
+  it("is a named keyboard tablist: arrows only move focus, Enter opens the tab on a clean URL in place, and the tab's content is its panel (WS-13 E2 C02/C03/C06)", async () => {
+    const user = userEvent.setup();
+    window.history.pushState({}, '', '/stock?q=lamp');
+    render(<StockPage />);
+    await screen.findByTestId('finished-row-3');
+    const list = screen.getByRole('tablist', { name: 'Stock sections' });
+    const finished = within(list).getByRole('tab', { name: 'Finished goods' });
+    const panel = screen.getByRole('tabpanel');
+    expect(panel).toHaveAttribute('aria-labelledby', finished.id);
+    expect(within(panel).getByTestId('finished-row-3')).toBeInTheDocument();
+    finished.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(within(list).getByRole('tab', { name: 'Free parts' })).toHaveFocus();
+    expect(window.location.search).toBe('?q=lamp');
+    expect(getPage).not.toHaveBeenCalled();
+    const before = window.history.length;
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(window.location.search).toBe('?tab=parts'));
+    expect(window.history.length).toBe(before);
   });
 
   it('draws no section tabs — the sidebar carries them', async () => {

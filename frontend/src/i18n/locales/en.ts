@@ -5634,6 +5634,7 @@ export default {
       subtitle: 'What to make, for whom and by when — the figures come from the prints and the shelf',
       newOrder: 'New order',
       tabAll: 'All',
+      statusTabs: 'Order status',
       noCustomer: 'No customer',
       customerFilterAll: 'All customers',
       responsible: 'Responsible',
@@ -6769,6 +6770,7 @@ export default {
       },
     },
     tabs: {
+      label: 'Stock sections',
       finished: 'Finished goods',
       parts: 'Free parts',
       journal: 'Movements',

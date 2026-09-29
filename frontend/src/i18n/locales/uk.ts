@@ -5679,6 +5679,7 @@ export default {
       subtitle: 'Що виготовити, для кого й до якого терміну — цифри рахуються з друків і складу',
       newOrder: 'Нове замовлення',
       tabAll: 'Усі',
+      statusTabs: 'Статус замовлення',
       noCustomer: 'Без замовника',
       customerFilterAll: 'Усі замовники',
       responsible: 'Відповідальний',
@@ -6895,6 +6896,7 @@ export default {
       },
     },
     tabs: {
+      label: 'Розділи складу',
       finished: 'Готові вироби',
       parts: 'Вільні деталі',
       journal: 'Журнал руху',

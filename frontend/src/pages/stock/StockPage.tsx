@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
@@ -26,6 +26,7 @@ import { useSearchBox } from '../../hooks/useSearchBox';
 import { useStockItems } from '../../hooks/useFinishedStock';
 import { useStockPage } from '../../hooks/useStock';
 import { invalidateStock } from '../../utils/queryInvalidation';
+import { WorkshopTabPanel, WorkshopTabs } from '../../components/workshop/WorkshopTabs';
 
 const TABS = ['finished', 'parts', 'journal', 'notes'] as const;
 type StockTab = (typeof TABS)[number];
@@ -47,6 +48,7 @@ export function StockPage() {
   const { hasPermission } = useAuth();
   const canEdit = hasPermission('projects:update');
   const [dialog, setDialog] = useState<StockDialogState>(null);
+  const tabsId = useId();
   const [params, setParams] = useSearchParams();
   const raw = params.get('tab');
   const tab: StockTab = (TABS as readonly string[]).includes(raw ?? '') ? (raw as StockTab) : 'finished';
@@ -85,27 +87,22 @@ export function StockPage() {
         )}
       </ListPageHeader>
 
-      <div role="tablist" className="flex gap-1 border-b border-bambu-dark-tertiary mb-4">
-        {TABS.map((key) => (
-          <button
-            key={key}
-            type="button"
-            role="tab"
-            aria-selected={tab === key}
-            onClick={() => switchTab(key)}
-            className={`px-4 py-2 text-sm border-b-2 -mb-px transition-colors ${
-              tab === key ? 'border-bambu-green text-white' : 'border-transparent text-bambu-gray hover:text-white'
-            }`}
-          >
-            {label[key]}
-          </button>
-        ))}
+      <div className="mb-4">
+        <WorkshopTabs
+          idBase={tabsId}
+          ariaLabel={t('stock.tabs.label')}
+          value={tab}
+          items={TABS.map((key) => ({ value: key, label: label[key] }))}
+          onChange={switchTab}
+        />
       </div>
 
-      {tab === 'finished' && <FinishedTab onDialog={setDialog} />}
-      {tab === 'parts' && <PartsTab />}
-      {tab === 'journal' && <StockJournal />}
-      {tab === 'notes' && <NotesTab />}
+      <WorkshopTabPanel idBase={tabsId} value={tab}>
+        {tab === 'finished' && <FinishedTab onDialog={setDialog} />}
+        {tab === 'parts' && <PartsTab />}
+        {tab === 'journal' && <StockJournal />}
+        {tab === 'notes' && <NotesTab />}
+      </WorkshopTabPanel>
 
       <StockDialogs dialog={dialog} onClose={() => setDialog(null)} />
     </div>

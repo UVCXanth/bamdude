@@ -135,6 +135,21 @@ describe('CustomerPage', () => {
     expect(screen.getByText('VIP')).toBeInTheDocument();
   });
 
+  it("counts nothing it does not know yet, and its orders list is the tab's panel (WS-13 E2 C02/C05)", async () => {
+    vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
+    let answer!: (page: never) => void;
+    vi.spyOn(api, 'getOrdersPaged').mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    mountAt();
+    const completed = await screen.findByRole('tab', { name: /completed/i });
+    expect(completed).toHaveTextContent('(—)');
+    expect(completed).not.toHaveTextContent('(0)');
+    answer(ordersPage as never);
+    expect(await screen.findByText('Flasks')).toBeInTheDocument();
+    const panel = screen.getByRole('tabpanel');
+    expect(panel).toHaveAttribute('aria-labelledby', screen.getByRole('tab', { name: /active/i }).id);
+    expect(within(panel).getByText('Flasks')).toBeInTheDocument();
+  });
+
   it('shows the code and kind under the name, and every contact', async () => {
     vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
     vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);

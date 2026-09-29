@@ -8,6 +8,7 @@ import { PaginationBar } from '../PaginationBar';
 import { OrderCard } from './OrderCard';
 import { OrdersTable } from './OrdersTable';
 import { ORDER_TABS } from './orderList';
+import { WorkshopTabs } from '../workshop/WorkshopTabs';
 
 /** How many placeholder cards the first fetch draws. Enough to fill the top of
  *  a normal window without pretending to know how many orders there are. */
@@ -72,34 +73,34 @@ function groupBy<T>(items: T[], keyFn: (item: T) => string): Map<string, T[]> {
 
 /** The status tabs; the counts are the server's `totals`, never the rows on screen. */
 export function OrderStatusTabs({
+  idBase,
   tab,
   totals,
+  busy = false,
   onChange,
 }: {
+  /** Shared with the `WorkshopTabPanel` around the list this strip controls. */
+  idBase: string;
   tab: ProjectStatus | 'all';
   totals: OrderListTotals | undefined;
+  /** The totals on screen belong to the previous request (placeholder data). */
+  busy?: boolean;
   onChange: (tab: ProjectStatus | 'all') => void;
 }) {
   const { t } = useTranslation();
-  const counts = totals ?? { active: 0, completed: 0, cancelled: 0, all: 0 };
   const label = (key: ProjectStatus | 'all') => (key === 'all' ? t('orders.list.tabAll') : t(`orders.status.${key}`));
+  // ⚠️ No totals yet is «not known», never a zero (WS-13 E2 C05) — the strip
+  // shows «(—)» until the server has counted.
+  const items = ORDER_TABS.map((key) => ({ value: key, label: label(key), count: totals ? totals[key] : null }));
   return (
-    <div role="tablist" className="flex gap-1 border-b border-bambu-dark-tertiary">
-      {ORDER_TABS.map((key) => (
-        <button
-          key={key}
-          type="button"
-          role="tab"
-          aria-selected={tab === key}
-          onClick={() => onChange(key)}
-          className={`px-4 py-2 text-sm border-b-2 -mb-px transition-colors ${
-            tab === key ? 'border-bambu-green text-white' : 'border-transparent text-bambu-gray hover:text-white'
-          }`}
-        >
-          {label(key)} ({counts[key]})
-        </button>
-      ))}
-    </div>
+    <WorkshopTabs
+      idBase={idBase}
+      ariaLabel={t('orders.list.statusTabs')}
+      value={tab}
+      items={items}
+      busy={busy}
+      onChange={onChange}
+    />
   );
 }
 
