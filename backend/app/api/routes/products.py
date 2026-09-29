@@ -20,20 +20,22 @@ import logging
 import os
 import shutil
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import and_, delete, exists, func, inspect as sqla_inspect, or_, select
+from sqlalchemy import and_, case, delete, distinct, exists, func, inspect as sqla_inspect, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
-from backend.app.core.auth import RequirePermission, require_media_permission
+from backend.app.api.routes.library import library_file_name_visible
+from backend.app.core.auth import RequirePermission, library_name_scope, require_media_permission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.i18n.api_errors import json_error
@@ -53,6 +55,7 @@ from backend.app.models.product import (
 )
 from backend.app.models.product_category import ProductCategory
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
+from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
 from backend.app.schemas.listing import (
@@ -101,6 +104,7 @@ from backend.app.schemas.product import (
 )
 from backend.app.services import (
     finished_stock,
+    finished_stock_views,
     line_config,
     part_stock,
     product_delete,
@@ -419,7 +423,8 @@ async def _response(db: AsyncSession, product: Product, *, reload_links: bool = 
         has_cover=effective_cover(product) is not None,
         parts_count=len(product.parts),
         plates_count=(await _plates_count(db, [product.id])).get(product.id, 0),
-        lines_count=await _lines_count(db, product.id),
+        # The catalog row's own figures (WS-13 E1 K1): the detail IS the row.
+        **(await _row_figures(db, [product]))[product.id],
         description=product.description,
         notes=product.notes,
         designer=product.designer,
@@ -474,6 +479,29 @@ async def _apply_folder(db: AsyncSession, folder_id: int, product_ids: set[int])
         raise HTTPException(status_code=404, detail=str(e)) from e
 
 
+# WS-13 E1 PC5 / K4 — the new sort keys are SQL over the whole filtered set (Z3):
+# correlated subqueries ordered BEFORE the page is cut, so a product far behind the
+# first page by name leads when its figure does.
+_PRINTED_PARTS = (
+    select(func.count(ProductPart.id))
+    .where(ProductPart.product_id == Product.id, ProductPart.kind == "printed", ProductPart.ignored.is_(False))
+    .correlate(Product)
+    .scalar_subquery()
+)
+_ACTIVE_ORDERS = (
+    select(func.count(distinct(ProjectLine.project_id)))
+    .join(Project, Project.id == ProjectLine.project_id)
+    .where(ProjectLine.product_id == Product.id, Project.status == "active")
+    .correlate(Product)
+    .scalar_subquery()
+)
+_FINISHED = (
+    select(func.coalesce(func.sum(StockItem.on_hand - StockItem.reserved), 0))
+    .where(StockItem.product_id == Product.id)
+    .correlate(Product)
+    .scalar_subquery()
+)
+
 _PRODUCT_SORT = SortSpec(
     sql={
         "name": (func.lower(Product.name), False),
@@ -483,23 +511,65 @@ _PRODUCT_SORT = SortSpec(
         "sku": (func.lower(Product.sku), True),
         "category": (func.lower(ProductCategory.name), True),
         "status": (Product.status, False),
+        "printed_parts": (_PRINTED_PARTS, False),
+        # K4: DISTINCT active orders — not lines of any status (``lines_count`` keeps that).
+        "orders": (_ACTIVE_ORDERS, False),
+        "finished": (_FINISHED, False),
     },
-    computed={"parts", "plates", "orders", "kits"},
+    computed={"parts", "plates", "kits"},
     default="name-asc",
 )
-_PRODUCT_COMPUTED = {
-    "parts": lambda r: r.parts_count,
-    "plates": lambda r: r.plates_count,
-    "orders": lambda r: r.lines_count,
-    "kits": lambda r: r.kits_available,
-}
 
 
-def _word_matches(word: str):
+async def _parts_figure(db: AsyncSession, products: Sequence[Product]) -> dict[int, int]:
+    return {p.id: len(p.parts) for p in products}
+
+
+async def _plates_figure(db: AsyncSession, products: Sequence[Product]) -> dict[int, int]:
+    plates = await _plates_count(db, [p.id for p in products])
+    return {p.id: plates.get(p.id, 0) for p in products}
+
+
+async def _kits_figure(db: AsyncSession, products: Sequence[Product]) -> dict[int, int]:
+    ids = [p.id for p in products]
+    stock = await part_stock.balances_for_products(db, ids)
+    defaults = await default_options(db, ids)
+    return {
+        p.id: part_stock.kits_of(
+            stock.get(p.id, {}), standard_composition(list(p.parts), set(defaults.get(p.id, {}).values()))
+        )
+        for p in products
+    }
+
+
+#: The keys sorted here rather than in SQL, each with the ONE figure it sorts by —
+#: computed for the whole filtered set, the rest of the row only for the page (Z3).
+_PRODUCT_COMPUTED = {"parts": _parts_figure, "plates": _plates_figure, "kits": _kits_figure}
+
+
+def _sliced_file(*conditions):
+    """PC2 / K2 — the one rule for «sliced»: a linked file outside the trash that can
+    go to a printer as it is (``LibraryFile.is_printable``). The row, the detail,
+    the filter and the model facets all ask it."""
+    return and_(
+        LibraryFile.id == product_files.c.library_file_id,
+        LibraryFile.deleted_at.is_(None),
+        LibraryFile.is_printable(),
+        *conditions,
+    )
+
+
+_SLICED = exists().where(product_files.c.product_id == Product.id, _sliced_file())
+
+
+def _word_matches(word: str, name_visible):
     """One search word against every field of a product (spec workshop-product-catalog, rule 8).
 
-    A trashed file is not searched — neither its name nor its facets: the product
-    page does not show it either (owner, 2026-09-27)."""
+    A linked file's NAME is searched only where ``name_visible`` — the library's own
+    rule for this caller (``library.library_file_name_visible``, WS-13 E1 LV3) —
+    lets the caller see it; that predicate also leaves the trash out. A trashed
+    file's facets are not searched either: the product page does not show it
+    (owner, 2026-09-27)."""
     needle = like_contains(word)
 
     def like(column):
@@ -508,12 +578,13 @@ def _word_matches(word: str):
     fields = [
         like(Product.name),
         like(Product.sku),
+        like(Product.version),
         like(ProductCategory.name),
         exists().where(ProductPart.product_id == Product.id, like(ProductPart.name)),
         exists().where(
             product_files.c.product_id == Product.id,
             LibraryFile.id == product_files.c.library_file_id,
-            LibraryFile.deleted_at.is_(None),
+            name_visible,
             like(LibraryFile.filename),
         ),
         product_facets.visible_facet(like(ProductFacet.value)),
@@ -521,6 +592,12 @@ def _word_matches(word: str):
     if (product_id := id_from_query("product", word)) is not None:
         fields.append(Product.id == product_id)
     return or_(*fields)
+
+
+def _printable_model():
+    """K2: a ``model`` facet counts only from a file that can be printed — an unsliced
+    project names the printer it was set up for, not one it was sliced for."""
+    return or_(ProductFacet.kind != "model", LibraryFile.is_printable())
 
 
 def _has_facet(kind: str, value: str):
@@ -532,7 +609,7 @@ def _has_facet(kind: str, value: str):
         wanted = normalize_model_name(raw) or raw
     else:
         wanted = raw.upper()
-    return product_facets.visible_facet(ProductFacet.kind == kind, ProductFacet.value == wanted)
+    return product_facets.visible_facet(ProductFacet.kind == kind, ProductFacet.value == wanted, _printable_model())
 
 
 async def _in_stock_ids(db: AsyncSession, conditions: list) -> list[int]:
@@ -586,9 +663,13 @@ async def _category_counts(db: AsyncSession, conditions: list) -> tuple[list[Cat
     return named, uncategorized
 
 
+_STOCK_BOTH = "Use either stock or in_stock, not both"
+
+
 @router.get("", response_model=list[ProductListItem] | ProductListPage)
 @router.get("/", response_model=list[ProductListItem] | ProductListPage)
 async def list_products(
+    request: Request,
     active: bool | None = None,
     q: str | None = None,
     include_adhoc: bool = False,
@@ -597,29 +678,39 @@ async def list_products(
     color: str | None = None,
     model: str | None = None,
     status: Literal["draft", "ready"] | None = None,
-    in_stock: bool = Query(False, description="Only products with at least one free kit"),
+    stock: Literal["finished", "kits", "below_min"] | None = Query(
+        None, description="finished: ready units free; kits: a free kit; below_min: a position below its minimum"
+    ),
+    sliced: bool | None = Query(None, description="A linked file outside the trash can be printed as it is"),
+    in_stock: bool = Query(False, description="The old name of stock=kits"),
     sort_by: str | None = Query(None, description="With page set: '<key>-<asc|desc>'; unknown → name-asc"),
     page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
     per_page: int = Query(24, ge=1, le=200),
     all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    user: User | None = RequirePermission(Permission.PROJECTS_READ),
 ):
     """The product catalog. ``page`` is the compat switch (the inventory's contract).
 
     Without it the flat array the pickers, the link-to-products dialog, the
     model card and the stock journal read — unchanged. With it ``{items, meta}``
-    and ``sort_by``. A SQL key (``name``, ``updated``, ``created``) pages in the
-    database and the counts below are read for that page only; a computed key
-    (``parts``, ``plates``, ``orders``, ``kits``) loads the filtered catalog,
-    counts it as the unpaged list always did, sorts here and slices.
+    and ``sort_by``. A SQL key orders the whole filtered set in the database and
+    only then cuts the page; a computed key (``parts``, ``plates``, ``kits``)
+    reads its one figure for the filtered set, sorts here and slices. Either way
+    the rest of the row is read for the page's ids alone (WS-13 E1 Z3).
 
     Search and filters (spec workshop-product-catalog, rules 8–11): every word
-    of ``q`` must hit some field; the facet filters read the stored
-    ``product_facets``; ``in_stock`` keeps the products with a free kit. The
-    page also carries the category panel's counts — every filter but the
-    category's own.
+    of ``q`` must hit some field — a file's name only as far as the library shows
+    it to this caller (LV3); the facet filters read the stored
+    ``product_facets``; ``stock`` keeps the products with ready units, a free kit
+    or a position below its minimum; ``sliced`` those with (or without) a
+    printable file. The page also carries the category panel's counts — every
+    filter but the category's own — and the catalogue's size under no filter.
     """
+    if in_stock and stock is not None:
+        raise HTTPException(status_code=422, detail=_STOCK_BOTH)
+    if in_stock:
+        stock = "kits"
     paged = page is not None
     key, direction, computed = resolve_sort(_PRODUCT_SORT, sort_by)
     conditions = []
@@ -630,13 +721,22 @@ async def list_products(
     if active is not None:
         conditions.append(Product.is_active.is_(active))
     if q and (words := q.split()):
-        conditions.append(and_(*(_word_matches(w) for w in words)))
+        scope = await library_name_scope(request, db, user)
+        name_visible = library_file_name_visible(scope, user.id if user is not None else None)
+        conditions.append(and_(*(_word_matches(w, name_visible) for w in words)))
     for kind, value in (("material", material), ("color", color), ("model", model)):
         if value and value.strip():
             conditions.append(_has_facet(kind, value))
     if status is not None:
         conditions.append(Product.status == status)
-    if in_stock:
+    if sliced is not None:
+        conditions.append(_SLICED if sliced else ~_SLICED)
+    if stock == "finished":
+        conditions.append(exists().where(StockItem.product_id == Product.id, StockItem.on_hand > StockItem.reserved))
+    elif stock == "below_min":
+        conditions.append(exists().where(StockItem.product_id == Product.id, finished_stock_views.BELOW_MIN))
+    elif stock == "kits":
+        # Last: it reads the candidates under every other filter.
         conditions.append(Product.id.in_(await _in_stock_ids(db, conditions)))
     panel = await _category_counts(db, conditions) if paged else None
     if category == "none":
@@ -653,30 +753,44 @@ async def list_products(
         .where(*conditions)
     )
     if not paged:
-        query = query.order_by(Product.name)
-    total = 0
-    if paged and not computed:
+        return await _catalog_rows(db, (await db.execute(query.order_by(Product.name))).scalars().all())
+    if computed:
+        candidates = (await db.execute(query)).scalars().all()
+        figures = await _PRODUCT_COMPUTED[key](db, candidates)
+        ordered = sort_computed(candidates, lambda p: figures[p.id], direction, id_fn=lambda p: p.id)
+        total = len(ordered)
+        products = slice_page(ordered, page, per_page, all)
+    else:
         total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
         query = apply_sql_sort(query, _PRODUCT_SORT, key, direction, Product.id)
         if not all:
             query = query.limit(per_page).offset((page - 1) * per_page)
-    products = (await db.execute(query)).scalars().all()
-    counts = dict(
-        (
-            await db.execute(
-                select(ProjectLine.product_id, func.count(ProjectLine.id)).group_by(ProjectLine.product_id)
-            )
-        ).all()
+        products = (await db.execute(query)).scalars().all()
+    categories, uncategorized = panel if panel else ([], 0)
+    catalog_total = (
+        await db.scalar(select(func.count(Product.id)).where(Product.origin == ProductOrigin.CATALOG.value)) or 0
     )
-    plates = await _plates_count(db, [p.id for p in products])
+    return ProductListPage(
+        items=await _catalog_rows(db, products),
+        meta=page_meta(total, page, per_page, all),
+        categories=categories,
+        uncategorized=uncategorized,
+        catalog_total=catalog_total,
+    )
+
+
+async def _catalog_rows(db: AsyncSession, products: Sequence[Product]) -> list[ProductListItem]:
+    """The catalog row of each product given (``parts`` loaded) — read for exactly
+    these ids, a fixed number of grouped statements however many there are."""
+    ids = [p.id for p in products]
+    figures = await _row_figures(db, products)
+    plates = await _plates_count(db, ids)
     # The ledger for the WHOLE page in one grouped read, exactly like the plate
     # counts above it — ``kits_available`` per product is a per-row number and a
     # per-row query for it would be an N+1 nobody notices until the catalog grows.
-    stock = await part_stock.balances_for_products(db, [p.id for p in products])
-    defaults = await default_options(db, [p.id for p in products])
-    finished = await _finished_available(db, [p.id for p in products])
-    facets = await _facets_by_product(db, [p.id for p in products])
-    items = [
+    stock = await part_stock.balances_for_products(db, ids)
+    defaults = await default_options(db, ids)
+    return [
         ProductListItem(
             id=p.id,
             code=code_for("product", p.id),
@@ -687,55 +801,102 @@ async def list_products(
             has_cover=effective_cover(p) is not None,
             parts_count=len(p.parts),
             plates_count=plates.get(p.id, 0),
-            lines_count=counts.get(p.id, 0),
             kits_available=part_stock.kits_of(
                 stock.get(p.id, {}), standard_composition(list(p.parts), set(defaults.get(p.id, {}).values()))
             ),
-            finished_available=finished.get(p.id, 0),
-            materials=facets.get(p.id, {}).get("material", []),
-            colors=facets.get(p.id, {}).get("color", []),
-            models=facets.get(p.id, {}).get("model", []),
+            **figures[p.id],
             origin=p.origin,
             origin_file_id=p.origin_file_id,
             origin_plate_index=p.origin_plate_index,
         )
         for p in products
     ]
-    if not paged:
-        return items
-    if computed:
-        items = sort_computed(items, _PRODUCT_COMPUTED[key], direction, id_fn=lambda r: r.id)
-        total = len(items)
-        items = slice_page(items, page, per_page, all)
-    categories, uncategorized = panel if panel else ([], 0)
-    return ProductListPage(
-        items=items,
-        meta=page_meta(total, page, per_page, all),
-        categories=categories,
-        uncategorized=uncategorized,
-    )
 
 
-async def _finished_available(db: AsyncSession, product_ids: list[int]) -> dict[int, int]:
-    """Free ready units per product, over every position — one grouped read."""
-    if not product_ids:
-        return {}
-    rows = await db.execute(
-        select(StockItem.product_id, func.sum(StockItem.on_hand - StockItem.reserved))
-        .where(StockItem.product_id.in_(product_ids))
-        .group_by(StockItem.product_id)
-    )
-    return {product_id: int(n or 0) for product_id, n in rows.all()}
+async def _row_figures(db: AsyncSession, products: Sequence[Product]) -> dict[int, dict]:
+    """What a catalog row and the product's detail both carry beyond the product's own
+    columns (WS-13 E1 K1, PC2, PC3), one grouped read per kind over these ids: the
+    facets, ready goods (free units, tracked positions, positions below the minimum),
+    lines and DISTINCT active orders, «sliced», the variant groups' names; the part
+    counts off the loaded ``parts``. The detail asks it for one product, so the two
+    cannot disagree."""
+    ids = [p.id for p in products]
+    facets = await _facets_by_product(db, ids)
+    finished: dict[int, tuple[int, int, int]] = {}
+    lines: dict[int, tuple[int, int]] = {}
+    sliced: set[int] = set()
+    groups: dict[int, list[str]] = {}
+    if ids:
+        tracked = func.sum(case((finished_stock_views.TRACKED, 1), else_=0))
+        low = func.sum(case((finished_stock_views.BELOW_MIN, 1), else_=0))
+        for pid, free, positions, below in (
+            await db.execute(
+                select(StockItem.product_id, func.sum(StockItem.on_hand - StockItem.reserved), tracked, low)
+                .where(StockItem.product_id.in_(ids))
+                .group_by(StockItem.product_id)
+            )
+        ).all():
+            finished[pid] = (int(free or 0), int(positions or 0), int(below or 0))
+        active_order = case((Project.status == "active", ProjectLine.project_id))
+        for pid, count, active in (
+            await db.execute(
+                select(ProjectLine.product_id, func.count(ProjectLine.id), func.count(distinct(active_order)))
+                .join(Project, Project.id == ProjectLine.project_id)
+                .where(ProjectLine.product_id.in_(ids))
+                .group_by(ProjectLine.product_id)
+            )
+        ).all():
+            lines[pid] = (int(count), int(active))
+        sliced = set(
+            (
+                await db.execute(
+                    select(distinct(product_files.c.product_id)).where(
+                        product_files.c.product_id.in_(ids), _sliced_file()
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for pid, name in (
+            await db.execute(
+                select(ProductVariantGroup.product_id, ProductVariantGroup.name)
+                .where(ProductVariantGroup.product_id.in_(ids))
+                .order_by(ProductVariantGroup.product_id, ProductVariantGroup.position, ProductVariantGroup.id)
+            )
+        ).all():
+            groups.setdefault(pid, []).append(name)
+    out: dict[int, dict] = {}
+    for p in products:
+        free, positions, below = finished.get(p.id, (0, 0, 0))
+        count, active = lines.get(p.id, (0, 0))
+        out[p.id] = {
+            "lines_count": count,
+            "finished_available": free,
+            "finished_positions": positions,
+            "finished_below_min": below,
+            "materials": facets.get(p.id, {}).get("material", []),
+            "colors": facets.get(p.id, {}).get("color", []),
+            "models": facets.get(p.id, {}).get("model", []),
+            "sliced": p.id in sliced,
+            # «Не рахувати» is not a part; a zero in the kit still is one (Q7).
+            "printed_parts_count": sum(1 for part in p.parts if part.kind == "printed" and not part.ignored),
+            "purchased_parts_count": sum(1 for part in p.parts if part.kind == "purchased"),
+            "variant_group_names": groups.get(p.id, []),
+            "active_orders_count": active,
+        }
+    return out
 
 
 async def _facets_by_product(db: AsyncSession, product_ids: list[int]) -> dict[int, dict[str, list[str]]]:
-    """``product → kind → sorted values`` of the stored facets, files outside the trash — one read."""
+    """``product → kind → sorted values`` of the stored facets, files outside the trash — one
+    read; a model only from a printable file (K2)."""
     if not product_ids:
         return {}
     rows = await db.execute(
         select(ProductFacet.product_id, ProductFacet.kind, ProductFacet.value)
         .join(LibraryFile, LibraryFile.id == ProductFacet.library_file_id)
-        .where(ProductFacet.product_id.in_(product_ids), LibraryFile.deleted_at.is_(None))
+        .where(ProductFacet.product_id.in_(product_ids), LibraryFile.deleted_at.is_(None), _printable_model())
         .distinct()
     )
     out: dict[int, dict[str, set[str]]] = {}
@@ -823,14 +984,15 @@ async def list_product_facets(
     db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
 ):
     """The values the catalog's filters offer (spec workshop-product-catalog, rule 12):
-    what the catalog's products are made of and sliced for. Declared above
-    ``/{product_id}``, or ``facets`` would be read as an id."""
+    what the catalog's products are made of and sliced for — a model only from a
+    printable file (WS-13 E1 K2). Declared above ``/{product_id}``, or ``facets``
+    would be read as an id."""
     rows = (
         await db.execute(
             select(ProductFacet.kind, ProductFacet.value)
             .join(Product, Product.id == ProductFacet.product_id)
             .join(LibraryFile, LibraryFile.id == ProductFacet.library_file_id)
-            .where(Product.origin == ProductOrigin.CATALOG.value, LibraryFile.deleted_at.is_(None))
+            .where(Product.origin == ProductOrigin.CATALOG.value, LibraryFile.deleted_at.is_(None), _printable_model())
             .distinct()
         )
     ).all()

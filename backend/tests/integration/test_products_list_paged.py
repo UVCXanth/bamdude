@@ -103,7 +103,7 @@ def test_every_computed_key_has_its_figure():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", ["name", "updated", "created", "parts", "plates", "orders", "kits"])
+@pytest.mark.parametrize("key", ["name", "updated", "created", "parts", "plates", "orders", "kits", "printed_parts"])
 async def test_every_sort_key_really_orders_both_ways(async_client, db_session, monkeypatch, key):
     """Distinct values for every key, so ascending must be descending reversed."""
     from backend.app.api.routes import products as route_module
@@ -117,11 +117,11 @@ async def test_every_sort_key_really_orders_both_ways(async_client, db_session, 
         p.created_at = T0 + timedelta(days=i)
         p.updated_at = T0 + timedelta(days=10 - i)
         products.append(p)
-    order = Project(name="o", status="active")
-    db_session.add(order)
-    await db_session.flush()
     for i, p in enumerate(products):
-        for _ in range(3 - i):  # lines per product: 3, 2, 1, 0
+        for _ in range(3 - i):  # active orders per product: 3, 2, 1, 0 (K4: orders, not lines)
+            order = Project(name="o", status="active")
+            db_session.add(order)
+            await db_session.flush()
             db_session.add(ProjectLine(project_id=order.id, product_id=p.id, quantity=1))
     await db_session.commit()
     rank = {p.id: i for i, p in enumerate(products)}
@@ -144,3 +144,114 @@ async def test_names_sort_without_regard_to_case(async_client, db_session):
         await _product(db_session, name)
     items = (await async_client.get("/api/v1/products/?page=1&sort_by=name-asc")).json()["items"]
     assert [p["name"] for p in items] == ["apple", "banana", "Zebra"]
+
+
+# ---------- WS-13 E1 PC4, PC5, Z3: the new keys order the whole set, the page is enriched alone ----------
+
+
+async def _far_catalog(db_session, key: str) -> tuple[list[int], int]:
+    """Thirty products «p00…p29» with a figure of 1 for every third one (a tie across page
+    boundaries) and one product «zz-winner» — last by name — with the biggest figure."""
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+    from backend.app.services import finished_stock
+
+    names = [f"p{i:02d}" for i in range(30)] + ["zz-winner"]
+    products = [await _product(db_session, name) for name in names]
+    figure = {p.id: 3 if p.name == "zz-winner" else 1 if i % 3 == 0 else 0 for i, p in enumerate(products)}
+    for p in products:
+        n = figure[p.id]
+        if not n:
+            continue
+        if key == "printed_parts":
+            for i in range(n):
+                db_session.add(
+                    ProductPart(product_id=p.id, kind="printed", name=f"x{i}", name_key=f"x{i}", qty_per_unit=1)
+                )
+            await db_session.commit()
+        elif key == "orders":
+            for _ in range(n):
+                order = Project(name=f"o-{p.name}", status="active")
+                db_session.add(order)
+                await db_session.flush()
+                db_session.add(ProjectLine(project_id=order.id, product_id=p.id, quantity=1))
+            await db_session.commit()
+        else:
+            item = await finished_stock.item_for(db_session, p.id, {}, create=True)
+            await finished_stock.receive(db_session, item, n)
+            await db_session.commit()
+    winner = next(p.id for p in products if p.name == "zz-winner")
+    ties = sorted(pid for pid, n in figure.items() if n == 1)
+    return ties, winner
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["printed_parts", "orders", "finished"])
+async def test_a_new_key_lifts_a_product_from_far_behind_the_first_page(async_client, db_session, monkeypatch, key):
+    from backend.app.api.routes import products as route_module
+
+    ties, winner = await _far_catalog(db_session, key)
+    enriched: list[list[int]] = []
+    real = route_module._facets_by_product
+
+    async def spy(db, product_ids):
+        enriched.append(list(product_ids))
+        return await real(db, product_ids)
+
+    monkeypatch.setattr(route_module, "_facets_by_product", spy)
+    seen: list[int] = []
+    for page in (1, 2, 3, 4):
+        body = (await async_client.get(f"/api/v1/products/?page={page}&per_page=10&sort_by={key}-desc")).json()
+        ids = [i["id"] for i in body["items"]]
+        assert sorted(enriched[-1]) == sorted(ids), "the enrichment reads exactly the page"
+        seen += ids
+    assert seen[0] == winner
+    assert len(seen) == len(set(seen)) == 31
+    # The tie of «1» spans a page boundary (10 of them sit on pages 1 and 2) and keeps
+    # its id order across it.
+    assert [pid for pid in seen if pid in ties] == ties
+
+
+@pytest.mark.asyncio
+async def test_orders_counts_distinct_active_orders_not_lines(async_client, db_session):
+    """K4: three lines of one order are one order; a completed order is none."""
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+
+    many_lines = await _product(db_session, "a-many-lines")
+    two_orders = await _product(db_session, "b-two-orders")
+    active = Project(name="A", status="active")
+    other = Project(name="B", status="active")
+    done = Project(name="C", status="completed")
+    db_session.add_all([active, other, done])
+    await db_session.flush()
+    db_session.add_all(
+        [ProjectLine(project_id=active.id, product_id=many_lines.id, quantity=1, sort_order=i) for i in range(3)]
+        + [ProjectLine(project_id=done.id, product_id=many_lines.id, quantity=1)]
+        + [ProjectLine(project_id=pid, product_id=two_orders.id, quantity=1) for pid in (active.id, other.id)]
+    )
+    await db_session.commit()
+    items = (await async_client.get("/api/v1/products/?page=1&sort_by=orders-desc")).json()["items"]
+    assert [i["name"] for i in items] == ["b-two-orders", "a-many-lines"]
+    assert [i["lines_count"] for i in items] == [2, 4]  # the field keeps its meaning
+
+
+@pytest.mark.asyncio
+async def test_a_page_of_thirty_asks_what_a_page_of_three_asks(async_client, db_session, test_engine):
+    """Z2 / PC4: the enrichment reads are grouped by the page's ids."""
+    from backend.tests.unit.services.test_product_composition import counting_statements
+
+    async def statements():
+        await async_client.get("/api/v1/products/?page=1&per_page=100")
+        with counting_statements(test_engine) as seen:
+            body = (await async_client.get("/api/v1/products/?page=1&per_page=100")).json()
+        return len(seen), len(body["items"])
+
+    for i in range(3):
+        await _product(db_session, f"few{i}", parts=2)
+    few, n = await statements()
+    assert n == 3
+    for i in range(27):
+        await _product(db_session, f"many{i}", parts=2)
+    many, n = await statements()
+    assert n == 30 and many == few

@@ -491,6 +491,18 @@ class ProductListItem(BaseModel):
     materials: list[str] = []
     colors: list[str] = []
     models: list[str] = []
+    #: WS-13 E1 PC2 — a linked file outside the trash can be printed as it is.
+    sliced: bool = False
+    #: PC3 — printed parts that are parts (a zero in the kit counts, «not counted»
+    #: does not), purchased parts, the variant groups' names in their order,
+    #: DISTINCT active orders with a line of the product, and its ready-goods
+    #: positions: tracked ones and those below their minimum.
+    printed_parts_count: int = 0
+    purchased_parts_count: int = 0
+    variant_group_names: list[str] = []
+    active_orders_count: int = 0
+    finished_positions: int = 0
+    finished_below_min: int = 0
     # ``catalog`` | ``adhoc_job`` | ``adhoc_plate`` (models.product.ProductOrigin).
     origin: str = "catalog"
     origin_file_id: int | None = None

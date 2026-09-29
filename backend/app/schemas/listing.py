@@ -137,6 +137,8 @@ class ProductListPage(BaseModel):
     # counts the products without one.
     categories: list[CategoryCount] = []
     uncategorized: int = 0
+    #: WS-13 E1 PC6 — every catalogue product, whatever the filters and ``is_active``.
+    catalog_total: int = 0
 
 
 class ProductFacetsOut(BaseModel):

@@ -9,7 +9,7 @@ from dataclasses import asdict
 from typing import Literal, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -274,8 +274,9 @@ _ITEM_SORT = SortSpec(
     },
     default="product-asc",
 )
-_BELOW_MIN = and_(StockItem.min_qty > 0, StockItem.on_hand - StockItem.reserved < StockItem.min_qty)
-_TRACKED = or_(StockItem.on_hand > 0, StockItem.reserved > 0, StockItem.min_qty > 0)
+# One definition for the stock page and the catalog (WS-13 E1 PC1).
+_BELOW_MIN = finished_stock_views.BELOW_MIN
+_TRACKED = finished_stock_views.TRACKED
 _MODES = {"tracked": _TRACKED, "low": _BELOW_MIN, "reserved": StockItem.reserved > 0, "all": None}
 
 

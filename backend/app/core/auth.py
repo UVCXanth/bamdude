@@ -7,7 +7,7 @@ import secrets
 import weakref
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import jwt
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -2355,6 +2355,59 @@ def require_media_ownership_permission(all_permission: str | Permission, own_per
 
 RequireOverlayToken = Depends(require_overlay_token())
 RequireCamWallToken = Depends(require_camwall_token())
+
+
+LibraryNameScope = Literal["all", "own", "none"]
+
+
+async def library_name_scope(request: Request | None, db: AsyncSession, user: User | None) -> LibraryNameScope:
+    """Which library files' NAMES this caller may learn (WS-13 E1 LV1).
+
+    The answer ``require_ownership_permission(LIBRARY_READ_ALL, LIBRARY_READ_OWN)``
+    gives, without its refusal: a user with ``library:read_all`` → ``all``, else with
+    ``library:read_own`` → ``own``, else ``none`` — the legacy ``library:read`` opens
+    nothing by itself, as in the library's own routes. An API key → ``all`` when its
+    scope AND its owner pass ``library:read_all`` exactly as ``_check_apikey_permissions``
+    decides, else ``none``. The credential is read the way the gates read it (the
+    X-API-Key header first, then a Bearer key or JWT); the per-request authority
+    caches mean nothing is validated twice. Routes outside the library that show a
+    file's name — the product catalog's search, a plate list — ask this, never
+    ``projects:read`` alone.
+    """
+    if request is None:
+        return "none"
+    all_perm = Permission.LIBRARY_READ_ALL.value
+    own_perm = Permission.LIBRARY_READ_OWN.value
+
+    async def key_scope(credential: str) -> LibraryNameScope | None:
+        authority = await _api_key_authority_or_none(request, credential)
+        if authority is None:
+            return None
+        try:
+            await authorize_api_key(db, authority.key, [all_perm], authority=authority)
+        except HTTPException:
+            return "none"
+        return "all"
+
+    x_api_key = request.headers.get("X-API-Key")
+    if x_api_key and (scope := await key_scope(x_api_key)) is not None:
+        return scope
+    header = request.headers.get("Authorization") or ""
+    scheme, _, token = header.partition(" ")
+    token = token.strip()
+    if scheme.lower() != "bearer" or not token:
+        return "none"
+    if is_api_key_token(token):
+        return await key_scope(token) or "none"
+    try:
+        authority = await resolve_jwt_authority(request, token)
+    except JWTValidationFailure:
+        return "none"
+    if authority.has_all(all_perm):
+        return "all"
+    if authority.has_all(own_perm):
+        return "own"
+    return "none"
 
 
 def require_ownership_permission(

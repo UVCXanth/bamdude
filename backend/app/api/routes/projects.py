@@ -136,6 +136,7 @@ from backend.app.services import (
     farm_forecast,
     filament_needs,
     finished_stock,
+    finished_stock_views,
     line_config,
     line_intake,
     order_from_files,
@@ -750,14 +751,7 @@ async def projects_nav_badges(
         )
         or 0
     )
-    below_min = (
-        await db.scalar(
-            select(func.count(StockItem.id)).where(
-                StockItem.min_qty > 0, StockItem.on_hand - StockItem.reserved < StockItem.min_qty
-            )
-        )
-        or 0
-    )
+    below_min = await db.scalar(select(func.count(StockItem.id)).where(finished_stock_views.BELOW_MIN)) or 0
     return ProjectsNavBadges(active_orders=active, draft_products=drafts, stock_below_min=below_min)
 
 

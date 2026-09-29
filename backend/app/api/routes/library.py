@@ -18,7 +18,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse, JSONResponse
-from sqlalchemy import distinct, func, or_, select
+from sqlalchemy import and_, distinct, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -180,6 +180,25 @@ def _library_file_visible(
         return False
     # Ownerless files (``created_by_id is None``) require ALL — fail-closed.
     return library_file.created_by_id is not None and library_file.created_by_id == user.id
+
+
+def file_name_visible(library_file: LibraryFile | None, user: User | None, scope: str) -> bool:
+    """May this caller see the file's NAME (WS-13 E1 LV2)? ``scope`` is
+    ``core.auth.library_name_scope``'s answer; ``none`` hides every file, the
+    caller's own too. The SQL twin is :func:`library_file_name_visible`."""
+    return scope != "none" and _library_file_visible(library_file, user, scope == "all")
+
+
+def library_file_name_visible(scope: str, user_id: int | None):
+    """The SQL twin of :func:`file_name_visible` (WS-13 E1 LV3) over ``LibraryFile``:
+    outside the trash, and ``all`` → every file, ``own`` → the caller's own (an
+    ownerless file stays hidden), ``none`` → no file. One predicate for every search
+    that matches a file name and for everything counted under the same ``q``."""
+    if scope == "all":
+        return LibraryFile.deleted_at.is_(None)
+    if scope == "own" and user_id is not None:
+        return and_(LibraryFile.deleted_at.is_(None), LibraryFile.created_by_id == user_id)
+    return false()
 
 
 def _ensure_library_file_visible(

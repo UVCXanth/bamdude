@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.finished_stock import StockItem, StockItemMovement
@@ -36,6 +36,12 @@ from backend.app.services.line_composition import (
     load_item_configs,
 )
 from backend.app.services.product_files import effective_cover
+
+#: WS-13 E1 PC1/PC3 — the ONE definition of «below the minimum» and of a «tracked»
+#: position, as SQL, for every reader: the stock page and its sidebar count, the
+#: catalog's filter and row counts, the menu badge. ``below_min`` below is its row twin.
+BELOW_MIN = and_(StockItem.min_qty > 0, StockItem.on_hand - StockItem.reserved < StockItem.min_qty)
+TRACKED = or_(StockItem.on_hand > 0, StockItem.reserved > 0, StockItem.min_qty > 0)
 
 
 def below_min(item: StockItem) -> bool:
