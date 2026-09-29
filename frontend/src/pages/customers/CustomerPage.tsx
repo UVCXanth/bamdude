@@ -52,7 +52,8 @@ export function CustomerPage() {
   const navigate = useNavigate();
   const forgetCustomer = useForgetOnUnmount(['customer', id]);
 
-  const [view, setViewPref] = usePersistedState<ListView>('bamdude-customer-orders-view', 'cards', parseListView);
+  // Nothing chosen → the table, sorted by due date like the orders page (WS-13 E2 B05, S03).
+  const [view, setViewPref] = usePersistedState<ListView>('bamdude-customer-orders-view', 'table', parseListView);
   const tabsId = useId();
   const views = useCardsTableViews();
   const sortOptions = useOrderSortOptions();
@@ -188,7 +189,7 @@ export function CustomerPage() {
   const ordersTotal = ordersQuery.data?.meta.total ?? 0;
 
   return (
-    <div className="p-4 space-y-4">
+    <div className="workshop p-4 space-y-4">
       <nav className="flex items-center gap-1 text-sm text-bambu-gray">
         <Link to="/customers" className="hover:text-white transition-colors">
           {t('projects.tabs.customers')}

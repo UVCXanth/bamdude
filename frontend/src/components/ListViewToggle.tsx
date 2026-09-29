@@ -12,7 +12,9 @@ export interface ListViewOption<V extends string> {
 /**
  * The view switch every list of the Projects section shares (spec
  * workshop-lists, rule 12): N modes the page names, each an icon and a label.
- * Below `sm` the label hides; the button keeps its name through `aria-label`.
+ * At a viewport of 760 px and narrower the label hides (WS-13 E2 B04); the button
+ * keeps its name through `aria-label`. `max-[761px]` because Tailwind 4 writes
+ * `max-*` as `width < N`.
  * The choice is a preference — the page keeps it with `usePersistedState`.
  */
 export function ListViewToggle<V extends string>({
@@ -42,7 +44,7 @@ export function ListViewToggle<V extends string>({
           className={`flex items-center gap-1.5 px-3 py-1.5 ${value === mode ? 'bg-bambu-dark-tertiary text-white' : 'text-bambu-gray hover:text-white'}`}
         >
           <Icon className="w-4 h-4" aria-hidden="true" />
-          <span className="hidden sm:inline">{label}</span>
+          <span className="max-[761px]:hidden">{label}</span>
         </button>
       ))}
     </div>

@@ -38,7 +38,7 @@ export function WorkshopField({
       </label>
       {children}
       {hint !== undefined && (
-        <p id={`${htmlFor}-hint`} className="text-xs text-bambu-gray">
+        <p id={`${htmlFor}-hint`} className="text-xs leading-[18px] text-bambu-gray">
           {hint}
         </p>
       )}

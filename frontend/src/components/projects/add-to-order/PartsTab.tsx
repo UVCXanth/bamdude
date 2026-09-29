@@ -63,7 +63,7 @@ export function PartsTab({ picks, onPicksChange }: { picks: PartPicks; onPicksCh
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('orders.add.parts.search')} />
+        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('orders.add.parts.search')} layout="picker" />
         <Select
           tone="filter"
           active={model !== ''}

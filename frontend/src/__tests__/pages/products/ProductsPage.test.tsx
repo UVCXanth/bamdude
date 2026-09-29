@@ -54,9 +54,21 @@ describe('ProductsPage', () => {
     expect(screen.queryByRole('navigation', { name: 'Projects' })).not.toBeInTheDocument();
   });
 
-  it('falls back to the default view when the stored one is not a mode', async () => {
+  it('falls back to the table when the stored view is not a mode, or when nothing was chosen (WS-13 E2 B05)', async () => {
     localStorage.setItem('bamdude-products-view', 'kanban');
     vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
+    render(<ProductsPage />);
+    expect(await screen.findByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('opens as a table by name when nothing was chosen, and keeps a stored cards view (WS-13 E2 B05)', async () => {
+    const get = vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
+    const { unmount } = render(<ProductsPage />);
+    expect(await screen.findByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
+    // The catalog's order does not depend on the view.
+    expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'name-asc' }));
+    unmount();
+    localStorage.setItem('bamdude-products-view', 'cards');
     render(<ProductsPage />);
     expect(await screen.findByRole('button', { name: 'Cards' })).toHaveAttribute('aria-pressed', 'true');
   });
@@ -113,6 +125,7 @@ describe('ProductsPage', () => {
   });
 
   it('shows the card figures and says nothing about a product no order uses', async () => {
+    localStorage.setItem('bamdude-products-view', 'cards'); // a test about the cards (WS-13 E2 B05)
     vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
     render(<ProductsPage />);
     await screen.findByText('Flask');
@@ -126,6 +139,7 @@ describe('ProductsPage', () => {
   });
 
   it('a 409 on delete becomes a toast, not a crash', async () => {
+    localStorage.setItem('bamdude-products-view', 'cards'); // a test about the cards (WS-13 E2 B05)
     vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
     vi.spyOn(api, 'deleteProduct').mockRejectedValue(new Error('Product is used by an order line'));
     render(<ProductsPage />);
@@ -138,6 +152,7 @@ describe('ProductsPage', () => {
   });
 
   it('sorts from the toolbar too — every key the server knows, both ways', async () => {
+    localStorage.setItem('bamdude-products-view', 'cards'); // a test about the cards (WS-13 E2 B05)
     const get = vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
     render(<ProductsPage />);
     await screen.findByText('Flask');
@@ -293,6 +308,7 @@ describe('ProductsPage — the catalog (spec workshop-product-catalog)', () => {
   });
 
   it('the card says Draft and shows the SKU', async () => {
+    localStorage.setItem('bamdude-products-view', 'cards'); // a test about the cards (WS-13 E2 B05)
     vi.spyOn(api, 'getProductsPaged').mockResolvedValue(
       envelope([{ ...rows[0], sku: 'LMP-1', version: null, category: null, status: 'draft' }]),
     );

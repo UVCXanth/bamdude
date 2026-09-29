@@ -60,7 +60,9 @@ export function OrdersPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
-  const [view, setViewPref] = usePersistedState<OrdersView>(VIEW_STORAGE_KEY, 'cards', parseOrdersView);
+  // Nothing chosen (or nothing readable) → the table (WS-13 E2 B05, S03): its default
+  // order is `due-asc`, so a URL without `sort` sorts by due date for such a reader.
+  const [view, setViewPref] = usePersistedState<OrdersView>(VIEW_STORAGE_KEY, 'table', parseOrdersView);
   const tabsId = useId();
   const views = useOrdersViews();
   const sortOptions = useOrderSortOptions();
@@ -189,7 +191,7 @@ export function OrdersPage() {
   };
 
   return (
-    <div className="p-4">
+    <div className="workshop p-4">
       <ListPageHeader title={t('orders.list.title')} subtitle={t('orders.list.subtitle')}>
         <ListViewToggle value={view} options={views} onChange={setView} />
         {hasPermission('projects:create') && (

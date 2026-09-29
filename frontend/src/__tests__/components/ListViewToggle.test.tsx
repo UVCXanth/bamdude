@@ -24,6 +24,7 @@ describe('ListViewToggle', () => {
     render(<ListViewToggle value="cards" options={options} onChange={() => {}} />);
     const button = screen.getByRole('button', { name: 'Cards' });
     expect(button).toHaveAttribute('aria-label', 'Cards');
-    expect(button.querySelector('span')).toHaveClass('hidden', 'sm:inline');
+    // The label hides at a viewport of 760 and narrower (WS-13 E2 B04; measured in the browser).
+    expect(button.querySelector('span')).toHaveClass('max-[761px]:hidden');
   });
 });

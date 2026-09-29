@@ -54,7 +54,7 @@ export function PlateTab({ pick, onPickChange }: { pick: PlatePick; onPickChange
   return (
     <div className="grid gap-4 md:grid-cols-2">
       <div className="space-y-2 min-w-0">
-        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('orders.add.plate.search')} />
+        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('orders.add.plate.search')} layout="picker" />
         <div className="rounded-lg border border-bambu-dark-tertiary">
           <ul className="divide-y divide-bambu-dark-tertiary max-h-96 overflow-y-auto">
             {files.map((file) => (

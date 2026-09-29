@@ -72,7 +72,8 @@ export function ProductsPage() {
     queryFn: () => api.getProductCategories(),
     staleTime: 60_000,
   });
-  const [view, setView] = usePersistedState<ListView>('bamdude-products-view', 'cards', parseListView);
+  // Nothing chosen → the table (WS-13 E2 B05); the catalog's order does not depend on the view.
+  const [view, setView] = usePersistedState<ListView>('bamdude-products-view', 'table', parseListView);
   const views = useCardsTableViews();
   const [perPage, setPerPage] = usePersistedState<number>('bamdude-products-perPage', 24, parsePageSize);
   const { typed, setTyped, forget } = useSearchBox(q, setQ);
@@ -198,7 +199,7 @@ export function ProductsPage() {
   };
 
   return (
-    <div className="p-4">
+    <div className="workshop p-4">
       <ListPageHeader title={t('products.list.title')} subtitle={t('products.list.subtitle')}>
         <ListViewToggle value={view} options={views} onChange={setView} />
         {hasPermission('projects:create') && (

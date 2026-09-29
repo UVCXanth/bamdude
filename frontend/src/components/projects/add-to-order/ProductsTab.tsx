@@ -90,7 +90,7 @@ export function ProductsTab({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('orders.add.searchProducts')} />
+        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('orders.add.searchProducts')} layout="picker" />
         <Select
           tone="filter"
           active={category !== ''}

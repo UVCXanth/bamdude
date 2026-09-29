@@ -67,7 +67,7 @@ export function StockPage() {
   };
 
   return (
-    <div className="p-4">
+    <div className="workshop p-4">
       <ListPageHeader
         title={t('stock.page.title')}
         subtitle={t('stock.page.intro')}

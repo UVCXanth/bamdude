@@ -617,6 +617,15 @@ body {
   background: transparent;
 }
 
+/* The Workshop's base text (WS-13 E2 B02): 14 px on 21 — what UNSIZED text inherits
+   inside a Workshop page root and inside WorkshopDialog's panel (portalled into
+   body, so it carries the class itself). Titles, hints and the rest are the
+   primitives' own classes; this resets nothing that sets its own size. */
+.workshop {
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
 /* Hide scrollbar but keep functionality */
 .scrollbar-hide {
   -ms-overflow-style: none;

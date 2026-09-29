@@ -116,7 +116,7 @@ export function CustomersPage() {
   });
 
   return (
-    <div className="p-4">
+    <div className="workshop p-4">
       <ListPageHeader title={t('customers.list.title')} subtitle={t('customers.list.subtitle')}>
         <ListViewToggle value={view} options={views} onChange={setView} />
         {hasPermission('projects:create') && (

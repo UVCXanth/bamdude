@@ -91,6 +91,16 @@ const emptyPage = {
   totals: { active: 0, completed: 0, cancelled: 0, all: 0 },
 };
 
+/** A storage that refuses to read ONE key — the view's — and answers every other
+ *  (the auth token, the theme) as usual. */
+function refuseToRead(key: string) {
+  const real = Storage.prototype.getItem;
+  return vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, k: string) {
+    if (k === key) throw new Error('storage denied');
+    return real.call(this, k);
+  });
+}
+
 function mountAt() {
   window.history.pushState({}, '', '/customers/1');
   render(
@@ -125,7 +135,7 @@ describe('CustomerPage', () => {
     mountAt();
 
     expect(await screen.findByText('Flasks')).toBeInTheDocument();
-    expect(get).toHaveBeenLastCalledWith({ customer_id: 1, status: 'active', sort_by: 'updated-desc', page: 1, per_page: 24 });
+    expect(get).toHaveBeenLastCalledWith({ customer_id: 1, status: 'active', sort_by: 'due-asc', page: 1, per_page: 24 });
     // Tab counts are the server's totals, not the rows on this page.
     expect(screen.getByRole('tab', { name: /completed/i }).textContent).toContain('3');
     expect(screen.getByTestId('customer-tile-orders')).toHaveTextContent('2');
@@ -148,6 +158,32 @@ describe('CustomerPage', () => {
     const panel = screen.getByRole('tabpanel');
     expect(panel).toHaveAttribute('aria-labelledby', screen.getByRole('tab', { name: /active/i }).id);
     expect(within(panel).getByText('Flasks')).toBeInTheDocument();
+  });
+
+  it("opens the customer's orders as a table by due date when nothing was chosen; a stored cards view keeps its order; a URL sort wins (WS-13 E2 B05/R03)", async () => {
+    vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
+    mountAt();
+    expect(await screen.findByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'due-asc' })));
+  });
+
+  it('keeps a stored cards view with its own order, and a URL sort wins (WS-13 E2 B05/R03)', async () => {
+    localStorage.setItem('bamdude-customer-orders-view', 'cards');
+    vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
+    mountAt();
+    expect(await screen.findByRole('button', { name: 'Cards' })).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'updated-desc' })));
+  });
+
+  it('a storage that cannot be read still shows the orders, as a table (WS-13 E2 B05)', async () => {
+    refuseToRead('bamdude-customer-orders-view');
+    vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
+    mountAt();
+    expect(await screen.findByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByText('Flasks')).toBeInTheDocument();
   });
 
   it('shows the code and kind under the name, and every contact', async () => {
@@ -222,6 +258,7 @@ describe('CustomerPage', () => {
   });
 
   it('keeps the rendered customer when a background refetch fails', async () => {
+    localStorage.setItem('bamdude-customer-orders-view', 'cards'); // a test about the cards (WS-13 E2 B05)
     // TanStack v5 turns the query's status to "error" on ANY failed fetch and
     // keeps `data` while it does. Every order action on this page invalidates
     // ['customer', id], so a refetch that fails must not replace a customer
@@ -246,6 +283,7 @@ describe('CustomerPage', () => {
     expect(screen.queryByText(/could not load this customer/i)).not.toBeInTheDocument();
   });
   it('says once that it could not refresh, and keeps the customer on screen', async () => {
+    localStorage.setItem('bamdude-customer-orders-view', 'cards'); // a test about the cards (WS-13 E2 B05)
     const client = createAppQueryClient();
     // The retry is the app's, the delay is not: an exponential backoff would put
     // the toast a second away for no gain.
@@ -276,6 +314,7 @@ describe('CustomerPage', () => {
   });
 
   it('opens the issue dialog from «Mark completed» instead of closing the order', async () => {
+    localStorage.setItem('bamdude-customer-orders-view', 'cards'); // a test about the cards (WS-13 E2 B05)
     vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
     vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
     const update = vi.spyOn(api, 'updateOrder').mockResolvedValue({} as never);

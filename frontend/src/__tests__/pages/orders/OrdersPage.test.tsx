@@ -46,6 +46,16 @@ const orderDetail = {
     all_printed: false, bankable_surplus: 0 },
 };
 
+/** A storage that refuses to read ONE key — the view's — and answers every other
+ *  (the auth token, the theme) as usual. */
+function refuseToRead(key: string) {
+  const real = Storage.prototype.getItem;
+  return vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, k: string) {
+    if (k === key) throw new Error('storage denied');
+    return real.call(this, k);
+  });
+}
+
 const EMPTY_FARM: FarmNeeds = { rows: [], orders_count: 0, unknown_prints: 0, stock_unavailable: false, assumptions: ['slicer_estimate'] };
 
 afterEach(() => {
@@ -109,19 +119,50 @@ describe('OrdersPage', () => {
     await screen.findByTestId('list-page-header');
     expect(screen.queryByRole('navigation', { name: 'Projects' })).not.toBeInTheDocument();
   });
-  it('falls back to the default view when the stored one is not a mode', async () => {
+  it('falls back to the table when the stored view is not a mode (WS-13 E2 B05)', async () => {
     localStorage.setItem('projects.view', 'timeline');
     vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
     window.history.pushState({}, '', '/projects');
     render(<OrdersPage />);
+    expect(await screen.findByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
+  });
+  it('opens as a table sorted by due date when nothing was chosen — the accepted consequence of S03 (WS-13 E2 B05/R03)', async () => {
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    window.history.pushState({}, '', '/projects');
+    render(<OrdersPage />);
+    expect(await screen.findByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'due-asc' })));
+    // Nothing was chosen, so nothing is written.
+    expect(localStorage.getItem('projects.view')).toBeNull();
+  });
+  it('keeps a stored cards view, with the cards own default order (WS-13 E2 B05/R03)', async () => {
+    localStorage.setItem('projects.view', 'cards');
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    window.history.pushState({}, '', '/projects');
+    render(<OrdersPage />);
     expect(await screen.findByRole('button', { name: 'Cards' })).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'updated-desc' })));
+  });
+  it('an explicit sort in the URL wins over the default of whichever view (WS-13 E2 B05/R03)', async () => {
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    window.history.pushState({}, '', '/projects?sort=name-asc');
+    render(<OrdersPage />);
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'name-asc' })));
+  });
+  it('a storage that cannot be read still renders the list, as a table (WS-13 E2 B05)', async () => {
+    refuseToRead('projects.view');
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    window.history.pushState({}, '', '/projects');
+    render(<OrdersPage />);
+    expect(await screen.findByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByText('A')).toBeInTheDocument();
   });
   it('asks the server for one page of the active tab and counts every tab from totals', async () => {
     const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA], { totals: { active: 1, completed: 5, cancelled: 0, all: 6 } }));
     window.history.pushState({}, '', '/projects');
     render(<OrdersPage />);
     expect(await screen.findByText('A')).toBeInTheDocument();
-    expect(get).toHaveBeenLastCalledWith({ status: 'active', sort_by: 'updated-desc', page: 1, per_page: 24 });
+    expect(get).toHaveBeenLastCalledWith({ status: 'active', sort_by: 'due-asc', page: 1, per_page: 24 });
     // Counts come from the server's totals, not from the rows on this page.
     expect(screen.getByRole('tab', { name: /active/i }).textContent).toContain('1');
     expect(screen.getByRole('tab', { name: /completed/i }).textContent).toContain('5');
@@ -177,7 +218,7 @@ describe('OrdersPage', () => {
     window.history.pushState({}, '', '/projects?tab=completed&customer=1&q=lamp&page=2');
     render(<OrdersPage />);
     await waitFor(() =>
-      expect(get).toHaveBeenLastCalledWith({ status: 'completed', customer_id: 1, q: 'lamp', sort_by: 'updated-desc', page: 2, per_page: 24 }),
+      expect(get).toHaveBeenLastCalledWith({ status: 'completed', customer_id: 1, q: 'lamp', sort_by: 'due-asc', page: 2, per_page: 24 }),
     );
     expect(screen.getByRole('searchbox')).toHaveValue('lamp');
   });
@@ -187,7 +228,7 @@ describe('OrdersPage', () => {
     render(<OrdersPage />);
     await screen.findByText('A');
     fireEvent.click(screen.getByRole('tab', { name: /all/i }));
-    await waitFor(() => expect(get).toHaveBeenLastCalledWith({ sort_by: 'updated-desc', page: 1, per_page: 24 }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith({ sort_by: 'due-asc', page: 1, per_page: 24 }));
     expect(window.location.search).toBe('?tab=all');
     // Exercise the debounce, not the speed of a loaded four-worker host.
     vi.useFakeTimers();
@@ -197,7 +238,7 @@ describe('OrdersPage', () => {
     } finally {
       vi.useRealTimers();
     }
-    await waitFor(() => expect(get).toHaveBeenLastCalledWith({ q: 'gear', sort_by: 'updated-desc', page: 1, per_page: 24 }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith({ q: 'gear', sort_by: 'due-asc', page: 1, per_page: 24 }));
     expect(window.location.search).toContain('q=gear');
   });
   it('filters by customer and groups the page when asked', async () => {
@@ -230,7 +271,7 @@ describe('OrdersPage', () => {
     render(<OrdersPage />);
     expect(await screen.findByText('Nothing matches your search or filters.')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
-    await waitFor(() => expect(get).toHaveBeenLastCalledWith({ status: 'completed', sort_by: 'updated-desc', page: 1, per_page: 24 }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith({ status: 'completed', sort_by: 'due-asc', page: 1, per_page: 24 }));
     expect(window.location.search).toBe('?tab=completed');
   });
   it('«Mine» with nothing of mine is a filter that matched nothing, with Reset — not an empty farm', async () => {
@@ -374,6 +415,7 @@ describe('OrdersPage', () => {
     expect(await screen.findByText('Showing 1-24 of 30 orders')).toBeInTheDocument();
   });
   it('the table defaults to the due date, the cards to the last change — an explicit sort holds in both', async () => {
+    localStorage.setItem('projects.view', 'cards'); // a test about the cards (WS-13 E2 B05)
     const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA], { meta: { total: 60, last_page: 3, current_page: 2 } }));
     vi.spyOn(api, 'getOrdersForecast').mockResolvedValue({ orders: [] } as never);
     window.history.pushState({}, '', '/projects?page=2');
@@ -391,6 +433,7 @@ describe('OrdersPage', () => {
     expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'name-asc' }));
   });
   it('in cards, sorts from the toolbar — every server key, both ways', async () => {
+    localStorage.setItem('projects.view', 'cards'); // a test about the cards (WS-13 E2 B05)
     const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
     window.history.pushState({}, '', '/projects');
     render(<OrdersPage />);
@@ -491,6 +534,7 @@ describe('OrdersPage', () => {
   });
 
   it('drops the deleted order from the cache, so a click on a reused id cannot render it', async () => {
+    localStorage.setItem('projects.view', 'cards'); // a test about the cards (WS-13 E2 B05)
     // ⚠️ Nothing on THIS page watches `['project', 1]`, so an entry left in the
     // cache is never refetched and never noticed — and the app's `staleTime` is
     // a minute, long enough for the next navigation to render the order that

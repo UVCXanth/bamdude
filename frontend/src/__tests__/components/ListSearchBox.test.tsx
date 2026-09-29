@@ -46,4 +46,12 @@ describe('ListSearchBox', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
     expect(onChange).toHaveBeenCalledWith('');
   });
+
+  it('gives the focus back to the search after clearing it (WS-13 E2 B06/R08)', () => {
+    render(<ListSearchBox value="lamp" onChange={() => {}} placeholder="Search orders" />);
+    const clear = screen.getByRole('button', { name: 'Clear search' });
+    clear.focus();
+    fireEvent.click(clear);
+    expect(screen.getByRole('searchbox', { name: 'Search orders' })).toHaveFocus();
+  });
 });
