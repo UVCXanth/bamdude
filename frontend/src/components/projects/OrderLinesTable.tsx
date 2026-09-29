@@ -16,6 +16,7 @@ import { Button } from '../Button';
 import { LineConfigDialog } from './LineConfigDialog';
 import { lineConfigLabel } from './lineConfigLabel';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
+import { WorkshopTableScroll } from '../workshop/WorkshopPanel';
 
 const FIELD_CLASS =
   'px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none';
@@ -121,6 +122,8 @@ function changedFields(line: ProjectLine, draft: Draft): ProjectLineUpdate {
 interface OrderLinesTableProps {
   order: Order;
   canEdit: boolean;
+  /** 2 on the order page; 3 in the workspace pane, whose order title is an h2 (E3 B06). */
+  headingLevel?: 2 | 3;
 }
 
 /**
@@ -141,8 +144,9 @@ interface OrderLinesTableProps {
  * and a second door onto `PrintModal` from the same page would let an operator
  * queue a plate the plan is not counting.
  */
-export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
+export function OrderLinesTable({ order, canEdit, headingLevel = 2 }: OrderLinesTableProps) {
   const { t } = useTranslation();
+  const Heading = headingLevel === 3 ? 'h3' : 'h2';
   const { showToast } = useToast();
   const queryClient = useQueryClient();
 
@@ -294,8 +298,12 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
 
   return (
     <section className="space-y-3">
+      {/* WS-13 E3 E06: the heading carries the count; the table has no card of its
+          own inside the order's main panel — only its own scroll region. */}
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-lg font-medium text-white">{t('orders.lines.title')}</h2>
+        <Heading className="text-lg leading-7 font-semibold text-white">
+          {t('orders.lines.title')} <small className="text-sm font-normal text-bambu-gray">({order.lines.length})</small>
+        </Heading>
         {canEdit && (
           <Button size="sm" onClick={() => setAdding(true)}>
             <ListPlus className="w-4 h-4" />
@@ -304,7 +312,7 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
         )}
       </div>
 
-      <div className="overflow-x-auto rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary">
+      <WorkshopTableScroll label={t('orders.lines.title')}>
         <table className="w-full text-sm">
           <thead>
             <tr className="text-xs text-bambu-gray text-left">
@@ -697,7 +705,7 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
 
           </tbody>
         </table>
-      </div>
+      </WorkshopTableScroll>
 
       {adding && (
         <AddToOrderDialog orderId={order.id} orderActive={orderActive} onClose={() => setAdding(false)} />

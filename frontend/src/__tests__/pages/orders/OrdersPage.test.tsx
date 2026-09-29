@@ -379,7 +379,9 @@ describe('OrdersPage', () => {
       window.history.pushState({}, '', '/projects?order=3');
       render(<OrdersPage />);
       await screen.findByRole('heading', { name: 'C' });
-      fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+      // The header's other actions live in its menu (WS-13 E3 C04).
+      fireEvent.click(screen.getByRole('button', { name: /^Order actions/ }));
+      fireEvent.click(await screen.findByRole('menuitem', { name: /^delete$/i }));
       fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
       await waitFor(() => expect(window.location.search).not.toContain('order='));
       expect(window.location.pathname).toBe('/projects');

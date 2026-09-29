@@ -32,6 +32,7 @@ import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 import { useOrderDetail } from '../../hooks/useOrderDetail';
 import { DispatchNotesSection } from '../stock/DispatchNotesSection';
 import { WorkshopPanel } from '../workshop/WorkshopPanel';
+import { forecastView } from './orderForecastView';
 
 /**
  * One order: who it is for, what it asks for, and how much of it is printed.
@@ -66,6 +67,9 @@ export function OrderView({
   const [duplicating, setDuplicating] = useState(false);
   const [coverOpen, setCoverOpen] = useState(false);
   const [planDraftChanged, setPlanDraftChanged] = useState(false);
+  // When the plan was last sent: until the forecast is read again after it, the
+  // cached answer is the previous plan's and is not shown as current (R03).
+  const [enqueuedAt, setEnqueuedAt] = useState<number | null>(null);
   // The issue dialog, and how it opens (spec workshop-order-issue, rules 26–28).
   const [fulfilling, setFulfilling] = useState<{ mode: FulfilmentMode; complete: boolean } | null>(null);
 
@@ -212,6 +216,13 @@ export function OrderView({
   }
 
   const canEdit = hasPermission('projects:update');
+  const forecastNow = forecastView({
+    active: order.status === 'active',
+    draft: planDraftChanged,
+    refreshing: enqueuedAt != null && forecast.dataUpdatedAt < enqueuedAt,
+    data: forecast.data,
+    isError: forecast.isError,
+  });
 
   // Zones in reading order (WS-13 E3 B01): head (title, facts, actions, the stage
   // row) → banners → the grid of ONE main panel and the side column. The grid's
@@ -260,15 +271,16 @@ export function OrderView({
       <div data-testid="order-grid" className="order-view-grid">
         <WorkshopPanel data-testid="order-main" className="min-w-0">
           <div className="space-y-6">
-            <OrderFigures
-              figures={order.figures}
-              forecast={order.status === 'active' ? forecast.data ?? null : null}
-              forecastStale={order.status === 'active' && planDraftChanged}
-            />
+            <OrderFigures figures={order.figures} forecast={forecastNow} />
 
             <OrderLinesTable order={order} canEdit={canEdit} />
 
-            <PlanBlock order={order} canEdit={canEdit} onDraftChanged={setPlanDraftChanged} />
+            <PlanBlock
+              order={order}
+              canEdit={canEdit}
+              onDraftChanged={setPlanDraftChanged}
+              onEnqueued={() => setEnqueuedAt(Date.now())}
+            />
 
             <ProcurementChecklist order={order} canEdit={canEdit} />
 

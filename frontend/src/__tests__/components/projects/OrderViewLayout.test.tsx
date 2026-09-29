@@ -72,6 +72,17 @@ describe('OrderView composition', () => {
     expect(within(crumbs).getByRole('link', { name: 'Orders' })).toBeInTheDocument();
   });
 
+  it('heads the lines with their count and keeps the table in its own scroll region (E06)', async () => {
+    mockOrderDetailApi(makeOrder());
+    renderPage();
+
+    const main = await screen.findByTestId('order-main');
+    const heading = await within(main).findByRole('heading', { level: 2, name: /^Lines/ });
+    expect(heading).toHaveTextContent('Lines (1)');
+    const region = within(main).getByRole('region', { name: 'Lines' });
+    expect(within(region).getByRole('table')).toBeInTheDocument();
+  });
+
   it('puts the page under the Workshop scope', async () => {
     mockOrderDetailApi(makeOrder());
     renderPage();
