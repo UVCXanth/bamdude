@@ -24,6 +24,7 @@ from sqlalchemy import and_, delete, func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import take_write_lock
+from backend.app.core.lock_ledger import LINE, POSITION, ledger
 from backend.app.models.finished_stock import MOVEMENT_KINDS, StockItem, StockItemMovement
 from backend.app.models.product import Product, ProductOrigin, ProductPart
 from backend.app.models.project_line import ProjectLine
@@ -37,6 +38,9 @@ from backend.app.services.line_composition import (
     counted,
     load_line_configs,
 )
+
+# spec WS-13 E1 BL6: a line's positions changed between reading them and locking the line.
+STOCK_CHANGED = "The order's stock changed while this was being saved — try again"
 
 
 class FinishedStockError(Exception):
@@ -58,7 +62,9 @@ async def lock_item(db: AsyncSession, item_id: int) -> StockItem | None:
     lock (``take_write_lock``), which is what its dialect's missing ``FOR UPDATE``
     leaves to us."""
     await take_write_lock(db, StockItem.__table__, item_id)
-    return (await db.execute(lock_item_stmt(item_id))).scalar_one_or_none()
+    item = (await db.execute(lock_item_stmt(item_id))).scalar_one_or_none()
+    ledger(db).note("stock_items", item_id, POSITION)
+    return item
 
 
 async def _find_item(db: AsyncSession, product_id: int, key: str) -> StockItem | None:
@@ -103,6 +109,8 @@ async def item_for(
     item = StockItem(product_id=product_id, config_key=key)
     db.add(item)
     await db.flush()
+    # A position nobody else can see yet — its lock never waits nor makes anyone wait.
+    ledger(db).note_created("stock_items", item.id)
     await line_config.seed_item(db, item, new_choices, new_counts)
     await db.flush()
     return item
@@ -306,21 +314,68 @@ async def lock_line(db: AsyncSession, line: ProjectLine) -> None:
     (final review M3): two transactions releasing one line — two PATCHes, a
     cancel beside a delete — would both read the same holding and hand it back
     twice. Pending changes to the line are flushed first, so the fresh read
-    (``populate_existing``) keeps them."""
+    (``populate_existing``) keeps them.
+
+    ⚠️ **Its positions first** (spec WS-13 E1, BL0 / BL6): a stock position is a
+    lower lock class than an order line. The issue dialog locks every position and
+    then the lines; a door that locked the line first and its position after met it
+    crosswise — a deadlock on PostgreSQL, reproduced by ``TestLineDoorLockOrder``.
+    So the positions this line holds (and its own configuration's) are locked here,
+    before the line, unless this transaction already holds them. The reads run
+    without autoflush: a pending change to the line would otherwise be written —
+    and the line locked by that UPDATE — before its positions. A position that
+    appears after a line lock was taken cannot be locked in order any more; it is
+    the operator's retry (409), never a late lock."""
+    held = ledger(db)
+    with db.no_autoflush:
+        new = await _line_position_ids(db, line) - held.held("stock_items")
+        if new and held.held_existing("project_lines"):
+            raise FinishedStockError(STOCK_CHANGED, 409)
+        for item_id in sorted(new):
+            await lock_item(db, item_id)
     await db.flush()
     await take_write_lock(db, ProjectLine.__table__, line.id)
     await db.execute(
         select(ProjectLine).where(ProjectLine.id == line.id).with_for_update().execution_options(populate_existing=True)
     )
+    held.note("project_lines", line.id, LINE)
+    late = await _line_position_ids(db, line) - held.held("stock_items")
+    if late:
+        if held.held_existing("project_lines"):
+            # It reserved from a position nobody here locked, between the read above and
+            # this lock (a configuration change, a first receipt): refuse, never lock late.
+            raise FinishedStockError(STOCK_CHANGED, 409)
+        # Only this transaction's own new lines are held — nobody can wait on them.
+        for item_id in sorted(late):
+            await lock_item(db, item_id)
 
 
-async def lock_positions_for_lines(db: AsyncSession, line_ids: Iterable[int]) -> None:
-    """Every position these lines hold, locked in ascending id order before any
-    line is handled (final review M4): two orders closing at once over shared
-    positions must not lock them in opposite orders — a deadlock on PostgreSQL."""
+async def _line_position_ids(db: AsyncSession, line: ProjectLine) -> set[int]:
+    """The positions ``line`` holds a reservation in, and its own configuration's —
+    the configuration read off the object, not the row: a door may have changed it
+    in this transaction without flushing yet (``line_config`` writes ``config_key``
+    as an attribute)."""
+    held = set(
+        (
+            await db.execute(
+                select(StockItemMovement.item_id)
+                .where(StockItemMovement.project_line_id == line.id)
+                .group_by(StockItemMovement.item_id)
+                .having(func.sum(StockItemMovement.delta_reserved) != 0)
+            )
+        ).scalars()
+    )
+    own = await db.scalar(
+        select(StockItem.id).where(StockItem.product_id == line.product_id, StockItem.config_key == line.config_key)
+    )
+    return held | ({own} if own is not None else set())
+
+
+async def _position_ids_for_lines(db: AsyncSession, line_ids: Iterable[int]) -> set[int]:
+    """The positions these lines hold a reservation in, and their own configurations' positions."""
     ids = sorted(set(line_ids))
     if not ids:
-        return
+        return set()
     item_ids = set(
         (
             await db.execute(
@@ -348,8 +403,22 @@ async def lock_positions_for_lines(db: AsyncSession, line_ids: Iterable[int]) ->
             )
         ).scalars()
     )
-    for item_id in sorted(item_ids):
-        await lock_item(db, item_id)
+    return item_ids
+
+
+async def lock_positions_for_lines(db: AsyncSession, line_ids: Iterable[int]) -> None:
+    """Every position these lines hold, locked in ascending id order before any
+    line is handled (final review M4): two orders closing at once over shared
+    positions must not lock them in opposite orders — a deadlock on PostgreSQL.
+    Read without autoflush, like :func:`lock_line`, so a pending change to a line
+    is not written — and the line locked — before its positions."""
+    held = ledger(db)
+    with db.no_autoflush:
+        new = await _position_ids_for_lines(db, line_ids) - held.held("stock_items")
+        if new and held.held_existing("project_lines"):
+            raise FinishedStockError(STOCK_CHANGED, 409)
+        for item_id in sorted(new):
+            await lock_item(db, item_id)
 
 
 async def release_for_line(db: AsyncSession, line: ProjectLine, *, actor: User | None = None) -> int:

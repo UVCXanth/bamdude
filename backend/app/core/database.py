@@ -6,7 +6,11 @@ from sqlalchemy.dialects.postgresql.base import PGDialect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Session
 
-from backend.app.core import case_folding, query_timing
+from backend.app.core import (  # noqa: F401 — lock_ledger installs its session listeners
+    case_folding,
+    lock_ledger,
+    query_timing,
+)
 from backend.app.core.config import settings
 from backend.app.core.db_dialect import is_sqlite
 
@@ -28,6 +32,22 @@ def configure_sqlite_connection(dbapi_conn, connection_record):
     cursor.execute("PRAGMA synchronous = NORMAL")
     cursor.close()
     case_folding.register_sqlite_functions(dbapi_conn)
+
+
+# spec WS-13 E1 BL5: PostgreSQL's answer to a NOWAIT lock somebody else holds.
+LOCK_NOT_AVAILABLE = "55P03"
+
+
+def sqlstate(exc: BaseException) -> str | None:
+    """The SQLSTATE of a database error, or None.
+
+    SQLAlchemy raises ``DBAPIError`` whose ``orig`` is its adapter around the
+    driver's exception (for asyncpg, ``AsyncAdapt_asyncpg_dbapi.Error``) — the
+    asyncpg type itself is not what the caller sees, so match the code, never the
+    class (review WS-13 E1, round 4)."""
+    orig = getattr(exc, "orig", None)
+    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    return code if isinstance(code, str) else None
 
 
 async def take_write_lock(db: AsyncSession, table: Table, row_id: int) -> None:

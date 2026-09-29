@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.database import take_write_lock
+from backend.app.core.lock_ledger import ORDER, ledger
 from backend.app.models.product import Product, ProductPart
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectLinePartStock
@@ -26,6 +28,22 @@ from backend.app.models.user import User
 from backend.app.services import finished_stock, order_journal, part_stock, stock_issues
 from backend.app.services.order_metrics import LineFigures, OrderContext, attribute, load_order_context
 from backend.app.services.stock_issues import Recipient
+
+
+async def lock_order(db: AsyncSession, project_id: int) -> None:
+    """The order row, ``FOR NO KEY UPDATE`` (spec WS-13 E1, BL0 class 3): before any
+    stock position or line. A door that ends by changing the order — completing it,
+    cancelling it — otherwise took the row by that late UPDATE, after the positions
+    another door holds while it waits on the order: the same crosswise wait as a line
+    before its position. ``NO KEY UPDATE`` is the mode an UPDATE of the row takes
+    anyway, so the later UPDATE never upgrades it, and inserts that merely reference
+    the order (journal, lines, issues) are not blocked by it."""
+    held = ledger(db)
+    if held.holds("projects", project_id):
+        return
+    await take_write_lock(db, Project.__table__, project_id)
+    await db.execute(select(Project.id).where(Project.id == project_id).with_for_update(key_share=True))
+    held.note("projects", project_id, ORDER)
 
 
 class FulfilmentError(Exception):
@@ -363,6 +381,9 @@ async def close(
     followups, rule 37): kits nobody assembled go back on the shelf; an order closing to stock
     also puts everything it holds into free stock — the cancel's own doors, with the status
     «completed». The caller sets the status and journals it."""
+    # The order row before any position (WS-13 E1 BL0) — already held when the caller
+    # took it at its start (the PATCH door, the issue dialog), and then no statement.
+    await lock_order(db, project.id)
     ordered = sorted(lines, key=lambda line: line.id)
     if to_stock:
         await finished_stock.lock_positions_for_lines(db, [line.id for line in ordered])
@@ -441,8 +462,10 @@ async def apply(
     if writing_off and not (write_off_note or "").strip():
         raise FulfilmentError("A write-off needs a note", 422)
 
-    # Positions first, in ascending id, then the lines — the order every closing door
-    # takes (WS-10 M4) — and only then the numbers, read fresh under the locks.
+    # The order row, then positions in ascending id, then the lines — the order every
+    # closing door takes (WS-10 M4; WS-13 E1 BL0) — and only then the numbers, read
+    # fresh under the locks. The row first because completing ends in its UPDATE.
+    await lock_order(db, project.id)
     await finished_stock.lock_positions_for_lines(db, list(lines))
     for line_id in sorted(lines):
         await finished_stock.lock_line(db, lines[line_id])

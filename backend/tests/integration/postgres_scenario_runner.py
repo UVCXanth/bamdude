@@ -23,6 +23,9 @@ Modes:
                           before waiting for shared file analysis
     line_door_deadlock a line's quantity change against an issue of the same line,
                        both stopped inside their operations (WS-13 E1, Q16)
+    line_set_changed   a line's positions change between the door reading them and
+                       locking the line: the door refuses (WS-13 E1, BL6)
+    order_delete_busy  deleting an order another door is writing to refuses at once
 
 Usage: python -m backend.tests.integration.postgres_scenario_runner <mode>
 """
@@ -877,6 +880,129 @@ async def _line_door_deadlock() -> dict:
     }
 
 
+async def _line_set_changed() -> dict:
+    """BL6: a line's positions change between the door reading them and locking the line.
+
+    A — ``PATCH …/lines/{L}`` quantity 5 → 4 — stops right after it read the line's
+    positions (none: its configuration has no position yet). C receives the first
+    units of that configuration — the line's own position now exists — and commits.
+    A goes on: it must refuse (409), never lock the new position after the line.
+    """
+    from sqlalchemy import func, select
+
+    from backend.app.api.routes import projects as projects_routes
+    from backend.app.core.database import async_session
+    from backend.app.models.finished_stock import StockItemMovement
+    from backend.app.models.product import Product
+    from backend.app.models.project import Project, ProjectEvent
+    from backend.app.models.project_line import ProjectLine
+    from backend.app.schemas.project import ProjectLineUpdate
+    from backend.app.services import finished_stock, line_config
+    from backend.tests.integration.lock_barriers import Barriers
+
+    async with async_session() as setup:
+        lamp = Product(name="BL6 lamp")
+        setup.add(lamp)
+        await setup.flush()
+        order = Project(name="BL6 order", status="active")
+        setup.add(order)
+        await setup.flush()
+        line = ProjectLine(project_id=order.id, product_id=lamp.id, quantity=5, mode="product", sort_order=0)
+        setup.add(line)
+        await setup.flush()
+        await line_config.seed_line(setup, line, choices=None, counts=None)
+        await setup.commit()
+        order_id, line_id, lamp_id = order.id, line.id, lamp.id
+
+    barriers = Barriers()
+    barriers.wrap(finished_stock, "_line_position_ids")
+    holds: dict[str, object] = {}
+
+    async def run_a() -> str:
+        async with async_session() as db:
+            holds["a"] = barriers.hold(db, after=1)
+            return await _outcome(
+                db, lambda: projects_routes.update_line(order_id, line_id, ProjectLineUpdate(quantity=4), db, None)
+            )
+
+    try:
+        task_a = asyncio.create_task(run_a())
+        hold_a = await _hold_of(holds, "a")
+        await asyncio.wait_for(hold_a.reached.wait(), timeout=15)
+        async with async_session() as c:
+            item = await finished_stock.item_for(c, lamp_id, {}, create=True)
+            await finished_stock.receive(c, item, 2)
+            await c.commit()
+        barriers.release_all()
+        outcome_a = await asyncio.wait_for(task_a, timeout=60)
+    finally:
+        barriers.restore()
+
+    async with async_session() as db:
+        line_after = await db.get(ProjectLine, line_id)
+        movements_by_line = await db.scalar(
+            select(func.count()).select_from(StockItemMovement).where(StockItemMovement.project_line_id == line_id)
+        )
+        events = await db.scalar(
+            select(func.count()).select_from(ProjectEvent).where(ProjectEvent.project_id == order_id)
+        )
+    return {
+        "a": outcome_a,
+        "quantity": line_after.quantity,
+        "movements_by_line": int(movements_by_line or 0),
+        "events": int(events or 0),
+    }
+
+
+async def _order_delete_busy() -> dict:
+    """BL6: deleting an order while another door wrote a journal entry to it.
+
+    A records a journal entry for the order and keeps its transaction open (its
+    insert holds the order row in KEY SHARE); B deletes the order. B's final
+    ``FOR UPDATE NOWAIT`` on the order row must refuse at once — 409, everything
+    rolled back — instead of waiting while it holds the order's positions and lines.
+    """
+    from sqlalchemy import func, select
+
+    from backend.app.api.routes import projects as projects_routes
+    from backend.app.core.database import async_session
+    from backend.app.models.product import Product
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+    from backend.app.services import finished_stock, line_config, order_journal
+
+    async with async_session() as setup:
+        lamp = Product(name="BL6 delete lamp")
+        setup.add(lamp)
+        await setup.flush()
+        order = Project(name="BL6 delete order", status="active")
+        setup.add(order)
+        await setup.flush()
+        line = ProjectLine(project_id=order.id, product_id=lamp.id, quantity=5, mode="product", sort_order=0)
+        setup.add(line)
+        await setup.flush()
+        await line_config.seed_line(setup, line, choices=None, counts=None)
+        item = await finished_stock.item_for(setup, lamp.id, {}, create=True)
+        await finished_stock.receive(setup, item, 4)
+        await finished_stock.reserve_for_line(setup, line, 2)
+        await setup.commit()
+        order_id = order.id
+
+    async with async_session() as a:
+        await order_journal.record(a, order_id, "fields_changed", {"fields": ["note"]}, actor=None)
+        await a.flush()
+        async with async_session() as b:
+            outcome_b = await asyncio.wait_for(
+                _outcome(b, lambda: projects_routes.delete_project(order_id, _plain_request(), b, None)), timeout=30
+            )
+        await a.commit()
+
+    async with async_session() as db:
+        still_there = await db.get(Project, order_id) is not None
+        lines = await db.scalar(select(func.count()).select_from(ProjectLine).where(ProjectLine.project_id == order_id))
+    return {"b": outcome_b, "order_exists": still_there, "lines": int(lines or 0)}
+
+
 async def _hold_of(holds: dict, key: str):
     """The Hold a task registers at its start — polled, it appears within a tick."""
     for _ in range(500):
@@ -910,6 +1036,10 @@ async def _main(mode: str) -> dict:
         return await _archive_attach_recovery()
     if mode == "line_door_deadlock":
         return await _line_door_deadlock()
+    if mode == "line_set_changed":
+        return await _line_set_changed()
+    if mode == "order_delete_busy":
+        return await _order_delete_busy()
     return await _report()
 
 

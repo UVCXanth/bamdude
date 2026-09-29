@@ -153,6 +153,10 @@ async def test_a_manual_release_cannot_take_a_lines_reservation(db_session, shel
 async def test_moving_to_a_poorer_position_takes_what_it_has(db_session, pipe_shelf):
     line, standard, angled = pipe_shelf["line"], pipe_shelf["standard"], pipe_shelf["angled"]
     await finished_stock.reserve_for_line(db_session, line, 3)
+    # Two requests, as in the app: the reservation, then the configuration change. In ONE
+    # transaction the line would already be locked when the angled position is reached —
+    # a position after a line (WS-13 E1 BL0), which the door refuses rather than risk.
+    await db_session.commit()
     line.config_key = angled.config_key  # what line_config writes when the choice changes
     assert await finished_stock.move_for_line(db_session, line) == (3, 1)
     assert (standard.reserved, angled.reserved, line.from_finished) == (0, 1, 1)

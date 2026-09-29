@@ -18,6 +18,7 @@ from typing import NamedTuple
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import case, func, or_, select, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -29,7 +30,7 @@ from backend.app.api.routes.print_queue import _enrich_response as queue_row_res
 from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequirePermission, acting_user, require_media_permission
 from backend.app.core.config import settings
-from backend.app.core.database import get_db
+from backend.app.core.database import LOCK_NOT_AVAILABLE, get_db, sqlstate
 from backend.app.core.permissions import Permission
 from backend.app.i18n.api_errors import json_error
 from backend.app.models.archive import PrintArchive
@@ -910,6 +911,8 @@ async def _reserve(db: AsyncSession, line: ProjectLine, units: int, user: User |
 
 _PARTS_LINE_NO_STOCK = "A parts line takes nothing from the shelf"
 _LINE_MOVED = "This line's stock has moved; take more from stock instead"
+# WS-13 E1 BL6: the order row is held by another door right now — the delete does not wait.
+_ORDER_BUSY = "This order is being changed right now — try again"
 
 
 def _check_line_create(data: ProjectLineCreate) -> None:
@@ -1148,6 +1151,10 @@ async def update_project(
     current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     project = await _get_project(db, project_id)
+    # The order row before anything is written or locked (WS-13 E1 BL0 / BL6): a cancel
+    # or a completion goes on to the order's positions and lines, and the row taken
+    # later — by the autoflushed UPDATE — would sit after them.
+    await order_fulfilment.lock_order(db, project.id)
     lines = list(project.lines)
     # Read BEFORE the fields are written: cancelling asks what the order was,
     # not what it is about to become (Ruling 25).
@@ -1484,6 +1491,16 @@ async def delete_project(
     line_products = {line.product_id for line in project.lines}
     # The journal goes with the order — in code, SQLite runs no CASCADE.
     await order_journal.delete_for_project(db, project_id)
+    # The order row itself goes LAST and without waiting (WS-13 E1 BL6): its FOR UPDATE
+    # collides with every insert that merely references the order — a journal entry, a
+    # line, an issue — and waiting here while holding positions and lines would close a
+    # cycle with such a door. PostgreSQL refuses at once instead; SQLite has no row lock.
+    try:
+        await db.execute(select(Project.id).where(Project.id == project_id).with_for_update(nowait=True))
+    except DBAPIError as e:
+        if sqlstate(e) == LOCK_NOT_AVAILABLE:
+            raise HTTPException(status_code=409, detail=_ORDER_BUSY) from e
+        raise
     await db.delete(project)
     await db.flush()
     # Decision 5: an adhoc product lives exactly as long as a line references it.
@@ -1594,6 +1611,14 @@ async def update_line(
             raise HTTPException(status_code=422, detail="A parts line always has quantity 1")
         if data.from_stock_units or data.from_finished:
             raise HTTPException(status_code=422, detail=_PARTS_LINE_NO_STOCK)
+    if line.mode != "parts" and data.model_fields_set & {"quantity", "from_finished", "from_stock_units"}:
+        # The line's positions, then the line, before a field of it is written (WS-13 E1
+        # BL6): the write would take the line first, and the issue dialog takes them the
+        # other way round.
+        try:
+            await finished_stock.lock_line(db, line)
+        except finished_stock.FinishedStockError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from e
     if line.mode != "parts" and finished_stock.moved(line):
         # After the first movement the ready units are only added to — through «take from
         # stock» — the kits only come DOWN (spec workshop-order-issue-followups, rule 42: back
@@ -1629,15 +1654,18 @@ async def update_line(
     finished_before = await finished_stock.held_for_line(db, line.id)
     for field_name in data.model_fields_set - {"from_stock_units", "from_finished"}:
         setattr(line, field_name, getattr(data, field_name))
-    if wants_finished:
-        # Ready units first (rule 6); the kits below are fitted into what is left.
-        # The number is the line's total, issued units included (rule 1).
-        await finished_stock.reserve_for_line(db, line, min(data.from_finished, line.quantity), actor=current_user)
-    elif line.from_finished > line.quantity and await finished_stock.held_for_line(db, line.id):
-        # The quantity came down under the ready units the line still holds: they
-        # are fitted too, whether or not a kits number came with it (final review
-        # I3). Only downwards — a quantity going up does not help itself to more.
-        await finished_stock.reserve_for_line(db, line, line.quantity, actor=current_user)
+    try:
+        if wants_finished:
+            # Ready units first (rule 6); the kits below are fitted into what is left.
+            # The number is the line's total, issued units included (rule 1).
+            await finished_stock.reserve_for_line(db, line, min(data.from_finished, line.quantity), actor=current_user)
+        elif line.from_finished > line.quantity and await finished_stock.held_for_line(db, line.id):
+            # The quantity came down under the ready units the line still holds: they
+            # are fitted too, whether or not a kits number came with it (final review
+            # I3). Only downwards — a quantity going up does not help itself to more.
+            await finished_stock.reserve_for_line(db, line, line.quantity, actor=current_user)
+    except finished_stock.FinishedStockError as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
     if data.from_stock_units is not None:
         # ⚠️ The fourth reservation door, and the one that is deliberately NOT
         # gated on :func:`_consumed_its_stock` (Ruling 33). Cancelling, deleting

@@ -96,6 +96,8 @@
 
 ### Fixed
 
+- **Changing an order line while its goods were being issued could fail on PostgreSQL.** Lowering a line's quantity (or removing it, or changing its ready units) locked the line and then its stock position, while the issue dialog locked them the other way round; two such requests at the same moment made PostgreSQL abort one with a deadlock error. Every stock door now locks the order, then the positions, then the lines, in one order. A request that finds the order's stock changed under it in the meantime now says so and asks to try again, and deleting an order that another request is writing to right now is refused instead of waiting.
+
 - **Batch firmware updates no longer claim to start when Bambu has announced a version but has not published its offline file.** The batch picker now offers only versions that can be downloaded or are already stored locally, and explains why a newer announced version is missing. A direct request for an unavailable version is rejected before creating a run. The success message now says an upload task was created; applying the firmware still happens on the printer screen.
 
 - **Existing PostgreSQL installations start after the sensor update.** Migrating an existing Zigbee sensor's printer or room binding used SQLite-style numbers for boolean fields, which PostgreSQL rejected and stopped startup. The migration now writes proper boolean values and preserves the sensor's alert state.

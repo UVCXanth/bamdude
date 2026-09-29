@@ -529,11 +529,6 @@ class TestLineDoorLockOrder:
     """Q16 (WS-13 E1, T1b): a line door locked the line before its position while the
     issue dialog locks the position before the line."""
 
-    @pytest.mark.xfail(
-        raises=DeadlockReproduced,
-        strict=True,
-        reason="Q16: the line's quantity change locks the line before its position (fixed in the next commit)",
-    )
     def test_a_quantity_change_and_an_issue_of_one_line_never_deadlock(self, tmp_path_factory):
         url = _pg_url()
         _wipe(url)
@@ -549,3 +544,26 @@ class TestLineDoorLockOrder:
         # …so the issue waited on it instead of forming a cycle.
         assert result["which"] == "waiting", result
         assert result["consistent"], result
+
+    def test_a_line_whose_stock_changed_meanwhile_is_refused_not_locked_late(self, tmp_path_factory):
+        """BL6: the position appeared after the door read the line's positions — the door
+        refuses and writes nothing, rather than locking a position after the line."""
+        url = _pg_url()
+        _wipe(url)
+        result = _run("line_set_changed", tmp_path_factory.mktemp("pg_line_set_changed"), url)
+        assert result["a"].startswith("http:409:"), result
+        assert "stock changed" in result["a"], result
+        assert result["quantity"] == 5, result
+        assert result["movements_by_line"] == 0, result
+        assert result["events"] == 0, result
+
+    def test_deleting_an_order_another_door_is_writing_to_refuses_at_once(self, tmp_path_factory):
+        """BL6: the order row goes last and FOR UPDATE NOWAIT — the delete never waits
+        on a door that merely references the order."""
+        url = _pg_url()
+        _wipe(url)
+        result = _run("order_delete_busy", tmp_path_factory.mktemp("pg_order_delete_busy"), url)
+        assert result["b"].startswith("http:409:"), result
+        assert "being changed right now" in result["b"], result
+        assert result["order_exists"] is True, result
+        assert result["lines"] == 1, result

@@ -30,6 +30,7 @@ from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.core.lock_ledger import ledger
 from backend.app.models.finished_stock import StockItem, StockItemChoice, StockItemPartCount
 from backend.app.models.line_config import ProjectLineChoice, ProjectLinePartCount
 from backend.app.models.product import Product, ProductPart
@@ -322,7 +323,11 @@ async def _dropping(
 async def seed_line(
     db: AsyncSession, line: ProjectLine, *, choices: Mapping[int, int] | None, counts: Mapping[int, int] | None
 ) -> None:
-    """A new line's configuration: the given choices, the standard for every other group."""
+    """A new line's configuration: the given choices, the standard for every other group.
+
+    Every line constructor passes here, so it is also where the lock ledger learns
+    the line is this transaction's own new row (WS-13 E1 BL0: nobody can wait on it)."""
+    ledger(db).note_created("project_lines", line.id)
     product = await _product(db, line.product_id)
     new_choices, new_counts = _validate(product, line.mode, choices or {}, counts or {})
     await _write(db, line, new_choices, new_counts)
@@ -598,6 +603,7 @@ async def forget_line(db: AsyncSession, line_id: int) -> None:
 
 async def copy_configuration(db: AsyncSession, source: ProjectLine, target: ProjectLine) -> None:
     """The copy of an order carries each line's configuration."""
+    ledger(db).note_created("project_lines", target.id)
     cfg = (await load_line_configs(db, [source.id])).get(source.id, LineConfig())
     target.mode = source.mode
     await _write(db, target, cfg.choices, cfg.counts)
