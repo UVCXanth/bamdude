@@ -29,6 +29,17 @@ const names = () =>
     .map((r) => within(within(r).getAllByRole('cell')[0]).getByRole('link').textContent);
 
 describe('OrdersTable', () => {
+  it('scrolls sideways in its own named region inside the panel, with the page bar under it and outside the scroll (WS-13 E2 E01/E02)', () => {
+    render(<OrdersTable orders={[row({ id: 1 })]} {...noSort} footer={<div data-testid="page-bar">pages</div>} />);
+
+    const region = screen.getByRole('region', { name: 'Orders' });
+    expect(within(region).getByRole('table')).toBeInTheDocument();
+    const bar = screen.getByTestId('page-bar');
+    expect(region.contains(bar)).toBe(false);
+    // One frame holds both.
+    expect(region.parentElement?.contains(bar)).toBe(true);
+  });
+
   it('keeps the server order and asks the server to sort — a fresh numeric column most-first', async () => {
     const onSort = vi.fn();
     render(

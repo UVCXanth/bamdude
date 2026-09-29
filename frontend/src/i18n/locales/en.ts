@@ -5654,6 +5654,7 @@ export default {
       },
     },
     table: {
+      label: 'Orders',
       name: 'Order',
       customer: 'Customer',
       status: 'Status',

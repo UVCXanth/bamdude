@@ -10,6 +10,7 @@ import { ResponsibleName } from './ResponsibleName';
 import { StageBadge } from './StageBadge';
 import { ForecastHint } from './ForecastHint';
 import { etaFull, etaShort, hoursMinutes } from '../../utils/forecast';
+import { WorkshopPanel, WorkshopTableScroll } from '../workshop/WorkshopPanel';
 import { isOverdue } from '../../utils/orderDates';
 
 /**
@@ -23,7 +24,8 @@ import { isOverdue } from '../../utils/orderDates';
  * included, which the server sorts by one simulation walk over the filtered
  * active orders (spec workshop-lists, rule 14). A fresh click on a count sorts
  * most-first; name, customer, due and «ready» start ascending. `footer` (the
- * page bar) is drawn inside the same card, under the rows.
+ * page bar) is drawn inside the same panel, under the rows and outside their
+ * horizontal scroll (WS-13 E2 E02) — a wide table scrolls, its page bar stays.
  */
 export function OrdersTable({
   orders,
@@ -52,8 +54,8 @@ export function OrdersTable({
   );
 
   return (
-    <div className="rounded-xl border border-bambu-dark-tertiary overflow-hidden">
-      <div className="overflow-x-auto">
+    <WorkshopPanel flush footer={footer}>
+      <WorkshopTableScroll label={t('orders.table.label')}>
         <table className="w-full text-sm">
           <thead className="text-xs text-bambu-gray bg-bambu-dark-secondary">
             <tr>
@@ -143,8 +145,7 @@ export function OrdersTable({
             ))}
           </tbody>
         </table>
-      </div>
-      {footer}
-    </div>
+      </WorkshopTableScroll>
+    </WorkshopPanel>
   );
 }

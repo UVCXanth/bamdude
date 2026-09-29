@@ -5701,6 +5701,7 @@ export default {
       },
     },
     table: {
+      label: 'Замовлення',
       name: 'Замовлення',
       customer: 'Замовник',
       status: 'Статус',
