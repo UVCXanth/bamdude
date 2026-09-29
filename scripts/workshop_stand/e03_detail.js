@@ -651,7 +651,7 @@ async (page) => {
     const pick = p.getByRole('button', { name: 'Вибрати файл' }).first();
     if ((await pick.count()) === 0) { await ctx.close(); return { pass: null, pending: 'no «Select file» button in Корпуси / CLM-01' }; }
     await pick.click();
-    const compute = p.getByRole('button', { name: /Розрахувати замовлення/ });
+    const compute = p.getByRole('button', { name: /^Розрахувати$/ });
     if ((await compute.count()) === 0) { await ctx.close(); return { pass: null, pending: 'the selected row is not a plannable file' }; }
     await compute.click();
     const dialog = p.getByRole('dialog');
@@ -664,7 +664,7 @@ async (page) => {
     const m = await p.evaluate(() => ({ block: !!document.querySelector('[role="dialog"] [data-testid="filament-needs"]'), plan: !!document.querySelector('[role="dialog"] [data-testid="plan-block"]') }));
     const file = await shoot(p, 'consumer-plan-dialog-filament');
     await ctx.close();
-    return { recipe: { route: '/files', actions: ['Корпуси / CLM-01', 'select the first file', 'Розрахувати замовлення', 'Розрахувати (POST intercepted → order 241)'] }, measured: m, pass: m.plan ? m.block : null, pending: m.plan ? undefined : 'the dialog did not reach its plan step', screenshots: [file] };
+    return { recipe: { route: '/files', actions: ['Корпуси / CLM-01', 'select the first file', 'Розрахувати (toolbar)', 'name, Розрахувати (POST intercepted → order 241)'] }, measured: m, pass: m.plan ? m.block : null, pending: m.plan ? undefined : 'the dialog did not reach its plan step', screenshots: [file] };
   });
 
   await page.request.post(`${base}/done`, { data: { count: summary.length } });
