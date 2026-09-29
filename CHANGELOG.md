@@ -76,7 +76,7 @@
 
 - **The workshop lists open as a table until you pick a view.** The orders list, the product catalog and a customer's orders used to open as cards for anyone who had never chosen; they now open as a table, and the orders table sorts by due date — so a shared link without a sort shows the nearest deadlines first to such a reader. A view you picked is kept, and a sort in the link still wins.
 
-- **The workshop's tabs work from the keyboard.** The order status tabs (on the orders list and a customer's page) and the stock sections are real tab strips: the arrow keys, Home and End move between tabs without loading anything, Enter or Space opens the one you are on, and a strip too wide for the screen scrolls inside itself. Before the first answer a tab's count reads «(—)» instead of pretending to be zero.
+- **The workshop's tabs work from the keyboard.** The order status tabs (on the orders list and a customer's page) and the stock sections are real tab strips: the arrow keys, Home and End move between tabs without loading anything, Enter or Space opens the one you are on, Tab leaves the strip from the tab you moved to (and coming back lands on the open one), and a strip too wide for the screen scrolls inside itself. Before the first answer a tab's count reads «(—)» instead of pretending to be zero.
 
 - **The new-order dialog is the workshop's wider dialog.** Its Cancel and Save now sit in the dialog's own footer, which stays in place while the form scrolls; the fields and what they send are unchanged.
 
