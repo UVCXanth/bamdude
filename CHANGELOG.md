@@ -10,6 +10,10 @@
 
 ### Added
 
+- **The workshop's server answers what the redesigned pages will show.** Orders: the summary counts orders at the quality-check stage; a list row names its materials and products; the forecast says whether an order will be late, why its production estimate is incomplete (prints without a time, prints no printer takes, parts only on plates of another material or on unsliced plates, parts on no plate, a plan too long to show whole) and, on the order, how many machine-hours each printer model gets; an order's figures carry the units issued and held and the purchases' cost (planned and bought, with an unknown price shown as unknown, never as zero) beside the prints' cost and margin, which do not change; the order page gets its tab counts and the plan its row count. Products: the catalog filters by ready units, free kits or a position below its minimum and by whether a printable file is linked, searches the version too, sorts by printed parts, active orders and ready units across the whole catalogue, and each row counts its parts, variant groups, active orders and stock positions; each part lists the plates it can be printed from — sliced ones in the plan's own order, the first recommended — and a product's files tab lists every linked file with its plates; a product estimates one standard unit printed from scratch, in whole plates, and says why when the estimate is incomplete. Stock: a row shows its SKU, the parts on the shelf, each part's option and the kits each option would make; the journal can be read by numbered pages with a total, and lists the products it moved.
+
+- **A product's variants can be saved as one draft.** `PUT /products/{id}/variants` applies renames, new groups and options, a new standard and a new order in one transaction, against the version the page read: if anyone changed the variants meanwhile, nothing is written and the page is told to reload.
+
 - **Home Assistant sensors can now watch printers and spool storage.** Bind numeric or binary entities to printers or storage locations, set per-binding alert rules and notifications, and inspect retained history. An optional printer rule holds queued starts while alerting; unavailable or stale HA readings release the hold. The same HA entity can serve several printers or locations independently.
 
 - **One Zigbee sensor can serve several printers, rooms and storage locations.** Each binding has its own display name, order, alert rules and notification switch. The device records one shared history, and removing one binding leaves the others in place. Existing single-target sensors are migrated automatically. Storage locations show both Zigbee and Home Assistant readings and let operators choose a primary temperature, humidity or battery reading for the compact inventory display. Optional sortable columns and spool-card readings show the conditions where a spool is stored.
@@ -70,6 +74,12 @@
 
 ### Changed
 
+- **The add-to-order parts list no longer offers «All».** It is paged on the server, which now refuses a request for the whole list (`all=true` on `/products/parts` is 422).
+
+- **Making an order from files no longer adds parts to other products linked to the same file.** Adding a file's plate to an order, or an order from the files wizard, gives parts only to the one-off product it makes for them; a catalogue product that also uses the file keeps the parts it has.
+
+- **The catalog's «Orders» sort counts distinct active orders**, not order lines of any status; the product's own line count is still shown as before.
+
 - **Local uploads and external-folder scans now share one background file-preparation service.** It extracts the full 3MF plate list and metadata, even from large multi-plate files on SMB shares, while keeping slow file reads and parsing out of the web server. The next external-folder scan fills missing metadata on existing files and refreshes changed files in place, including their plate lists and thumbnails; an unreadable file keeps its last good metadata. System shows the service's health separately. The server log now shows when its worker is ready and reports the start, result, plate count and duration of each file it parses.
 
 - **The Bambu Studio sidecar now defaults to the latest stable release, 02.08.02.61.** Build defaults, Compose settings and the example environment file use the same version; OrcaSlicer remains on its latest stable release, 2.4.2. Existing installations with a version pinned in `.env` need to update that pin and rebuild the sidecar.
@@ -95,6 +105,14 @@
 - **The Projects lists share one frame.** The cards/table switch of the orders, products and customers lists moved from the filter bar into the page header, beside the create button, and shows an icon — its label hides on a narrow screen. Every list page carries a one-line explanation under its title, and the search box of every list is the same one.
 
 ### Fixed
+
+- **A product's page shows its materials, colours, printer models and ready units.** They were empty on the product page while the catalog card showed them; the page and the card now read the same figures. A printer model is taken only from a file that can be printed, so an unsliced 3MF project no longer names a model or offers it in the filter.
+
+- **A product's plates, part sources and files show a file's name only to people who may open it.** A user without access to a library file could learn its name from the product's plates or by searching the catalog for it; there such a file is now shown as «File you cannot open», with its plates and numbers kept, and neither the catalog search nor the parts list finds it by that name.
+
+- **The print plan no longer leaves out a part that only an unplaceable plate makes.** When another part of the line could be scheduled, a part made only by a plate no printer takes (its model is absent or parked, or it has no time estimate) got no row and no warning; it is now planned, and the forecast counts it as unroutable or as a print without a time.
+
+- **Changing a product's variants, configuration or stock while another request works on the same product no longer risks a deadlock on PostgreSQL.** Every such change now takes the product first and its orders, stock positions, lines and parts in one fixed order; a variant or configuration change that finds the product busy says so at once and asks to try again.
 
 - **Changing an order line while its goods were being issued could fail on PostgreSQL.** Lowering a line's quantity (or removing it, or changing its ready units) locked the line and then its stock position, while the issue dialog locked them the other way round; two such requests at the same moment made PostgreSQL abort one with a deadlock error. Every stock door now locks the order, then the positions, then the lines, in one order. A request that finds the order's stock changed under it in the meantime now says so and asks to try again, and deleting an order that another request is writing to right now is refused instead of waiting.
 
