@@ -1213,6 +1213,7 @@ async def test_the_plan_names_the_other_file_the_same_part_is_sliced_for(committ
             "library_file_id": twin_file.id,
             "plate_index": 0,
             "filename": "lamp-p1s.gcode.3mf",
+            "hidden": False,
             # ⚠️ Normalised on the way out: the 3MF says "Bambu Lab P1S" and the
             # auto-queue routes on "P1S". A raw name here would match no printer.
             "printer_model": "P1S",
@@ -1938,14 +1939,20 @@ async def test_the_plan_loads_every_products_recipes_in_one_batch(
 
     The plan is computed on every read of the order page, so the per-product
     loop was a round trip per line on a page nobody thinks of as expensive.
+    The files are read twice per plan, each time in one batch: the engine's
+    recipes, and the names the reader may see (WS-13 E1 LV5) — counted apart.
     """
     pid, _lines, _products = three_product_order
     calls = {"batched": 0}
+    engine_reads: list[int] = []
     real = plan_engine.recipes_for_products
 
     async def counting(db, products):
         calls["batched"] += 1
-        return await real(db, products)
+        before = len(seen)
+        result = await real(db, products)
+        engine_reads.append(len(seen) - before)
+        return result
 
     monkeypatch.setattr(plan_engine, "recipes_for_products", counting)
     assert not hasattr(plan_engine, "recipes_for_product"), (
@@ -1959,7 +1966,8 @@ async def test_the_plan_loads_every_products_recipes_in_one_batch(
     assert len(r.json()["lines"]) == 3
     assert all(line["rows"] for line in r.json()["lines"]), "each line still gets its own plate to print"
     assert calls["batched"] == 1
-    assert len(seen) == 1, seen
+    assert engine_reads == [1], seen
+    assert len(seen) == 2, seen  # + the one batched read of the names
 
 
 @pytest.mark.asyncio

@@ -539,7 +539,10 @@ class PlanAlternativeOut(BaseModel):
     plate_id: int  # ProductPlate.id
     library_file_id: int
     plate_index: int  # 0 = the whole file
-    filename: str
+    # null with ``hidden`` for a file the library would not show this caller
+    # (WS-13 E1 LV5) — the plate's ids and figures are the plan's all the same.
+    filename: str | None = None
+    hidden: bool = False
     # The short model name the auto-queue routes on, or null when the file names
     # none — which is "we do not know", never "any printer".
     printer_model: str | None = None
@@ -561,7 +564,10 @@ class PlanRowOut(BaseModel):
     plate_id: int  # ProductPlate.id — NOT the slicer's plate index
     library_file_id: int
     plate_index: int  # 0 = the whole file
-    filename: str
+    # null with ``hidden`` for a file the library would not show this caller
+    # (WS-13 E1 LV5); nothing else on the row depends on who is reading.
+    filename: str | None = None
+    hidden: bool = False
     count: int
     useful: list[PlanPartCount]
     print_time_seconds: int | None = None

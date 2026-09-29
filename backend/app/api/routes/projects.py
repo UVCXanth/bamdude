@@ -25,10 +25,10 @@ from sqlalchemy.orm import selectinload
 # Aliased: a private name imported into a module this size could be shadowed
 # by a local helper of the same name without anyone noticing.
 from backend.app.api.routes.auto_queue import _to_response as auto_queue_row_response, auto_queue_item_load_options
-from backend.app.api.routes.library import _library_file_visible as library_file_visible
+from backend.app.api.routes.library import _library_file_visible as library_file_visible, file_name_visible
 from backend.app.api.routes.print_queue import _enrich_response as queue_row_response, queue_item_load_options
 from backend.app.core.api_key_scope import key_printer_scope
-from backend.app.core.auth import RequirePermission, acting_user, require_media_permission
+from backend.app.core.auth import RequirePermission, acting_user, library_name_scope, require_media_permission
 from backend.app.core.config import settings
 from backend.app.core.database import LOCK_NOT_AVAILABLE, get_db, sqlstate
 from backend.app.core.permissions import Permission
@@ -2991,13 +2991,45 @@ def _counts(mapping: dict[int, int], names: dict[int, str]) -> list[PlanPartCoun
     return [PlanPartCount(part_id=pid, name=names.get(pid, "?"), count=n) for pid, n in sorted(mapping.items())]
 
 
-def _plan_response(plan: OrderPlan, pending_auto: dict[int, int]) -> OrderPlanResponse:
+async def _plan_file_names(db: AsyncSession, file_ids: set[int], user: User | None, scope: str) -> dict[int, str]:
+    """``library_file_id → name`` for the plan's files this caller may see named
+    (WS-13 E1 LV5) — ONE batched read over every row's and alternative's file.
+
+    The name comes from this read alone, never from the plan's own copy of the
+    row: a file trashed or deleted since the engine read it is absent here, and
+    absent means hidden. No ids, or a scope that shows no file at all, reads
+    nothing. The engine never asks: the plan is the same for every reader.
+    """
+    if not file_ids or scope == "none":
+        return {}
+    rows = await db.execute(
+        select(LibraryFile.id, LibraryFile.filename, LibraryFile.deleted_at, LibraryFile.created_by_id).where(
+            LibraryFile.id.in_(file_ids)
+        )
+    )
+    # ``file_name_visible`` reads ``deleted_at`` and ``created_by_id`` off whatever
+    # it is handed — the four columns, not the whole row with its metadata.
+    return {row.id: row.filename for row in rows if file_name_visible(row, user, scope)}
+
+
+def _plan_file_ids(plan: OrderPlan) -> set[int]:
+    return {
+        file_id
+        for line in plan.lines
+        for row in line.rows
+        for file_id in (row.library_file_id, *(alt.library_file_id for alt in row.alternatives))
+    }
+
+
+def _plan_response(plan: OrderPlan, pending_auto: dict[int, int], file_names: dict[int, str]) -> OrderPlanResponse:
     """Name every id the engine returned — no SELECT, no walk.
 
     The engine builds the plan from an ``OrderContext`` that already holds every
     product and part of the order, so it hands the two name maps out beside the
     rows. Re-reading ``products`` and ``product_parts`` here was two queries for
-    rows the request had just had in memory.
+    rows the request had just had in memory. File names are the one exception,
+    read by the caller (``_plan_file_names``): which of them a reader may see is
+    the library's rule, not the engine's.
     """
     part_names = plan.part_names
     product_names = plan.product_names
@@ -3014,7 +3046,8 @@ def _plan_response(plan: OrderPlan, pending_auto: dict[int, int]) -> OrderPlanRe
                         plate_id=row.plate_id,
                         library_file_id=row.library_file_id,
                         plate_index=row.plate_index,
-                        filename=row.filename,
+                        filename=file_names.get(row.library_file_id),
+                        hidden=row.library_file_id not in file_names,
                         count=row.count,
                         useful=_counts(row.useful, part_names),
                         print_time_seconds=row.print_time_seconds,
@@ -3033,7 +3066,8 @@ def _plan_response(plan: OrderPlan, pending_auto: dict[int, int]) -> OrderPlanRe
                                 plate_id=alt.plate_id,
                                 library_file_id=alt.library_file_id,
                                 plate_index=alt.plate_index,
-                                filename=alt.filename,
+                                filename=file_names.get(alt.library_file_id),
+                                hidden=alt.library_file_id not in file_names,
                                 printer_model=alt.printer_model,
                                 print_time_seconds=alt.print_time_seconds,
                                 filament_used_grams=alt.filament_used_grams,
@@ -3085,20 +3119,27 @@ async def _pending_auto_prints(db: AsyncSession, line_ids: list[int]) -> dict[in
 @router.get("/{project_id}/plan", response_model=OrderPlanResponse)
 async def get_order_plan(
     project_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    user: User | None = RequirePermission(Permission.PROJECTS_READ),
 ):
     """What to print next for every line of this order (spec pass 3).
 
     Computed on every read, never cached and never stored: a second call after
     enqueuing sees the new queue rows and plans that much less.  Recipe choice
     accounts for a read-only snapshot of usable farm capacity; it neither
-    claims a printer nor changes dispatch readiness.
+    claims a printer nor changes dispatch readiness. A file the library would not
+    show the caller keeps its plate in the plan without its name (WS-13 E1 LV5).
     """
     plan = await plan_for_order(db, project_id)
     if plan is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    return _plan_response(plan, await _pending_auto_prints(db, [line.line_id for line in plan.lines]))
+    scope = await library_name_scope(request, db, user)
+    return _plan_response(
+        plan,
+        await _pending_auto_prints(db, [line.line_id for line in plan.lines]),
+        await _plan_file_names(db, _plan_file_ids(plan), user, scope),
+    )
 
 
 @router.get("/{project_id}/queue", response_model=OrderQueueOut)
