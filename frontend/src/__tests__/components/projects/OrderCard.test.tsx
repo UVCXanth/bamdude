@@ -4,6 +4,7 @@ import { render } from '../../utils';
 import { strayZeroTextNodes } from '../../domHelpers';
 import type { OrderListItem } from '../../../api/client';
 import { OrderCard } from '../../../components/projects/OrderCard';
+import { ORDER_ROW_DEFAULTS } from '../../wireDefaults';
 
 // Every entry of the card menu is permission-gated, and the render helper's
 // real `AuthProvider` resolves an admin only once its own request has settled —
@@ -14,7 +15,7 @@ vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
   return { ...actual, useAuth: () => ({ ...actual.useAuth(), hasPermission: () => true }) };
 });
 
-const base: OrderListItem = { id: 1, code: 'OR-0001', name: 'Ten flasks', customer_id: 2, customer_name: 'ACME', color: '#00ae42', status: 'active', stage: 'prep', responsible_id: null, responsible_name: null, due_date: null, priority: 'normal', price: 120, tags: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00Z', lines_count: 2, ordered: 10, printed: 4, covered_units: 4, remaining: 6, from_stock_units: 0, issued_units: 0, progress: 0.4, prints_in_progress: 0, prints_queued: 0, line_products: [{ product_id: 11, has_cover: true }, { product_id: 12, has_cover: false }] };
+const base: OrderListItem = { ...ORDER_ROW_DEFAULTS, id: 1, code: 'OR-0001', name: 'Ten flasks', customer_id: 2, customer_name: 'ACME', color: '#00ae42', status: 'active', stage: 'prep', responsible_id: null, responsible_name: null, due_date: null, priority: 'normal', price: 120, tags: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00Z', lines_count: 2, ordered: 10, printed: 4, covered_units: 4, remaining: 6, from_stock_units: 0, issued_units: 0, progress: 0.4, prints_in_progress: 0, prints_queued: 0, line_products: [{ product_id: 11, has_cover: true }, { product_id: 12, has_cover: false }] };
 const noop = () => {};
 
 describe('OrderCard', () => {

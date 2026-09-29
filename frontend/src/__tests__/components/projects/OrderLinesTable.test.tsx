@@ -484,7 +484,7 @@ describe('OrderLinesTable · add to order and ready units', () => {
   });
 
   it('opens «Add to order» for this order instead of an add-line row', async () => {
-    vi.spyOn(api, 'getProductsPaged').mockResolvedValue({ items: [], meta: { total: 0, current_page: 1, per_page: 24, last_page: 1 }, categories: [], uncategorized: 0 });
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue({ items: [], meta: { total: 0, current_page: 1, per_page: 24, last_page: 1 }, categories: [], uncategorized: 0, catalog_total: 0 });
     vi.spyOn(api, 'getProductCategories').mockResolvedValue([]);
     vi.spyOn(api, 'getProductFacets').mockResolvedValue({ materials: [], colors: [], models: [] });
     render(<OrderLinesTable order={order} canEdit />);

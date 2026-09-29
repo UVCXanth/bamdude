@@ -12,8 +12,10 @@ import { strayZeroTextNodes } from '../../domHelpers';
 import { api, ApiError } from '../../../api/client';
 import type { ProductListItem } from '../../../api/client';
 import { ProductCard } from '../../../components/products/ProductCard';
+import { PRODUCT_ROW_DEFAULTS } from '../../wireDefaults';
 
 const base: ProductListItem = {
+  ...PRODUCT_ROW_DEFAULTS,
   id: 4,
   code: 'PR-0004',
   name: 'Flask',

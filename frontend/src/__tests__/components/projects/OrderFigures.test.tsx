@@ -3,8 +3,10 @@ import { screen } from '@testing-library/react';
 import { render } from '../../utils';
 import { strayZeroTextNodes } from '../../domHelpers';
 import { OrderFigures } from '../../../components/projects/OrderFigures';
+import { FIGURES_DEFAULTS, FORECAST_DEFAULTS } from '../../wireDefaults';
 
 const FIGURES = {
+  ...FIGURES_DEFAULTS,
   ordered: 0,
   printed: 0,
   covered_units: 0,
@@ -37,7 +39,7 @@ describe('OrderFigures', () => {
   it('shows the bar and the other-prints line once there is something to count', () => {
     render(
       <OrderFigures
-        figures={{
+        figures={{ ...FIGURES_DEFAULTS,
           ordered: 10,
           printed: 4,
           covered_units: 4,
@@ -82,7 +84,7 @@ describe('OrderFigures', () => {
   it('shows what is printing and queued right now', () => {
     render(
       <OrderFigures
-        figures={{
+        figures={{ ...FIGURES_DEFAULTS,
           ordered: 10,
           printed: 4,
           covered_units: 4,
@@ -112,6 +114,7 @@ describe('OrderFigures', () => {
     // A permanent "0" tile on every order in the farm would be a column of
     // noise, so the tile exists only when the figure does.
     const figures = {
+      ...FIGURES_DEFAULTS,
       ordered: 10,
       printed: 4,
       covered_units: 7,
@@ -155,7 +158,7 @@ describe('OrderFigures', () => {
     render(
       <OrderFigures
         figures={FIGURES}
-        forecast={{ project_id: 1, now_eta: '2026-09-07T10:00:00Z', now_seconds: 7200, after_eta: null, after_seconds: null, machine_seconds: 5400, unknown_prints: 2, unroutable_prints: 0, eta_complete: false, ahead_count: 0, assumptions: ['drying'], lines: [] }}
+        forecast={{ ...FORECAST_DEFAULTS, by_model: [], project_id: 1, now_eta: '2026-09-07T10:00:00Z', now_seconds: 7200, after_eta: null, after_seconds: null, machine_seconds: 5400, unknown_prints: 2, unroutable_prints: 0, eta_complete: false, ahead_count: 0, assumptions: ['drying'], lines: [] }}
       />,
     );
     expect(screen.getByText('Ready ≈')).toBeInTheDocument();
@@ -170,7 +173,7 @@ describe('OrderFigures', () => {
     render(
       <OrderFigures
         figures={FIGURES}
-        forecast={{ project_id: 1, now_eta: '2026-09-07T10:00:00Z', now_seconds: 7200, after_eta: null, after_seconds: null, machine_seconds: 5400, unknown_prints: 0, unroutable_prints: 0, eta_complete: true, ahead_count: 0, assumptions: [], lines: [] }}
+        forecast={{ ...FORECAST_DEFAULTS, by_model: [], project_id: 1, now_eta: '2026-09-07T10:00:00Z', now_seconds: 7200, after_eta: null, after_seconds: null, machine_seconds: 5400, unknown_prints: 0, unroutable_prints: 0, eta_complete: true, ahead_count: 0, assumptions: [], lines: [] }}
         forecastStale
       />,
     );

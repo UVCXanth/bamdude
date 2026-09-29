@@ -21,7 +21,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { api, getAuthToken, withMediaToken } from '../api/client';
-import { invalidateOrderViews, invalidateProductCatalog } from '../utils/queryInvalidation';
+import { invalidateOrderViews, invalidateProductCatalog, invalidateProductFiles } from '../utils/queryInvalidation';
 import type { CardAux } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -625,6 +625,8 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
       // its own sake too: the re-read can give the product its FIRST cover, and
       // an order card renders that cover off the projects query.
       invalidateOrderViews(queryClient);
+      // A re-read rewrites the file's metadata — the plates the product prints from.
+      invalidateProductFiles(queryClient);
       setRereadOpen(false);
       showToast(cardNotesText(t, result.notes));
     },

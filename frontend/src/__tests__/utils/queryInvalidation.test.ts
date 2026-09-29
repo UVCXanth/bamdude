@@ -20,9 +20,12 @@ import { describe, it, expect, vi } from 'vitest';
 import { QueryClient } from '@tanstack/react-query';
 import {
   ORDER_VIEW_KEYS,
+  PRODUCT_FILE_KEYS,
   invalidateAfterDelete,
   invalidateOrderCandidates,
   invalidateOrderViews,
+  invalidateProductFiles,
+  invalidateProductVariants,
   invalidateQueueViews,
   invalidateSpoolViews,
   invalidateStock,
@@ -138,6 +141,8 @@ describe('invalidateOrderViews', () => {
       // finished goods (WS-09): the journal shows the parts rows an order moves,
       // and «can assemble» reads the same free shelf.
       'stock-journal',
+      // WS-13 E1 ST2: the journal's product filter.
+      'stock-journal-products',
       'stock-items',
       'stock-item',
       'stock-lookup',
@@ -332,5 +337,55 @@ describe('invalidateAfterDelete', () => {
 
     expect(qc.getQueryState(['project', 5])).toBeDefined();
     expect(stale(qc, ['project', 5])).toBe(false);
+  });
+});
+
+describe('invalidateProductFiles (WS-13 E1 CL3 / CL4)', () => {
+  it('marks what a product prints from stale — not the linked-files list, another DTO under its own key', () => {
+    const qc = new QueryClient();
+    seed(qc, [
+      ['product-plates', 7],
+      ['product-part-sources', 7],
+      ['product-file-groups', 7],
+      ['product-estimate', 7],
+      ['product-files', 7],
+      ['product-plates', 8],
+    ]);
+    invalidateProductFiles(qc, 7);
+    for (const key of PRODUCT_FILE_KEYS) expect(stale(qc, [key, 7])).toBe(true);
+    expect(PRODUCT_FILE_KEYS).toContain('product-file-groups');
+    expect(PRODUCT_FILE_KEYS).not.toContain('product-files');
+    expect(stale(qc, ['product-files', 7])).toBe(false);
+    expect(stale(qc, ['product-plates', 8])).toBe(false);
+  });
+
+  it('without a product touches every product — the trash hides a file from all of them', () => {
+    const qc = new QueryClient();
+    seed(qc, [['product-plates', 7], ['product-estimate', 8]]);
+    invalidateProductFiles(qc);
+    expect(stale(qc, ['product-plates', 7])).toBe(true);
+    expect(stale(qc, ['product-estimate', 8])).toBe(true);
+  });
+});
+
+describe('invalidateProductVariants (WS-13 E1 CL4)', () => {
+  it('moves the product, the catalog, every order view, the stock and the estimate', () => {
+    // A new group writes a choice into every order line and stock position of the product.
+    const qc = new QueryClient();
+    seed(qc, [['product', 7], ['products'], ['projects'], ['project', 3], ['stock-items'], ['product-estimate', 7]]);
+    invalidateProductVariants(qc, 7);
+    for (const key of [['product', 7], ['products'], ['projects'], ['project', 3], ['stock-items'], ['product-estimate', 7]]) {
+      expect(stale(qc, key)).toBe(true);
+    }
+  });
+});
+
+describe('the journal product filter', () => {
+  it('moves with the journal', () => {
+    const qc = new QueryClient();
+    seed(qc, [['stock-journal-products', 'both']]);
+    invalidateStock(qc);
+    expect(stale(qc, ['stock-journal-products', 'both'])).toBe(true);
+    expect(ORDER_VIEW_KEYS).toContain('stock-journal-products');
   });
 });

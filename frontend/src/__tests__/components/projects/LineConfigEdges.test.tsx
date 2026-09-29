@@ -96,7 +96,7 @@ describe('kits offered from the shelf', () => {
     vi.restoreAllMocks();
     vi.spyOn(api, 'getProducts').mockResolvedValue([{ id: 7, code: 'PR-0007', name: 'Pipe', is_active: true }] as never);
     vi.spyOn(api, 'getProduct').mockResolvedValue(product);
-    vi.spyOn(api, 'getProductStock').mockResolvedValue({ kits_available: 5, balances: [], movements: [] });
+    vi.spyOn(api, 'getProductStock').mockResolvedValue({ kits_by_option: [], kits_available: 5, balances: [], movements: [] });
   });
 
   it('are the line’s own configuration’s when editing it', async () => {

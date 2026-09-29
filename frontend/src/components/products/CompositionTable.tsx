@@ -9,6 +9,7 @@ import { getCurrencySymbol } from '../../utils/currency';
 import { ConfirmModal } from '../ConfirmModal';
 import { AddPartRow } from './AddPartRow';
 import { Select } from '../Select';
+import { invalidateProductFiles } from '../../utils/queryInvalidation';
 
 const FIELD_CLASS =
   'px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none disabled:opacity-60';
@@ -45,9 +46,10 @@ interface CompositionTableProps {
  * source, so the row you press it on is the one that disappears — which is why
  * it asks first, naming both.
  *
- * Every mutation invalidates `['product', id]` AND `['product-plates', id]`:
- * a part's name, aliases or existence changes what the plate walk matches, so
- * the plates below are stale the moment a row here is touched.
+ * Every mutation invalidates `['product', id]` AND what the product prints from
+ * (`invalidateProductFiles`: plates, sources, files tab, estimate): a part's name,
+ * aliases or existence changes what the plate walk matches, and a bought part's
+ * price moves the estimate, so all of it is stale the moment a row here is touched.
  */
 export function CompositionTable({ product, canEdit }: CompositionTableProps) {
   const { t } = useTranslation();
@@ -64,7 +66,7 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['product', product.id] });
-    queryClient.invalidateQueries({ queryKey: ['product-plates', product.id] });
+    invalidateProductFiles(queryClient, product.id);
   };
   const fail = (e: Error) => showToast(e.message, 'error');
 

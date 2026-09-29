@@ -30,6 +30,7 @@ import {
   DEFAULT_SWAP_MACROS_OPTIONS,
   type PrintModalAnswer,
 } from '../../components/PrintModal/types';
+import { FIGURES_DEFAULTS } from '../wireDefaults';
 
 /**
  * Every path that queues from this dialog must mark the proposal stale.
@@ -100,6 +101,7 @@ const MULTI_PLATE = {
 
 /** A minimal `Order`, shaped like Task 13's own stub — only `id` varies per test. */
 const ORDER_STUB: Order = {
+  counts: { prints: 0, issues: 0 },
   id: 42,
   code: 'OR-0042',
   name: 'Batch order',
@@ -126,6 +128,7 @@ const ORDER_STUB: Order = {
   lines: [],
   procurement: [],
   figures: {
+    ...FIGURES_DEFAULTS,
     ordered: 0,
     printed: 0,
     complete: 0,

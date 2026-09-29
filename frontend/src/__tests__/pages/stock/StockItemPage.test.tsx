@@ -31,7 +31,7 @@ describe('StockItemPage', () => {
     vi.restoreAllMocks();
     window.history.pushState({}, '', '/stock/5');
     vi.spyOn(api, 'getStockItem').mockResolvedValue(pipeDetail);
-    journal = vi.spyOn(api, 'getStockJournal').mockResolvedValue({ items: [], next_cursor: null });
+    journal = vi.spyOn(api, 'getStockJournal').mockResolvedValue({ items: [], next_cursor: null, meta: null });
     vi.spyOn(api, 'getProducts').mockResolvedValue([]);
     vi.spyOn(api, 'getSettings').mockResolvedValue({ date_format: 'system' } as never);
   });

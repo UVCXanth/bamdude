@@ -1173,6 +1173,8 @@ export function SettingsPage() {
       // a minute after the user enables auto-mode.
       queryClient.invalidateQueries({ queryKey: ['archive-cleanup-status'] });
       queryClient.invalidateQueries({ queryKey: ['archive-cleanup-preview'] });
+      // The filament rate prices a product's estimate (WS-13 E1 CL4) — every product's.
+      queryClient.invalidateQueries({ queryKey: ['product-estimate'] });
       showToast(t('settings.toast.settingsSaved'), 'success');
     },
     onError: (error: Error) => {

@@ -9,7 +9,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
 import { cardNotesText } from './cardNotes';
-import { invalidateOrderViews } from '../../utils/queryInvalidation';
+import { invalidateOrderViews, invalidateProductFiles } from '../../utils/queryInvalidation';
 
 interface ProductHeaderProps {
   product: Product;
@@ -110,6 +110,8 @@ export function ProductHeader({
       // card renders that cover off the projects query. Without this the card
       // keeps its placeholder until something else refetches orders.
       invalidateOrderViews(queryClient);
+      // A re-read rewrites the file's metadata — the plates the product prints from.
+      invalidateProductFiles(queryClient, product.id);
       setRereadOpen(false);
       // One toast, every note in it: they are one answer to one question, and
       // five stacked toasts would push the first off screen before it is read.

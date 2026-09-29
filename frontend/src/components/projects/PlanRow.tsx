@@ -344,7 +344,9 @@ export function PlanRow({
               {t('orders.plan.row.applyFarmSplit')}
             </Button>
           )}
-          {canPrint && (
+          {/* «To printer» opens the file itself — not for a plate added by hand from a
+              file the caller may not open (WS-13 E1 CL2). */}
+          {canPrint && !row.hidden && (
             <Button
               size="sm"
               variant="ghost"

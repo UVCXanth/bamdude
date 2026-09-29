@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link2, Loader2, Package, X } from 'lucide-react';
 import { api } from '../../api/client';
-import { invalidateProductCatalog } from '../../utils/queryInvalidation';
+import { invalidateProductCatalog, invalidateProductFiles } from '../../utils/queryInvalidation';
 import type { ProductRef } from '../../api/client';
 import { Button } from '../Button';
 import { Modal } from '../Modal';
@@ -105,6 +105,8 @@ export function LinkToProductsModal({ kind, item, onClose }: LinkToProductsModal
       invalidateProductCatalog(queryClient);
       queryClient.invalidateQueries({ queryKey: ['product-files'] });
       queryClient.invalidateQueries({ queryKey: ['product-folders'] });
+      // The products gained or lost this file's plates — all of them, by prefix.
+      invalidateProductFiles(queryClient);
       // Literal keys, one per outcome: the i18n guard only sees keys spelled
       // out at a `t(` call, and a ternary inside one hides them from it.
       const unlinked = productIds.length === 0;

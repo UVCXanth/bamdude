@@ -33,8 +33,8 @@ function hoursMinutes(seconds: number): string {
  * back grouped already, and re-sorting would shuffle a product's files on
  * every rename for no gain.
  */
-function groupByFile(plates: PlateRecipe[]): { fileId: number; filename: string; plates: PlateRecipe[] }[] {
-  const groups = new Map<number, { fileId: number; filename: string; plates: PlateRecipe[] }>();
+function groupByFile(plates: PlateRecipe[]): { fileId: number; filename: string | null; plates: PlateRecipe[] }[] {
+  const groups = new Map<number, { fileId: number; filename: string | null; plates: PlateRecipe[] }>();
   for (const plate of plates) {
     const existing = groups.get(plate.library_file_id);
     if (existing) existing.plates.push(plate);
@@ -81,7 +81,13 @@ export function PlatesByFile({ productId }: { productId: number }) {
 
       {files.map((file) => (
         <div key={file.fileId} className="rounded-xl border border-bambu-dark-tertiary p-3 space-y-3">
-          <h3 className="text-sm font-medium text-white truncate">{file.filename}</h3>
+          {/* A file the library does not let this user open keeps its plates and loses
+              its name (WS-13 E1 CL2) — labelled, never an empty heading. */}
+          {file.filename == null ? (
+            <h3 className="text-sm font-medium text-bambu-gray italic truncate">{t('products.plates.hiddenFile')}</h3>
+          ) : (
+            <h3 className="text-sm font-medium text-white truncate">{file.filename}</h3>
+          )}
 
           {file.plates.map((plate) => (
             <div key={plate.id} className="space-y-2 border-t border-bambu-dark-tertiary pt-2 first:border-0 first:pt-0">

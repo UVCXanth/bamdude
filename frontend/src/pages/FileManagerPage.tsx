@@ -110,7 +110,7 @@ import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsP
 import { QueueSequencer } from '../components/QueueSequencer';
 import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
 import { LinkToProductsModal } from '../components/products/LinkToProductsModal';
-import { invalidateQueueViews } from '../utils/queryInvalidation';
+import { invalidateProductFiles, invalidateQueueViews } from '../utils/queryInvalidation';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
 type SortDirection = 'asc' | 'desc';
@@ -2045,6 +2045,8 @@ export function FileManagerPage() {
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
+      // The folder's files go to the trash, and their plates leave their products.
+      invalidateProductFiles(queryClient);
       if (selectedFolderId === deleteConfirm?.id) {
         setSelectedFolderId(null);
       }
@@ -2070,6 +2072,8 @@ export function FileManagerPage() {
       // queries on a stale snapshot that pre-dates this delete.
       queryClient.invalidateQueries({ queryKey: ['library-trash'] });
       queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
+      // A trashed file's plates leave every product it belonged to (WS-13 E1 CL4).
+      invalidateProductFiles(queryClient);
       setSelectedFiles((prev) => prev.filter((id) => id !== deleteConfirm?.id));
       setDeleteConfirm(null);
       showToast(t('fileManager.toast.fileDeleted'), 'success');
@@ -2088,6 +2092,7 @@ export function FileManagerPage() {
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
       queryClient.invalidateQueries({ queryKey: ['library-trash'] });
       queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
+      invalidateProductFiles(queryClient);
       // What happened, not what was asked for. A file whose queue item is
       // mid-print is skipped by the backend, and counting the request reported
       // it as deleted.

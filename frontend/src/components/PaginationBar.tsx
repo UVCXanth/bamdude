@@ -19,6 +19,9 @@ export interface PaginationBarProps {
    *  a grid of cards, which has no card of its own to sit in. */
   variant?: 'card' | 'bare';
   perPageOptions?: number[];
+  /** Offer «All» among the sizes (the default). A list whose server refuses the whole
+   *  list — the parts picker (WS-13 E1 K7) — turns it off. */
+  allowAll?: boolean;
 }
 
 const DEFAULT_PER_PAGE_OPTIONS = [12, 24, 48, 96];
@@ -47,6 +50,7 @@ export function PaginationBar({
   items,
   variant = 'card',
   perPageOptions = DEFAULT_PER_PAGE_OPTIONS,
+  allowAll = true,
 }: PaginationBarProps) {
   const { t } = useTranslation();
 
@@ -89,7 +93,7 @@ export function PaginationBar({
               {n}
             </option>
           ))}
-          <option value={-1}>{t('common.all')}</option>
+          {allowAll && <option value={-1}>{t('common.all')}</option>}
         </Select>
 
         {!isShowAll && totalPages > 1 && (

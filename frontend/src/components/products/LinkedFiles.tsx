@@ -5,6 +5,7 @@ import { File, Folder, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Product } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+import { invalidateProductFiles } from '../../utils/queryInvalidation';
 
 const CHIP_CLASS =
   'inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs bg-bambu-dark-tertiary text-bambu-gray max-w-full';
@@ -60,7 +61,7 @@ export function LinkedFiles({ product, canEdit }: LinkedFilesProps) {
     queryClient.invalidateQueries({ queryKey: ['product', product.id] });
     queryClient.invalidateQueries({ queryKey: ['product-files', product.id] });
     queryClient.invalidateQueries({ queryKey: ['product-folders', product.id] });
-    queryClient.invalidateQueries({ queryKey: ['product-plates', product.id] });
+    invalidateProductFiles(queryClient, product.id);
     // The File Manager's own chips carry the same links.
     queryClient.invalidateQueries({ queryKey: ['library-files'] });
   };

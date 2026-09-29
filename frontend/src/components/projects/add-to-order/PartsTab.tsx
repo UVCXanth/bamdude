@@ -36,7 +36,8 @@ export function PartsTab({ picks, onPicksChange }: { picks: PartPicks; onPicksCh
   });
   const params = {
     page,
-    ...(perPage === -1 ? { all: true } : { per_page: perPage }),
+    // The picker is paged — the server refuses the whole list (WS-13 E1 K7).
+    per_page: perPage,
     ...(q ? { q } : {}),
     ...(model ? { model } : {}),
   };
@@ -153,6 +154,7 @@ export function PartsTab({ picks, onPicksChange }: { picks: PartPicks; onPicksCh
             setPage(1);
           }}
           items={t('orders.add.parts.noun')}
+          allowAll={false}
         />
       </div>
     </div>

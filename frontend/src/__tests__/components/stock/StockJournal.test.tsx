@@ -22,6 +22,7 @@ const page1: StockJournalPage = {
     },
   ],
   next_cursor: 'c1',
+  meta: null,
 };
 const page2: StockJournalPage = {
   items: [
@@ -33,6 +34,7 @@ const page2: StockJournalPage = {
     },
   ],
   next_cursor: null,
+  meta: null,
 };
 
 describe('StockJournal', () => {

@@ -63,7 +63,7 @@ describe('OrdersWorkspace', () => {
     vi.spyOn(api, 'getOrder').mockImplementation(async (id: number) => detail(id, id === 2 ? 'Lamp' : 'Ten flasks') as never);
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue({
       lines: [],
-      totals: { prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null },
+      totals: { rows: 0, prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null },
     });
     screenIsWide(true);
   });

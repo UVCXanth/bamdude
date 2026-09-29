@@ -31,6 +31,7 @@ import type {
 } from '../../../api/client';
 import { PlanBlock } from '../../../components/projects/PlanBlock';
 import { ORDER_VIEW_KEYS } from '../../../utils/queryInvalidation';
+import { FORECAST_DEFAULTS } from '../../wireDefaults';
 
 /** What the mocked `useAuth` grants — reset in `beforeEach`, narrowed per test. */
 const auth = vi.hoisted(() => ({ granted: new Set<string>() }));
@@ -162,7 +163,7 @@ const plan: OrderPlan = {
       not_sliced: [],
     },
   ],
-  totals: { prints: 2, print_time_seconds: 5400, filament_used_grams: 120, cost: 2.4 },
+  totals: { rows: 0, prints: 2, print_time_seconds: 5400, filament_used_grams: 120, cost: 2.4 },
 };
 
 const plates: PlateRecipe[] = [
@@ -171,6 +172,7 @@ const plates: PlateRecipe[] = [
     library_file_id: 5,
     plate_index: 1,
     filename: 'big.3mf',
+    hidden: false,
     sliced: true,
     yield: [{ part_id: 1, name: 'Body', count: 10 }],
     unassigned: [],
@@ -185,6 +187,7 @@ const plates: PlateRecipe[] = [
     library_file_id: 6,
     plate_index: 0,
     filename: 'small.3mf',
+    hidden: false,
     sliced: true,
     yield: [{ part_id: 1, name: 'Body', count: 6 }],
     unassigned: [],
@@ -204,6 +207,7 @@ const spare: PlateRecipe = {
   library_file_id: 9,
   plate_index: 2,
   filename: 'extra.3mf',
+  hidden: false,
   sliced: true,
   yield: [{ part_id: 1, name: 'Body', count: 3 }],
   unassigned: [],
@@ -291,6 +295,7 @@ const farm = [
 /** No line answers yet — the shape every test gets unless it asks for a
  *  specific forecast. */
 const EMPTY_FORECAST: OrderForecastDetail = {
+  ...FORECAST_DEFAULTS, by_model: [],
   project_id: order.id, now_eta: null, now_seconds: null, after_eta: null, after_seconds: null, machine_seconds: 0,
   unknown_prints: 0, unroutable_prints: 0, eta_complete: true, ahead_count: 0, assumptions: [], lines: [],
 };
@@ -518,7 +523,7 @@ describe('PlanBlock', () => {
   it('says so when there is nothing outstanding left to plan', async () => {
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue({
       lines: [{ ...plan.lines[0], rows: [], outstanding_before: [], unsatisfiable: [], surplus_after: [] }],
-      totals: { prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null },
+      totals: { rows: 0, prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null },
     });
 
     render(<PlanBlock order={order} canEdit />);
@@ -599,6 +604,23 @@ describe('PlanBlock', () => {
     // ⚠️ `canEdit` is the ORDER's own gate (a closed order, a read-only view)
     // and it does not speak for the printers. Somebody holding
     // `printers:control` may still send a plate to a machine.
+    expect(screen.getByTestId('plan-row-10-100-printer')).toBeInTheDocument();
+  });
+
+  it('names a plate from a file the caller cannot open, and offers no printer for it', async () => {
+    // WS-13 E1 CL2: the server keeps the plate and drops its file's name.
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithSpare);
+    vi.spyOn(api, 'getProductPlates').mockResolvedValue([...plates, { ...spare, filename: null, hidden: true }]);
+    render(<PlanBlock order={order} canEdit />);
+
+    const add = await screen.findByTestId('plan-line-10-add');
+    expect(within(add).getByRole('option', { name: /File you cannot open/ })).toBeInTheDocument();
+    fireEvent.change(add, { target: { value: '300' } });
+
+    const row = screen.getByTestId('plan-row-10-300');
+    expect(within(row).getByText(/File you cannot open/)).toBeInTheDocument();
+    expect(screen.queryByTestId('plan-row-10-300-printer')).not.toBeInTheDocument();
+    // The planned rows keep their printer.
     expect(screen.getByTestId('plan-row-10-100-printer')).toBeInTheDocument();
   });
 

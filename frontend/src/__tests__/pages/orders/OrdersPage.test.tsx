@@ -57,7 +57,7 @@ describe('OrdersPage', () => {
     localStorage.clear();
     vi.spyOn(api, 'getCustomers').mockResolvedValue([{ id: 1, name: 'ACME', figures: {} }] as never);
     vi.spyOn(api, 'getOrdersFilament').mockResolvedValue(EMPTY_FARM);
-    vi.spyOn(api, 'getOrdersSummary').mockResolvedValue({ active: 4, overdue: 1, urgent: 2, printing: 3, queued: 7, remaining: 12, all_covered: 1 });
+    vi.spyOn(api, 'getOrdersSummary').mockResolvedValue({ active: 4, overdue: 1, urgent: 2, printing: 3, queued: 7, remaining: 12, all_covered: 1, qc: 0 });
     vi.spyOn(api, 'getOrderAssignees').mockResolvedValue([]);
     vi.spyOn(api, 'getOrderBoard').mockResolvedValue(boardOf());
   });
@@ -276,7 +276,7 @@ describe('OrdersPage', () => {
           ({ matches: query.includes('min-width: 1024px'), media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as never,
       );
       vi.spyOn(api, 'getOrder').mockImplementation(async (id: number) => ({ ...orderDetail, id, name: id === 3 ? 'C' : 'A' }) as never);
-      vi.spyOn(api, 'getOrderPlan').mockResolvedValue({ lines: [], totals: { prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null } });
+      vi.spyOn(api, 'getOrderPlan').mockResolvedValue({ lines: [], totals: { rows: 0, prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null } });
       vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([{ ...rowA, code: 'OR-0001' }, rowC]));
     });
     it('the order in the URL is the one shown; a click on another row moves it', async () => {

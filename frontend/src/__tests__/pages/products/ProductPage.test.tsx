@@ -83,7 +83,7 @@ describe('ProductPage', () => {
     vi.restoreAllMocks();
     auth.granted = null;
     vi.spyOn(api, 'getProduct').mockResolvedValue(product as never);
-    vi.spyOn(api, 'getProductStock').mockResolvedValue({ balances: [], kits_available: 0, movements: [] });
+    vi.spyOn(api, 'getProductStock').mockResolvedValue({ kits_by_option: [], balances: [], kits_available: 0, movements: [] });
     vi.spyOn(api, 'getProductPlates').mockResolvedValue([] as never);
     vi.spyOn(api, 'getLibraryFiles').mockResolvedValue([] as never);
     vi.spyOn(api, 'getFoldersByProduct').mockResolvedValue([] as never);
@@ -271,7 +271,7 @@ describe('ProductPage', () => {
   });
   describe('free stock (pass 8)', () => {
     it('shows the shelf, right under the composition it is a shelf of', async () => {
-      vi.spyOn(api, 'getProductStock').mockResolvedValue({
+      vi.spyOn(api, 'getProductStock').mockResolvedValue({ kits_by_option: [],
         balances: [{ part_id: 1, name: 'lid', qty_per_unit: 1, balance: 3 }],
         kits_available: 3,
         movements: [],
@@ -313,7 +313,7 @@ describe('ProductPage', () => {
   });
 
   it('adds a catalog product to an order it asks for', async () => {
-    vi.spyOn(api, 'getProductsPaged').mockResolvedValue({ items: [], meta: { total: 0, current_page: 1, per_page: 24, last_page: 1 }, categories: [], uncategorized: 0 });
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue({ items: [], meta: { total: 0, current_page: 1, per_page: 24, last_page: 1 }, categories: [], uncategorized: 0, catalog_total: 0 });
     vi.spyOn(api, 'getProductCategories').mockResolvedValue([]);
     vi.spyOn(api, 'getProductFacets').mockResolvedValue({ materials: [], colors: [], models: [] });
     const orders = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue({

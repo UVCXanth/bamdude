@@ -6484,6 +6484,8 @@ export default {
     plates: {
       title: 'Plates',
       plate: 'Plate',
+      // WS-13 E1 CL2: the library does not let this user open the file; its plate stays.
+      hiddenFile: 'File you cannot open',
       wholeFile: 'Whole file',
       notSliced: 'not sliced',
       notInComposition: 'not in composition — add a part or an alias with this name',
@@ -6879,6 +6881,18 @@ export default {
       products: 'Products',
       customers: 'Customers',
       stock: 'Stock',
+    },
+    // Why an estimate is not whole — one label per server code (utils/estimateReasons.ts).
+    estimateReasons: {
+      unknown_time: 'Prints without a time estimate',
+      unroutable: 'Prints no printer takes',
+      material_mismatch: 'Parts only on plates of another material',
+      needs_slicing: 'Parts only on unsliced plates',
+      no_plate: 'Parts on no plate',
+      truncated: 'The plan is too long to show whole',
+      unknown_weight: 'Plates without a filament weight',
+      unknown_purchase_price: 'Purchased parts without a price',
+      empty_composition: 'The product has no parts',
     },
   },
 

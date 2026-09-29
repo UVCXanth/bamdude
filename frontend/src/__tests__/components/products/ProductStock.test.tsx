@@ -57,6 +57,7 @@ function CaptureClient({ onReady }: { onReady: (qc: QueryClient) => void }) {
 }
 
 const stock: ProductStockWire = {
+  kits_by_option: [],
   kits_available: 3,
   balances: [
     { part_id: 1, name: 'Lid', qty_per_unit: 1, balance: 5 },
@@ -283,7 +284,7 @@ describe('ProductStock', () => {
     // ⚠️ `balances` is empty only when the product COUNTS nothing — every
     // counted part comes back, with a 0 where nothing has moved. So this
     // sentence is about the product's composition, never about an empty shelf.
-    vi.spyOn(api, 'getProductStock').mockResolvedValue({ balances: [], kits_available: 0, movements: [] });
+    vi.spyOn(api, 'getProductStock').mockResolvedValue({ kits_by_option: [], balances: [], kits_available: 0, movements: [] });
 
     render(<ProductStock productId={5} canEdit />);
 
@@ -298,7 +299,7 @@ describe('ProductStock', () => {
   it('shows a shelf that is merely empty as zeros under a zero-kit headline', async () => {
     // The other half of finding M2: the parts exist and there are none of them,
     // which is a table of zeros — not "this product has no counted parts".
-    vi.spyOn(api, 'getProductStock').mockResolvedValue({
+    vi.spyOn(api, 'getProductStock').mockResolvedValue({ kits_by_option: [],
       kits_available: 0,
       balances: [
         { part_id: 1, name: 'Lid', qty_per_unit: 1, balance: 0 },
@@ -442,7 +443,7 @@ describe('ProductStock · parts held for orders and parts out of the kit', () =>
 
   // spec workshop-order-issue-followups, rules 34 and 49.
   it('shows what orders hold and puts out-of-kit parts in their own group', async () => {
-    vi.spyOn(api, 'getProductStock').mockResolvedValue({
+    vi.spyOn(api, 'getProductStock').mockResolvedValue({ kits_by_option: [],
       balances: [
         { part_id: 1, name: 'shade', qty_per_unit: 1, balance: 4, held_for_orders: 3 },
         { part_id: 2, name: 'handle', qty_per_unit: 0, balance: 5, held_for_orders: 0 },

@@ -84,4 +84,30 @@ describe('PlatesByFile', () => {
     // The model the plate was sliced for (spec workshop-product-catalog, rule 24).
     expect(screen.getByTitle('Printer model')).toHaveTextContent('X1C');
   });
+  it('labels a file the caller cannot open instead of naming it', async () => {
+    // WS-13 E1 CL2 / LV4: the plate stays — its numbers are the product's — and the
+    // file's name does not reach this caller.
+    vi.spyOn(api, 'getProductPlates').mockResolvedValue([
+      {
+        id: 9,
+        library_file_id: 11,
+        plate_index: 0,
+        filename: null,
+        hidden: true,
+        sliced: true,
+        yield: [{ part_id: 1, name: 'hook', count: 2 }],
+        unassigned: [],
+        materials: ['PETG'],
+        colors: [],
+        printer_model: 'P1S',
+        print_time_seconds: 3600,
+        filament_used_grams: 20,
+      },
+    ]);
+    render(<PlatesByFile productId={3} />);
+
+    expect(await screen.findByRole('heading', { name: 'File you cannot open' })).toBeInTheDocument();
+    expect(screen.getByText('P1S')).toBeInTheDocument();
+    expect(screen.queryByText('null')).not.toBeInTheDocument();
+  });
 });

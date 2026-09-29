@@ -85,6 +85,8 @@ export const ORDER_VIEW_KEYS = [
   // these mutations write, and «can assemble» on the positions, their page and
   // a dialog's lookup reads the same free shelf.
   'stock-journal',
+  // WS-13 E1 ST2: the journal's product filter moves with the journal.
+  'stock-journal-products',
   'stock-items',
   'stock-item',
   'stock-lookup',
@@ -182,6 +184,7 @@ export const STOCK_KEYS: readonly (readonly string[])[] = [
   ['stock-item'],
   ['stock-lookup'],
   ['stock-journal'],
+  ['stock-journal-products'],
   ['stock-summary'],
   ['stock-movements'],
   ['product-stock'],
@@ -235,6 +238,43 @@ export const PRODUCT_CATALOG_KEYS: readonly (readonly string[])[] = [
 
 export function invalidateProductCatalog(qc: QueryClient): void {
   for (const queryKey of PRODUCT_CATALOG_KEYS) qc.invalidateQueries({ queryKey: [...queryKey] });
+}
+
+/**
+ * What a product prints from, as key prefixes (WS-13 E1 CL3 / CL4): its plates, its
+ * parts' sources, its files tab and its estimate — every one read off the product's
+ * plates and the files behind them.
+ *
+ * ⚠️ `product-file-groups` is the files tab's DTO and is NOT `product-files`: that key
+ * already holds the product's `LibraryFile[]` (`LinkedFiles`, `ProductHeader`), a
+ * different shape that a shared key would overwrite.
+ */
+export const PRODUCT_FILE_KEYS = ['product-plates', 'product-part-sources', 'product-file-groups', 'product-estimate'] as const;
+
+/**
+ * Mark what a product prints from stale — after a composition, alias or merge edit,
+ * a file linked or unlinked, a card re-read, a purchased part's price. Without a
+ * product id every product's: a file trashed or restored in the file manager moves
+ * the plates of whichever products it belongs to, and the page does not know which.
+ */
+export function invalidateProductFiles(qc: QueryClient, productId?: number): void {
+  for (const key of PRODUCT_FILE_KEYS) {
+    qc.invalidateQueries({ queryKey: productId == null ? [key] : [key, productId] });
+  }
+}
+
+/**
+ * After a product's variants changed (WS-13 E1 CL4): the product and the catalog's
+ * figures, and — because a new group writes a choice into every order line and
+ * stock position of the product — every order view and every stock view, and the
+ * estimate of one standard unit.
+ */
+export function invalidateProductVariants(qc: QueryClient, productId: number): void {
+  qc.invalidateQueries({ queryKey: ['product', productId] });
+  invalidateProductCatalog(qc);
+  invalidateOrderViews(qc);
+  invalidateStock(qc);
+  qc.invalidateQueries({ queryKey: ['product-estimate', productId] });
 }
 
 /** The DETAIL key of one deleted row — an order's page is `['project', id]`. */

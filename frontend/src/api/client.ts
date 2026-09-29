@@ -1924,6 +1924,13 @@ export interface ProcurementRow {
   need: number;
   acquired: number;
   remaining: number;
+  /** WS-13 E1 PR1–PR3 — the part's price and link, and the two costs off them. */
+  unit_price: number | null;
+  sourcing_url: string | null;
+  /** need × price; null without a price (0 with a zero price). */
+  planned_cost: number | null;
+  /** min(acquired, need) × price; 0 when nothing was bought, null when bought at an unknown price. */
+  acquired_cost: number | null;
 }
 
 export interface ProjectFigures {
@@ -1959,6 +1966,25 @@ export interface ProjectFigures {
   bankable_surplus: number;
   prints_in_progress: number;
   prints_queued: number;
+  /** WS-13 E1 OR8 — the lines' «issued» / «held» counters, summed by the server. */
+  issued_units: number;
+  held_units: number;
+  /** WS-13 E1 PR4–PR7 — the purchases beside the prints' `total_cost` / `margin`,
+   *  which keep their meaning. null = one bought part has no price; the known part
+   *  and `procurement_partial` say how much is known. */
+  procurement_cost: number | null;
+  procurement_known_cost: number;
+  procurement_partial: boolean;
+  cost_with_procurement: number | null;
+  margin_with_procurement: number | null;
+}
+
+/** WS-13 E1 CN1 — the order page's tab badges. */
+export interface OrderCounts {
+  /** The «Prints» tab's rows: the order's prints outside the trash, whatever their status. */
+  prints: number;
+  /** The order's dispatch notes. */
+  issues: number;
 }
 
 /** Who receives the order — a contact of its customer. */
@@ -1999,6 +2025,7 @@ export interface Order {
   lines: ProjectLine[];
   procurement: ProcurementRow[];
   figures: ProjectFigures;
+  counts: OrderCounts;
   /** Prints bound to the order that no line could take. */
   other_archive_ids: number[];
 }
@@ -2042,6 +2069,11 @@ export interface OrderListItem {
    *  built from, so a line whose product HAS a cover shows it and one that has
    *  none keeps its place as a placeholder. */
   line_products: LineProduct[];
+  /** WS-13 E1 OR2 — the lines' distinct materials, in line order («any» adds nothing). */
+  materials: string[];
+  /** WS-13 E1 OR3 — the distinct products, in line order, the whole list (a card
+   *  draws the first three and «+N» off its length). */
+  products: LineProduct[];
   prints_in_progress: number;
   prints_queued: number;
 }
@@ -2129,6 +2161,8 @@ export interface OrdersSummary {
   queued: number;
   remaining: number;
   all_covered: number;
+  /** WS-13 E1 OR1 — active orders at the «qc» stage; not `all_covered`. */
+  qc: number;
 }
 /** `GET /projects/nav-badges` — the sidebar's counts for the Projects section. */
 export interface ProjectsNavBadges {
@@ -2150,6 +2184,8 @@ export interface ProductListPage {
   /** Counts under every filter but the category; a category with none is absent. */
   categories: ProductCategoryCount[];
   uncategorized: number;
+  /** WS-13 E1 PC6 — every catalogue product, whatever the filters. */
+  catalog_total: number;
 }
 export interface CustomerListPage {
   items: Customer[];
@@ -2279,6 +2315,10 @@ export interface PlanRow {
   /** The line's other candidate plates that make exactly the same counted
    *  parts. Empty is the ordinary case; see `PlanAlternative`. */
   alternatives: PlanAlternative[];
+  /** Client-side only, never on the wire: a plate the operator added by hand from a
+   *  file the library does not let them open (WS-13 E1 CL2) — `filename` then holds
+   *  the label, and nothing that needs the file is offered on the row. */
+  hidden?: boolean;
 }
 
 /**
@@ -2339,6 +2379,8 @@ export interface PlanTotals {
   filament_used_grams: number;
   /** null when the farm has no filament rate. */
   cost: number | null;
+  /** WS-13 E1 OR9 — Σ the lines' rows: the «Print plan» tab's badge. */
+  rows: number;
 }
 
 export interface OrderPlan {
@@ -2639,6 +2681,33 @@ export interface VariantGroup {
   position: number;
   default_option_id: number | null;
   options: VariantOption[];
+  /** WS-13 E1 VR9 — what would refuse the group's delete, counted as the delete guard counts. */
+  lines_count: number;
+  stock_count: number;
+  parts_count: number;
+}
+
+/** One option of a variants draft: an existing `id` (renamed in place) or a new `temp_id`. */
+export interface VariantOptionDraft {
+  id?: number;
+  temp_id?: string;
+  name: string;
+}
+
+/** One group of a variants draft; `default` names the standard option by id or temp_id. */
+export interface VariantGroupDraft {
+  id?: number;
+  temp_id?: string;
+  name: string;
+  default: number | string;
+  options: VariantOptionDraft[];
+}
+
+/** `PUT /products/{id}/variants` — the whole draft, against the revision the page read. */
+export interface VariantsApply {
+  /** `Product.variants_revision` as the page read it. */
+  revision: string;
+  groups: VariantGroupDraft[];
 }
 
 export interface VariantGroupCreate {
@@ -2705,7 +2774,10 @@ export interface PlateRecipe {
   library_file_id: number;
   /** 0 means the whole file rather than a numbered plate. */
   plate_index: number;
-  filename: string;
+  /** null with `hidden` for a file the caller may not open in the library (WS-13 E1
+   *  K5); the plate's numbers are still the product's. */
+  filename: string | null;
+  hidden: boolean;
   sliced: boolean;
   /** `yield` is the wire name — a JS keyword only inside a generator, so it
    *  is a legal property here. */
@@ -2717,6 +2789,77 @@ export interface PlateRecipe {
   printer_model: string | null;
   print_time_seconds: number | null;
   filament_used_grams: number | null;
+}
+
+/** One plate a part can be printed from (WS-13 E1 PS1) — `filename` / folder null with
+ *  `hidden` for a file the caller may not open. */
+export interface PartSource {
+  plate_id: number;
+  library_file_id: number;
+  filename: string | null;
+  folder_id: number | null;
+  folder_name: string | null;
+  hidden: boolean;
+  plate_index: number;
+  printer_model: string | null;
+  sliced: boolean;
+  yield: number;
+  print_time_seconds: number | null;
+  filament_used_grams: number | null;
+  /** The first sliced source, in the plan's order. */
+  recommended: boolean;
+}
+
+/** What a part's sources add up to (PS2): `yield_*` over the sliced ones, hidden included. */
+export interface PartSourcesSummary {
+  sources: PartSource[];
+  has_sliced_source: boolean;
+  yield_min: number | null;
+  yield_max: number | null;
+  hidden_sources: number;
+}
+
+/** `GET /products/{id}/sources` — every printed part's sources (PS6). */
+export interface ProductSources {
+  parts: (PartSourcesSummary & { part_id: number })[];
+}
+
+/** One file linked to the product, with its plates (PS7). */
+export interface ProductFileGroup {
+  library_file_id: number;
+  filename: string | null;
+  hidden: boolean;
+  folder_id: number | null;
+  folder_name: string | null;
+  file_type: string | null;
+  /** A container a plan can use (3MF / gcode); STL / STEP must be sliced first. */
+  plan_eligible: boolean;
+  printer_model: string | null;
+  sliced_any: boolean;
+  plates: PlateRecipe[];
+}
+
+/** `GET /products/{id}/files` — every linked file outside the trash (PS7). */
+export interface ProductFileGroups {
+  files: ProductFileGroup[];
+  hidden_files: number;
+}
+
+/** `GET /products/{id}/estimate` — one standard unit from scratch, in whole plates (ES). */
+export interface ProductEstimate {
+  prints: number;
+  print_time_seconds: number | null;
+  /** The known part — a row without grams adds nothing and is a reason. */
+  filament_grams: number;
+  /** null without a filament rate (the farm's setting, never a reason). */
+  filament_cost: number | null;
+  surplus: { part_id: number; name: string; count: number }[];
+  purchased_cost: number | null;
+  purchased_known_cost: number;
+  purchased_partial: boolean;
+  /** Exactly «no reasons». */
+  complete: boolean;
+  reasons: EstimateReason[];
 }
 
 /** The four buckets a product attachment sits in. `pictures` IS the gallery;
@@ -2790,10 +2933,23 @@ export interface ProductListItem {
   kits_available: number;
   /** Free ready units over every finished-goods position of the product. */
   finished_available: number;
-  /** The product's plate materials, colours and printer models (stored facets). */
+  /** The product's plate materials, colours and printer models (stored facets) — a
+   *  model only from a printable file (WS-13 E1 K2). */
   materials: string[];
   colors: string[];
   models: string[];
+  /** WS-13 E1 PC2 — a linked file outside the trash can be printed as it is. */
+  sliced: boolean;
+  /** PC3 — printed parts that are parts (a zero in the kit counts, «not counted» does not). */
+  printed_parts_count: number;
+  purchased_parts_count: number;
+  /** The variant groups' names, in their order. */
+  variant_group_names: string[];
+  /** Distinct active orders with a line of the product. */
+  active_orders_count: number;
+  /** Ready-goods positions on record, and those below their minimum. */
+  finished_positions: number;
+  finished_below_min: number;
 }
 
 export interface Product extends ProductListItem {
@@ -2806,6 +2962,8 @@ export interface Product extends ProductListItem {
   attachments: ProductAttachment[];
   parts: ProductPart[];
   variant_groups: VariantGroup[];
+  /** WS-13 E1 VR4 — the revision a variants draft is applied against. */
+  variants_revision: string;
   library_file_ids: number[];
   library_folder_ids: number[];
   /** Units made for orders — every order status, the usable units attributed
@@ -2909,6 +3067,20 @@ export interface StockBalance {
   /** Held by orders' parts lines — neither free nor reserved (followups, rule 49).
    *  Sent by `GET /products/{id}/stock`; the stock tab's rows leave it null. */
   held_for_orders?: number | null;
+  /** WS-13 E1 ST4 — the option the part is bound to; null when it is none (or the
+   *  row came from the flat stock answer, which does not read options). */
+  variant?: { group: string; option: string } | null;
+}
+
+/** WS-13 E1 ST4 / Q12 — the kits the free shelf makes with ONE option of one group,
+ *  every other group at its standard. */
+export interface KitsByOption {
+  group_id: number;
+  group_name: string;
+  option_id: number;
+  option_name: string;
+  is_default: boolean;
+  kits: number;
 }
 
 /**
@@ -2954,6 +3126,8 @@ export const STOCK_MOVEMENT_LIMIT = 200;
 export interface ProductStock {
   balances: StockBalance[];
   kits_available: number;
+  /** WS-13 E1 ST5 — the stock page's own helper, for this product. */
+  kits_by_option: KitsByOption[];
   movements: StockMovement[];
 }
 
@@ -2978,6 +3152,8 @@ export interface StockMoved {
 export interface StockReservation {
   line_id: number;
   order_id: number;
+  /** `OR-0042` (WS-13 E1 ST4). */
+  order_code: string;
   order_name: string;
   /** Always > 0 — a line holding nothing is not listed. */
   kits: number;
@@ -2994,6 +3170,12 @@ export interface StockProduct {
   parts: StockBalance[];
   /** Lines of ACTIVE orders holding kits; kits desc, then order name. */
   reservations: StockReservation[];
+  /** WS-13 E1 ST4. */
+  sku: string | null;
+  /** Σ the counted parts' balances — what lies on the shelf, kits or not; the `shelf` sort key. */
+  parts_on_shelf: number;
+  /** Read for a page's rows only; the flat answer leaves it empty. */
+  kits_by_option: KitsByOption[];
 }
 
 /** A row of the paged shelf list: the flat row plus its reservations' sum, counted by the server. */
@@ -3298,11 +3480,12 @@ export interface StockIssueUpdate {
 export const WAYBILL_MAX = 24;
 
 /** A printed part of a catalogue product — the dialog's «parts of a product» tab. */
-export interface ProductPartRow {
+export interface ProductPartRow extends PartSourcesSummary {
   part_id: number;
   name: string;
   variant: { group: string; option: string } | null;
   product: { id: number; code: string; name: string; sku: string | null };
+  /** WS-13 E1 K3 — the models THIS part's sliced sources are sliced for. */
   models: string[];
 }
 
@@ -3312,6 +3495,7 @@ export interface ProductPartsPage {
 }
 
 export interface ProductPartsParams extends PagedListParams {
+  /** A printer model, or `none` — nothing of the product is sliced (WS-13 E1 PS4). */
   model?: string;
 }
 
@@ -3487,6 +3671,8 @@ export interface StockJournalPage {
   items: StockJournalRow[];
   /** Set only when the page came back full — a short page is the end. */
   next_cursor: string | null;
+  /** WS-13 E1 ST1 — set in the numbered-page mode, null in the cursor mode. */
+  meta: PaginationMeta | null;
 }
 
 export interface StockJournalParams {
@@ -3496,6 +3682,17 @@ export interface StockJournalParams {
   kind?: string;
   cursor?: string | null;
   limit?: number;
+  /** WS-13 E1 ST1 — numbered pages instead of the cursor; never both. */
+  page?: number;
+  per_page?: number;
+  sort_by?: 'date-desc' | 'date-asc';
+}
+
+/** `GET /stock/journal/products` — a product the chosen books moved (WS-13 E1 ST2). */
+export interface StockJournalProduct {
+  id: number;
+  code: string;
+  name: string;
 }
 
 /** `POST /projects/{id}/bank-surplus`. `nothing_to_bank` is not "`moved` is
@@ -3623,7 +3820,12 @@ export interface ProductCatalogFilters {
   color?: string;
   model?: string;
   status?: ProductStatus;
+  /** The old name of `stock: 'kits'`; the server refuses both together. */
   in_stock?: boolean;
+  /** WS-13 E1 PC1 — ready units free, a free kit, or a position below its minimum. */
+  stock?: 'finished' | 'kits' | 'below_min';
+  /** WS-13 E1 PC2 — a printable file is (or is not) linked. */
+  sliced?: boolean;
 }
 
 // API Key types
@@ -5776,8 +5978,31 @@ export interface OrderForecast {
   ahead_count: number;
   /** What the simulation does not model: `stagger` | `plate_clear` | `drying` | `prep`. */
   assumptions: string[];
+  /** WS-13 E1 OR5 — why the PRODUCTION estimate is not whole, in the server's order;
+   *  empty = whole. Apart from `eta_complete`, which describes the simulation. */
+  incomplete_reasons: EstimateReason[];
+  /** WS-13 E1 OR4 — the forecast lands after the due day (the deadlines view's own rule). */
+  late: boolean;
 }
-export interface OrderForecastDetail extends OrderForecast { lines: LineForecast[] }
+/** WS-13 E1 OR6 — one printer model's share of an order's plan. */
+export interface ModelHours {
+  model: string | null;
+  prints: number;
+  /** null as soon as one of the model's rows has no estimate — never a partial sum. */
+  seconds: number | null;
+  /** Machines of that model the farm lets take new work. */
+  accepting_printers: number;
+}
+export interface OrderForecastDetail extends OrderForecast {
+  lines: LineForecast[];
+  by_model: ModelHours[];
+}
+/** Why an estimate is not whole (WS-13 E1 OR5a / ES3): a code of the server's closed
+ *  lists (`utils/estimateReasons.ts`) and its count — null where a count means nothing. */
+export interface EstimateReason {
+  code: string;
+  count: number | null;
+}
 export interface ForecastBatch { farm: FarmForecast; orders: OrderForecast[] }
 
 // ---- filament needs (spec 2026-09-07) ----
@@ -12325,6 +12550,8 @@ export const api = {
       if (value) qs.set(key, value);
     }
     if (params.in_stock) qs.set('in_stock', 'true');
+    if (params.stock) qs.set('stock', params.stock);
+    if (params.sliced != null) qs.set('sliced', String(params.sliced));
     return request<ProductListPage>(`/products/?${pagedSearchParams(qs, params)}`);
   },
   getProductFacets: () => request<ProductFacets>('/products/facets'),
@@ -12411,12 +12638,28 @@ export const api = {
     if (params.product_id != null) qs.set('product_id', String(params.product_id));
     if (params.item_id != null) qs.set('item_id', String(params.item_id));
     if (params.kind) qs.set('kind', params.kind);
-    if (params.cursor) qs.set('cursor', params.cursor);
-    qs.set('limit', String(params.limit ?? STOCK_JOURNAL_PAGE));
+    if (params.page != null) {
+      // WS-13 E1 ST1: numbered pages — the cursor and its limit are not sent.
+      qs.set('page', String(params.page));
+      if (params.per_page != null) qs.set('per_page', String(params.per_page));
+      if (params.sort_by) qs.set('sort_by', params.sort_by);
+    } else {
+      if (params.cursor) qs.set('cursor', params.cursor);
+      qs.set('limit', String(params.limit ?? STOCK_JOURNAL_PAGE));
+    }
     return request<StockJournalPage>(`/stock/journal?${qs.toString()}`);
   },
+  /** The journal's product filter: products the chosen books moved (WS-13 E1 ST2). */
+  getStockJournalProducts: (book: StockJournalBook = 'both') =>
+    request<StockJournalProduct[]>(`/stock/journal/products?book=${book}`),
 
   getProductPlates: (id: number) => request<PlateRecipe[]>(`/products/${id}/plates`),
+  /** Every printed part's sources — the composition tab (WS-13 E1 PS6). */
+  getProductSources: (id: number) => request<ProductSources>(`/products/${id}/sources`),
+  /** Every linked file with its plates — the files tab (PS7); NOT `['product-files', id]`. */
+  getProductFileGroups: (id: number) => request<ProductFileGroups>(`/products/${id}/files`),
+  /** One standard unit from scratch, in whole plates (ES). */
+  getProductEstimate: (id: number) => request<ProductEstimate>(`/products/${id}/estimate`),
   createProductPart: (productId: number, data: ProductPartCreate) =>
     request<ProductPart>(`/products/${productId}/parts`, {
       method: 'POST',
@@ -12430,6 +12673,10 @@ export const api = {
   deleteProductPart: (productId: number, partId: number) =>
     request<{ message: string }>(`/products/${productId}/parts/${partId}`, { method: 'DELETE' }),
   // Variants (spec workshop-product-variants, rule 18) — every call answers the product.
+  /** The whole draft in one transaction, against the revision the page read (WS-13 E1
+   *  VR4–VR9); a refusal is `{error, message}` — `variants_changed`, `option_moved`, … */
+  applyProductVariants: (productId: number, data: VariantsApply) =>
+    request<Product>(`/products/${productId}/variants`, { method: 'PUT', body: JSON.stringify(data) }),
   createVariantGroup: (productId: number, data: VariantGroupCreate) =>
     request<Product>(`/products/${productId}/variant-groups`, { method: 'POST', body: JSON.stringify(data) }),
   updateVariantGroup: (productId: number, groupId: number, data: VariantGroupUpdate) =>

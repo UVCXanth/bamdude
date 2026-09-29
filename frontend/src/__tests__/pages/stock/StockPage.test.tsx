@@ -10,16 +10,18 @@ import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { StockFigures, StockItem, StockItemsPage, StockListPage } from '../../../api/client';
 import { StockPage } from '../../../pages/stock/StockPage';
+import { PRODUCT_ROW_DEFAULTS, STOCK_ROW_DEFAULTS } from '../../wireDefaults';
 
 const lamp = {
+  ...STOCK_ROW_DEFAULTS,
   id: 1, name: 'Lamp', is_active: true, sku: null, version: null, category: null, status: 'ready', origin: 'catalog', kits_available: 3, reserved_kits: 2,
   parts: [
     { part_id: 11, name: 'lid', qty_per_unit: 1, balance: 5 },
     { part_id: 12, name: 'base', qty_per_unit: 1, balance: 3 },
   ],
-  reservations: [{ line_id: 7, order_id: 42, order_name: 'Order for Ivan', kits: 2 }],
+  reservations: [{ line_id: 7, order_id: 42, order_code: 'OR-0042', order_name: 'Order for Ivan', kits: 2 }],
 };
-const vase = { id: 2, name: 'Old vase', is_active: false, sku: null, version: null, category: null, status: 'ready', origin: 'catalog', kits_available: 0, reserved_kits: 0, parts: [{ part_id: 21, name: 'body', qty_per_unit: 1, balance: 0 }], reservations: [] };
+const vase = { ...STOCK_ROW_DEFAULTS, id: 2, name: 'Old vase', is_active: false, sku: null, version: null, category: null, status: 'ready', origin: 'catalog', kits_available: 0, reserved_kits: 0, parts: [{ part_id: 21, name: 'body', qty_per_unit: 1, balance: 0 }], reservations: [] };
 const pageOf = (items: unknown[], total = items.length): StockListPage =>
   ({ items, meta: { total, current_page: 1, per_page: 24, last_page: Math.max(1, Math.ceil(total / 24)) } }) as StockListPage;
 const figures: StockFigures = { kits: 3, kit_products: 1, parts: 8, reserved_kits: 2, incomplete: 1 };
@@ -52,11 +54,11 @@ describe('StockPage', () => {
     vi.spyOn(api, 'getStockItemsSummary').mockResolvedValue({ on_hand: 4, reserved: 1, available: 3, tracked: 1, below_min: 0 });
     getPage = vi.spyOn(api, 'getStockPaged').mockResolvedValue(pageOf([lamp, vase]));
     vi.spyOn(api, 'getStockFigures').mockResolvedValue(figures);
-    getJournal = vi.spyOn(api, 'getStockJournal').mockResolvedValue({ items: [], next_cursor: null });
+    getJournal = vi.spyOn(api, 'getStockJournal').mockResolvedValue({ items: [], next_cursor: null, meta: null });
     vi.spyOn(api, 'getSettings').mockResolvedValue({ date_format: 'system' } as never);
     getProducts = vi.spyOn(api, 'getProducts').mockResolvedValue([
-      { id: 1, code: 'PR-0001', name: 'Lamp', is_active: true, sku: null, version: null, category: null, status: 'ready', origin: 'catalog', origin_file_id: null, origin_plate_index: null, cover_image_filename: null, has_cover: false, parts_count: 2, plates_count: 1, lines_count: 0, kits_available: 3, finished_available: 0, materials: [], colors: [], models: [] },
-      { id: 2, code: 'PR-0002', name: 'Old vase', is_active: false, sku: null, version: null, category: null, status: 'ready', origin: 'catalog', origin_file_id: null, origin_plate_index: null, cover_image_filename: null, has_cover: false, parts_count: 1, plates_count: 1, lines_count: 0, kits_available: 0, finished_available: 0, materials: [], colors: [], models: [] },
+      { ...PRODUCT_ROW_DEFAULTS, id: 1, code: 'PR-0001', name: 'Lamp', is_active: true, sku: null, version: null, category: null, status: 'ready', origin: 'catalog', origin_file_id: null, origin_plate_index: null, cover_image_filename: null, has_cover: false, parts_count: 2, plates_count: 1, lines_count: 0, kits_available: 3, finished_available: 0, materials: [], colors: [], models: [] },
+      { ...PRODUCT_ROW_DEFAULTS, id: 2, code: 'PR-0002', name: 'Old vase', is_active: false, sku: null, version: null, category: null, status: 'ready', origin: 'catalog', origin_file_id: null, origin_plate_index: null, cover_image_filename: null, has_cover: false, parts_count: 1, plates_count: 1, lines_count: 0, kits_available: 0, finished_available: 0, materials: [], colors: [], models: [] },
     ]);
   });
 

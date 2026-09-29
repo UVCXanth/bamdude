@@ -11,6 +11,7 @@ import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
+import { invalidateProductFiles } from '../utils/queryInvalidation';
 import { formatFileSize } from '../utils/file';
 import { parseUTCDate } from '../utils/date';
 
@@ -157,6 +158,8 @@ export function LibraryTrashPage() {
       queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
+      // A restored file brings its plates back to its products (WS-13 E1 CL4).
+      invalidateProductFiles(queryClient);
     },
     onError: (e: Error) => showToast(e.message || t('libraryTrash.toast.restoreFailed'), 'error'),
   });

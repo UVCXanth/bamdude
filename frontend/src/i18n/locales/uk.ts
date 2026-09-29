@@ -6599,6 +6599,8 @@ export default {
     plates: {
       title: 'Платформи',
       plate: 'Платформа',
+      // WS-13 E1 CL2: бібліотека не дає цьому користувачу відкрити файл; його платформа лишається.
+      hiddenFile: 'Файл без доступу',
       wholeFile: 'Увесь файл',
       notSliced: 'не нарізано',
       notInComposition: 'немає у складі — додайте деталь або її назву',
@@ -7009,6 +7011,18 @@ export default {
       products: 'Вироби',
       customers: 'Замовники',
       stock: 'Склад',
+    },
+    // Чому оцінка неповна — підпис для кожного коду сервера (utils/estimateReasons.ts).
+    estimateReasons: {
+      unknown_time: 'Друки без оцінки часу',
+      unroutable: 'Друки, яких не бере жоден принтер',
+      material_mismatch: 'Деталі лише на платформах іншого матеріалу',
+      needs_slicing: 'Деталі лише на ненарізаних платформах',
+      no_plate: 'Деталі без платформи',
+      truncated: 'План задовгий, щоб показати його повністю',
+      unknown_weight: 'Платформи без ваги філаменту',
+      unknown_purchase_price: 'Куповані деталі без ціни',
+      empty_composition: 'У виробі немає деталей',
     },
   },
 

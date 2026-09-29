@@ -7,6 +7,7 @@ import type { ProductPartKind } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
 import { Select } from '../Select';
+import { invalidateProductFiles } from '../../utils/queryInvalidation';
 
 const FIELD_CLASS =
   'px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none';
@@ -63,7 +64,7 @@ export function AddPartRow({ productId, canEdit }: AddPartRowProps) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['product', productId] });
-      queryClient.invalidateQueries({ queryKey: ['product-plates', productId] });
+      invalidateProductFiles(queryClient, productId);
       setName('');
       setQty(1);
       setPrice('');

@@ -4,8 +4,10 @@ import userEvent from '@testing-library/user-event';
 import { render } from '../../utils';
 import { OrdersTable } from '../../../components/projects/OrdersTable';
 import type { OrderForecast, OrderListItem } from '../../../api/client';
+import { FORECAST_DEFAULTS, ORDER_ROW_DEFAULTS } from '../../wireDefaults';
 
 const row = (over: Partial<OrderListItem>): OrderListItem => ({
+  ...ORDER_ROW_DEFAULTS,
   id: 1, code: 'OR-0001', name: 'A', customer_id: null, customer_name: null, color: null, status: 'active',
   stage: 'prep', responsible_id: null, responsible_name: null, due_date: null, priority: 'normal',
   price: null, tags: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00', lines_count: 1, ordered: 10, printed: 4,
@@ -13,6 +15,7 @@ const row = (over: Partial<OrderListItem>): OrderListItem => ({
 });
 
 const fc = (over: Partial<OrderForecast>): OrderForecast => ({
+  ...FORECAST_DEFAULTS,
   project_id: 1, now_eta: null, now_seconds: null, after_eta: null, after_seconds: null, machine_seconds: null,
   unknown_prints: 0, unroutable_prints: 0, eta_complete: true, ahead_count: 0, assumptions: ['drying'], ...over,
 });

@@ -5,7 +5,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useConnection } from '../contexts/ConnectionContext';
 import { useTranslation } from 'react-i18next';
 import { forecastQueryKeys, inventoryLocationsQueryKey } from '../utils/inventoryQueries';
-import { ORDER_VIEW_KEYS } from '../utils/queryInvalidation';
+import { ORDER_VIEW_KEYS, PRODUCT_FILE_KEYS } from '../utils/queryInvalidation';
 import { prioritizeLiveStatusEntries } from '../utils/liveStatusPriority';
 
 // The only auth-failure close code /api/v1/ws emits (backend websocket.py
@@ -772,6 +772,8 @@ export function useWebSocket() {
         debouncedInvalidate('library-files');
         debouncedInvalidate('library-stats');
         debouncedInvalidate('product-files');
+        // A file landing in a product's folder brings its plates (WS-13 E1 CL4).
+        debouncedInvalidate(...PRODUCT_FILE_KEYS);
         break;
 
       // A scan of an external folder is now a background job, so its progress
@@ -797,6 +799,7 @@ export function useWebSocket() {
         debouncedInvalidate('library-file-plates');
         debouncedInvalidate('library-file-filaments');
         debouncedInvalidate('product-files');
+        debouncedInvalidate(...PRODUCT_FILE_KEYS);
         break;
 
       case 'library_file_notes_changed': {

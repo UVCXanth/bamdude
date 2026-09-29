@@ -243,3 +243,37 @@ describe('every order journal kind has a sentence', () => {
     for (const kind of EVENT_KINDS) expect(locale.orders.timeline.events).toHaveProperty(kind);
   });
 });
+
+/**
+ * Why an estimate is not whole — two closed lists of codes defined on the server
+ * (WS-13 E1 OR5a: `farm_forecast.REASON_ORDER`; ES3: `products._ESTIMATE_REASONS`)
+ * and mirrored in `utils/estimateReasons.ts`. A label is looked up by the code, so
+ * a missing key would render the code itself (CL5).
+ */
+describe('every estimate reason has a label', () => {
+  const ORDER_REASONS = ['unknown_time', 'unroutable', 'material_mismatch', 'needs_slicing', 'no_plate', 'truncated'];
+  const PRODUCT_REASONS = [
+    'no_plate',
+    'needs_slicing',
+    'unknown_time',
+    'unknown_weight',
+    'unknown_purchase_price',
+    'truncated',
+    'empty_composition',
+  ];
+
+  it('the frontend reads the server’s lists, in their order', async () => {
+    const { ORDER_ESTIMATE_REASONS, PRODUCT_ESTIMATE_REASONS } = await import('../../utils/estimateReasons');
+    expect([...ORDER_ESTIMATE_REASONS]).toEqual(ORDER_REASONS);
+    expect([...PRODUCT_ESTIMATE_REASONS]).toEqual(PRODUCT_REASONS);
+  });
+
+  it.each([
+    ['en', en],
+    ['uk', uk],
+  ])('%s has a label for each', (_name, locale) => {
+    for (const code of new Set([...ORDER_REASONS, ...PRODUCT_REASONS])) {
+      expect(locale.projects.estimateReasons).toHaveProperty(code);
+    }
+  });
+});

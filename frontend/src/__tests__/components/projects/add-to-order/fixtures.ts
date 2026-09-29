@@ -5,8 +5,10 @@ import type {
   ProductPartRow,
   StockSuggestion,
 } from '../../../../api/client';
+import { PART_SOURCES_DEFAULTS, PRODUCT_ROW_DEFAULTS } from '../../../wireDefaults';
 
 const row = (over: Partial<ProductListItem>): ProductListItem => ({
+  ...PRODUCT_ROW_DEFAULTS,
   id: 1,
   code: 'PR-0001',
   name: 'Pipe',
@@ -50,6 +52,7 @@ export const pageOf = (items: ProductListItem[], total: number, page = 1): Produ
   items,
   meta: { total, current_page: page, per_page: 24, last_page: Math.max(1, Math.ceil(total / 24)) },
   categories: [],
+  catalog_total: total,
   uncategorized: 0,
 });
 
@@ -95,6 +98,7 @@ export const suggestion = (over: Partial<StockSuggestion>): StockSuggestion => (
 
 
 export const part = (over: Partial<ProductPartRow>): ProductPartRow => ({
+  ...PART_SOURCES_DEFAULTS,
   part_id: 11,
   name: 'Tail',
   variant: null,

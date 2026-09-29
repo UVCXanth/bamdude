@@ -3,8 +3,10 @@ import { screen } from '@testing-library/react';
 import { render } from '../../utils';
 import { StockProductsTable } from '../../../components/stock/StockProductsTable';
 import type { StockListItem } from '../../../api/client';
+import { STOCK_ROW_DEFAULTS } from '../../wireDefaults';
 
 const row: StockListItem = {
+  ...STOCK_ROW_DEFAULTS,
   id: 1,
   name: 'Lamp',
   is_active: true,

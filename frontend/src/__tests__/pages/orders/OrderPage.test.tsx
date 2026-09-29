@@ -165,7 +165,7 @@ describe('OrderPage', () => {
     // quiet without letting the request escape to the network.
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue({
       lines: [],
-      totals: { prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null },
+      totals: { rows: 0, prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null },
     });
     // An order completes through the issue dialog (spec workshop-order-issue, rule 28):
     // the line's two printed units can be received and issued in one batch.

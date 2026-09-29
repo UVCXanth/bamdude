@@ -49,12 +49,15 @@ interface PlanLineProps {
  *  `useful` is empty on purpose: the greedy did not choose this plate, so it
  *  covers nothing "usefully" by the engine's reckoning — the surplus
  *  projection reads the plate's real yield either way. */
-function rowFromRecipe(plate: PlateRecipe, ratePerGram: number | null): PlanRowData {
+function rowFromRecipe(plate: PlateRecipe, ratePerGram: number | null, hiddenLabel: string): PlanRowData {
   return {
     plate_id: plate.id,
     library_file_id: plate.library_file_id,
     plate_index: plate.plate_index,
-    filename: plate.filename,
+    // A file the caller may not open is named by its label, and the row is marked so
+    // nothing that needs the file is offered on it (WS-13 E1 CL2).
+    filename: plate.filename ?? hiddenLabel,
+    hidden: plate.hidden,
     count: 1,
     useful: [],
     print_time_seconds: plate.print_time_seconds,
@@ -155,9 +158,12 @@ export function PlanLine({
   // Named or not shown. A bare `#42` is a database id on an operator's screen
   // — it names nothing they can act on, and while the recipes are in flight it
   // would flash up and then be replaced by the real filename.
+  const hiddenLabel = t('products.plates.hiddenFile');
+  const plateName = (plate: PlateRecipe) => plate.filename ?? hiddenLabel;
   const notSliced = line.not_sliced
-    .map((id) => plates?.find((p) => p.id === id)?.filename)
-    .filter((filename): filename is string => filename != null);
+    .map((id) => plates?.find((p) => p.id === id))
+    .filter((plate): plate is PlateRecipe => plate != null)
+    .map(plateName);
 
   // plate · covers · count · time · grams · [cost] · actions
   const columns = showCost ? 7 : 6;
@@ -305,15 +311,15 @@ export function PlanLine({
             aria-label={t('orders.plan.addPlate')}
             onChange={(e) => {
               const plate = addable.find((p) => p.id === Number(e.currentTarget.value));
-              if (plate) onAddPlate(rowFromRecipe(plate, ratePerGram));
+              if (plate) onAddPlate(rowFromRecipe(plate, ratePerGram, hiddenLabel));
             }}
           >
             <option value="">{t('orders.plan.addPlate')}</option>
             {addable.map((plate) => (
               <option key={plate.id} value={plate.id}>
                 {plate.plate_index === 0
-                  ? plate.filename
-                  : `${plate.filename} · ${t('orders.plan.row.plate', { n: plate.plate_index })}`}
+                  ? plateName(plate)
+                  : `${plateName(plate)} · ${t('orders.plan.row.plate', { n: plate.plate_index })}`}
               </option>
             ))}
           </Select>
