@@ -28,12 +28,16 @@ async (page) => {
   const exact = (path) => new RegExp(`/api/v1${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/?(\\?.*)?$`);
 
   // A context of our own. `rewrite`: [[pathRegex, (json) => json]] for GET answers; `fail`: [[regex, status]];
-  // `delay`: [[regex, ms]]; `writes`: { regexSource: json } answers for non-GET, everything else non-GET gets {}.
+  // `delay`: [[regex, ms]]; `writes`: [[regex, json | (request) => json]] answers for non-GET, everything else non-GET gets {}.
   const open = async (w, { h, storage = {}, me = null, rewrite = [], fail = [], delay = [], writes = [], settings = null } = {}) => {
     const ctx = await browser.newContext({
       viewport: { width: w, height: h || HEIGHTS[w] || 900 }, deviceScaleFactor: 1, locale: 'uk-UA',
       timezoneId: 'Europe/Kyiv', serviceWorkers: 'block',
     });
+    // The socket's token is minted by a POST (it writes a row), which this runner answers itself — so the real
+    // /api/v1/ws refused every context and the app toasted «Відновлюю з'єднання…» over the frames. A silent
+    // socket of our own instead: nothing reaches the stand, and no event is invented.
+    if (typeof ctx.routeWebSocket === 'function') await ctx.routeWebSocket(/\/api\/v1\/ws/, () => {});
     await ctx.addInitScript(({ token, storage }) => {
       if (sessionStorage.getItem('e03-init')) return;
       sessionStorage.setItem('e03-init', '1');
@@ -51,7 +55,8 @@ async (page) => {
       const url = req.url();
       if (req.method() !== 'GET') {
         const hit = writes.find(([re]) => re.test(url));
-        return route.fulfill({ status: 200, json: hit ? hit[1] : {} });
+        const answer = hit ? (typeof hit[1] === 'function' ? hit[1](req) : hit[1]) : {};
+        return route.fulfill({ status: 200, json: answer });
       }
       const failing = fail.find(([re]) => re.test(url));
       if (failing) return route.fulfill({ status: failing[1], json: { detail: 'e03 runner' } });
@@ -95,6 +100,20 @@ async (page) => {
     const actions = document.querySelector('[data-testid="order-actions"]').getBoundingClientRect();
     const strip = document.querySelector('[role="tablist"]');
     const mainBody = main.querySelector(':scope > div') ?? main;
+    // C06 (E3-V01): the title must stay readable — its width and lines, and where the actions went.
+    const header = document.querySelector('[data-testid="order-head"] header');
+    const titleEl = header.querySelector('h1, h2');
+    const tr = titleEl.getBoundingClientRect();
+    const lr = header.firstElementChild.getBoundingClientRect();
+    const ar = document.querySelector('[data-testid="order-actions"]').getBoundingClientRect();
+    const head = {
+      width: +header.getBoundingClientRect().width.toFixed(1),
+      height: Math.round(header.getBoundingClientRect().height),
+      titleWidth: +tr.width.toFixed(1),
+      titleLines: Math.round(tr.height / parseFloat(getComputedStyle(titleEl).lineHeight)),
+      leftWidth: +lr.width.toFixed(1),
+      actions: ar.height === 0 ? 'none' : ar.top >= lr.bottom - 1 ? 'below' : 'beside',
+    };
     const mb = mainBody.getBoundingClientRect();
     const mcs = getComputedStyle(mainBody);
     return {
@@ -109,8 +128,11 @@ async (page) => {
       actionsInView: actions.right <= innerWidth + 0.5 && actions.left >= 0,
       stripScrolls: strip ? getComputedStyle(strip).overflowX : null,
       docOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      head,
     };
   });
+  // C06: the title keeps a readable width, and actions beside it never squeeze its block under its 20rem basis.
+  const headOk = (h) => h.titleWidth >= Math.min(240, h.width * 0.6) && (h.actions !== 'beside' || h.leftWidth >= 319.5);
   const expectedTiles = (inner) => Math.min(8, Math.floor((inner + 12) / 142));
   const sideClamp = (w) => Math.min(440, Math.max(320, 0.22 * w));
   const text = (p, sel) => p.locator(sel).first().textContent();
@@ -132,7 +154,8 @@ async (page) => {
       const ok =
         m.docOverflow <= 0 && m.gridCols === (two ? 2 : 1) && m.actionsInView && errors.length === 0 &&
         m.tilesPerRow === expectedTiles(m.mainInner) &&
-        (two ? near(m.sideWidth, sideClamp(w)) : true) && m.stripScrolls === 'auto';
+        (two ? near(m.sideWidth, sideClamp(w)) : true) && m.stripScrolls === 'auto' &&
+        headOk(m.head) && (w === 390 ? m.head.actions === 'below' : true);
       return { recipe: { url: `/projects/{order:241}`, viewport: w }, env: e, measured: { ...m, expectedTiles: expectedTiles(m.mainInner), errors }, pass: ok, screenshots: [file] };
     });
   }
@@ -187,10 +210,48 @@ async (page) => {
       await ctx.close();
       const ok = pane.viewPadding === '0px' && pane.frameBorder === '0px' && !pane.crumbs && pane.title === 'H2' &&
         pane.open === `/projects/${A}` && m.docOverflow <= 0 && m.gridCols === (m.container > 1150 ? 2 : 1) &&
-        m.tilesPerRow === expectedTiles(m.mainInner);
+        m.tilesPerRow === expectedTiles(m.mainInner) && headOk(m.head);
       return { recipe: { url: `/projects?order={order:241}`, viewport: w, storage: { 'projects.view': 'workspace' } }, measured: { ...m, pane }, pass: ok, screenshots: [file] };
     });
   }
+
+  // ======================= 4b. the header at narrow widths (C06, E3-V01) =======================
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  const LONG = {
+    name: 'Корпуси датчиків клімату для лабораторії зберігання харчових продуктів — друга партія з посиленими кріпленнями',
+    tags: 'серія-для-лабораторії-зберігання, довгий-тег-що-не-має-пробілів-взагалі, PETG',
+  };
+  const headerCase = async ({ name, w, url, storage = {}, cover, long = false }) => {
+    const { ctx, p, errors } = await open(w, {
+      storage,
+      rewrite: [[exact(`/projects/${A}`), (o) => ({ ...o, cover_image_filename: cover ? 'cover.png' : null, ...(long ? LONG : {}) })]],
+    });
+    // The cover picture is answered here — a fixture, not the stand's data.
+    if (cover) await p.route(new RegExp(`/api/v1/projects/${A}/cover-image`), (route) => route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from(PNG, 'base64') }));
+    await p.goto(url, { waitUntil: 'networkidle' });
+    await ready(p);
+    const m = await layout(p);
+    const coverShown = await p.locator('[data-testid="order-head"] [data-testid="order-cover-image"]').count();
+    const file = await shoot(p, `header-c06-${name}`);
+    await ctx.close();
+    return { name, viewport: w, cover, long, coverShown, head: m.head, docOverflow: m.docOverflow, errors, file };
+  };
+  await scenario('header-c06', ['E3-C06', 'E3-V01'], async () => {
+    const cases = [
+      await headerCase({ name: '390-no-cover', w: 390, url: detail(A), cover: false }),
+      await headerCase({ name: '390-cover', w: 390, url: detail(A), cover: true }),
+      await headerCase({ name: '390-long-cover', w: 390, url: detail(A), cover: true, long: true }),
+      await headerCase({ name: '390-long-no-cover', w: 390, url: detail(A), cover: false, long: true }),
+      // The narrowest pane the workspace has: its right side appears from 1024 on.
+      await headerCase({ name: 'embedded-1024-long-cover', w: 1024, url: `${job.ui}/projects?order=${A}`, storage: { 'projects.view': 'workspace' }, cover: true, long: true }),
+    ];
+    const ok = cases.every((c) => headOk(c.head) && c.docOverflow <= 0 && c.errors.length === 0 && c.coverShown === (c.cover ? 1 : 0) &&
+      (c.viewport === 390 ? c.head.actions === 'below' : true));
+    return {
+      recipe: { cases: cases.map(({ name, viewport, cover, long }) => ({ name, viewport, cover, long })), fixture: ['GET order → cover_image_filename, long name/tags', 'GET cover-image → 1×1 PNG'] },
+      measured: cases.map(({ file, ...rest }) => rest), pass: ok, screenshots: cases.map((c) => c.file),
+    };
+  });
 
   // ======================= 5. states =======================
   const stateShot = async (id, ids, { order = A, q = '', w = 1440, opts = {}, check }) =>
@@ -361,8 +422,8 @@ async (page) => {
       })]],
     },
     check: async (p) => {
-      const m = await p.evaluate(() => ({ docOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth }));
-      return { m, pass: m.docOverflow <= 0 };
+      const m = await layout(p);
+      return { m: { docOverflow: m.docOverflow, head: m.head }, pass: m.docOverflow <= 0 && headOk(m.head) && m.head.actions === 'below' };
     },
   });
   await stateShot('state-procurement-unknown', ['E3-E02', 'E3-C02', 'R07'], {
@@ -678,31 +739,79 @@ async (page) => {
     await ctx.close();
     return { measured: { heading }, pass: heading >= 1, screenshots: [file] };
   });
-  await scenario('consumer-plan-dialog-filament', ['E3-F06', 'R04'], async () => {
+  await scenario('consumer-plan-dialog-filament', ['E3-F06', 'R04', 'E3-V06'], async () => {
+    // The stand's library carries no file tags, so the file manager offers «Розрахувати» for nothing, and
+    // the dialog's parts preview is a POST this runner answers itself. Both are FIXTURES, recorded below:
+    // the list marks one CLM-01 file as a 3MF, and the preview is built from order 241's own product and
+    // that file. The order POST is intercepted and answers order 241, whose plan and filament are real reads.
+    const FILE = 'clm01_p1s.gcode.3mf';
     const order = await read(`/projects/${A}`);
-    const { ctx, p } = await open(1440, { writes: [[/\/projects\/from-files/, order]] });
+    const productId = order.lines.find((l) => l.product_id != null)?.product_id;
+    const product = await read(`/products/${productId}`);
+    let fileId = null;
+    const tag = (f) => {
+      if (f.filename !== FILE) return f;
+      fileId = f.id;
+      return { ...f, file_tags: [...new Set([...(f.file_tags ?? []), '3mf', 'sliced'])] };
+    };
+    const preview = () => ({
+      files: [{ id: fileId, filename: FILE, sliced_for_model: 'P1S', plates: [{ plate_index: 1, sliced: true, print_time_seconds: 3600 }] }],
+      parts: (product.parts ?? []).map((part) => ({ name_key: part.name_key ?? String(part.name).toLowerCase(), name: part.name, yields: [{ library_file_id: fileId, plate_index: 1, count: 1 }] })),
+      catalog_product: { id: product.id, name: product.name, parts: (product.parts ?? []).map((part) => ({ id: part.id, name: part.name, qty_per_unit: part.qty_per_unit ?? 1 })) },
+    });
+    const { ctx, p, errors } = await open(1440, {
+      rewrite: [[/\/api\/v1\/library\/files\/?\?/, (body) => (Array.isArray(body) ? body.map(tag) : body?.items ? { ...body, items: body.items.map(tag) } : body)]],
+      writes: [[/\/library\/files\/parts-preview/, () => preview()], [/\/projects\/from-files/, order]],
+    });
     await p.goto(`${job.ui}/files`, { waitUntil: 'networkidle' });
     await p.getByText('Корпуси', { exact: true }).first().click();
     await p.waitForTimeout(800);
     await p.getByText('CLM-01', { exact: true }).first().click();
     await p.waitForTimeout(1200);
-    const pick = p.getByRole('button', { name: 'Вибрати файл' }).first();
-    if ((await pick.count()) === 0) { await ctx.close(); return { pass: null, pending: 'no «Select file» button in Корпуси / CLM-01' }; }
-    await pick.click();
-    const compute = p.getByRole('button', { name: /^Розрахувати$/ });
-    if ((await compute.count()) === 0) { await ctx.close(); return { pass: null, pending: 'the selected row is not a plannable file' }; }
-    await compute.click();
+    const selected = await p.evaluate((name) => {
+      const label = [...document.querySelectorAll('*')].find((el) => el.childElementCount === 0 && el.textContent.trim() === name);
+      for (let el = label; el; el = el.parentElement) {
+        const box = el.querySelector('[data-select-file]');
+        if (box) { box.click(); return true; }
+      }
+      return false;
+    }, FILE);
+    if (!selected || fileId == null) { await ctx.close(); return { pass: false, measured: { selected, fileId } }; }
+    await p.getByRole('button', { name: /^Розрахувати$/ }).click();
     const dialog = p.getByRole('dialog');
     await dialog.waitFor({ timeout: 8000 });
-    const name = dialog.locator('input').first();
-    await name.fill('E3 smoke');
-    const calc = dialog.getByRole('button', { name: /Розрахувати/ }).last();
-    await calc.click();
-    await p.waitForTimeout(2500);
-    const m = await p.evaluate(() => ({ block: !!document.querySelector('[role="dialog"] [data-testid="filament-needs"]'), plan: !!document.querySelector('[role="dialog"] [data-testid="plan-block"]') }));
+    await p.waitForTimeout(800);
+    const stepParts = await dialog.textContent();
+    await dialog.getByRole('button', { name: /Розрахувати/ }).last().click();
+    await dialog.locator('[data-testid="plan-block"]').waitFor({ timeout: 10000 });
+    await p.waitForTimeout(1500);
+    const m = await p.evaluate(() => {
+      const d = [...document.querySelectorAll('[role="dialog"]')].pop();
+      const plan = d.querySelector('[data-testid="plan-block"]');
+      const block = d.querySelector('[data-testid="filament-needs"]');
+      const pr = plan?.getBoundingClientRect();
+      const br = block?.getBoundingClientRect();
+      return {
+        plan: !!plan,
+        block: !!block,
+        rows: block ? block.querySelectorAll('[data-testid^="filament-need-"]').length : 0,
+        blockClass: block?.className ?? null,
+        blockTitle: block?.querySelector('p')?.textContent ?? null,
+        underPlan: !!(pr && br && br.top >= pr.top),
+        sidePanelInDialog: !!d.querySelector('[data-testid="order-filament-panel"]'),
+      };
+    });
     const file = await shoot(p, 'consumer-plan-dialog-filament');
     await ctx.close();
-    return { recipe: { route: '/files', actions: ['Корпуси / CLM-01', 'select the first file', 'Розрахувати (toolbar)', 'name, Розрахувати (POST intercepted → order 241)'] }, measured: m, pass: m.plan ? m.block : null, pending: m.plan ? undefined : 'the dialog did not reach its plan step', screenshots: [file] };
+    return {
+      recipe: {
+        route: '/files', actions: ['Корпуси / CLM-01', `select ${FILE}`, 'Розрахувати (toolbar)', 'Розрахувати in the dialog (catalog product, 1 unit)'],
+        fixture: [`GET /library/files → ${FILE} tagged 3mf+sliced`, 'POST parts-preview → built from order 241’s product and that file', 'POST from-files → order 241 (intercepted)'],
+      },
+      measured: { ...m, fileId, stepParts: (stepParts ?? '').slice(0, 160), errors },
+      pass: m.plan && m.block && m.rows > 0 && m.underPlan && !m.sidePanelInDialog && /rounded-xl/.test(m.blockClass ?? '') && /Філамент/.test(m.blockTitle ?? '') && errors.length === 0,
+      screenshots: [file],
+    };
   });
 
   await page.request.post(`${base}/done`, { data: { count: summary.length } });
