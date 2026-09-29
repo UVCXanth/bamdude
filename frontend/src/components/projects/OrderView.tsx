@@ -281,7 +281,9 @@ export function OrderView({
   // columns are the named container's call (`.order-view*` in index.css), not
   // the window's.
   return (
-    <div data-testid="order-view" className="order-view p-4">
+    // The page's own padding is the view's (the mockup's #app 16); inside the
+    // workspace the list page has one already (H01).
+    <div data-testid="order-view" className={embedded ? 'order-view' : 'order-view p-4'}>
       {crumbs}
       <div data-testid="order-head" className="border-b border-bambu-dark-tertiary pb-3 mb-4">
           <OrderHeader

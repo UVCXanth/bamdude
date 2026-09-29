@@ -399,6 +399,34 @@ describe('OrdersPage', () => {
       expect(window.history.length).toBe(depth);
       expect(screen.getByRole('tab', { name: /^Prints/ })).toHaveAttribute('aria-selected', 'true');
     });
+    it('picking another order opens it on the plan, in one write (WS-13 E3 F03)', async () => {
+      window.history.pushState({}, '', '/projects?order=3&section=notes');
+      render(<OrdersPage />);
+      await screen.findByRole('heading', { name: 'C' });
+      const depth = window.history.length;
+      fireEvent.click(within(screen.getByRole('list', { name: 'Orders' })).getByRole('button', { name: /^OR-0001/ }));
+      await waitFor(() => expect(window.location.search).toBe('?order=1'));
+      expect(window.history.length).toBe(depth);
+      expect(await screen.findByRole('tab', { name: /^Print plan/ })).toHaveAttribute('aria-selected', 'true');
+    });
+    it('picking the order already shown keeps its tab — nothing is written', async () => {
+      window.history.pushState({}, '', '/projects?order=3&section=notes');
+      render(<OrdersPage />);
+      await screen.findByRole('heading', { name: 'C' });
+      fireEvent.click(within(screen.getByRole('list', { name: 'Orders' })).getByRole('button', { name: /^OR-0003/ }));
+      expect(window.location.search).toBe('?order=3&section=notes');
+      expect(screen.getByRole('tab', { name: /^Notes/ })).toHaveAttribute('aria-selected', 'true');
+    });
+    it('deleting the shown order drops it and its tab from the URL', async () => {
+      vi.spyOn(api, 'deleteOrder').mockResolvedValue(undefined as never);
+      window.history.pushState({}, '', '/projects?order=3&section=notes');
+      render(<OrdersPage />);
+      await screen.findByRole('heading', { name: 'C' });
+      fireEvent.click(screen.getByRole('button', { name: /^Order actions/ }));
+      fireEvent.click(await screen.findByRole('menuitem', { name: /^delete$/i }));
+      fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
+      await waitFor(() => expect(window.location.search).toBe(''));
+    });
     it('deleting the shown order drops it from the URL and stays on the list', async () => {
       vi.spyOn(api, 'deleteOrder').mockResolvedValue(undefined as never);
       window.history.pushState({}, '', '/projects?order=3');

@@ -79,7 +79,10 @@ export function OrdersWorkspace({
                 <button
                   type="button"
                   aria-current={order.id === shown ? 'true' : undefined}
-                  onClick={() => onPick(order.id)}
+                  // Picking the order already shown writes nothing — its tab stays (F03).
+                  onClick={() => {
+                    if (order.id !== shown) onPick(order.id);
+                  }}
                   className={rowClass(order.id === shown)}
                 >
                   <WorkspaceRow order={order} />
@@ -105,7 +108,9 @@ export function OrdersWorkspace({
       </div>
 
       {wide && shown != null && (
-        <div className="min-w-0 rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary">
+        // No frame of its own (WS-13 E3 H03): the order view brings its panels, and a
+        // frame around them would be the third nested one.
+        <div className="min-w-0">
           {/* Keyed by id: another order is another view — its dialogs, its draft, and the
               forget-on-unmount of a deleted one all belong to the order they were opened for. */}
           <OrderView

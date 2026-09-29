@@ -338,7 +338,9 @@ export function OrdersPage() {
                 setPage(1);
               }}
               picked={Number(extra.order) || null}
-              onPick={(id) => setExtra('order', id ? String(id) : '', { keepPage: true })}
+              // Another order opens on its plan: the order and the tab in ONE write
+              // (WS-13 E3 F03) — deleting the shown one clears both.
+              onPick={(id) => setExtras({ order: id ? String(id) : '', section: '' }, { keepPage: true })}
               section={extra.section}
               // The shown order and its tab in ONE write — also when the order was
               // the first-row fallback and the URL did not name it yet (F03).
