@@ -532,8 +532,10 @@ def test_hitting_the_safety_limit_is_an_incomplete_recipe_not_an_ok_one():
 # ---- WS-13 E2 evidence sidecar (e02_evidence.py) ----
 
 import hashlib  # noqa: E402
+import json  # noqa: E402
 
 import e02_evidence  # noqa: E402
+import e03_evidence  # noqa: E402
 
 
 def test_e02_narrow_plan_shoots_only_the_named_recipes_at_the_narrow_width():
@@ -568,3 +570,27 @@ def test_e02_record_hashes_every_picture_and_marks_a_missing_one(tmp_path, monke
 
     assert out["screenshots"][0] == {"file": "temp/a.png", "sha256": hashlib.sha256(b"png").hexdigest()}
     assert out["screenshots"][1]["sha256"] is None
+
+
+def test_e03_job_names_the_recipes_orders_and_customer_by_mockup_number():
+    """The runner opens mockup orders by their number; the stand maps them to its own ids."""
+    mapping = {f"order:{n}": {"id": 100 + i} for i, n in enumerate(["241", "244", "245", "247", "250", "251", "299"])}
+    mapping["customer:1"] = {"id": 7}
+
+    out = e03_evidence.job_entities(mapping)
+
+    assert out == {
+        "orders": {"241": 100, "244": 101, "245": 102, "247": 103, "250": 104, "251": 105},
+        "customer": 7,
+    }
+
+
+def test_e03_pairs_are_the_order_detail_recipes_of_the_e0_plan():
+    """Every pair recipe exists in the E0 plan — the sidecar never invents a recipe."""
+    plan = json.loads(
+        (Path(__file__).resolve().parents[3] / "scripts" / "workshop_stand" / "capture_plan.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    ids = {surface["id"] for surface in plan["surfaces"]}
+    assert set(e03_evidence.PAIR_RECIPES) <= ids
