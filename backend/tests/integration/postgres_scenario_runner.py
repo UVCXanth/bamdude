@@ -21,6 +21,8 @@ Modes:
                            one printer and rejects the loser after the commit
     analysis_wait_release a cold usage projection releases its DB transaction
                           before waiting for shared file analysis
+    line_door_deadlock a line's quantity change against an issue of the same line,
+                       both stopped inside their operations (WS-13 E1, Q16)
 
 Usage: python -m backend.tests.integration.postgres_scenario_runner <mode>
 """
@@ -724,6 +726,166 @@ async def _archive_attach_recovery() -> dict:
         }
 
 
+def _plain_request():
+    from starlette.requests import Request
+
+    return Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+
+
+async def _outcome(db, call) -> str:
+    """Run one route call in ``db`` and commit: ``ok``, ``http:<status>:<detail>``,
+    ``deadlock`` (SQLSTATE 40P01 only) or ``error:<type>:<sqlstate>:<text>``."""
+    from fastapi import HTTPException
+
+    from backend.tests.integration.lock_barriers import DEADLOCK_DETECTED, sqlstate
+
+    try:
+        await call()
+        await db.commit()
+        return "ok"
+    except HTTPException as e:
+        await db.rollback()
+        return f"http:{e.status_code}:{e.detail}"
+    except Exception as e:  # noqa: BLE001 — the scenario reports what happened, whatever it was
+        await db.rollback()
+        code = sqlstate(e)
+        if code == DEADLOCK_DETECTED:
+            return "deadlock"
+        return f"error:{type(e).__name__}:{code}:{str(e)[:300]}"
+
+
+async def _position_ledger_consistent(item_ids) -> bool:
+    from sqlalchemy import func, select
+
+    from backend.app.core.database import async_session
+    from backend.app.models.finished_stock import StockItem, StockItemMovement
+
+    async with async_session() as db:
+        for item_id in item_ids:
+            item = await db.get(StockItem, item_id)
+            on_hand, reserved = (
+                await db.execute(
+                    select(
+                        func.coalesce(func.sum(StockItemMovement.delta_on_hand), 0),
+                        func.coalesce(func.sum(StockItemMovement.delta_reserved), 0),
+                    ).where(StockItemMovement.item_id == item_id)
+                )
+            ).one()
+            if (item.on_hand, item.reserved) != (int(on_hand), int(reserved)):
+                return False
+    return True
+
+
+async def _line_door_deadlock() -> dict:
+    """Q16 (spec E1 T1b): a line's quantity change against an issue of the same line.
+
+    A — ``PATCH …/lines/{L}`` quantity 5 → 2 on a line holding 3 ready units (no
+    movement yet, so the checks pass and the reservation is rewritten). B — the issue
+    dialog issuing 1 unit of L. A stops after its FIRST lock, B runs to its first,
+    the coordinator waits for B's barrier or for B waiting on a lock, then both go on.
+    """
+    from backend.app.api.routes import projects as projects_routes
+    from backend.app.core.database import async_session, engine
+    from backend.app.models.customer import Customer
+    from backend.app.models.product import Product
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+    from backend.app.schemas.project import FulfilmentIn, FulfilmentLineIn, ProjectLineUpdate
+    from backend.app.services import finished_stock, line_config
+    from backend.tests.integration.lock_barriers import Barriers, SqlRecorder, backend_pid, first_of
+
+    async with async_session() as setup:
+        customer = Customer(name="Q16 customer")
+        lamp = Product(name="Q16 lamp")
+        setup.add_all([customer, lamp])
+        await setup.flush()
+        order = Project(name="Q16 order", status="active", customer_id=customer.id)
+        setup.add(order)
+        await setup.flush()
+        line = ProjectLine(project_id=order.id, product_id=lamp.id, quantity=5, mode="product", sort_order=0)
+        setup.add(line)
+        await setup.flush()
+        await line_config.seed_line(setup, line, choices=None, counts=None)
+        item = await finished_stock.item_for(setup, lamp.id, {}, create=True)
+        await finished_stock.receive(setup, item, 4)
+        await finished_stock.reserve_for_line(setup, line, 3)
+        await setup.commit()
+        order_id, line_id, item_id = order.id, line.id, item.id
+
+    barriers = Barriers()
+    for name in ("lock_line", "lock_item"):
+        barriers.wrap(finished_stock, name)
+    recorder = SqlRecorder(engine.sync_engine)
+    pid_b: asyncio.Future = asyncio.get_running_loop().create_future()
+    holds: dict[str, object] = {}
+    trails: dict[str, list[str]] = {}
+
+    async def run_a() -> str:
+        async with async_session() as db:
+            holds["a"] = barriers.hold(db, after=1)
+            await SqlRecorder.tag(db, "a")
+            try:
+                return await _outcome(
+                    db,
+                    lambda: projects_routes.update_line(order_id, line_id, ProjectLineUpdate(quantity=2), db, None),
+                )
+            finally:
+                trails["a"] = barriers.trail(db)
+                await SqlRecorder.untag(db)
+
+    async def run_b() -> str:
+        async with async_session() as db:
+            holds["b"] = barriers.hold(db, after=1)
+            pid_b.set_result(await backend_pid(db))
+            await SqlRecorder.tag(db, "b")
+            data = FulfilmentIn(lines=[FulfilmentLineIn(line_id=line_id, issue=1)])
+            try:
+                return await _outcome(
+                    db, lambda: projects_routes.fulfil_order(order_id, data, _plain_request(), db, None)
+                )
+            finally:
+                trails["b"] = barriers.trail(db)
+                await SqlRecorder.untag(db)
+
+    which = "a_finished_before_its_first_lock"
+    outcome_b = "not_started"
+    try:
+        task_a = asyncio.create_task(run_a())
+        hold_a = await _hold_of(holds, "a")
+        a_stopped = asyncio.ensure_future(hold_a.reached.wait())
+        done, _pending = await asyncio.wait({task_a, a_stopped}, timeout=15, return_when=asyncio.FIRST_COMPLETED)
+        if a_stopped in done:
+            task_b = asyncio.create_task(run_b())
+            which = await first_of(await _hold_of(holds, "b"), engine, pid_b)
+            barriers.release_all()
+            outcome_a, outcome_b = await asyncio.wait_for(asyncio.gather(task_a, task_b), timeout=60)
+        else:
+            a_stopped.cancel()
+            outcome_a = await asyncio.wait_for(task_a, timeout=60)
+    finally:
+        barriers.restore()
+        recorder.close()
+
+    return {
+        "which": which,
+        "a": outcome_a,
+        "b": outcome_b,
+        "a_trail": trails.get("a", []),
+        "b_trail": trails.get("b", []),
+        "a_sql": [list(row) for row in recorder.log.get("a", [])],
+        "consistent": await _position_ledger_consistent([item_id]),
+    }
+
+
+async def _hold_of(holds: dict, key: str):
+    """The Hold a task registers at its start — polled, it appears within a tick."""
+    for _ in range(500):
+        if holds.get(key) is not None:
+            return holds[key]
+        await asyncio.sleep(0.01)
+    raise TimeoutError(f"session {key} never started")
+
+
 async def _main(mode: str) -> dict:
     # One event loop for the whole run. The engine is a module-level singleton
     # holding connections bound to whichever loop created them, so a second
@@ -746,6 +908,8 @@ async def _main(mode: str) -> dict:
         return await _analysis_wait_release()
     if mode == "archive_attach_recovery":
         return await _archive_attach_recovery()
+    if mode == "line_door_deadlock":
+        return await _line_door_deadlock()
     return await _report()
 
 

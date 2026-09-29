@@ -515,3 +515,37 @@ class TestPrintAnalysisConnectionRelease:
             "writer_completed": True,
             "projection_active": True,
         }
+
+
+class DeadlockReproduced(Exception):
+    """PostgreSQL answered SQLSTATE 40P01 — the lock cycle the test exists to catch.
+
+    The ONLY failure the reproduction's ``xfail`` accepts: a scenario that did not
+    reach both locks, a timeout, a 409/422 from the data or another SQLSTATE stay
+    red (spec WS-13 E1, R12)."""
+
+
+class TestLineDoorLockOrder:
+    """Q16 (WS-13 E1, T1b): a line door locked the line before its position while the
+    issue dialog locks the position before the line."""
+
+    @pytest.mark.xfail(
+        raises=DeadlockReproduced,
+        strict=True,
+        reason="Q16: the line's quantity change locks the line before its position (fixed in the next commit)",
+    )
+    def test_a_quantity_change_and_an_issue_of_one_line_never_deadlock(self, tmp_path_factory):
+        url = _pg_url()
+        _wipe(url)
+        result = _run("line_door_deadlock", tmp_path_factory.mktemp("pg_line_door_deadlock"), url)
+        if "deadlock" in (result["a"], result["b"]):
+            raise DeadlockReproduced(json.dumps(result, ensure_ascii=False))
+        # Both stopped inside their operations — or B was seen waiting on A's lock.
+        assert result["which"] in ("barrier", "waiting"), result
+        assert (result["a"], result["b"]) == ("ok", "ok"), result
+        # The quantity change takes the position before the line (spec BL6)…
+        touched = [table for _kind, table, _nowait in result["a_sql"] if table in ("stock_items", "project_lines")]
+        assert touched and touched[0] == "stock_items", result["a_sql"]
+        # …so the issue waited on it instead of forming a cycle.
+        assert result["which"] == "waiting", result
+        assert result["consistent"], result
