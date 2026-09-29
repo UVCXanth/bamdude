@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from backend.app.schemas.farm_forecast import EstimateReasonOut
 from backend.app.schemas.project import validate_http_url
 
 
@@ -326,6 +327,30 @@ class ProductFileOut(BaseModel):
 class ProductFilesOut(BaseModel):
     files: list[ProductFileOut] = []
     hidden_files: int = 0
+
+
+class EstimateSurplusOut(BaseModel):
+    part_id: int
+    name: str
+    count: int
+
+
+class ProductEstimateOut(BaseModel):
+    """WS-13 E1 ES — ONE unit of the standard configuration printed from scratch, in
+    whole plates. ``complete`` is exactly «no reasons»; a missing filament rate is the
+    farm's setting, said by ``filament_cost = None``, never a reason."""
+
+    prints: int
+    print_time_seconds: int | None = None
+    #: The known part: a row without grams adds nothing and is a reason.
+    filament_grams: float = 0.0
+    filament_cost: float | None = None
+    surplus: list[EstimateSurplusOut] = []
+    purchased_cost: float | None = None
+    purchased_known_cost: float = 0.0
+    purchased_partial: bool = False
+    complete: bool
+    reasons: list[EstimateReasonOut] = []
 
 
 class FileLinkRequest(BaseModel):

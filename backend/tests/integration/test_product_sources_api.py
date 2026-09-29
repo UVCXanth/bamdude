@@ -273,3 +273,165 @@ async def test_a_page_reads_the_library_once(async_client, hanger, test_engine):
     with counting_statements(test_engine, match="FROM library_files") as seen:
         await _parts(async_client)
     assert len(seen) == 1, seen
+
+
+# ---------- WS-13 E1 ES: one standard unit, from scratch, in whole plates ----------
+
+
+async def _product_with(db, name: str, parts: list[tuple[str, str, int, float | None]], files: list[dict]) -> int:
+    """A product: ``parts`` = (name, kind, per, unit_price); ``files`` = LibraryFile
+    kwargs, each linked (its plates yield by object name)."""
+    product = Product(name=name)
+    db.add(product)
+    await db.flush()
+    for part_name, kind, per, price in parts:
+        key = part_name if kind == "printed" else f"purchased:{part_name}"
+        db.add(
+            ProductPart(
+                product_id=product.id, kind=kind, name=part_name, name_key=key, qty_per_unit=per, unit_price=price
+            )
+        )
+    await db.flush()
+    for kwargs in files:
+        f = LibraryFile(file_size=1, **kwargs)
+        db.add(f)
+        await db.flush()
+        await sync_product_for_file(db, library_file_id=f.id, product_ids=[product.id])
+    await db.commit()
+    return product.id
+
+
+def _gcode(name: str, objects: dict[str, str], *, seconds: int | None = 600, grams: float | None = 10.0) -> dict:
+    plate: dict = {"index": 1, "printable_objects": objects, "filaments": [{"type": "PLA"}]}
+    if seconds is not None:
+        plate["print_time_seconds"] = seconds
+    if grams is not None:
+        plate["filament_used_grams"] = grams
+    return {"filename": name, "file_path": name, "file_type": "gcode", "file_metadata": {"plates": [plate]}}
+
+
+async def _estimate(client, product_id: int) -> dict:
+    r = await client.get(f"/api/v1/products/{product_id}/estimate")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def _rate(db, per_kg: str | None) -> None:
+    from sqlalchemy import delete
+
+    from backend.app.api.routes.settings import set_setting
+    from backend.app.models.settings import Settings
+
+    if per_kg is None:
+        await db.execute(delete(Settings).where(Settings.key == "default_filament_cost"))
+    else:
+        await set_setting(db, "default_filament_cost", per_kg)
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_plate_with_two_parts_is_printed_once(async_client, db_session):
+    """ES1: whole plates — one plate yields both parts of the unit, so one print."""
+    await _rate(db_session, "20")
+    pid = await _product_with(
+        db_session,
+        "Pair",
+        [("a", "printed", 1, None), ("b", "printed", 1, None)],
+        [_gcode("pair.gcode.3mf", {"1": "a", "2": "b", "3": "a_2"})],
+    )
+    body = await _estimate(async_client, pid)
+    assert (body["prints"], body["print_time_seconds"], body["filament_grams"], body["filament_cost"]) == (
+        1,
+        600,
+        10.0,
+        0.2,
+    )
+    assert body["surplus"] == [{"part_id": body["surplus"][0]["part_id"], "name": "a", "count": 1}]
+    assert (body["complete"], body["reasons"]) == (True, [])
+    assert (body["purchased_cost"], body["purchased_known_cost"], body["purchased_partial"]) == (0.0, 0.0, False)
+
+
+@pytest.mark.asyncio
+async def test_every_reason_on_its_own_state(async_client, db_session):
+    """ES3, in its fixed order: a part without a plate (units), a part only on an
+    unsliced project (units), a row without time, a row without grams (the numbers
+    are the known part), a purchased part without a price."""
+    await _rate(db_session, "20")
+    raw = {
+        "filename": "raw.3mf",
+        "file_path": "raw.3mf",
+        "file_type": "3mf",
+        "file_metadata": {"has_sliced_gcode": False, "plates": [{"index": 1, "printable_objects": {"1": "d"}}]},
+    }
+    pid = await _product_with(
+        db_session,
+        "Mixed",
+        [
+            ("a", "printed", 1, None),
+            ("b", "printed", 1, None),
+            ("c", "printed", 2, None),
+            ("d", "printed", 3, None),
+            ("screw", "purchased", 4, None),
+            ("nut", "purchased", 1, 0.5),
+        ],
+        [_gcode("a.gcode.3mf", {"1": "a"}, seconds=None), _gcode("b.gcode.3mf", {"1": "b"}, grams=None), raw],
+    )
+    body = await _estimate(async_client, pid)
+    assert body["reasons"] == [
+        {"code": "no_plate", "count": 2},
+        {"code": "needs_slicing", "count": 3},
+        {"code": "unknown_time", "count": 1},
+        {"code": "unknown_weight", "count": 1},
+        {"code": "unknown_purchase_price", "count": 1},
+    ]
+    assert body["complete"] is False
+    assert (body["prints"], body["print_time_seconds"], body["filament_grams"]) == (2, None, 10.0)
+    assert body["filament_cost"] == 0.2  # the known part: one row of 10 g at 20 per kg
+    assert (body["purchased_cost"], body["purchased_known_cost"], body["purchased_partial"]) == (None, 0.5, True)
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_plan_is_a_reason_with_nothing_unplaced(async_client, db_session, monkeypatch):
+    from backend.app.services import plan_engine
+
+    pid = await _product_with(db_session, "Twice", [("a", "printed", 2, None)], [_gcode("a.gcode.3mf", {"1": "a"})])
+    monkeypatch.setattr(plan_engine, "MAX_ITERATIONS", 1)
+    body = await _estimate(async_client, pid)
+    assert body["reasons"] == [{"code": "truncated", "count": None}] and body["complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_no_filament_rate_is_no_cost_and_not_a_reason(async_client, db_session):
+    """ES3: the rate is the farm's setting, not the product's data."""
+    await _rate(db_session, None)
+    pid = await _product_with(db_session, "Plain", [("a", "printed", 1, None)], [_gcode("a.gcode.3mf", {"1": "a"})])
+    body = await _estimate(async_client, pid)
+    assert (body["filament_cost"], body["complete"], body["reasons"]) == (None, True, [])
+
+
+@pytest.mark.asyncio
+async def test_bought_parts_only_are_complete_exactly_when_every_price_is_known(async_client, db_session):
+    """ES4: nothing to print is a known zero; a zero price is a price."""
+    await _rate(db_session, "20")
+    priced = await _product_with(
+        db_session, "Kit", [("screw", "purchased", 4, 0.25), ("free", "purchased", 1, 0.0)], []
+    )
+    body = await _estimate(async_client, priced)
+    assert (body["prints"], body["print_time_seconds"], body["filament_grams"], body["filament_cost"]) == (
+        0,
+        0,
+        0.0,
+        0.0,
+    )
+    assert (body["purchased_cost"], body["complete"], body["reasons"]) == (1.0, True, [])
+    unpriced = await _product_with(db_session, "Bag", [("bolt", "purchased", 2, None)], [])
+    body = await _estimate(async_client, unpriced)
+    assert (body["complete"], body["reasons"]) == (False, [{"code": "unknown_purchase_price", "count": 1}])
+    assert (body["purchased_cost"], body["purchased_known_cost"], body["purchased_partial"]) == (None, 0.0, True)
+
+
+@pytest.mark.asyncio
+async def test_an_empty_composition_is_not_a_complete_estimate(async_client, db_session):
+    pid = await _product_with(db_session, "Nothing", [("zero", "printed", 0, None)], [])
+    body = await _estimate(async_client, pid)
+    assert (body["complete"], body["reasons"]) == (False, [{"code": "empty_composition", "count": None}])

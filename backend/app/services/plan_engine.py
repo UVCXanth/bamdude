@@ -589,6 +589,12 @@ def _totals(lines: list[LinePlan], price_per_gram: float | None) -> PlanTotals:
     return totals
 
 
+def plan_totals(lines: list[LinePlan], price_per_gram: float | None) -> PlanTotals:
+    """The public name of :func:`_totals` — the product estimate (WS-13 E1 ES1) sums
+    its rows by the plan's own rules, not a copy of them."""
+    return _totals(lines, price_per_gram)
+
+
 def unplanned_units(figs: LineFigures, queued: Mapping[int, int]) -> int:
     """Whole units of the line nobody has printed, is printing or has queued — the part
     «take from stock» may cover (spec workshop-order-issue, rule 17). The plan's own

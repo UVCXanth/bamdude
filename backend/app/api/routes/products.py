@@ -58,6 +58,7 @@ from backend.app.models.product_variant import ProductVariantGroup, ProductVaria
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
+from backend.app.schemas.farm_forecast import EstimateReasonOut
 from backend.app.schemas.listing import (
     CategoryCount,
     ProductFacetsOut,
@@ -70,6 +71,7 @@ from backend.app.schemas.listing import (
 from backend.app.schemas.product import (
     AttachmentOrderRequest,
     CoverPickRequest,
+    EstimateSurplusOut,
     FileLinkRequest,
     FolderLinkRequest,
     PartSourceOut,
@@ -81,6 +83,7 @@ from backend.app.schemas.product import (
     ProductCategoryRef,
     ProductCreate,
     ProductDuplicate,
+    ProductEstimateOut,
     ProductFileOut,
     ProductFilesOut,
     ProductImportResponse,
@@ -112,13 +115,15 @@ from backend.app.services import (
     finished_stock_views,
     line_config,
     part_stock,
+    plan_engine,
     product_delete,
     product_facets,
     product_gate,
     product_variants,
 )
 from backend.app.services.entity_codes import code_for, id_from_query
-from backend.app.services.line_composition import composition, default_options, standard_composition
+from backend.app.services.filament_cost import default_rate_per_kg
+from backend.app.services.line_composition import composition, counted, default_options, standard_composition
 from backend.app.services.list_paging import (
     SortSpec,
     apply_sql_sort,
@@ -1966,6 +1971,80 @@ async def list_plates(
         _plate_out(plate, file, r, names, file_name_visible(file, user, scope))
         for plate, file, r in sorted(rows, key=lambda row: (row[0].library_file_id, row[0].plate_index))
     ]
+
+
+#: WS-13 E1 ES3 — the estimate's reasons, in the order a surface lists them.
+_ESTIMATE_REASONS = (
+    "no_plate",
+    "needs_slicing",
+    "unknown_time",
+    "unknown_weight",
+    "unknown_purchase_price",
+    "truncated",
+    "empty_composition",
+)
+
+
+@router.get("/{product_id}/estimate", response_model=ProductEstimateOut)
+async def get_product_estimate(
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """One unit of the standard configuration, printed from scratch in whole plates
+    (WS-13 E1 ES1–ES5): the plan engine's own covering over the product's sliced plates
+    (every file outside the trash, as the planner sees them — no file names here), its
+    totals by the plan's rules, and the bought parts at their prices. ``complete`` is
+    exactly «no reasons»."""
+    product = await _get(db, product_id)
+    defaults = (await default_options(db, [product.id])).get(product.id, {})
+    kit = standard_composition(list(product.parts), set(defaults.values()))
+    printed = counted(kit)
+    bought = [(part, per) for part, per in kit if part.kind == "purchased" and per > 0]
+    outstanding = {part.id: per for part, per in printed}
+    recipes = await recipes_for_product(db, product)
+    candidates = [row for row in recipes if row[2].sliced]
+    rate = await default_rate_per_kg(db)
+    price_per_gram = rate / 1000.0 if rate > 0 else None
+    rows, surplus, truncated = plan_engine.cover(outstanding, candidates, set(outstanding), price_per_gram)
+    totals = plan_engine.plan_totals(
+        [plan_engine.LinePlan(line_id=0, product_id=product.id, material=None, rows=rows)], price_per_gram
+    )
+    counts: dict[str, int | None] = dict.fromkeys(_ESTIMATE_REASONS, 0)
+    # OR5a's rules without the material (a standard unit has none), in part units.
+    made_sliced: set[int] = set()
+    made_unsliced: set[int] = set()
+    for _plate, _file, recipe in recipes:
+        (made_sliced if recipe.sliced else made_unsliced).update(plan_engine.line_yield(recipe, set(outstanding)))
+    for part, per in printed:
+        if part.id not in made_sliced:
+            counts["needs_slicing" if part.id in made_unsliced else "no_plate"] += per
+    counts["unknown_time"] = sum(1 for row in rows if row.print_time_seconds is None)
+    counts["unknown_weight"] = sum(1 for row in rows if row.filament_used_grams is None)
+    counts["unknown_purchase_price"] = sum(1 for part, _per in bought if part.unit_price is None)
+    reasons = [EstimateReasonOut(code=code, count=counts[code]) for code in _ESTIMATE_REASONS[:5] if counts[code]]
+    if truncated:
+        reasons.append(EstimateReasonOut(code="truncated", count=None))
+    if not printed and not bought:
+        reasons.append(EstimateReasonOut(code="empty_composition", count=None))
+    known = round(sum(per * part.unit_price for part, per in bought if part.unit_price is not None), 2)
+    partial = counts["unknown_purchase_price"] > 0
+    names = {part.id: part.name for part in product.parts}
+    return ProductEstimateOut(
+        prints=totals.prints,
+        print_time_seconds=totals.print_time_seconds,
+        filament_grams=totals.filament_used_grams,
+        # Nothing to print costs a known nothing, once a rate exists (ES4).
+        filament_cost=0.0 if not rows and price_per_gram is not None else totals.cost,
+        surplus=[
+            EstimateSurplusOut(part_id=pid, name=names.get(pid, "?"), count=n) for pid, n in sorted(surplus.items())
+        ],
+        purchased_cost=None if partial else known,
+        purchased_known_cost=known,
+        purchased_partial=partial,
+        complete=not reasons,
+        reasons=reasons,
+    )
 
 
 @router.get("/{product_id}/sources", response_model=ProductSourcesOut)
