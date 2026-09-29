@@ -10,6 +10,7 @@ import { useOrderDetail } from '../../hooks/useOrderDetail';
 import { useQueueRowPicture } from '../../hooks/useQueueRowPicture';
 import { formatDuration } from '../../utils/date';
 import { Button } from '../Button';
+import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { WorkshopPanel } from '../workshop/WorkshopPanel';
 
 interface OrderQueueProps {
@@ -86,19 +87,20 @@ export function OrderQueue({ orderId, headingLevel = 2 }: OrderQueueProps) {
         <p className="text-sm text-bambu-gray">{t('common.loading')}</p>
       );
     }
+    // A refresh that failed says so over ANY last answer, an empty one too: «nothing
+    // queued» from before the failure is not a confirmed current state (E3-V03).
+    const stale = isError && <RefreshFailedNote onRetry={() => refetch()} />;
     if (printing.length === 0 && pending.length === 0 && awaiting.length === 0) {
-      return <p className="text-sm text-bambu-gray">{t('orders.queue.empty')}</p>;
+      return (
+        <>
+          {stale}
+          <p className="text-sm text-bambu-gray">{t('orders.queue.empty')}</p>
+        </>
+      );
     }
     return (
       <div className="text-[13px]">
-        {isError && (
-          <p className="mb-2 flex flex-wrap items-center gap-2 text-xs text-amber-400">
-            {t('orders.detail.refreshFailed')}
-            <button type="button" onClick={() => refetch()} className="text-bambu-green hover:underline">
-              {t('common.retry')}
-            </button>
-          </p>
-        )}
+        {stale}
         {printing.length > 0 && (
           <ul aria-label={t('orders.queue.printing')}>
             {printing.map((print) => (
@@ -217,9 +219,11 @@ function PrintingRow({ print, lineName }: { print: OrderQueuePrinting; lineName:
  * show itself after its library file or archive is deleted, and its own render
  * outranks a surviving original that may have been re-sliced since (A03). The
  * compact rows of WS-13 E3 G04 keep this picture for that reason — without it an
- * independent job would be a pictureless row. `archive_thumbnail` /
+ * independent job would be a pictureless row. The own render exists only for a
+ * job on a printer's queue (`PendingRow`); an auto-queue row has no such route
+ * and shows its original (`AwaitingRow`). `archive_thumbnail` /
  * `library_file_thumbnail` are the server's DISK paths: they say a picture
- * exists, the id says where to ask for it. No picture → nothing is drawn.
+ * exists, the id says where to ask for it. No picture → a placeholder icon.
  */
 function RowPicture({ src }: { src: string | null }) {
   return src ? (

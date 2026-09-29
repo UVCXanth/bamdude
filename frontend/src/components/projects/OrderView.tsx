@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useState } from 'react';
 import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -124,6 +124,19 @@ export function OrderView({
     enabled: Number.isFinite(id) && order?.status === 'active',
     staleTime: 30_000,
   });
+
+  // After a send the forecast is READ AGAIN (E3-V02). The invalidation that follows
+  // the send cannot promise it: a query still waiting for its first answer hands that
+  // in-flight read back instead of starting one, and its late answer — the previous
+  // plan's — would land after the send and pass for fresh. Dropping the in-flight read
+  // and asking anew makes every answer that lands after `enqueuedAt` one asked after it.
+  const onPlanSent = useCallback(() => {
+    setEnqueuedAt(Date.now());
+    const queryKey = ['order-forecast', id];
+    void queryClient
+      .cancelQueries({ queryKey })
+      .then(() => queryClient.refetchQueries({ queryKey, type: 'active' }));
+  }, [queryClient, id]);
 
   // The customer keys go too, and as prefixes — their tiles are computed
   // from this order and its siblings, and with a 60 s `staleTime` a key left
@@ -262,7 +275,7 @@ export function OrderView({
             order={order}
             canEdit={canEdit}
             onDraftChanged={setPlanDraftChanged}
-            onEnqueued={() => setEnqueuedAt(Date.now())}
+            onEnqueued={onPlanSent}
           />
         );
       case 'prints':
@@ -322,7 +335,7 @@ export function OrderView({
             onFulfil={(mode, complete) => setFulfilling({ mode, complete })}
           />
         )}
-        {canEdit && order.status === 'active' && <TakeStockBanner orderId={order.id} />}
+        {canEdit && order.status === 'active' && <TakeStockBanner orderId={order.id} lines={order.lines} />}
       </div>
 
       <div data-testid="order-grid" className="order-view-grid">

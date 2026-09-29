@@ -91,6 +91,55 @@ describe('OrderView · sending the plan', () => {
     expect(screen.getByTestId('order-forecast-eta')).toBeInTheDocument();
   });
 
+  // E3-V02 (Codex review 1): the first forecast read is still in flight when the
+  // plan is sent. TanStack hands that in-flight read back to the invalidation (a
+  // query without data reuses its fetch), so its late answer — the PREVIOUS plan's
+  // — must not open the numbers; a read started after the send must.
+  async function sendWhileTheFirstReadIsHeld(second: Promise<never>) {
+    const spies = mockOrderDetailApi(makeOrder());
+    spies.getOrderPlan.mockResolvedValue(plan as never);
+    let releaseFirst: (value: never) => void = () => {};
+    // Both answers are set up front: the read after the send starts inside the send's own success.
+    spies.getOrderForecast
+      .mockReturnValueOnce(new Promise((resolve) => (releaseFirst = resolve)) as never)
+      .mockReturnValueOnce(second);
+    vi.spyOn(api, 'enqueueOrderPlan').mockResolvedValue({ created: [{ line_id: 10, plate_id: 100, queue_item_ids: [7] }] } as never);
+    renderPage();
+    fireEvent.click(await screen.findByTestId('plan-enqueue-all'));
+    await waitFor(() => expect(api.enqueueOrderPlan).toHaveBeenCalled());
+    return { spies, releaseFirst };
+  }
+
+  it('does not take the answer of a read started before the send as the fresh forecast', async () => {
+    let answer: (value: never) => void = () => {};
+    const { spies, releaseFirst } = await sendWhileTheFirstReadIsHeld(new Promise((resolve) => (answer = resolve)));
+
+    releaseFirst(makeForecast({ now_eta: '2026-09-26T09:37:00Z' }) as never);
+    const ready = screen.getByTestId('order-tile-ready');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(ready).not.toHaveTextContent(/26/);
+    expect(ready).toHaveTextContent('…');
+    expect(within(screen.getByTestId('order-forecast-panel')).queryByTestId('order-forecast-eta')).toBeNull();
+    expect(spies.getOrderForecast).toHaveBeenCalledTimes(2);
+
+    answer(makeForecast({ now_eta: '2026-09-28T09:37:00Z' }) as never);
+    await waitFor(() => expect(ready).toHaveTextContent(/28/));
+  });
+
+  it('ends a failed read after the send in the retry even when the first read was still in flight', async () => {
+    let fail: (e: Error) => void = () => {};
+    const { spies, releaseFirst } = await sendWhileTheFirstReadIsHeld(new Promise((_, reject) => (fail = reject)));
+
+    releaseFirst(makeForecast({ now_eta: '2026-09-26T09:37:00Z' }) as never);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByTestId('order-tile-ready')).not.toHaveTextContent(/26/);
+    expect(spies.getOrderForecast).toHaveBeenCalledTimes(2);
+    fail(new Error('boom'));
+    const panel = screen.getByTestId('order-forecast-panel');
+    expect(await within(panel).findByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.getByTestId('order-tile-ready')).toHaveTextContent('—');
+  });
+
   it('ends a failed re-read after the send in the panel’s retry', async () => {
     let fail: (e: Error) => void = () => {};
     await sendThePlan(new Promise((_, reject) => (fail = reject)));

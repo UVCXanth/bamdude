@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useDispatchNotes } from '../../hooks/useDispatchNotes';
 import { Button } from '../Button';
 import { PaginationBar } from '../PaginationBar';
+import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { DispatchNotesTable } from './DispatchNotesTable';
 
 // One of PaginationBar's own sizes, so its select shows it (final review M8).
@@ -54,6 +55,7 @@ export function DispatchNotesSection({
   return (
     <section className="space-y-3" data-testid="dispatch-notes-section">
       {!inTab && <h2 className="text-lg font-medium text-white">{t('stock.notes.sectionTitle')}</h2>}
+      {inTab && isError && <RefreshFailedNote onRetry={() => void refetch()} />}
       {items.length === 0 ? (
         <p className="text-bambu-gray text-sm">{t('stock.notes.empty')}</p>
       ) : (

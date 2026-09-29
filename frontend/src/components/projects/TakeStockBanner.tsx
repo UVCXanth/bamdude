@@ -2,11 +2,12 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { PackageCheck } from 'lucide-react';
 import { api } from '../../api/client';
-import type { StockOffer, TakeStockResult } from '../../api/client';
+import type { ProjectLine, StockOffer, TakeStockResult } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { useStockOffers } from '../../hooks/useFulfilment';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 import { Button } from '../Button';
+import { lineConfigLabel } from './lineConfigLabel';
 
 /**
  * «На складі є для цього замовлення — узяти і друкувати менше» (spec
@@ -14,12 +15,25 @@ import { Button } from '../Button';
  * the order nobody printed, is printing or has queued, and one button that takes
  * it. The offer is the server's (`GET …/stock-offers`); the take sends what the
  * banner SHOWED, so the answer can say where the shelf gave less.
+ *
+ * Each offer names its line's configuration (spec D05, E3-V04): two lines of one
+ * product differ only by it. The caption is the lines table's own
+ * (`lineConfigLabel`), found by `line_id` in the order the page has already read —
+ * no request of its own; a line without variants gets none.
  */
-export function TakeStockBanner({ orderId }: { orderId: number }) {
+export function TakeStockBanner({ orderId, lines = [] }: { orderId: number; lines?: ProjectLine[] }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const { showToast } = useToast();
   const { data: offers = [] } = useStockOffers(orderId);
+  const configOf = (lineId: number) => {
+    const line = lines.find((l) => l.id === lineId);
+    return line ? lineConfigLabel(line.configuration, line.mode, t) : '';
+  };
+  const lineName = (offer: StockOffer) => {
+    const config = configOf(offer.line_id);
+    return config ? t('orders.take.lineConfigured', { product: offer.product_name, config }) : offer.product_name;
+  };
 
   const take = useMutation({
     mutationFn: (shown: StockOffer[]) =>
@@ -28,7 +42,7 @@ export function TakeStockBanner({ orderId }: { orderId: number }) {
       }),
     onSuccess: (result: TakeStockResult, shown) => {
       invalidateOrderViews(qc, { orderId });
-      const names = new Map(shown.map((o) => [o.line_id, o.product_name]));
+      const names = new Map(shown.map((o) => [o.line_id, lineName(o)]));
       const short = result.results
         .filter((r) => r.got_finished < r.asked_finished || r.got_kits < r.asked_kits)
         .map((r) => {
@@ -48,7 +62,11 @@ export function TakeStockBanner({ orderId }: { orderId: number }) {
   });
 
   if (offers.length === 0) return null;
-  const offerTexts = offers.map((o) => t('orders.take.offer', { product: o.product_name, ready: o.from_finished, kits: o.kits }));
+  const offerTexts = offers.map((o) => {
+    const config = configOf(o.line_id);
+    const counts = { product: o.product_name, ready: o.from_finished, kits: o.kits };
+    return config ? t('orders.take.offerConfigured', { ...counts, config }) : t('orders.take.offer', counts);
+  });
 
   // WS-13 E3 D05: the mockup's one-line note — «In stock for this order: «A» — N
   // ready + K kits; «B» — …. Take it — and print less.» — with the one action on

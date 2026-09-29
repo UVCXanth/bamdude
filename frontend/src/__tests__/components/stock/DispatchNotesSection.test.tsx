@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { StockIssueRow } from '../../../api/client';
@@ -41,6 +43,21 @@ describe('DispatchNotesSection', () => {
     vi.spyOn(api, 'getDispatchNotes').mockResolvedValue(page([row({})]));
     render(<DispatchNotesSection customerId={2} canEdit={false} />);
     expect(await screen.findByRole('heading', { name: 'Issues' })).toBeInTheDocument();
+  });
+
+  it('in the order’s tab a failed refresh of an empty list says so, with a retry (the V03 class)', async () => {
+    const get = vi.spyOn(api, 'getDispatchNotes').mockResolvedValue(page([]));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    render(
+      <QueryClientProvider client={client}>
+        <DispatchNotesSection projectId={5} canEdit={false} inTab />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText('No issues yet.')).toBeInTheDocument();
+    get.mockRejectedValue(new Error('boom'));
+    await act(() => client.refetchQueries());
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.getByText(/Could not refresh/)).toBeInTheDocument();
   });
 
   it('in the order’s tab a failed read says so, with a retry — not «no issues»', async () => {

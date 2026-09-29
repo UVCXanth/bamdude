@@ -6,6 +6,7 @@ import { api } from '../../api/client';
 import { formatDateTime, type DateFormat, type TimeFormat } from '../../utils/date';
 import { Button } from '../Button';
 import { LoadingBlock } from '../LoadingBlock';
+import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { WorkshopPanel } from '../workshop/WorkshopPanel';
 import { journalText } from './orderJournal';
 import { JOURNAL_ICONS } from './orderJournalIcons';
@@ -64,6 +65,7 @@ export function OrderTimeline({ orderId, headingLevel = 2 }: OrderTimelineProps)
   return (
     <WorkshopPanel data-testid="order-activity-panel" title={t('orders.timeline.title')} headingLevel={headingLevel} flush>
       <div className="px-4 py-3">
+        {isError && timeline && <RefreshFailedNote onRetry={() => void refetch()} />}
         {isLoading ? (
           <LoadingBlock label={t('common.loading')} className="py-4 text-bambu-gray" />
         ) : isError && !timeline ? (

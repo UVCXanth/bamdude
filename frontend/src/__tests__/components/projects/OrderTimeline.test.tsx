@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { TimelineEvent } from '../../../api/client';
@@ -25,6 +26,24 @@ describe('OrderTimeline · a failed read (WS-13 E3, review 7)', () => {
     get.mockResolvedValue([]);
     retry.click();
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe('OrderTimeline · a failed refresh (WS-13 E3, the V03 class)', () => {
+  it('says the last answer could not be refreshed, with a retry — an empty journal too', async () => {
+    const get = vi.spyOn(api, 'getProjectTimeline').mockResolvedValue([]);
+    vi.spyOn(api, 'getSettings').mockResolvedValue({} as never);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    render(
+      <QueryClientProvider client={client}>
+        <OrderTimeline orderId={1} />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText('No activity yet.')).toBeInTheDocument();
+    get.mockRejectedValue(new Error('boom'));
+    await act(() => client.refetchQueries({ queryKey: ['project-timeline', 1] }));
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.getByText(/Could not refresh/)).toBeInTheDocument();
   });
 });
 

@@ -115,6 +115,23 @@ describe('OrderQueue', () => {
     expect(document.querySelector('img[src*="c.png"]')).toBeNull(); // not live: no cover from the printer either
   });
 
+  it('an empty queue whose refresh failed says so, with a retry — the empty answer is not confirmed now (E3-V03)', async () => {
+    const get = vi.spyOn(api, 'getOrderQueue').mockResolvedValue(EMPTY as never);
+    const client = newClient();
+    mountWithClient(client);
+    expect(await screen.findByText('Nothing queued for this order.')).toBeInTheDocument();
+
+    get.mockRejectedValue(new Error('boom'));
+    await act(() => client.refetchQueries({ queryKey: ['project-queue', 1] }));
+    const retry = await screen.findByRole('button', { name: 'Retry' });
+    expect(screen.getByText(/Could not refresh/)).toBeInTheDocument();
+
+    get.mockResolvedValue(EMPTY as never);
+    act(() => retry.click());
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull());
+    expect(screen.getByText('Nothing queued for this order.')).toBeInTheDocument();
+  });
+
   it('when its rows change, the order\'s tiles are re-read with them — never on the first answer', async () => {
     // The tiles (`['project', id]`) do not poll and no queue socket event reaches
     // them; the section does both. Moving them together keeps «exactly the jobs

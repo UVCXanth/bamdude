@@ -89,7 +89,10 @@ export function OrderHeader({
 
   return (
     <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
-      <div className="flex min-w-0 flex-1 items-start gap-3">
+      {/* A real basis, not `flex-1` (E3-V01): with a zero basis the row never wraps and
+          the title is squeezed beside the actions — one letter a line at 390. With 20rem
+          the actions move under the title block as soon as the two do not fit (C06). */}
+      <div className="flex min-w-0 grow basis-80 items-start gap-3">
         <OrderCoverThumb order={order} canEdit={canUpdate} onOpen={onCover} />
         <div className="min-w-0">
           <p data-testid="order-meta" className="text-xs text-bambu-gray">

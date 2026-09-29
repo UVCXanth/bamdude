@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { useOrderFilament } from '../../hooks/useOrderFilament';
 import { Button } from '../Button';
+import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { WorkshopPanel } from '../workshop/WorkshopPanel';
 import { FilamentNeedsRows } from './FilamentNeeds';
 
@@ -39,7 +40,7 @@ export function OrderFilamentPanel({
     const empty = data.rows.length === 0 && data.unknown_prints === 0 && !data.stock_unavailable;
     return (
       <>
-        {needs.isError && <Stale onRetry={() => needs.refetch()} />}
+        {needs.isError && <RefreshFailedNote onRetry={() => needs.refetch()} />}
         {empty ? (
           <p className="text-sm text-bambu-gray">{t('orders.filament.empty')}</p>
         ) : (
@@ -69,17 +70,5 @@ function Failed({ text, onRetry }: { text: string; onRetry: () => void }) {
         {t('common.retry')}
       </Button>
     </div>
-  );
-}
-
-function Stale({ onRetry }: { onRetry: () => void }) {
-  const { t } = useTranslation();
-  return (
-    <p className="mb-2 flex flex-wrap items-center gap-2 text-xs text-amber-400">
-      {t('orders.detail.refreshFailed')}
-      <button type="button" onClick={onRetry} className="text-bambu-green hover:underline">
-        {t('common.retry')}
-      </button>
-    </p>
   );
 }
