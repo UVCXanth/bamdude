@@ -666,3 +666,15 @@ class TestLockProtocol:
         conf = r["apply_group_vs_configuration"]
         assert conf["which"] == "waiting" and (conf["a"], conf["b"]) == ("ok", "ok"), conf
         assert conf["line_groups"] == 2 and conf["kept_blue"] and conf["key_ok"], conf
+
+
+class TestStockJournalPages:
+    """WS-13 E1 T9 / ST1: the journal's numbered pages on a real PostgreSQL."""
+
+    def test_the_union_of_both_books_pages_as_the_cursor_does(self, tmp_path_factory):
+        r = _protocol(tmp_path_factory, "journal")
+        # shop() seeds 10 of each part (2 parts rows); 7 receipts, 7 more parts moves.
+        assert r["same_as_cursor"] and r["asc_is_reversed"], r
+        assert r["rows"] == r["unique"] == r["total"] == 7 + 7 + 2, r
+        assert r["parts_total"] == 9, r
+        assert r["products"] == ["Protocol lamp"], r

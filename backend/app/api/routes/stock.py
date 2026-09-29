@@ -31,6 +31,7 @@ from backend.app.schemas.finished_stock import (
     StockItemsPage,
     StockItemsSummary,
     StockJournalPage,
+    StockJournalProduct,
     StockLookupOut,
     StockMoveIn,
     StockMoveOut,
@@ -566,6 +567,19 @@ async def suggest_stock(
     return StockSuggestOut(items=[StockSuggestLineOut(**asdict(answer)) for answer in answers])
 
 
+_JOURNAL_PAGE_AND_CURSOR = "Use either page or cursor, not both"
+
+
+@router.get("/journal/products", response_model=list[StockJournalProduct])
+async def get_stock_journal_products(
+    book: Literal["both", "finished", "parts"] = Query("both"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """The journal's product filter: products the chosen books moved (WS-13 E1 ST2)."""
+    return await stock_journal.journal_products(db, book)
+
+
 @router.get("/journal", response_model=StockJournalPage)
 async def get_stock_journal(
     book: Literal["both", "finished", "parts"] = Query("both"),
@@ -574,10 +588,27 @@ async def get_stock_journal(
     kind: str | None = Query(None, max_length=32),
     cursor: str | None = Query(None, max_length=100),
     limit: int = Query(50, ge=1, le=200),
+    page: int | None = Query(None, ge=1, description="Numbered pages instead of the cursor"),
+    per_page: int = Query(50, ge=1, le=200),
+    sort_by: str | None = Query(None, description="With page set: date-desc (the default) or date-asc"),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_READ),
 ):
-    """Both stock ledgers as one feed, newest first, one keyset page at a time."""
+    """Both stock ledgers as one feed, newest first, one keyset page at a time — or,
+    with ``page`` set, by numbered pages with a total (WS-13 E1 ST1); never both."""
+    if page is not None:
+        if cursor:
+            raise HTTPException(status_code=422, detail=_JOURNAL_PAGE_AND_CURSOR)
+        return await stock_journal.journal_page(
+            db,
+            book=book,
+            product_id=product_id,
+            item_id=item_id,
+            kind=kind,
+            page=page,
+            per_page=per_page,
+            ascending=sort_by == "date-asc",
+        )
     try:
         return await stock_journal.journal(
             db, book=book, product_id=product_id, item_id=item_id, kind=kind, cursor=cursor, limit=limit

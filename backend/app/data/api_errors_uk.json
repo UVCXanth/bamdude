@@ -870,6 +870,7 @@
   "Trashed file not found": "Файл у кошику не знайдено",
   "Tray UUID is already linked to spool {}": "UUID слота вже привʼязано до котушки {}",
   "Unreadable journal cursor": "Не вдалося прочитати курсор журналу",
+  "Use either page or cursor, not both": "Вкажіть або page, або cursor — не обидва",
   "Use either stock or in_stock, not both": "Вкажіть або stock, або in_stock — не обидва",
   "Use the sensor bindings API for a sensor with multiple targets.": "Для датчика з кількома цілями користуйтеся API прив'язок датчиків.",
   "Variant group not found": "Групу варіантів не знайдено",

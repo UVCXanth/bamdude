@@ -224,3 +224,13 @@ class StockJournalPage(BaseModel):
     items: list[StockJournalRow]
     #: Set only when the page came back full — a short page is the end.
     next_cursor: str | None = None
+    #: WS-13 E1 ST1 — the numbered-page mode's meta; ``None`` in the cursor mode.
+    meta: PaginationMeta | None = None
+
+
+class StockJournalProduct(BaseModel):
+    """``GET /stock/journal/products`` — a product the chosen books moved (WS-13 E1 ST2)."""
+
+    id: int
+    code: str
+    name: str

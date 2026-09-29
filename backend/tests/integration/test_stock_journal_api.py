@@ -167,3 +167,109 @@ async def test_an_issue_row_names_its_dispatch_note(committing_client, db_sessio
     by_kind = {row["kind"]: row for row in rows}
     assert by_kind["issue"]["issue"] == {"id": issue_id, "code": f"DN-{issue_id:04d}"}
     assert by_kind["receipt"]["issue"] is None
+
+
+# ---------- WS-13 E1 ST1–ST3: the journal by pages ----------
+
+
+async def _paged(client, **params):
+    r = await client.get("/api/v1/stock/journal", params={"page": 1, **params})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def _tied_feed(db, lamp) -> None:
+    """Seven rows of each book at one instant, one finished row at the same second's
+    ``.000000`` and one parts row written before the ledger stamped its own time —
+    the SQLite server default, no fraction: the same instant as that ``.000000``."""
+    item = await finished_stock.item_for(db, lamp["product"].id, {}, create=True)
+    for _ in range(7):
+        await finished_stock.receive(db, item, 1)
+        await part_stock.move(db, part_id=lamp["shade"].id, delta=1, reason="manual", note="x")
+    await db.execute(update(StockItemMovement).values(created_at=datetime(2026, 9, 27, 10, 0, 0, 123456)))
+    await db.execute(update(ProductPartStockMovement).values(created_at=datetime(2026, 9, 27, 10, 0, 0, 123456)))
+    whole = await finished_stock.receive(db, item, 1)
+    await db.execute(
+        update(StockItemMovement)
+        .where(StockItemMovement.id == whole.id)
+        .values(created_at=datetime(2026, 9, 27, 10, 0, 0))
+    )
+    legacy = await part_stock.move(db, part_id=lamp["shade"].id, delta=1, reason="manual", note="x")
+    await db.commit()
+    await db.execute(
+        text("UPDATE product_part_stock_movements SET created_at = '2026-09-27 10:00:00' WHERE id = :id"),
+        {"id": legacy.id},
+    )
+    await db.commit()
+
+
+async def _all_pages(client, per_page, **params):
+    seen, page = [], 1
+    while True:
+        body = await _paged(client, page=page, per_page=per_page, **params)
+        seen += [(r["book"], r["id"]) for r in body["items"]]
+        if page >= body["meta"]["last_page"]:
+            return seen, body["meta"]
+        page += 1
+
+
+@pytest.mark.asyncio
+async def test_pages_walk_the_cursors_order_across_tied_rows_of_both_books(committing_client, db_session, lamp):
+    """ST1: the same rows in the same order as the cursor — across a page boundary
+    between rows of both books with one timestamp, a legacy SQLite row included — and
+    a total over both books."""
+    await _tied_feed(db_session, lamp)
+    by_cursor = await _walk(committing_client, 5)
+    by_page, meta = await _all_pages(committing_client, 5)
+    assert by_page == by_cursor
+    assert meta["total"] == 16 and len(set(by_page)) == 16
+    oldest, _ = await _all_pages(committing_client, 5, sort_by="date-asc")
+    assert oldest == list(reversed(by_page))
+
+
+@pytest.mark.asyncio
+async def test_a_book_left_out_is_not_read(committing_client, db_session, lamp, test_engine):
+    from backend.tests.unit.services.test_product_composition import counting_statements
+
+    await _tied_feed(db_session, lamp)
+    with counting_statements(test_engine) as seen:
+        body = await _paged(committing_client, book="parts", per_page=50)
+    assert body["meta"]["total"] == 8 and {r["book"] for r in body["items"]} == {"parts"}
+    assert not [s for s in seen if "stock_item_movements" in s]
+
+
+@pytest.mark.asyncio
+async def test_a_page_and_a_cursor_together_are_refused(committing_client, db_session, lamp):
+    await _tied_feed(db_session, lamp)
+    cursor = (await _page(committing_client, limit=1))["next_cursor"]
+    r = await committing_client.get("/api/v1/stock/journal", params={"page": 1, "cursor": cursor})
+    assert r.status_code == 422, r.text
+    # The cursor mode answers as before, with no page meta.
+    assert (await _page(committing_client, limit=1))["meta"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_journals_product_filter_lists_what_each_book_moved(committing_client, db_session, lamp):
+    """ST2: the products with movements in the chosen books, by name."""
+    bench = Product(name="bench")
+    db_session.add(bench)
+    await db_session.flush()
+    leg = ProductPart(product_id=bench.id, kind="printed", name="leg", name_key="leg", qty_per_unit=1)
+    db_session.add(leg)
+    await db_session.commit()
+    await part_stock.move(db_session, part_id=leg.id, delta=1, reason="manual", note="x")
+    await db_session.commit()
+    item = await finished_stock.item_for(db_session, lamp["product"].id, {}, create=True)
+    await finished_stock.receive(db_session, item, 1)
+    await db_session.commit()
+
+    async def listed(book):
+        r = await committing_client.get("/api/v1/stock/journal/products", params={"book": book})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    lamp_row = {"id": lamp["product"].id, "code": f"PR-{lamp['product'].id:04d}", "name": "Lamp"}
+    bench_row = {"id": bench.id, "code": f"PR-{bench.id:04d}", "name": "bench"}
+    assert await listed("finished") == [lamp_row]
+    assert await listed("parts") == [bench_row]
+    assert await listed("both") == [bench_row, lamp_row]

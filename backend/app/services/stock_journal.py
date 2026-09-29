@@ -7,6 +7,17 @@ parts row written in the same instant — and the cursor is that triple of the
 last row, so a page boundary between rows of the same timestamp neither loses
 nor repeats one.
 
+The same feed can also be read by numbered pages (WS-13 E1 ST1): ``page`` set →
+a ``UNION ALL`` of both books' keys ``(ts, rank, id)``, built from the same
+filtered queries and the same timestamp expressions as the cursor, is ordered and
+cut in SQL, and only the page's ids are read back; the total is two ``COUNT``s.
+A book the request leaves out is not read at all. The two modes give the same rows
+in the same order.
+
+⚠️ ``kind`` with ``book=both`` is matched in each book on its own column: a kind
+both books use (``assembled`` — the parts written off and the finished units
+received by one assembly) returns a row from each, which is what happened (ST3).
+
 ⚠️ The timestamp is compared at its full MICROSECOND precision, in SQL and in
 Python alike, and the cursor carries all six digits. An earlier version
 truncated to the millisecond — and SQLite's ``strftime('%f')`` ROUNDS where
@@ -16,8 +27,10 @@ parts ledger still holds rows from before its clock moved to Python (the
 server default ``YYYY-MM-DD HH:MM:SS``, no fraction) beside rows with six
 digits, so its column is padded to one format before it is compared; the
 finished ledger is written by its one writer only, always with six digits,
-and is compared as it is. On PostgreSQL both are real timestamps, compared
-as they are — which lets the ``(created_at, id)`` indexes serve the order.
+and is compared as it is. On PostgreSQL both are real timestamps, compared as
+they are. Only the finished ledger has a ``(created_at, id)`` index; the parts
+ledger's order is served by nothing but a sort (ST6: no index is added — the
+query plan on the stand is in the stage's evidence).
 """
 
 from __future__ import annotations
@@ -25,7 +38,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import String, and_, case, func, literal, or_, select, type_coerce
+from sqlalchemy import String, and_, case, func, literal, literal_column, or_, select, type_coerce, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.customer import Customer
@@ -40,11 +53,13 @@ from backend.app.schemas.finished_stock import (
     StockJournalItemRef,
     StockJournalOrder,
     StockJournalPage,
+    StockJournalProduct,
     StockJournalRow,
     StockJournalUser,
 )
 from backend.app.services.entity_codes import code_for
 from backend.app.services.finished_stock_views import configuration_refs
+from backend.app.services.list_paging import page_meta
 from backend.app.services.stock_views import orders_of_lines
 
 FINISHED, PARTS = "finished", "parts"
@@ -107,6 +122,42 @@ class _Row:
     extra: tuple
 
 
+def _finished_query(*columns, product_id: int | None, item_id: int | None, kind: str | None):
+    """The finished ledger under the journal's filters — the ONE query both modes read."""
+    q = select(*columns).select_from(StockItemMovement).join(StockItem, StockItem.id == StockItemMovement.item_id)
+    if product_id is not None:
+        q = q.where(StockItem.product_id == product_id)
+    if item_id is not None:
+        q = q.where(StockItemMovement.item_id == item_id)
+    if kind:
+        q = q.where(StockItemMovement.kind == kind)
+    return q
+
+
+def _parts_query(*columns, product_id: int | None, item_id: int | None, kind: str | None):
+    """The free-parts ledger under the journal's filters — the ONE query both modes read."""
+    q = (
+        select(*columns)
+        .select_from(ProductPartStockMovement)
+        .join(ProductPart, ProductPart.id == ProductPartStockMovement.product_part_id)
+    )
+    if product_id is not None:
+        q = q.where(ProductPart.product_id == product_id)
+    if item_id is not None:
+        q = q.where(ProductPartStockMovement.stock_item_id == item_id)
+    if kind:
+        q = q.where(ProductPartStockMovement.reason == kind)
+    return q
+
+
+def _finished_ts(sqlite: bool):
+    return _sql_ts(StockItemMovement.created_at, sqlite, legacy=False)
+
+
+def _parts_ts(sqlite: bool):
+    return _sql_ts(ProductPartStockMovement.created_at, sqlite, legacy=True)
+
+
 async def journal(
     db: AsyncSession,
     *,
@@ -119,17 +170,12 @@ async def journal(
 ) -> StockJournalPage:
     sqlite = db.get_bind().dialect.name == "sqlite"
     position = decode_cursor(cursor) if cursor else None
+    filters = {"product_id": product_id, "item_id": item_id, "kind": kind}
     rows: list[_Row] = []
 
     if book in ("both", FINISHED):
-        ts = _sql_ts(StockItemMovement.created_at, sqlite, legacy=False)
-        q = select(StockItemMovement, StockItem.product_id).join(StockItem, StockItem.id == StockItemMovement.item_id)
-        if product_id is not None:
-            q = q.where(StockItem.product_id == product_id)
-        if item_id is not None:
-            q = q.where(StockItemMovement.item_id == item_id)
-        if kind:
-            q = q.where(StockItemMovement.kind == kind)
+        ts = _finished_ts(sqlite)
+        q = _finished_query(StockItemMovement, StockItem.product_id, **filters)
         if position:
             q = q.where(_older_than(ts, StockItemMovement.id, _RANK[FINISHED], position, sqlite))
         q = q.order_by(ts.desc(), StockItemMovement.id.desc()).limit(limit)
@@ -137,16 +183,8 @@ async def journal(
             rows.append(_Row(FINISHED, (move.created_at, _RANK[FINISHED], move.id), move, (pid,)))
 
     if book in ("both", PARTS):
-        ts = _sql_ts(ProductPartStockMovement.created_at, sqlite, legacy=True)
-        q = select(ProductPartStockMovement, ProductPart.name, ProductPart.product_id).join(
-            ProductPart, ProductPart.id == ProductPartStockMovement.product_part_id
-        )
-        if product_id is not None:
-            q = q.where(ProductPart.product_id == product_id)
-        if item_id is not None:
-            q = q.where(ProductPartStockMovement.stock_item_id == item_id)
-        if kind:
-            q = q.where(ProductPartStockMovement.reason == kind)
+        ts = _parts_ts(sqlite)
+        q = _parts_query(ProductPartStockMovement, ProductPart.name, ProductPart.product_id, **filters)
         if position:
             q = q.where(_older_than(ts, ProductPartStockMovement.id, _RANK[PARTS], position, sqlite))
         q = q.order_by(ts.desc(), ProductPartStockMovement.id.desc()).limit(limit)
@@ -155,8 +193,117 @@ async def journal(
 
     rows.sort(key=lambda r: r.key, reverse=True)
     rows = rows[:limit]
+    next_cursor = (
+        encode_cursor(rows[-1].movement.created_at, rows[-1].book, rows[-1].movement.id) if len(rows) == limit else None
+    )
+    return StockJournalPage(items=await _rows_out(db, rows), next_cursor=next_cursor)
 
-    # Names — one read per kind of name, whatever the page.
+
+async def journal_page(
+    db: AsyncSession,
+    *,
+    book: str = "both",
+    product_id: int | None = None,
+    item_id: int | None = None,
+    kind: str | None = None,
+    page: int = 1,
+    per_page: int = 50,
+    ascending: bool = False,
+) -> StockJournalPage:
+    """The journal by numbered pages (WS-13 E1 ST1): both books' keys ``(ts, rank, id)``
+    in one ``UNION ALL`` — the cursor's own timestamp expressions, so the order is the
+    cursor's — ordered and cut in SQL, then the page's rows read back by id. The total
+    is one ``COUNT`` per book read; a book the request leaves out is not read."""
+    sqlite = db.get_bind().dialect.name == "sqlite"
+    filters = {"product_id": product_id, "item_id": item_id, "kind": kind}
+    branches = []
+    total = 0
+    if book in ("both", FINISHED):
+        branches.append(
+            _finished_query(
+                _finished_ts(sqlite).label("ts"),
+                literal_column(str(_RANK[FINISHED])).label("rank"),
+                StockItemMovement.id.label("id"),
+                **filters,
+            )
+        )
+        total += await db.scalar(_finished_query(func.count(StockItemMovement.id), **filters)) or 0
+    if book in ("both", PARTS):
+        branches.append(
+            _parts_query(
+                _parts_ts(sqlite).label("ts"),
+                literal_column(str(_RANK[PARTS])).label("rank"),
+                ProductPartStockMovement.id.label("id"),
+                **filters,
+            )
+        )
+        total += await db.scalar(_parts_query(func.count(ProductPartStockMovement.id), **filters)) or 0
+    keys = (branches[0] if len(branches) == 1 else union_all(*branches)).subquery()
+    order = [keys.c.ts, keys.c.rank, keys.c.id]
+    page_keys = (
+        await db.execute(
+            select(keys.c.rank, keys.c.id)
+            .order_by(*(c.asc() if ascending else c.desc() for c in order))
+            .limit(per_page)
+            .offset((page - 1) * per_page)
+        )
+    ).all()
+    finished_ids = [row_id for rank, row_id in page_keys if rank == _RANK[FINISHED]]
+    parts_ids = [row_id for rank, row_id in page_keys if rank == _RANK[PARTS]]
+    found: dict[tuple[str, int], _Row] = {}
+    if finished_ids:
+        for move, pid in (
+            await db.execute(
+                select(StockItemMovement, StockItem.product_id)
+                .join(StockItem, StockItem.id == StockItemMovement.item_id)
+                .where(StockItemMovement.id.in_(finished_ids))
+            )
+        ).all():
+            found[(FINISHED, move.id)] = _Row(FINISHED, (), move, (pid,))
+    if parts_ids:
+        for move, part_name, pid in (
+            await db.execute(
+                select(ProductPartStockMovement, ProductPart.name, ProductPart.product_id)
+                .join(ProductPart, ProductPart.id == ProductPartStockMovement.product_part_id)
+                .where(ProductPartStockMovement.id.in_(parts_ids))
+            )
+        ).all():
+            found[(PARTS, move.id)] = _Row(PARTS, (), move, (pid, part_name))
+    rows = [
+        found[key]
+        for key in ((FINISHED if rank == _RANK[FINISHED] else PARTS, row_id) for rank, row_id in page_keys)
+        if key in found
+    ]
+    return StockJournalPage(
+        items=await _rows_out(db, rows), next_cursor=None, meta=page_meta(total, page, per_page, False)
+    )
+
+
+async def journal_products(db: AsyncSession, book: str = "both") -> list[StockJournalProduct]:
+    """The journal's product filter (WS-13 E1 ST2): the products with movements in the
+    chosen books, by name (case aside), then id."""
+    ids = []
+    if book in ("both", FINISHED):
+        ids.append(
+            select(StockItem.product_id).join(StockItemMovement, StockItemMovement.item_id == StockItem.id).distinct()
+        )
+    if book in ("both", PARTS):
+        ids.append(
+            select(ProductPart.product_id)
+            .join(ProductPartStockMovement, ProductPartStockMovement.product_part_id == ProductPart.id)
+            .distinct()
+        )
+    wanted = ids[0] if len(ids) == 1 else union_all(*ids)
+    rows = await db.execute(
+        select(Product.id, Product.name)
+        .where(Product.id.in_(select(wanted.subquery())))
+        .order_by(func.lower(Product.name), Product.id)
+    )
+    return [StockJournalProduct(id=pid, code=code_for("product", pid), name=name) for pid, name in rows.all()]
+
+
+async def _rows_out(db: AsyncSession, rows: list[_Row]) -> list[StockJournalRow]:
+    """The page's rows on the wire — names read once per kind of name, whatever the page."""
     product_ids = {r.extra[0] for r in rows}
     products = (
         dict((await db.execute(select(Product.id, Product.name).where(Product.id.in_(product_ids)))).all())
@@ -247,7 +394,4 @@ async def journal(
                     user=user,
                 )
             )
-    next_cursor = (
-        encode_cursor(rows[-1].movement.created_at, rows[-1].book, rows[-1].movement.id) if len(rows) == limit else None
-    )
-    return StockJournalPage(items=out, next_cursor=next_cursor)
+    return out

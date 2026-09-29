@@ -911,3 +911,63 @@ async def scenario_t2() -> dict:
 
 
 SCENARIOS["t2"] = scenario_t2
+
+
+async def scenario_journal() -> dict:
+    """T9 on PostgreSQL: the paged journal's ``UNION ALL`` of both books compiles, and its
+    order and total are the cursor's — across a page boundary inside one instant."""
+    from datetime import datetime
+
+    from sqlalchemy import update
+
+    from backend.app.core.database import async_session
+    from backend.app.models.finished_stock import StockItemMovement
+    from backend.app.models.part_stock import ProductPartStockMovement
+    from backend.app.services import finished_stock, part_stock, stock_journal
+
+    s = await shop(group=False)
+    async with async_session() as db:
+        item = await finished_stock.item_for(db, s["product"], {}, create=True)
+        for _ in range(7):
+            await finished_stock.receive(db, item, 1)
+            await part_stock.move(db, part_id=s["shade"], delta=1, reason="manual", note="x")
+        same = datetime(2026, 9, 27, 10, 0, 0, 123456)
+        await db.execute(update(StockItemMovement).values(created_at=same))
+        await db.execute(update(ProductPartStockMovement).values(created_at=same))
+        await db.commit()
+
+    async def by_pages(ascending: bool) -> tuple[list, int]:
+        seen, page = [], 1
+        while True:
+            async with async_session() as db:
+                body = await stock_journal.journal_page(db, page=page, per_page=5, ascending=ascending)
+            seen += [(r.book, r.id) for r in body.items]
+            if page >= body.meta.last_page:
+                return seen, body.meta.total
+            page += 1
+
+    by_cursor, cursor = [], None
+    while True:
+        async with async_session() as db:
+            body = await stock_journal.journal(db, cursor=cursor, limit=5)
+        by_cursor += [(r.book, r.id) for r in body.items]
+        cursor = body.next_cursor
+        if not cursor:
+            break
+    newest, total = await by_pages(False)
+    oldest, _ = await by_pages(True)
+    async with async_session() as db:
+        parts_only = await stock_journal.journal_page(db, book="parts", page=1, per_page=50)
+        products = await stock_journal.journal_products(db, "both")
+    return {
+        "same_as_cursor": newest == by_cursor,
+        "rows": len(newest),
+        "unique": len(set(newest)),
+        "total": total,
+        "asc_is_reversed": oldest == list(reversed(newest)),
+        "parts_total": parts_only.meta.total,
+        "products": [p.name for p in products],
+    }
+
+
+SCENARIOS["journal"] = scenario_journal
