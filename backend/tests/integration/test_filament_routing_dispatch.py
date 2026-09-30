@@ -621,8 +621,8 @@ async def test_edit_echoing_mapping_keeps_original_pin_evidence(
     assert edited.status_code == 200, edited.text
     await db_session.refresh(item)
     assert json.loads(item.filament_routing)["physical_pins"] == before
-    with pytest.raises(RoutingDeferred, match="mapping_review_required"):
-        await preflight_item(db_session, item, printer.id)
+    # П4: without a forced colour a recoloured spool still holds the pin.
+    assert await preflight_item(db_session, item, printer.id)
     reviewed = await committing_client.patch(
         f"/api/v1/queue/{item.id}",
         json={

@@ -226,13 +226,76 @@ def test_explicit_external_only_works_even_with_ams():
     assert result.plan.mapping == [254]
 
 
-def test_pinned_sources_are_not_remapped_and_unknown_legacy_colour_needs_review():
+def test_a_legacy_pin_without_a_colour_holds_unless_the_colour_is_forced():
+    """П4 (owner, 2026-09-30): a pin's colour counts only when the colour is forced."""
     req = requirements({})
     policy = RoutingPolicy(mode="pinned", physical_pins={1: {"source_id": 0}})
     state = snapshot(feed(0, "00FF00", kind="ams"), feed(1, kind="ams"))
-    assert resolve_filament_routing(req, policy, state).reason == "mapping_review_required"
-    explicit = replace(policy, physical_pins={1: {"source_id": 0, "color": "00FF00", "type": "PLA"}})
-    assert resolve_filament_routing(req, explicit, state).plan.mapping == [0]
+    assert resolve_filament_routing(req, policy, state).plan.mapping == [0]
+    assert resolve_filament_routing(req, replace(policy, force_color_match=True), state).reason == "color_mismatch"
+
+
+def masked(sid, *, color, declared_color, variant="GFG00", declared_variant="GFG99", material="PETG", remain=-1):
+    return FeedSource(
+        sid,
+        "ams",
+        material,
+        color,
+        variant,
+        (0,),
+        remain,
+        declared_color=declared_color,
+        declared_variant=declared_variant,
+    )
+
+
+def test_a_forced_colour_is_judged_by_the_colour_the_operator_declared():
+    state = snapshot(masked(0, color="FF0000FF", declared_color="000000FF"))
+    forced = RoutingPolicy(force_color_match=True)
+    black = requirements({"type": "PETG", "color": "#000000"})
+    red = requirements({"type": "PETG", "color": "#FF0000"})
+    assert resolve_filament_routing(black, forced, state).plan.mapping == [0]
+    assert resolve_filament_routing(red, forced, state).reason == "color_mismatch"
+
+
+def test_a_strict_profile_is_judged_by_the_profile_the_operator_declared():
+    state = snapshot(masked(0, color="000000FF", declared_color="000000FF", variant="GFG02", declared_variant="GFG99"))
+    strict = RoutingPolicy(allow_base_material_match=False)
+    generic = requirements({"type": "PETG", "color": "#000000", "tray_info_idx": "GFG99"})
+    hf = requirements({"type": "PETG", "color": "#000000", "tray_info_idx": "GFG02"})
+    assert resolve_filament_routing(generic, strict, state).status == "compatible"
+    result = resolve_filament_routing(hf, strict, state)
+    assert result.reason == "variant_mismatch"
+    assert result.params["loaded"] == "PETG (GFG99)"  # the refusal names what the rule read
+
+
+def test_the_base_material_is_always_the_spools():
+    state = snapshot(masked(0, color="000000FF", declared_color="000000FF"))
+    assert (
+        resolve_filament_routing(requirements({"type": "PLA", "color": "#000000"}), RoutingPolicy(), state).plan is None
+    )
+
+
+def test_a_pin_checks_colour_only_when_the_colour_is_forced():
+    pinned = RoutingPolicy(
+        mode="pinned", physical_pins={1: {"source_id": 0, "type": "PLA", "color": "00FF00FF", "nozzles": [0]}}
+    )
+    state = snapshot(feed(0, "0000FFFF", kind="ams"))
+    assert resolve_filament_routing(requirements({}), pinned, state).plan.mapping == [0]
+    assert (
+        resolve_filament_routing(requirements({}), replace(pinned, force_color_match=True), state).reason
+        == "color_mismatch"
+    )
+
+
+def test_the_ranking_counts_a_declared_colour_as_exact():
+    """В1: in a leftover group declared black, «lowest remain first» starts on the leftovers."""
+    state = snapshot(
+        FeedSource(0, "ams", "PETG", "000000FF", nozzles=(0,), remain=90),
+        FeedSource(1, "ams", "PETG", "FF0000FF", nozzles=(0,), remain=10, declared_color="000000FF"),
+    )
+    req = requirements({"type": "PETG", "color": "#000000"})
+    assert resolve_filament_routing(req, RoutingPolicy(), state, prefer_lowest=True).plan.mapping == [1]
 
 
 def test_a_pinned_tray_that_was_only_re_profiled_is_still_the_pinned_tray():

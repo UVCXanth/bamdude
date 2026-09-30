@@ -135,7 +135,9 @@ def describe_source(material: str | None, variant: str | None) -> str:
 
 
 def _refusal_params(sid: int, target_type: str, variant: str | None, sources) -> dict:
-    listed = [describe_source(s.material, s.variant) for s in sources]
+    # The profile the rule READ — the declared one when an advertisement is
+    # applied — or the sentence contradicts the verdict it explains.
+    listed = [describe_source(s.material, s.rule_variant) for s in sources]
     loaded = ", ".join(listed[:_LISTED_SOURCES])
     if len(listed) > _LISTED_SOURCES:
         loaded = f"{loaded}, +{len(listed) - _LISTED_SOURCES}"
@@ -182,6 +184,183 @@ def effective_slots(requirements: "PrintRequirements", policy: RoutingPolicy) ->
     return slots
 
 
+def slot_nozzle(slot: dict) -> int:
+    """The nozzle a channel prints from — 0 unless the file names another."""
+    return slot.get("nozzle_id") if slot.get("nozzle_id") is not None else 0
+
+
+def channel_nozzle_counts(slots: list[dict]) -> Counter:
+    return Counter(slot_nozzle(slot) for slot in slots)
+
+
+def feed_preconditions(
+    requirements: "PrintRequirements",
+    policy: RoutingPolicy,
+    snapshot: PrinterFeedSnapshot,
+    *,
+    exact_model: bool,
+    with_model: bool = True,
+) -> RoutingResult | None:
+    """What refuses a whole job before any channel is looked at.
+
+    ``with_model=False`` skips the model comparison: ``model_compatibility``
+    builds its matrix from the mirrored printer configs on first use, and the
+    synchronous publish boundary (``DispatchRoutingGuard.validate``) may not
+    touch a file. The model cannot change between the final check and publish.
+    """
+    if requirements.status != "ok":
+        return RoutingResult("unknown", requirements.reason or "source_unreadable")
+    if policy.review_required:
+        return RoutingResult("unknown", "mapping_review_required")
+    if not snapshot.connected:
+        return RoutingResult("unknown", "printer_offline")
+    if with_model:
+        model = normalize_model_name(requirements.model)
+        if not model or not snapshot.model:
+            return RoutingResult("unknown", "model_unavailable")
+        verdict = model_compatibility(model, snapshot.model)
+        if (exact_model and verdict != "exact") or (not exact_model and verdict == "incompatible"):
+            return RoutingResult("incompatible", "model_mismatch")
+    if not snapshot.ams_known:
+        # In particular, an external tray report does not prove AMS absence.
+        # Single-nozzle wire encoding differs when no AMS is attached.
+        return RoutingResult("unknown", "feed_state_unavailable")
+    return None
+
+
+def channel_refusal(
+    requirements: "PrintRequirements", slot: dict, snapshot: PrinterFeedSnapshot
+) -> RoutingResult | None:
+    """What refuses one channel whatever is loaded: its nozzle diameter, or a forced colour it cannot name."""
+    sid = slot["slot_id"]
+    nozzle = slot_nozzle(slot)
+    diameter = _required_diameter(requirements, nozzle)
+    if diameter is not None:
+        installed = snapshot.nozzle_diameters.get(nozzle)
+        if not installed:
+            return RoutingResult("unknown", "nozzle_state_unavailable", slots=(sid,))
+        if diameter not in installed:
+            return RoutingResult("incompatible", "nozzle_mismatch", slots=(sid,))
+    if slot["strict"] and normalized_color(slot.get("color")) is None:
+        return RoutingResult("unknown", "color_unavailable", slots=(sid,))
+    return None
+
+
+def _pin_holds(pin: dict, slot: dict, source: FeedSource, policy: RoutingPolicy) -> bool:
+    """Whether a pinned channel may take ``source``.
+
+    The pin records what its slot held when the operator chose it. Its nozzle
+    binding and material always count. Its colour counts only when the colour
+    is forced (П4, owner 2026-09-30) and its profile only when the profile is
+    strict — each against the spool OR what was declared for it, because a pin
+    captured before an advertisement holds the spool's values.
+
+    A backup twin (another slot standing in for an empty pinned one) answers
+    only the nozzle and the material: the recorded colour and profile describe
+    the spool that ran out, and the job's own forced colour / strict profile
+    were already asked of the twin by ``source_fits``.
+    """
+    if pin.get("nozzles") is not None and tuple(pin["nozzles"]) != source.nozzles:
+        return False
+    if not filament_types_compatible(pin.get("type") or slot["type"], source.material):
+        return False
+    if source.id != pin.get("source_id"):
+        return True
+    if slot["strict"]:
+        expected = normalized_color(pin.get("color")) or normalized_color(slot.get("color"))
+        seen = {normalized_color(source.color), normalized_color(source.declared_color)} - {None}
+        if not expected or expected not in seen:
+            return False
+    # A pin is a PHYSICAL slot, not a profile, so the option governs this
+    # comparison exactly as it governs the channel's own gate. With it on, a tray
+    # whose profile id was re-tagged while its material, its colour and its
+    # nozzle binding stayed put is still the tray the operator pointed at —
+    # re-profiling a spool moves no filament. With it off the operator asked for
+    # that exact profile, here too.
+    expected_variant = pin.get("tray_info_idx")
+    seen_variants = {v for v in (source.variant, source.declared_variant) if v}
+    return (
+        policy.allow_base_material_match
+        or not expected_variant
+        or not seen_variants
+        or expected_variant in seen_variants
+    )
+
+
+def source_fits(
+    slot: dict,
+    source: FeedSource,
+    policy: RoutingPolicy,
+    snapshot: PrinterFeedSnapshot,
+    *,
+    nozzle: int,
+    nozzle_counts: Counter,
+    allowed: frozenset[int] | None,
+    pin: dict | None,
+    left_tpu_check: bool,
+) -> tuple[bool, str | None, bool]:
+    """Whether one feed source can serve one channel — the ONE copy of the rule.
+
+    ``(fits, reason, unknown)``. ``reason`` is ``None`` for a source that is
+    silently not a candidate (another feed kind, not an allowed slot, another
+    material); otherwise it names why this source was turned down, and a caller
+    walking several keeps the last one, as the resolver always has. ``unknown``
+    means the answer can change once the printer reports more — a guard waits on
+    it and never passes it.
+
+    The resolver asks it of every source for every channel; the dispatch guard
+    (``filament_preflight.plan_holds``) asks it of the sources a plan CHOSE.
+
+    The owner's rule (2026-09-30): base material is the spool's, always; the
+    profile counts only when strict and the colour only when forced, and both
+    are read off what the operator DECLARED to the AMS when that is applied
+    (``FeedSource.rule_variant`` / ``rule_color``). ``left_tpu_check`` is
+    ``requires_left_tpu_firmware_check(model)`` answered by the caller once:
+    its first call reads a file, which the publish boundary may not.
+    """
+    # Firmware (and Bambu Studio) refuse any external feed while FTS is
+    # installed, including an external TPU Feed Assist path. Asked before the
+    # source-policy/pin selection so external_only cannot turn a physical
+    # refusal into an accidental bypass.
+    if (snapshot.fts or snapshot.fts_pending_confirmation) and source.kind == "external":
+        reason = "fts_external_unsupported" if snapshot.fts else "fts_state_unavailable"
+        return False, reason, snapshot.fts_pending_confirmation
+    if policy.feed_policy == "ams_only" and source.kind != "ams":
+        return False, None, False
+    if policy.feed_policy == "external_only" and source.kind != "external":
+        return False, None, False
+    if allowed is not None and source.id not in allowed:
+        return False, None, False
+    if not filament_types_compatible(source.material, slot["type"]):
+        return False, None, False
+    variant = slot.get("tray_info_idx")
+    if variant and source.rule_variant and variant != source.rule_variant and not policy.allow_base_material_match:
+        return False, "variant_mismatch", False
+    if not source.nozzles:
+        return False, "nozzle_state_unavailable", True
+    if nozzle not in source.nozzles:
+        return False, "nozzle_mismatch", False
+    # This is deliberately the actual structured source material, not a
+    # profile name and not a broad TPU-* family match. TPU-AMS is a different
+    # material string in Bambu Studio's own check.
+    if (
+        nozzle == 1
+        and left_tpu_check
+        and canonical_filament_type(source.material) == "TPU"
+        and snapshot.left_tpu_firmware is not True
+    ):
+        unknown = snapshot.left_tpu_firmware is None
+        return False, ("tpu_left_firmware_unavailable" if unknown else "tpu_left_firmware_unsupported"), unknown
+    if source.kind == "external" and nozzle_counts[nozzle] > 1:
+        return False, "feed_topology_mismatch", False
+    color = normalized_color(source.rule_color)
+    if slot["strict"] and color != normalized_color(slot.get("color")):
+        return False, ("color_mismatch" if color else "color_unavailable"), color is None
+    if pin and not _pin_holds(pin, slot, source, policy):
+        return False, "mapping_review_required", False
+    return True, None, False
+
+
 def resolve_filament_routing(
     requirements: "PrintRequirements",
     policy: RoutingPolicy,
@@ -191,26 +370,14 @@ def resolve_filament_routing(
     exact_model: bool = True,
     source_priority: dict[int, tuple] | None = None,
 ) -> RoutingResult:
-    if requirements.status != "ok":
-        return RoutingResult("unknown", requirements.reason or "source_unreadable")
-    if policy.review_required:
-        return RoutingResult("unknown", "mapping_review_required")
-    if not snapshot.connected:
-        return RoutingResult("unknown", "printer_offline")
-    model = normalize_model_name(requirements.model)
-    if not model or not snapshot.model:
-        return RoutingResult("unknown", "model_unavailable")
-    verdict = model_compatibility(model, snapshot.model)
-    if (exact_model and verdict != "exact") or (not exact_model and verdict == "incompatible"):
-        return RoutingResult("incompatible", "model_mismatch")
-    if not snapshot.ams_known:
-        # In particular, an external tray report does not prove AMS absence.
-        # Single-nozzle wire encoding differs when no AMS is attached.
-        return RoutingResult("unknown", "feed_state_unavailable")
+    refusal = feed_preconditions(requirements, policy, snapshot, exact_model=exact_model)
+    if refusal is not None:
+        return refusal
     slots = effective_slots(requirements, policy)
     if slots is None:
         return RoutingResult("unknown", "override_slot_not_used")
-    nozzle_counts = Counter(s.get("nozzle_id") if s.get("nozzle_id") is not None else 0 for s in slots)
+    nozzle_counts = channel_nozzle_counts(slots)
+    left_tpu_check = requires_left_tpu_firmware_check(snapshot.model)
     options: dict[int, list[FeedSource]] = {}
     colors = {}
     for slot in slots:
@@ -245,108 +412,34 @@ def resolve_filament_routing(
         # presets are ids this install has never seen and never will. Anything
         # that makes routing depend on resolving them strands those plates.
         target_type = slot["type"]
-        nozzle = slot.get("nozzle_id") if slot.get("nozzle_id") is not None else 0
-        diameter = _required_diameter(requirements, nozzle)
-        if diameter is not None:
-            installed = snapshot.nozzle_diameters.get(nozzle)
-            if not installed:
-                return RoutingResult("unknown", "nozzle_state_unavailable", slots=(sid,))
-            if diameter not in installed:
-                return RoutingResult("incompatible", "nozzle_mismatch", slots=(sid,))
-        target_color = normalized_color(slot.get("color"))
-        colors[sid] = target_color
-        if slot["strict"] and target_color is None:
-            return RoutingResult("unknown", "color_unavailable", slots=(sid,))
+        refusal = channel_refusal(requirements, slot, snapshot)
+        if refusal is not None:
+            return refusal
+        colors[sid] = normalized_color(slot.get("color"))
         pin = policy.physical_pins.get(sid)
         if policy.mode == "pinned" and (pin is None or pin.get("source_id", -1) < 0):
             return RoutingResult("unknown", "mapping_review_required", slots=(sid,))
+        allowed = frozenset({pin["source_id"]}) if pin else None
         candidates = []
         unknown = False
         reason = "material_mismatch"
         for source in snapshot.sources:
-            # Firmware (and Bambu Studio) refuse any external feed while FTS is
-            # installed, including an external TPU Feed Assist path.  Filter it
-            # before source-policy/pin selection so external_only cannot turn a
-            # physical refusal into an accidental bypass.
-            if (snapshot.fts or snapshot.fts_pending_confirmation) and source.kind == "external":
-                reason = "fts_external_unsupported" if snapshot.fts else "fts_state_unavailable"
-                unknown = unknown or snapshot.fts_pending_confirmation
-                continue
-            if policy.feed_policy == "ams_only" and source.kind != "ams":
-                continue
-            if policy.feed_policy == "external_only" and source.kind != "external":
-                continue
-            if pin and source.id != pin["source_id"]:
-                continue
-            if not filament_types_compatible(source.material, target_type):
-                continue
-            variant = slot.get("tray_info_idx")
-            if variant and source.variant and variant != source.variant and not policy.allow_base_material_match:
-                reason = "variant_mismatch"
-                continue
-            if not source.nozzles:
-                unknown = True
-                reason = "nozzle_state_unavailable"
-                continue
-            if nozzle not in source.nozzles:
-                reason = "nozzle_mismatch"
-                continue
-            # This is deliberately the actual structured source material, not
-            # a profile name and not a broad TPU-* family match.  TPU-AMS is a
-            # different material string in Bambu Studio's own check.
-            if (
-                nozzle == 1
-                and requires_left_tpu_firmware_check(snapshot.model)
-                and canonical_filament_type(source.material) == "TPU"
-                and snapshot.left_tpu_firmware is not True
-            ):
-                unknown |= snapshot.left_tpu_firmware is None
-                reason = (
-                    "tpu_left_firmware_unavailable"
-                    if snapshot.left_tpu_firmware is None
-                    else "tpu_left_firmware_unsupported"
-                )
-                continue
-            if source.kind == "external" and nozzle_counts[nozzle] > 1:
-                reason = "feed_topology_mismatch"
-                continue
-            color = normalized_color(source.color)
-            if slot["strict"] and color != target_color:
-                unknown |= color is None
-                reason = "color_mismatch" if color else "color_unavailable"
-                continue
-            if pin:
-                # Captured expectations allow an explicitly chosen colour that
-                # differs from the slice. Legacy pins need a non-ambiguous match.
-                expected_color = normalized_color(pin.get("color")) or target_color
-                expected_type = pin.get("type") or slot["type"]
-                expected_variant = pin.get("tray_info_idx")
-                if (
-                    (pin.get("nozzles") is not None and tuple(pin["nozzles"]) != source.nozzles)
-                    or not expected_color
-                    or not color
-                    or color != expected_color
-                    or not filament_types_compatible(
-                        expected_type,
-                        source.material,
-                    )
-                    # A pin is a PHYSICAL slot, not a profile, so the option
-                    # governs this comparison exactly as it governs the gate
-                    # above. With it on, a tray whose profile id was re-tagged
-                    # while its material, its colour and its nozzle binding
-                    # stayed put is still the tray the operator pointed at —
-                    # re-profiling a spool moves no filament. With it off the
-                    # operator asked for that exact profile, here too.
-                    or (
-                        not policy.allow_base_material_match
-                        and expected_variant
-                        and source.variant
-                        and expected_variant != source.variant
-                    )
-                ):
-                    reason = "mapping_review_required"
-                    continue
-            candidates.append(source)
+            fits, why, unsure = source_fits(
+                slot,
+                source,
+                policy,
+                snapshot,
+                nozzle=slot_nozzle(slot),
+                nozzle_counts=nozzle_counts,
+                allowed=allowed,
+                pin=pin,
+                left_tpu_check=left_tpu_check,
+            )
+            unknown |= unsure
+            if why is not None:
+                reason = why
+            if fits:
+                candidates.append(source)
         if not candidates:
             unknown |= (
                 (not snapshot.ams_known and policy.feed_policy != "external_only")
@@ -373,7 +466,9 @@ def resolve_filament_routing(
     max_penalty = max(102, len(ranks) + 1)
 
     def score(sid, source):
-        exact = int(colors[sid] is not None and colors[sid] == normalized_color(source.color))
+        # В1 (owner, 2026-09-30): a colour the operator DECLARED for backup is
+        # an exact match, so «lowest remain first» uses the leftovers.
+        exact = int(colors[sid] is not None and colors[sid] == normalized_color(source.rule_color))
         remain = source.remain if 0 <= source.remain <= 100 else 101
         penalty = ranks.get(source.id, len(ranks)) if ranks else remain
         return exact * (max_penalty * len(order) + 1) - (penalty if prefer_lowest else 0)
@@ -420,7 +515,10 @@ def resolve_filament_routing(
             policy.fingerprint,
             snapshot.marker,
             best,
-            sum(int(colors[sid] is not None and colors[sid] == normalized_color(s.color)) for sid, s in best.items()),
+            sum(
+                int(colors[sid] is not None and colors[sid] == normalized_color(s.rule_color))
+                for sid, s in best.items()
+            ),
             not policy.allow_base_material_match,
         ),
     )

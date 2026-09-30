@@ -126,8 +126,11 @@ async def test_printer_preview_keeps_saved_pin_until_explicit_review(
     response = await committing_client.post("/api/v1/auto-queue/printer-routing-preview", json=body)
     assert response.json()["targets"][0]["status"] == "compatible"
     mqtt._process_message({"print": {"vt_tray": {"id": 254, "tray_type": "PLA", "tray_color": "00FF00"}}})
+    # П4 (owner, 2026-09-30): without a forced colour a recoloured spool still
+    # holds the pin — the saved pin is kept, and it is not a review.
     response = await committing_client.post("/api/v1/auto-queue/printer-routing-preview", json=body)
-    assert response.json()["targets"][0]["reason"]["code"] == "mapping_review_required"
+    assert response.json()["targets"][0]["status"] == "compatible"
+    assert response.json()["targets"][0]["mapping"] == [-1, -1, 254]
     copied = await committing_client.post(
         "/api/v1/auto-queue/printer-routing-preview", json={**body, "editing_queue_item": False}
     )
