@@ -253,6 +253,67 @@ async (page) => {
     };
   });
 
+  // ======================= 4c. the stock banner at narrow widths (D03/D05, E3-V07) =======================
+  // Coordinates of the sentence and the button, not the document's width: the button goes UNDER the
+  // sentence when the two do not fit, beside it otherwise, and the configuration is amber (the mockup's .m-cfg).
+  const bannerGeo = (p) => p.evaluate(() => {
+    const banner = document.querySelector('[data-testid="take-stock"]');
+    if (!banner) return null;
+    const para = banner.querySelector('p');
+    const button = banner.querySelector('button');
+    const pr = para.getBoundingClientRect();
+    const br = button.getBoundingClientRect();
+    const configs = [...para.querySelectorAll('.text-amber-700')];
+    return {
+      banner: Math.round(banner.getBoundingClientRect().width),
+      paraWidth: Math.round(pr.width), paraHeight: Math.round(pr.height), paraBottom: Math.round(pr.bottom), paraRight: Math.round(pr.right),
+      buttonTop: Math.round(br.top), buttonLeft: Math.round(br.left), buttonWidth: Math.round(br.width),
+      button: br.top >= pr.bottom - 1 ? 'below' : 'beside',
+      configs: configs.length, configColors: [...new Set(configs.map((el) => getComputedStyle(el).color))],
+      bannerOverflow: banner.scrollWidth - banner.clientWidth,
+      docOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    };
+  });
+  const AMBER_DARK = 'rgb(251, 191, 36)';
+  const bannerCase = async ({ name, w, url, storage = {}, long = false }) => {
+    const rewrite = [];
+    if (long) {
+      // Three lines of the order's product in three long configurations, and one offer for each.
+      const option = (text) => ({ group_id: 1, group_name: 'Кріплення', option_id: 1, option_name: text, is_default: false });
+      const LONG_OPTIONS = ['на DIN-рейку з додатковою пластиною для щитових шаф', 'настінне з прихованим кабельним вводом знизу', 'на магніт для металевих стелажів складу'];
+      rewrite.push([exact(`/projects/${A}`), (o) => ({ ...o, lines: LONG_OPTIONS.map((text, i) => ({ ...o.lines[0], id: 900 + i, configuration: { choices: [option(text)], changed_parts: [] } })) })]);
+      rewrite.push([exact(`/projects/${A}/stock-offers`), (offers) => LONG_OPTIONS.map((_, i) => ({ ...(offers[0] ?? {}), line_id: 900 + i, from_finished: 2 + i, kits: 1 }))]);
+    }
+    const { ctx, p, errors } = await open(w, { storage, rewrite });
+    await p.goto(url, { waitUntil: 'networkidle' });
+    await ready(p);
+    await p.waitForSelector('[data-testid="take-stock"]', { timeout: 8000 });
+    const m = await bannerGeo(p);
+    await p.locator('[data-testid="take-stock"]').scrollIntoViewIfNeeded();
+    const file = await shoot(p, `take-stock-${name}`);
+    await ctx.close();
+    return { name, viewport: w, long, ...m, errors, file };
+  };
+  await scenario('take-stock-wrap', ['E3-D03', 'E3-D05', 'E3-V07'], async () => {
+    const cases = [
+      await bannerCase({ name: '390', w: 390, url: detail(A) }),
+      await bannerCase({ name: '390-long', w: 390, url: detail(A), long: true }),
+      await bannerCase({ name: '1440', w: 1440, url: detail(A) }),
+      await bannerCase({ name: 'embedded-1024', w: 1024, url: `${job.ui}/projects?order=${A}`, storage: { 'projects.view': 'workspace' } }),
+      await bannerCase({ name: 'embedded-1024-long', w: 1024, url: `${job.ui}/projects?order=${A}`, storage: { 'projects.view': 'workspace' }, long: true }),
+    ];
+    const ok = cases.every((c) =>
+      c.docOverflow <= 0 && c.bannerOverflow <= 0 && c.errors.length === 0 &&
+      c.configs === (c.long ? 3 : 1) && c.configColors.length === 1 && c.configColors[0] === AMBER_DARK &&
+      (c.viewport === 390 ? c.button === 'below' : true) &&
+      (c.viewport === 1440 ? c.button === 'beside' && c.buttonLeft > c.paraRight : true) &&
+      (c.button === 'beside' ? c.paraWidth >= 320 : true));
+    return {
+      recipe: { cases: cases.map(({ name, viewport, long }) => ({ name, viewport, long })), fixture: ['long: GET order → three lines in three long configurations', 'long: GET stock-offers → one offer per line'] },
+      measured: cases.map(({ file, ...rest }) => rest), pass: ok, screenshots: cases.map((c) => c.file),
+    };
+  });
+
   // ======================= 5. states =======================
   const stateShot = async (id, ids, { order = A, q = '', w = 1440, opts = {}, check }) =>
     scenario(id, ids, async () => {
