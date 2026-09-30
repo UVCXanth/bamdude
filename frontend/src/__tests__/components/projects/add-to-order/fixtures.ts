@@ -33,7 +33,13 @@ const row = (over: Partial<ProductListItem>): ProductListItem => ({
   ...over,
 });
 
-export const pipe = row({});
+/** The Pipe: one group, Tail — straight (standard) or angled; the catalog row carries it (WS-13 E5 H01). */
+export const pipe = row({
+  variant_group_names: ['Tail'],
+  variant_groups: [
+    { id: 10, name: 'Tail', default_option_id: 100, options: [{ id: 100, name: 'straight' }, { id: 101, name: 'angled' }] },
+  ],
+});
 export const lamp = row({
   id: 2,
   code: 'PR-0002',

@@ -97,11 +97,12 @@ export function AddToOrderDialog({
   // A chosen order came from the active list; a given one says what it is.
   const takesStock = order ? order.active : true;
   const items = useMemo(() => suggestItems(products), [products]);
-  const { byProduct, failed } = useStockSuggest(items, takesStock);
+  // Only proposals that answer what each row asks NOW reach the rows and the batch (E5 R02).
+  const { current, status, refreshFailed, retry } = useStockSuggest(items, takesStock);
 
   // Everything picked on every tab goes in ONE batch — one transaction, so a
   // refused line adds nothing (spec rule 11).
-  const productBatch = productLines(products, byProduct, takesStock);
+  const productBatch = productLines(products, current, takesStock);
   const partsBatch = partsLines(parts);
   const plateBatch = plateLines(plate);
   const lines: BatchLine[] = [...productBatch, ...partsBatch, ...plateBatch];
@@ -182,7 +183,7 @@ export function AddToOrderDialog({
           </Button>
           <Button
             onClick={() =>
-              target != null && !pending && add.mutate({ id: target.id, shown: shownForLines(products, byProduct, takesStock) })
+              target != null && !pending && add.mutate({ id: target.id, shown: shownForLines(products, current, takesStock) })
             }
             disabled={!canSubmit}
           >
@@ -215,8 +216,12 @@ export function AddToOrderDialog({
                   picks={products}
                   onPicksChange={setProducts}
                   takesStock={takesStock}
-                  suggestions={byProduct}
-                  suggestFailed={failed}
+                  stockOf={(id) => ({
+                    suggestion: current.get(id),
+                    status: status.get(id) ?? 'waiting',
+                    refreshFailed: refreshFailed.has(id),
+                  })}
+                  onRetryStock={retry}
                   initialQuery={preselectProduct?.code}
                 />
               )}

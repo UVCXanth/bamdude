@@ -93,8 +93,11 @@ describe('the products tab of «Add to order»', () => {
   it('marks a draft, and shows what an unticked row has in stock', async () => {
     render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
     const lampRow = await screen.findByTestId('add-product-2');
-    expect(within(lampRow).getByText('Draft')).toBeInTheDocument();
-    expect(within(screen.getByTestId('add-product-1')).getByText('ready 2 · kits 3')).toBeInTheDocument();
+    // WS-13 E5 C03: a draft is said in the row's second line, not by a badge.
+    expect(within(lampRow).getByText(/· draft/)).toBeInTheDocument();
+    // The Pipe has groups: its ready units count every configuration (C04).
+    expect(within(screen.getByTestId('add-product-1')).getByText('ready 2 (all configs) · kits 3')).toBeInTheDocument();
+    expect(within(lampRow).getByText('ready 0 · kits 1')).toBeInTheDocument();
   });
 
   it('an order that is not active takes nothing from stock', async () => {

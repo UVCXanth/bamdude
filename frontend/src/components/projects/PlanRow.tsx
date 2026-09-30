@@ -7,14 +7,12 @@ import { Button } from '../Button';
 import { PrintModal } from '../PrintModal';
 import { chosenPlate, parseCount, plateName, plateOptions, projectRow, splitIsOff, type ChosenPlate } from './planMath';
 import { PlanPrinterDialog } from './PlanPrinterDialog';
+import { MODEL_CHIP } from './chips';
 import { Select } from '../Select';
 
 /** The server's own ceiling on one enqueue item (`PlanEnqueueItem.count`). */
 export const MAX_PER_PLATE = 999;
 
-/** The blue model chip (mockup `.m-model`). */
-const MODEL_CHIP =
-  'inline-block rounded px-1.5 py-px text-[11px] font-medium leading-4 whitespace-nowrap bg-blue-500/15 text-blue-700 dark:text-blue-400';
 const CELL = 'px-2.5 py-2.5 align-top';
 
 interface PlanRowProps {

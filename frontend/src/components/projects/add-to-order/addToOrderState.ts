@@ -173,11 +173,18 @@ export function shortfalls(result: BatchLinesResult, shown: Shown[] = []): Short
     .filter((s) => s.gotFinished < s.askedFinished || s.gotKits < s.askedKits);
 }
 
-/** What each product line shows, in the order the batch sends them (see {@link shortfalls}). */
+/**
+ * What each product line shows, in the order the batch sends them (see {@link shortfalls}).
+ * `suggestions` holds CURRENT proposals only (`useStockSuggest().current`, WS-13 E5 R02):
+ * an auto row without one showed no numbers, so nothing it did not show is warned about;
+ * a manual row showed the operator's own.
+ */
 export function shownForLines(picks: ProductPicks, suggestions: Map<number, StockSuggestion>, takesStock: boolean): Shown[] {
   return [...picks].map(([productId, pick]) => {
     if (!takesStock) return undefined;
-    const shown = shownStock(pick, suggestions.get(productId));
+    const suggestion = suggestions.get(productId);
+    if (pick.auto && !suggestion) return undefined;
+    const shown = shownStock(pick, suggestion);
     return { finished: shown.fromFinished, kits: shown.fromKits };
   });
 }

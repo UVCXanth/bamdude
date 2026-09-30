@@ -115,7 +115,7 @@ describe('AddToOrderDialog', () => {
     expect(within(await screen.findByTestId('add-product-1')).getByRole('checkbox')).toBeChecked();
     // Final review I4: the product is found, not merely ticked somewhere off the page.
     expect(api.getProductsPaged).toHaveBeenLastCalledWith({ page: 1, per_page: 24, active: true, q: 'PR-0001' });
-    expect(screen.getByLabelText('Search products…')).toHaveValue('PR-0001');
+    expect(screen.getByLabelText('Product, SKU, category, material or part name…')).toHaveValue('PR-0001');
     expect(getOrders).toHaveBeenLastCalledWith({ status: 'active', page: 1, per_page: 20 });
     const submit = screen.getByRole('button', { name: 'Add lines (1)' });
     expect(submit).toBeDisabled();

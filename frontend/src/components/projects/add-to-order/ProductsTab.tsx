@@ -3,42 +3,57 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Package } from 'lucide-react';
 import { api } from '../../../api/client';
-import type { ProductListItem, StockSuggestion } from '../../../api/client';
-import { useProductDetail } from '../../../hooks/useProductDetail';
+import type { ListVariantGroup, ProductListItem, StockSuggestion } from '../../../api/client';
+import type { SuggestStatus } from '../../../hooks/useStockSuggest';
 import { useSearchBox } from '../../../hooks/useSearchBox';
 import { getColorName } from '../../../utils/colors';
+import { Button } from '../../Button';
 import { ListSearchBox } from '../../ListSearchBox';
 import { PaginationBar } from '../../PaginationBar';
 import { Select } from '../../Select';
-import { ProductStatusBadge } from '../../products/ProductStatusBadge';
+import { RefreshFailedNote } from '../../workshop/RefreshFailedNote';
+import { WorkshopTableScroll } from '../../workshop/WorkshopPanel';
+import { MODEL_CHIP } from '../chips';
 import { MAX_LINE_QTY, newProductPick, shownStock, withStock } from './addToOrderState';
 import type { ProductPick, ProductPicks } from './addToOrderState';
 
 const PAGE_SIZE = 24;
+const HEAD = 'px-3 py-2 text-left text-xs font-normal text-bambu-gray whitespace-nowrap';
+const CELL = 'px-3 py-2.5 align-top';
+
+/** A picked row's stock, as the dialog's `useStockSuggest` tells it. */
+export interface RowStock {
+  /** The proposal — present only when it answers what the row asks now (E5 R02). */
+  suggestion: StockSuggestion | undefined;
+  status: SuggestStatus;
+  refreshFailed: boolean;
+}
 
 /**
- * «Products» of the add-to-order dialog (spec workshop-add-to-order, rule 20).
+ * «Products» of the add-to-order dialog (spec workshop-add-to-order, rule 20;
+ * WS-13 E5 C — the mockup's `addProductsTab`).
  *
  * The catalog comes a page at a time from the server — search, category and
  * printer model are request parameters; the picks are the dialog's and outlive
- * the page. Stock numbers are the server's proposal (`suggestions`); a changed
- * number makes the row the operator's until «pick» hands it back.
+ * the page. A picked row becomes fields in place (no expanding row, E5 K1). Its
+ * groups come with the catalog row (H01) — no product is read per row. Stock
+ * numbers are the server's proposal; a changed number makes the row the
+ * operator's until «pick» hands it back.
  */
 export function ProductsTab({
   picks,
   onPicksChange,
   takesStock,
-  suggestions,
-  suggestFailed = false,
+  stockOf,
+  onRetryStock,
   initialQuery = '',
 }: {
   picks: ProductPicks;
   onPicksChange: (next: ProductPicks) => void;
   /** Only an active order takes stock (rule 7) — otherwise there is no stock column. */
   takesStock: boolean;
-  suggestions: Map<number, StockSuggestion>;
-  /** The last `/stock/suggest` failed — the picked rows say so. */
-  suggestFailed?: boolean;
+  stockOf: (productId: number) => RowStock;
+  onRetryStock: () => void;
   /** Opens already searched — the product page opens on its own product. */
   initialQuery?: string;
 }) {
@@ -73,12 +88,13 @@ export function ProductsTab({
     ...(category ? { category } : {}),
     ...(model ? { model } : {}),
   };
-  const { data } = useQuery({
+  const { data, isPending, isError, refetch } = useQuery({
     queryKey: ['products', params],
     queryFn: () => api.getProductsPaged(params),
     placeholderData: keepPreviousData,
   });
   const rows = data?.items ?? [];
+  const columns = takesStock ? 6 : 5;
 
   const update = (id: number, pick: ProductPick | null) => {
     const next = new Map(picks);
@@ -89,7 +105,7 @@ export function ProductsTab({
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-3">
         <ListSearchBox value={typed} onChange={setTyped} placeholder={t('orders.add.searchProducts')} layout="picker" />
         <Select
           tone="filter"
@@ -101,7 +117,7 @@ export function ProductsTab({
             setPage(1);
           }}
         >
-          <option value="">{t('products.catalog.all')}</option>
+          <option value="">{t('orders.add.allCategories')}</option>
           <option value="none">{t('products.catalog.uncategorized')}</option>
           {directory.map((c) => (
             <option key={c.id} value={String(c.id)}>
@@ -127,40 +143,64 @@ export function ProductsTab({
           ))}
         </Select>
       </div>
+      <p className="my-2.5 text-[13px] text-bambu-gray">{t('orders.add.help.products')}</p>
 
-      <div className="overflow-x-auto rounded-lg border border-bambu-dark-tertiary">
-        <table className="w-full text-sm">
-          <thead className="bg-bambu-dark-tertiary/50 text-bambu-gray">
-            <tr>
-              <th className="p-2 w-8" aria-label={t('orders.add.pick')} />
-              <th className="font-normal p-2 text-left">{t('orders.lines.product')}</th>
-              <th className="font-normal p-2 text-left">{t('orders.add.configuration')}</th>
-              <th className="font-normal p-2 text-left">{t('orders.lines.quantity')}</th>
-              {takesStock && <th className="font-normal p-2 text-left">{t('orders.add.stock.title')}</th>}
-              <th className="font-normal p-2 text-left">{t('orders.add.materialColor')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((product) => (
-              <ProductRow
-                key={product.id}
-                product={product}
-                pick={picks.get(product.id)}
-                suggestion={suggestions.get(product.id)}
-                suggestFailed={suggestFailed}
-                takesStock={takesStock}
-                onChange={(pick) => update(product.id, pick)}
-              />
-            ))}
-            {data && rows.length === 0 && (
+      {isError && data && <RefreshFailedNote onRetry={() => refetch()} />}
+      <div className="rounded-lg border border-bambu-dark-tertiary">
+        <WorkshopTableScroll label={t('orders.add.tabs.products')}>
+          <table className="w-full text-sm">
+            <thead>
               <tr>
-                <td colSpan={takesStock ? 6 : 5} className="p-6 text-center text-bambu-gray">
-                  {t('orders.add.noProducts')}
-                </td>
+                <th className={`${HEAD} w-8`}>
+                  <span className="sr-only">{t('orders.add.pick')}</span>
+                </th>
+                <th className={`${HEAD} w-[26%]`}>{t('orders.lines.product')}</th>
+                <th className={`${HEAD} min-w-[200px]`}>{t('orders.add.configuration')}</th>
+                <th className={HEAD}>{t('orders.lines.quantity')}</th>
+                {takesStock && <th className={HEAD}>{t('orders.add.stock.title')}</th>}
+                <th className={HEAD}>{t('orders.add.materialColor')}</th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((product) => (
+                <ProductRow
+                  key={product.id}
+                  product={product}
+                  pick={picks.get(product.id)}
+                  stock={picks.has(product.id) ? stockOf(product.id) : undefined}
+                  onRetryStock={onRetryStock}
+                  takesStock={takesStock}
+                  onChange={(pick) => update(product.id, pick)}
+                />
+              ))}
+              {isPending && (
+                <tr>
+                  <td colSpan={columns} className="p-6 text-center text-bambu-gray">
+                    {t('common.loading')}
+                  </td>
+                </tr>
+              )}
+              {isError && !data && (
+                <tr>
+                  <td colSpan={columns} className="p-6 text-center">
+                    <span className="text-amber-700 dark:text-amber-400">{t('orders.add.productsFailed')}</span>{' '}
+                    <Button size="sm" variant="ghost" onClick={() => refetch()}>
+                      {t('common.retry')}
+                    </Button>
+                  </td>
+                </tr>
+              )}
+              {data && rows.length === 0 && (
+                <tr>
+                  <td colSpan={columns} className="p-6 text-center">
+                    <p className="text-white">{t('orders.add.noProducts')}</p>
+                    <p className="text-sm text-bambu-gray">{t('orders.add.noProductsHint')}</p>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </WorkshopTableScroll>
         <PaginationBar
           page={page}
           totalPages={data?.meta.last_page ?? 1}
@@ -178,87 +218,112 @@ export function ProductsTab({
   );
 }
 
+/** «Tail: straight / angled; Mount: wall / DIN» — what an unpicked row could be. */
+function groupsText(groups: ListVariantGroup[]): string {
+  return groups.map((g) => `${g.name}: ${g.options.map((o) => o.name).join(' / ')}`).join('; ');
+}
+
 function ProductRow({
   product,
   pick,
-  suggestion,
-  suggestFailed,
+  stock,
+  onRetryStock,
   takesStock,
   onChange,
 }: {
   product: ProductListItem;
   pick: ProductPick | undefined;
-  suggestion: StockSuggestion | undefined;
-  suggestFailed: boolean;
+  stock: RowStock | undefined;
+  onRetryStock: () => void;
   takesStock: boolean;
   onChange: (pick: ProductPick | null) => void;
 }) {
   const { t } = useTranslation();
   const set = (patch: Partial<ProductPick>) => pick && onChange({ ...pick, ...patch });
+  const groups = product.variant_groups ?? [];
+  const colours = product.colors.map((c) => getColorName(c)).join(', ');
   return (
-    <tr data-testid={`add-product-${product.id}`} className="border-t border-bambu-dark-tertiary text-white align-top">
-      <td className="p-2">
+    <tr
+      data-testid={`add-product-${product.id}`}
+      className={`border-t border-bambu-dark-tertiary text-white ${pick ? 'bg-bambu-green/[0.08]' : ''}`}
+    >
+      <td className={CELL}>
         <input
           type="checkbox"
           checked={pick !== undefined}
           onChange={(e) => onChange(e.target.checked ? newProductPick() : null)}
-          aria-label={product.name}
-          className="accent-bambu-green mt-2"
+          aria-label={t('orders.add.pickNamed', { name: product.name })}
+          className="mt-3 accent-bambu-green"
         />
       </td>
-      <td className="p-2">
-        <div className="flex items-start gap-2">
+      <td className={CELL}>
+        <div className="flex items-start gap-3">
           {product.has_cover ? (
             <img
               src={api.getProductCoverImageUrl(product.id)}
               alt=""
-              className="w-9 h-9 flex-shrink-0 rounded object-contain bg-bambu-dark"
+              className="h-10 w-10 flex-shrink-0 rounded-lg bg-bambu-dark-tertiary object-contain"
             />
           ) : (
-            <span className="w-9 h-9 flex-shrink-0 rounded bg-bambu-dark flex items-center justify-center">
-              <Package className="w-4 h-4 text-bambu-gray" />
+            <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-bambu-dark-tertiary">
+              <Package className="h-[18px] w-[18px] text-bambu-gray" />
             </span>
           )}
           <div className="min-w-0">
-            <div className="truncate">{product.name}</div>
+            <div className="font-semibold [overflow-wrap:anywhere]">{product.name}</div>
             <div className="text-xs text-bambu-gray">
-              {[product.code, product.sku, product.category?.name].filter(Boolean).join(' · ')}
-            </div>
-            <div className="flex flex-wrap items-center gap-1 mt-0.5">
-              <ProductStatusBadge product={product} />
-              {product.models.length > 0 && (
-                <span className="text-xs text-bambu-gray">{product.models.join(', ')}</span>
+              {product.code}
+              {product.sku && (
+                <>
+                  {' · '}
+                  <span className="font-mono">{product.sku}</span>
+                </>
+              )}
+              {product.category && ` · ${product.category.name}`}
+              {product.status === 'draft' && (
+                <span className="text-amber-700 dark:text-amber-400"> · {t('orders.add.draft')}</span>
               )}
             </div>
+            {product.models.length > 0 && (
+              <div className="mt-0.5 flex flex-wrap gap-1">
+                {product.models.map((m) => (
+                  <span key={m} className={MODEL_CHIP}>
+                    {m}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </td>
-      <td className="p-2">{pick && <PickedConfiguration productId={product.id} pick={pick} onChange={onChange} />}</td>
-      <td className="p-2">
-        <input
-          type="number"
-          min={1}
-          max={MAX_LINE_QTY}
-          value={pick?.qty ?? 1}
-          disabled={!pick}
-          onChange={(e) => set({ qty: Math.min(MAX_LINE_QTY, Math.max(1, Math.floor(Number(e.target.value)) || 1)) })}
-          aria-label={t('orders.lines.quantity')}
-          className="w-20 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white disabled:opacity-50"
-        />
+      <td className={CELL}>
+        {groups.length === 0 ? (
+          <span className="text-bambu-gray">{t('orders.add.noVariants')}</span>
+        ) : pick ? (
+          <PickedConfiguration groups={groups} pick={pick} onChange={onChange} />
+        ) : (
+          <span className="text-bambu-gray">{groupsText(groups)}</span>
+        )}
+      </td>
+      <td className={CELL}>
+        <QuantityField pick={pick} onCommit={(qty) => set({ qty })} />
       </td>
       {takesStock && (
-        <td className="p-2">
-          {pick ? (
-            <StockCell pick={pick} suggestion={suggestion} failed={suggestFailed} onChange={onChange} />
+        <td className={CELL}>
+          {pick && stock ? (
+            <StockCell pick={pick} stock={stock} onRetry={onRetryStock} onChange={onChange} />
           ) : (
-            <span className="text-bambu-gray whitespace-nowrap">
-              {t('orders.add.stock.listed', { ready: product.finished_available, kits: product.kits_available })}
+            <span className="whitespace-nowrap text-bambu-gray">
+              {t(groups.length > 0 ? 'orders.add.stock.listedAll' : 'orders.add.stock.listed', {
+                ready: product.finished_available,
+                kits: product.kits_available,
+              })}
             </span>
           )}
         </td>
       )}
-      <td className="p-2">
-        {pick && (
+      <td className={CELL}>
+        {pick ? (
           <div className="flex flex-col gap-1">
             <Select
               size="sm"
@@ -266,7 +331,7 @@ function ProductRow({
               value={pick.material}
               onChange={(e) => set({ material: e.target.value })}
             >
-              <option value="">{t('products.catalog.anyMaterial')}</option>
+              <option value="">{t('orders.add.any')}</option>
               {product.materials.map((m) => (
                 <option key={m} value={m}>
                   {m}
@@ -279,7 +344,7 @@ function ProductRow({
               value={pick.color}
               onChange={(e) => set({ color: e.target.value })}
             >
-              <option value="">{t('products.catalog.anyColor')}</option>
+              <option value="">{t('orders.add.anyColor')}</option>
               {product.colors.map((c) => (
                 <option key={c} value={c}>
                   {getColorName(c)}
@@ -287,94 +352,164 @@ function ProductRow({
               ))}
             </Select>
           </div>
+        ) : (
+          <>
+            <div>{product.materials.join(', ') || t('orders.add.any')}</div>
+            <div className="text-xs text-bambu-gray">{colours || t('orders.add.anyColor')}</div>
+          </>
         )}
       </td>
     </tr>
   );
 }
 
-/** A group `Select` per variant group — list rows carry no groups, so a picked row reads its product. */
+/**
+ * The quantity, typed as text: a whole number in range is taken as it is typed; an
+ * empty or broken field goes back to the last good number when it is left — so
+ * retyping never passes through a clamped «1» (the E4 I1 lesson).
+ */
+function QuantityField({ pick, onCommit }: { pick: ProductPick | undefined; onCommit: (qty: number) => void }) {
+  const { t } = useTranslation();
+  const [text, setText] = useState<string | null>(null);
+  const shown = pick ? (text ?? String(pick.qty)) : '1';
+  const parse = (value: string) => {
+    const n = Number(value);
+    return value.trim() !== '' && Number.isInteger(n) && n >= 1 && n <= MAX_LINE_QTY ? n : null;
+  };
+  return (
+    <input
+      type="number"
+      min={1}
+      max={MAX_LINE_QTY}
+      value={shown}
+      disabled={!pick}
+      onChange={(e) => {
+        setText(e.target.value);
+        const n = parse(e.target.value);
+        if (n != null) onCommit(n);
+      }}
+      onBlur={() => setText(null)}
+      aria-label={t('orders.lines.quantity')}
+      className="w-[88px] rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-2 py-1 text-white disabled:opacity-50"
+    />
+  );
+}
+
+/**
+ * A `Select` per variant group, labelled with the group (the mockup's inline label).
+ * ⚠️ A group without a standard option stays UNCHOSEN until the operator picks one —
+ * the server leaves it so (`line_config._defaults`, E5 R11): the field shows «no
+ * choice», and the proposal and the batch carry nothing for it. Clearing it again
+ * drops the group from the draft, never sends 0.
+ */
 function PickedConfiguration({
-  productId,
+  groups,
   pick,
   onChange,
 }: {
-  productId: number;
+  groups: ListVariantGroup[];
   pick: ProductPick;
   onChange: (pick: ProductPick) => void;
 }) {
   const { t } = useTranslation();
-  const { data: product } = useProductDetail(productId);
-  if (!product) return null;
-  if (product.variant_groups.length === 0) {
-    return <span className="text-bambu-gray">{t('orders.add.noVariants')}</span>;
-  }
+  const choose = (groupId: number, value: string) => {
+    const choices = { ...pick.choices };
+    if (value === '') delete choices[groupId];
+    else choices[groupId] = Number(value);
+    onChange({ ...pick, choices });
+  };
   return (
-    <div className="flex flex-col gap-1">
-      {product.variant_groups.map((group) => (
-        <Select
-          key={group.id}
-          size="sm"
-          aria-label={group.name}
-          value={String(pick.choices[group.id] ?? group.default_option_id ?? '')}
-          onChange={(e) => onChange({ ...pick, choices: { ...pick.choices, [group.id]: Number(e.target.value) } })}
-        >
-          {group.options.map((option) => (
-            <option key={option.id} value={String(option.id)}>
-              {option.name}
-            </option>
-          ))}
-        </Select>
+    <div className="flex flex-wrap gap-x-2 gap-y-1">
+      {groups.map((group) => (
+        <span key={group.id} className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-bambu-gray">
+          {group.name}
+          <Select
+            size="sm"
+            aria-label={group.name}
+            value={String(pick.choices[group.id] ?? group.default_option_id ?? '')}
+            onChange={(e) => choose(group.id, e.target.value)}
+          >
+            {group.default_option_id == null && <option value="">{t('orders.add.noChoice')}</option>}
+            {group.options.map((option) => (
+              <option key={option.id} value={String(option.id)}>
+                {option.name}
+              </option>
+            ))}
+          </Select>
+        </span>
       ))}
     </div>
   );
 }
 
+/**
+ * A picked row's stock (E5 C06, R02): the proposal's numbers only while they answer
+ * what the row asks now. A row the operator set keeps its own numbers through a
+ * re-read or a refusal; an automatic row then says only where the proposal stands.
+ */
 function StockCell({
   pick,
-  suggestion,
-  failed,
+  stock,
+  onRetry,
   onChange,
 }: {
   pick: ProductPick;
-  suggestion: StockSuggestion | undefined;
-  failed: boolean;
+  stock: RowStock;
+  onRetry: () => void;
   onChange: (pick: ProductPick) => void;
 }) {
   const { t } = useTranslation();
-  const shown = shownStock(pick, suggestion);
-  const nothing = suggestion !== undefined && suggestion.finished_free === 0 && suggestion.kits_free === 0;
+  const { suggestion, status, refreshFailed } = stock;
+  const known = status === 'current' && suggestion !== undefined;
+  const statusLine =
+    status === 'waiting' ? (
+      <span className="text-bambu-gray">{t('orders.add.stock.reading')}</span>
+    ) : status === 'failed' ? (
+      <span className="flex items-center gap-1">
+        <span className="text-amber-700 dark:text-amber-400">{t('orders.add.stock.failed')}</span>
+        <Button size="sm" variant="ghost" onClick={onRetry}>
+          {t('common.retry')}
+        </Button>
+      </span>
+    ) : null;
+
+  // An automatic row without an answer to its own question shows no numbers at all.
+  if (pick.auto && !known) return <div className="text-xs">{statusLine}</div>;
+
+  const shown = shownStock(pick, known ? suggestion : undefined);
+  const nothing = known && suggestion.finished_free === 0 && suggestion.kits_free === 0;
   const field = (name: 'fromFinished' | 'fromKits', label: string, word: string, free: number | undefined) => (
     <span className="flex items-center gap-1 whitespace-nowrap">
-      <span className="text-bambu-gray">{word}</span>
       <input
         type="number"
         min={0}
         value={shown[name]}
-        onChange={(e) => onChange(withStock(pick, suggestion, name, Number(e.target.value)))}
+        onChange={(e) => onChange(withStock(pick, known ? suggestion : undefined, name, Number(e.target.value)))}
         aria-label={label}
-        className="w-16 px-2 py-0.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white"
+        className="w-[68px] rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-2 py-0.5 text-white"
       />
-      <span className="text-bambu-gray">{t('orders.add.stock.of', { n: free ?? '—' })}</span>
+      <span className="text-bambu-gray">{word}</span>
+      {free !== undefined && <span className="text-bambu-gray">{t('orders.add.stock.of', { n: free })}</span>}
     </span>
   );
   return (
     <div className="flex flex-col gap-1 text-xs">
-      {field('fromFinished', t('orders.add.stock.readyLabel'), t('orders.add.stock.ready'), suggestion?.finished_free)}
-      {field('fromKits', t('orders.add.stock.kitsLabel'), t('orders.add.stock.kits'), suggestion?.kits_free)}
-      <span className="flex items-center gap-2">
-        {failed && !suggestion && <span className="text-red-400">{t('orders.add.stock.failed')}</span>}
+      {field('fromFinished', t('orders.add.stock.readyLabel'), t('orders.add.stock.ready'), known ? suggestion.finished_free : undefined)}
+      {field('fromKits', t('orders.add.stock.kitsLabel'), t('orders.add.stock.kits'), known ? suggestion.kits_free : undefined)}
+      <span className="flex flex-wrap items-center gap-2">
+        {statusLine}
         {pick.auto ? (
-          suggestion && (
-            <span className="text-bambu-gray">{t(nothing ? 'orders.add.stock.none' : 'orders.add.stock.auto')}</span>
-          )
+          <span className={nothing ? 'text-bambu-gray' : 'text-bambu-green'}>
+            {t(nothing ? 'orders.add.stock.none' : 'orders.add.stock.auto')}
+          </span>
         ) : (
           <button type="button" onClick={() => onChange({ ...pick, auto: true })} className="text-bambu-green hover:underline">
             {t('orders.add.stock.pick')}
           </button>
         )}
-        <span className="text-white">{t('orders.add.stock.toPrint', { n: shown.toPrint })}</span>
+        {shown.toPrint > 0 && <span className="text-bambu-gray">{t('orders.add.stock.toPrint', { n: shown.toPrint })}</span>}
       </span>
+      {refreshFailed && <span className="text-amber-700 dark:text-amber-400">{t('orders.add.stock.refreshFailed')}</span>}
     </div>
   );
 }

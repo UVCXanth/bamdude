@@ -1,9 +1,9 @@
 import { useTranslation } from 'react-i18next';
 import type { LineMode, LinePurchasedPart, PartFigures } from '../../api/client';
+import { VARIANT_CHIP } from './chips';
 
 /** The amber chip of a variant part and a bought part (mockup `.m-varchip`). */
-const CHIP_CLASS =
-  'ml-1.5 inline-block rounded px-1.5 py-px align-[1px] text-[11px] font-medium leading-4 whitespace-nowrap bg-amber-500/15 text-amber-700 dark:text-amber-400';
+const CHIP_CLASS = `ml-1.5 ${VARIANT_CHIP}`;
 const CELL = 'px-2.5 py-1.5';
 
 /**
