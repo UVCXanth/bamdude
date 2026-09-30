@@ -1,7 +1,8 @@
 """Drive both real runners through public owners with only device I/O mocked."""
 
 import asyncio
-from datetime import datetime, timedelta
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -253,8 +254,6 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
         if ok:
             assert job.outcome["success"] is True
     if ok:
-        import json
-
         from backend.app.services.filament_policy import restore_routing_source
 
         await db_session.refresh(item)
@@ -316,3 +315,38 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
     if owner == "queue" and change not in {"cancel", "reclaim", "delete"}:
         with pytest.raises(RoutingDeferred):
             await preflight_item(db_session, item, printer_id)
+
+
+async def test_the_row_keeps_the_mapping_the_printer_was_sent(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from backend.app.services import background_dispatch as bd
+    from backend.app.services.background_dispatch import _record_dispatched_mapping
+
+    monkeypatch.setattr(bd, "async_session", async_sessionmaker(test_engine, expire_on_commit=False))
+    _source, _printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    started = datetime.now(timezone.utc)
+    intent = PrintQueueItem(
+        queue_id=queue.id, status="printing", started_at=started, filament_routing="{}", ams_mapping="[0]"
+    )
+    legacy = PrintQueueItem(
+        queue_id=queue.id, status="printing", started_at=started, filament_routing=None, ams_mapping="[0]"
+    )
+    db_session.add_all([intent, legacy])
+    await db_session.commit()
+
+    for row in (intent, legacy):
+        # The dispatcher's claim stamp is the value it READ off the row.
+        await db_session.refresh(row)
+        job = SimpleNamespace(
+            queue_item_id=row.id,
+            claim_started_at=row.started_at,
+            routing_guard=SimpleNamespace(plan=SimpleNamespace(mapping=[1], use_ams=True)),
+        )
+        await _record_dispatched_mapping(job)
+    await db_session.refresh(intent)
+    await db_session.refresh(legacy)
+    assert json.loads(intent.ams_mapping) == [1]
+    assert json.loads(legacy.ams_mapping) == [0]  # a legacy row's mapping IS its pins

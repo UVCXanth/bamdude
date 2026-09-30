@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.app.core.config import settings
 from backend.app.core.database import async_session
@@ -538,6 +538,38 @@ async def _rebind_if_moved(db, *, printer_id, ams_mapping, is_calibration, bound
             db=db, printer_id=printer_id, ams_mapping=ams_mapping, is_calibration=is_calibration
         )
     return bound
+
+
+async def _record_dispatched_mapping(job) -> None:
+    """The queue row keeps the mapping the printer was actually sent.
+
+    The scheduler's preflight wrote its own plan's mapping; the dispatcher's may
+    have chosen differently (a backup twin, a lower-remain spool), and the row's
+    copy is the attribution fallback (``usage_tracker``) and what
+    ``unlose_external_markers`` reads. A row without a routing intent re-reads
+    its PINS from this column, so it is left alone — it never gets a twin anyway
+    (``allow_backup_twins``). Best-effort: the print has started.
+    """
+    from backend.app.models.print_queue import PrintQueueItem
+
+    plan = getattr(job.routing_guard, "plan", None) if job.routing_guard else None
+    if plan is None or job.queue_item_id is None:
+        return
+    try:
+        async with async_session() as db:
+            await db.execute(
+                update(PrintQueueItem)
+                .where(
+                    PrintQueueItem.id == job.queue_item_id,
+                    PrintQueueItem.started_at == job.claim_started_at,
+                    PrintQueueItem.filament_routing.is_not(None),
+                )
+                .values(ams_mapping=json.dumps(plan.mapping), use_ams=plan.use_ams)
+                .execution_options(synchronize_session=False)
+            )
+            await db.commit()
+    except Exception:  # noqa: BLE001 — never fail a print that has started
+        logger.warning("Dispatch %s: could not record the dispatched mapping", getattr(job, "id", None), exc_info=True)
 
 
 def _timelapse_or_off(printer_id: int, printer, requested: bool) -> bool:
@@ -2525,6 +2557,8 @@ class BackgroundDispatchService:
                     # The print owns the heaters from here; preheat must not
                     # undo its own work on the way out.
                     preheat_service.clear_pin(job.printer_id)
+                    # The row keeps the mapping the printer was actually sent.
+                    await _record_dispatched_mapping(job)
 
                 if not started:
                     await self._cleanup_sd_card_file(
@@ -3240,6 +3274,8 @@ class BackgroundDispatchService:
                     # The print owns the heaters from here; preheat must not
                     # undo its own work on the way out.
                     preheat_service.clear_pin(job.printer_id)
+                    # The row keeps the mapping the printer was actually sent.
+                    await _record_dispatched_mapping(job)
 
                 if not started:
                     await self._cleanup_sd_card_file(
