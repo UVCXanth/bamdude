@@ -5430,7 +5430,7 @@ export default {
       title: 'In stock for this order:',
       body: 'Take it — and print less.',
       offer: '«{{product}}» — {{ready}} ready + {{kits}} kits',
-      offerConfigured: '«{{product}}» {{config}} — {{ready}} ready + {{kits}} kits',
+      offerConfigured: '«{{product}}» <config>{{config}}</config> — {{ready}} ready + {{kits}} kits',
       lineConfigured: '{{product}} ({{config}})',
       action: 'Take from stock',
       taken: 'Taken from stock',

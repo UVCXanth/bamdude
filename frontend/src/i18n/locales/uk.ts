@@ -5459,7 +5459,7 @@ export default {
       title: 'На складі є для цього замовлення:',
       body: 'Узяти — і друкувати менше.',
       offer: '«{{product}}» — {{ready}} готових + {{kits}} компл.',
-      offerConfigured: '«{{product}}» {{config}} — {{ready}} готових + {{kits}} компл.',
+      offerConfigured: '«{{product}}» <config>{{config}}</config> — {{ready}} готових + {{kits}} компл.',
       lineConfigured: '{{product}} ({{config}})',
       action: 'Взяти зі складу',
       taken: 'Взято зі складу',

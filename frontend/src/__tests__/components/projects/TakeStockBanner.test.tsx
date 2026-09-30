@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import { TakeStockBanner } from '../../../components/projects/TakeStockBanner';
@@ -90,6 +90,43 @@ describe('TakeStockBanner', () => {
     expect(await screen.findByTestId('take-stock')).toHaveTextContent(
       'In stock for this order: «Lamp» Colour: Red — 2 ready + 2 kits; «Lamp» Colour: Blue · 1 part changed — 0 ready + 1 kits; «Base» — 1 ready + 0 kits. Take it — and print less.',
     );
+  });
+
+  it('marks the configuration out in amber, as the mockup does — the sentence stays one translation (E3-V07)', async () => {
+    vi.spyOn(api, 'getStockOffers').mockResolvedValue([
+      { line_id: 1, product_name: 'Lamp', from_finished: 2, kits: 2 },
+      { line_id: 3, product_name: 'Base', from_finished: 1, kits: 0 },
+    ]);
+    const lines = [
+      makeLine({
+        id: 1,
+        product_name: 'Lamp',
+        configuration: { choices: [{ group_id: 1, group_name: 'Colour', option_id: 1, option_name: 'Red', is_default: false }], changed_parts: [] },
+      }),
+      makeLine({ id: 3, product_name: 'Base' }),
+    ];
+    render(<TakeStockBanner orderId={1} lines={lines} />);
+    const banner = await screen.findByTestId('take-stock');
+    const config = within(banner).getByText('Colour: Red');
+    expect(config).toHaveClass('text-amber-700', 'dark:text-amber-400');
+    // Only the configuration is marked: the line without variants has no highlighted part.
+    expect(banner.querySelectorAll('.text-amber-700')).toHaveLength(1);
+    expect(banner).toHaveTextContent('In stock for this order: «Lamp» Colour: Red — 2 ready + 2 kits; «Base» — 1 ready + 0 kits. Take it — and print less.');
+  });
+
+  it('shows an option name with angle brackets as typed — it is text, never markup', async () => {
+    vi.spyOn(api, 'getStockOffers').mockResolvedValue([{ line_id: 1, product_name: 'Lamp', from_finished: 1, kits: 0 }]);
+    const lines = [
+      makeLine({
+        id: 1,
+        product_name: 'Lamp',
+        configuration: { choices: [{ group_id: 1, group_name: 'Hole', option_id: 1, option_name: 'Ø < 5 mm <b>x</b>', is_default: false }], changed_parts: [] },
+      }),
+    ];
+    render(<TakeStockBanner orderId={1} lines={lines} />);
+    const banner = await screen.findByTestId('take-stock');
+    expect(banner).toHaveTextContent('«Lamp» Hole: Ø < 5 mm <b>x</b> — 1 ready + 0 kits');
+    expect(banner.querySelector('b')).toBeNull();
   });
 
   it('draws nothing when there is nothing to take', async () => {

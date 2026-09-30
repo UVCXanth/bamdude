@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { PackageCheck } from 'lucide-react';
 import { api } from '../../api/client';
 import type { ProjectLine, StockOffer, TakeStockResult } from '../../api/client';
@@ -62,10 +62,30 @@ export function TakeStockBanner({ orderId, lines = [] }: { orderId: number; line
   });
 
   if (offers.length === 0) return null;
-  const offerTexts = offers.map((o) => {
+  // Each offer is one translated sentence; a configuration is marked out inside it
+  // in amber, as the mockup's `.m-cfg` (E3-V07) — through `Trans`, never a phrase
+  // glued from pieces. `text` is the plain sentence, for the full-stop check below:
+  // it ends the same with or without the configuration.
+  const offerParts = offers.map((o) => {
     const config = configOf(o.line_id);
     const counts = { product: o.product_name, ready: o.from_finished, kits: o.kits };
-    return config ? t('orders.take.offerConfigured', { ...counts, config }) : t('orders.take.offer', counts);
+    const text = t('orders.take.offer', counts);
+    return {
+      key: o.line_id,
+      text,
+      node: config ? (
+        // `Trans` escapes the values before it parses the tags, so an option named «Ø < 5 mm»
+        // cannot become markup; `shouldUnescape` turns the entities back into the text typed.
+        <Trans
+          i18nKey="orders.take.offerConfigured"
+          values={{ ...counts, config }}
+          shouldUnescape
+          components={{ config: <span className="text-amber-700 dark:text-amber-400" /> }}
+        />
+      ) : (
+        text
+      ),
+    };
   });
 
   // WS-13 E3 D05: the mockup's one-line note — «In stock for this order: «A» — N
@@ -76,17 +96,20 @@ export function TakeStockBanner({ orderId, lines = [] }: { orderId: number; line
       data-testid="take-stock"
       className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-xl border border-bambu-green/30 bg-bambu-green/10 px-4 py-3 text-sm leading-5 text-white"
     >
-      <p className="min-w-0 flex-1">
+      {/* A real basis, not `flex-1` (E3-V07, as the header's V01): with a zero basis the
+          row never wraps and the button squeezes the sentence beside it at 390. With 20rem
+          the button moves under the sentence as soon as the two do not fit (D03/D05). */}
+      <p className="min-w-0 grow basis-80">
         <PackageCheck className="mr-1.5 inline h-4 w-4 align-[-3px] text-bambu-green" aria-hidden />
         {t('orders.take.title')}{' '}
-        {offerTexts.map((text, index) => (
-          <span key={offers[index].line_id}>
+        {offerParts.map((part, index) => (
+          <span key={part.key}>
             {index > 0 && '; '}
-            <span>{text}</span>
+            <span>{part.node}</span>
           </span>
         ))}
         {/* One full stop: the Ukrainian offer already ends in «компл.». */}
-        {offerTexts[offerTexts.length - 1].endsWith('.') ? ' ' : '. '}
+        {offerParts[offerParts.length - 1].text.endsWith('.') ? ' ' : '. '}
         {t('orders.take.body')}
       </p>
       <Button size="sm" onClick={() => take.mutate(offers)} disabled={take.isPending}>
