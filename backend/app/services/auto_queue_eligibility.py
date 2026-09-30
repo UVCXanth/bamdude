@@ -289,11 +289,11 @@ class EligiblePrinter:
     plan: object = None
     requirements: object = None
     #: What "the feed has not moved" meant when this plan was resolved, read
-    #: under the item's own policy — the carrier's half of the same deal
-    #: ``DispatchRoutingGuard.snapshot_signature`` holds at the dispatch
-    #: boundary. The plan's own ``snapshot_marker`` cannot stand in for it: that
-    #: is the raw revision, and it moves on a profile retag a job with «allow
-    #: base material match» was told to ignore.
+    #: under the item's own policy — the auto-queue placement's own "feed moved"
+    #: baseline (``auto_queue_scheduler._feed_moved``). The plan's own
+    #: ``snapshot_marker`` cannot stand in for it: that is the raw revision, and
+    #: it moves on a profile retag a job with «allow base material match» was
+    #: told to ignore.
     snapshot_signature: tuple[int, str] | None = None
 
     def __iter__(self):

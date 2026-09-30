@@ -511,47 +511,16 @@ def a_plan(policy, state, req=None):
 
 def a_guard(policy, state, req=None):
     req = req or requirements({})
-    return DispatchRoutingGuard(
-        req, policy, a_plan(policy, state, req), True, "revision", feed_signature(policy, state)
-    )
+    return DispatchRoutingGuard(req, policy, a_plan(policy, state, req), True, "revision", state.generation)
+
+
+def validate(guard, state):
+    guard.validate(state, mapping=guard.plan.mapping, use_ams=guard.plan.use_ams, plate_id=guard.plan.resolved_plate_id)
 
 
 def retagged(state, source, variant="GFB99"):
     """The one change this feature is about: a new profile id on the same spool."""
     return replace(state, sources=(replace(source, variant=variant),), revision="the raw revision moved")
-
-
-def test_the_plan_records_whether_the_profile_is_part_of_its_identity():
-    state = snapshot(feed(0, kind="ams", variant="GFA00"))
-    assert a_plan(RoutingPolicy(allow_base_material_match=True), state).variant_sensitive is False
-    assert a_plan(RoutingPolicy(allow_base_material_match=False), state).variant_sensitive is True
-
-
-def test_a_profile_only_retag_is_not_a_changed_plan_when_the_option_is_on():
-    policy = RoutingPolicy(allow_base_material_match=True)
-    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
-    state = snapshot(source)
-    assert a_plan(policy, state).fingerprint == a_plan(policy, retagged(state, source)).fingerprint
-
-
-def test_the_same_retag_is_a_changed_plan_when_the_option_is_off():
-    policy = RoutingPolicy(allow_base_material_match=False)
-    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
-    state = snapshot(source)
-    assert a_plan(policy, state).fingerprint != a_plan(policy, retagged(state, source)).fingerprint
-
-
-@pytest.mark.parametrize(
-    "changed",
-    [{"color": "00FF00FF"}, {"identity": "ANOTHER-SPOOL"}, {"nozzles": (0, 1)}, {"kind": "external"}, {"id": 1}],
-)
-def test_the_plan_keeps_every_physical_fact_with_the_option_on(changed):
-    """Only the profile becomes policy-dependent; the spool itself never does."""
-    policy = RoutingPolicy(allow_base_material_match=True)
-    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
-    state = snapshot(source)
-    moved = replace(state, sources=(replace(source, **changed),))
-    assert a_plan(policy, state).fingerprint != a_plan(policy, moved).fingerprint
 
 
 def test_a_changed_material_never_reaches_the_plan_comparison_at_all():
@@ -650,40 +619,87 @@ def test_the_guard_runs_without_an_await_and_lets_a_retag_through():
     )
 
 
-@pytest.mark.parametrize(
-    "changed", [{"material": "PETG"}, {"color": "00FF00FF"}, {"identity": "ANOTHER-SPOOL"}, {"nozzles": (1,)}]
-)
-def test_the_guard_still_refuses_a_swapped_spool_with_the_option_on(changed):
+@pytest.mark.parametrize("changed", [{"color": "00FF00FF"}, {"identity": "ANOTHER-SPOOL"}, {"variant": "GFB99"}])
+def test_the_guard_lets_the_same_filament_through_whatever_its_tag_or_colour(changed):
     policy = RoutingPolicy(allow_base_material_match=True)
     source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
-    state = snapshot(source)
-    guard = a_guard(policy, state)
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
-        guard.validate(
-            replace(state, sources=(replace(source, **changed),)),
-            mapping=guard.plan.mapping,
-            use_ams=guard.plan.use_ams,
-            plate_id=guard.plan.resolved_plate_id,
-        )
+    guard = a_guard(policy, snapshot(source))
+    validate(guard, replace(snapshot(source), sources=(replace(source, **changed),)))
 
 
-@pytest.mark.parametrize("changed", [{"generation": 2}, {"connected": False}, {"sources": ()}])
-def test_the_guard_still_refuses_a_lost_connection_or_an_empty_feed(changed):
+@pytest.mark.parametrize(
+    ("changed", "reason"), [({"material": "PETG"}, "material_mismatch"), ({"nozzles": (1,)}, "nozzle_mismatch")]
+)
+def test_the_guard_refuses_a_spool_that_no_longer_fits_its_channel(changed, reason):
+    policy = RoutingPolicy(allow_base_material_match=True)
+    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
+    guard = a_guard(policy, snapshot(source))
+    with pytest.raises(RoutingDeferred, match=reason):
+        validate(guard, replace(snapshot(source), sources=(replace(source, **changed),)))
+
+
+@pytest.mark.parametrize(
+    ("changed", "reason"),
+    [
+        ({"generation": 2}, "feed_state_changed"),
+        ({"connected": False}, "feed_state_changed"),
+        ({"sources": ()}, "planned_source_empty"),
+    ],
+)
+def test_the_guard_still_refuses_a_lost_connection_or_an_empty_feed(changed, reason):
     policy = RoutingPolicy(allow_base_material_match=True)
     guard = a_guard(policy, snapshot(feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")))
     state = replace(snapshot(feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")), **changed)
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
-        guard.validate(state, mapping=guard.plan.mapping, use_ams=guard.plan.use_ams, plate_id=4)
+    with pytest.raises(RoutingDeferred, match=reason):
+        validate(guard, state)
 
 
-def test_the_guard_refuses_a_profile_only_retag_when_the_option_is_off():
-    policy = RoutingPolicy(allow_base_material_match=False)
+def test_the_guard_refuses_a_profile_retag_only_when_the_job_is_strict_about_it():
     source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
-    guard = a_guard(policy, snapshot(source))
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
-        guard.validate(
-            retagged(snapshot(source), source),
-            mapping=guard.plan.mapping,
-            use_ams=guard.plan.use_ams,
-            plate_id=guard.plan.resolved_plate_id,
-        )
+    strict = RoutingPolicy(allow_base_material_match=False)
+    named = requirements({"tray_info_idx": "GFA00"})
+    guard = a_guard(strict, snapshot(source), named)
+    with pytest.raises(RoutingDeferred, match="variant_mismatch"):
+        validate(guard, retagged(snapshot(source), source))
+    validate(a_guard(strict, snapshot(source)), retagged(snapshot(source), source))  # the file names no profile
+
+
+def test_a_change_in_a_slot_the_plan_does_not_use_is_not_a_changed_plan():
+    policy = RoutingPolicy()
+    used, spare = feed(0, kind="ams"), feed(1, "00FF00FF", kind="ams", material="PETG")
+    guard = a_guard(policy, snapshot(used, spare))
+    assert guard.plan.mapping == [0]
+    validate(guard, snapshot(used, replace(spare, material="ABS", identity="NEW")))
+    validate(guard, snapshot(used))  # and a spare slot emptied
+
+
+def test_the_guard_reads_the_declared_colour_for_a_forced_colour():
+    forced = RoutingPolicy(force_color_match=True)
+    black = requirements({"type": "PETG", "color": "#000000"})
+    source = FeedSource(0, "ams", "PETG", "000000FF", nozzles=(0,))
+    guard = a_guard(forced, snapshot(source), black)
+    validate(guard, snapshot(replace(source, color="FF0000FF", declared_color="000000FF")))
+    with pytest.raises(RoutingDeferred, match="color_mismatch"):
+        validate(guard, snapshot(replace(source, color="FF0000FF")))
+
+
+def test_the_guard_refuses_a_nozzle_that_no_longer_fits_the_plate():
+    req = PrintRequirements(
+        "ok",
+        source_identity=SourceIdentity("synthetic", 1, 1),
+        resolved_plate_id=4,
+        model="P1P",
+        used_filaments=({"slot_id": 1, "type": "PLA", "color": "#FF0000", "nozzle_id": 0, "used_grams": 1},),
+        nozzle_constraints={"nozzle_diameter": [0.2]},
+    )
+    state = snapshot(feed(0, kind="ams"), nozzle_diameters={0: (0.2,)})
+    guard = a_guard(RoutingPolicy(), state, req)
+    with pytest.raises(RoutingDeferred, match="nozzle_mismatch"):
+        validate(guard, replace(state, nozzle_diameters={0: (0.4,)}))
+
+
+def test_an_unknown_fact_is_never_a_pass():
+    source = feed(254)
+    guard = a_guard(RoutingPolicy(), snapshot(source))
+    with pytest.raises(RoutingDeferred, match="fts_state_unavailable"):
+        validate(guard, snapshot(source, fts_pending_confirmation=True))

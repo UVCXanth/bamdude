@@ -214,7 +214,9 @@ async def test_publish_boundary_catches_change_after_final_preflight(
     await db_session.commit()
     guard = await final_guard(await preflight_item(db_session, item, printer.id), printer.id)
     mqtt._process_message({"print": {"vt_tray": {"id": 254, "tray_type": "PETG"}}})
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+    # The boundary asks the plan's own slot under the channel rule, so it names
+    # what is wrong with it rather than "something changed".
+    with pytest.raises(RoutingDeferred, match="material_mismatch"):
         printer_manager.start_print(
             printer.id,
             source.filename,
@@ -432,17 +434,17 @@ async def test_a_retagged_spool_no_longer_stops_a_prepared_job(
     mqtt._client.publish.assert_called_once()
 
 
-async def test_the_same_retag_still_stops_the_job_when_the_option_is_off(
+async def test_a_retag_does_not_stop_a_job_whose_file_names_no_profile(
     db_session, tmp_path, printer_factory, monkeypatch
 ):
-    """With the option off the operator asked for that exact profile, here too."""
+    """With the option off the operator asked for the FILE's profile — and this
+    file names none, so a new profile id on the loaded spool asks nothing of it (П2)."""
     item, _source, printer, _plate, mqtt = await a_routed_job(
         db_session, tmp_path, printer_factory, monkeypatch, allow_base_material_match=False
     )
     guard = await preflight_item(db_session, item, printer.id)
     retag(mqtt)
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
-        await final_guard(guard, printer.id)
+    assert (await final_guard(guard, printer.id)).plan.mapping == guard.plan.mapping
 
 
 def reconnect(mqtt):
@@ -499,9 +501,10 @@ async def test_a_reconnect_that_reports_another_spool_defers(db_session, tmp_pat
     guard = await preflight_item(db_session, item, printer.id)
     monkeypatch.setattr(printer_manager, "request_status_update", MagicMock(return_value=True))
     reconnect(mqtt)
-    report_the_spool(mqtt, tray_uuid="ANOTHER-SPOOL")
+    # Another tag on the same filament is the same plan now; another MATERIAL is not.
+    report_the_spool(mqtt, tray_type="PETG")
     await settle_feed(guard, printer.id, timeout=2, poll=0.01, converge=0.05)
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+    with pytest.raises(RoutingDeferred, match="material_mismatch"):
         await final_guard(guard, printer.id)
     mqtt._client.publish.assert_not_called()
 
@@ -637,36 +640,36 @@ async def test_edit_echoing_mapping_keeps_original_pin_evidence(
     assert await preflight_item(db_session, item, printer.id)
 
 
-@pytest.mark.parametrize(
-    ("change", "reason"),
-    [({"tray_type": "PETG"}, "material_mismatch"), ({"tray_uuid": "ANOTHER-SPOOL"}, "feed_state_changed")],
-)
 async def test_final_guard_still_refuses_a_swapped_spool_with_the_option_on(
-    db_session, tmp_path, printer_factory, monkeypatch, change, reason
+    db_session, tmp_path, printer_factory, monkeypatch
 ):
     item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
     guard = await preflight_item(db_session, item, printer.id)
-    mqtt._process_message({"print": {"vt_tray": {"id": 254, **change}}})
-    with pytest.raises(RoutingDeferred, match=reason):
+    mqtt._process_message({"print": {"vt_tray": {"id": 254, "tray_type": "PETG"}}})
+    with pytest.raises(RoutingDeferred, match="material_mismatch"):
         await final_guard(guard, printer.id)
 
 
-@pytest.mark.parametrize("change", ["material", "colour", "identity", "reconnect"])
+async def test_final_guard_lets_a_new_tag_on_the_same_filament_through(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    mqtt._process_message({"print": {"vt_tray": {"id": 254, "tray_uuid": "ANOTHER-SPOOL"}}})
+    assert (await final_guard(guard, printer.id)).plan.mapping == guard.plan.mapping
+
+
+@pytest.mark.parametrize(("change", "reason"), [("material", "material_mismatch"), ("reconnect", "feed_state_changed")])
 async def test_the_publish_boundary_still_catches_a_real_change_with_the_option_on(
-    db_session, tmp_path, printer_factory, monkeypatch, change
+    db_session, tmp_path, printer_factory, monkeypatch, change, reason
 ):
     item, source, printer, plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
     guard = await final_guard(await preflight_item(db_session, item, printer.id), printer.id)
     if change == "reconnect":
         mqtt.state.connection_generation += 1
     else:
-        tray = {
-            "material": {"tray_type": "PETG"},
-            "colour": {"tray_color": "00FF00"},
-            "identity": {"tray_uuid": "ANOTHER-SPOOL"},
-        }[change]
-        mqtt._process_message({"print": {"vt_tray": {"id": 254, **tray}}})
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+        mqtt._process_message({"print": {"vt_tray": {"id": 254, "tray_type": "PETG"}}})
+    with pytest.raises(RoutingDeferred, match=reason):
         printer_manager.start_print(
             printer.id,
             source.filename,
@@ -676,6 +679,24 @@ async def test_the_publish_boundary_still_catches_a_real_change_with_the_option_
             routing_guard=guard,
         )
     mqtt._client.publish.assert_not_called()
+
+
+@pytest.mark.parametrize("tray", [{"tray_color": "00FF00"}, {"tray_uuid": "ANOTHER-SPOOL"}])
+async def test_the_publish_boundary_lets_a_new_colour_or_tag_through(
+    db_session, tmp_path, printer_factory, monkeypatch, tray
+):
+    item, source, printer, plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await final_guard(await preflight_item(db_session, item, printer.id), printer.id)
+    mqtt._process_message({"print": {"vt_tray": {"id": 254, **tray}}})
+    assert printer_manager.start_print(
+        printer.id,
+        source.filename,
+        plate,
+        ams_mapping=guard.plan.mapping,
+        use_ams=guard.plan.use_ams,
+        routing_guard=guard,
+    )
+    mqtt._client.publish.assert_called_once()
 
 
 async def test_a_block_recorded_the_old_way_no_longer_holds_a_compatible_job(

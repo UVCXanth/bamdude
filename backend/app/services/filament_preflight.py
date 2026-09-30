@@ -14,9 +14,20 @@ from backend.app.services.filament_intake import (
 )
 from backend.app.services.filament_policy import decode, queue_policy, source_scope
 from backend.app.services.filament_requirements import probe_identity, revision_refutes
-from backend.app.services.filament_routing import RoutingDeferred, fingerprint, resolve_filament_routing
+from backend.app.services.filament_routing import (
+    RoutingDeferred,
+    channel_nozzle_counts,
+    channel_refusal,
+    effective_slots,
+    feed_preconditions,
+    fingerprint,
+    resolve_filament_routing,
+    slot_nozzle,
+    source_fits,
+)
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.source_io import SourceUnavailable
+from backend.app.utils.printer_configs import requires_left_tpu_firmware_check
 
 #: How long a prepared attempt waits for a reconnected printer's first complete
 #: feed report before it is refused (spec direct-print-silent-cancel §4.3).
@@ -35,27 +46,83 @@ class DispatchRoutingGuard:
     plan: object
     exact_model: bool
     revision: str
-    #: What "the feed has not moved" meant when this guard was built, read under
-    #: this job's own policy. Recorded rather than re-derived from the plan,
-    #: because the plan describes the trays it CHOSE and the feed is the whole
-    #: of what was on offer — a spool pulled out of an unassigned slot still
-    #: changes what a re-run of the resolver would answer.
-    snapshot_signature: tuple[int, str]
+    #: The MQTT session the plan was last confirmed on. The pre-start K-profile
+    #: bind went to that session, and ``_on_connect`` drops whatever paho was
+    #: still retrying — a print published on another session would start with
+    #: no K selected (review 2026-09-30).
+    generation: int
+    #: ``requires_left_tpu_firmware_check(model)``, answered when the guard was
+    #: built: its first call reads the mirrored printer config from disk, and
+    #: ``validate`` runs under the MQTT routing lock, where nothing may.
+    left_tpu_check: bool = False
 
     def validate(self, snapshot, *, mapping, use_ams, plate_id):
-        """Must run under the client's routing lock, without an await before publish."""
+        """Under the client's routing lock: no await and no file read before publish."""
         # Source I/O is checked by final_guard before this synchronous handoff.
         # Never stat a network mount while holding the MQTT telemetry lock.
-        # ``feed_signature`` is pure arithmetic over a snapshot already in hand,
-        # so this stays as awaitless as the raw marker comparison it replaced.
-        if not snapshot.connected or feed_signature(self.policy, snapshot) != self.snapshot_signature:
-            raise RoutingDeferred("feed_state_changed", revision=revision_for(self.requirements, self.policy, snapshot))
+        # ``plan_holds`` is pure arithmetic over a snapshot already in hand; the
+        # model check (the only one that can read a config file) is skipped.
+        if not snapshot.connected or snapshot.generation != self.generation:
+            raise RoutingDeferred("feed_state_changed")
+        holds, reason, _unknown = plan_holds(self, snapshot, with_model=False)
+        if not holds:
+            raise RoutingDeferred(reason or "feed_state_changed")
         if mapping != self.plan.mapping or use_ams != self.plan.use_ams or plate_id != self.plan.resolved_plate_id:
             raise RoutingDeferred("mapping_review_required")
 
 
+def plan_holds(guard, snapshot, *, with_model: bool = True) -> tuple[bool, str | None, bool]:
+    """Does the prepared plan still hold on this snapshot — asked of the plan's own slots.
+
+    ``(holds, reason, unknown)``. The same rule the resolver chose the plan by
+    (``filament_routing.feed_preconditions``, ``channel_refusal``,
+    ``source_fits``), asked of the sources the plan CHOSE: a spool swapped in a
+    slot the job does not use, a new tag on the same filament or a remain update
+    is not a changed plan (owner, 2026-09-30; spec dispatch-guard-follows-the-
+    plan Д4). Pure arithmetic over the snapshot. ``planned_source_empty`` comes
+    with ``unknown=True``: a planned slot is empty now — an operator mid-swap —
+    which ``settle_plan`` waits on. None of these refusals carries a revision,
+    so none latches.
+    """
+    req, policy, plan = guard.requirements, guard.policy, guard.plan
+    refusal = feed_preconditions(req, policy, snapshot, exact_model=guard.exact_model, with_model=with_model)
+    if refusal is not None:
+        return False, refusal.reason, refusal.status == "unknown"
+    slots = effective_slots(req, policy)
+    if slots is None:
+        return False, "override_slot_not_used", True
+    present = {source.id: source for source in snapshot.sources}
+    nozzle_counts = channel_nozzle_counts(slots)
+    for slot in slots:
+        planned = plan.assignments.get(slot["slot_id"])
+        if planned is None:
+            continue
+        refusal = channel_refusal(req, slot, snapshot)
+        if refusal is not None:
+            return False, refusal.reason, refusal.status == "unknown"
+        source = present.get(planned.id)
+        if source is None:
+            return False, "planned_source_empty", True
+        fits, why, unsure = source_fits(
+            slot,
+            source,
+            policy,
+            snapshot,
+            nozzle=slot_nozzle(slot),
+            nozzle_counts=nozzle_counts,
+            allowed=None,
+            pin=policy.physical_pins.get(slot["slot_id"]),
+            left_tpu_check=guard.left_tpu_check,
+        )
+        if not fits:
+            return False, why or "material_mismatch", unsure
+    return True, None, False
+
+
 def feed_signature(policy, snapshot) -> tuple[int, str]:
-    """Whether the feed has moved, asked under one job's own policy.
+    """Whether the feed has moved, asked under one job's own policy — the
+    auto-queue's placement check and the latch key; the dispatch guard asks
+    ``plan_holds`` instead.
 
     ``PrinterFeedSnapshot.revision`` hashes a tray's ``tray_info_idx`` with
     everything else, so re-tagging a spool in the AMS moves the marker of every
@@ -236,7 +303,15 @@ async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None
     runtime = saved.get("runtime", {})
     if runtime.get("reason") in LATCHING_REASONS and runtime.get("blocked_revision") == revision:
         raise RoutingDeferred(runtime["reason"], revision=revision)
-    return DispatchRoutingGuard(req, policy, result.plan, exact_model, revision, feed_signature(policy, snapshot))
+    return DispatchRoutingGuard(
+        req,
+        policy,
+        result.plan,
+        exact_model,
+        revision,
+        snapshot.generation,
+        requires_left_tpu_firmware_check(snapshot.model),
+    )
 
 
 def _has_explicit_external_mapping(item) -> bool:
@@ -325,7 +400,7 @@ async def settle_feed(
     """
     if guard is None:
         return False
-    prepared_generation, prepared_content = guard.snapshot_signature
+    prepared_generation = guard.generation
     snapshot = printer_manager.get_feed_snapshot(printer_id)
     if snapshot.connected and snapshot.generation == prepared_generation:
         return False
@@ -337,7 +412,7 @@ async def settle_feed(
         raise_if_cancelled()
         snapshot = printer_manager.get_feed_snapshot(printer_id)
         if _settled(snapshot, prepared_generation):
-            if feed_signature(guard.policy, snapshot)[1] == prepared_content:
+            if plan_holds(guard, snapshot)[0]:
                 return True
             # Complete-looking but different: a separately reported fact may still
             # be on its way. A bounded grace; a real difference is final_guard's.
@@ -353,7 +428,15 @@ async def settle_feed(
 
 
 async def final_guard(guard, printer_id):
-    """Refresh after all preparatory awaits. A different complete plan needs a new attempt."""
+    """After all preparatory awaits: the prepared plan still holds, or there is no start.
+
+    A different plan is a new attempt, never a swapped mapping — the mapping
+    never changes after preflight (inv-complete-routing-before-publish). A
+    reconnect alone is not a changed plan once the new session reported the
+    plan's own slots from scratch (``settle_plan`` waited for that); what the
+    guard asks is ``plan_holds`` — the plan's slots under the job's own rule.
+    Its refusals carry no revision, so none of them parks a queue row.
+    """
     if guard is None:
         return None
     identity = guard.requirements.source_identity
@@ -364,32 +447,20 @@ async def final_guard(guard, printer_id):
     if current != identity:
         raise RoutingDeferred("source_changed")
     snapshot = printer_manager.get_feed_snapshot(printer_id)
-    revision = revision_for(guard.requirements, guard.policy, snapshot)
-    result = resolve_filament_routing(guard.requirements, guard.policy, snapshot, exact_model=guard.exact_model)
-    if result.plan is None:
-        raise RoutingDeferred(result.reason or "feed_state_changed", revision=revision, params=result.params)
-    # A reconnect alone is not a changed feed once the new session has reported
-    # the same CONTENT from scratch (spec direct-print-silent-cancel §4.3): the
-    # cache empties with the generation, so equal content here is fresh evidence,
-    # and the plan fingerprint carries no generation. Anything physical that moved
-    # — a tag, a material, a colour, the topology, completeness — still defers.
-    # The signature ignores remain (and variant under ON), never physical
-    # identity. The synchronous publish boundary keeps the strict comparison.
-    if feed_signature(guard.policy, snapshot)[1] != guard.snapshot_signature[1]:
-        raise RoutingDeferred("feed_state_changed", revision=revision)
-    # Keep the prepared assignment if it remains valid. Remain-only updates
-    # cannot select another spool after calibration/colour attribution ran.
-    selected = {
-        slot: next((s for s in snapshot.sources if s.id == old.id), None)
-        for slot, old in guard.plan.assignments.items()
-    }
-    if any(s is None for s in selected.values()):
-        raise RoutingDeferred("feed_state_changed", revision=revision)
-    refreshed_plan = replace(guard.plan, assignments=selected, snapshot_marker=snapshot.marker)
-    if refreshed_plan.fingerprint != guard.plan.fingerprint:
-        raise RoutingDeferred("feed_state_changed", revision=revision)
+    holds, reason, _unknown = plan_holds(guard, snapshot)
+    if not holds:
+        raise RoutingDeferred(reason or "feed_state_changed")
+    now = {source.id: source for source in snapshot.sources}
+    refreshed_plan = replace(
+        guard.plan,
+        assignments={slot: now[old.id] for slot, old in guard.plan.assignments.items()},
+        snapshot_marker=snapshot.marker,
+    )
     refreshed = replace(
-        guard, plan=refreshed_plan, revision=revision, snapshot_signature=feed_signature(guard.policy, snapshot)
+        guard,
+        plan=refreshed_plan,
+        revision=revision_for(guard.requirements, guard.policy, snapshot),
+        generation=snapshot.generation,
     )
     refreshed.validate(
         snapshot, mapping=guard.plan.mapping, use_ams=guard.plan.use_ams, plate_id=guard.plan.resolved_plate_id

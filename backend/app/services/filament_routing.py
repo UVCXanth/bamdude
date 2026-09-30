@@ -64,21 +64,13 @@ class RoutingPlan:
     source_revision: dict
     policy_fingerprint: str
     #: Raw provenance: the policy-BLIND marker of the snapshot this plan was
-    #: resolved against. It is not how either boundary decides "the feed moved" —
-    #: both compare ``filament_preflight.feed_signature`` under the job's own
-    #: policy, because this revision hashes every tray's profile id and a job
-    #: told to ignore profiles must not be stopped by one. It survives as the
-    #: plan's stamp, and as the baseline of last resort for a plan handed over
-    #: without its plan-time signature (``auto_queue_scheduler._feed_moved``).
+    #: resolved against. It is not how the dispatch boundary decides whether the
+    #: plan still stands — that is ``filament_preflight.plan_holds``, asked of the
+    #: plan's own slots. It survives as the plan's stamp and as the auto-queue
+    #: placement's baseline of last resort (``auto_queue_scheduler._feed_moved``).
     snapshot_marker: tuple[int, str]
     assignments: dict[int, FeedSource]
     color_matches: int
-    #: Whether a profile id is part of what "the same plan" means. The plan does
-    #: not carry the policy, and it is asked this question long after the policy
-    #: has gone out of scope — at the dispatcher's final refresh, comparing a
-    #: plan against itself. Defaults to the strict reading so anything that
-    #: builds a plan without answering keeps the behaviour it had.
-    variant_sensitive: bool = True
 
     @property
     def mapping(self) -> list[int]:
@@ -88,28 +80,6 @@ class RoutingPlan:
     @property
     def use_ams(self) -> bool:
         return any(s.kind == "ams" for s in self.assignments.values())
-
-    @property
-    def fingerprint(self) -> str:
-        # ``remain`` is never part of this: a spool that lost a gram during the
-        # upload is the same spool. With the base-material option on, neither is
-        # ``variant`` — re-profiling a tray moves no filament, so a plan made
-        # against it is still the plan. Everything PHYSICAL stays either way:
-        # the tag on the spool, its material, its colour, its nozzle binding,
-        # which feed it is and which slot it sits in.
-        volatile = ("remain",) if self.variant_sensitive else ("remain", "variant")
-        return fingerprint(
-            {
-                "printer": self.printer_id,
-                "plate": self.resolved_plate_id,
-                "source": self.source_revision,
-                "policy": self.policy_fingerprint,
-                "assignments": {
-                    slot: {k: v for k, v in asdict(feed).items() if k not in volatile}
-                    for slot, feed in self.assignments.items()
-                },
-            }
-        )
 
 
 @dataclass(frozen=True)
@@ -551,6 +521,5 @@ def resolve_filament_routing(
                 int(colors[sid] is not None and colors[sid] == normalized_color(s.rule_color))
                 for sid, s in best.items()
             ),
-            not policy.allow_base_material_match,
         ),
     )
