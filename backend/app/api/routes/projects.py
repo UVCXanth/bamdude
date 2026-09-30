@@ -96,6 +96,7 @@ from backend.app.schemas.project import (
     LineIntakeOut,
     LinePlanOut,
     LineProductOut,
+    LinePurchasedPartOut,
     LineStateOut,
     OrderAssigneeOut,
     OrderContactOut,
@@ -168,6 +169,7 @@ from backend.app.services.list_paging import (
 from backend.app.services.order_deadlines import ATTENTION_ORDER, attention_reason, eta_is_late, server_wall_time
 from backend.app.services.order_metrics import (
     attribute,
+    composition_of,
     grouped_figures,
     load_order_context,
     procurement_figures,
@@ -180,7 +182,7 @@ from backend.app.services.order_queue import (
     live_archive_conditions,
     queued_printer_row_conditions,
 )
-from backend.app.services.plan_engine import OrderPlan, plan_for_order
+from backend.app.services.plan_engine import OrderPlan, plan_for_order, queued_yield_by_line
 from backend.app.services.print_option_defaults import preference_options
 from backend.app.services.product_composition import PlateRecipe, recipes_for_products
 from backend.app.services.product_files import (
@@ -280,6 +282,35 @@ def _line_counters(line: ProjectLine, parts: dict) -> dict[str, int]:
     }
 
 
+def _line_product(product: Product | None) -> dict:
+    """WS-13 E4 H01: what the line table shows of its product, off the loaded row.
+    The cover is the EFFECTIVE one — the order lists' rule — never the column alone."""
+    if product is None:
+        return {"product_sku": None, "product_origin": "catalog", "product_has_cover": False}
+    return {
+        "product_sku": product.sku,
+        "product_origin": product.origin,
+        "product_has_cover": effective_cover(product) is not None,
+    }
+
+
+def _line_purchased(ctx, line: ProjectLine) -> list[LinePurchasedPartOut]:
+    """WS-13 E4 H03: the line's purchased parts. ``need`` is per × the STORED
+    quantity — ``procurement_figures``'s own expression, so the lines add up to the
+    order's procurement row (a parts line's DTO quantity is its parts' sum, not 1)."""
+    return [
+        LinePurchasedPartOut(
+            part_id=part.id,
+            name=part.name,
+            per=per,
+            need=per * line.quantity,
+            variant=part.variant_option_id is not None,
+        )
+        for part, per in composition_of(ctx, line)
+        if part.kind == "purchased" and per > 0
+    ]
+
+
 async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
     """The one response builder — every mutating handler returns through it.
 
@@ -295,6 +326,18 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
     figs, other = attribute(ctx)
     configurations = await _configurations(db, ctx)
     part_counters = await part_stock.line_part_stock(db, [line.id for line in ctx.lines if line.mode == "parts"])
+    # WS-13 E4 H04: what each line already has waiting — ONE call of the plan's own
+    # map over every line, recipes from one batch and the counted parts from the same
+    # ``attribute`` pass, so the card and the plan subtract the same thing.
+    queued = await queued_yield_by_line(
+        db,
+        await recipes_for_products(db, ctx.products_by_id.values()),
+        ctx.lines,
+        {line.id: {p.part_id for p in figs[line.id].parts} for line in ctx.lines},
+    )
+    variant_parts = {
+        part.id for parts in ctx.parts_by_product.values() for part in parts if part.variant_option_id is not None
+    }
     project = ctx.project
     customer = await db.get(Customer, project.customer_id) if project.customer_id else None
     contact = await db.get(CustomerContact, project.contact_id) if project.contact_id else None
@@ -304,6 +347,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
             id=line.id,
             product_id=line.product_id,
             product_name=ctx.products_by_id[line.product_id].name if line.product_id in ctx.products_by_id else "?",
+            **_line_product(ctx.products_by_id.get(line.product_id)),
             # A parts line reads in parts (spec workshop-product-variants, rule 16).
             quantity=figs[line.id].quantity,
             material=line.material,
@@ -327,9 +371,12 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
                     in_progress=p.in_progress,
                     remaining=p.remaining,
                     surplus=p.surplus,
+                    variant=p.part_id in variant_parts,
+                    queued=queued.get(line.id, {}).get(p.part_id, 0),
                 )
                 for p in figs[line.id].parts
             ],
+            purchased=_line_purchased(ctx, line),
             archive_ids=list(figs[line.id].archive_ids),
             prints_in_progress=figs[line.id].prints_in_progress,
             prints_queued=figs[line.id].prints_queued,

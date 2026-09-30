@@ -1781,6 +1781,21 @@ export interface PartFigures {
   in_progress: number;
   remaining: number;
   surplus: number;
+  /** Bound to a variant option — whichever option the line chose (WS-13 E4 H02). */
+  variant: boolean;
+  /** This line's parts already waiting in a queue — the map the plan subtracts
+   *  (WS-13 E4 H04). */
+  queued: number;
+}
+
+/** A purchased part of one line (WS-13 E4 H03). `need` = per × the line's stored
+ *  quantity; how much was bought is the order's `procurement`, not the line's. */
+export interface LinePurchasedPart {
+  part_id: number;
+  name: string;
+  per: number;
+  need: number;
+  variant: boolean;
 }
 
 /** `product` — kits of the product; `parts` — a set of its parts, quantity 1 for
@@ -1841,6 +1856,11 @@ export interface ProjectLine {
   id: number;
   product_id: number;
   product_name: string;
+  /** WS-13 E4 H01 — a line whose product is gone reads as none of them. */
+  product_sku: string | null;
+  product_origin: ProductOrigin;
+  /** The EFFECTIVE cover — the column, else the first picture. */
+  product_has_cover: boolean;
   quantity: number;
   material: string | null;
   color: string | null;
@@ -1872,6 +1892,7 @@ export interface ProjectLine {
   covered_units: number;
   progress: number;
   parts: PartFigures[];
+  purchased: LinePurchasedPart[];
   /** Archives attributed to this line, in processing order. One archive can
    *  appear under two lines — this is not a partition of the order's prints. */
   archive_ids: number[];

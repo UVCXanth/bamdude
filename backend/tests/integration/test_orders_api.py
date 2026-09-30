@@ -3836,3 +3836,272 @@ async def test_the_plan_totals_count_their_rows(committing_client, catalog):
     pid = (await committing_client.post("/api/v1/projects/", json=body)).json()["id"]
     plan = (await committing_client.get(f"/api/v1/projects/{pid}/plan")).json()
     assert plan["totals"]["rows"] == sum(len(line["rows"]) for line in plan["lines"]) == 1
+
+
+# ---------- WS-13 E4 H01–H04: what the line table and its parts need ----------
+
+
+async def _detail(client, pid):
+    r = await client.get(f"/api/v1/projects/{pid}")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _line_parts(line):
+    return {p["name"]: p for p in line["parts"]}
+
+
+@pytest.mark.asyncio
+async def test_a_line_names_its_products_sku_origin_and_cover(committing_client, db_session, catalog):
+    """H01: SKU and origin off the product; the cover by the SAME rule the lists use —
+    the column, else the first picture — never the column alone."""
+    lamp = await db_session.get(Product, catalog["product"].id)
+    lamp.sku, lamp.cover_image_filename = "LMP-01", "cover.png"
+    pictured = Product(
+        name="Pictured",
+        origin=ProductOrigin.ADHOC_JOB,
+        attachments=[{"category": "pictures", "filename": "p.png", "original_name": "p.png", "sort_order": 0}],
+    )
+    bare = Product(name="Bare", origin=ProductOrigin.ADHOC_PLATE)
+    db_session.add_all([pictured, bare])
+    await db_session.commit()
+    lines = [{"product_id": pid, "quantity": 1} for pid in (lamp.id, pictured.id, bare.id)]
+    pid = (await committing_client.post("/api/v1/projects/", json={"name": "Covers", "lines": lines})).json()["id"]
+
+    got = [
+        (line["product_sku"], line["product_origin"], line["product_has_cover"])
+        for line in (await _detail(committing_client, pid))["lines"]
+    ]
+    assert got == [("LMP-01", "catalog", True), (None, "adhoc_job", True), (None, "adhoc_plate", False)]
+
+
+@pytest.mark.asyncio
+async def test_a_line_whose_product_is_gone_reads_as_nothing_known(committing_client, db_session, catalog):
+    """H01: a line pointing at no product (SQLite keeps the dangling id) answers the
+    defaults — no SKU, catalog, no cover — rather than failing the order."""
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 1)
+    (await db_session.get(ProjectLine, line_id)).product_id = 987654
+    await db_session.commit()
+
+    [line] = (await _detail(committing_client, pid))["lines"]
+    assert (line["product_sku"], line["product_origin"], line["product_has_cover"]) == (None, "catalog", False)
+    assert line["purchased"] == []
+
+
+async def _mount_group(db, product_id):
+    """A «Mount» group whose «wall» option (the standard) brings a bracket and
+    «din» a clip; both parts printed, one per unit."""
+    from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
+
+    group = ProductVariantGroup(product_id=product_id, name="Mount")
+    db.add(group)
+    await db.flush()
+    wall = ProductVariantOption(group_id=group.id, name="wall", position=0)
+    din = ProductVariantOption(group_id=group.id, name="din", position=1)
+    db.add_all([wall, din])
+    await db.flush()
+    group.default_option_id = wall.id
+    db.add_all(
+        [
+            ProductPart(
+                product_id=product_id,
+                kind="printed",
+                name="bracket",
+                name_key="bracket",
+                qty_per_unit=1,
+                variant_option_id=wall.id,
+            ),
+            ProductPart(
+                product_id=product_id,
+                kind="printed",
+                name="clip",
+                name_key="clip",
+                qty_per_unit=1,
+                variant_option_id=din.id,
+            ),
+        ]
+    )
+    await db.commit()
+    return group.id, wall.id, din.id
+
+
+@pytest.mark.asyncio
+async def test_a_part_of_an_option_is_marked_as_a_variant(committing_client, db_session, catalog):
+    """H02: ``variant`` is «bound to an option», whichever option the line chose."""
+    group_id, _wall, din = await _mount_group(db_session, catalog["product"].id)
+    body = {
+        "name": "Mounts",
+        "lines": [
+            {"product_id": catalog["product"].id, "quantity": 1},
+            {"product_id": catalog["product"].id, "quantity": 1, "choices": {str(group_id): din}},
+        ],
+    }
+    pid = (await committing_client.post("/api/v1/projects/", json=body)).json()["id"]
+
+    standard, din_line = (await _detail(committing_client, pid))["lines"]
+    assert {n: p["variant"] for n, p in _line_parts(standard).items()} == {
+        "shade": False,
+        "arm": False,
+        "bracket": True,
+    }
+    assert {n: p["variant"] for n, p in _line_parts(din_line).items()} == {"shade": False, "arm": False, "clip": True}
+
+
+@pytest.mark.asyncio
+async def test_a_line_lists_its_purchased_parts_and_they_add_up_to_procurement(committing_client, db_session, catalog):
+    """H03: per line, need = per × the line's STORED quantity; Σ over the lines is the
+    procurement row. The parts line is the case that tells the two quantities apart:
+    its DTO quantity is the sum of its printed parts (2), the stored one is 1."""
+    lamp = catalog["product"].id
+    screw = catalog["screw"].id
+    _group_id, wall, _din = await _mount_group(db_session, lamp)
+    magnet = ProductPart(
+        product_id=lamp,
+        kind="purchased",
+        name="Magnet",
+        name_key="purchased:magnet",
+        qty_per_unit=2,
+        variant_option_id=wall,
+    )
+    db_session.add(magnet)
+    await db_session.commit()
+    arm = (await _parts_of(db_session, lamp))["arm"]
+    body = {
+        "name": "Bought",
+        "lines": [
+            {"product_id": lamp, "quantity": 3},
+            {"product_id": lamp, "quantity": 1, "mode": "parts", "part_counts": {str(arm): 2, str(screw): 5}},
+        ],
+    }
+    r = await committing_client.post("/api/v1/projects/", json=body)
+    assert r.status_code in (200, 201), r.text
+    pid = r.json()["id"]
+
+    detail = await _detail(committing_client, pid)
+    product_line, parts_line = detail["lines"]
+    assert parts_line["quantity"] == 2  # the DTO's reading: the printed parts it wants
+    assert product_line["purchased"] == [
+        {"part_id": screw, "name": "M3", "per": 4, "need": 12, "variant": False},
+        {"part_id": magnet.id, "name": "Magnet", "per": 2, "need": 6, "variant": True},
+    ]
+    assert parts_line["purchased"] == [{"part_id": screw, "name": "M3", "per": 5, "need": 5, "variant": False}]
+    per_line = Counter()
+    for line in detail["lines"]:
+        for row in line["purchased"]:
+            per_line[row["part_id"]] += row["need"]
+    assert per_line == {row["part_id"]: row["need"] for row in detail["procurement"]}
+    # No purchased row leaks into the printed figures.
+    assert all(p["name"] not in ("M3", "Magnet") for line in detail["lines"] for p in line["parts"])
+
+
+@pytest.mark.asyncio
+async def test_a_part_carries_what_is_queued_for_its_line(committing_client, db_session, catalog):
+    """H04, given outputs: an explicit line row and a line-less row resolved to the
+    line both count (1 shade + 2 arms each); an assigned auto row counts once, through
+    its printer item; a file the product does not hold counts nothing."""
+    pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
+    stray = LibraryFile(filename="stray.gcode.3mf", file_path="stray", file_size=1, file_type="gcode")
+    queue = PrinterQueue(id=1, printer_id=1)
+    db_session.add_all([stray, queue])
+    await db_session.flush()
+    item = PrintQueueItem(
+        queue_id=queue.id, project_line_id=line_id, library_file_id=catalog["file"].id, status="pending"
+    )
+    db_session.add(item)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            AutoQueueItem(
+                project_line_id=line_id,
+                library_file_id=catalog["file"].id,
+                status="pending",
+                assigned_to_item_id=item.id,
+            ),
+            AutoQueueItem(project_id=pid, library_file_id=catalog["file"].id, status="pending"),
+            AutoQueueItem(project_line_id=line_id, library_file_id=stray.id, status="pending"),
+        ]
+    )
+    await db_session.commit()
+
+    [line] = (await _detail(committing_client, pid))["lines"]
+    assert {n: p["queued"] for n, p in _line_parts(line).items()} == {"shade": 2, "arm": 4}
+
+
+@pytest.mark.asyncio
+async def test_a_line_less_row_between_two_alike_lines_is_queued_nowhere(committing_client, db_session, catalog):
+    """H04: the plate cannot tell two lines of one product and one material apart, so
+    the row counts on neither — the same refusal the plan makes."""
+    body = {
+        "name": "Twins",
+        "lines": [
+            {"product_id": catalog["product"].id, "quantity": 4, "material": "PETG"},
+            {"product_id": catalog["product"].id, "quantity": 4, "material": "PETG"},
+        ],
+    }
+    pid = (await committing_client.post("/api/v1/projects/", json=body)).json()["id"]
+    await _unfiled_rows(db_session, pid, catalog["file"].id)
+
+    lines = (await _detail(committing_client, pid))["lines"]
+    assert [{n: p["queued"] for n, p in _line_parts(line).items()} for line in lines] == [
+        {"shade": 0, "arm": 0},
+        {"shade": 0, "arm": 0},
+    ]
+
+
+async def _products_on_their_own_plates(db, n):
+    """``n`` products, each with one printed and one purchased part, on a plate of its own file."""
+    ids = []
+    for i in range(n):
+        file = LibraryFile(
+            filename=f"p{i}.gcode.3mf",
+            file_path=f"p{i}",
+            file_size=1,
+            file_type="gcode",
+            file_metadata={"plates": [{"index": 1, "printable_objects": {"1": f"part{i}"}, "print_time_seconds": 60}]},
+        )
+        product = Product(name=f"P{i}", sku=f"SKU-{i}")
+        db.add_all([file, product])
+        await db.flush()
+        db.add_all(
+            [
+                ProductPart(
+                    product_id=product.id,
+                    kind="printed",
+                    name=f"part{i}",
+                    name_key=f"part{i}",
+                    qty_per_unit=1,
+                    aliases=[f"part{i}"],
+                ),
+                ProductPart(
+                    product_id=product.id,
+                    kind="purchased",
+                    name=f"nut{i}",
+                    name_key=f"purchased:nut{i}",
+                    qty_per_unit=1,
+                ),
+                ProductPlate(product_id=product.id, library_file_id=file.id, plate_index=1),
+            ]
+        )
+        ids.append(product.id)
+    await db.commit()
+    return ids
+
+
+@pytest.mark.asyncio
+async def test_the_detail_costs_the_same_statements_for_one_line_or_five(
+    committing_client, db_session, catalog, test_engine
+):
+    """H01–H04 read nothing per line: five lines of five products on five plates cost
+    the statements one line costs."""
+    products = await _products_on_their_own_plates(db_session, 5)
+
+    async def statements_for(product_ids):
+        lines = [{"product_id": p, "quantity": 2} for p in product_ids]
+        pid = (await committing_client.post("/api/v1/projects/", json={"name": "N", "lines": lines})).json()["id"]
+        with counting_statements(test_engine) as seen:
+            body = await _detail(committing_client, pid)
+        assert all("queued" in p for line in body["lines"] for p in line["parts"])
+        assert all(line["purchased"] for line in body["lines"])
+        return len(seen)
+
+    assert await statements_for(products[:1]) == await statements_for(products)

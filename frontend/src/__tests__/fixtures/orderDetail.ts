@@ -46,6 +46,9 @@ export function makeLine(over: Partial<ProjectLine> = {}): ProjectLine {
     id: 10,
     product_id: 1,
     product_name: 'Flask',
+    product_sku: null,
+    product_origin: 'catalog',
+    product_has_cover: false,
     quantity: 10,
     material: 'PETG',
     color: null,
@@ -63,6 +66,7 @@ export function makeLine(over: Partial<ProjectLine> = {}): ProjectLine {
     covered_units: 7,
     progress: 0.7,
     parts: [],
+    purchased: [],
     archive_ids: [],
     prints_in_progress: 1,
     prints_queued: 2,
@@ -70,7 +74,7 @@ export function makeLine(over: Partial<ProjectLine> = {}): ProjectLine {
     config_key: '',
     configuration: { choices: [], changed_parts: [] },
     ...over,
-  } as ProjectLine;
+  };
 }
 
 export function makeOrder(over: Partial<Order> = {}): Order {

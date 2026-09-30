@@ -285,12 +285,35 @@ class PartFiguresOut(BaseModel):
     in_progress: int
     remaining: int
     surplus: int
+    #: WS-13 E4 H02: the part is bound to a variant option (whichever the line chose).
+    variant: bool = False
+    #: WS-13 E4 H04: this line's parts already waiting in a queue — the map the plan
+    #: subtracts (``plan_engine.queued_yield_by_line``), never a second copy of its rule.
+    queued: int = 0
+
+
+class LinePurchasedPartOut(BaseModel):
+    """WS-13 E4 H03: one purchased part of a line — ``need`` = per × the line's
+    STORED quantity, the expression ``procurement_figures`` sums per order."""
+
+    part_id: int
+    name: str
+    per: int
+    need: int
+    variant: bool = False
 
 
 class ProjectLineResponse(BaseModel):
     id: int
     product_id: int
     product_name: str
+    #: WS-13 E4 H01 — off the loaded product; a line whose product is gone reads
+    #: as none of them: no SKU, ``catalog``, no cover.
+    product_sku: str | None = None
+    product_origin: Literal["catalog", "adhoc_job", "adhoc_plate"] = "catalog"
+    #: The EFFECTIVE cover (``product_files.effective_cover``: the column, else the
+    #: first picture), as the order lists answer it.
+    product_has_cover: bool = False
     quantity: int
     material: str | None
     color: str | None
@@ -323,6 +346,9 @@ class ProjectLineResponse(BaseModel):
     # ``units_printed`` and each part's ``surplus``, never through this.
     progress: float
     parts: list[PartFiguresOut] = []
+    #: WS-13 E4 H03 — the line's purchased parts; how much was bought is the order's
+    #: procurement, not the line's.
+    purchased: list[LinePurchasedPartOut] = []
     # Every archive attributed to this line, in processing order. One archive
     # may appear under two lines — a plate carrying parts of both products, or a
     # file both hold — so these lists are not a partition of the order's prints.
