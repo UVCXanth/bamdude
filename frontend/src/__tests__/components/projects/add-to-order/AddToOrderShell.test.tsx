@@ -65,11 +65,11 @@ describe('AddToOrderDialog — the frame (WS-13 E5)', () => {
     expect(api.getLibraryFilesPaged).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Parts of a product' }));
-    const search = await screen.findByLabelText('Search parts…');
+    const search = await screen.findByLabelText('Part, product, SKU or file…');
     fireEvent.change(search, { target: { value: 'tail' } });
     fireEvent.click(screen.getByRole('tab', { name: 'Products' }));
     fireEvent.click(screen.getByRole('tab', { name: 'Parts of a product' }));
-    expect(screen.getByLabelText('Search parts…')).toHaveValue('tail');
+    expect(screen.getByLabelText('Part, product, SKU or file…')).toHaveValue('tail');
     // Every tab points at a panel that exists, visited or not.
     for (const tab of screen.getAllByRole('tab')) {
       expect(document.getElementById(tab.getAttribute('aria-controls') ?? '')).not.toBeNull();

@@ -47,15 +47,17 @@ describe('the parts tab of «Add to order»', () => {
   it('names the option a part belongs to and the product it comes from', async () => {
     open();
     const elbow = await screen.findByTestId('add-part-12');
-    expect(within(elbow).getByText('Tail: angled')).toBeInTheDocument();
-    expect(within(elbow).getByText('Pipe · PP-1 · PR-0001')).toBeInTheDocument();
+    // WS-13 E5 D03: the chip names the option; the group is its title.
+    expect(within(elbow).getByText('angled')).toHaveAttribute('title', 'Tail: angled');
+    // The SKU sits in its own monospace run inside that line (E5 D03).
+    expect(within(elbow).getByText((_c, el) => el?.textContent === 'Pipe · PP-1 · PR-0001' && el.tagName === 'DIV')).toBeInTheDocument();
     expect(within(screen.getByTestId('add-part-21')).getByText('Lamp · PR-0002')).toBeInTheDocument();
   });
 
   it('parts of one product become one line', async () => {
     open();
     for (const id of [11, 12, 21]) fireEvent.click(within(await screen.findByTestId(`add-part-${id}`)).getByRole('checkbox'));
-    fireEvent.change(within(screen.getByTestId('add-part-12')).getByLabelText('Pieces'), { target: { value: '3' } });
+    fireEvent.change(within(screen.getByTestId('add-part-12')).getByLabelText('Order, pcs'), { target: { value: '3' } });
     expect(screen.getByText('Selected parts: 3 · 5 pcs')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Add parts' }));
     await waitFor(() =>
@@ -70,7 +72,9 @@ describe('the parts tab of «Add to order»', () => {
     open();
     const row = await screen.findByTestId('add-part-11');
     fireEvent.click(within(row).getByRole('checkbox'));
-    fireEvent.change(within(row).getByLabelText('Pieces'), { target: { value: '0' } });
-    expect(within(row).getByLabelText('Pieces')).toHaveValue(1);
+    fireEvent.change(within(row).getByLabelText('Order, pcs'), { target: { value: '0' } });
+    // WS-13 E5 D06: the rule applies when the field is left — the count stays 1.
+    fireEvent.blur(within(row).getByLabelText('Order, pcs'));
+    expect(within(row).getByLabelText('Order, pcs')).toHaveValue(1);
   });
 });

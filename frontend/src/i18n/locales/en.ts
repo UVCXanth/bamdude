@@ -5520,6 +5520,7 @@ export default {
       anyColor: 'any colour',
       noChoice: 'No choice — no standard option',
       help: {
+        parts: 'Single parts without a whole product: spares, only the «tails» and so on. The quantity is final, in pieces of the part. Parts of one product become one line.',
         products: 'Tick products, and for each one its quantity and configuration (the variants of its parts). Ready products of that configuration and kits of parts are picked from stock by themselves — a number can be changed, «pick» brings the automatic choice back. Only the rest is printed.',
       },
       productsNoun: 'products',
@@ -5545,7 +5546,24 @@ export default {
       clampedLine: '{{name}}: {{what}}',
       clampedReady: 'ready {{got}} of {{asked}}',
       clampedKits: 'kits {{got}} of {{asked}}',
-      parts: { search: 'Search parts…', qty: 'Pieces', variant: '{{group}}: {{option}}', none: 'No parts match', noun: 'parts' },
+      parts: {
+        search: 'Part, product, SKU or file…',
+        qty: 'Order, pcs',
+        variant: '{{group}}: {{option}}',
+        none: 'Nothing found',
+        noun: 'parts',
+        // WS-13 E5 D.
+        head: { part: 'Part / product', file: 'File · printer', yield: 'On the plate' },
+        perPlate: '{{n}} pcs',
+        noSliced: 'no sliced plate',
+        plates_one: '≈ {{count}} plate',
+        plates_other: '≈ {{count}} plates',
+        platesRange: '≈ {{from}}–{{to}} plates',
+        platesUnknown: 'plates: unknown',
+        noSlicedFilter: 'No sliced files',
+        modelHint: 'Products sliced for this printer',
+        failed: 'Could not load the parts',
+      },
       plate: {
         search: 'Search files…',
         noFiles: 'No files match',

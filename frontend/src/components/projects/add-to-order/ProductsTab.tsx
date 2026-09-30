@@ -15,6 +15,7 @@ import { RefreshFailedNote } from '../../workshop/RefreshFailedNote';
 import { WorkshopTableScroll } from '../../workshop/WorkshopPanel';
 import { MODEL_CHIP } from '../chips';
 import { MAX_LINE_QTY, newProductPick, shownStock, withStock } from './addToOrderState';
+import { CountInput } from './CountInput';
 import type { ProductPick, ProductPicks } from './addToOrderState';
 
 const PAGE_SIZE = 24;
@@ -306,7 +307,14 @@ function ProductRow({
         )}
       </td>
       <td className={CELL}>
-        <QuantityField pick={pick} onCommit={(qty) => set({ qty })} />
+        <CountInput
+          value={pick?.qty ?? 1}
+          min={1}
+          max={MAX_LINE_QTY}
+          disabled={!pick}
+          onCommit={(qty) => set({ qty })}
+          ariaLabel={t('orders.lines.quantity')}
+        />
       </td>
       {takesStock && (
         <td className={CELL}>
@@ -360,38 +368,6 @@ function ProductRow({
         )}
       </td>
     </tr>
-  );
-}
-
-/**
- * The quantity, typed as text: a whole number in range is taken as it is typed; an
- * empty or broken field goes back to the last good number when it is left — so
- * retyping never passes through a clamped «1» (the E4 I1 lesson).
- */
-function QuantityField({ pick, onCommit }: { pick: ProductPick | undefined; onCommit: (qty: number) => void }) {
-  const { t } = useTranslation();
-  const [text, setText] = useState<string | null>(null);
-  const shown = pick ? (text ?? String(pick.qty)) : '1';
-  const parse = (value: string) => {
-    const n = Number(value);
-    return value.trim() !== '' && Number.isInteger(n) && n >= 1 && n <= MAX_LINE_QTY ? n : null;
-  };
-  return (
-    <input
-      type="number"
-      min={1}
-      max={MAX_LINE_QTY}
-      value={shown}
-      disabled={!pick}
-      onChange={(e) => {
-        setText(e.target.value);
-        const n = parse(e.target.value);
-        if (n != null) onCommit(n);
-      }}
-      onBlur={() => setText(null)}
-      aria-label={t('orders.lines.quantity')}
-      className="w-[88px] rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-2 py-1 text-white disabled:opacity-50"
-    />
   );
 }
 
