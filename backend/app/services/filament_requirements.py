@@ -10,12 +10,11 @@ its loaded slots had the right material in the wrong colours.
 This helper is the shared per-slot extractor: it returns one dict per slot
 that actually consumed filament on the chosen plate. Callers wire the list
 into ``filament_overrides`` (with ``force_color_match=True`` when they want
-the scheduler to refuse colour mismatches) so the existing
-:func:`backend.app.services.auto_queue_eligibility._get_missing_force_color_slots`
-path can do exact type+colour matching against printer AMS state.
+the scheduler to refuse colour mismatches) so routing
+(:func:`backend.app.services.filament_routing.resolve_filament_routing`) can do
+exact type+colour matching against the printer's feed.
 
-Returned shape mirrors the override JSON the eligibility helper validates
-against:
+Returned shape mirrors the override JSON routing's ``effective_slots`` reads:
 
     [{"slot_id": int, "type": str, "color": str, "tray_info_idx": str,
       "used_grams": float, "nozzle_id": int | None}, ...]

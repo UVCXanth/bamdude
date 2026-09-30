@@ -773,9 +773,9 @@ class TestVirtualPrinterInstance:
     @pytest.mark.asyncio
     async def test_add_to_auto_queue_with_force_color_match_pins_overrides(self, tmp_path):
         """``queue_force_color_match=True`` populates filament_overrides from the
-        per-slot type+color in the 3MF (#1188). Each entry is the shape the
-        eligibility scheduler's ``_get_missing_force_color_slots`` validates
-        against: ``{slot_id, type, color, tray_info_idx, force_color_match: True}``.
+        per-slot type+color in the 3MF (#1188). Each entry is the shape
+        routing's ``effective_slots`` reads:
+        ``{slot_id, type, color, tray_info_idx, force_color_match: True}``.
 
         ``tray_info_idx`` joined that shape with #2650 — it is the only field
         that separates PLA Basic from Matte from Silk, all of which report

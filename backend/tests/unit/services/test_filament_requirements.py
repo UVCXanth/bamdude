@@ -5,9 +5,8 @@ entries out of a 3MF for the VP auto-queue intake to pin
 ``force_color_match=True`` overrides on the new queue row (#1188).
 
 The shape needs to match what
-``services/auto_queue_eligibility._get_missing_force_color_slots``
-validates — exact ``type+color`` matching against the printer's loaded
-AMS state — so these tests pin the JSON shape, the slot ordering, and
+``services/filament_routing.effective_slots`` reads — exact ``type+color``
+matching against the printer's feed — so these tests pin the JSON shape, the slot ordering, and
 the ``used_g <= 0`` exclusion (slot present in the slicer config but
 not consumed by the chosen plate must NOT appear in the requirements
 list — that would force the scheduler to refuse printers that don't
@@ -153,7 +152,7 @@ class TestTrayInfoIdx:
     Bambu reports Basic, Matte and Silk all as ``tray_type == "PLA"``, so
     ``tray_info_idx`` is the only thing that tells them apart. It travels
     3MF → ``ThreeMFParser.filament_slots`` → here → the VP's force override →
-    ``_get_missing_force_color_slots``; dropping it anywhere on that path made
+    routing's ``effective_slots``; dropping it anywhere on that path made
     a job sliced for PLA Matte an exact match for every white PLA on the farm.
     """
 

@@ -26,6 +26,10 @@ may draw from is known and no known source gives a channel its material (the
 routing equivalences) or its forced colour. Nozzles, profile ids, FTS and
 distinct sources are left to routing once the printer is up: a wrong "no" here
 would strand the job with nothing ever switched on for it.
+
+A bound AMS spool on a printer told a canonical colour (backup-compatibility)
+satisfies a forced colour by that colour too — the owner's rule for routing
+(2026-09-30), so a wake never refuses what routing would accept.
 """
 
 from __future__ import annotations
@@ -56,6 +60,9 @@ class OfflineSource:
     kind: str
     material: str
     color: str | None
+    #: The canonical colour the printer is told for a bound AMS spool
+    #: (backup-compatibility), which a forced colour may read (spec П3).
+    declared_color: str | None = None
 
 
 @dataclass(frozen=True)
@@ -95,8 +102,14 @@ def _reported_slots(reading: dict) -> dict[tuple[int, int], tuple[str, dict]]:
     return slots
 
 
-def feed_from(reading: dict, bound: dict[tuple[int, int], BoundSpool | None]) -> OfflineFeed:
-    """Combine the assigned inventory with the last reading — see the module."""
+def feed_from(
+    reading: dict, bound: dict[tuple[int, int], BoundSpool | None], *, declared_color: str | None = None
+) -> OfflineFeed:
+    """Combine the assigned inventory with the last reading — see the module.
+
+    ``declared_color`` is the printer's backup-compatibility canonical colour,
+    when its policy advertises one: a bound AMS spool carries it beside its own.
+    """
     reported = _reported_slots(reading)
     ams_known = isinstance(reading.get("ams"), list)
     external_known = isinstance(reading.get("vt_tray"), list)
@@ -116,8 +129,9 @@ def feed_from(reading: dict, bound: dict[tuple[int, int], BoundSpool | None]) ->
                     external_known = False
                 continue
             materials, color = spool
+            declared = declared_color if kind == "ams" else None
             for material in dict.fromkeys(m for m in materials if m):
-                sources.append(OfflineSource(kind, material, color))
+                sources.append(OfflineSource(kind, material, color, declared))
             continue
         tray = reported[key][1]
         if tray.get("tray_type"):
@@ -145,7 +159,10 @@ def offline_shortfall(requirements, policy: RoutingPolicy, feed: OfflineFeed) ->
             continue  # routing cannot judge this channel either
         if any(
             filament_types_compatible(source.material, slot["type"])
-            and (not slot["strict"] or normalized_color(source.color) == target_color)
+            and (
+                not slot["strict"]
+                or target_color in {normalized_color(source.color), normalized_color(source.declared_color)}
+            )
             for source in usable
         ):
             continue
@@ -242,7 +259,18 @@ async def read_offline_feed(db, printer_id: int) -> OfflineFeed:
     except Exception:  # noqa: BLE001 — never let this decide "cannot print"
         logger.warning("offline feed: assignments of printer %s unreadable", printer_id, exc_info=True)
         return OfflineFeed()
-    return feed_from(printer_manager.last_tray_reading(printer_id), bound)
+    declared = None
+    try:
+        from backend.app.models.printer import Printer
+        from backend.app.services.ams_backup_compatibility import BackupCompatibilityPolicy
+
+        printer = await db.get(Printer, printer_id)
+        policy = BackupCompatibilityPolicy.from_printer(printer) if printer else None
+        if policy is not None and policy.normalize_color:
+            declared = policy.canonical_color_rgba
+    except Exception:  # noqa: BLE001 — a declaration we cannot read declares nothing
+        logger.debug("offline feed: backup policy of printer %s unreadable", printer_id, exc_info=True)
+    return feed_from(printer_manager.last_tray_reading(printer_id), bound, declared_color=declared)
 
 
 class OfflineFeedCache:
