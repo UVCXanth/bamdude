@@ -4,7 +4,7 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import select
@@ -712,6 +712,39 @@ async def test_final_guard_still_refuses_a_swapped_spool_with_the_option_on(
         await final_guard(guard, printer.id)
 
 
+async def test_final_guard_refuses_when_the_bind_went_to_another_session(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    """Final review I2: the K bind went to the session it was sent on; a start on
+    another one would print with no K selected."""
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    bind_generation = mqtt.state.connection_generation
+    reconnect(mqtt)
+    report_the_spool(mqtt)
+    with pytest.raises(RoutingDeferred, match="printer_reconnected") as refusal:
+        await final_guard(guard, printer.id, bind_generation=bind_generation)
+    assert refusal.value.revision is None  # never latched
+
+
+@pytest.mark.parametrize(("pinned", "asked"), [(254, False), (0, True)])
+async def test_a_pinned_job_ranks_the_inventory_only_when_a_twin_may_be_needed(
+    db_session, tmp_path, printer_factory, monkeypatch, pinned, asked
+):
+    """Final review: ranking a pinned job cost a Spoolman read per bound slot on
+    every preflight; it only matters when the pinned slot is empty."""
+    from backend.app.services.filament_preflight import ranked_feed
+    from backend.app.services.filament_routing import RoutingPolicy
+    from backend.app.services.print_scheduler import scheduler
+
+    _item, _source, printer, _plate, _mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    overrides = AsyncMock(return_value={})
+    monkeypatch.setattr(scheduler, "_build_inventory_remain_overrides", overrides)
+    policy = RoutingPolicy(mode="pinned", physical_pins={1: {"source_id": pinned}})
+    await ranked_feed(db_session, printer.id, policy, prefer_lowest=True)
+    assert overrides.await_count == (1 if asked else 0)
+
+
 async def test_final_guard_lets_a_new_tag_on_the_same_filament_through(
     db_session, tmp_path, printer_factory, monkeypatch
 ):
@@ -721,7 +754,9 @@ async def test_final_guard_lets_a_new_tag_on_the_same_filament_through(
     assert (await final_guard(guard, printer.id)).plan.mapping == guard.plan.mapping
 
 
-@pytest.mark.parametrize(("change", "reason"), [("material", "material_mismatch"), ("reconnect", "feed_state_changed")])
+@pytest.mark.parametrize(
+    ("change", "reason"), [("material", "material_mismatch"), ("reconnect", "printer_reconnected")]
+)
 async def test_the_publish_boundary_still_catches_a_real_change_with_the_option_on(
     db_session, tmp_path, printer_factory, monkeypatch, change, reason
 ):

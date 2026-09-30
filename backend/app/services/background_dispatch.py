@@ -524,20 +524,38 @@ async def _calibration_bind_keys(db, printer_id: int, ams_mapping, is_calibratio
     return frozenset(key for key, _ in await _calibration_targets(db, printer_id, ams_mapping, is_calibration))
 
 
-async def _rebind_if_moved(db, *, printer_id, ams_mapping, is_calibration, bound, session_changed) -> frozenset:
+def _session_generation(printer_id: int) -> int:
+    """The MQTT session a command sent now would reach."""
+    return printer_manager.get_feed_snapshot(printer_id).generation
+
+
+async def _rebind_if_moved(
+    db, *, printer_id, ams_mapping, is_calibration, bound, bound_generation
+) -> tuple[frozenset, int]:
     """Send the pre-start K bind again when it went to another session or another spool.
 
-    The bind is keyed on what IT reads — the assigned spool, the slot's live
+    ``bound_generation`` is the session the last bind was sent on (read just
+    before sending it). A session that changed since dropped it
+    (``_on_connect`` discards what paho was still retrying), so it is re-sent;
+    the bind is also keyed on what IT reads — the assigned spool, the slot's live
     profile id and its nozzle — not on the routing feed: a spool re-assigned in
     a slot whose tray looks the same changes nothing in ``FeedSource`` but
     everything about the K it needs (spec dispatch-guard-follows-the-plan Д5).
     Re-sending is safe: ``extrusion_cali_sel`` is idempotent.
+
+    Returns the keys bound and the session they were sent on, which
+    ``final_guard`` holds the start to (final review I2).
     """
-    if session_changed or await _calibration_bind_keys(db, printer_id, ams_mapping, is_calibration) != bound:
-        return await _apply_calibrations_for_print(
+    generation = _session_generation(printer_id)
+    if (
+        generation != bound_generation
+        or await _calibration_bind_keys(db, printer_id, ams_mapping, is_calibration) != bound
+    ):
+        keys = await _apply_calibrations_for_print(
             db=db, printer_id=printer_id, ams_mapping=ams_mapping, is_calibration=is_calibration
         )
-    return bound
+        return keys, generation
+    return bound, bound_generation
 
 
 async def _record_dispatched_mapping(job) -> None:
@@ -2483,6 +2501,9 @@ class BackgroundDispatchService:
                     await db.commit()
 
                 await self._set_active_message(job, f"Starting print on {printer_name}...", phase="starting")
+                # The session the bind reaches, read BEFORE it is sent: a reconnect
+                # while it is on the wire then shows as a later session.
+                bind_generation = _session_generation(job.printer_id)
                 bound = await _apply_calibrations_for_print(
                     db=db,
                     printer_id=job.printer_id,
@@ -2503,22 +2524,25 @@ class BackgroundDispatchService:
                 # One bounded wait until the prepared plan holds: a new session,
                 # an operator mid-swap, our own slot writes (spec dispatch-guard-
                 # follows-the-plan Д6; direct-print-silent-cancel §4.3).
-                session_changed = await settle_plan(
+                await settle_plan(
                     job.routing_guard,
                     job.printer_id,
                     raise_if_cancelled=lambda: self._raise_if_cancel_requested(job),
                 )
-                # The pre-start K bind went to the old session, or the slot now
-                # holds another spool than it bound for: send it again.
-                bound = await _rebind_if_moved(
+                # The pre-start K bind went to another session, or the slot now
+                # holds another spool than it bound for: send it again. The final
+                # check then holds the start to the session it reached.
+                bound, bind_generation = await _rebind_if_moved(
                     db,
                     printer_id=job.printer_id,
                     ams_mapping=job.options.get("ams_mapping"),
                     is_calibration=bool(job.options.get("is_calibration")),
                     bound=bound,
-                    session_changed=session_changed,
+                    bound_generation=bind_generation,
                 )
-                job.routing_guard = await final_guard(job.routing_guard, job.printer_id)
+                job.routing_guard = await final_guard(
+                    job.routing_guard, job.printer_id, bind_generation=bind_generation
+                )
                 await self._verify_routing_claim(db, job)
                 started = printer_manager.start_print(
                     job.printer_id,
@@ -3200,6 +3224,9 @@ class BackgroundDispatchService:
                     await db.commit()
 
                 await self._set_active_message(job, f"Starting print on {printer_name}...", phase="starting")
+                # The session the bind reaches, read BEFORE it is sent: a reconnect
+                # while it is on the wire then shows as a later session.
+                bind_generation = _session_generation(job.printer_id)
                 bound = await _apply_calibrations_for_print(
                     db=db,
                     printer_id=job.printer_id,
@@ -3220,22 +3247,25 @@ class BackgroundDispatchService:
                 # One bounded wait until the prepared plan holds: a new session,
                 # an operator mid-swap, our own slot writes (spec dispatch-guard-
                 # follows-the-plan Д6; direct-print-silent-cancel §4.3).
-                session_changed = await settle_plan(
+                await settle_plan(
                     job.routing_guard,
                     job.printer_id,
                     raise_if_cancelled=lambda: self._raise_if_cancel_requested(job),
                 )
-                # The pre-start K bind went to the old session, or the slot now
-                # holds another spool than it bound for: send it again.
-                bound = await _rebind_if_moved(
+                # The pre-start K bind went to another session, or the slot now
+                # holds another spool than it bound for: send it again. The final
+                # check then holds the start to the session it reached.
+                bound, bind_generation = await _rebind_if_moved(
                     db,
                     printer_id=job.printer_id,
                     ams_mapping=job.options.get("ams_mapping"),
                     is_calibration=bool(job.options.get("is_calibration")),
                     bound=bound,
-                    session_changed=session_changed,
+                    bound_generation=bind_generation,
                 )
-                job.routing_guard = await final_guard(job.routing_guard, job.printer_id)
+                job.routing_guard = await final_guard(
+                    job.routing_guard, job.printer_id, bind_generation=bind_generation
+                )
                 await self._verify_routing_claim(db, job)
                 started = printer_manager.start_print(
                     job.printer_id,

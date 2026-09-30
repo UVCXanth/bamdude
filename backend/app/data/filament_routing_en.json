@@ -43,6 +43,7 @@
   "feed_settle_timeout": "The printer did not report its filament state in time, so the print was not started.",
   "pinned_source_empty": "The slot chosen for this print is empty, and no AMS Backup slot can stand in for it.",
   "planned_source_empty": "A slot this print uses stayed empty, so it was not started.",
+  "printer_reconnected": "The printer reconnected just before the print would start, so it was not started.",
   "source_copy_busy": "The queue is already copying files. Try again in a moment.",
   "source_spool_replaced": "A restore replaced the saved queue files. Try again.",
   "source_invalid": "The source file is not a readable sliced file.",

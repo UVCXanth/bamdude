@@ -510,8 +510,13 @@ def a_plan(policy, state, req=None):
 
 
 def a_guard(policy, state, req=None):
+    from backend.app.services.filament_preflight import planned_nozzle_diameters
+
     req = req or requirements({})
-    return DispatchRoutingGuard(req, policy, a_plan(policy, state, req), True, "revision", state.generation)
+    plan = a_plan(policy, state, req)
+    return DispatchRoutingGuard(
+        req, policy, plan, True, "revision", state.generation, planned_nozzle_diameters(req, policy, plan, state)
+    )
 
 
 def validate(guard, state):
@@ -641,8 +646,8 @@ def test_the_guard_refuses_a_spool_that_no_longer_fits_its_channel(changed, reas
 @pytest.mark.parametrize(
     ("changed", "reason"),
     [
-        ({"generation": 2}, "feed_state_changed"),
-        ({"connected": False}, "feed_state_changed"),
+        ({"generation": 2}, "printer_reconnected"),
+        ({"connected": False}, "printer_offline"),
         ({"sources": ()}, "planned_source_empty"),
     ],
 )
@@ -696,6 +701,18 @@ def test_the_guard_refuses_a_nozzle_that_no_longer_fits_the_plate():
     guard = a_guard(RoutingPolicy(), state, req)
     with pytest.raises(RoutingDeferred, match="nozzle_mismatch"):
         validate(guard, replace(state, nozzle_diameters={0: (0.4,)}))
+
+
+def test_the_guard_refuses_a_hotend_swapped_on_a_nozzle_the_plan_uses():
+    """Final review I1: a plate with no diameter constraint, or an H2C rack whose
+    chosen dock was re-fitted during the soak, is still a changed plan."""
+    state = snapshot(feed(0, kind="ams"), nozzle_diameters={0: (0.4,)})
+    guard = a_guard(RoutingPolicy(), state)
+    with pytest.raises(RoutingDeferred, match="nozzle_mismatch"):
+        validate(guard, replace(state, nozzle_diameters={0: (0.6,)}))
+    validate(guard, replace(state, nozzle_diameters={0: (0.4,), 1: (0.6,)}))  # a nozzle the plan does not use
+    with pytest.raises(RoutingDeferred, match="nozzle_state_unavailable"):
+        validate(guard, replace(state, nozzle_diameters={}))  # not reported yet: wait, never pass
 
 
 def test_an_unknown_fact_is_never_a_pass():

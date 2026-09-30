@@ -265,8 +265,10 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
         assert register.call_args.kwargs["ams_mapping"] == [-1, -1, 254]
         withdraw.assert_not_called()
         failure.assert_not_awaited()
-        # The pre-start K-profile bind went to the old session; it is sent again.
-        assert calibrate.await_count == (2 if change == "reconnect" else 1)
+        # The reconnect happens during the upload, so the pre-start K bind is
+        # sent on the NEW session already: the generation it was sent on is
+        # recorded, and it is not re-sent (final review I2).
+        assert calibrate.await_count == 1
         if owner == "direct" and kind == "print_library_file":
             saved = json.loads(item.filament_routing)
             assert saved["source_identity"]["kind"] == "archive"

@@ -53,6 +53,11 @@ class DispatchRoutingGuard:
     #: still retrying — a print published on another session would start with
     #: no K selected (review 2026-09-30).
     generation: int
+    #: The nozzle diameters the plan's channels print from, as the preflight saw
+    #: them (``planned_nozzle_diameters``). A plate that names no diameter, or an
+    #: H2C rack whose dock was re-fitted during the soak, would otherwise start
+    #: on a hotend the plan was never made for (final review I1).
+    nozzle_diameters: dict[int, tuple[float, ...]]
     #: ``requires_left_tpu_firmware_check(model)``, answered when the guard was
     #: built: its first call reads the mirrored printer config from disk, and
     #: ``validate`` runs under the MQTT routing lock, where nothing may.
@@ -64,8 +69,10 @@ class DispatchRoutingGuard:
         # Never stat a network mount while holding the MQTT telemetry lock.
         # ``plan_holds`` is pure arithmetic over a snapshot already in hand; the
         # model check (the only one that can read a config file) is skipped.
-        if not snapshot.connected or snapshot.generation != self.generation:
-            raise RoutingDeferred("feed_state_changed")
+        if not snapshot.connected:
+            raise RoutingDeferred("printer_offline")
+        if snapshot.generation != self.generation:
+            raise RoutingDeferred("printer_reconnected")
         holds, reason, _unknown = plan_holds(self, snapshot, with_model=False)
         if not holds:
             raise RoutingDeferred(reason or "feed_state_changed")
@@ -93,6 +100,14 @@ def plan_holds(guard, snapshot, *, with_model: bool = True) -> tuple[bool, str |
     slots = effective_slots(req, policy)
     if slots is None:
         return False, "override_slot_not_used", True
+    now_fitted = planned_nozzle_diameters(req, policy, plan, snapshot)
+    for nozzle, fitted in guard.nozzle_diameters.items():
+        if not fitted:
+            continue  # the preflight never knew it; the plate's own diameter check still stands
+        if not now_fitted.get(nozzle):
+            return False, "nozzle_state_unavailable", True
+        if now_fitted[nozzle] != fitted:
+            return False, "nozzle_mismatch", False
     present = {source.id: source for source in snapshot.sources}
     nozzle_counts = channel_nozzle_counts(slots)
     for slot in slots:
@@ -119,6 +134,21 @@ def plan_holds(guard, snapshot, *, with_model: bool = True) -> tuple[bool, str |
         if not fits:
             return False, why or "material_mismatch", unsure
     return True, None, False
+
+
+def planned_nozzle_diameters(req, policy, plan, snapshot) -> dict[int, tuple[float, ...]]:
+    """The fitted diameters of the nozzles the plan's channels print from.
+
+    Pure arithmetic over the snapshot (``validate`` asks it under the lock).
+    Only the plan's nozzles: a hotend swapped on a nozzle the job does not use
+    is not a changed plan. On an H2C this is the whole rack's diameter set for
+    the rack carriage — a per-dock swap that leaves the set unchanged is not
+    visible here.
+    """
+    nozzles = {
+        slot_nozzle(slot) for slot in (effective_slots(req, policy) or []) if slot["slot_id"] in plan.assignments
+    }
+    return {nozzle: tuple(snapshot.nozzle_diameters.get(nozzle, ())) for nozzle in sorted(nozzles)}
 
 
 def feed_signature(policy, snapshot) -> tuple[int, str]:
@@ -312,6 +342,7 @@ async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None
         exact_model,
         revision,
         snapshot.generation,
+        planned_nozzle_diameters(req, policy, result.plan, snapshot),
         requires_left_tpu_firmware_check(snapshot.model),
     )
 
@@ -342,8 +373,14 @@ async def ranked_feed(db, printer_id, policy, prefer_lowest=None):
         prefer_lowest = await scheduler._get_bool_setting(db, "prefer_lowest_filament", default=True)
     snapshot = printer_manager.get_feed_snapshot(printer_id)
     source_priority = None
-    # Pinned jobs too: an empty pinned slot's backup twins are ranked the same way.
-    if prefer_lowest and snapshot.backup_enabled is not False:
+    # A pinned job needs a ranking only when a pinned slot is empty and its
+    # backup twins compete; otherwise it is one Spoolman read per bound slot on
+    # every preflight for nothing (final review).
+    present = {source.id for source in snapshot.sources}
+    ranking_matters = policy.mode == "auto" or any(
+        pin.get("source_id") not in present for pin in policy.physical_pins.values()
+    )
+    if prefer_lowest and snapshot.backup_enabled is not False and ranking_matters:
         loaded = [
             {
                 "ams_id": source.id if source.id >= 128 else source.id // 4,
@@ -437,7 +474,7 @@ async def settle_plan(
         await asyncio.sleep(poll)
 
 
-async def final_guard(guard, printer_id):
+async def final_guard(guard, printer_id, *, bind_generation: int | None = None):
     """After all preparatory awaits: the prepared plan still holds, or there is no start.
 
     A different plan is a new attempt, never a swapped mapping — the mapping
@@ -446,6 +483,12 @@ async def final_guard(guard, printer_id):
     plan's own slots from scratch (``settle_plan`` waited for that); what the
     guard asks is ``plan_holds`` — the plan's slots under the job's own rule.
     Its refusals carry no revision, so none of them parks a queue row.
+
+    ``bind_generation`` is the MQTT session the pre-start K bind was sent on
+    (``background_dispatch._rebind_if_moved``). A session that changed since —
+    during this function's own source probe — would start the print with no K
+    selected, so it is a refusal, and ``validate`` then holds the publish to the
+    very session confirmed here.
     """
     if guard is None:
         return None
@@ -457,6 +500,8 @@ async def final_guard(guard, printer_id):
     if current != identity:
         raise RoutingDeferred("source_changed")
     snapshot = printer_manager.get_feed_snapshot(printer_id)
+    if bind_generation is not None and snapshot.generation != bind_generation:
+        raise RoutingDeferred("printer_reconnected")
     holds, reason, _unknown = plan_holds(guard, snapshot)
     if not holds:
         raise RoutingDeferred(reason or "feed_state_changed")
