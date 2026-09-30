@@ -246,6 +246,22 @@ def channel_refusal(
     return None
 
 
+def backup_twins(source_id: int, snapshot: PrinterFeedSnapshot) -> frozenset[int]:
+    """The AMS slots the firmware would feed from instead of an EMPTY ``source_id``.
+
+    Only with AMS Backup on (``backup_enabled is True`` — unknown is not
+    consent), only while ``source_id`` is absent from the feed (a loaded pinned
+    slot is never swapped: the firmware would not switch either), never an
+    external holder. The group is the firmware's own (``filam_bak``), which the
+    backup-compatibility emulation may have filled with differently coloured
+    spools on purpose — the owner's choice (2026-09-30). Whether a twin can
+    serve the channel is still ``source_fits``'s question.
+    """
+    if snapshot.backup_enabled is not True or any(s.id == source_id for s in snapshot.sources):
+        return frozenset()
+    return frozenset(m for m in snapshot.backup_membership.get(source_id, ()) if m != source_id and m < 254)
+
+
 def _pin_holds(pin: dict, slot: dict, source: FeedSource, policy: RoutingPolicy) -> bool:
     """Whether a pinned channel may take ``source``.
 
@@ -369,7 +385,14 @@ def resolve_filament_routing(
     prefer_lowest: bool = False,
     exact_model: bool = True,
     source_priority: dict[int, tuple] | None = None,
+    allow_backup_twins: bool = True,
 ) -> RoutingResult:
+    """A complete, injective plan for the job on this feed, or a typed refusal.
+
+    ``allow_backup_twins=False`` for a row without a routing intent: its pins
+    are re-read from ``item.ams_mapping``, and a twin written there would
+    become its pin for good.
+    """
     refusal = feed_preconditions(requirements, policy, snapshot, exact_model=exact_model)
     if refusal is not None:
         return refusal
@@ -378,6 +401,7 @@ def resolve_filament_routing(
         return RoutingResult("unknown", "override_slot_not_used")
     nozzle_counts = channel_nozzle_counts(slots)
     left_tpu_check = requires_left_tpu_firmware_check(snapshot.model)
+    present = {source.id for source in snapshot.sources}
     options: dict[int, list[FeedSource]] = {}
     colors = {}
     for slot in slots:
@@ -419,7 +443,11 @@ def resolve_filament_routing(
         pin = policy.physical_pins.get(sid)
         if policy.mode == "pinned" and (pin is None or pin.get("source_id", -1) < 0):
             return RoutingResult("unknown", "mapping_review_required", slots=(sid,))
-        allowed = frozenset({pin["source_id"]}) if pin else None
+        allowed = None
+        if pin:
+            allowed = frozenset({pin["source_id"]})
+            if allow_backup_twins:
+                allowed |= backup_twins(pin["source_id"], snapshot)
         candidates = []
         unknown = False
         reason = "material_mismatch"
@@ -441,6 +469,10 @@ def resolve_filament_routing(
             if fits:
                 candidates.append(source)
         if not candidates:
+            if pin and pin["source_id"] not in present and reason == "material_mismatch":
+                # Nothing more specific was said: the chosen slot is simply empty
+                # (and no backup twin could stand in) — not "no compatible filament".
+                reason = "pinned_source_empty"
             unknown |= (
                 (not snapshot.ams_known and policy.feed_policy != "external_only")
                 or (not snapshot.external_known and policy.feed_policy != "ams_only")

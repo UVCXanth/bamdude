@@ -288,6 +288,97 @@ def test_a_pin_checks_colour_only_when_the_colour_is_forced():
     )
 
 
+PIN_0 = RoutingPolicy(
+    mode="pinned", physical_pins={1: {"source_id": 0, "type": "PETG", "color": "000000FF", "nozzles": [0]}}
+)
+PETG_BLACK = requirements({"type": "PETG", "color": "#000000"})
+
+
+def twin_state(*, backup=True, membership=None):
+    return snapshot(
+        FeedSource(1, "ams", "PETG", "FF0000FF", nozzles=(0,), declared_color="000000FF"),
+        FeedSource(2, "ams", "PLA", "000000FF", nozzles=(0,)),
+        backup_enabled=backup,
+        backup_membership={0: (0, 1), 1: (0, 1)} if membership is None else membership,
+    )
+
+
+def test_an_empty_pinned_slot_prints_from_its_backup_twin():
+    assert resolve_filament_routing(PETG_BLACK, PIN_0, twin_state()).plan.mapping == [1]
+
+
+def test_a_twin_still_meets_a_forced_colour_by_what_was_declared():
+    forced = replace(PIN_0, force_color_match=True)
+    assert resolve_filament_routing(PETG_BLACK, forced, twin_state()).plan.mapping == [1]
+    red = requirements({"type": "PETG", "color": "#FF0000"})
+    assert resolve_filament_routing(red, forced, twin_state()).reason == "color_mismatch"
+
+
+@pytest.mark.parametrize("backup", [False, None])
+def test_without_backup_an_empty_pinned_slot_waits(backup):
+    assert resolve_filament_routing(PETG_BLACK, PIN_0, twin_state(backup=backup)).reason == "pinned_source_empty"
+
+
+def test_a_slot_never_seen_in_a_group_has_no_twin():
+    """Also the state after a BamDude restart: the memory is empty."""
+    assert resolve_filament_routing(PETG_BLACK, PIN_0, twin_state(membership={})).reason == "pinned_source_empty"
+
+
+def test_a_twin_on_another_nozzle_is_not_used():
+    state = snapshot(
+        FeedSource(1, "ams", "PETG", "000000FF", nozzles=(1,)), backup_enabled=True, backup_membership={0: (0, 1)}
+    )
+    assert resolve_filament_routing(PETG_BLACK, PIN_0, state).plan is None
+
+
+def test_a_loaded_pinned_slot_is_never_swapped_for_a_twin():
+    state = snapshot(
+        FeedSource(0, "ams", "PLA", "000000FF", nozzles=(0,)),
+        FeedSource(1, "ams", "PETG", "000000FF", nozzles=(0,)),
+        backup_enabled=True,
+        backup_membership={0: (0, 1), 1: (0, 1)},
+    )
+    result = resolve_filament_routing(PETG_BLACK, PIN_0, state)
+    assert result.plan is None and result.reason == "material_mismatch"
+
+
+def test_an_external_holder_is_never_a_twin():
+    state = snapshot(feed(254, "000000FF", material="PETG"), backup_enabled=True, backup_membership={0: (0, 254)})
+    assert resolve_filament_routing(PETG_BLACK, PIN_0, state).reason == "pinned_source_empty"
+
+
+def test_an_ams_ht_slot_has_twins_too():
+    pin = RoutingPolicy(mode="pinned", physical_pins={1: {"source_id": 128, "type": "PETG", "nozzles": [0]}})
+    state = snapshot(
+        FeedSource(129, "ams", "PETG", "000000FF", nozzles=(0,)),
+        backup_enabled=True,
+        backup_membership={128: (128, 129)},
+    )
+    assert resolve_filament_routing(PETG_BLACK, pin, state).plan.mapping == [129]
+
+
+def test_a_legacy_row_gets_no_twin():
+    result = resolve_filament_routing(PETG_BLACK, PIN_0, twin_state(), allow_backup_twins=False)
+    assert result.reason == "pinned_source_empty"
+
+
+def test_a_twin_already_serving_another_channel_is_not_taken_twice():
+    req = requirements({"type": "PETG", "color": "#000000"}, {"type": "PETG", "color": "#000000"})
+    policy = RoutingPolicy(
+        mode="pinned",
+        physical_pins={
+            1: {"source_id": 0, "type": "PETG", "nozzles": [0]},
+            2: {"source_id": 1, "type": "PETG", "nozzles": [0]},
+        },
+    )
+    state = snapshot(
+        FeedSource(1, "ams", "PETG", "000000FF", nozzles=(0,)),
+        backup_enabled=True,
+        backup_membership={0: (0, 1), 1: (0, 1)},
+    )
+    assert resolve_filament_routing(req, policy, state).plan is None
+
+
 def test_the_ranking_counts_a_declared_colour_as_exact():
     """В1: in a leftover group declared black, «lowest remain first» starts on the leftovers."""
     state = snapshot(

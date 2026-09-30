@@ -213,7 +213,15 @@ async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None
     revision = revision_for(req, policy, snapshot)
     exact_model = saved.get("exact_model", item.source_auto_item_id is not None)
     result = resolve_filament_routing(
-        req, policy, snapshot, prefer_lowest=prefer_lowest, exact_model=exact_model, source_priority=source_priority
+        req,
+        policy,
+        snapshot,
+        prefer_lowest=prefer_lowest,
+        exact_model=exact_model,
+        source_priority=source_priority,
+        # A row without a routing intent re-reads its pins from item.ams_mapping,
+        # which the scheduler overwrites with the plan — a twin would stick.
+        allow_backup_twins=item.filament_routing is not None,
     )
     if result.plan is None:
         raise RoutingDeferred(result.reason or "mapping_review_required", revision=revision, params=result.params)
@@ -257,7 +265,8 @@ async def ranked_feed(db, printer_id, policy, prefer_lowest=None):
         prefer_lowest = await scheduler._get_bool_setting(db, "prefer_lowest_filament", default=True)
     snapshot = printer_manager.get_feed_snapshot(printer_id)
     source_priority = None
-    if prefer_lowest and snapshot.backup_enabled is not False and policy.mode == "auto":
+    # Pinned jobs too: an empty pinned slot's backup twins are ranked the same way.
+    if prefer_lowest and snapshot.backup_enabled is not False:
         loaded = [
             {
                 "ams_id": source.id if source.id >= 128 else source.id // 4,
