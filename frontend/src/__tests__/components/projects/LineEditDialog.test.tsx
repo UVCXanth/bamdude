@@ -327,7 +327,8 @@ describe('LineEditDialog · a line whose stock has moved', () => {
     expect(screen.queryByLabelText('From stock — ready')).not.toBeInTheDocument();
     // One live kit (2 from kits, 1 of them assembled) — it may only come down.
     expect(screen.getByLabelText('From stock — part kits')).toHaveAttribute('max', '1');
-    expect(screen.getByText('Kits can only be lowered once the line’s stock has moved')).toBeInTheDocument();
+    // A hint under a field, lower-case like every other hint of the dialog.
+    expect(screen.getByText('kits can only be lowered once the line’s stock has moved')).toBeInTheDocument();
     expect(quantity).toHaveAttribute('min', '4');
     fireEvent.change(quantity, { target: { value: '8' } });
     save();

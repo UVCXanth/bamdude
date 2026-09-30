@@ -157,12 +157,11 @@ export function PlanRow({
           {hasAlternatives ? (
             <Select
               size="sm"
-              className="w-full truncate"
+              className="w-full"
               data-testid={`plan-row-${lineId}-${row.plate_id}-file`}
               aria-label={t('orders.plan.row.file')}
-              // A name the column cannot fit (the order page below 1920, the «Plan from files»
-              // dialog) ends in an ellipsis — Chromium honours text-overflow on a <select>;
-              // without it the name was cut mid-letter. Its title keeps it readable in full.
+              // In a narrow table (the «Plan from files» dialog) the chosen name may be
+              // clipped by the select; its title keeps it readable in full.
               title={optionLabel(plate, hiddenLabel)}
               value={plate.plate_id}
               onChange={(e) => onChoose(Number(e.currentTarget.value))}

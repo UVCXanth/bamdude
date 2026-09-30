@@ -5876,7 +5876,7 @@ export default {
       anyMaterial: 'any',
       anyColor: 'colour — any',
       moved: "This line's stock has moved — take more from stock instead",
-      movedKitsDown: 'Kits can only be lowered once the line’s stock has moved',
+      movedKitsDown: 'kits can only be lowered once the line’s stock has moved',
       actions: 'Actions',
       menu: 'Line actions: {{product}}',
       menuConfigure: 'Part configuration…',

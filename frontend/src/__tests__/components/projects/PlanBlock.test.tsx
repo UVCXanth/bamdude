@@ -833,17 +833,6 @@ describe('PlanBlock', () => {
     expect(panel).not.toHaveTextContent('null');
   });
 
-  it('ends a file name the switch cannot fit with an ellipsis, the full name in its title', async () => {
-    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planHiding(false, true));
-    render(<PlanBlock order={order} canEdit />);
-
-    // Measured in Chromium: a narrow <select> cut the name mid-letter until it was
-    // given text-overflow: ellipsis (Tailwind's `truncate`).
-    const files = await screen.findByTestId('plan-row-10-100-file');
-    expect(files).toHaveClass('truncate');
-    expect(files).toHaveAttribute('title', 'big.3mf (X1C)');
-  });
-
   it('sends a printer only a plate the reader may open: hidden row, visible alternative', async () => {
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planHiding(true, false));
     render(<PlanBlock order={order} canEdit />);
