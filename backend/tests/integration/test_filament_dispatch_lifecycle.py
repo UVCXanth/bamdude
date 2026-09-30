@@ -185,12 +185,16 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
                     owned_queue.current_item_id, owned_queue.status = None, "idle"
                     await concurrent.delete(claimed)
                 await concurrent.commit()
+        return frozenset()  # the keys of what it bound — none, in this harness
 
     upload_mock = AsyncMock(side_effect=upload)
     monkeypatch.setattr(bd, "upload_file_async", upload_mock)
     monkeypatch.setattr("backend.app.services.preheat.preheat_and_soak", AsyncMock(side_effect=preheat))
     calibrate = AsyncMock(side_effect=calibration)
     monkeypatch.setattr(bd, "_apply_calibrations_for_print", calibrate)
+    # The bind is stubbed, so what it would bind now is stubbed with it: only a
+    # session change re-sends it here (the key comparison has its own unit test).
+    monkeypatch.setattr(bd, "_calibration_bind_keys", AsyncMock(return_value=frozenset()))
     service = BackgroundDispatchService()
     monkeypatch.setattr(service, "_ensure_live_connection_before_start", AsyncMock())
     monkeypatch.setattr(service, "_run_swap_macro_if_needed", AsyncMock())
