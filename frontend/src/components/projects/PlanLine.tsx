@@ -47,6 +47,8 @@ interface PlanLineProps {
   onAddPlate: (row: PlanRowData) => void;
   onEnqueueRow: (rowPlateId: number) => void;
   onQueued: () => void;
+  /** The block's own variant, handed to its rows. */
+  variant?: 'page' | 'dialog';
 }
 
 /** A plate the operator picked by hand, in the shape the plan speaks.
@@ -122,6 +124,7 @@ export function PlanLine({
   onAddPlate,
   onEnqueueRow,
   onQueued,
+  variant = 'page',
 }: PlanLineProps) {
   const { t } = useTranslation();
 
@@ -288,6 +291,7 @@ export function PlanLine({
                     onSplit={(next) => onSplit(row.plate_id, next)}
                     onEnqueue={() => onEnqueueRow(row.plate_id)}
                     onQueued={onQueued}
+                    variant={variant}
                   />
                 );
               })}

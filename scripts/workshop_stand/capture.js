@@ -63,11 +63,32 @@ async (page) => {
     };
   };
 
+  // A filter rewrite: walk `keys` (`*` = every item of an array) and keep, in the array
+  // at the end, the items whose `field` matches `pattern`.
+  const filterAt = (node, keys, field, pattern) => {
+    if (node == null || typeof node !== 'object') return;
+    const [key, ...rest] = keys;
+    if (key === '*') {
+      if (Array.isArray(node)) node.forEach(child => filterAt(child, rest, field, pattern));
+      return;
+    }
+    if (rest.length) return filterAt(node[key], rest, field, pattern);
+    if (Array.isArray(node[key])) node[key] = node[key].filter(item => pattern.test(String(item && item[field])));
+  };
+
   for (const shot of job.shots) {
+    // WS-13 E4 F6: the pair's explicit GET fixtures (validated by capture_serve). Each is
+    // recorded with how many responses it rewrote — one that never applied fails the shot.
+    // ⚠️ A request the app's service worker answers never reaches `page.route`, so a shot
+    // with a fixture blocks the worker (measured: every rewrite applied 0 times without).
+    const rewrites = shot.rewrites || [];
     const ctx = await browser.newContext({
       viewport: {width: shot.width, height: shot.height}, deviceScaleFactor: 1, locale: 'uk-UA', timezoneId: 'Europe/Kyiv',
+      ...(rewrites.length ? {serviceWorkers: 'block'} : {}),
     });
     const result = {id: shot.id, side: shot.side, width: shot.width, file: shot.file, steps: []};
+    if (rewrites.length) result.fixture = rewrites.map(r => ({...r, applied: 0}));
+    let p = null;
     try {
       await ctx.addInitScript(({side, storage, token}) => {
         if (sessionStorage.getItem('ws13-init')) return;
@@ -76,7 +97,29 @@ async (page) => {
         for (const [k, v] of Object.entries(storage || {})) localStorage.setItem(k, v);
         if (side === 'app' && token) localStorage.setItem('auth_token', token);
       }, {side: shot.side, storage: shot.storage, token: shot.side === 'app' ? job.token : null});
-      const p = await ctx.newPage();
+      p = await ctx.newPage();
+      if (rewrites.length) {
+        // Only a GET on the exact path is rewritten; everything else goes on untouched.
+        await p.route(url => rewrites.some(r => r.path === url.pathname), async route => {
+          try {
+            const request = route.request();
+            const at = rewrites.findIndex(r => r.path === new URL(request.url()).pathname);
+            if (request.method() !== 'GET' || at < 0) return await route.fallback();
+            const response = await route.fetch();
+            if (!response.ok()) return await route.fulfill({response});
+            let body = await response.json();
+            const rewrite = rewrites[at];
+            if (rewrite.merge) body = {...body, ...rewrite.merge};
+            if (rewrite.filter) filterAt(body, rewrite.filter.at.split('.'), rewrite.filter.field, new RegExp(rewrite.filter.match));
+            await route.fulfill({response, json: body});
+            result.fixture[at].applied += 1;
+          } catch (e) {
+            // A name only: a message may carry a URL, and nothing here should echo one.
+            (result.route_errors = result.route_errors || []).push(String((e && e.name) || 'Error'));
+            try { await route.abort(); } catch { /* the page is closing */ }
+          }
+        });
+      }
       await p.goto(shot.url, {waitUntil: 'networkidle', timeout: 60000});
       await p.evaluate(() => document.fonts.ready);
       await p.waitForTimeout(600);
@@ -153,11 +196,14 @@ async (page) => {
       const lastEnd = offsets[offsets.length - 1] + extent.view;
       result.scroll = {height: extent.height, view: extent.view, frames: offsets.length, container: shot.measure === 'dialog' ? 'dialog' : 'page',
         complete: plan.complete && lastEnd >= extent.height - 4, truncated: !(plan.complete && lastEnd >= extent.height - 4)};
-      result.ok = result.steps.every(s => s.ok) && result.stable && result.scroll.complete;
+      result.ok = result.steps.every(s => s.ok) && result.stable && result.scroll.complete &&
+        (result.fixture || []).every(f => f.applied > 0) && !result.route_errors;
     } catch (e) {
       result.ok = false;
       result.error = String(e.message || e).split('\n')[0].slice(0, 300);
     } finally {
+      // A route left on a closing page answers into nothing; take it off first.
+      if (p && rewrites.length) { try { await p.unrouteAll({behavior: 'ignoreErrors'}); } catch { /* gone */ } }
       await ctx.close();
     }
     await page.request.post(`${base}/result`, {data: result});

@@ -51,6 +51,54 @@ def plan_offsets(height: int, view: int, *, overlap: int = FRAME_OVERLAP, limit:
     return offsets, True
 
 
+_API_PATH = re.compile(r"/api/v1(?:/[A-Za-z0-9_-]+)+")
+_REWRITE_OPS = {"merge", "filter"}
+
+
+def app_rewrites(spec: dict, resolve) -> list[dict]:
+    """A pair's explicit GET fixtures (WS-13 E4 F6), refs resolved like the route.
+
+    A state the stand's baseline lacks — attachments on an order, a comparable set
+    of plan alternatives — is answered in the capture's own browser context and
+    written nowhere. Only two operations exist: ``merge`` (an object laid over the
+    response) and ``filter`` (``at`` a dotted path, ``*`` for every array item,
+    keep the items whose ``field`` matches ``match``). Anything else is refused
+    here, before a browser starts, so a recipe cannot quietly do nothing."""
+    out = []
+    for raw in spec.get("rewrites", []):
+        path = resolve(raw.get("path", ""))
+        if not _API_PATH.fullmatch(path):
+            raise ValueError(f"rewrite path {path!r} is not an API path")
+        ops = {key: value for key, value in raw.items() if key != "path"}
+        if not ops or set(ops) - _REWRITE_OPS:
+            raise ValueError(f"rewrite of {path} must be merge and/or filter, got {sorted(ops)}")
+        if "merge" in ops and not isinstance(ops["merge"], dict):
+            raise ValueError(f"rewrite of {path}: merge is an object")
+        if "filter" in ops:
+            rule = ops["filter"]
+            if not (
+                isinstance(rule, dict)
+                and set(rule) == {"at", "field", "match"}
+                and all(isinstance(value, str) and value for value in rule.values())
+            ):
+                raise ValueError(f"rewrite of {path}: filter is {{at, field, match}}")
+            try:
+                re.compile(rule["match"])
+            except re.error as exc:
+                raise ValueError(f"rewrite of {path}: filter pattern {rule['match']!r}: {exc}") from exc
+        out.append({"path": path, **ops})
+    return out
+
+
+def side_rewrites(side: str, spec: dict, resolve) -> list[dict]:
+    """The mockup talks to no API: a fixture on its side is a recipe that does nothing."""
+    if side == "mockup":
+        if spec.get("rewrites"):
+            raise ValueError("the mockup side takes no rewrites")
+        return []
+    return app_rewrites(spec, resolve)
+
+
 MOCKUP = stand.REPO / "temp" / "proj-ui-work" / "02-mockup-v2.html"
 MOCKUP_PREF_KEY = "bamdude-mockup-v2-ui"
 
@@ -96,6 +144,7 @@ def build_job(mode: str, stage: str, only: set[str] | None) -> tuple[dict, dict]
                         "url": url,
                         "storage": storage,
                         "actions": spec.get("actions", []),
+                        "rewrites": side_rewrites(side, spec, resolve),
                         "measure": surface["measure"],
                         "file": str(file).replace("\\", "/"),
                     }
@@ -135,6 +184,10 @@ def write_manifest(context: dict, results: list[dict]) -> Path:
                 "ok": r.get("ok"),
                 "error": r.get("error"),
                 "steps": r.get("steps"),
+                # WS-13 E4 F6: the explicit GET fixture the shot ran with, each with how many
+                # responses it rewrote, and any failure of the route that applied it.
+                "fixture": r.get("fixture"),
+                "route_errors": r.get("route_errors"),
                 # Fixed-viewport frames (V02): the first is `file`; each one's layout key was
                 # the same before and after the picture as when the measures were taken.
                 "stable": r.get("stable"),

@@ -46,6 +46,9 @@ interface PlanRowProps {
   onSplit: (next: Record<number, number>) => void;
   onEnqueue: () => void;
   onQueued: () => void;
+  /** Where the plan sits — the order page, or the «Plan from files» dialog. On
+   *  the page a phone keeps the row's actions on one line (WS-13 E4 F6). */
+  variant?: 'page' | 'dialog';
 }
 
 /** `filename (X1C)`, or the bare filename when the file names no model. The
@@ -108,6 +111,7 @@ export function PlanRow({
   onSplit,
   onEnqueue,
   onQueued,
+  variant = 'page',
 }: PlanRowProps) {
   const { t } = useTranslation();
   const [printing, setPrinting] = useState<{ plate: ChosenPlate; printerId?: number } | null>(null);
@@ -157,11 +161,12 @@ export function PlanRow({
           {hasAlternatives ? (
             <Select
               size="sm"
-              className="w-full"
+              // A file name rarely fits the cell: it ends in an ellipsis rather than
+              // mid-letter at the border (WS-13 E4 F6 — see `select-ellipsis`).
+              className="w-full select-ellipsis"
               data-testid={`plan-row-${lineId}-${row.plate_id}-file`}
               aria-label={t('orders.plan.row.file')}
-              // In a narrow table (the «Plan from files» dialog) the chosen name may be
-              // clipped by the select; its title keeps it readable in full.
+              // The title keeps the shortened name readable in full.
               title={optionLabel(plate, hiddenLabel)}
               value={plate.plate_id}
               onChange={(e) => onChoose(Number(e.currentTarget.value))}
@@ -246,7 +251,13 @@ export function PlanRow({
         </td>
 
         <td className={CELL}>
-          <div className="flex items-center justify-end gap-1 flex-wrap">
+          {/* ⚠️ On a phone the order page keeps the actions on ONE line (WS-13 E4 F6):
+              stacked, three 44 px buttons made every row ~160 px tall, while the
+              table already scrolls sideways in its own frame. The dialog keeps
+              wrapping — the owner's call left it as it was. */}
+          <div
+            className={`flex items-center justify-end gap-1 flex-wrap ${variant === 'page' ? 'max-sm:flex-nowrap' : ''}`}
+          >
             {canQueue && (
               <Button
                 size="sm"

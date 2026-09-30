@@ -1322,6 +1322,29 @@ describe('PlanBlock', () => {
     );
   });
 
+  it('ends a long file name in the switch with an ellipsis, not at the border (WS-13 E4 F6)', async () => {
+    // This field alone opts out of the customizable select, which ignores
+    // `text-overflow`: a file name rarely fits a table cell. The price — the
+    // system's own list for this one field — is the owner's call.
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+
+    render(<PlanBlock order={order} canEdit />);
+
+    expect(await screen.findByTestId('plan-row-10-100-file')).toHaveClass('select-ellipsis');
+  });
+
+  it('keeps a row’s actions on one line on a phone — on the order page, not in the dialog (WS-13 E4 F6)', async () => {
+    const { unmount } = render(<PlanBlock order={order} canEdit />);
+    const onPage = (await screen.findByTestId('plan-row-10-100-queue')).parentElement!;
+    expect(onPage).toHaveClass('flex-wrap', 'max-sm:flex-nowrap');
+    unmount();
+
+    render(<PlanBlock order={order} canEdit variant="dialog" />);
+    const inDialog = (await screen.findByTestId('plan-row-10-100-queue')).parentElement!;
+    expect(inDialog).toHaveClass('flex-wrap');
+    expect(inDialog).not.toHaveClass('max-sm:flex-nowrap');
+  });
+
   it('hands the printer leg the file that printer was sliced for', async () => {
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
 

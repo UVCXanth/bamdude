@@ -529,6 +529,60 @@ def test_hitting_the_safety_limit_is_an_incomplete_recipe_not_an_ok_one():
     assert len(offsets) == 12
 
 
+# ── WS-13 E4 F6: a pair may carry an explicit GET fixture, and nothing else ─
+
+
+def _resolve(route: str) -> str:
+    return route.replace("{order:241}", "57")
+
+
+def test_a_pair_without_rewrites_carries_none():
+    assert capture_serve.app_rewrites({"route": "/projects/{order:241}"}, _resolve) == []
+
+
+def test_a_rewrite_path_is_resolved_like_the_route():
+    spec = {"rewrites": [{"path": "/api/v1/projects/{order:241}", "merge": {"attachments": []}}]}
+
+    assert capture_serve.app_rewrites(spec, _resolve) == [{"path": "/api/v1/projects/57", "merge": {"attachments": []}}]
+
+
+def test_a_filter_rewrite_keeps_its_three_fields():
+    rewrite = {
+        "path": "/api/v1/projects/{order:241}/plan",
+        "filter": {"at": "lines.*.rows.*.alternatives", "field": "filename", "match": "^clm01_p1s\\."},
+    }
+
+    assert capture_serve.app_rewrites({"rewrites": [rewrite]}, _resolve) == [
+        {**rewrite, "path": "/api/v1/projects/57/plan"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "rewrite",
+    [
+        {"path": "/projects/{order:241}", "merge": {}},  # the page, not the API
+        {"path": "https://example.com/api/v1/projects/1", "merge": {}},  # not a path
+        {"path": "/api/v1/projects/{order:241}?x=1", "merge": {}},  # a query is not a path
+        {"path": "/api/v1/../auth/me", "merge": {}},  # no climbing out
+        {"path": "/api/v1/projects/{order:241}"},  # does nothing
+        {"path": "/api/v1/projects/{order:241}", "merge": []},  # merge is an object
+        {"path": "/api/v1/projects/{order:241}", "set": {"a": 1}},  # an operation nobody reads
+        {"path": "/api/v1/projects/{order:241}/plan", "filter": {"at": "lines", "field": "filename"}},
+        {"path": "/api/v1/projects/{order:241}/plan", "filter": {"at": "lines", "field": "f", "match": "("}},
+    ],
+)
+def test_a_rewrite_that_is_not_a_plain_get_fixture_is_refused(rewrite):
+    with pytest.raises(ValueError):
+        capture_serve.app_rewrites({"rewrites": [rewrite]}, _resolve)
+
+
+def test_the_mockup_side_never_carries_a_rewrite():
+    # The mockup talks to no API; a fixture there would be a recipe that does nothing.
+    with pytest.raises(ValueError):
+        capture_serve.side_rewrites("mockup", {"rewrites": [{"path": "/api/v1/x", "merge": {}}]}, _resolve)
+    assert capture_serve.side_rewrites("mockup", {"route": "#/orders/241"}, _resolve) == []
+
+
 # ---- WS-13 E2 evidence sidecar (e02_evidence.py) ----
 
 import hashlib  # noqa: E402
@@ -860,3 +914,18 @@ def test_e04_the_job_server_keeps_valid_records_and_always_ends_on_done():
         assert finished.is_set() and done == {}
     finally:
         httpd.shutdown()
+
+
+def test_every_e04_pair_shows_one_order_on_both_sides_with_plain_fixtures():
+    # F6: a pair is comparable only when both sides show the same order; a fixture
+    # it needs is a validated GET rewrite on the app side, never a write.
+    for recipe in e04_evidence.e04_recipes():
+        kind, number = recipe["pair"].split(":")
+        assert kind == "order", recipe["id"]
+        assert recipe["mockup"]["route"] == f"#/orders/{number}", recipe["id"]
+        assert recipe["app"]["route"] == f"/projects/{{order:{number}}}", recipe["id"]
+        assert capture_serve.side_rewrites("mockup", recipe["mockup"], str) == []
+        for rewrite in capture_serve.side_rewrites(
+            "app", recipe["app"], lambda r, n=number: r.replace(f"{{order:{n}}}", "1")
+        ):
+            assert rewrite["path"].startswith("/api/v1/projects/1"), recipe["id"]

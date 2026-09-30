@@ -507,6 +507,7 @@ export function PlanBlock({
                 }
                 onEnqueueRow={(rowPlateId) => enqueue.mutate(itemsFor(line, rowPlateId))}
                 onQueued={invalidate}
+                variant={variant}
               />
             ))}
           </div>

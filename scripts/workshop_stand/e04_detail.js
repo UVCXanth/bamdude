@@ -784,6 +784,120 @@ async (page, selftest = null) => {
     return { recipe: { fixture: ['GET /projects/{order:241}/plan → the first line with an unsatisfiable part × 3'] }, measured: { text, href }, pass: /Немає плити для/.test(text ?? '') && /#files$/.test(href ?? ''), screenshots: [file] };
   });
 
+  // F6 (owner's call): the plan row's file switch ends a long name in an ellipsis. Only
+  // this field leaves the customizable select, which ignores `text-overflow` — so the
+  // computed style is the evidence: plain appearance, ellipsis, our arrow back as the
+  // background, no `::after` arrow; the title carries the whole name; the keyboard
+  // still moves the choice.
+  for (const width of [1280, 1024]) {
+    const id = `plan-file-ellipsis@${width}`;
+    await scenario(id, ['E4-E04', 'F6'], async () => {
+      const { ctx, p, errors } = await open(width);
+      await p.goto(detail(A), { waitUntil: 'networkidle' });
+      await ready(p);
+      const fields = await p.evaluate(() => [...document.querySelectorAll('select[data-testid^="plan-row-"][data-testid$="-file"]')].map((s) => {
+        const cs = getComputedStyle(s);
+        const pen = document.createElement('canvas').getContext('2d');
+        pen.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+        const label = s.options[s.selectedIndex]?.textContent ?? '';
+        const room = s.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+        return {
+          label, room: Math.round(room), text: Math.round(pen.measureText(label).width),
+          long: pen.measureText(label).width > room,
+          textOverflow: cs.textOverflow, appearance: cs.appearance,
+          arrow: cs.backgroundImage.startsWith('url('), after: getComputedStyle(s, '::after').content,
+          title: s.title === label, height: Math.round(s.getBoundingClientRect().height),
+        };
+      }));
+      await p.locator('select[data-testid^="plan-row-"][data-testid$="-file"]').first().evaluate((s) => s.scrollIntoView({ block: 'center' }));
+      const file = await shoot(p, id);
+      // The keyboard: focus the first switch and step to the next file (or back, on the last).
+      const first = p.locator('select[data-testid^="plan-row-"][data-testid$="-file"]').first();
+      const before = await first.inputValue();
+      await first.focus();
+      await p.keyboard.press('ArrowDown');
+      await p.waitForTimeout(300);
+      if ((await first.inputValue()) === before) {
+        await p.keyboard.press('ArrowUp');
+        await p.waitForTimeout(300);
+      }
+      const after = await first.inputValue();
+      const focused = await first.evaluate((s) => document.activeElement === s);
+      const fileKeyboard = await shoot(p, `${id}-keyboard`);
+      await ctx.close();
+      return {
+        recipe: { url: '/projects/{order:241}', viewport: width, actions: ['read every plan file switch', 'focus the first, ArrowDown (ArrowUp on the last)'] },
+        measured: { fields, keyboard: { before, after, focused }, errors },
+        pass: fields.length > 0 && fields.some((f) => f.long) &&
+          fields.every((f) => f.textOverflow === 'ellipsis' && f.appearance === 'none' && f.arrow && f.after === 'none' && f.title) &&
+          after !== before && focused && errors.length === 0,
+        screenshots: [file, fileKeyboard],
+      };
+    });
+  }
+
+  // F6 (owner's call): on a phone the plan row keeps its actions on one line and the
+  // table scrolls sideways in its own frame. Measured per row: the actions share one
+  // line, the actions cell is no taller than the tallest other cell (so it no longer
+  // sets the row's height — stacked, it made every row ~160 px), and every action is
+  // reachable by scrolling that frame alone and takes the click.
+  await scenario('plan-row@390', ['E4-E04', 'F6'], async () => {
+    const { ctx, p, errors } = await open(390);
+    await p.goto(detail(A), { waitUntil: 'networkidle' });
+    await ready(p);
+    await p.locator('[data-testid="plan-block"]').scrollIntoViewIfNeeded();
+    const file = await shoot(p, 'plan-row@390');
+    const rows = await p.evaluate(() => {
+      const extent = (td) => { const range = document.createRange(); range.selectNodeContents(td); return range.getBoundingClientRect().height; };
+      return [...document.querySelectorAll('tr[data-testid^="plan-row-"]')].filter((tr) => /^plan-row-\d+-\d+$/.test(tr.dataset.testid)).map((tr) => {
+        const cells = [...tr.children];
+        const actionsCell = cells[cells.length - 1];
+        const scroller = tr.closest('[data-testid^="plan-line-"][data-testid$="-scroll"]');
+        const ancestors = [];
+        for (let el = tr.parentElement; el; el = el.parentElement) ancestors.push(el);
+        const buttons = [...actionsCell.querySelectorAll(':scope > div > button')];
+        const tops = buttons.map((b) => b.getBoundingClientRect().top);
+        const actions = buttons.map((button) => {
+          button.scrollIntoView({ block: 'center', inline: 'center' });
+          const b = button.getBoundingClientRect();
+          const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+          const stray = ancestors.some((el) => el !== scroller && el.scrollLeft > 0);
+          const result = {
+            label: button.textContent.trim(),
+            inView: b.width > 0 && b.left >= 0 && b.right <= innerWidth + 0.5,
+            hits: !!hit && (hit === button || button.contains(hit)),
+            stray,
+          };
+          if (scroller) scroller.scrollLeft = 0;
+          return result;
+        });
+        return {
+          id: tr.dataset.testid,
+          height: Math.round(tr.getBoundingClientRect().height),
+          actionsHeight: Math.round(extent(actionsCell)),
+          othersHeight: Math.round(Math.max(...cells.slice(0, -1).map(extent))),
+          oneLine: tops.length > 0 && Math.max(...tops) - Math.min(...tops) <= 2,
+          ownFrame: !!scroller && scroller.scrollWidth > scroller.clientWidth,
+          actions,
+        };
+      });
+    });
+    const docOverflow = await p.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    await p.evaluate(() => {
+      const scroller = document.querySelector('[data-testid^="plan-line-"][data-testid$="-scroll"]');
+      if (scroller) scroller.scrollLeft = scroller.scrollWidth;
+    });
+    const fileRight = await shoot(p, 'plan-row-right@390');
+    await ctx.close();
+    return {
+      recipe: { url: '/projects/{order:241}', viewport: 390, actions: ['the plan block', 'each row action scrolled into the plan frame and hit-tested', 'the frame scrolled to its right end'] },
+      measured: { rows, docOverflow, errors },
+      pass: rows.length > 0 && rows.every((row) => row.actions.length >= 2 && row.oneLine && row.actionsHeight <= row.othersHeight + 1 && row.ownFrame &&
+        row.actions.every((a) => a.inView && a.hits && !a.stray)) && docOverflow <= 0 && errors.length === 0,
+      screenshots: [file, fileRight],
+    };
+  });
+
   // ======================= 7. prints (F01–F11, R02, R03, R05) =======================
   stage = 'prepare';
   const archivesA = await read(`/projects/${A}/archives?limit=500&offset=0`);

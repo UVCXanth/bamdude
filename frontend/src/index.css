@@ -198,6 +198,31 @@
       font-weight: 500;
     }
   }
+
+  /* One field's way out of all the above (WS-13 E4 F6): a label that must END
+     in an ellipsis — a file name in a table cell — instead of being cut at the
+     border, mid-letter. `base-select` ignores `text-overflow` (measured
+     2026-09-30), so a field that says `select-ellipsis` goes back to a plain
+     select: the arrow is the background image again, and the open list is the
+     system's own. That list is the price, accepted by the owner for this one
+     field — every other select keeps the drawn one. */
+  .select-chevron.select-ellipsis {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  @supports (appearance: base-select) {
+    .select-chevron.select-ellipsis {
+      appearance: none;
+      display: block;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23808080' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    }
+
+    .select-chevron.select-ellipsis::after {
+      content: none;
+    }
+  }
 }
 
 @theme {
