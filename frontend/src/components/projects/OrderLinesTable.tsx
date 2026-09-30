@@ -377,7 +377,12 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2 }: OrderLines
         </table>
       </WorkshopTableScroll>
 
-      {adding && <AddToOrderDialog orderId={order.id} orderActive={orderActive} onClose={() => setAdding(false)} />}
+      {adding && (
+        <AddToOrderDialog
+          order={{ id: order.id, code: order.code, name: order.name, active: orderActive }}
+          onClose={() => setAdding(false)}
+        />
+      )}
 
       {editing && (
         <LineEditDialog

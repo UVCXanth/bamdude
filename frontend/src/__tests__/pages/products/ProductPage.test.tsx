@@ -333,6 +333,13 @@ describe('ProductPage', () => {
     expect(screen.getByRole('button', { name: 'Add lines (1)' })).toBeDisabled();
   });
 
+  it('offers no «Add to order» for a hidden product — the dialog lists active products only (WS-13 E5 G01)', async () => {
+    vi.spyOn(api, 'getProduct').mockResolvedValue({ ...product, id: 8, is_active: false } as never);
+    mountAt(8);
+    expect((await screen.findAllByText(product.name)).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Add to order' })).not.toBeInTheDocument();
+  });
+
   it('offers no «Add to order» for a one-off product', async () => {
     vi.spyOn(api, 'getProduct').mockResolvedValue({ ...product, id: 9, origin: 'adhoc_job' } as never);
     mountAt(9);

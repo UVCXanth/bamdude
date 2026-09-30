@@ -5,6 +5,10 @@ import { api } from '../../../../api/client';
 import { AddToOrderDialog } from '../../../../components/projects/add-to-order/AddToOrderDialog';
 import { lamp, pageOf, pipe, pipeDetail, suggestion, vase } from './fixtures';
 
+
+/** The order the dialog is opened from (WS-13 E5: the dialog names it). */
+const ORDER = { id: 5, code: 'OR-0005', name: 'Flasks for Acme', active: true };
+
 describe('the products tab of «Add to order»', () => {
   let getPage: ReturnType<typeof vi.spyOn>;
   let suggest: ReturnType<typeof vi.spyOn>;
@@ -27,7 +31,7 @@ describe('the products tab of «Add to order»', () => {
   });
 
   it('lists a server page, searched and filtered on the server', async () => {
-    render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
     expect(await screen.findByTestId('add-product-1')).toBeInTheDocument();
     expect(getPage).toHaveBeenLastCalledWith({ page: 1, per_page: 24, active: true });
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'pip' } });
@@ -39,7 +43,7 @@ describe('the products tab of «Add to order»', () => {
   });
 
   it('a ticked row gets its quantity, configuration, material and colour', async () => {
-    render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
     const row = await screen.findByTestId('add-product-1');
     expect(within(row).getByLabelText('Quantity')).toBeDisabled();
     fireEvent.click(within(row).getByRole('checkbox'));
@@ -50,7 +54,7 @@ describe('the products tab of «Add to order»', () => {
   });
 
   it('the stock is the server proposal — ready units first, then kits, the rest to print', async () => {
-    render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
     const row = await screen.findByTestId('add-product-1');
     fireEvent.click(within(row).getByRole('checkbox'));
     fireEvent.change(within(row).getByLabelText('Quantity'), { target: { value: '6' } });
@@ -63,7 +67,7 @@ describe('the products tab of «Add to order»', () => {
   });
 
   it('a changed number is the operator’s until «pick» hands it back', async () => {
-    render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
     const row = await screen.findByTestId('add-product-1');
     fireEvent.click(within(row).getByRole('checkbox'));
     fireEvent.change(within(row).getByLabelText('Quantity'), { target: { value: '6' } });
@@ -75,7 +79,7 @@ describe('the products tab of «Add to order»', () => {
   });
 
   it('the selection survives another page and another search', async () => {
-    render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
     fireEvent.click(within(await screen.findByTestId('add-product-1')).getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: /next page/i }));
     expect(await screen.findByTestId('add-product-3')).toBeInTheDocument();
@@ -87,14 +91,14 @@ describe('the products tab of «Add to order»', () => {
   });
 
   it('marks a draft, and shows what an unticked row has in stock', async () => {
-    render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
     const lampRow = await screen.findByTestId('add-product-2');
     expect(within(lampRow).getByText('Draft')).toBeInTheDocument();
     expect(within(screen.getByTestId('add-product-1')).getByText('ready 2 · kits 3')).toBeInTheDocument();
   });
 
   it('an order that is not active takes nothing from stock', async () => {
-    render(<AddToOrderDialog orderId={5} orderActive={false} onClose={() => {}} />);
+    render(<AddToOrderDialog order={{ ...ORDER, active: false }} onClose={() => {}} />);
     const row = await screen.findByTestId('add-product-1');
     fireEvent.click(within(row).getByRole('checkbox'));
     expect(within(row).queryByLabelText('Ready units')).not.toBeInTheDocument();
@@ -104,7 +108,7 @@ describe('the products tab of «Add to order»', () => {
   it('says so when the stock could not be asked', async () => {
     // Final review M11: a failed proposal is said, not left as «of —».
     suggest.mockRejectedValue(new Error('boom'));
-    render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
     const row = await screen.findByTestId('add-product-1');
     fireEvent.click(within(row).getByRole('checkbox'));
     expect(await within(row).findByText('Could not read the stock')).toBeInTheDocument();

@@ -21,6 +21,7 @@ import { useListUrlState } from '../../hooks/useListUrlState';
 import { parseListView, parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
 import { useSearchBox } from '../../hooks/useSearchBox';
 import { ProductCardDialog } from '../../components/products/ProductCardDialog';
+import { AddToOrderDialog } from '../../components/projects/add-to-order/AddToOrderDialog';
 import { FromFileDialog } from '../../components/products/FromFileDialog';
 import { ImportProductDialog } from '../../components/products/ImportProductDialog';
 import { ConfirmModal } from '../../components/ConfirmModal';
@@ -81,6 +82,8 @@ export function ProductsPage() {
   const [fromFile, setFromFile] = useState(false);
   const [importing, setImporting] = useState(false);
   const [deleting, setDeleting] = useState<ProductListItem | null>(null);
+  // «To order…» from a card or a row (WS-13 E5 G01): the dialog opens on that product.
+  const [addingToOrder, setAddingToOrder] = useState<ProductListItem | null>(null);
 
   // `active: false` would be a filter of its own ("only what is hidden"), which
   // this toggle does not offer — off means "no filter", so the key is absent.
@@ -292,6 +295,7 @@ export function ProductsPage() {
                 onDuplicate={(p) => duplicate.mutate(p.id)}
                 onToggleActive={(p) => toggleActive.mutate(p)}
                 onDelete={setDeleting}
+                onAddToOrder={setAddingToOrder}
                 footer={pageBar('card')}
               />
             ) : (
@@ -305,6 +309,7 @@ export function ProductsPage() {
                       onDuplicate={(p) => duplicate.mutate(p.id)}
                       onToggleActive={(p) => toggleActive.mutate(p)}
                       onDelete={setDeleting}
+                      onAddToOrder={setAddingToOrder}
                     />
                   ))}
                 </div>
@@ -331,6 +336,13 @@ export function ProductsPage() {
       {fromFile && <FromFileDialog onClose={() => setFromFile(false)} onCreated={openCreated} />}
 
       {importing && <ImportProductDialog onClose={() => setImporting(false)} />}
+
+      {addingToOrder && (
+        <AddToOrderDialog
+          preselectProduct={{ id: addingToOrder.id, code: addingToOrder.code }}
+          onClose={() => setAddingToOrder(null)}
+        />
+      )}
 
       {deleting && (
         <ConfirmModal

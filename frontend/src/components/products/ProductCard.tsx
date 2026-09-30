@@ -12,6 +12,7 @@ interface ProductCardProps {
   onDuplicate: (product: ProductListItem) => void;
   onToggleActive: (product: ProductListItem) => void;
   onDelete: (product: ProductListItem) => void;
+  onAddToOrder?: (product: ProductListItem) => void;
 }
 
 /**
@@ -37,7 +38,7 @@ interface ProductCardProps {
  * fix as `OrderCard`: the menu was a `<button>` inside an `<a>` and every item
  * had to undo the navigation its own click caused.
  */
-export function ProductCard({ product, onEdit, onDuplicate, onToggleActive, onDelete }: ProductCardProps) {
+export function ProductCard({ product, onEdit, onDuplicate, onToggleActive, onDelete, onAddToOrder }: ProductCardProps) {
   const { t } = useTranslation();
 
   return (
@@ -78,6 +79,7 @@ export function ProductCard({ product, onEdit, onDuplicate, onToggleActive, onDe
                 onEdit={onEdit}
                 onDuplicate={onDuplicate}
                 onToggleActive={onToggleActive}
+                onAddToOrder={onAddToOrder}
                 onDelete={onDelete}
               />
             </div>

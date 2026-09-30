@@ -5,6 +5,10 @@ import { api, ApiError } from '../../../../api/client';
 import { AddToOrderDialog } from '../../../../components/projects/add-to-order/AddToOrderDialog';
 import { filesPage, libraryFile, pageOf, plate } from './fixtures';
 
+
+/** The order the dialog is opened from (WS-13 E5: the dialog names it). */
+const ORDER = { id: 5, code: 'OR-0005', name: 'Flasks for Acme', active: true };
+
 describe('the one-off tab of «Add to order»', () => {
   let getFiles: ReturnType<typeof vi.spyOn>;
   let getPlates: ReturnType<typeof vi.spyOn>;
@@ -28,7 +32,7 @@ describe('the one-off tab of «Add to order»', () => {
   });
 
   function open() {
-    render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
     fireEvent.click(screen.getByRole('tab', { name: 'One-off from a file' }));
   }
 
@@ -49,7 +53,8 @@ describe('the one-off tab of «Add to order»', () => {
     expect(screen.getAllByText('1h 30m · 12g')).toHaveLength(2);
     fireEvent.click(second);
     fireEvent.change(screen.getByLabelText('Copies of the plate'), { target: { value: '4' } });
-    expect(screen.getByText('A one-off product will be made from the plate')).toBeInTheDocument();
+    // WS-13 E5 B03: the summary names the plate and the copies.
+    expect(screen.getByText('One-off from plate 2 × 4')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Create and add' }));
     await waitFor(() =>
       expect(add).toHaveBeenCalledWith(5, [{ kind: 'plate', library_file_id: 31, plate_index: 2, copies: 4 }]),

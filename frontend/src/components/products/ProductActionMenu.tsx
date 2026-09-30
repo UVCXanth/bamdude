@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { Copy, Download, Eye, EyeOff, Pencil, Trash2 } from 'lucide-react';
+import { ClipboardPlus, Copy, Download, Eye, EyeOff, Pencil, Trash2 } from 'lucide-react';
 import { api, ApiError } from '../../api/client';
 import type { ProductListItem } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
@@ -11,6 +11,8 @@ export interface ProductActions {
   onDuplicate: (product: ProductListItem) => void;
   onToggleActive: (product: ProductListItem) => void;
   onDelete: (product: ProductListItem) => void;
+  /** «To order…» (WS-13 E5 G01) — only where the page can open the add-to-order dialog. */
+  onAddToOrder?: (product: ProductListItem) => void;
 }
 
 /**
@@ -23,6 +25,7 @@ export function ProductActionMenu({
   onDuplicate,
   onToggleActive,
   onDelete,
+  onAddToOrder,
   testId = 'product-menu',
 }: ProductActions & { product: ProductListItem; testId?: string }) {
   const { t } = useTranslation();
@@ -66,6 +69,18 @@ export function ProductActionMenu({
             >
               <Copy className="w-4 h-4" />
               {t('products.card.menu.duplicate')}
+            </CardActionMenuItem>
+          )}
+          {/* A catalog product that is listed: the dialog offers active products only. */}
+          {onAddToOrder && hasPermission('projects:update') && product.origin === 'catalog' && product.is_active && (
+            <CardActionMenuItem
+              onSelect={() => {
+                onAddToOrder(product);
+                close();
+              }}
+            >
+              <ClipboardPlus className="w-4 h-4" />
+              {t('products.card.menu.toOrder')}
             </CardActionMenuItem>
           )}
           <CardActionMenuItem

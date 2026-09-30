@@ -5,6 +5,10 @@ import { api } from '../../../../api/client';
 import { AddToOrderDialog } from '../../../../components/projects/add-to-order/AddToOrderDialog';
 import { pageOf, part, partsPage } from './fixtures';
 
+
+/** The order the dialog is opened from (WS-13 E5: the dialog names it). */
+const ORDER = { id: 5, code: 'OR-0005', name: 'Flasks for Acme', active: true };
+
 describe('the parts tab of «Add to order»', () => {
   let getParts: ReturnType<typeof vi.spyOn>;
   let add: ReturnType<typeof vi.spyOn>;
@@ -25,7 +29,7 @@ describe('the parts tab of «Add to order»', () => {
   });
 
   function open() {
-    render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
     fireEvent.click(screen.getByRole('tab', { name: 'Parts of a product' }));
   }
 
@@ -35,7 +39,8 @@ describe('the parts tab of «Add to order»', () => {
     expect(getParts).toHaveBeenLastCalledWith({ page: 1, per_page: 24 });
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'elbow' } });
     await waitFor(() => expect(getParts).toHaveBeenLastCalledWith({ page: 1, per_page: 24, q: 'elbow' }));
-    fireEvent.change(await screen.findByLabelText('Printer model'), { target: { value: 'X1C' } });
+    // The products tab stays mounted, hidden (WS-13 E5 B02) — its own filter is not this one.
+    fireEvent.change(await within(screen.getByRole('tabpanel')).findByLabelText('Printer model'), { target: { value: 'X1C' } });
     await waitFor(() => expect(getParts).toHaveBeenLastCalledWith({ page: 1, per_page: 24, q: 'elbow', model: 'X1C' }));
   });
 

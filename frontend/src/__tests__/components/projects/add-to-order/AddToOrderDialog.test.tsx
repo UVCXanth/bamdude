@@ -14,6 +14,9 @@ const orders = {
   totals: { active: 2, completed: 0, cancelled: 0, all: 2, stages: {} },
 };
 
+/** The order the dialog is opened from (WS-13 E5: it names it in the subtitle). */
+const ORDER = { id: 5, code: 'OR-0005', name: 'Flasks for Acme', active: true };
+
 describe('AddToOrderDialog', () => {
   let add: ReturnType<typeof vi.spyOn>;
 
@@ -45,7 +48,7 @@ describe('AddToOrderDialog', () => {
   }
 
   it('three tabs switch without losing the picks', async () => {
-    render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
     await tick(1);
     fireEvent.click(screen.getByRole('tab', { name: 'Parts of a product' }));
     fireEvent.click(screen.getByRole('tab', { name: 'One-off from a file' }));
@@ -55,7 +58,7 @@ describe('AddToOrderDialog', () => {
 
   it('says what is picked and adds every line in one request', async () => {
     const onClose = vi.fn();
-    render(<AddToOrderDialog orderId={5} onClose={onClose} />);
+    render(<AddToOrderDialog order={ORDER} onClose={onClose} />);
     const pipeRow = await tick(1);
     fireEvent.change(within(pipeRow).getByLabelText('Quantity'), { target: { value: '6' } });
     fireEvent.change(await within(pipeRow).findByLabelText('Tail'), { target: { value: '101' } });
@@ -87,7 +90,7 @@ describe('AddToOrderDialog', () => {
       order: { id: 5, lines: [{ id: 40, product_name: 'Pipe' }] } as never,
       results: [{ line_id: 40, asked_finished: 2, got_finished: 1, asked_kits: 0, got_kits: 0 }],
     });
-    render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
     const row = await tick(1);
     fireEvent.change(within(row).getByLabelText('Quantity'), { target: { value: '6' } });
     await waitFor(() => expect(within(row).getByLabelText('Ready units')).toHaveValue(2));
@@ -98,7 +101,7 @@ describe('AddToOrderDialog', () => {
   it('a refusal is the server sentence, and the dialog stays', async () => {
     add.mockRejectedValue(new ApiError('Product not found', 404));
     const onClose = vi.fn();
-    render(<AddToOrderDialog orderId={5} onClose={onClose} />);
+    render(<AddToOrderDialog order={ORDER} onClose={onClose} />);
     await tick(1);
     fireEvent.click(screen.getByRole('button', { name: 'Add lines (1)' }));
     expect(await screen.findByText('Product not found')).toBeInTheDocument();
@@ -125,16 +128,16 @@ describe('AddToOrderDialog', () => {
     vi.spyOn(api, 'getProductParts').mockResolvedValue(partsPage([part({})]));
     vi.spyOn(api, 'getLibraryFilesPaged').mockResolvedValue(filesPage([libraryFile(31, 'flask.gcode.3mf')]) as never);
     vi.spyOn(api, 'getLibraryFilePlates').mockResolvedValue({ file_id: 31, filename: 'flask.gcode.3mf', plates: [plate(1)], is_multi_plate: false });
-    render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
     await tick(1);
     fireEvent.click(screen.getByRole('tab', { name: 'Parts of a product' }));
     fireEvent.click(within(await screen.findByTestId('add-part-11')).getByRole('checkbox'));
     fireEvent.click(screen.getByRole('tab', { name: 'One-off from a file' }));
     fireEvent.click(await screen.findByRole('button', { name: 'flask.gcode.3mf' }));
     fireEvent.click(await screen.findByRole('radio', { name: /Plate 1/ }));
-    expect(screen.getByText('Selected: 1 product · 1 pcs')).toBeInTheDocument();
-    expect(screen.getByText('Selected parts: 1 · 1 pcs')).toBeInTheDocument();
-    expect(screen.getByText('A one-off product will be made from the plate')).toBeInTheDocument();
+    expect(screen.getByText(/Selected: 1 product · 1 pcs · Selected parts: 1 · 1 pcs/)).toBeInTheDocument();
+    // WS-13 E5 B03: the summary is one line over the whole selection.
+    expect(screen.getByText(/One-off from plate 1 × 1/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Add lines (3)' }));
     await waitFor(() =>
       expect(add).toHaveBeenCalledWith(5, [
@@ -152,7 +155,7 @@ describe('AddToOrderDialog', () => {
       order: { id: 5, lines: [{ id: 40, product_name: 'Pipe' }] } as never,
       results: [{ line_id: 40, asked_finished: 0, got_finished: 0, asked_kits: 5, got_kits: 5 }],
     });
-    render(<AddToOrderDialog orderId={5} onClose={() => {}} />);
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
     const row = await tick(1);
     fireEvent.change(within(row).getByLabelText('Quantity'), { target: { value: '6' } });
     await waitFor(() => expect(within(row).getByLabelText('Ready units')).toHaveValue(2));

@@ -113,7 +113,17 @@ export const partsPage = (items: ProductPartRow[], total = items.length) => ({
 });
 
 export const libraryFile = (id: number, filename: string) =>
-  ({ id, filename, folder_id: null, file_type: 'gcode', print_name: null }) as unknown as LibraryFileListItem;
+  ({
+    id,
+    filename,
+    folder_id: null,
+    file_type: 'gcode',
+    // A sliced .gcode.3mf: the server's tags say so, and its type can be planned (WS-13 E5 H02).
+    file_tags: ['gcode', '3mf'],
+    plan_eligible: true,
+    sliced_for_model: null,
+    print_name: null,
+  }) as unknown as LibraryFileListItem;
 
 export const filesPage = (items: LibraryFileListItem[]) => ({
   items,

@@ -186,7 +186,8 @@ export function ProductPage() {
         onToggleActive={(next) => toggleActive.mutate(next)}
         // A one-off product is added with its plate, from the order (spec
         // workshop-add-to-order, rule 25) — the button is the catalog's.
-        onAddToOrder={product.origin === 'catalog' && canEdit ? () => setAdding(true) : undefined}
+        // A listed catalog product only: the dialog offers active products (WS-13 E5 G01).
+        onAddToOrder={product.origin === 'catalog' && product.is_active && canEdit ? () => setAdding(true) : undefined}
       />
 
       {product.origin !== 'catalog' && (
