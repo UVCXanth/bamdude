@@ -57,7 +57,15 @@ export function DispatchNotesSection({
       {!inTab && <h2 className="text-lg font-medium text-white">{t('stock.notes.sectionTitle')}</h2>}
       {inTab && isError && <RefreshFailedNote onRetry={() => void refetch()} />}
       {items.length === 0 ? (
-        <p className="text-bambu-gray text-sm">{t('stock.notes.empty')}</p>
+        inTab ? (
+          // WS-13 E4 G02: the order's tab says where issues come from.
+          <div className="py-8 text-center">
+            <p className="text-sm font-medium text-white">{t('stock.notes.orderEmptyTitle')}</p>
+            <p className="mt-1 text-sm text-bambu-gray">{t('stock.notes.orderEmptyText')}</p>
+          </div>
+        ) : (
+          <p className="text-bambu-gray text-sm">{t('stock.notes.empty')}</p>
+        )
       ) : (
         <DispatchNotesTable
           items={items}

@@ -197,7 +197,7 @@ describe('OrderPage', () => {
     );
     expect(await screen.findByText('Flask')).toBeInTheDocument();
     await waitFor(() => expect(api.getDispatchNotes).toHaveBeenCalledWith(expect.objectContaining({ project_id: 1 })));
-    expect(await screen.findByText('No issues yet.')).toBeInTheDocument();
+    expect(await screen.findByText('No issues yet')).toBeInTheDocument();
     unmount();
 
     vi.spyOn(api, 'getDispatchNotes').mockResolvedValue({

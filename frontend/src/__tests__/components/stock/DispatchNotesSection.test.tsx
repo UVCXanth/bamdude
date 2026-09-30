@@ -53,7 +53,7 @@ describe('DispatchNotesSection', () => {
         <DispatchNotesSection projectId={5} canEdit={false} inTab />
       </QueryClientProvider>,
     );
-    expect(await screen.findByText('No issues yet.')).toBeInTheDocument();
+    expect(await screen.findByText('No issues yet')).toBeInTheDocument();
     get.mockRejectedValue(new Error('boom'));
     await act(() => client.refetchQueries());
     expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
@@ -64,10 +64,10 @@ describe('DispatchNotesSection', () => {
     const get = vi.spyOn(api, 'getDispatchNotes').mockRejectedValue(new Error('boom'));
     render(<DispatchNotesSection projectId={5} canEdit={false} inTab />);
     const retry = await screen.findByRole('button', { name: 'Retry' });
-    expect(screen.queryByText('No issues yet.')).toBeNull();
+    expect(screen.queryByText('No issues yet')).toBeNull();
     get.mockResolvedValue(page([]));
     fireEvent.click(retry);
-    expect(await screen.findByText('No issues yet.')).toBeInTheDocument();
+    expect(await screen.findByText('No issues yet')).toBeInTheDocument();
   });
 
   it('in the order’s tab: no heading of its own, and the wait and the empty list in words', async () => {
@@ -76,7 +76,11 @@ describe('DispatchNotesSection', () => {
     render(<DispatchNotesSection projectId={5} canEdit={false} inTab />);
     expect(screen.getByText('Loading...')).toBeInTheDocument();
     answer(page([]) as never);
-    expect(await screen.findByText('No issues yet.')).toBeInTheDocument();
+    expect(await screen.findByText('No issues yet')).toBeInTheDocument();
+    // WS-13 E4 G02: the empty tab says where issues come from.
+    expect(
+      screen.getByText('Goods are issued through «Stock & issue»: each batch gets its own dispatch note.'),
+    ).toBeInTheDocument();
     expect(screen.queryByRole('heading')).toBeNull();
   });
 

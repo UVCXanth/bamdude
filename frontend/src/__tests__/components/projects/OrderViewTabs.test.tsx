@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { Routes, Route } from 'react-router';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
@@ -120,14 +120,20 @@ describe('OrderView tabs', () => {
     mockOrderDetailApi(makeOrder());
     renderPage('/projects/1?section=notes');
 
+    // WS-13 E4 G03: the editor is open from the start; what was typed survives the look.
     const notes = await screen.findByRole('tabpanel', { name: /^Notes/ });
-    fireEvent.click(within(notes).getByRole('button', { name: 'Edit' }));
-    expect(within(notes).getByRole('button', { name: /Save/ })).toBeInTheDocument();
+    const editor = await waitFor(() => notes.querySelector('.ProseMirror') as HTMLElement);
+    await act(async () => {
+      editor.innerHTML = '<p>Typed here</p>';
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    await waitFor(() => expect(within(notes).getByRole('button', { name: 'Save notes' })).toBeEnabled());
 
     fireEvent.click(tab(/^Prints/));
     fireEvent.click(tab(/^Notes/));
     const again = screen.getByRole('tabpanel', { name: /^Notes/ });
-    expect(within(again).getByRole('button', { name: /Save/ })).toBeInTheDocument();
+    expect(again.querySelector('.ProseMirror')).toHaveTextContent('Typed here');
+    expect(within(again).getByRole('button', { name: 'Save notes' })).toBeEnabled();
   });
 
   it('names each section once — by its tab, not by a second heading inside it', async () => {
@@ -143,7 +149,7 @@ describe('OrderView tabs', () => {
     renderPage('/projects/1?section=procurement');
 
     const purchases = await screen.findByRole('tabpanel', { name: /^Purchased parts/ });
-    expect(purchases).toHaveTextContent('No purchased parts in this order.');
+    expect(purchases).toHaveTextContent('No purchased parts');
 
     fireEvent.click(tab(/^Issues/));
     const issues = screen.getByRole('tabpanel', { name: /^Issues/ });

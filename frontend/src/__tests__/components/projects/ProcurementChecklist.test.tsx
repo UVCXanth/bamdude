@@ -84,6 +84,74 @@ describe('ProcurementChecklist', () => {
     await waitFor(() => expect(input().value).toBe('10'));
   });
 
+  const row = (over: Record<string, unknown> = {}) => ({
+    part_id: 4,
+    name: 'M3 screw',
+    need: 40,
+    acquired: 10,
+    remaining: 30,
+    unit_price: 0.5,
+    sourcing_url: null,
+    planned_cost: 20,
+    acquired_cost: 5,
+    ...over,
+  });
+  const withRows = (...rows: ReturnType<typeof row>[]) => ({ id: 1, procurement: rows }) as unknown as Order;
+
+  it('heads five columns: part, need, acquired, remaining and price (E4 G01)', () => {
+    render(<ProcurementChecklist order={withRows(row())} canEdit />);
+    expect(screen.getAllByRole('columnheader').map((th) => th.textContent)).toEqual([
+      'Part',
+      'Need',
+      'Acquired',
+      'Remaining',
+      'Price',
+    ]);
+  });
+
+  it('links a part to its supplier, and prices it — or says the price is unknown', () => {
+    render(
+      <ProcurementChecklist
+        order={withRows(
+          row({ sourcing_url: 'https://example.com/m3' }),
+          row({ part_id: 5, name: 'Magnet', planned_cost: null, unit_price: null }),
+        )}
+        canEdit
+      />,
+    );
+    const link = screen.getByRole('link', { name: 'Open the supplier page for «M3 screw»' });
+    expect(link).toHaveAttribute('href', 'https://example.com/m3');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(screen.getByTestId('procurement-4-price')).toHaveTextContent(/20/);
+    const unknown = screen.getByTestId('procurement-5-price');
+    expect(unknown).toHaveTextContent('—');
+    expect(unknown).toHaveTextContent('price unknown');
+    expect(screen.queryAllByRole('link')).toHaveLength(1);
+  });
+
+  it('says there is nothing to buy in words, instead of an empty table', () => {
+    render(<ProcurementChecklist order={withRows()} canEdit />);
+    expect(screen.getByText('No purchased parts')).toBeInTheDocument();
+    expect(screen.getByText('This order’s products are made of printed parts only.')).toBeInTheDocument();
+  });
+
+  it('commits once for Enter, even when a blur follows while the first write is in flight (R07)', async () => {
+    const patch = vi.spyOn(api, 'updateOrderProcurement').mockReturnValue(new Promise(() => {}) as never);
+    render(<ProcurementChecklist order={withRows(row())} canEdit />);
+    const input = screen.getByTestId('procurement-4-acquired') as HTMLInputElement;
+    input.focus();
+    fireEvent.change(input, { target: { value: '25' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+    expect(document.activeElement).not.toBe(input);
+    // Tab / a click elsewhere blurs again with the same number while the PATCH flies.
+    input.focus();
+    fireEvent.blur(input);
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(patch).toHaveBeenCalledWith(1, 4, 25);
+  });
+
   it('leaves the numbers read-only without the permission', () => {
     render(
       <ProcurementChecklist

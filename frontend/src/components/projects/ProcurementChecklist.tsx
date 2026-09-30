@@ -1,9 +1,11 @@
-import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { ExternalLink } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Order, ProcurementRow } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+import { formatMoney } from '../../utils/currency';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 interface ProcurementChecklistProps {
@@ -49,6 +51,16 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
   // toast beside it says what happened.
   const [rejections, setRejections] = useState<Record<number, number>>({});
 
+  // ⚠️ What was last SENT per row, and against which server value (R07). Enter blurs
+  // the box and the blur commits; a second blur with the same number — Tab, a click
+  // elsewhere — while the first PATCH flies must send nothing. The record is good only
+  // while the server still says what it said when the number was sent: once the
+  // refetch lands (with it or with anything else), the server's number is the one to
+  // compare with again.
+  const sent = useRef<Record<number, { value: number; base: number }>>({});
+
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+
   const save = useMutation({
     mutationFn: ({ partId, acquired }: { partId: number; acquired: number }) =>
       api.updateOrderProcurement(order.id, partId, acquired),
@@ -57,6 +69,7 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
     },
     onError: (e: Error, { partId }) => {
       showToast(e.message, 'error');
+      delete sent.current[partId];
       setRejections((prev) => ({ ...prev, [partId]: (prev[partId] ?? 0) + 1 }));
     },
   });
@@ -65,15 +78,24 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
   // column headers is worse than no section at all.
   // The «Purchased parts» tab is always there, so it never stands blank (WS-13 E3 F05).
   if (order.procurement.length === 0) {
-    return <p className="text-sm text-bambu-gray">{t('orders.procurement.empty')}</p>;
+    return (
+      <div className="py-8 text-center">
+        <p className="text-sm font-medium text-white">{t('orders.procurement.emptyTitle')}</p>
+        <p className="mt-1 text-sm text-bambu-gray">{t('orders.procurement.emptyText')}</p>
+      </div>
+    );
   }
 
   const commit = (row: ProcurementRow, field: HTMLInputElement) => {
     const raw = field.value.trim();
     const next = Number(raw);
+    const last = sent.current[row.part_id];
+    const current = last && last.base === row.acquired ? last.value : row.acquired;
     // A cleared or nonsense field is not "zero acquired" — it is an edit the
     // operator abandoned, so it patches nothing.
-    if (raw !== '' && Number.isInteger(next) && next >= 0 && next !== row.acquired) {
+    if (raw !== '' && Number.isInteger(next) && next >= 0) {
+      if (next === current) return;
+      sent.current[row.part_id] = { value: next, base: row.acquired };
       save.mutate({ partId: row.part_id, acquired: next });
       return;
     }
@@ -96,12 +118,27 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
               <th className="px-3 py-2 font-normal text-right">{t('orders.procurement.need')}</th>
               <th className="px-3 py-2 font-normal text-right">{t('orders.procurement.acquired')}</th>
               <th className="px-3 py-2 font-normal text-right">{t('orders.procurement.remaining')}</th>
+              <th className="px-3 py-2 font-normal text-right">{t('orders.procurement.price')}</th>
             </tr>
           </thead>
           <tbody>
             {order.procurement.map((row) => (
               <tr key={row.part_id} className="border-b border-bambu-dark-tertiary last:border-0">
-                <td className="px-3 py-2 text-white">{row.name}</td>
+                <td className="px-3 py-2 text-white">
+                  {row.name}
+                  {row.sourcing_url && (
+                    <a
+                      href={row.sourcing_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label={t('orders.procurement.openSupplier', { name: row.name })}
+                      title={t('orders.procurement.openSupplier', { name: row.name })}
+                      className="ml-1.5 inline-flex align-[-2px] text-bambu-gray hover:text-white"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" aria-hidden />
+                    </a>
+                  )}
+                </td>
                 <td className="px-3 py-2 text-right text-bambu-gray tabular-nums">{row.need}</td>
                 <td className="px-3 py-2 text-right">
                   <input
@@ -112,15 +149,29 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
                     defaultValue={row.acquired}
                     disabled={!canEdit}
                     onBlur={(e) => commit(row, e.currentTarget)}
+                    // Enter only lets go of the box; the blur is the one commit (R07).
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') e.currentTarget.blur();
+                    }}
                     aria-label={`${row.name} — ${t('orders.procurement.acquired')}`}
                     className="w-20 px-2 py-1 text-right tabular-nums bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:border-bambu-green focus:outline-none disabled:opacity-60"
                   />
                 </td>
                 <td
                   data-testid={`procurement-${row.part_id}-remaining`}
-                  className={`px-3 py-2 text-right tabular-nums ${row.remaining > 0 ? 'text-amber-400' : 'text-bambu-gray'}`}
+                  className={`px-3 py-2 text-right tabular-nums ${row.remaining > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-bambu-green'}`}
                 >
                   {row.remaining}
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-bambu-gray" data-testid={`procurement-${row.part_id}-price`}>
+                  {row.planned_cost != null ? (
+                    formatMoney(row.planned_cost, settings?.currency)
+                  ) : (
+                    <>
+                      <span aria-hidden>—</span>
+                      <span className="sr-only">{t('orders.procurement.priceUnknown')}</span>
+                    </>
+                  )}
                 </td>
               </tr>
             ))}
