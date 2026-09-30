@@ -91,6 +91,20 @@ function Refetcher({ id }: { id: number }) {
   );
 }
 
+/** A refetch of the printer list — a printer archived or parked meanwhile. */
+function PrintersRefetcher() {
+  const queryClient = useQueryClient();
+  return (
+    <button
+      type="button"
+      data-testid="force-printers-refetch"
+      onClick={() => queryClient.invalidateQueries({ queryKey: ['printers'] })}
+    >
+      refetch printers
+    </button>
+  );
+}
+
 const order = {
   id: 1,
   name: 'Ten flasks',
@@ -304,6 +318,24 @@ const EMPTY_FORECAST: OrderForecastDetail = {
   unknown_prints: 0, unroutable_prints: 0, eta_complete: true, ahead_count: 0, assumptions: [], lines: [],
 };
 
+/** The farm's answer for line 10: row 100's print on the P1S file. */
+const proposing: OrderForecastDetail = {
+  ...EMPTY_FORECAST,
+  lines: [
+    {
+      line_id: 10,
+      now_eta: '2026-09-07T10:00:00Z',
+      now_seconds: 7200,
+      after_eta: null,
+      after_seconds: null,
+      unknown_prints: 0,
+      unroutable_prints: 0,
+      eta_complete: true,
+      rows: [{ plate_id: 100, proposed_split: { 100: 0, 400: 1 } }],
+    },
+  ],
+};
+
 /** No filament need reported yet — the shape every test gets unless it asks
  *  for a specific need-vs-shelf response. */
 const EMPTY_NEEDS: OrderNeeds = { project_id: order.id, rows: [], unknown_prints: 0, stock_unavailable: false, assumptions: ['slicer_estimate'] };
@@ -339,6 +371,99 @@ describe('PlanBlock', () => {
     // legitimately reach zero — the detector is the only thing that sees one
     // left behind where a conditional used to be.
     expect(strayZeroTextNodes(screen.getByTestId('plan-block'))).toHaveLength(0);
+  });
+
+  it('opens with what the plan is, in one sentence', async () => {
+    render(<PlanBlock order={order} canEdit />);
+    expect(await screen.findByTestId('plan-intro')).toHaveTextContent(
+      'What to print next to close the lines. What is printed, printing and queued is already subtracted.',
+    );
+  });
+
+  it('heads a line with its configuration, what is left, the material and the machine time', async () => {
+    const configured = {
+      ...order,
+      lines: [
+        {
+          ...order.lines[0],
+          mode: 'product',
+          configuration: {
+            choices: [{ group_id: 1, group_name: 'Mount', option_id: 4, option_name: 'DIN', is_default: false }],
+            changed_parts: [],
+          },
+        },
+      ],
+    } as unknown as Order;
+    render(<PlanBlock order={configured} canEdit />);
+
+    const head = await screen.findByTestId('plan-line-10-head');
+    expect(head).toHaveTextContent('Flask');
+    expect(head).toHaveTextContent('Mount: DIN');
+    expect(head).toHaveTextContent('Outstanding: Body × 12');
+    expect(head).toHaveTextContent('PETG');
+    // 1 h + 30 min of the two rows at their planned counts.
+    expect(screen.getByTestId('plan-line-10-machine')).toHaveTextContent('≈ 1h 30m of machine time');
+    fireEvent.click(screen.getByTestId('plan-row-10-100-inc'));
+    expect(screen.getByTestId('plan-line-10-machine')).toHaveTextContent('≈ 2h 30m of machine time');
+  });
+
+  it('marks a count that left the plan with what the plan said, and a hand-added row with nothing', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithSpare);
+    vi.spyOn(api, 'getProductPlates').mockResolvedValue([...plates, spare]);
+    render(<PlanBlock order={order} canEdit />);
+
+    expect(await screen.findByTestId('plan-row-10-100-count')).toHaveValue(1);
+    expect(screen.queryByTestId('plan-row-10-100-planned')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('plan-row-10-100-inc'));
+    expect(screen.getByTestId('plan-row-10-100-planned')).toHaveTextContent('plan: 1');
+    fireEvent.click(screen.getByTestId('plan-row-10-100-dec'));
+    expect(screen.queryByTestId('plan-row-10-100-planned')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('plan-line-10-add'), { target: { value: '300' } });
+    fireEvent.click(screen.getByTestId('plan-row-10-300-inc'));
+    expect(screen.queryByTestId('plan-row-10-300-planned')).not.toBeInTheDocument();
+  });
+
+  it('names the plate and the model under the file', async () => {
+    render(<PlanBlock order={order} canEdit />);
+    const plate = await screen.findByTestId('plan-row-10-100-plate');
+    expect(plate).toHaveTextContent('plate 1');
+    expect(plate).toHaveTextContent('X1C');
+    // No model, no chip — and never a «—» in its place.
+    expect(screen.getByTestId('plan-row-10-200-plate')).toHaveTextContent(/^Whole file$/);
+  });
+
+  it('adds the plan up in one line under the lines', async () => {
+    render(<PlanBlock order={order} canEdit />);
+    const total = await screen.findByTestId('plan-total');
+    await waitFor(() => expect(total).toHaveTextContent('Total: 2 prints · 1h 30m · 120.0 g · ₴2.40 of filament'));
+    expect(within(total).getByTestId('plan-enqueue-all')).toBeInTheDocument();
+  });
+
+  it('leaves an unknown filament cost out of the total line', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue({
+      ...plan,
+      lines: [{ ...plan.lines[0], rows: plan.lines[0].rows.map((row) => ({ ...row, cost: null })) }],
+    });
+    render(<PlanBlock order={order} canEdit />);
+    const total = await screen.findByTestId('plan-total');
+    expect(total).toHaveTextContent('Total: 2 prints · 1h 30m · 120.0 g');
+    expect(total).not.toHaveTextContent('of filament');
+  });
+
+  it('says what is not sliced inside the no-plate block, beside the link to the product', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue({ ...plan, lines: [{ ...plan.lines[0], not_sliced: [300] }] });
+    vi.spyOn(api, 'getProductPlates').mockResolvedValue([...plates, { ...spare, filename: 'raw.stl', sliced: false }]);
+    render(<PlanBlock order={order} canEdit />);
+
+    const block = await screen.findByTestId('plan-unsatisfiable-10-2');
+    await waitFor(() => expect(block).toHaveTextContent('not sliced: raw.stl'));
+    expect(block).toHaveTextContent('No plate for «Cap» × 3 in PETG.');
+    expect(within(block).getByRole('link', { name: 'Link a file in the product' })).toHaveAttribute(
+      'href',
+      '/products/7#files',
+    );
+    expect(block.closest('table')).toBeNull();
   });
 
   it('says when the engine stopped early, and says nothing when it did not', async () => {
@@ -519,7 +644,9 @@ describe('PlanBlock', () => {
   it('plans nothing for a closed order', async () => {
     render(<PlanBlock order={{ ...order, status: 'completed' }} canEdit />);
 
-    expect(await screen.findByTestId('plan-closed')).toBeInTheDocument();
+    const closed = await screen.findByTestId('plan-closed');
+    expect(closed).toHaveTextContent('The order is closed');
+    expect(closed).toHaveTextContent('No plan is built for it.');
     expect(screen.queryByTestId('plan-row-10-100')).not.toBeInTheDocument();
     expect(api.getOrderPlan).not.toHaveBeenCalled();
   });
@@ -532,7 +659,9 @@ describe('PlanBlock', () => {
 
     render(<PlanBlock order={order} canEdit />);
 
-    expect(await screen.findByTestId('plan-empty')).toBeInTheDocument();
+    expect(await screen.findByTestId('plan-empty')).toHaveTextContent(
+      'Everything is printed or already queued — nothing to print.',
+    );
     expect(screen.queryByTestId('plan-enqueue-all')).not.toBeInTheDocument();
   });
 
@@ -655,6 +784,19 @@ describe('PlanBlock', () => {
   const pickOption = (pick: HTMLElement, value: string) =>
     pick.querySelector(`option[value="${value}"]`) as HTMLOptionElement;
 
+  /** «To printer…» on a row with alternatives opens F09 (WS-13 E4 E09): its printer
+   *  select is where the row's old inline picker was. */
+  const openPrinterDialog = async (row: string) => {
+    fireEvent.click(await screen.findByTestId(`plan-row-${row}-printer`));
+    const dialog = await screen.findByRole('dialog', { name: 'To printer' });
+    return within(dialog).findByLabelText('Printer');
+  };
+  /** Choose a printer and press «Next» — the step the inline picker's change used to be. */
+  const choosePrinter = (pick: HTMLElement, value: string) => {
+    fireEvent.change(pick, { target: { value } });
+    fireEvent.click(screen.getByRole('button', { name: 'Next — print dialog' }));
+  };
+
   it('labels a hidden server row and offers no printer for it', async () => {
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue({
       ...plan,
@@ -695,17 +837,16 @@ describe('PlanBlock', () => {
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planHiding(true, false));
     render(<PlanBlock order={order} canEdit />);
 
-    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
-    const pick = await screen.findByTestId('plan-row-10-100-printer-pick');
+    const pick = await openPrinterDialog('10-100');
     // The X1C would get the row's own file — hidden; the P1S gets the alternative.
     expect(pickOption(pick, '1')).toBeDisabled();
     expect(pickOption(pick, '1')).toHaveTextContent('File you cannot open');
     expect(pickOption(pick, '2')).not.toBeDisabled();
 
-    fireEvent.change(pick, { target: { value: '1' } });
+    choosePrinter(pick, '1');
     expect(printModal.props).toBeNull();
 
-    fireEvent.change(pick, { target: { value: '2' } });
+    choosePrinter(pick, '2');
     expect(printModal.props).toMatchObject({ libraryFileId: 8, preselectedPlateId: 2, initialSelectedPrinterIds: [2] });
   });
 
@@ -713,14 +854,13 @@ describe('PlanBlock', () => {
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planHiding(false, true));
     render(<PlanBlock order={order} canEdit />);
 
-    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
-    const pick = await screen.findByTestId('plan-row-10-100-printer-pick');
+    const pick = await openPrinterDialog('10-100');
     expect(pickOption(pick, '2')).toBeDisabled();
 
-    fireEvent.change(pick, { target: { value: '2' } });
+    choosePrinter(pick, '2');
     expect(printModal.props).toBeNull();
 
-    fireEvent.change(pick, { target: { value: '1' } });
+    choosePrinter(pick, '1');
     expect(printModal.props).toMatchObject({ libraryFileId: 5, preselectedPlateId: 1, initialSelectedPrinterIds: [1] });
   });
 
@@ -730,16 +870,16 @@ describe('PlanBlock', () => {
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planHiding(true, false, 'X1C'));
     render(<PlanBlock order={order} canEdit />);
 
-    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
-    const pick = await screen.findByTestId('plan-row-10-100-printer-pick');
+    const pick = await openPrinterDialog('10-100');
     expect(pickOption(pick, '1')).toBeDisabled();
-    fireEvent.change(pick, { target: { value: '1' } });
+    choosePrinter(pick, '1');
     expect(printModal.props).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
 
     fireEvent.change(screen.getByTestId('plan-row-10-100-file'), { target: { value: '400' } });
-    const again = screen.getByTestId('plan-row-10-100-printer-pick');
+    const again = await openPrinterDialog('10-100');
     expect(pickOption(again, '1')).not.toBeDisabled();
-    fireEvent.change(again, { target: { value: '1' } });
+    choosePrinter(again, '1');
     expect(printModal.props).toMatchObject({ libraryFileId: 8, initialSelectedPrinterIds: [1] });
   });
 
@@ -942,21 +1082,21 @@ describe('PlanBlock', () => {
     expect(screen.getByTestId('plan-row-10-100-queue')).toHaveAttribute('title', 'Nothing to send at 0');
   });
 
-  it('heads the plate table with named columns', async () => {
+  it('heads the plate table with five named columns, the actions one for a screen reader', async () => {
     render(<PlanBlock order={order} canEdit />);
 
     const headers = within(await screen.findByTestId('plan-line-10')).getAllByRole('columnheader');
-    expect(headers.map((h) => h.textContent)).toEqual([
-      'Plate',
-      'Covers',
-      'Prints',
-      'Print time',
-      'Filament, g',
-      // Renamed by 3759b857 when cost was split into its components: this column
-      // is filament only, and electricity is reported separately.
-      'Filament cost',
-      'Actions',
-    ]);
+    expect(headers.map((h) => h.textContent)).toEqual(['Plate', 'Covers', 'Prints', 'Time / filament', 'Actions']);
+    expect(within(headers[4]).getByText('Actions')).toHaveClass('sr-only');
+  });
+
+  it('puts a row’s filament cost under its time and grams, where the cost column was', async () => {
+    render(<PlanBlock order={order} canEdit />);
+
+    const figures = await screen.findByTestId('plan-row-10-100-figures');
+    await waitFor(() => expect(figures).toHaveTextContent('₴2.00'));
+    expect(figures).toHaveTextContent('1h');
+    expect(figures).toHaveTextContent('100.0 g');
   });
 
   it('hands the printer leg the file, the plate, the order and the line', async () => {
@@ -1184,8 +1324,7 @@ describe('PlanBlock', () => {
 
     render(<PlanBlock order={order} canEdit />);
 
-    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
-    fireEvent.change(await screen.findByTestId('plan-row-10-100-printer-pick'), { target: { value: '2' } });
+    choosePrinter(await openPrinterDialog('10-100'), '2');
 
     expect(printModal.props).toMatchObject({
       // The P1S file, not the row's own — and the printer the operator named
@@ -1203,8 +1342,7 @@ describe('PlanBlock', () => {
     printModal.props = null;
     render(<PlanBlock order={order} canEdit />);
 
-    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
-    fireEvent.change(await screen.findByTestId('plan-row-10-100-printer-pick'), { target: { value: '1' } });
+    choosePrinter(await openPrinterDialog('10-100'), '1');
 
     expect(printModal.props).toMatchObject({ libraryFileId: 5, preselectedPlateId: 1, initialSelectedPrinterIds: [1] });
   });
@@ -1223,8 +1361,7 @@ describe('PlanBlock', () => {
 
     render(<PlanBlock order={order} canEdit />);
 
-    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
-    fireEvent.change(await screen.findByTestId('plan-row-10-100-printer-pick'), { target: { value: '3' } });
+    choosePrinter(await openPrinterDialog('10-100'), '3');
 
     // The P1S alternative, not the row's own X1C file.
     expect(printModal.props).toMatchObject({ libraryFileId: 8, preselectedPlateId: 2 });
@@ -1232,9 +1369,8 @@ describe('PlanBlock', () => {
 
   it('does not offer a parked printer', async () => {
     // ⚠️ Maintenance Mode is an axis of its own: the card stays on the printers
-    // page and the machine takes no work. Offering it here mounts the dialog on
-    // a printer whose queue nothing will dispatch from, and says so nowhere.
-    // (Archived printers never arrive — `getPrinters` leaves them out.)
+    // page and the machine takes no work. (Archived printers never arrive —
+    // `getPrinters` leaves them out.)
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
     vi.spyOn(api, 'getPrinters').mockResolvedValue([
       { id: 1, name: 'Carbon', model: 'X1C', is_active: true },
@@ -1243,18 +1379,14 @@ describe('PlanBlock', () => {
 
     render(<PlanBlock order={order} canEdit />);
 
-    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
-    const pick = await screen.findByTestId('plan-row-10-100-printer-pick');
-    const offered = [...pick.querySelectorAll('option')].map((o) => o.textContent);
-
-    expect(offered).toEqual(['To printer…', 'Carbon (X1C)']);
+    const pick = await openPrinterDialog('10-100');
+    await waitFor(() => expect(pick.querySelectorAll('option')).toHaveLength(1));
+    expect([...pick.querySelectorAll('option')].map((o) => o.textContent)).toEqual(['Carbon (X1C)']);
   });
 
   it('offers only printers of the models the row was sliced for', async () => {
     // ⚠️ The row stands for an X1C file and a P1S file — those two models are
-    // the whole set of machines that can close it. An A1 mini can hold a plate
-    // but not this one, and offering every active printer handed the operator a
-    // menu full of minis for a two-file row. Both sides go through the same
+    // the whole set of machines that can close it. Both sides go through the same
     // normaliser, so a printer named the long way still qualifies.
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
     vi.spyOn(api, 'getPrinters').mockResolvedValue([
@@ -1266,12 +1398,9 @@ describe('PlanBlock', () => {
 
     render(<PlanBlock order={order} canEdit />);
 
-    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
-    const pick = await screen.findByTestId('plan-row-10-100-printer-pick');
-    const offered = [...pick.querySelectorAll('option')].map((o) => o.textContent);
-
-    expect(offered).toEqual([
-      'To printer…',
+    const pick = await openPrinterDialog('10-100');
+    await waitFor(() => expect(pick.querySelectorAll('option')).toHaveLength(3));
+    expect([...pick.querySelectorAll('option')].map((o) => o.textContent)).toEqual([
       'Carbon (X1C)',
       'Pea (P1S)',
       'Longhand (Bambu Lab X1 Carbon)',
@@ -1305,16 +1434,14 @@ describe('PlanBlock', () => {
 
     render(<PlanBlock order={order} canEdit />);
 
-    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
-    const pick = await screen.findByTestId('plan-row-10-100-printer-pick');
-    const offered = [...pick.querySelectorAll('option')].map((o) => o.textContent);
-
-    expect(offered).toEqual(['To printer…', 'Carbon (X1C)', 'Mini (A1 Mini)']);
+    const pick = await openPrinterDialog('10-100');
+    await waitFor(() => expect(pick.querySelectorAll('option')).toHaveLength(2));
+    expect([...pick.querySelectorAll('option')].map((o) => o.textContent)).toEqual(['Carbon (X1C)', 'Mini (A1 Mini)']);
   });
 
   it('says so when no active printer of those models exists, instead of offering the rest', async () => {
     // The only X2D is in Maintenance Mode and the P1S is archived: the honest
-    // answer is an empty menu that says why — not every mini on the farm.
+    // answer is a dialog that says why — not every mini on the farm.
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
     vi.spyOn(api, 'getPrinters').mockResolvedValue([
       { id: 4, name: 'Mini', model: 'A1 Mini', is_active: true },
@@ -1324,14 +1451,97 @@ describe('PlanBlock', () => {
     render(<PlanBlock order={order} canEdit />);
 
     fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
-    const pick = await screen.findByTestId('plan-row-10-100-printer-pick');
-    const options = [...pick.querySelectorAll('option')];
+    const dialog = await screen.findByRole('dialog', { name: 'To printer' });
+    expect(await within(dialog).findByText('No active printer of this model')).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText('Printer')).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Next — print dialog' })).toBeDisabled();
+  });
 
-    expect(options.map((o) => o.textContent)).toEqual([
-      'To printer…',
-      'No active printer of this model',
-    ]);
-    expect(options[1]).toBeDisabled();
+  it('says it is still reading the printers, and never calls a farm it has not read empty', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+    vi.spyOn(api, 'getPrinters').mockReturnValue(new Promise(() => {}));
+
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
+    const dialog = await screen.findByRole('dialog', { name: 'To printer' });
+    expect(within(dialog).getByText('Loading printers…')).toBeInTheDocument();
+    expect(within(dialog).queryByText('No active printer of this model')).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Next — print dialog' })).toBeDisabled();
+  });
+
+  it('says the printers could not be read and offers to try again, instead of «no printer»', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+    const get = vi.spyOn(api, 'getPrinters').mockRejectedValue(new Error('Gateway timeout'));
+
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
+    const dialog = await screen.findByRole('dialog', { name: 'To printer' });
+    expect(await within(dialog).findByText('Could not read the printers')).toBeInTheDocument();
+    expect(within(dialog).queryByText('No active printer of this model')).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Next — print dialog' })).toBeDisabled();
+
+    get.mockResolvedValue(farm);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Try again' }));
+    const pick = await within(dialog).findByLabelText('Printer');
+    choosePrinter(pick, '2');
+    expect(printModal.props).toMatchObject({ libraryFileId: 8, initialSelectedPrinterIds: [2] });
+  });
+
+  it('checks the choice again before going on: a printer that left the farm opens nothing', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+    const get = vi.spyOn(api, 'getPrinters').mockResolvedValue(farm);
+
+    render(
+      <>
+        <PlanBlock order={order} canEdit />
+        <PrintersRefetcher />
+      </>,
+    );
+
+    const pick = await openPrinterDialog('10-100');
+    fireEvent.change(pick, { target: { value: '2' } });
+    get.mockResolvedValue([farm[0]]);
+    fireEvent.click(screen.getByTestId('force-printers-refetch'));
+
+    expect(await screen.findByText('This printer is no longer available — choose another.')).toBeInTheDocument();
+    const next = screen.getByRole('button', { name: 'Next — print dialog' });
+    expect(next).toBeDisabled();
+    fireEvent.click(next);
+    expect(printModal.props).toBeNull();
+  });
+
+  it('checks the file again before going on: a file that became hidden opens nothing', async () => {
+    const get = vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planHiding(false, false));
+
+    render(
+      <>
+        <PlanBlock order={order} canEdit />
+        <Refetcher id={1} />
+      </>,
+    );
+
+    const pick = await openPrinterDialog('10-100');
+    fireEvent.change(pick, { target: { value: '2' } });
+    get.mockResolvedValue(planHiding(false, true));
+    fireEvent.click(screen.getByTestId('force-refetch'));
+
+    expect(
+      await screen.findByText('This printer would get a file you cannot open — choose another.'),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Next — print dialog' }));
+    expect(printModal.props).toBeNull();
+  });
+
+  it('names the file, the plate and the models in the dialog', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+    render(<PlanBlock order={order} canEdit />);
+
+    fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
+    const dialog = await screen.findByRole('dialog', { name: 'To printer' });
+    expect(dialog).toHaveTextContent('big.3mf · plate 1');
+    expect(dialog).toHaveTextContent('(X1C / P1S)');
   });
 
   it('splits a row across the two files, and refuses a split that does not add up', async () => {
@@ -1410,18 +1620,16 @@ describe('PlanBlock', () => {
     );
   });
 
-  it('shows the farm proposal on a row with alternatives and applies it only on click', async () => {
+  it('shows the farm proposal in the split panel and applies it only on click', async () => {
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
-    vi.spyOn(api, 'getOrderForecast').mockResolvedValue({
-      ...EMPTY_FORECAST,
-      lines: [{ line_id: 10, now_eta: '2026-09-07T10:00:00Z', now_seconds: 7200, after_eta: null, after_seconds: null, unknown_prints: 0, unroutable_prints: 0, eta_complete: true,
-                rows: [{ plate_id: 100, proposed_split: { 100: 0, 400: 1 } }] }],
-    });
+    vi.spyOn(api, 'getOrderForecast').mockResolvedValue(proposing);
     render(<PlanBlock order={order} canEdit />);
-    expect(await screen.findByTestId('plan-row-10-100-proposal')).toHaveTextContent('by the farm: 0 X1C · 1 P1S');
-    expect(screen.getByTestId('plan-line-10-ready')).toHaveTextContent(/ready ≈/);
-    // Opening the editor shows the default — every print on the row's own file — not the proposal.
+    expect(await screen.findByTestId('plan-line-10-ready')).toHaveTextContent(/ready ≈/);
+    // WS-13 E4 E07/E08: the proposal lives in the panel now, not in the actions cell.
+    expect(screen.queryByTestId('plan-row-10-100-proposal')).not.toBeInTheDocument();
     await userEvent.click(screen.getByTestId('plan-row-10-100-split'));
+    expect(await screen.findByTestId('plan-row-10-100-proposal')).toHaveTextContent('by the farm: 0 X1C · 1 P1S');
+    // Opening the editor shows the default — every print on the row's own file — not the proposal.
     expect(screen.getByTestId('plan-row-10-100-split-100')).toHaveValue(1);
     expect(screen.getByTestId('plan-row-10-100-split-400')).toHaveValue(0);
     await userEvent.click(screen.getByTestId('plan-row-10-100-apply-farm'));
@@ -1438,6 +1646,58 @@ describe('PlanBlock', () => {
     expect(screen.queryByTestId('plan-forecast-stale')).not.toBeInTheDocument();
     expect(screen.getByTestId('plan-line-10-ready')).toBeInTheDocument();
     expect(screen.getByTestId('plan-row-10-100-proposal')).toBeInTheDocument();
+  });
+
+  it('opens the split as a row of its own under the plate, not inside the actions cell', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+    render(<PlanBlock order={order} canEdit />);
+
+    const toggle = await screen.findByTestId('plan-row-10-100-split');
+    expect(toggle).toHaveTextContent('Split across files');
+    fireEvent.click(toggle);
+    const row = screen.getByTestId('plan-row-10-100');
+    const panelRow = screen.getByTestId('plan-row-10-100-split-panel').closest('tr') as HTMLElement;
+    expect(panelRow).not.toBe(row);
+    expect(row.nextElementSibling).toBe(panelRow);
+    expect(within(panelRow).getByRole('cell')).toHaveAttribute('colspan', '5');
+    expect(toggle).toHaveTextContent('Hide split');
+    fireEvent.click(toggle);
+    expect(screen.queryByTestId('plan-row-10-100-split-panel')).not.toBeInTheDocument();
+  });
+
+  it('lets a reader open the farm proposal and read it, with nothing to change or send', async () => {
+    // R06: without `queue:create` the panel is read-only — the numbers, and no field,
+    // no «apply», no «queue split».
+    auth.granted = new Set(['projects:update']);
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+    vi.spyOn(api, 'getOrderForecast').mockResolvedValue(proposing);
+    render(<PlanBlock order={order} canEdit />);
+
+    const toggle = await screen.findByTestId('plan-row-10-100-split');
+    await waitFor(() => expect(toggle).toHaveTextContent('Farm proposal'));
+    fireEvent.click(toggle);
+    const panel = screen.getByTestId('plan-row-10-100-split-panel');
+    expect(within(panel).getByTestId('plan-row-10-100-proposal')).toHaveTextContent('by the farm: 0 X1C · 1 P1S');
+    expect(panel).toHaveTextContent('big.3mf (X1C) — 0');
+    expect(panel).toHaveTextContent('big-p1s.3mf (P1S) — 1');
+    expect(within(panel).queryByRole('spinbutton')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('plan-row-10-100-apply-farm')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('plan-row-10-100-split-apply')).not.toBeInTheDocument();
+    expect(toggle).toHaveTextContent('Hide proposal');
+
+    // A draft hides the proposal here too: the panel closes with its toggle.
+    fireEvent.click(screen.getByTestId('plan-row-10-100-inc'));
+    await waitFor(() => expect(screen.queryByTestId('plan-row-10-100-split')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('plan-row-10-100-split-panel')).not.toBeInTheDocument();
+  });
+
+  it('gives a reader no split toggle when the farm proposes nothing', async () => {
+    auth.granted = new Set(['projects:update']);
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+    render(<PlanBlock order={order} canEdit />);
+
+    expect(await screen.findByTestId('plan-row-10-100-file')).toBeInTheDocument();
+    expect(screen.queryByTestId('plan-row-10-100-split')).not.toBeInTheDocument();
   });
 
   it('uses the effective split for totals instead of the file shown before splitting', async () => {
@@ -1474,7 +1734,7 @@ describe('PlanBlock', () => {
     const add = await screen.findByTestId('plan-line-10-add');
     expect([...add.querySelectorAll('option')].map((o) => o.textContent)).toEqual([
       'Add a plate…',
-      'extra.3mf · Plate 2',
+      'extra.3mf · plate 2',
     ]);
   });
 

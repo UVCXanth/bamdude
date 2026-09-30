@@ -366,8 +366,14 @@ export function PlanBlock({
     setSplit((prev) => ({ ...prev, [lineId]: { ...(prev[lineId] ?? {}), [rowPlateId]: next } }));
 
   // No heading of its own: on the order page the «Print plan» tab names it (WS-13
-  // E3 F05), and the dialog has its own title.
+  // E3 F05), and the dialog has its own title. What the block is, it says in one
+  // sentence above the lines (E4 E01).
   const heading = null;
+  const intro = (
+    <p className="text-xs leading-[18px] text-bambu-gray" data-testid="plan-intro">
+      {t('orders.plan.intro')}
+    </p>
+  );
 
   // ⚠️ `plan-block` marks THE BLOCK, on every branch — it answers "is the plan
   // on this page", not "has the plan arrived". Carrying it on the loaded and
@@ -377,9 +383,10 @@ export function PlanBlock({
     return (
       <section id="order-plan" className="space-y-3" data-testid="plan-block">
         {heading}
-        <p className="text-sm text-bambu-gray" data-testid="plan-closed">
-          {t('orders.plan.closed')}
-        </p>
+        <div className="py-8 text-center" data-testid="plan-closed">
+          <p className="text-sm font-medium text-white">{t('orders.plan.closedTitle')}</p>
+          <p className="mt-1 text-sm text-bambu-gray">{t('orders.plan.closedText')}</p>
+        </div>
       </section>
     );
   }
@@ -443,6 +450,7 @@ export function PlanBlock({
   return (
     <section id="order-plan" className="space-y-3" data-testid="plan-block">
       {heading}
+      {intro}
 
       {/* The engine's iteration guard stopped covering, so what follows is a
           PREFIX of the plan — rows, totals and no unsatisfiable part all look
@@ -464,7 +472,10 @@ export function PlanBlock({
       )}
 
       {lines.length === 0 ? (
-        <p className="text-sm text-bambu-gray" data-testid="plan-empty">
+        <p
+          className="rounded-xl border border-bambu-green/30 bg-bambu-green/10 px-4 py-3 text-sm text-white"
+          data-testid="plan-empty"
+        >
           {t('orders.plan.nothingOutstanding')}
         </p>
       ) : (
@@ -475,6 +486,7 @@ export function PlanBlock({
                 key={line.line_id}
                 order={order}
                 line={line}
+                addedIds={new Set((added[line.line_id] ?? []).map((row) => row.plate_id))}
                 forecast={draftChanged ? undefined : forecast.data?.lines.find((l) => l.line_id === line.line_id)}
                 counts={counts[line.line_id] ?? {}}
                 chosen={chosen[line.line_id] ?? {}}
@@ -499,31 +511,30 @@ export function PlanBlock({
             ))}
           </div>
 
-          <div className="flex items-center justify-between gap-4 flex-wrap rounded-xl border border-bambu-dark-tertiary bg-bambu-dark p-3">
-            <div className="flex items-center gap-4 flex-wrap text-sm">
-              <Figure
-                label={t('orders.plan.totals.prints')}
-                testId="plan-totals-prints"
-                value={String(totals.prints)}
-              />
-              <Figure
-                label={t('orders.plan.totals.time')}
-                testId="plan-totals-time"
-                value={totals.seconds == null ? '—' : formatDuration(totals.seconds)}
-              />
-              <Figure
-                label={t('orders.plan.totals.grams')}
-                testId="plan-totals-grams"
-                value={totals.grams.toFixed(1)}
-              />
+          {/* E11: one line — prints, time, weight and, when it is known, the filament's
+              cost — and the whole-plan button beside it. */}
+          <div
+            className="flex items-center justify-between gap-3 flex-wrap border-t border-bambu-dark-tertiary pt-3 px-1 text-sm"
+            data-testid="plan-total"
+          >
+            <p className="text-bambu-gray-light tabular-nums">
+              {t('orders.plan.totals.label')}{' '}
+              <b className="text-white font-semibold" data-testid="plan-totals-prints">
+                {t('orders.plan.totals.prints', { count: totals.prints })}
+              </b>
+              {' · '}
+              <span data-testid="plan-totals-time">{totals.seconds == null ? '—' : formatDuration(totals.seconds)}</span>
+              {' · '}
+              <span data-testid="plan-totals-grams">{t('orders.plan.row.grams', { grams: totals.grams.toFixed(1) })}</span>
               {totals.cost != null && (
-                <Figure
-                  label={t('orders.plan.totals.cost')}
-                  testId="plan-totals-cost"
-                  value={formatMoney(totals.cost, settings?.currency)}
-                />
+                <>
+                  {' · '}
+                  <span data-testid="plan-totals-cost">
+                    {t('orders.plan.totals.cost', { cost: formatMoney(totals.cost, settings?.currency) })}
+                  </span>
+                </>
               )}
-            </div>
+            </p>
 
             {canQueue && (
               <Button
@@ -565,16 +576,5 @@ export function PlanBlock({
           which is the only gate this has. */}
       {variant === 'dialog' && filament.data && <FilamentNeeds needs={filament.data} />}
     </section>
-  );
-}
-
-function Figure({ label, value, testId }: { label: string; value: string; testId: string }) {
-  return (
-    <div>
-      <p className="text-xs text-bambu-gray">{label}</p>
-      <p className="text-white tabular-nums" data-testid={testId}>
-        {value}
-      </p>
-    </div>
   );
 }

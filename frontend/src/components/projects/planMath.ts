@@ -112,6 +112,18 @@ export function chosenPlate(row: PlanRow, chosen?: number): ChosenPlate {
  * The order is the row's own — its plate first, then its alternatives as the
  * server sorted them — so the body a test reads back is stable.
  */
+/** The row's own plate first, then its alternatives as the server sorted them —
+ *  one list, used by the file switch, the printer match and the split alike. */
+export function plateOptions(row: PlanRow): ChosenPlate[] {
+  return [chosenPlate(row), ...row.alternatives];
+}
+
+/** The plate's file name, or the label for a file the reader may not open
+ *  (WS-13 E1 CL6) — never the name the server did not send, never «null». */
+export function plateName(plate: ChosenPlate, hiddenLabel: string): string {
+  return plate.hidden || plate.filename == null ? hiddenLabel : plate.filename;
+}
+
 export function rowDistribution(
   row: PlanRow,
   count: number,

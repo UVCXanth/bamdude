@@ -5,15 +5,20 @@ import { Shuffle } from 'lucide-react';
 import { api } from '../../api/client';
 import type { LineForecast, LinePlan, Order, PlanRow as PlanRowData, PlateRecipe } from '../../api/client';
 import { etaShort } from '../../utils/forecast';
+import { formatDuration } from '../../utils/date';
 import { PlanRow } from './PlanRow';
 import { PlanUnsatisfiable } from './PlanUnsatisfiable';
 import { projectPlan, type YieldByPlate } from './planMath';
+import { lineConfigLabel } from './lineConfigLabel';
 import { Select } from '../Select';
 
 interface PlanLineProps {
   order: Order;
   /** The line's plan with the manually added plates already merged into `rows`. */
   line: LinePlan;
+  /** The plate ids of the rows the operator added by hand — they have no planned
+   *  count to differ from (WS-13 E4 E06). */
+  addedIds: Set<number>;
   /** The farm's own read on this line — when it will be ready, and how it
    *  would split a row with alternatives across the machines. Undefined while
    *  the forecast is unresolved, or when the order is closed. */
@@ -98,6 +103,7 @@ function rowFromRecipe(plate: PlateRecipe, ratePerGram: number | null): PlanRowD
 export function PlanLine({
   order,
   line,
+  addedIds,
   forecast,
   counts,
   chosen,
@@ -150,6 +156,8 @@ export function PlanLine({
 
   const projected = projectPlan(line, counts, yields, chosen, split);
   const surplus = projected.surplusAfter ?? line.surplus_after;
+  const orderLine = order.lines.find((l) => l.id === line.line_id);
+  const configLabel = orderLine ? lineConfigLabel(orderLine.configuration, orderLine.mode, t) : '';
 
   // ⚠️ A row's ALTERNATIVES are as planned as the row itself — the row already
   // offers each of them as a file switch, so offering one here too would put
@@ -166,78 +174,85 @@ export function PlanLine({
     .filter((plate): plate is PlateRecipe => plate != null)
     .map(plateName);
 
-  // plate · covers · count · time · grams · [cost] · actions
-  const columns = showCost ? 7 : 6;
+  const head = 'px-2.5 py-2 text-left font-normal whitespace-nowrap';
+  // ⚠️ Gated on EITHER permission, because adding a row writes nothing: it is a
+  // client-side what-if that puts a plate on screen at count 1. Somebody who holds
+  // only `printers:control` reaches "to printer…" through this menu.
+  const showAdd = (canQueue || canPrint) && addable.length > 0;
+  // With a no-plate block the not-sliced files are said inside it (E10).
+  const slicedInFooter = line.unsatisfiable.length === 0 && notSliced.length > 0;
+  const hasFooter = surplus.length > 0 || slicedInFooter || showAdd;
 
   return (
-    <div className="rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary" data-testid={`plan-line-${line.line_id}`}>
-      <div className="flex items-center justify-between gap-3 flex-wrap p-3 border-b border-bambu-dark-tertiary">
+    <div
+      className="rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary p-3.5"
+      data-testid={`plan-line-${line.line_id}`}
+    >
+      <div className="flex items-start justify-between gap-3 flex-wrap" data-testid={`plan-line-${line.line_id}-head`}>
         <div className="min-w-0">
-          <p className="text-white font-medium truncate">{line.product_name}</p>
+          <p className="text-white">
+            <span className="font-semibold">{line.product_name}</span>
+            {configLabel && <small className="ml-1.5 text-xs text-bambu-gray">{configLabel}</small>}
+          </p>
           {line.outstanding_before.length > 0 && (
-            <p className="text-xs text-bambu-gray">
+            <small className="block mt-0.5 text-xs text-bambu-gray">
               {`${t('orders.plan.outstanding')} ${line.outstanding_before
                 .map((o) => `${o.name} × ${o.count}`)
                 .join(' · ')}`}
-            </p>
+            </small>
           )}
           {forecast?.eta_complete && forecast.now_eta && (
-            <span className="text-xs text-bambu-gray" data-testid={`plan-line-${line.line_id}-ready`}>
+            <small className="block text-xs text-bambu-gray" data-testid={`plan-line-${line.line_id}-ready`}>
               {t('orders.plan.readyAt', { when: etaShort(forecast.now_eta, settings?.time_format) })}
-            </span>
+            </small>
           )}
         </div>
-        {canRebalance && (line.pending_auto_prints ?? 0) > 0 && (
-          <button
-            type="button"
-            onClick={onRebalance}
-            disabled={busy}
-            data-testid={`plan-line-${line.line_id}-rebalance`}
-            title={t('orders.plan.rebalance.title')}
-            className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-bambu-dark-tertiary text-bambu-gray-light hover:text-white hover:border-bambu-green/50 disabled:opacity-40"
-          >
-            <Shuffle className="w-3.5 h-3.5" />
-            {t('orders.plan.rebalance.button')}
-          </button>
-        )}
-        {line.material && (
-          <span className="text-xs px-2 py-0.5 rounded-full border border-bambu-dark-tertiary text-bambu-gray-light">
-            {line.material}
-          </span>
-        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          {line.material && (
+            <span className="text-xs px-2.5 py-1 rounded-full border border-bambu-dark-tertiary bg-bambu-dark text-bambu-gray-light">
+              {line.material}
+            </span>
+          )}
+          {projected.seconds != null && projected.seconds > 0 && (
+            <small className="text-xs text-bambu-gray-light" data-testid={`plan-line-${line.line_id}-machine`}>
+              {t('orders.plan.machineTime', { time: formatDuration(projected.seconds) })}
+            </small>
+          )}
+          {canRebalance && (line.pending_auto_prints ?? 0) > 0 && (
+            <button
+              type="button"
+              onClick={onRebalance}
+              disabled={busy}
+              data-testid={`plan-line-${line.line_id}-rebalance`}
+              title={t('orders.plan.rebalance.title')}
+              className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-lg text-bambu-gray-light hover:text-white hover:bg-bambu-dark-tertiary disabled:opacity-40 whitespace-nowrap"
+            >
+              <Shuffle className="w-3.5 h-3.5" />
+              {t('orders.plan.rebalance.button')}
+            </button>
+          )}
+        </div>
       </div>
 
-      {(line.rows.length > 0 || line.unsatisfiable.length > 0) && (
-        <div className="overflow-x-auto">
+      {line.rows.length > 0 && (
+        <div className="mt-2.5 overflow-x-auto" data-testid={`plan-line-${line.line_id}-scroll`}>
           <table className="w-full text-sm">
-            {/* Every column but the first carries a bare number or a glyph, and
-                a table of bare numbers says nothing about what they measure.
-                The labels the footer already uses are reused verbatim so the
-                same figure is not named two ways on one screen. */}
             <thead>
-              <tr className="text-xs text-bambu-gray border-b border-bambu-dark-tertiary">
-                <th scope="col" className="px-3 py-2 text-left font-medium">
+              <tr className="text-xs text-bambu-gray">
+                <th scope="col" className={head}>
                   {t('orders.plan.col.plate')}
                 </th>
-                <th scope="col" className="px-3 py-2 text-left font-medium">
+                <th scope="col" className={head}>
                   {t('orders.plan.col.covers')}
                 </th>
-                <th scope="col" className="px-3 py-2 text-left font-medium">
-                  {t('orders.plan.totals.prints')}
+                <th scope="col" className={head}>
+                  {t('orders.plan.col.prints')}
                 </th>
-                <th scope="col" className="px-3 py-2 text-right font-medium">
-                  {t('orders.plan.totals.time')}
+                <th scope="col" className={head}>
+                  {t('orders.plan.col.timeFilament')}
                 </th>
-                <th scope="col" className="px-3 py-2 text-right font-medium">
-                  {t('orders.plan.totals.grams')}
-                </th>
-                {showCost && (
-                  <th scope="col" className="px-3 py-2 text-right font-medium">
-                    {t('orders.plan.totals.cost')}
-                  </th>
-                )}
-                <th scope="col" className="px-3 py-2 text-right font-medium">
-                  {t('orders.plan.col.actions')}
+                <th scope="col" className={`${head} w-px`}>
+                  <span className="sr-only">{t('orders.plan.col.actions')}</span>
                 </th>
               </tr>
             </thead>
@@ -255,6 +270,7 @@ export function PlanLine({
                     lineId={line.line_id}
                     row={row}
                     count={count}
+                    planned={addedIds.has(row.plate_id) ? null : row.count}
                     chosen={chosen[row.plate_id]}
                     split={split[row.plate_id]}
                     proposal={forecast?.rows.find((r) => r.plate_id === row.plate_id)?.proposed_split ?? null}
@@ -271,39 +287,38 @@ export function PlanLine({
                   />
                 );
               })}
-              {line.unsatisfiable.map((part) => (
-                <PlanUnsatisfiable
-                  key={part.part_id}
-                  lineId={line.line_id}
-                  productId={line.product_id}
-                  material={line.material}
-                  part={part}
-                  colSpan={columns}
-                />
-              ))}
             </tbody>
           </table>
         </div>
       )}
 
-      <div className="flex items-center justify-between gap-3 flex-wrap p-3 border-t border-bambu-dark-tertiary">
+      {/* E10: what no plate makes, under the table — with the files that are linked
+          but not sliced beside the link, since that is usually why. */}
+      {line.unsatisfiable.map((part) => (
+        <PlanUnsatisfiable
+          key={part.part_id}
+          lineId={line.line_id}
+          productId={line.product_id}
+          material={line.material}
+          part={part}
+          notSliced={notSliced}
+        />
+      ))}
+
+      {hasFooter && (
+      <div className="mt-2.5 flex items-center justify-between gap-3 flex-wrap">
         <div className="space-y-1 min-w-0">
           {surplus.length > 0 && (
-            <p className="text-xs text-amber-300" data-testid={`plan-line-${line.line_id}-surplus`}>
+            <p className="text-xs text-amber-700 dark:text-amber-400" data-testid={`plan-line-${line.line_id}-surplus`}>
               {`${t('orders.plan.surplusAfter')} ${surplus.map((s) => `${s.name} +${s.count}`).join(' · ')}`}
             </p>
           )}
-          {notSliced.length > 0 && (
+          {slicedInFooter && (
             <p className="text-xs text-bambu-gray">{`${t('orders.plan.notSliced')}: ${notSliced.join(' · ')}`}</p>
           )}
         </div>
 
-        {/* ⚠️ Gated on EITHER permission, because adding a row writes nothing:
-            it is a client-side what-if that puts a plate on screen at count 1.
-            Somebody who holds only `printers:control` reaches "to printer…"
-            through this menu, and gating it on `queue:create` alone hid the
-            only door they have. */}
-        {(canQueue || canPrint) && addable.length > 0 && (
+        {showAdd && (
           <Select
             size="sm"
             tone="muted"
@@ -326,6 +341,7 @@ export function PlanLine({
           </Select>
         )}
       </div>
+      )}
     </div>
   );
 }

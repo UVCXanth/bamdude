@@ -8,56 +8,53 @@ interface PlanUnsatisfiableProps {
   productId: number;
   material: string | null;
   part: PlanPartCount;
-  colSpan: number;
+  /** The product's files that are linked but not sliced — the likely reason, said
+   *  beside the link (WS-13 E4 E10). */
+  notSliced: string[];
 }
 
 /**
- * A part the line still needs that no candidate plate makes at all.
+ * A part the line still needs that no candidate plate makes at all (WS-13 E4 E10) —
+ * an amber block under the group's table.
  *
- * This is not "the plan fell short" — the greedy covered everything it could,
- * and there is simply nothing to print for this part in this material yet. So
- * the row offers the two things that would change that: the product's files,
- * where a plate is linked, and the slice slot, which is **reserved and
- * disabled** (pass-3 scope: slicing a part from the plan is a later pass). The
- * disabled button is kept rather than dropped so the answer to "why can't I
- * just slice it here" is on screen instead of absent.
+ * This is not "the plan fell short" — the greedy covered everything it could, and
+ * there is simply nothing to print for this part in this material yet. So the block
+ * offers the two things that would change that: the product's files, where a plate
+ * is linked, and the slice slot, which is **reserved and disabled** (pass-3 scope).
+ * The disabled button is kept rather than dropped so the answer to "why can't I just
+ * slice it here" is on screen instead of absent.
  *
- * ⚠️ **The test id carries the LINE id beside the part's**, exactly as
- * `PlanRow`'s does: a `ProductPart.id` is unique per product, not per order, so
- * two lines of the same product put the same part on screen twice and a bare
- * `plan-unsatisfiable-2` would match both.
+ * ⚠️ **The test id carries the LINE id beside the part's**, exactly as `PlanRow`'s
+ * does: a `ProductPart.id` is unique per product, not per order.
  */
-export function PlanUnsatisfiable({ lineId, productId, material, part, colSpan }: PlanUnsatisfiableProps) {
+export function PlanUnsatisfiable({ lineId, productId, material, part, notSliced }: PlanUnsatisfiableProps) {
   const { t } = useTranslation();
 
   return (
-    <tr
+    <div
       data-testid={`plan-unsatisfiable-${lineId}-${part.part_id}`}
-      className="border-b border-bambu-dark-tertiary last:border-0"
+      className="mt-2.5 flex items-center gap-2 flex-wrap rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2.5 text-[13px] text-amber-700 dark:text-amber-400"
     >
-      <td colSpan={colSpan} className="px-3 py-2">
-        <div className="flex items-center gap-2 flex-wrap text-sm">
-          <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
-          <span className="text-amber-300">
-            {t('orders.plan.noPlateFor', {
-              part: part.name,
-              material: material ?? t('orders.plan.anyMaterial'),
-            })}
-          </span>
-          <span className="text-bambu-gray tabular-nums">{`× ${part.count}`}</span>
-          <Link to={`/products/${productId}#files`} className="text-bambu-green hover:underline">
-            {t('orders.plan.linkFile')}
-          </Link>
-          <button
-            type="button"
-            disabled
-            title={t('orders.plan.sliceReserved')}
-            className="px-2 py-1 rounded border border-bambu-dark-tertiary text-bambu-gray opacity-50 cursor-not-allowed"
-          >
-            {t('orders.plan.slice')}
-          </button>
-        </div>
-      </td>
-    </tr>
+      <AlertTriangle className="w-4 h-4 shrink-0" aria-hidden />
+      <span className="min-w-0 flex-1">
+        {t('orders.plan.noPlateFor', {
+          part: part.name,
+          count: part.count,
+          material: material ?? t('orders.plan.anyMaterial'),
+        })}{' '}
+        <Link to={`/products/${productId}#files`} className="underline">
+          {t('orders.plan.linkFile')}
+        </Link>
+        {notSliced.length > 0 && ` · ${t('orders.plan.notSlicedInline', { files: notSliced.join(', ') })}`}
+      </span>
+      <button
+        type="button"
+        disabled
+        title={t('orders.plan.sliceReserved')}
+        className="px-2 py-1 rounded border border-bambu-dark-tertiary text-bambu-gray opacity-50 cursor-not-allowed whitespace-nowrap"
+      >
+        {t('orders.plan.slice')}
+      </button>
+    </div>
   );
 }

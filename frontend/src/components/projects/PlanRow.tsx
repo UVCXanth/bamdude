@@ -1,25 +1,30 @@
-import { useMemo, useState } from 'react';
-import { useQueries, useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api } from '../../api/client';
 import type { Order, PlanRow as PlanRowData } from '../../api/client';
 import { formatMoney } from '../../utils/currency';
 import { formatDuration } from '../../utils/date';
-import { normalizeModelName } from '../../utils/printer';
-import { modelCompatibility } from '../../utils/modelCompatibility';
 import { Button } from '../Button';
 import { PrintModal } from '../PrintModal';
-import { chosenPlate, parseCount, projectRow, splitIsOff, type ChosenPlate } from './planMath';
+import { chosenPlate, parseCount, plateName, plateOptions, projectRow, splitIsOff, type ChosenPlate } from './planMath';
+import { PlanPrinterDialog } from './PlanPrinterDialog';
 import { Select } from '../Select';
 
 /** The server's own ceiling on one enqueue item (`PlanEnqueueItem.count`). */
 export const MAX_PER_PLATE = 999;
+
+/** The blue model chip (mockup `.m-model`). */
+const MODEL_CHIP =
+  'inline-block rounded px-1.5 py-px text-[11px] font-medium leading-4 whitespace-nowrap bg-blue-500/15 text-blue-700 dark:text-blue-400';
+const CELL = 'px-2.5 py-2.5 align-top';
 
 interface PlanRowProps {
   order: Order;
   lineId: number;
   row: PlanRowData;
   count: number;
+  /** The count the server planned for this row — `null` for a plate the operator
+   *  added by hand, which has no plan to differ from (WS-13 E4 E06). */
+  planned: number | null;
   /** Which of the row's plates the operator set it to print — its own, or one
    *  of its alternatives. Undefined is the engine's own pick. */
   chosen: number | undefined;
@@ -28,8 +33,8 @@ interface PlanRowProps {
    *  until somebody says otherwise. */
   split: Record<number, number> | undefined;
   /** The farm's own suggested split across this row's files, when it has one.
-   *  `null` (not sent, or the row has no alternatives) hides the proposal —
-   *  it never seeds `split` on its own; only the button below does that. */
+   *  `null` (not sent, the row has no alternatives, or the draft moved the plan)
+   *  hides the proposal — it never seeds `split` on its own; only its button does. */
   proposal?: Record<number, number> | null;
   currency: string | null | undefined;
   showCost: boolean;
@@ -43,18 +48,6 @@ interface PlanRowProps {
   onQueued: () => void;
 }
 
-/** The row's own plate first, then its alternatives as the server sorted them.
- *  One list, used by the file switch, the printer match and the split alike. */
-function plateOptions(row: PlanRowData): ChosenPlate[] {
-  return [chosenPlate(row), ...row.alternatives];
-}
-
-/** The plate's file name, or the label for a file the reader may not open
- *  (WS-13 E1 CL6) — never the name the server did not send, never «null». */
-function plateName(plate: ChosenPlate, hiddenLabel: string): string {
-  return plate.hidden || plate.filename == null ? hiddenLabel : plate.filename;
-}
-
 /** `filename (X1C)`, or the bare filename when the file names no model. The
  *  model is what tells two otherwise identically-named exports apart. */
 function optionLabel(plate: ChosenPlate, hiddenLabel: string): string {
@@ -63,40 +56,45 @@ function optionLabel(plate: ChosenPlate, hiddenLabel: string): string {
 }
 
 /**
- * One recommended plate, printed `count` times.
+ * One recommended plate, printed `count` times (WS-13 E4 E03–E09).
  *
- * ⚠️ **The figures on the row describe its effective enqueue distribution.**
- * Until split opens that is one file × `count`; afterwards each file carries
- * its own time, grams and cost. The count editor stays here so the operator
- * changes a number and reads that consequence in the same line.
+ * Five cells — plate, covers, prints, time / filament, actions — and, under the row,
+ * the split panel as a row of its own when it is open. The actions are buttons that
+ * never wrap their own text; the cell wraps them instead.
  *
- * ⚠️ **`plate_id` is `ProductPlate.id`, `plate_index` is the slicer's.** The
- * queue and `PrintModal` speak the second one, where 0 means "no plate pinned",
- * i.e. the whole file — hence `plate_index || undefined` below and nowhere a
- * bare `plate_index`.
+ * ⚠️ **The figures on the row describe its effective enqueue distribution.** Until
+ * split opens that is one file × `count`; afterwards each file carries its own time,
+ * grams and cost. The count editor stays here so the operator changes a number and
+ * reads that consequence in the same line.
  *
- * ⚠️ **A row can stand for SEVERAL files** (`row.alternatives`): the same part
- * is routinely sliced once per printer model, and the engine's greedy picks
- * one of them, which used to make the others invisible here. The switch, the
- * printer match and the split all read the same `plateOptions` list, and the
- * only thing that never moves with the choice is the COUNT — the alternatives
- * are by construction plates making the same counted parts.
+ * ⚠️ **`plate_id` is `ProductPlate.id`, `plate_index` is the slicer's.** The queue
+ * and `PrintModal` speak the second one, where 0 means "no plate pinned", i.e. the
+ * whole file — hence `plate_index || undefined` below and nowhere a bare index.
+ *
+ * ⚠️ **A row can stand for SEVERAL files** (`row.alternatives`): the same part is
+ * routinely sliced once per printer model. The switch, the printer match and the
+ * split all read the same `plateOptions` list, and the only thing that never moves
+ * with the choice is the COUNT — the alternatives make the same counted parts.
+ *
+ * ⚠️ **The split panel has two modes by right (R06).** With `queue:create` it edits:
+ * a number per file, the farm's proposal to apply, «queue split». Without it, the
+ * panel only READS the farm's proposal — the numbers per file, nothing to change or
+ * send — so a reader never loses the proposal the row used to show.
  *
  * The `+` is deliberately uncapped: a count over the server's 999 disables the
  * *queue* button with the reason in its title, rather than silently refusing a
  * click or clamping a number the operator typed on purpose.
  *
- * ⚠️ **The test ids carry the LINE id beside the plate's.** `ProductPlate.id`
- * is unique per product, not per order — two lines of the same product put the
- * same plate on screen twice, and a bare `plan-row-100` would match both. The
- * `counts` state upstream has always been keyed `lineId → plateId`; this is the
- * ids catching up with it.
+ * ⚠️ **The test ids carry the LINE id beside the plate's.** `ProductPlate.id` is
+ * unique per product, not per order — two lines of the same product put the same
+ * plate on screen twice.
  */
 export function PlanRow({
   order,
   lineId,
   row,
   count,
+  planned,
   chosen,
   split,
   proposal,
@@ -122,62 +120,8 @@ export function PlanRow({
   const hasAlternatives = row.alternatives.length > 0;
   // «To printer» opens the FILE. Offered while at least one of the row's plates
   // is one the reader may open; which one a printer gets is checked on the final
-  // plate below (WS-13 E1 CL6).
+  // plate in the printer dialog (WS-13 E1 CL6).
   const anyOpenable = options.some((option) => !option.hidden);
-
-  // A plan with no alternatives does not need a printer picker.
-  const { data: allPrinters } = useQuery({
-    queryKey: ['printers'],
-    queryFn: api.getPrinters,
-    enabled: canPrint && hasAlternatives,
-  });
-  const { data: modelMatrix } = useQuery({
-    queryKey: ['modelCompatibility'], queryFn: api.getModelCompatibility,
-    enabled: canPrint && hasAlternatives, staleTime: 60 * 60 * 1000,
-  });
-  const statusQueries = useQueries({
-    queries: (allPrinters ?? []).map((printer) => ({
-      queryKey: ['printerStatus', printer.id],
-      queryFn: ({ signal }: { signal: AbortSignal }) => api.getPrinterStatus(printer.id, signal),
-      staleTime: 5000,
-    })),
-  });
-  const effectiveModel = (printerId: number, model: string | null) =>
-    statusQueries[(allPrinters ?? []).findIndex((printer) => printer.id === printerId)]?.data?.effective_model || model;
-  // ⚠️ Parked printers are not offered. `getPrinters` already leaves ARCHIVED
-  // ones out server-side, but Maintenance Mode (`is_active === false`) is the
-  // independent axis: the card stays visible on the printers page and the
-  // machine takes no work, so offering it here mounts the dialog on a printer
-  // whose queue nothing will ever dispatch from — and the operator is told
-  // nothing until they go looking. Same rule every other "available printer"
-  // list applies.
-  // ⚠️ And only the MODELS the row's files were sliced for. A part sliced for
-  // a P1S and an X2D has nothing to do on an A1 mini, and offering every active
-  // machine is how the operator was handed a menu full of minis for a two-file
-  // row. The set comes from the row's own plate and its alternatives — exactly
-  // the files that can close this row — normalised on both sides the way
-  // `fileForPrinter` compares them. A row whose files carry no model at all (an
-  // old 3MF without the metadata) filters nothing: when nothing is known, every
-  // printer beats none.
-  const models = useMemo(
-    () =>
-      new Set(
-        plateOptions(row)
-          .map((o) => normalizeModelName(o.printer_model).toLowerCase())
-          .filter(Boolean),
-      ),
-    [row],
-  );
-  const printers = useMemo(() => {
-    const active = (allPrinters ?? []).filter((p) => p.is_active);
-    if (models.size === 0) return active;
-    return active.filter((p) => plateOptions(row).some((option) =>
-      ['exact', 'compatible'].includes(modelCompatibility(
-        option.printer_model, effectiveModel(p.id, p.model), modelMatrix?.models,
-      ))
-    ));
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- status queries determine live effective models
-  }, [allPrinters, models, row, modelMatrix, statusQueries]);
 
   const tooMany = count > MAX_PER_PLATE;
   const atZero = count === 0;
@@ -191,309 +135,283 @@ export function PlanRow({
   const currentSplit = split ?? { [plate.plate_id]: count };
   const figures = projectRow(row, count, chosen, split);
 
-  /** The file this print should use, given the printer it is going to.
-   *
-   *  ⚠️ EXACTLY one match, or the row's own choice stands. Two files claiming
-   *  the same model is a library the operator has to sort out, and picking one
-   *  of them for them would send a print they never chose. */
-  const fileForPrinter = (model: string | null): ChosenPlate => {
-    // ⚠️ BOTH sides through the same normaliser. A printer row spells its model
-    // "Bambu Lab X1 Carbon" while the 3MF the plate came from says "X1C", and
-    // `mapModelCode` passes the long name straight through — so the two never
-    // compared equal and this quietly returned the row's own file for every
-    // printer named the long way, which is the bug the feature exists to fix.
-    const wanted = normalizeModelName(model).toLowerCase();
-    if (!wanted) return plate;
-    const matches = options.filter(
-      (o) => normalizeModelName(o.printer_model).toLowerCase() === wanted,
-    );
-    if (matches.length === 1) return matches[0];
-    if (matches.length > 1) return plate;
-    const compatible = options.filter((option) =>
-      modelCompatibility(option.printer_model, model, modelMatrix?.models) === 'compatible'
-    );
-    return compatible.length === 1 ? compatible[0] : plate;
-  };
+  // The panel's toggle: an editor for somebody who may queue, a reading of the
+  // farm's proposal for somebody who may not — and nothing when there is neither.
+  const offersPanel = hasAlternatives && (canQueue || proposal != null);
+  const panelOpen = splitting && offersPanel;
+  const toggleLabel = canQueue
+    ? panelOpen
+      ? t('orders.plan.split.hide')
+      : t('orders.plan.split.title')
+    : panelOpen
+      ? t('orders.plan.split.hideProposal')
+      : t('orders.plan.split.proposal');
+  const proposalText =
+    proposal != null
+      ? t('orders.plan.row.byFarm', {
+          split: options.map((o) => `${proposal[o.plate_id] ?? 0} ${o.printer_model ?? '?'}`).join(' · '),
+        })
+      : null;
 
   return (
-    <tr
-      data-testid={`plan-row-${lineId}-${row.plate_id}`}
-      className={`border-b border-bambu-dark-tertiary last:border-0 ${count === 0 ? 'opacity-50' : ''}`}
-    >
-      <td className="px-3 py-2 min-w-0">
-        {hasAlternatives ? (
-          <Select
-            size="sm"
-            className="max-w-full"
-            data-testid={`plan-row-${lineId}-${row.plate_id}-file`}
-            aria-label={t('orders.plan.row.file')}
-            value={plate.plate_id}
-            onChange={(e) => onChoose(Number(e.currentTarget.value))}
-          >
-            {options.map((option) => (
-              <option key={option.plate_id} value={option.plate_id}>
-                {optionLabel(option, hiddenLabel)}
-              </option>
-            ))}
-          </Select>
-        ) : (
-          <p className="text-white truncate">{plateName(plate, hiddenLabel)}</p>
-        )}
-        <p className="text-xs text-bambu-gray">
-          {plate.plate_index === 0
-            ? t('orders.plan.row.wholeFile')
-            : t('orders.plan.row.plate', { n: plate.plate_index })}
-        </p>
-      </td>
-
-      <td className="px-3 py-2 text-xs text-bambu-gray">
-        {row.useful.length > 0
-          ? `${t('orders.plan.row.covers')} ${row.useful.map((u) => `${u.name} × ${u.count}`).join(' · ')}`
-          : '—'}
-      </td>
-
-      <td className="px-3 py-2">
-        <div className="inline-flex items-center gap-1">
-          {/* ⚠️ A bare `−` / `+` is invisible to a screen reader and to every
-              test that asks for a control by name — the glyphs carry the whole
-              meaning. The title on the disabled one answers the question the
-              disabling raises rather than leaving it on screen unexplained. */}
-          <button
-            type="button"
-            data-testid={`plan-row-${lineId}-${row.plate_id}-dec`}
-            className={step}
-            aria-label={t('orders.plan.row.decrease')}
-            title={atZero ? t('orders.plan.row.atZero') : undefined}
-            disabled={atZero}
-            onClick={() => onCount(count - 1)}
-          >
-            −
-          </button>
-          <input
-            type="number"
-            min={0}
-            data-testid={`plan-row-${lineId}-${row.plate_id}-count`}
-            value={count}
-            aria-label={t('orders.plan.row.count')}
-            onChange={(e) => onCount(parseCount(e.currentTarget.value, count))}
-            className="w-16 px-2 py-1 text-right tabular-nums bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:border-bambu-green focus:outline-none"
-          />
-          <button
-            type="button"
-            data-testid={`plan-row-${lineId}-${row.plate_id}-inc`}
-            className={step}
-            aria-label={t('orders.plan.row.increase')}
-            onClick={() => onCount(count + 1)}
-          >
-            +
-          </button>
-        </div>
-      </td>
-
-      <td className="px-3 py-2 text-right text-bambu-gray tabular-nums whitespace-nowrap">
-        {figures.seconds == null ? '—' : formatDuration(figures.seconds)}
-      </td>
-
-      <td className="px-3 py-2 text-right text-bambu-gray tabular-nums whitespace-nowrap">
-        {figures.hasGrams ? figures.grams.toFixed(1) : '—'}
-      </td>
-
-      {showCost && (
-        <td className="px-3 py-2 text-right text-bambu-gray tabular-nums whitespace-nowrap">
-          {figures.cost == null ? '—' : formatMoney(figures.cost, currency)}
-        </td>
-      )}
-
-      <td className="px-3 py-2">
-        <div className="flex items-center justify-end gap-2 flex-wrap">
-          {canQueue && (
-            <Button
-              size="sm"
-              variant="outline"
-              data-testid={`plan-row-${lineId}-${row.plate_id}-queue`}
-              disabled={busy || atZero || tooMany || splitOff}
-              title={
-                tooMany
-                  ? t('orders.plan.row.tooMany')
-                  : atZero
-                    ? t('orders.plan.row.atZero')
-                    : splitOff
-                      ? t('orders.plan.split.sum', { count })
-                      : undefined
-              }
-              onClick={onEnqueue}
-            >
-              {t('orders.plan.row.toQueue', { count })}
-            </Button>
-          )}
-          {canQueue && hasAlternatives && (
-            <Button
-              size="sm"
-              variant="ghost"
-              data-testid={`plan-row-${lineId}-${row.plate_id}-split`}
-              onClick={() => setSplitting((open) => !open)}
-            >
-              {t('orders.plan.split.title')}
-            </Button>
-          )}
-          {hasAlternatives && proposal && (
-            <span className="text-xs text-bambu-gray" data-testid={`plan-row-${lineId}-${row.plate_id}-proposal`}>
-              {t('orders.plan.row.byFarm', {
-                split: options.map((o) => `${proposal[o.plate_id] ?? 0} ${o.printer_model ?? '?'}`).join(' · '),
-              })}
-            </span>
-          )}
-          {canQueue && hasAlternatives && proposal && (
-            <Button
-              size="sm"
-              variant="ghost"
-              data-testid={`plan-row-${lineId}-${row.plate_id}-apply-farm`}
-              onClick={() => {
-                onSplit({ ...proposal });
-                setSplitting(true);
-              }}
-            >
-              {t('orders.plan.row.applyFarmSplit')}
-            </Button>
-          )}
-          {/* «To printer» opens the file itself — never for a plate the caller may not
-              open, planned or added by hand (WS-13 E1 CL2 / CL6). */}
-          {canPrint && anyOpenable && (
-            <Button
-              size="sm"
-              variant="ghost"
-              data-testid={`plan-row-${lineId}-${row.plate_id}-printer`}
-              onClick={() =>
-                hasAlternatives ? setPickingPrinter(true) : setPrinting({ plate })
-              }
-            >
-              {t('orders.plan.row.toPrinter')}
-            </Button>
-          )}
-        </div>
-
-        {/* ⚠️ The printer is asked FIRST, and only when the row stands for
-            several files. `PrintModal` owns its own printer selector and
-            reports no choice back, so there is no way to swap the file it was
-            mounted with once a machine is picked inside it — and mounting it
-            with the wrong file is exactly the bug this feature exists to fix.
-            A row with one file opens the dialog straight away, as it always
-            did. */}
-        {pickingPrinter && (
-          <div className="mt-2 flex justify-end">
+    <>
+      <tr
+        data-testid={`plan-row-${lineId}-${row.plate_id}`}
+        className={`border-t border-bambu-dark-tertiary ${count === 0 ? 'opacity-50' : ''}`}
+      >
+        <td className={`${CELL} min-w-[9rem]`}>
+          {hasAlternatives ? (
             <Select
               size="sm"
-              tone="muted"
-              data-testid={`plan-row-${lineId}-${row.plate_id}-printer-pick`}
-              aria-label={t('orders.plan.row.toPrinter')}
-              value=""
-              onChange={(e) => {
-                const printer = printers.find((p) => p.id === Number(e.currentTarget.value));
-                if (!printer) return;
-                // ⚠️ The check is on the plate this printer would actually get —
-                // the row's own, the model's alternative or the operator's choice —
-                // not on the row: a hidden row does not bar an alternative the
-                // reader may open, and an openable row does not open a hidden one.
-                const target = fileForPrinter(effectiveModel(printer.id, printer.model));
-                if (target.hidden) return;
-                setPickingPrinter(false);
-                setPrinting({ plate: target, printerId: printer.id });
-              }}
+              className="w-full"
+              data-testid={`plan-row-${lineId}-${row.plate_id}-file`}
+              aria-label={t('orders.plan.row.file')}
+              // In a narrow table (the «Plan from files» dialog) the chosen name may be
+              // clipped by the select; its title keeps it readable in full.
+              title={optionLabel(plate, hiddenLabel)}
+              value={plate.plate_id}
+              onChange={(e) => onChoose(Number(e.currentTarget.value))}
             >
-              <option value="">{t('orders.plan.row.toPrinter')}</option>
-              {/* The filter can leave nothing — the only X2D is in Maintenance
-                  Mode, say. An empty menu that says why beats falling back to
-                  every printer, which would be the menu full of minis again. */}
-              {printers.length === 0 && (
-                <option value="none" disabled>
-                  {t('orders.plan.row.noPrinterOfModel')}
+              {options.map((option) => (
+                <option key={option.plate_id} value={option.plate_id}>
+                  {optionLabel(option, hiddenLabel)}
                 </option>
-              )}
-              {printers.map((printer) => {
-                const closed = fileForPrinter(effectiveModel(printer.id, printer.model)).hidden;
-                const name = printer.model ? `${printer.name} (${printer.model})` : printer.name;
-                return (
-                  <option key={printer.id} value={printer.id} disabled={closed}>
-                    {closed ? `${name} — ${hiddenLabel}` : name}
-                  </option>
-                );
-              })}
+              ))}
             </Select>
-          </div>
-        )}
-
-        {/* One number per file, and they must add up to the row's count — the
-            split moves prints between machines, it does not add or drop any.
-            Everything starts on the file the row is showing, so opening this
-            and closing it again changes nothing. */}
-        {splitting && (
-          <div
-            className="mt-2 space-y-1 rounded border border-bambu-dark-tertiary bg-bambu-dark p-2 text-xs"
-            data-testid={`plan-row-${lineId}-${row.plate_id}-split-panel`}
-          >
-            {options.map((option) => (
-              <label key={option.plate_id} className="flex items-center justify-end gap-2">
-                <span className="text-bambu-gray-light truncate">{optionLabel(option, hiddenLabel)}</span>
-                <input
-                  type="number"
-                  min={0}
-                  data-testid={`plan-row-${lineId}-${row.plate_id}-split-${option.plate_id}`}
-                  value={currentSplit[option.plate_id] ?? 0}
-                  onChange={(e) =>
-                    onSplit({
-                      ...currentSplit,
-                      [option.plate_id]: parseCount(e.currentTarget.value, currentSplit[option.plate_id] ?? 0),
-                    })
-                  }
-                  className="w-16 px-2 py-1 text-right tabular-nums bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white focus:border-bambu-green focus:outline-none"
-                />
-              </label>
-            ))}
-            {splitOff && (
-              <p className="text-right text-amber-300" data-testid={`plan-row-${lineId}-${row.plate_id}-split-error`}>
-                {t('orders.plan.split.sum', { count })}
-              </p>
+          ) : (
+            <p className="text-white font-semibold [overflow-wrap:anywhere]">{plateName(plate, hiddenLabel)}</p>
+          )}
+          <small className="block mt-0.5 text-xs text-bambu-gray" data-testid={`plan-row-${lineId}-${row.plate_id}-plate`}>
+            {plate.plate_index === 0 ? t('orders.plan.row.wholeFile') : t('orders.plan.row.plate', { n: plate.plate_index })}
+            {plate.printer_model && (
+              <>
+                {' · '}
+                <span className={MODEL_CHIP}>{plate.printer_model}</span>
+              </>
             )}
-            <div className="flex justify-end">
+          </small>
+        </td>
+
+        <td className={`${CELL} text-xs text-bambu-gray`}>
+          {row.useful.length > 0 ? row.useful.map((u) => `${u.name} × ${u.count}`).join(', ') : '—'}
+        </td>
+
+        <td className={CELL}>
+          <div className="inline-flex items-center gap-1 whitespace-nowrap">
+            {/* ⚠️ A bare `−` / `+` is invisible to a screen reader and to every test
+                that asks for a control by name — the glyphs carry the whole meaning. */}
+            <button
+              type="button"
+              data-testid={`plan-row-${lineId}-${row.plate_id}-dec`}
+              className={step}
+              aria-label={t('orders.plan.row.decrease')}
+              title={atZero ? t('orders.plan.row.atZero') : undefined}
+              disabled={atZero}
+              onClick={() => onCount(count - 1)}
+            >
+              −
+            </button>
+            <input
+              type="number"
+              min={0}
+              data-testid={`plan-row-${lineId}-${row.plate_id}-count`}
+              value={count}
+              aria-label={t('orders.plan.row.count')}
+              onChange={(e) => onCount(parseCount(e.currentTarget.value, count))}
+              className="w-12 px-1.5 py-1 text-right tabular-nums bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:border-bambu-green focus:outline-none"
+            />
+            <button
+              type="button"
+              data-testid={`plan-row-${lineId}-${row.plate_id}-inc`}
+              className={step}
+              aria-label={t('orders.plan.row.increase')}
+              onClick={() => onCount(count + 1)}
+            >
+              +
+            </button>
+          </div>
+          {planned != null && planned !== count && (
+            <small
+              className="block mt-0.5 text-xs text-amber-700 dark:text-amber-400"
+              data-testid={`plan-row-${lineId}-${row.plate_id}-planned`}
+            >
+              {t('orders.plan.row.planned', { count: planned })}
+            </small>
+          )}
+        </td>
+
+        <td
+          className={`${CELL} text-xs text-bambu-gray tabular-nums whitespace-nowrap`}
+          data-testid={`plan-row-${lineId}-${row.plate_id}-figures`}
+        >
+          <span className="block">{figures.seconds == null ? '—' : formatDuration(figures.seconds)}</span>
+          <span className="block">
+            {figures.hasGrams ? t('orders.plan.row.grams', { grams: figures.grams.toFixed(1) }) : '—'}
+          </span>
+          {showCost && figures.cost != null && <span className="block">{formatMoney(figures.cost, currency)}</span>}
+        </td>
+
+        <td className={CELL}>
+          <div className="flex items-center justify-end gap-1 flex-wrap">
+            {canQueue && (
               <Button
                 size="sm"
-                variant="outline"
-                data-testid={`plan-row-${lineId}-${row.plate_id}-split-apply`}
+                className="whitespace-nowrap"
+                data-testid={`plan-row-${lineId}-${row.plate_id}-queue`}
                 disabled={busy || atZero || tooMany || splitOff}
+                title={
+                  tooMany
+                    ? t('orders.plan.row.tooMany')
+                    : atZero
+                      ? t('orders.plan.row.atZero')
+                      : splitOff
+                        ? t('orders.plan.split.sum', { count })
+                        : undefined
+                }
                 onClick={onEnqueue}
               >
-                {t('orders.plan.split.apply')}
+                {t('orders.plan.row.toQueue', { count })}
               </Button>
-            </div>
+            )}
+            {/* «To printer» opens the file itself — never for a plate the caller may
+                not open, planned or added by hand (WS-13 E1 CL2 / CL6). */}
+            {canPrint && anyOpenable && (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="whitespace-nowrap"
+                data-testid={`plan-row-${lineId}-${row.plate_id}-printer`}
+                onClick={() => (hasAlternatives ? setPickingPrinter(true) : setPrinting({ plate }))}
+              >
+                {t('orders.plan.row.toPrinter')}
+              </Button>
+            )}
+            {offersPanel && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="whitespace-nowrap"
+                aria-expanded={panelOpen}
+                data-testid={`plan-row-${lineId}-${row.plate_id}-split`}
+                onClick={() => setSplitting((open) => !open)}
+              >
+                {toggleLabel}
+              </Button>
+            )}
           </div>
-        )}
 
-        {printing && (
-          <PrintModal
-            mode="add-to-queue"
-            libraryFileId={printing.plate.library_file_id}
-            // Only an openable plate gets here, so this is its file name.
-            archiveName={plateName(printing.plate, hiddenLabel)}
-            preselectedPlateId={printing.plate.plate_index || undefined}
-            projectId={order.id}
-            projectLineId={lineId}
-            // Pinned, not hidden: the operator named the machine in the row's
-            // own menu, and the dialog should still say which one it is.
-            initialSelectedPrinterIds={printing.printerId == null ? undefined : [printing.printerId]}
-            lockPrinterSelection={printing.printerId != null}
-            // Routing, not dispatching: the modal is opened on the printer leg
-            // and kept there, because "to printer…" already answered the only
-            // question the toggle asks.
-            initialDispatchMode="specific"
-            lockDispatchMode
-            onClose={() => setPrinting(null)}
-            onSuccess={() => {
-              setPrinting(null);
-              onQueued();
-            }}
-          />
-        )}
-      </td>
-    </tr>
+          {pickingPrinter && (
+            <PlanPrinterDialog
+              row={row}
+              plate={plate}
+              onClose={() => setPickingPrinter(false)}
+              onNext={(target, printerId) => {
+                setPickingPrinter(false);
+                setPrinting({ plate: target, printerId });
+              }}
+            />
+          )}
+
+          {printing && (
+            <PrintModal
+              mode="add-to-queue"
+              libraryFileId={printing.plate.library_file_id}
+              // Only an openable plate gets here, so this is its file name.
+              archiveName={plateName(printing.plate, hiddenLabel)}
+              preselectedPlateId={printing.plate.plate_index || undefined}
+              projectId={order.id}
+              projectLineId={lineId}
+              // Pinned, not hidden: the operator named the machine in the printer
+              // dialog, and the print dialog should still say which one it is.
+              initialSelectedPrinterIds={printing.printerId == null ? undefined : [printing.printerId]}
+              lockPrinterSelection={printing.printerId != null}
+              // Routing, not dispatching: the modal is opened on the printer leg and
+              // kept there, because "to printer…" already answered its only question.
+              initialDispatchMode="specific"
+              lockDispatchMode
+              onClose={() => setPrinting(null)}
+              onSuccess={() => {
+                setPrinting(null);
+                onQueued();
+              }}
+            />
+          )}
+        </td>
+      </tr>
+
+      {/* One number per file, and they must add up to the row's count — the split
+          moves prints between machines, it does not add or drop any. Everything
+          starts on the file the row is showing, so opening this and closing it
+          again changes nothing. Closing hides the panel and keeps the split. */}
+      {panelOpen && (
+        <tr>
+          <td colSpan={5} className="bg-bambu-dark-tertiary/30 px-3 py-2">
+            <div
+              className="flex flex-wrap items-end gap-3.5 py-1.5 text-xs"
+              data-testid={`plan-row-${lineId}-${row.plate_id}-split-panel`}
+            >
+              {canQueue
+                ? options.map((option) => (
+                    <label key={option.plate_id} className="flex flex-col gap-1 text-bambu-gray-light">
+                      <span className="[overflow-wrap:anywhere]">{optionLabel(option, hiddenLabel)}</span>
+                      <input
+                        type="number"
+                        min={0}
+                        data-testid={`plan-row-${lineId}-${row.plate_id}-split-${option.plate_id}`}
+                        value={currentSplit[option.plate_id] ?? 0}
+                        onChange={(e) =>
+                          onSplit({
+                            ...currentSplit,
+                            [option.plate_id]: parseCount(e.currentTarget.value, currentSplit[option.plate_id] ?? 0),
+                          })
+                        }
+                        className="w-24 px-2 py-1 text-right tabular-nums bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:border-bambu-green focus:outline-none"
+                      />
+                    </label>
+                  ))
+                : proposal != null &&
+                  options.map((option) => (
+                    <span key={option.plate_id} className="text-bambu-gray-light">
+                      {`${optionLabel(option, hiddenLabel)} — ${proposal[option.plate_id] ?? 0}`}
+                    </span>
+                  ))}
+              {proposalText && (
+                <span className="text-bambu-gray" data-testid={`plan-row-${lineId}-${row.plate_id}-proposal`}>
+                  {proposalText}
+                </span>
+              )}
+              {canQueue && proposal != null && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="whitespace-nowrap"
+                  data-testid={`plan-row-${lineId}-${row.plate_id}-apply-farm`}
+                  onClick={() => onSplit({ ...proposal })}
+                >
+                  {t('orders.plan.row.applyFarmSplit')}
+                </Button>
+              )}
+              {canQueue && splitOff && (
+                <p className="text-amber-700 dark:text-amber-400" data-testid={`plan-row-${lineId}-${row.plate_id}-split-error`}>
+                  {t('orders.plan.split.sum', { count })}
+                </p>
+              )}
+              {canQueue && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="whitespace-nowrap"
+                  data-testid={`plan-row-${lineId}-${row.plate_id}-split-apply`}
+                  disabled={busy || atZero || tooMany || splitOff}
+                  onClick={onEnqueue}
+                >
+                  {t('orders.plan.split.apply')}
+                </Button>
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
