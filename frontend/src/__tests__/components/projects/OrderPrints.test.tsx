@@ -7,19 +7,45 @@
  * it under neither. Whatever no line claimed lands under "other prints" from
  * `other_archive_ids`; the leftover group exists only as a defensive net.
  *
- * The other half of this file is the READ: the order names every archive it
- * counts, so the page keeps asking for pages until it holds them all. Reading
- * one page and captioning the shortfall was honest and useless — the figures
- * counted prints the grid could not show.
+ * The READ: the order names every archive it counts, so the page keeps asking for
+ * pages until it holds them all — and when its guard stops the walk short, the
+ * groups say they are counted over what was LOADED (WS-13 E4 F02, R02).
+ *
+ * WS-13 E4 F: the card (plate, printer, date and time), a page per group, the
+ * menu gated as the server gates it (R03), «File under a line» as a dialog, and a
+ * confirmation before a print leaves the order.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
-import type { Order } from '../../../api/client';
+import type { Order, Permission } from '../../../api/client';
 import { OrderPrints } from '../../../components/projects/OrderPrints';
 import { strayZeroTextNodes } from '../../domHelpers';
+import { formatDateTime } from '../../../utils/date';
+
+/** What the mocked `useAuth` grants — reset in `beforeEach`, narrowed per test. */
+const auth = vi.hoisted(() => ({ granted: new Set<string>(), userId: 5 }));
+
+// The menu's «File under a line» follows the ARCHIVE's owner (R03) and the printer
+// names need `printers:read`; the real provider always resolves one admin, so only
+// the hook is replaced, with the provider's own ownership rule.
+vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../contexts/AuthContext')>();
+  return {
+    ...actual,
+    useAuth: () => ({
+      ...actual.useAuth(),
+      hasPermission: (p: Permission) => auth.granted.has(p),
+      canModify: (resource: string, action: string, createdById: number | null | undefined) => {
+        if (auth.granted.has(`${resource}:${action}_all`)) return true;
+        if (auth.granted.has(`${resource}:${action}_own`)) return createdById != null && createdById === auth.userId;
+        return false;
+      },
+    }),
+  };
+});
 
 /** `id` → a minimal archive row, the shape `getProjectArchives` answers with. */
 function rows(ids: number[], lineId: number | null = 10) {
@@ -31,9 +57,28 @@ function rows(ids: number[], lineId: number | null = 10) {
   }));
 }
 
+function lineOrder(ids: number[], over: Record<string, unknown> = {}) {
+  return {
+    id: 1,
+    other_archive_ids: [],
+    lines: [{ id: 10, product_name: 'Flask', quantity: 2, mode: 'product', archive_ids: ids, ...over }],
+  } as unknown as Order;
+}
+
+const cardOf = (name: string) => screen.getByText(name).closest('[data-print-card]') as HTMLElement;
+
+async function openMenu(id: number) {
+  fireEvent.click(await screen.findByTestId(`print-menu-${id}`));
+  return screen.findByRole('menu');
+}
+
 describe('OrderPrints', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    auth.granted = new Set(['projects:update', 'archives:update_all', 'printers:read']);
+    vi.spyOn(api, 'getPrintersWithArchived').mockResolvedValue([
+      { id: 3, name: 'P1S-02', model: 'P1S' },
+    ] as never);
   });
 
   it('groups archives by line from the response and lists the leftovers as other prints', async () => {
@@ -47,8 +92,8 @@ describe('OrderPrints', () => {
       id: 1,
       other_archive_ids: [3],
       lines: [
-        { id: 10, product_name: 'Flask', quantity: 2, archive_ids: [1, 2] },
-        { id: 11, product_name: 'Lid', quantity: 1, archive_ids: [2] },
+        { id: 10, product_name: 'Flask', quantity: 2, mode: 'product', archive_ids: [1, 2] },
+        { id: 11, product_name: 'Lid', quantity: 1, mode: 'parts', archive_ids: [2] },
       ],
     } as unknown as Order;
 
@@ -63,35 +108,40 @@ describe('OrderPrints', () => {
     expect(screen.getAllByText(/attributed/i).length).toBeGreaterThan(0);
   });
 
+  it('heads each group with its line and how many prints it holds', async () => {
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue([...rows([1, 2]), ...rows([3], 11), ...rows([4], null)] as never);
+    const order = {
+      id: 1,
+      other_archive_ids: [4],
+      lines: [
+        { id: 10, product_name: 'Flask', quantity: 2, mode: 'product', archive_ids: [1, 2] },
+        { id: 11, product_name: 'Lid', quantity: 1, mode: 'parts', archive_ids: [3] },
+      ],
+    } as unknown as Order;
+
+    render(<OrderPrints order={order} canEdit />);
+
+    const heading = (id: string) => within(screen.getByTestId(id)).getByRole('heading', { level: 3 });
+    expect((await screen.findByTestId('prints-line-10')).querySelector('h3')).toHaveTextContent('Flask — × 2 2');
+    expect(within(heading('prints-line-10')).getByText('2')).toBeInTheDocument();
+    expect(heading('prints-line-11')).toHaveTextContent('Lid — parts 1');
+    expect(heading('prints-other')).toHaveTextContent('Other prints 1');
+  });
+
   it('says which of two prints under the same line was filed by hand', async () => {
-    // The badge reads `archive.project_line_id`, NOT the group the card is
-    // drawn in. Both of these hang under line 10 — one because an operator
-    // filed it there, one because the server's accounting attributed it — and
-    // a badge derived from the grouping would call both of them "Filed",
-    // erasing the only signal that says whose decision it was.
+    // The badge reads `archive.project_line_id`, NOT the group the card is drawn in.
     vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
       { id: 1, filename: 'by-hand.3mf', status: 'completed', project_line_id: 10 },
       { id: 2, filename: 'by-the-server.3mf', status: 'completed', project_line_id: null },
     ] as never);
 
-    const order = {
-      id: 1,
-      other_archive_ids: [],
-      lines: [{ id: 10, product_name: 'Flask', quantity: 2, archive_ids: [1, 2] }],
-    } as unknown as Order;
-
-    render(<OrderPrints order={order} canEdit />);
+    render(<OrderPrints order={lineOrder([1, 2])} canEdit />);
 
     const group = await screen.findByTestId('prints-line-10');
-    const card = (name: string) => screen.getByText(name).closest('div.relative') as HTMLElement;
-
-    expect(within(card('by-hand.3mf')).getByText('Filed')).toBeInTheDocument();
-    expect(within(card('by-the-server.3mf')).getByText('Attributed')).toBeInTheDocument();
-    // The filed one also names the line it was filed under; the attributed one
-    // has nothing to name, because nobody named it.
-    expect(within(card('by-hand.3mf')).getByText('Filed')).toHaveAttribute('title', 'Flask');
-    expect(within(card('by-the-server.3mf')).getByText('Attributed')).not.toHaveAttribute('title');
-    // Both are in the same group — the badge is the only thing that differs.
+    expect(within(cardOf('by-hand.3mf')).getByText('Filed')).toBeInTheDocument();
+    expect(within(cardOf('by-the-server.3mf')).getByText('Attributed')).toBeInTheDocument();
+    expect(within(cardOf('by-hand.3mf')).getByText('Filed')).toHaveAttribute('title', 'Flask');
+    expect(within(cardOf('by-the-server.3mf')).getByText('Attributed')).not.toHaveAttribute('title');
     expect(group.textContent).toContain('by-hand.3mf');
     expect(group.textContent).toContain('by-the-server.3mf');
   });
@@ -100,15 +150,7 @@ describe('OrderPrints', () => {
     vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
       { id: 7, filename: 'stray.3mf', status: 'completed', project_line_id: null },
     ] as never);
-
-    const order = {
-      id: 1,
-      other_archive_ids: [],
-      lines: [{ id: 10, product_name: 'Flask', quantity: 1, archive_ids: [] }],
-    } as unknown as Order;
-
-    render(<OrderPrints order={order} canEdit />);
-
+    render(<OrderPrints order={lineOrder([])} canEdit />);
     expect((await screen.findByTestId('prints-unlisted')).textContent).toContain('stray.3mf');
   });
 
@@ -118,46 +160,140 @@ describe('OrderPrints', () => {
       { id: 2, filename: 'external print.3mf', status: 'completed', project_line_id: 10, library_file_id: null },
     ] as never);
 
-    const order = {
-      id: 1,
-      other_archive_ids: [],
-      lines: [{ id: 10, product_name: 'Flask', quantity: 2, archive_ids: [1, 2] }],
-    } as unknown as Order;
-
-    render(<OrderPrints order={order} canEdit />);
+    render(<OrderPrints order={lineOrder([1, 2])} canEdit />);
 
     const group = await screen.findByTestId('prints-line-10');
     const hrefs = Array.from(group.querySelectorAll('a')).map((a) => a.getAttribute('href'));
-    // ``file`` is the only param that FILTERS; ``fileName`` just labels the chip.
     expect(hrefs).toContain('/archives?file=42&fileName=linked.3mf');
-    // No library file id means nothing to filter ON, so the link does not
-    // pretend: a bare `?fileName=` opened the whole archive list wearing this
-    // print's name, which reads as a filter that quietly did nothing.
     expect(hrefs).toContain('/archives');
     expect(hrefs).not.toContain('/archives?fileName=external%20print.3mf');
   });
 
+  it('says the plate, the printer and when, on the card', async () => {
+    const when = '2026-09-28T09:42:00Z';
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
+      { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: 10, plate_index: 2, printer_id: 3, completed_at: when, quantity: 6, defective_count: 1 },
+      { id: 2, filename: 'b.3mf', status: 'printing', project_line_id: null, plate_index: 0, printer_id: 99, started_at: when },
+    ] as never);
+
+    render(<OrderPrints order={lineOrder([1, 2])} canEdit />);
+
+    await screen.findByText('a.3mf');
+    const first = cardOf('a.3mf');
+    await waitFor(() => expect(within(first).getByTestId('print-where-1')).toHaveTextContent('P1S-02'));
+    expect(within(first).getByTestId('print-where-1')).toHaveTextContent(`plate 2 · P1S-02 · ${formatDateTime(when)}`);
+    expect(screen.getByTestId('print-defects-1')).toHaveTextContent('6 pcs · 1 defective');
+    // An unknown printer id is skipped, never shown as a number; a whole-file print says no plate.
+    expect(within(cardOf('b.3mf')).getByTestId('print-where-2')).toHaveTextContent(new RegExp(`^${formatDateTime(when)}$`));
+    expect(within(cardOf('b.3mf')).getByText('printing')).toBeInTheDocument();
+  });
+
+  it('asks nothing about printers without the right to read them, and keeps the cards', async () => {
+    auth.granted = new Set(['projects:update', 'archives:update_all']);
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
+      { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: 10, plate_index: 1, printer_id: 3, completed_at: '2026-09-28T09:42:00Z' },
+    ] as never);
+
+    render(<OrderPrints order={lineOrder([1])} canEdit />);
+
+    expect(await screen.findByText('a.3mf')).toBeInTheDocument();
+    expect(api.getPrintersWithArchived).not.toHaveBeenCalled();
+    expect(screen.getByTestId('print-where-1')).not.toHaveTextContent('P1S-02');
+  });
+
+  it('keeps the cards when the printer names cannot be read', async () => {
+    vi.spyOn(api, 'getPrintersWithArchived').mockRejectedValue(new Error('boom'));
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue(rows([1]) as never);
+
+    render(<OrderPrints order={lineOrder([1])} canEdit />);
+
+    expect(await screen.findByText('p1.3mf')).toBeInTheDocument();
+    await waitFor(() => expect(api.getPrintersWithArchived).toHaveBeenCalled());
+    expect(screen.queryByText(/could not/i)).not.toBeInTheDocument();
+  });
+
+  it('says the prints could not be read and offers to try again — not that there are none', async () => {
+    const get = vi.spyOn(api, 'getProjectArchives').mockRejectedValue(new Error('Gateway timeout'));
+
+    render(<OrderPrints order={lineOrder([1])} canEdit />);
+
+    expect(await screen.findByText('Could not load the prints')).toBeInTheDocument();
+    expect(screen.queryByText('No prints yet')).not.toBeInTheDocument();
+    get.mockResolvedValue(rows([1]) as never);
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('p1.3mf')).toBeInTheDocument();
+  });
+
+  it('says there are no prints only when the read succeeded with none', async () => {
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue([] as never);
+    render(<OrderPrints order={lineOrder([])} canEdit />);
+    expect(await screen.findByText('No prints yet')).toBeInTheDocument();
+  });
+
+  describe('a page per group (F02, R02)', () => {
+    it('shows 24 of a group’s prints with the group’s own pager, and the rest on the next page', async () => {
+      const all = rows(Array.from({ length: 30 }, (_, i) => i + 1));
+      vi.spyOn(api, 'getProjectArchives').mockResolvedValue(all as never);
+
+      render(<OrderPrints order={lineOrder(all.map((a) => a.id))} canEdit />);
+
+      const group = await screen.findByTestId('prints-line-10');
+      expect(group.querySelectorAll('[data-print-card]')).toHaveLength(24);
+      expect(within(group).getByText('Showing 1-24 of 30 prints')).toBeInTheDocument();
+      fireEvent.click(within(group).getByRole('button', { name: /next page/i }));
+      expect(group.querySelectorAll('[data-print-card]')).toHaveLength(6);
+      expect(within(group).getByText('Showing 25-30 of 30 prints')).toBeInTheDocument();
+    });
+
+    it('calls a set the walk cut short «loaded», and says the order’s prints are not all here', async () => {
+      const page = rows(Array.from({ length: 500 }, (_, i) => i + 1));
+      vi.spyOn(api, 'getProjectArchives').mockResolvedValue(page as never);
+
+      render(<OrderPrints order={lineOrder([...page.map((a) => a.id), 9999])} canEdit />);
+
+      const group = await screen.findByTestId('prints-line-10');
+      expect(await within(group).findByText('Showing 1-24 of 500 loaded prints')).toBeInTheDocument();
+      expect(screen.getByText('Not all of the order’s prints are loaded')).toBeInTheDocument();
+      expect(screen.getByTestId('prints-load-older')).toBeInTheDocument();
+    });
+
+    it('does not take the short last page as the total when ids are missing from it', async () => {
+      // A short page is the end of the history: the missing id was deleted or moved,
+      // so the set is complete and says «of N», N being what arrived — not the ids named.
+      vi.spyOn(api, 'getProjectArchives').mockResolvedValue(rows([1, 2]) as never);
+      render(<OrderPrints order={lineOrder([1, 2, 3])} canEdit />);
+      const group = await screen.findByTestId('prints-line-10');
+      expect(within(group).getByText('Showing 1-2 of 2 prints')).toBeInTheDocument();
+      expect(screen.queryByText('Not all of the order’s prints are loaded')).not.toBeInTheDocument();
+    });
+
+    it('clamps a group’s page when its set shrinks under it', async () => {
+      const all = rows(Array.from({ length: 30 }, (_, i) => i + 1));
+      const get = vi.spyOn(api, 'getProjectArchives').mockResolvedValue(all as never);
+
+      const { rerender } = render(<OrderPrints order={lineOrder(all.map((a) => a.id))} canEdit />);
+      const group = await screen.findByTestId('prints-line-10');
+      fireEvent.click(within(group).getByRole('button', { name: /next page/i }));
+      expect(group.querySelectorAll('[data-print-card]')).toHaveLength(6);
+
+      // Six prints left the order: the group has one page, and page two is gone.
+      get.mockResolvedValue(all.slice(0, 24) as never);
+      rerender(<OrderPrints order={lineOrder(all.slice(0, 24).map((a) => a.id))} canEdit />);
+      await waitFor(() => expect(screen.getByTestId('prints-line-10').querySelectorAll('[data-print-card]')).toHaveLength(24));
+      expect(within(screen.getByTestId('prints-line-10')).getByText('Showing 1-24 of 24 prints')).toBeInTheDocument();
+    });
+  });
+
   it('keeps reading pages until every archive the order names is loaded', async () => {
-    // A FULL page says nothing about whether it was the last one, so the walk
-    // asks again; the short second page ends it. 750 prints, two reads — where
-    // the old page read 500 and captioned the missing 250 as "truncated".
     const all = rows(Array.from({ length: 750 }, (_, i) => i + 1));
     const getArchives = vi
       .spyOn(api, 'getProjectArchives')
-      .mockImplementation((async (_id: number, limit = 500, offset = 0) =>
-        all.slice(offset, offset + limit)) as never);
+      .mockImplementation((async (_id: number, limit = 500, offset = 0) => all.slice(offset, offset + limit)) as never);
 
-    const order = {
-      id: 1,
-      other_archive_ids: [],
-      lines: [{ id: 10, product_name: 'Flask', quantity: 750, archive_ids: all.map((a) => a.id) }],
-    } as unknown as Order;
-
-    render(<OrderPrints order={order} canEdit />);
+    render(<OrderPrints order={lineOrder(all.map((a) => a.id))} canEdit />);
 
     const group = await screen.findByTestId('prints-line-10');
-    // The last print of the SECOND page: proof the walk did not stop at 500.
-    await waitFor(() => expect(group.textContent).toContain('p750.3mf'));
+    await waitFor(() => expect(within(group).getByText('Showing 1-24 of 750 prints')).toBeInTheDocument());
     expect(getArchives).toHaveBeenCalledTimes(2);
     expect(getArchives).toHaveBeenNthCalledWith(1, 1, 500, 0);
     expect(getArchives).toHaveBeenNthCalledWith(2, 1, 500, 500);
@@ -165,148 +301,145 @@ describe('OrderPrints', () => {
   });
 
   it('stops at its page guard and offers the rest as a button', async () => {
-    // The stub answers every offset with the SAME full page, so the walk runs
-    // to its twenty-page cap without ten thousand cards in jsdom. Overlapping
-    // pages are real — rows arrive mid-walk — which is why the loader keys
-    // archives by id and only the 500 distinct ones render.
     const page = rows(Array.from({ length: 500 }, (_, i) => i + 1));
     const getArchives = vi.spyOn(api, 'getProjectArchives').mockResolvedValue(page as never);
 
-    const order = {
-      id: 1,
-      other_archive_ids: [],
-      // 9999 is never answered, so the walk can never satisfy the order and
-      // stops only because the guard says so.
-      lines: [{ id: 10, product_name: 'Flask', quantity: 600, archive_ids: [...page.map((a) => a.id), 9999] }],
-    } as unknown as Order;
-
-    render(<OrderPrints order={order} canEdit />);
+    render(<OrderPrints order={lineOrder([...page.map((a) => a.id), 9999])} canEdit />);
 
     const button = await screen.findByTestId('prints-load-older');
     expect(getArchives).toHaveBeenCalledTimes(20);
     expect(getArchives).not.toHaveBeenCalledWith(1, 500, 20 * 500);
-
     fireEvent.click(button);
-
-    // One more page than last time — the button buys pages, it does not restate
-    // the shortfall.
     await waitFor(() => expect(getArchives).toHaveBeenCalledWith(1, 500, 20 * 500));
   });
 
   it('keeps the button away while one page holds everything', async () => {
-    vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
-      { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: 10 },
-    ] as never);
-
-    const order = {
-      id: 1,
-      other_archive_ids: [],
-      lines: [{ id: 10, product_name: 'Flask', quantity: 1, archive_ids: [1] }],
-    } as unknown as Order;
-
-    render(<OrderPrints order={order} canEdit />);
-
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue(rows([1]) as never);
+    render(<OrderPrints order={lineOrder([1])} canEdit />);
     expect(await screen.findByTestId('prints-line-10')).toBeInTheDocument();
     expect(screen.queryByTestId('prints-load-older')).not.toBeInTheDocument();
-    // ⚠️ No bare `0` anywhere in the grid. `count && <X/>` renders the number
-    // when the count is zero, and a list is exactly where an empty one is
-    // normal — the digit then sits in the layout looking like data.
     expect(strayZeroTextNodes(screen.getByTestId('prints-line-10'))).toHaveLength(0);
   });
 
-  // ⚠️ The card's actions live in the SHARED `CardActionMenu` now, not in a
-  // hand-rolled panel: `role="menu"`, roving arrow keys, Escape, and one z-stack
-  // decided in one place. These two tests are what says the actions still reach
-  // the API through it.
-  it('files a print under a line from its menu', async () => {
+  it('files a print under a line in a dialog, and sends the order with the line', async () => {
     vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
-      { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: null },
+      { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: null, plate_index: 3 },
     ] as never);
     const update = vi.spyOn(api, 'updateArchive').mockResolvedValue({} as never);
     const order = {
       id: 1,
       other_archive_ids: [1],
-      lines: [{ id: 10, product_name: 'Flask', quantity: 1, archive_ids: [] }],
+      lines: [
+        { id: 10, product_name: 'Flask', quantity: 4, mode: 'product', archive_ids: [], configuration: { choices: [], changed_parts: [] } },
+        { id: 11, product_name: 'Lid', quantity: 1, mode: 'parts', archive_ids: [] },
+      ],
     } as unknown as Order;
-    vi.spyOn(api, 'getOrder').mockResolvedValue(order as never);
 
     render(<OrderPrints order={order} canEdit />);
     await screen.findByTestId('prints-other');
 
-    fireEvent.click(screen.getByTestId('print-menu-1'));
-    fireEvent.click(await screen.findByRole('menuitem', { name: /file under/i }));
-    // The picker reads the order through `useOrderDetail`; wait for its lines.
-    await screen.findByRole('option', { name: /Flask/ });
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: '10' } });
-
-    // ⚠️ `project_id` travels with the line — a bare line change on an archive
-    // whose order is being re-stated is a 400.
+    fireEvent.click(within(await openMenu(1)).getByRole('menuitem', { name: /file under/i }));
+    const dialog = await screen.findByRole('dialog', { name: 'File under a line' });
+    expect(dialog).toHaveTextContent('a.3mf · plate 3');
+    const select = within(dialog).getByLabelText('Line');
+    expect(within(select).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      'No line (other prints)',
+      'Flask — × 4',
+      'Lid — parts',
+    ]);
+    const submit = within(dialog).getByRole('button', { name: 'File' });
+    expect(submit).toBeDisabled();
+    fireEvent.change(select, { target: { value: '10' } });
+    fireEvent.click(submit);
+    // ⚠️ `project_id` travels with the line — a bare line change is a 400.
     await waitFor(() => expect(update).toHaveBeenCalledWith(1, { project_id: 1, project_line_id: 10 }));
   });
 
-  it('takes a print off the order from its menu', async () => {
-    vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
-      { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: 10 },
-    ] as never);
-    const remove = vi.spyOn(api, 'removeArchivesFromProject').mockResolvedValue({} as never);
-    const order = {
-      id: 1,
-      other_archive_ids: [],
-      lines: [{ id: 10, product_name: 'Flask', quantity: 1, archive_ids: [1] }],
-    } as unknown as Order;
+  it('shows a refusal of the filing above the dialog’s footer', async () => {
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue(rows([1], null) as never);
+    vi.spyOn(api, 'updateArchive').mockRejectedValue(new Error('That line belongs to another order'));
+    render(<OrderPrints order={{ ...lineOrder([]), other_archive_ids: [1] } as Order} canEdit />);
+    fireEvent.click(within(await openMenu(1)).getByRole('menuitem', { name: /file under/i }));
+    const dialog = await screen.findByRole('dialog', { name: 'File under a line' });
+    fireEvent.change(within(dialog).getByLabelText('Line'), { target: { value: '10' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'File' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('That line belongs to another order');
+  });
 
-    render(<OrderPrints order={order} canEdit />);
+  describe('who may file a print (R03)', () => {
+    const three = [
+      { id: 1, filename: 'mine.3mf', status: 'completed', project_line_id: 10, created_by_id: 5 },
+      { id: 2, filename: 'theirs.3mf', status: 'completed', project_line_id: 10, created_by_id: 8 },
+      { id: 3, filename: 'nobodys.3mf', status: 'completed', project_line_id: 10, created_by_id: null },
+    ];
+    const offers = async (id: number) => {
+      const menu = await openMenu(id);
+      const has = within(menu).queryByRole('menuitem', { name: /file under/i }) != null;
+      fireEvent.keyDown(menu, { key: 'Escape' });
+      return has;
+    };
+
+    it('offers it for an own print only, with «update own»', async () => {
+      auth.granted = new Set(['projects:update', 'archives:update_own']);
+      vi.spyOn(api, 'getProjectArchives').mockResolvedValue(three as never);
+      render(<OrderPrints order={lineOrder([1, 2, 3])} canEdit />);
+      await screen.findByText('mine.3mf');
+      expect(await offers(1)).toBe(true);
+      expect(await offers(2)).toBe(false);
+      expect(await offers(3)).toBe(false);
+    });
+
+    it('offers it for every print with «update all»', async () => {
+      vi.spyOn(api, 'getProjectArchives').mockResolvedValue(three as never);
+      render(<OrderPrints order={lineOrder([1, 2, 3])} canEdit />);
+      await screen.findByText('mine.3mf');
+      expect(await offers(1)).toBe(true);
+      expect(await offers(2)).toBe(true);
+      expect(await offers(3)).toBe(true);
+    });
+  });
+
+  it('asks before a print leaves the order, naming it and what happens to it', async () => {
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue(rows([1]) as never);
+    const remove = vi.spyOn(api, 'removeArchivesFromProject').mockResolvedValue({} as never);
+    render(<OrderPrints order={lineOrder([1])} canEdit />);
     await screen.findByTestId('prints-line-10');
 
-    const trigger = screen.getByTestId('print-menu-1');
-    expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
-    fireEvent.click(trigger);
-    fireEvent.click(await screen.findByRole('menuitem', { name: /remove from/i }));
-
+    expect(screen.getByTestId('print-menu-1')).toHaveAttribute('aria-haspopup', 'menu');
+    fireEvent.click(within(await openMenu(1)).getByRole('menuitem', { name: /remove from/i }));
+    const ask = await screen.findByRole('dialog', { name: 'Remove the print «p1.3mf» from the order?' });
+    expect(ask).toHaveTextContent(
+      'The print stays in the archive. Its usable parts become free stock. A print whose output has already been received cannot be removed.',
+    );
+    expect(remove).not.toHaveBeenCalled();
+    fireEvent.click(within(ask).getByRole('button', { name: 'Remove' }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith(1, [1]));
   });
 
   it('will not unlink the same print twice while the first request is in flight', async () => {
-    vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
-      { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: 10 },
-    ] as never);
-    // Never settles, so the menu item stays in its pending state for the assertion.
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue(rows([1]) as never);
     const remove = vi.spyOn(api, 'removeArchivesFromProject').mockReturnValue(new Promise(() => {}) as never);
-    const order = {
-      id: 1,
-      other_archive_ids: [],
-      lines: [{ id: 10, product_name: 'Flask', quantity: 1, archive_ids: [1] }],
-    } as unknown as Order;
-
-    render(<OrderPrints order={order} canEdit />);
+    render(<OrderPrints order={lineOrder([1])} canEdit />);
     await screen.findByTestId('prints-line-10');
-    fireEvent.click(screen.getByTestId('print-menu-1'));
-
-    const item = await screen.findByRole('menuitem', { name: /remove from/i });
-    fireEvent.click(item);
-    await waitFor(() => expect(item).toBeDisabled());
-
-    // The second click is the one the hand-rolled button used to refuse and the
-    // ported menu item did not.
-    fireEvent.click(item);
+    fireEvent.click(within(await openMenu(1)).getByRole('menuitem', { name: /remove from/i }));
+    const ask = await screen.findByRole('dialog', { name: 'Remove the print «p1.3mf» from the order?' });
+    const confirm = within(ask).getByRole('button', { name: 'Remove' });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
+    fireEvent.click(confirm);
     expect(remove).toHaveBeenCalledTimes(1);
   });
 
   it('starts a different order at the first page rather than at the cap bought on the last one', async () => {
-    // A full page, so the walk always reports `truncated` and the button shows.
     const page = rows(Array.from({ length: 500 }, (_, i) => i + 1));
     const get = vi.spyOn(api, 'getProjectArchives').mockResolvedValue(page as never);
     const order = (id: number) =>
-      ({ id, other_archive_ids: [], lines: [{ id: 10, product_name: 'F', quantity: 1, archive_ids: [] }] }) as
-        unknown as Order;
+      ({ id, other_archive_ids: [], lines: [{ id: 10, product_name: 'F', quantity: 1, archive_ids: [] }] }) as unknown as Order;
 
     const { rerender } = render(<OrderPrints order={order(1)} canEdit={false} />);
     fireEvent.click(await screen.findByTestId('prints-load-older'));
     await waitFor(() => expect(get.mock.calls.length).toBeGreaterThan(20));
 
-    // ⚠️ The cap is per order. Reset in an effect it would survive one render of
-    // the NEW order — long enough to issue a 21-page walk of somebody else's
-    // history before the reset landed.
     get.mockClear();
     rerender(<OrderPrints order={order(2)} canEdit={false} />);
     await waitFor(() => expect(get).toHaveBeenCalled());
@@ -314,9 +447,9 @@ describe('OrderPrints', () => {
     expect(get.mock.calls.every((call) => call[0] === 2)).toBe(true);
   });
 
-  it('shows how many came out bad and records defects from the card menu', async () => {
+  it('shows how many came out bad and records defects in the framed dialog', async () => {
     vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
-      { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: 10, quantity: 6, defective_count: 2 },
+      { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: 10, quantity: 6, defective_count: 2, plate_index: 1 },
     ] as never);
     vi.spyOn(api, 'getOrderPrintParts').mockResolvedValue({
       archive_id: 1,
@@ -330,17 +463,13 @@ describe('OrderPrints', () => {
     const record = vi.spyOn(api, 'recordOrderPrintDefects').mockResolvedValue({
       archive_id: 1, quantity: 6, defective_count: 3, parts: [],
     });
-    const order = {
-      id: 1,
-      other_archive_ids: [],
-      lines: [{ id: 10, product_name: 'Flask', quantity: 2, archive_ids: [1] }],
-    } as unknown as Order;
 
-    render(<OrderPrints order={order} canEdit />);
+    render(<OrderPrints order={lineOrder([1])} canEdit />);
 
     expect((await screen.findByTestId('print-defects-1')).textContent).toContain('2 defective');
-    fireEvent.click(screen.getByTestId('print-menu-1'));
-    fireEvent.click(await screen.findByText('Defects…'));
+    fireEvent.click(within(await openMenu(1)).getByText('Defects…'));
+    const dialog = await screen.findByRole('dialog', { name: 'Defects in this print' });
+    expect(dialog).toHaveTextContent('a.3mf · plate 1 · 6 pcs');
 
     const lid = (await screen.findByTestId('part-defective-11')) as HTMLInputElement;
     fireEvent.change(lid, { target: { value: '1' } });
@@ -349,7 +478,6 @@ describe('OrderPrints', () => {
     await waitFor(() =>
       expect(record).toHaveBeenCalledWith(1, 1, { parts: [{ id: 11, defective: 1 }, { id: 12, defective: 2 }] }),
     );
-    // The grid re-reads after the save.
     await waitFor(() => expect(api.getProjectArchives).toHaveBeenCalledTimes(2));
   });
 
@@ -357,19 +485,13 @@ describe('OrderPrints', () => {
     vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
       { id: 2, filename: 'b.3mf', status: 'completed', project_line_id: 10, quantity: 3, defective_count: 0 },
     ] as never);
-    vi.spyOn(api, 'getOrderPrintParts').mockResolvedValue({
-      archive_id: 2, quantity: 3, defective_count: 0, parts: [],
-    });
+    vi.spyOn(api, 'getOrderPrintParts').mockResolvedValue({ archive_id: 2, quantity: 3, defective_count: 0, parts: [] });
     const record = vi.spyOn(api, 'recordOrderPrintDefects').mockResolvedValue({
       archive_id: 2, quantity: 3, defective_count: 1, parts: [],
     });
-    const order = {
-      id: 1, other_archive_ids: [], lines: [{ id: 10, product_name: 'Flask', quantity: 2, archive_ids: [2] }],
-    } as unknown as Order;
 
-    render(<OrderPrints order={order} canEdit />);
-    fireEvent.click(await screen.findByTestId('print-menu-2'));
-    fireEvent.click(await screen.findByText('Defects…'));
+    render(<OrderPrints order={lineOrder([2])} canEdit />);
+    fireEvent.click(within(await openMenu(2)).getByText('Defects…'));
     fireEvent.change(await screen.findByTestId('defective-count-input'), { target: { value: '1' } });
     fireEvent.click(screen.getByTestId('print-defects-save'));
 
@@ -377,8 +499,6 @@ describe('OrderPrints', () => {
   });
 
   it('a failed parts fetch says so and offers a retry instead of hanging on Loading', async () => {
-    // `const { data } = useQuery(...)` with no error branch left the dialog on
-    // «Loading…» for ever, Save disabled and Cancel the only exit.
     vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
       { id: 3, filename: 'c.3mf', status: 'completed', project_line_id: 10, quantity: 2, defective_count: 0 },
     ] as never);
@@ -391,16 +511,10 @@ describe('OrderPrints', () => {
         defective_count: 0,
         parts: [{ id: 31, name: 'lid', name_key: 'lid', quantity: 2, defective: 0 }],
       });
-    const order = {
-      id: 1, other_archive_ids: [], lines: [{ id: 10, product_name: 'Flask', quantity: 1, archive_ids: [3] }],
-    } as unknown as Order;
 
-    render(<OrderPrints order={order} canEdit />);
-    fireEvent.click(await screen.findByTestId('print-menu-3'));
-    fireEvent.click(await screen.findByText('Defects…'));
+    render(<OrderPrints order={lineOrder([3])} canEdit />);
+    fireEvent.click(within(await openMenu(3)).getByText('Defects…'));
 
-    // The boundary already translated the sentence — it is rendered, never
-    // branched on.
     expect(await screen.findByText('Print not found in this order')).toBeInTheDocument();
     expect(screen.getByTestId('print-defects-save')).toBeDisabled();
     expect(screen.getByText('Cancel')).toBeInTheDocument();
@@ -413,17 +527,8 @@ describe('OrderPrints', () => {
   });
 
   it('offers no menu at all without the permission', async () => {
-    vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
-      { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: 10 },
-    ] as never);
-    const order = {
-      id: 1,
-      other_archive_ids: [],
-      lines: [{ id: 10, product_name: 'Flask', quantity: 1, archive_ids: [1] }],
-    } as unknown as Order;
-
-    render(<OrderPrints order={order} canEdit={false} />);
-
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue(rows([1]) as never);
+    render(<OrderPrints order={lineOrder([1])} canEdit={false} />);
     await screen.findByTestId('prints-line-10');
     expect(screen.queryByTestId('print-menu-1')).not.toBeInTheDocument();
   });

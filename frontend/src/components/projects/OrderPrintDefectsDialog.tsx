@@ -6,7 +6,7 @@ import type { Archive, DefectsWriteBody } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
 import { DefectsFields } from '../DefectsFields';
-import { Modal } from '../Modal';
+import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 interface OrderPrintDefectsDialogProps {
@@ -20,6 +20,9 @@ interface OrderPrintDefectsDialogProps {
  * each, saved under the ORDER's permission through the order route — the list
  * this card came from never carries rows, and the operator editing an order
  * need not hold the archive permission for a print somebody else started.
+ *
+ * WS-13 E4 F09 (F11): the Workshop frame, «<file> · plate N · N pcs» under the
+ * title; the fields, their limits, the retry and the invalidation are unchanged.
  */
 export function OrderPrintDefectsDialog({ orderId, archive, onClose }: OrderPrintDefectsDialogProps) {
   const { t } = useTranslation();
@@ -71,47 +74,60 @@ export function OrderPrintDefectsDialog({ orderId, archive, onClose }: OrderPrin
     onError: (e: Error) => showToast(e.message, 'error'),
   });
 
+  const name = archive.print_name || archive.filename;
+  const subtitle = [
+    name,
+    (archive.plate_index ?? 0) > 0 ? t('orders.prints.plate', { n: archive.plate_index }) : null,
+    t('orders.prints.pieces', { count: archive.quantity }),
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
   return (
-    <Modal onClose={onClose} title={t('orders.prints.defects.title')} size="sm">
-      <div className="p-4 space-y-3">
-        <p className="text-sm text-white truncate">{archive.print_name || archive.filename}</p>
-        {data ? (
-          <DefectsFields
-            parts={data.parts}
-            values={values}
-            onChange={(id, next) => setValues((prev) => ({ ...prev, [id]: next }))}
-            quantity={data.quantity}
-            flat={flat}
-            onFlatChange={setFlat}
-          />
-        ) : isError ? (
-          // A failed parts fetch used to leave the dialog on «Loading…» for
-          // ever, with Save disabled and Cancel the only exit. The message is
-          // already translated by the API boundary — rendered, never branched on.
-          <div className="space-y-2" data-testid="print-defects-error">
-            <p className="text-sm text-red-400">{(error as Error)?.message}</p>
-            <Button type="button" variant="secondary" onClick={() => refetch()} disabled={isFetching}>
-              {t('common.retry')}
-            </Button>
-          </div>
-        ) : (
-          <p className="text-sm text-bambu-gray">{t('common.loading')}</p>
-        )}
-      </div>
-      <div className="p-4 border-t border-bambu-dark-tertiary flex gap-3">
-        <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
-          {t('common.cancel')}
-        </Button>
-        <Button
-          type="button"
-          onClick={() => save.mutate()}
-          disabled={!data || save.isPending}
-          className="flex-1"
-          data-testid="print-defects-save"
-        >
-          {t('orders.prints.defects.save')}
-        </Button>
-      </div>
-    </Modal>
+    <WorkshopDialog
+      title={t('orders.prints.defects.title')}
+      subtitle={subtitle}
+      size="sm"
+      pending={save.isPending}
+      onClose={onClose}
+      footer={
+        <>
+          <Button type="button" variant="secondary" onClick={onClose}>
+            {t('common.cancel')}
+          </Button>
+          <Button
+            type="button"
+            onClick={() => save.mutate()}
+            disabled={!data || save.isPending}
+            data-testid="print-defects-save"
+          >
+            {t('orders.prints.defects.save')}
+          </Button>
+        </>
+      }
+    >
+      {data ? (
+        <DefectsFields
+          parts={data.parts}
+          values={values}
+          onChange={(id, next) => setValues((prev) => ({ ...prev, [id]: next }))}
+          quantity={data.quantity}
+          flat={flat}
+          onFlatChange={setFlat}
+        />
+      ) : isError ? (
+        // A failed parts fetch used to leave the dialog on «Loading…» for ever, with
+        // Save disabled and Cancel the only exit. The message is already translated by
+        // the API boundary — rendered, never branched on.
+        <div className="space-y-2" data-testid="print-defects-error">
+          <p className="text-sm text-red-400">{(error as Error)?.message}</p>
+          <Button type="button" variant="secondary" onClick={() => refetch()} disabled={isFetching}>
+            {t('common.retry')}
+          </Button>
+        </div>
+      ) : (
+        <p className="text-sm text-bambu-gray">{t('common.loading')}</p>
+      )}
+    </WorkshopDialog>
   );
 }

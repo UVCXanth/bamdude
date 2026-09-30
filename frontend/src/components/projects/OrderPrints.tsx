@@ -2,15 +2,21 @@ import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
-import { Package, Unlink } from 'lucide-react';
+import { Package } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Archive, Order, ProjectLine } from '../../api/client';
+import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
-import { formatDateOnly } from '../../utils/date';
+import { formatDateTime } from '../../utils/date';
 import { getArchiveStatusBadge } from '../../utils/archiveStatus';
+import { Button } from '../Button';
 import { CardActionMenu, CardActionMenuItem } from '../CardActionMenu';
+import { ConfirmModal } from '../ConfirmModal';
 import { LoadingBlock } from '../LoadingBlock';
-import { OrderLinePicker } from '../pickers/OrderLinePicker';
+import { PaginationBar } from '../PaginationBar';
+import { Select } from '../Select';
+import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
+import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { OrderPrintDefectsDialog } from './OrderPrintDefectsDialog';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
@@ -25,6 +31,9 @@ interface Group {
   title: string;
   archives: Archive[];
 }
+
+/** A group's page size until the operator picks another (WS-13 E4 F02). */
+const GROUP_PAGE = 24;
 
 /** What one page of `getProjectArchives` asks for.
  *
@@ -101,22 +110,24 @@ async function loadOrderArchives(orderId: number, named: Set<number>, maxPages: 
  */
 export function OrderPrints({ order, canEdit }: OrderPrintsProps) {
   // ⚠️ **Keyed by the order, so a different order is a different component.**
-  // Everything below that is per-order state — the `extraPages` cap — then
-  // starts at zero BEFORE the first render of the new order, not after it. An
-  // effect could only reset it afterwards, and by then the render in between had
-  // already asked for `['project-archives', the new order, the OLD cap]`: one
-  // twenty-page walk of somebody else's history, fired for nothing, and a second
-  // fetch behind it once the effect landed.
+  // Everything below that is per-order state — the `extraPages` cap, each group's
+  // page — then starts at zero BEFORE the first render of the new order, not after
+  // it. An effect could only reset it afterwards, and by then the render in between
+  // had already asked for `['project-archives', the new order, the OLD cap]`.
   return <OrderPrintsOf key={order.id} order={order} canEdit={canEdit} />;
+}
+
+/** The title of a line's group — «<product> — × <quantity>», or «— parts» for a parts line. */
+function lineTitle(line: ProjectLine, parts: string): string {
+  return `${line.product_name} — ${line.mode === 'parts' ? parts : `× ${line.quantity}`}`;
 }
 
 function OrderPrintsOf({ order, canEdit }: OrderPrintsProps) {
   const { t } = useTranslation();
+  const { hasPermission } = useAuth();
 
   // Every archive the order NAMES — the walk's own finish line, and the same
-  // set the figures above were computed from. `pick()` drops an id it cannot
-  // resolve in silence, so a page that stopped short showed fewer prints than
-  // the order claimed and looked wrong rather than incomplete.
+  // set the figures above were computed from.
   const named = useMemo(() => {
     const ids = new Set<number>();
     for (const line of order.lines) for (const id of line.archive_ids ?? []) ids.add(id);
@@ -125,34 +136,40 @@ function OrderPrintsOf({ order, canEdit }: OrderPrintsProps) {
   }, [order]);
 
   // Pages bought by hand past the guard. In the key, so a click is a fetch —
-  // `placeholderData` keeps the prints on screen while it runs, rather than
-  // dropping the grid back to its spinner.
+  // `placeholderData` keeps the prints on screen while it runs.
   //
-  // ⚠️ **This is a bigger CAP, not the next page.** Clicking "load older
-  // prints" re-walks from offset 0 with `MAX_PAGES + extraPages` allowed;
-  // nothing is paged incrementally. Offset paging over `created_at desc`
-  // shifts under a farm that is still printing, so resuming from where the
-  // last walk stopped would skip whatever moved across the boundary — and the
-  // id-keyed map makes re-reading the pages already in hand cost nothing but
-  // the requests.
-  //
-  // ⚠️ The cap belongs to ONE order, and the `key` on the wrapper above is what
-  // enforces that — see the note there before replacing it with an effect.
+  // ⚠️ **This is a bigger CAP, not the next page.** Clicking "load older prints"
+  // re-walks from offset 0 with `MAX_PAGES + extraPages` allowed; offset paging over
+  // `created_at desc` shifts under a farm that is still printing, so resuming from
+  // where the last walk stopped would skip whatever moved across the boundary.
   const [extraPages, setExtraPages] = useState(0);
 
-  const { data, isLoading, isFetching } = useQuery({
+  const { data, isLoading, isError, isFetching, refetch } = useQuery({
     queryKey: ['project-archives', order.id, extraPages],
     queryFn: () => loadOrderArchives(order.id, named, MAX_PAGES + extraPages),
-    // ⚠️ Placeholder only from the SAME order. `(prev) => prev` keeps the last
-    // data of whatever this observer held, and on a navigation that is the
-    // PREVIOUS order's prints — rendered under the new order's headings, with
-    // its ids resolved against the wrong `named` set, until the fetch lands.
-    // The second argument is the query the placeholder would come from, so the
-    // order id can be read off its key.
+    // ⚠️ Placeholder only from the SAME order: `(prev) => prev` would render the
+    // previous order's prints under this order's headings until the fetch lands.
     placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === order.id ? prev : undefined),
   });
   const archives = data?.archives;
   const truncated = data?.truncated ?? false;
+
+  // The printer's name on a card (F04, R03): the list the Archives page reads, archived
+  // machines included — asked only with the right to read printers. Without it, while
+  // it is read, when it fails or for an id it does not know, the name is simply left
+  // out: it never hides a card and never becomes an error of the tab.
+  const canSeePrinters = hasPermission('printers:read');
+  const { data: printers } = useQuery({
+    queryKey: ['printers', 'withArchived'],
+    queryFn: api.getPrintersWithArchived,
+    enabled: canSeePrinters,
+  });
+  const printerNames = useMemo(() => new Map((printers ?? []).map((p) => [p.id, p.name])), [printers]);
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+
+  // One page per group, by the group's key. Clamped on every render to the pages the
+  // group has NOW — a print unlinked, moved or loaded changes that under the page.
+  const [paging, setPaging] = useState<Record<string, { page: number; perPage: number }>>({});
 
   const byId = new Map((archives ?? []).map((archive) => [archive.id, archive]));
   const pick = (ids: number[]): Archive[] =>
@@ -169,7 +186,7 @@ function OrderPrintsOf({ order, canEdit }: OrderPrintsProps) {
       groups.push({
         key: `line-${line.id}`,
         testId: `prints-line-${line.id}`,
-        title: `${line.product_name} × ${line.quantity}`,
+        title: lineTitle(line, t('orders.prints.partsGroup')),
         archives: items,
       });
     }
@@ -178,61 +195,93 @@ function OrderPrintsOf({ order, canEdit }: OrderPrintsProps) {
   const other = pick(order.other_archive_ids ?? []);
   for (const item of other) claimed.add(item.id);
   if (other.length > 0) {
-    groups.push({
-      key: 'other',
-      testId: 'prints-other',
-      title: t('orders.prints.otherPrints'),
-      archives: other,
-    });
+    groups.push({ key: 'other', testId: 'prints-other', title: t('orders.prints.otherPrints'), archives: other });
   }
 
   const unlisted = (archives ?? []).filter((archive) => !claimed.has(archive.id));
   if (unlisted.length > 0) {
-    groups.push({
-      key: 'unlisted',
-      testId: 'prints-unlisted',
-      title: t('orders.prints.unlisted'),
-      archives: unlisted,
-    });
+    groups.push({ key: 'unlisted', testId: 'prints-unlisted', title: t('orders.prints.unlisted'), archives: unlisted });
   }
+
+  const setGroupPage = (key: string, next: { page: number; perPage: number }) =>
+    setPaging((prev) => ({ ...prev, [key]: next }));
 
   return (
     // No heading of its own — the «Prints» tab names it (WS-13 E3 F05).
     <section className="space-y-3">
+      {isError && data && <RefreshFailedNote onRetry={() => void refetch()} />}
 
       {truncated && (
-        <button
-          type="button"
-          data-testid="prints-load-older"
-          onClick={() => setExtraPages((pages) => pages + 1)}
-          disabled={isFetching}
-          className="rounded-lg border border-bambu-dark-tertiary px-3 py-1.5 text-xs text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors disabled:opacity-50"
-        >
-          {t('orders.prints.loadOlder')}
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-sm text-bambu-gray">{t('orders.prints.partial')}</p>
+          <button
+            type="button"
+            data-testid="prints-load-older"
+            onClick={() => setExtraPages((pages) => pages + 1)}
+            disabled={isFetching}
+            className="rounded-lg border border-bambu-dark-tertiary px-3 py-1.5 text-xs text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors disabled:opacity-50"
+          >
+            {t('orders.prints.loadOlder')}
+          </button>
+        </div>
       )}
 
       {isLoading ? (
         <LoadingBlock label={t('common.loading')} className="py-4 text-bambu-gray" />
+      ) : isError && !data ? (
+        <div className="flex flex-wrap items-center gap-3 py-2 text-sm">
+          <p className="text-red-400">{t('orders.prints.loadFailed')}</p>
+          <Button size="sm" variant="secondary" onClick={() => void refetch()}>
+            {t('orders.prints.retry')}
+          </Button>
+        </div>
       ) : groups.length === 0 ? (
-        <p className="text-sm text-bambu-gray/70 italic">{t('orders.prints.empty')}</p>
+        <p className="py-6 text-center text-sm text-bambu-gray">{t('orders.prints.empty')}</p>
       ) : (
-        groups.map((group) => (
-          <div key={group.key} data-testid={group.testId} className="space-y-2">
-            <h3 className="text-sm text-bambu-gray">{group.title}</h3>
-            <div className="grid gap-2 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]">
-              {group.archives.map((archive) => (
-                <ArchiveCard
-                  key={`${group.key}-${archive.id}`}
-                  archive={archive}
-                  order={order}
-                  lines={order.lines}
-                  canEdit={canEdit}
-                />
-              ))}
+        groups.map((group) => {
+          const state = paging[group.key] ?? { page: 1, perPage: GROUP_PAGE };
+          const total = group.archives.length;
+          const totalPages = state.perPage === -1 ? 1 : Math.max(1, Math.ceil(total / state.perPage));
+          const page = Math.min(Math.max(1, state.page), totalPages);
+          const shown =
+            state.perPage === -1 ? group.archives : group.archives.slice((page - 1) * state.perPage, page * state.perPage);
+          return (
+            <div key={group.key} data-testid={group.testId}>
+              <h3 className="mt-4 mb-2 text-sm font-semibold text-white">
+                {group.title} <small className="ml-1 text-xs font-normal text-bambu-gray">{total}</small>
+              </h3>
+              <div className="grid gap-2.5 grid-cols-[repeat(auto-fill,minmax(min(320px,100%),1fr))]">
+                {shown.map((archive) => (
+                  <ArchiveCard
+                    key={`${group.key}-${archive.id}`}
+                    archive={archive}
+                    order={order}
+                    lines={order.lines}
+                    canEdit={canEdit}
+                    printerName={archive.printer_id != null ? printerNames.get(archive.printer_id) : undefined}
+                    when={formatDateTime(
+                      archive.completed_at || archive.started_at || archive.created_at,
+                      settings?.time_format,
+                      settings?.date_format,
+                    )}
+                  />
+                ))}
+              </div>
+              <PaginationBar
+                variant="bare"
+                allowAll
+                partial={truncated}
+                page={page}
+                totalPages={totalPages}
+                perPage={state.perPage}
+                total={total}
+                items={t('orders.prints.noun', { count: total })}
+                onPageChange={(next) => setGroupPage(group.key, { ...state, page: next })}
+                onPerPageChange={(perPage) => setGroupPage(group.key, { page: 1, perPage })}
+              />
             </div>
-          </div>
-        ))
+          );
+        })
       )}
     </section>
   );
@@ -243,180 +292,255 @@ interface ArchiveCardProps {
   order: Order;
   lines: ProjectLine[];
   canEdit: boolean;
+  printerName: string | undefined;
+  when: string;
 }
 
-/**
- * The card's "…" menu — a separate component so that CLOSING it resets it.
- *
- * `CardActionMenu` unmounts its panel when it closes, so `pickingLine` (and the
- * two mutations' pending flags) start clean on every opening. Held in the card
- * instead, a menu dismissed by the backdrop while the line picker was up
- * re-opened straight into that picker with no way back to the two actions.
- */
-function ArchivePrintMenu({
-  archive,
-  order,
-  close,
-  onDefects,
-}: {
-  archive: Archive;
-  order: Order;
-  close: () => void;
-  onDefects: () => void;
-}) {
+/** «File under a line» (WS-13 E4 F08, F10): the order's lines and «no line», the
+ *  current one chosen; the order travels with the line, as the server demands. */
+function AssignLineDialog({ archive, order, onClose }: { archive: Archive; order: Order; onClose: () => void }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const { showToast } = useToast();
-  const [pickingLine, setPickingLine] = useState(false);
+  const [lineId, setLineId] = useState<number | null>(archive.project_line_id ?? null);
+  const [error, setError] = useState<string | null>(null);
 
-  // Filing a print under a line, or taking it off the order, moves the order
-  // cards' roll-up and the customer tiles as well as this page — and the
-  // print may have just left ANOTHER order and another customer, which is why
-  // every key is a prefix. One decision, in `utils/queryInvalidation.ts`.
-  const refresh = () => invalidateOrderViews(queryClient, { orderId: order.id });
-
-  // ⚠️ `project_id` travels with the line: the server rejects (400) a line
-  // that belongs to another order, and a bare line change on an archive whose
-  // order is being re-stated is exactly that case.
-  const fileUnder = useMutation({
-    mutationFn: (lineId: number | null) =>
-      api.updateArchive(archive.id, { project_id: order.id, project_line_id: lineId }),
+  // ⚠️ `project_id` travels with the line: the server rejects (400) a line that
+  // belongs to another order, and a bare line change on an archive whose order is
+  // being re-stated is exactly that case.
+  const save = useMutation({
+    mutationFn: () => api.updateArchive(archive.id, { project_id: order.id, project_line_id: lineId }),
     onSuccess: () => {
-      refresh();
-      close();
+      invalidateOrderViews(queryClient, { orderId: order.id });
+      onClose();
     },
-    onError: (e: Error) => showToast(e.message, 'error'),
+    onError: (e: Error) => setError(e.message),
   });
+
+  const label = (line: ProjectLine) => {
+    if (line.mode === 'parts') return `${line.product_name} — ${t('orders.prints.partsGroup')}`;
+    const config = line.configuration;
+    const custom =
+      config != null && (config.choices.some((c) => !c.is_default) || config.changed_parts.length > 0)
+        ? config.choices.filter((c) => !c.is_default).map((c) => `${c.group_name}: ${c.option_name}`).join(' · ')
+        : '';
+    return `${line.product_name} — ${custom || `× ${line.quantity}`}`;
+  };
+
+  return (
+    <WorkshopDialog
+      title={t('orders.prints.assign.title')}
+      subtitle={printSubtitle(archive, t)}
+      size="sm"
+      pending={save.isPending}
+      error={error ?? undefined}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={save.isPending}>
+            {t('orders.prints.assign.cancel')}
+          </Button>
+          <Button
+            onClick={() => {
+              setError(null);
+              save.mutate();
+            }}
+            disabled={save.isPending || lineId === (archive.project_line_id ?? null)}
+          >
+            {t('orders.prints.assign.submit')}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-1">
+        <label htmlFor={`print-${archive.id}-line`} className="text-sm text-bambu-gray-light">
+          {t('orders.prints.assign.line')}
+        </label>
+        <Select
+          id={`print-${archive.id}-line`}
+          className="w-full"
+          value={lineId ?? ''}
+          onChange={(e) => setLineId(e.target.value ? Number(e.target.value) : null)}
+        >
+          <option value="">{t('orders.prints.assign.none')}</option>
+          {order.lines.map((line) => (
+            <option key={line.id} value={line.id}>
+              {label(line)}
+            </option>
+          ))}
+        </Select>
+      </div>
+    </WorkshopDialog>
+  );
+}
+
+/** «<file> · plate N» — a dialog's subtitle naming the print. */
+function printSubtitle(archive: Archive, t: ReturnType<typeof useTranslation>['t']): string {
+  const name = archive.print_name || archive.filename;
+  return (archive.plate_index ?? 0) > 0 ? `${name} · ${t('orders.prints.plate', { n: archive.plate_index })}` : name;
+}
+
+/** One print: what it was, where and when it ran, how it ended, and which line it answers to. */
+function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: ArchiveCardProps) {
+  const { t } = useTranslation();
+  const { canModify } = useAuth();
+  const queryClient = useQueryClient();
+  const { showToast } = useToast();
+  const [dialog, setDialog] = useState<'defects' | 'assign' | 'remove' | null>(null);
+
+  const badge = getArchiveStatusBadge(archive.status);
+  const name = archive.print_name || archive.filename;
+  const lineName = lines.find((line) => line.id === archive.project_line_id)?.product_name;
+  const completed = archive.status === 'completed';
+  // R03: the server checks the ARCHIVE's owner on this write — offered only where it
+  // would be allowed (admin / `update_all` any print; `update_own` its own only).
+  const canAssign = canEdit && canModify('archives', 'update', archive.created_by_id);
+  const where = [
+    (archive.plate_index ?? 0) > 0 ? t('orders.prints.plate', { n: archive.plate_index }) : null,
+    printerName ?? null,
+    when || null,
+  ].filter(Boolean);
 
   const remove = useMutation({
     mutationFn: () => api.removeArchivesFromProject(order.id, [archive.id]),
     onSuccess: () => {
-      refresh();
-      close();
+      invalidateOrderViews(queryClient, { orderId: order.id });
+      setDialog(null);
     },
     onError: (e: Error) => showToast(e.message, 'error'),
   });
 
-  if (pickingLine) {
-    // Not a `menuitem`: it is a `<select>`, and the roving-key handler above it
-    // reads `[role="menuitem"]` only, so the arrows belong to the list of lines
-    // while it is open. Escape still closes the whole menu.
-    return (
-      <div className="p-2 space-y-2">
-        <OrderLinePicker
-          orderId={order.id}
-          value={archive.project_line_id}
-          onChange={(lineId) => fileUnder.mutate(lineId)}
-          disabled={fileUnder.isPending}
-        />
-      </div>
-    );
-  }
-
   return (
-    <>
-      {archive.status === 'completed' && (
-        <CardActionMenuItem
-          onSelect={() => {
-            close();
-            onDefects();
-          }}
-        >
-          {t('orders.prints.defects.action')}
-        </CardActionMenuItem>
-      )}
-      <CardActionMenuItem onSelect={() => setPickingLine(true)}>{t('orders.prints.fileUnderLine')}</CardActionMenuItem>
-      {/* ⚠️ `disabled` while the unlink is in flight. The hand-rolled button
-          this menu item replaced had it, and the port lost it — leaving a second
-          click able to fire the same DELETE against an archive the first one had
-          already unfiled. */}
-      <CardActionMenuItem danger disabled={remove.isPending} onSelect={() => remove.mutate()}>
-        <Unlink className="w-4 h-4" />
-        {t('orders.prints.removeFromOrder')}
-      </CardActionMenuItem>
-    </>
-  );
-}
-
-/** One print: what it was, how it ended, and which line it answers to. */
-function ArchiveCard({ archive, order, lines, canEdit }: ArchiveCardProps) {
-  const { t } = useTranslation();
-  const [defectsOpen, setDefectsOpen] = useState(false);
-
-  const badge = getArchiveStatusBadge(archive.status);
-  const name = archive.print_name || archive.filename;
-  const when = archive.completed_at || archive.started_at || archive.created_at;
-  const lineName = lines.find((line) => line.id === archive.project_line_id)?.product_name;
-
-  return (
-    <div className="relative rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary p-2 flex gap-2">
+    <div
+      data-print-card
+      className="flex gap-3 items-start rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary p-3 text-[13px]"
+    >
       {/* ⚠️ `fileName`, not `search` — ArchivesPage reads `printer`, `file` and
-          `fileName` off the URL and nothing else, so the `?search=` this was
-          copied with never reached the page at all. And only `file` FILTERS:
-          `fileName` merely LABELS the chip. Carrying it alone therefore opened
-          an unfiltered archive list wearing this print's name, which reads as
-          a filter that silently failed — without a library file id the link
-          goes to the plain list instead. */}
+          `fileName` off the URL and nothing else, and only `file` FILTERS: without a
+          library file id the link goes to the plain list instead. */}
       <Link
         to={
           archive.library_file_id != null
             ? `/archives?file=${archive.library_file_id}&fileName=${encodeURIComponent(archive.filename)}`
             : '/archives'
         }
-        className="w-14 h-14 rounded bg-bambu-dark flex items-center justify-center overflow-hidden flex-shrink-0"
+        className="w-10 h-10 rounded-lg bg-bambu-dark-tertiary flex items-center justify-center overflow-hidden flex-shrink-0"
       >
         {archive.thumbnail_path ? (
           <img src={api.getArchiveThumbnail(archive.id)} alt="" className="w-full h-full object-contain" />
         ) : (
-          <Package className="w-5 h-5 text-bambu-gray" />
+          <Package className="w-[18px] h-[18px] text-bambu-gray" aria-hidden />
         )}
       </Link>
 
       <div className="min-w-0 flex-1">
-        <p className="text-sm text-white truncate" title={name}>
-          {name}
-        </p>
-        <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+        <p className="font-semibold text-white [overflow-wrap:anywhere]">{name}</p>
+        <small className="block mt-0.5 text-xs text-bambu-gray" data-testid={`print-where-${archive.id}`}>
+          {where.join(' · ')}
+        </small>
+        <small className="flex flex-wrap items-center gap-x-1.5 gap-y-1 mt-1 text-xs text-bambu-gray">
           {badge && (
-            <span className={`px-1.5 py-0.5 rounded text-[10px] ${badge.className}`}>{t(badge.labelKey)}</span>
+            <span
+              className={`px-2 py-0.5 rounded font-medium ${
+                archive.status === 'printing'
+                  ? 'bg-bambu-green/20 text-bambu-green'
+                  : archive.status === 'archived'
+                    ? 'bg-gray-200 dark:bg-gray-500/20 text-gray-600 dark:text-gray-400'
+                    : 'bg-red-500/20 text-red-600 dark:text-red-400'
+              }`}
+            >
+              {t(badge.labelKey)}
+            </span>
           )}
+          {completed && (
+            <span data-testid={`print-defects-${archive.id}`}>
+              {t('orders.prints.pieces', { count: archive.quantity })}
+              {(archive.defective_count ?? 0) > 0 && (
+                <>
+                  {' · '}
+                  <span className="text-amber-700 dark:text-amber-400">
+                    {t('orders.prints.defective', { count: archive.defective_count })}
+                  </span>
+                </>
+              )}
+            </span>
+          )}
+          <span aria-hidden>·</span>
           <span
-            className={`px-1.5 py-0.5 rounded text-[10px] ${
+            className={`px-2 py-0.5 rounded font-medium ${
               archive.project_line_id != null
-                ? 'bg-bambu-green/20 text-bambu-green'
-                : 'bg-bambu-dark-tertiary text-bambu-gray'
+                ? 'bg-blue-500/20 text-blue-700 dark:text-blue-400'
+                : 'bg-gray-200 dark:bg-gray-500/20 text-gray-600 dark:text-gray-400'
             }`}
             title={lineName}
           >
             {archive.project_line_id != null ? t('orders.prints.explicit') : t('orders.prints.attributed')}
           </span>
-          {archive.status === 'completed' && (
-            <span className="text-[10px] text-bambu-gray" data-testid={`print-defects-${archive.id}`}>
-              {archive.quantity}
-              {(archive.defective_count ?? 0) > 0 && ` · ${t('orders.prints.defective', { count: archive.defective_count })}`}
-            </span>
-          )}
-        </div>
-        {when && <p className="text-[11px] text-bambu-gray/70 mt-0.5">{formatDateOnly(when)}</p>}
+        </small>
       </div>
 
       {canEdit && (
         <div className="flex-shrink-0">
-          {/* ⚠️ The shared menu, not a hand-rolled panel. The old one was an
-              absolutely-positioned div with a `fixed inset-0` backdrop: no
-              `role="menu"`, no roving arrow keys, no Escape, and a z-stack of
-              its own that had to be kept in step with every other overlay on
-              the page by hand. `CardActionMenu` portals to `document.body` and
-              answers all four the same way every other card menu does. */}
-          <CardActionMenu label={t('orders.prints.actions')} testId={`print-menu-${archive.id}`} width={224}>
+          <CardActionMenu
+            label={t('orders.prints.actions')}
+            testId={`print-menu-${archive.id}`}
+            width="max-content"
+          >
             {(close) => (
-              <ArchivePrintMenu archive={archive} order={order} close={close} onDefects={() => setDefectsOpen(true)} />
+              <>
+                {completed && (
+                  <CardActionMenuItem
+                    onSelect={() => {
+                      close();
+                      setDialog('defects');
+                    }}
+                  >
+                    {t('orders.prints.defects.action')}
+                  </CardActionMenuItem>
+                )}
+                {canAssign && (
+                  <CardActionMenuItem
+                    onSelect={() => {
+                      close();
+                      setDialog('assign');
+                    }}
+                  >
+                    {t('orders.prints.fileUnderLine')}
+                  </CardActionMenuItem>
+                )}
+                {(completed || canAssign) && (
+                  <div role="separator" className="my-1 border-t border-bambu-dark-tertiary" />
+                )}
+                <CardActionMenuItem
+                  danger
+                  onSelect={() => {
+                    close();
+                    setDialog('remove');
+                  }}
+                >
+                  {t('orders.prints.removeFromOrder')}
+                </CardActionMenuItem>
+              </>
             )}
           </CardActionMenu>
         </div>
       )}
-      {defectsOpen && (
-        <OrderPrintDefectsDialog orderId={order.id} archive={archive} onClose={() => setDefectsOpen(false)} />
+
+      {dialog === 'defects' && (
+        <OrderPrintDefectsDialog orderId={order.id} archive={archive} onClose={() => setDialog(null)} />
+      )}
+      {dialog === 'assign' && <AssignLineDialog archive={archive} order={order} onClose={() => setDialog(null)} />}
+      {dialog === 'remove' && (
+        <ConfirmModal
+          title={t('orders.prints.remove.title', { name })}
+          message={t('orders.prints.remove.message')}
+          confirmText={t('orders.prints.remove.confirm')}
+          variant="danger"
+          // ⚠️ Loading while the unlink is in flight: a second click must not fire the
+          // same DELETE against a print the first one already unfiled.
+          isLoading={remove.isPending}
+          onConfirm={() => remove.mutate()}
+          onCancel={() => setDialog(null)}
+        />
       )}
     </div>
   );

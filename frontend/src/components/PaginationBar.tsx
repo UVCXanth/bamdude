@@ -22,6 +22,10 @@ export interface PaginationBarProps {
   /** Offer «All» among the sizes (the default). A list whose server refuses the whole
    *  list — the parts picker (WS-13 E1 K7) — turns it off. */
   allowAll?: boolean;
+  /** The rows are what was LOADED of a larger set the caller could not read whole
+   *  (WS-13 E4 F02): the count says «of N loaded», never «of N», which would name a
+   *  partial set as the whole. */
+  partial?: boolean;
 }
 
 const DEFAULT_PER_PAGE_OPTIONS = [12, 24, 48, 96];
@@ -51,6 +55,7 @@ export function PaginationBar({
   variant = 'card',
   perPageOptions = DEFAULT_PER_PAGE_OPTIONS,
   allowAll = true,
+  partial = false,
 }: PaginationBarProps) {
   const { t } = useTranslation();
 
@@ -76,7 +81,11 @@ export function PaginationBar({
   return (
     <div data-pagination className={`flex flex-wrap items-center justify-between gap-2 text-sm ${wrapper}`}>
       <span className="text-bambu-gray">
-        {isShowAll ? `${total} ${items}` : t('common.showingRangeItems', { from, to, total, items })}
+        {isShowAll
+          ? partial
+            ? t('common.loadedItems', { total, items })
+            : `${total} ${items}`
+          : t(partial ? 'common.showingRangeLoaded' : 'common.showingRangeItems', { from, to, total, items })}
       </span>
 
       {/* ⚠️ The right block wraps too (WS-13 E2 E06): at 390 px its one line — size
