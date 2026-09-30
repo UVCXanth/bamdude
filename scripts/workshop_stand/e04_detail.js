@@ -683,7 +683,17 @@ async (page, selftest = null) => {
     });
   }
   await scenario('plan-printer@1440', ['E4-E09'], async () => {
-    const { ctx, p } = await open(1440);
+    // The stand's seed stores a plate as { index, printable_objects, filaments, … } — without the
+    // `objects` list (and name, thumbnail flag) every plate the 3MF parser writes carries, and the
+    // print dialog's plate picker reads. Completed here to the parser's shape; the app is not at fault.
+    const parserShape = (b) => ({
+      ...b,
+      plates: (b.plates ?? []).map((pl) => ({
+        name: null, has_thumbnail: false, thumbnail_url: null, ...pl,
+        objects: pl.objects ?? [...new Set(Object.values(pl.printable_objects ?? {}))],
+      })),
+    });
+    const { ctx, p } = await open(1440, { rewrite: [[/\/api\/v1\/library\/files\/\d+\/plates/, parserShape]] });
     await p.goto(detail(A), { waitUntil: 'networkidle' });
     await ready(p);
     await p.locator('[data-testid^="plan-row-"][data-testid$="-printer"]').first().click();
@@ -698,11 +708,13 @@ async (page, selftest = null) => {
     await p.waitForTimeout(1500);
     const printModal = await p.evaluate(() => [...document.querySelectorAll('[role="dialog"]')].map((d) => d.getAttribute('aria-label') || d.querySelector('h2, h3')?.textContent || ''));
     const crashed = await p.evaluate(() => document.body.innerText.includes('Something went wrong'));
+    // A crash names where it happened: the error screen's own stack (the app's sources, no request).
+    const stack = crashed ? await p.evaluate(() => [...document.querySelectorAll('details, pre')].map((el) => el.textContent).join('\n').split('\n').map((s) => s.trim()).filter(Boolean).slice(0, 14)) : null;
     const file2 = await shoot(p, 'plan-printer-next@1440');
     await ctx.close();
     return {
-      recipe: { url: '/projects/{order:241}', actions: ['«На принтер…» on the first row', 'Далі — діалог друку'], fixture: ['POST /auto-queue/printer-routing-preview → { targets: [] }'] },
-      measured: { text: text?.slice(0, 500), enabled, printModal, crashed },
+      recipe: { url: '/projects/{order:241}', actions: ['«На принтер…» on the first row', 'Далі — діалог друку'], fixture: ['POST /auto-queue/printer-routing-preview → { targets: [] }', 'GET /library/files/{id}/plates → the seed’s plates completed with the parser’s objects list'] },
+      measured: { text: text?.slice(0, 500), enabled, printModal, crashed, stack },
       pass: /Принтер/.test(text ?? '') && /Далі відкриється звичний діалог друку/.test(text ?? '') && enabled && printModal.length >= 1 && !crashed,
       screenshots: [file, file2],
     };
