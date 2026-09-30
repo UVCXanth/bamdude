@@ -320,6 +320,10 @@ class FileListResponse(BaseModel):
     # JSON dig, so the list stays filterable server-side.
     skip_objects_supported: bool = False
     sliced_for_model: str | None = None
+    # WS-13 E5 H02 — can this TYPE be planned (``product_sync.is_plan_eligible``,
+    # the rule an order's plate line is refused by). An unsliced 3MF is eligible:
+    # «sliced» is the ``gcode`` tag of ``file_tags``, not this.
+    plan_eligible: bool = False
     swap_compatible: bool = False
     is_multi_plate: bool = False
     # spec §4 - plate 1's (or the only plate's) filament types in slot order,

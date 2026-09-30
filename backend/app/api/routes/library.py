@@ -115,6 +115,7 @@ from backend.app.services.product_files import attachment_limit, exceeds_attachm
 from backend.app.services.product_sync import (
     apply_folder_products,
     inherit_folder_products,
+    is_plan_eligible,
     purge_folder_product_links,
     sync_product_for_file,
 )
@@ -2112,6 +2113,7 @@ async def list_files(
                 object_count=object_count,
                 skip_objects_supported=f.skip_objects_supported,
                 sliced_for_model=sliced_for_model,
+                plan_eligible=is_plan_eligible(f.file_type),
                 swap_compatible=f.swap_compatible,
                 is_multi_plate=is_multi_plate,
                 filament_types=filament_types,

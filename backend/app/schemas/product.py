@@ -549,6 +549,22 @@ class VariantOptionUpdate(BaseModel):
         return _never_null(v, "position")
 
 
+class ListVariantOption(BaseModel):
+    id: int
+    name: str
+
+
+class ListVariantGroup(BaseModel):
+    """A catalog row's variant group (WS-13 E5 H01): enough for the add-to-order
+    dialog to name the options of an unpicked row and fill a picked row's selects."""
+
+    id: int
+    name: str
+    #: ``None`` — the group has no standard option, and the server leaves it unchosen.
+    default_option_id: int | None = None
+    options: list[ListVariantOption] = []
+
+
 class ProductListItem(BaseModel):
     id: int
     code: str
@@ -588,6 +604,9 @@ class ProductListItem(BaseModel):
     printed_parts_count: int = 0
     purchased_parts_count: int = 0
     variant_group_names: list[str] = []
+    #: WS-13 E5 H01 — the groups with their options, in ``position``/``id`` order;
+    #: one grouped read per page. The detail overrides it with the full groups.
+    variant_groups: list[ListVariantGroup] = []
     active_orders_count: int = 0
     finished_positions: int = 0
     finished_below_min: int = 0

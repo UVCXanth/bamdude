@@ -74,6 +74,8 @@ from backend.app.schemas.product import (
     EstimateSurplusOut,
     FileLinkRequest,
     FolderLinkRequest,
+    ListVariantGroup,
+    ListVariantOption,
     PartSourceOut,
     PartSourcesOut,
     PlateRecipeResponse,
@@ -811,6 +813,7 @@ async def _catalog_rows(db: AsyncSession, products: Sequence[Product]) -> list[P
     these ids, a fixed number of grouped statements however many there are."""
     ids = [p.id for p in products]
     figures = await _row_figures(db, products)
+    variants = await _variant_summaries(db, ids)
     plates = await _plates_count(db, ids)
     # The ledger for the WHOLE page in one grouped read, exactly like the plate
     # counts above it — ``kits_available`` per product is a per-row number and a
@@ -832,12 +835,50 @@ async def _catalog_rows(db: AsyncSession, products: Sequence[Product]) -> list[P
                 stock.get(p.id, {}), standard_composition(list(p.parts), set(defaults.get(p.id, {}).values()))
             ),
             **figures[p.id],
+            variant_groups=variants.get(p.id, []),
             origin=p.origin,
             origin_file_id=p.origin_file_id,
             origin_plate_index=p.origin_plate_index,
         )
         for p in products
     ]
+
+
+async def _variant_summaries(db: AsyncSession, ids: list[int]) -> dict[int, list[ListVariantGroup]]:
+    """``product → its variant groups with their options`` (WS-13 E5 H01) — ONE outer
+    join over the page's ids, groups and options each in ``position``/``id`` order,
+    so a catalog page names its options without a detail read per row."""
+    out: dict[int, list[ListVariantGroup]] = {}
+    if not ids:
+        return out
+    by_group: dict[int, ListVariantGroup] = {}
+    rows = await db.execute(
+        select(
+            ProductVariantGroup.product_id,
+            ProductVariantGroup.id,
+            ProductVariantGroup.name,
+            ProductVariantGroup.default_option_id,
+            ProductVariantOption.id,
+            ProductVariantOption.name,
+        )
+        .outerjoin(ProductVariantOption, ProductVariantOption.group_id == ProductVariantGroup.id)
+        .where(ProductVariantGroup.product_id.in_(ids))
+        .order_by(
+            ProductVariantGroup.product_id,
+            ProductVariantGroup.position,
+            ProductVariantGroup.id,
+            ProductVariantOption.position,
+            ProductVariantOption.id,
+        )
+    )
+    for pid, gid, gname, default, oid, oname in rows.all():
+        group = by_group.get(gid)
+        if group is None:
+            group = by_group[gid] = ListVariantGroup(id=gid, name=gname, default_option_id=default)
+            out.setdefault(pid, []).append(group)
+        if oid is not None:
+            group.options.append(ListVariantOption(id=oid, name=oname))
+    return out
 
 
 async def _row_figures(db: AsyncSession, products: Sequence[Product]) -> dict[int, dict]:

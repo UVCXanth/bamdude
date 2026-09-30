@@ -736,6 +736,8 @@ class TestLibraryFilesAPI:
             "object_count",
             "skip_objects_supported",
             "sliced_for_model",
+            # WS-13 E5 H02: additive — the add-to-order dialog's plate tab reads it.
+            "plan_eligible",
             "swap_compatible",
             "is_multi_plate",
             "filament_types",

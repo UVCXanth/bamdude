@@ -2932,6 +2932,14 @@ export interface ProductFacets {
   models: string[];
 }
 
+/** A catalog row's variant group (WS-13 E5 H01). */
+export interface ListVariantGroup {
+  id: number;
+  name: string;
+  default_option_id: number | null;
+  options: { id: number; name: string }[];
+}
+
 export interface ProductListItem {
   id: number;
   code: string;
@@ -2970,6 +2978,10 @@ export interface ProductListItem {
   purchased_parts_count: number;
   /** The variant groups' names, in their order. */
   variant_group_names: string[];
+  /** WS-13 E5 H01 — the groups with their options, in order; a `null` standard means
+   *  the group has no standard option and the server leaves it unchosen. The detail
+   *  (`Product`) carries the full groups under the same name. */
+  variant_groups: ListVariantGroup[];
   /** Distinct active orders with a line of the product. */
   active_orders_count: number;
   /** Ready-goods positions on record, and those below their minimum. */
@@ -14309,6 +14321,9 @@ export interface LibraryFileListItem {
   mqtt_recording?: boolean;
   mqtt_recording_bytes?: number;
   sliced_for_model: string | null;
+  /** WS-13 E5 H02 — can this TYPE be planned (the server's `is_plan_eligible`). An
+   *  unsliced 3MF is eligible; «sliced» is `isPrintable` (the `gcode` tag), not this. */
+  plan_eligible: boolean;
   swap_compatible: boolean;
   // True iff the 3MF carries 2+ plates (extracted at upload / m023 backfill).
   // Used to gate gallery rendering — single-plate files skip the per-card

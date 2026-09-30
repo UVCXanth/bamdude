@@ -5,12 +5,15 @@
  * explicitly after the spread.
  */
 
+import type { ListVariantGroup } from '../api/client';
+
 /** `ProductListItem` (PC2, PC3). */
 export const PRODUCT_ROW_DEFAULTS = {
   sliced: false,
   printed_parts_count: 0,
   purchased_parts_count: 0,
   variant_group_names: [] as string[],
+  variant_groups: [] as ListVariantGroup[],
   active_orders_count: 0,
   finished_positions: 0,
   finished_below_min: 0,
