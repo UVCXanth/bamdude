@@ -5487,6 +5487,9 @@ export default {
         products_other: 'Selected: {{count}} products · {{units}} pcs',
         parts: 'Selected parts: {{count}} · {{units}} pcs',
         plate: 'One-off from plate {{n}} × {{copies}}',
+        // WS-13 E5 B03: after another kind on the same line.
+        partsNext: 'parts: {{count}} · {{units}} pcs',
+        plateNext: 'one-off from plate {{n}} × {{copies}}',
       },
       submit: { products: 'Add lines ({{count}})', parts: 'Add parts', plate: 'Create and add' },
       stock: {

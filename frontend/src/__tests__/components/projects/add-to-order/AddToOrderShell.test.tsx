@@ -89,7 +89,7 @@ describe('AddToOrderDialog — the frame (WS-13 E5)', () => {
     fireEvent.click(await screen.findByRole('button', { name: /flask\.gcode\.3mf/ }));
     fireEvent.click(await screen.findByRole('radio', { name: /Plate 2/ }));
     expect(
-      screen.getByText('Selected: 1 product · 1 pcs · Selected parts: 1 · 1 pcs · One-off from plate 2 × 1'),
+      screen.getByText('Selected: 1 product · 1 pcs · parts: 1 · 1 pcs · one-off from plate 2 × 1'),
     ).toBeInTheDocument();
   });
 

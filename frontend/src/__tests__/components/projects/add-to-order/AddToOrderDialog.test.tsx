@@ -135,9 +135,9 @@ describe('AddToOrderDialog', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'One-off from a file' }));
     fireEvent.click(await screen.findByRole('button', { name: /^flask\.gcode\.3mf/ }));
     fireEvent.click(await screen.findByRole('radio', { name: /Plate 1/ }));
-    expect(screen.getByText(/Selected: 1 product · 1 pcs · Selected parts: 1 · 1 pcs/)).toBeInTheDocument();
-    // WS-13 E5 B03: the summary is one line over the whole selection.
-    expect(screen.getByText(/One-off from plate 1 × 1/)).toBeInTheDocument();
+    // WS-13 E5 B03: one line over the whole selection — the first part in its own form,
+    // the next ones continue it («…· parts: N · M pcs · one-off from plate …»).
+    expect(screen.getByText('Selected: 1 product · 1 pcs · parts: 1 · 1 pcs · one-off from plate 1 × 1')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Add lines (3)' }));
     await waitFor(() =>
       expect(add).toHaveBeenCalledWith(5, [

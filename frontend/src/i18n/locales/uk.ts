@@ -5518,6 +5518,9 @@ export default {
         products_other: 'Обрано: {{count}} виробу · {{units}} шт.',
         parts: 'Обрано деталей: {{count}} · {{units}} шт.',
         plate: 'Разовий виріб з плити {{n}} × {{copies}}',
+        // WS-13 E5 B03: після іншого виду в тому ж рядку.
+        partsNext: 'деталей: {{count}} · {{units}} шт.',
+        plateNext: 'разовий виріб з плити {{n}} × {{copies}}',
       },
       submit: { products: 'Додати позиції ({{count}})', parts: 'Додати деталі', plate: 'Створити й додати' },
       stock: {

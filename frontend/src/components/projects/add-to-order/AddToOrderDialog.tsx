@@ -145,8 +145,17 @@ export function AddToOrderDialog({
   const canSubmit = target != null && lines.length > 0 && !pending;
   const summaries = [
     products.size > 0 && t('orders.add.summary.products', { count: products.size, units: productUnits(products) }),
-    parts.size > 0 && t('orders.add.summary.parts', { count: parts.size, units: partUnits(parts) }),
-    plate?.plateIndex != null && t('orders.add.summary.plate', { n: plate.plateIndex, copies: plate.copies }),
+    // B03: a kind after another continues the line («… · деталей: N · …»), alone it opens it.
+    parts.size > 0 &&
+      t(products.size > 0 ? 'orders.add.summary.partsNext' : 'orders.add.summary.parts', {
+        count: parts.size,
+        units: partUnits(parts),
+      }),
+    plate?.plateIndex != null &&
+      t(products.size > 0 || parts.size > 0 ? 'orders.add.summary.plateNext' : 'orders.add.summary.plate', {
+        n: plate.plateIndex,
+        copies: plate.copies,
+      }),
   ].filter((s): s is string => Boolean(s));
   // One kind picked names that kind, several are «lines», nothing yet follows the tab.
   const kind: Tab | 'lines' =
