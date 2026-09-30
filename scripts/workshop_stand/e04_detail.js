@@ -5,9 +5,80 @@
 // Nothing reaches the stand but reads: every non-GET request of every context is answered here, and the states the
 // baseline does not hold are rewritten GET answers in this runner's own context only. The oracles measure what a
 // person reads (widths, lines, where a button sits, one-line buttons), never a class name.
-async (page) => {
+// A second argument, a function, is the local self-test's door (backend/tests/unit/test_workshop_stand.py): it runs
+// its own scenarios through this harness instead of the real ones. Playwright MCP passes the page alone.
+async (page, selftest = null) => {
   const base = 'http://127.0.0.1:8197';
-  const job = await (await page.request.get(`${base}/job.json`)).json();
+  const summary = [];
+  const opened = []; // the state of every context opened, in order — a scenario reads its own slice
+  // Every context this runner opens, until it is closed — the outer `finally` closes what is left.
+  const live = new Map(); // ctx → { routeErrors, closing, pages }
+  let job = null;
+  let stage = 'job';
+  let incomplete = false;
+
+  // ⚠️ **No raw error leaves this runner.** A Playwright error's text can carry its call log —
+  // the request headers, the app token among them — so a failure is reported as a code, the
+  // stage it happened in, the error's class, and a first line only when it matches a known
+  // harmless shape (a locator timeout, a script TypeError). Cutting to the first line is not
+  // redaction; the whitelist is.
+  const HARMLESS = [
+    /^(locator|page|frame|elementHandle|keyboard|mouse)\.\w+: Timeout \d+ms exceeded\.$/,
+    /^Cannot read properties of (undefined|null) \(reading '[\w$]+'\)$/,
+    /^[\w$.]+ is not a function$/,
+    /^[\w$]+ is not defined$/,
+  ];
+  const safeError = (e, where) => {
+    const code = e && typeof e.code === 'string' && /^[\w.-]{1,60}$/.test(e.code) ? e.code : 'error';
+    const out = { code, stage: where, name: e && typeof e.name === 'string' && /^\w{1,40}$/.test(e.name) ? e.name : 'Error' };
+    // `where` of a runner failure is the stand path it read — ours, and free of secrets.
+    if (e && e.name === 'RunnerFailure' && typeof e.where === 'string') out.at = e.where;
+    const first = String((e && e.message) || '').split('\n')[0].trim();
+    const secretFree = !/authori[sz]ation|bearer|cookie|token|eyJ[\w-]{10,}/i.test(first) && !(job && job.token && first.includes(job.token));
+    if (secretFree && HARMLESS.some((re) => re.test(first))) out.hint = first;
+    return out;
+  };
+  const failure = (code, where) => Object.assign(new Error(code), { name: 'RunnerFailure', code, where });
+  const post = async (path, data) => {
+    try {
+      await page.request.post(`${base}${path}`, { data });
+    } catch {
+      incomplete = true; // the job server did not take it; the manifest will say so by its absence
+    }
+  };
+  // The last guard: a record that carries the token, whatever put it there, is replaced by a
+  // failure that says so — and never sent.
+  const scrub = (r) => {
+    let text = null;
+    try { text = JSON.stringify(r); } catch { /* below */ }
+    if (text == null) return { id: r.id, ids: r.ids, source: r.source, pass: false, error: { code: 'record_unserializable', stage: r.id } };
+    if (job && job.token && text.includes(job.token)) return { id: r.id, ids: r.ids, source: r.source, pass: false, error: { code: 'secret_in_record', stage: r.id } };
+    return r;
+  };
+  const record = async (raw) => {
+    const r = scrub(raw);
+    summary.push(`${r.pass ? 'ok  ' : r.pass === null ? 'PEND' : 'FAIL'} ${r.id}`);
+    await post('/record', r);
+  };
+  // The routes are the PAGE's (the runner's own and a scenario's fixtures), so each page lets go
+  // of them before the context closes; an error from here on is the closing's, not a scenario's.
+  const closeContext = async (ctx) => {
+    const state = live.get(ctx);
+    if (!state) return;
+    state.closing = true;
+    live.delete(ctx);
+    for (const p of state.pages) {
+      try { await p.unrouteAll({ behavior: 'ignoreErrors' }); } catch { /* already gone */ }
+    }
+    try { await ctx.close(); } catch { /* already gone */ }
+  };
+
+  try {
+  try {
+    job = await (await page.request.get(`${base}/job.json`)).json();
+  } catch {
+    throw failure('job_unreadable', 'job');
+  }
   const browser = page.context().browser();
   const O = job.orders;
   const A = O['241'];
@@ -15,20 +86,30 @@ async (page) => {
   const HEIGHTS = { 2560: 1440, 1920: 1080, 1440: 900, 1280: 800, 1024: 768, 768: 1024, 390: 844 };
   const WIDTHS = [2560, 1920, 1440, 1280, 1024, 768, 390];
   const ONLY = (job.only ?? '').split(',').filter(Boolean);
-  const summary = [];
   const auth = { Authorization: `Bearer ${job.token}` };
 
-  const record = async (r) => {
-    summary.push(`${r.pass ? 'ok  ' : r.pass === null ? 'PEND' : 'FAIL'} ${r.id}`);
-    await page.request.post(`${base}/record`, { data: r });
-  };
   const env = async (p) => p.evaluate(() => ({ viewport: [innerWidth, innerHeight], dpr: window.devicePixelRatio, theme: document.documentElement.className }));
   const shoot = async (p, name, opts = {}) => {
     const file = `${job.out}/${name}.png`;
     await p.screenshot({ path: file, fullPage: false, ...opts });
     return file;
   };
-  const read = async (path) => (await page.request.get(`${job.api}/api/v1${path}`, { headers: auth })).json();
+  // An authenticated read of the stand. Its failure is a code and the path, never Playwright's
+  // message: that one carries the request's headers.
+  const read = async (path) => {
+    let res;
+    try {
+      res = await page.request.get(`${job.api}/api/v1${path}`, { headers: auth });
+    } catch {
+      throw failure('read_network', path);
+    }
+    if (!res.ok()) throw failure(`read_http_${res.status()}`, path);
+    try {
+      return await res.json();
+    } catch {
+      throw failure('read_json', path);
+    }
+  };
 
   // A context of our own. `rewrite`: [[pathRegex, (json, url) => json]] for GET answers; `fail`: [[regex, status]];
   // `delay`: [[regex, ms]]; `writes`: [[regex, json | (request) => json | {status, json}]] answers for non-GET,
@@ -38,6 +119,12 @@ async (page) => {
       viewport: { width: w, height: h || HEIGHTS[w] || 900 }, deviceScaleFactor: 1, locale: 'uk-UA',
       timezoneId: 'Europe/Kyiv', serviceWorkers: 'block',
     });
+    // Tracked before anything else can throw, so a failure half-way through opening still closes it.
+    const state = { routeErrors: [], closing: false, pages: [] };
+    live.set(ctx, state);
+    opened.push(state);
+    // A scenario closing its own context goes through the same door as the cleanup.
+    ctx.close = ((close) => async () => (live.has(ctx) ? closeContext(ctx) : close()))(ctx.close.bind(ctx));
     // The socket's token is minted by a POST (it writes a row), which this runner answers itself — a silent
     // socket of our own instead: nothing reaches the stand, and no event is invented.
     if (typeof ctx.routeWebSocket === 'function') await ctx.routeWebSocket(/\/api\/v1\/ws/, () => {});
@@ -49,14 +136,19 @@ async (page) => {
       for (const [k, v] of Object.entries(storage)) localStorage.setItem(k, v);
     }, { token: job.token, storage });
     const p = await ctx.newPage();
+    state.pages.push(p);
     const errors = [];
-    p.on('pageerror', (e) => errors.push(String(e.message).slice(0, 200)));
+    p.on('pageerror', (e) => errors.push(safeError(e, 'page')));
     const requests = [];
-    p.on('request', (r) => { if (r.url().includes('/api/v1/')) requests.push(`${r.method()} ${new URL(r.url()).pathname}${new URL(r.url()).search}`); });
-    // ⚠️ Every route callback swallows its own errors: a callback still in flight when its
-    // context closes throws from outside any scenario, and Playwright's call log of that
-    // throw carries the request headers — the app token among them. Nothing may print it.
-    await p.route(/\/api\/v1\//, async (route) => { try { await answer(route); } catch { /* the context closed */ } });
+    // A picture's URL carries a media token in `?token=` — logged as the path with that value masked.
+    p.on('request', (r) => {
+      if (!r.url().includes('/api/v1/')) return;
+      const u = new URL(r.url());
+      if (u.searchParams.has('token')) u.searchParams.set('token', 'masked');
+      requests.push(`${r.method()} ${u.pathname}${u.search}`);
+    });
+    // A route callback that fails while its scenario is alive — a fixture or the network — FAILS
+    // that scenario (recorded safely); only a failure caused by the context closing is expected.
     const answer = async (route) => {
       const req = route.request();
       const url = req.url();
@@ -87,21 +179,34 @@ async (page) => {
       if (isSettings) body = { ...body, ...settings };
       return route.fulfill({ response, json: body });
     };
-    // Closing lets go of the routes first, so no callback is left running against a dead context.
-    const closeContext = ctx.close.bind(ctx);
-    ctx.close = async () => {
-      await p.unrouteAll({ behavior: 'ignoreErrors' }).catch(() => {});
-      await closeContext();
-    };
-    return { ctx, p, errors, requests };
+    const route = (re, handler) => p.route(re, async (r) => {
+      try {
+        await handler(r);
+      } catch (e) {
+        if (!state.closing) state.routeErrors.push(safeError(e, 'route'));
+      }
+    });
+    await route(/\/api\/v1\//, answer);
+    return { ctx, p, errors, requests, route };
   };
+  // Every context a scenario opened is closed whatever the scenario did; a route failure during
+  // it makes it a FAIL whatever it measured.
   const scenario = async (id, ids, fn) => {
     if (ONLY.length && !ONLY.some((o) => id.startsWith(o))) return;
+    stage = id;
+    const before = new Set(live.keys());
+    const mark = opened.length;
+    let result;
     try {
-      await record({ id, ids, source: 'app', ...(await fn()) });
+      result = await fn();
     } catch (e) {
-      await record({ id, ids, source: 'app', pass: false, error: String(e.message || e).split('\n')[0].slice(0, 300) });
+      result = { pass: false, error: safeError(e, id) };
+    } finally {
+      for (const ctx of [...live.keys()]) if (!before.has(ctx)) await closeContext(ctx);
     }
+    const routeErrors = opened.slice(mark).flatMap((s) => s.routeErrors);
+    if (routeErrors.length) result = { ...result, pass: false, route_errors: routeErrors.slice(0, 5) };
+    await record({ id, ids, source: 'app', ...result });
   };
   const detail = (id, q = '') => `${job.ui}/projects/${id}${q}`;
   const ready = async (p) => {
@@ -121,6 +226,7 @@ async (page) => {
     return { text: b.textContent.trim(), lines: tops.size, height: Math.round(b.getBoundingClientRect().height) };
   }), selector);
 
+  stage = 'prepare';
   const exact = (path) => new RegExp(`/api/v1${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/?(\\?.*)?$`);
   const orderA = await read(`/projects/${A}`);
   const orderB = await read(`/projects/${B}`);
@@ -159,6 +265,7 @@ async (page) => {
     return { inView: r.left >= 0 && r.right <= innerWidth + 0.5 && r.width > 0, hits: !!hit && (hit === el || el.contains(hit)) };
   }), selector);
 
+  const realScenarios = async () => {
   // ======================= 1. geometry of the lines and the plan (B01, E03, E07) =======================
   for (const w of WIDTHS) {
     await scenario(`geometry@${w}`, ['E4-B01', 'E4-E03', 'E4-E07'], async () => {
@@ -510,6 +617,7 @@ async (page) => {
     const split = Object.fromEntries([[withAlt.r.plate_id, 0], ...withAlt.r.alternatives.map((a, i) => [a.plate_id, i === 0 ? withAlt.r.count : 0])]);
     return { ...body, lines: [{ ...(body.lines?.[0] ?? {}), line_id: withAlt.l.line_id, eta_complete: true, rows: [{ plate_id: withAlt.r.plate_id, proposed_split: split }] }, ...(body.lines ?? []).filter((l) => l.line_id !== withAlt.l.line_id)] };
   };
+  stage = 'prepare';
   const planA = await read(`/projects/${A}/plan`);
   for (const [id, me] of [['plan-proposal-editor@1440', null], ['plan-proposal-reader@1440', { is_admin: false, role: 'user', permissions: without('queue:create') }]]) {
     await scenario(id, ['E4-E07', 'E4-E08', 'R06'], async () => {
@@ -631,7 +739,8 @@ async (page) => {
   });
 
   // ======================= 7. prints (F01–F11, R02, R03, R05) =======================
-  const archivesA = await (await page.request.get(`${job.api}/api/v1/projects/${A}/archives?limit=500&offset=0`, { headers: auth })).json();
+  stage = 'prepare';
+  const archivesA = await read(`/projects/${A}/archives?limit=500&offset=0`);
   await scenario('prints-page@1440', ['E4-F01', 'E4-F02', 'E4-F03', 'E4-F04'], async () => {
     const { ctx, p, errors } = await open(1440);
     await p.goto(detail(A), { waitUntil: 'networkidle' });
@@ -981,11 +1090,11 @@ async (page) => {
       { filename: 'spec.pdf', original_name: 'Специфікація.pdf', size: 204800, uploaded_at: '2026-09-27T15:10:00Z' },
     ];
     const posts = [];
-    const { ctx, p } = await open(1440, {
+    const { ctx, p, route } = await open(1440, {
       rewrite: [[exact(`/projects/${A}`), (o) => ({ ...o, attachments: files })]],
       writes: [[/\/attachments$/, (req) => { posts.push(req.method()); return { status: 'ok', filename: 'x', original_name: 'x', size: 1 }; }]],
     });
-    await p.route(/\/attachments\/parcel\.png/, (route) => route.fulfill({ status: 200, body: png, contentType: 'image/png' }).catch(() => {}));
+    await route(/\/attachments\/parcel\.png/, (r) => r.fulfill({ status: 200, body: png, contentType: 'image/png' }));
     await p.goto(detail(A), { waitUntil: 'networkidle' });
     await ready(p);
     await tab(p, 'Вкладення');
@@ -1018,6 +1127,8 @@ async (page) => {
   await scenario('attachments-late@1440', ['E4-G04', 'R09'], async () => {
     const files = [{ filename: 'parcel.png', original_name: 'Пакування.png', size: 48213, uploaded_at: '2026-09-28T09:40:00Z' }];
     const { ctx, p } = await open(1440, { rewrite: [[exact(`/projects/${A}`), (o) => ({ ...o, attachments: files })]] });
+    // The viewer closes before the picture comes, and the app drops that request: a late answer
+    // with nothing left to fulfil is the case under test, so its refusal is not a fixture failure.
     await p.route(/\/attachments\/parcel\.png/, async (route) => {
       await new Promise((r) => setTimeout(r, 2500));
       await route.fulfill({ status: 200, body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'), contentType: 'image/png' }).catch(() => {});
@@ -1141,6 +1252,16 @@ async (page) => {
     });
   }
 
-  await page.request.post(`${base}/done`, { data: { count: summary.length } });
-  return { records: summary.length, summary };
+  };
+  await (typeof selftest === 'function' ? selftest({ scenario, open, read }) : realScenarios());
+  } catch (e) {
+    // A failure outside any scenario — the job, a preparation read — ends the run as INCOMPLETE,
+    // recorded like a scenario and safely.
+    incomplete = true;
+    await record({ id: 'runner', ids: [], source: 'runner', pass: false, error: safeError(e, stage) });
+  } finally {
+    for (const ctx of [...live.keys()]) await closeContext(ctx);
+    await post('/done', { count: summary.length, incomplete });
+  }
+  return { records: summary.length, incomplete, summary };
 }

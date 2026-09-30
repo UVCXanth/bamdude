@@ -594,3 +594,157 @@ def test_e03_pairs_are_the_order_detail_recipes_of_the_e0_plan():
     )
     ids = {surface["id"] for surface in plan["surfaces"]}
     assert set(e03_evidence.PAIR_RECIPES) <= ids
+
+
+# ---- WS-13 E4 detail runner (e04_detail.js): no token leaves it, every context closes (T7-R01/R02) ----
+
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+
+import e04_evidence  # noqa: E402
+
+_E04_MARKER = "zq9-plural-alpha-4417-fake"
+_E04_RUNNER = Path(__file__).resolve().parents[3] / "scripts" / "workshop_stand" / "e04_detail.js"
+_E04_HARNESS = Path(__file__).resolve().parent / "e04_detail_harness.mjs"
+
+
+def _e04_run(case: str) -> dict:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    out = subprocess.run(
+        [node, str(_E04_HARNESS), str(_E04_RUNNER), case], capture_output=True, text=True, timeout=60, check=False
+    )
+    # The marker is the fake token: it may reach nothing the runner writes, returns or lets escape.
+    assert _E04_MARKER not in out.stdout + out.stderr
+    assert out.returncode == 0, out.stderr[-2000:]
+    return json.loads(out.stdout)
+
+
+def _e04_records(run: dict) -> list[dict]:
+    return [p["data"] for p in run["posts"] if p["path"] == "/record"]
+
+
+def _e04_done(run: dict) -> dict:
+    done = [p["data"] for p in run["posts"] if p["path"] == "/done"]
+    assert len(done) == 1
+    return done[0]
+
+
+def _e04_closed_in_order(run: dict) -> None:
+    """Every context the runner opened is unrouted and then closed — nothing is left open."""
+    made = [e.split(".")[0] for e in run["log"] if e.endswith(".new")]
+    assert made
+    for ctx in made:
+        closed = run["log"].index(f"{ctx}.close")
+        if f"{ctx}.route" in run["log"]:
+            assert run["log"].index(f"{ctx}.unrouteAll") < closed
+    # The routes are the page's: a context closed with them still in place is the leak's origin.
+    assert not [e for e in run["log"] if e.endswith(".closedWithRoutes")]
+
+
+@pytest.mark.parametrize(
+    ("case", "code", "at"),
+    [
+        ("prep_read_throws", "read_network", "/projects/1"),
+        ("prep_read_refused", "read_http_401", "/groups/"),
+        ("late_prep_read_fails", "read_http_500", "/projects/1/plan"),
+    ],
+)
+def test_e04_a_failed_authenticated_read_ends_the_run_incomplete_and_names_no_secret(case, code, at):
+    run = _e04_run(case)
+
+    records = _e04_records(run)
+    assert [r["id"] for r in records] == ["runner"]
+    assert records[0]["pass"] is False
+    assert records[0]["error"] == {"code": code, "stage": "prepare", "name": "RunnerFailure", "at": at}
+    assert _e04_done(run)["incomplete"] is True
+    assert run["returned"]["incomplete"] is True
+
+
+def test_e04_a_real_scenario_that_throws_fails_safely_and_closes_its_context():
+    run = _e04_run("real_scenario_throws")
+
+    (rec,) = _e04_records(run)
+    assert rec["id"] == "geometry@2560" and rec["pass"] is False
+    assert rec["error"] == {"code": "error", "stage": "geometry@2560", "name": "Error"}
+    assert _e04_done(run)["incomplete"] is False
+    _e04_closed_in_order(run)
+
+
+def test_e04_a_route_failure_during_a_live_scenario_is_a_fail():
+    run = _e04_run("route_fails_live")
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is False
+    assert rec["route_errors"] == [{"code": "error", "stage": "route", "name": "Error"}]
+    _e04_closed_in_order(run)
+
+
+@pytest.mark.parametrize("case", ["route_fails_while_closing", "scenario_closes_its_own"])
+def test_e04_a_route_failure_caused_by_the_close_is_not_the_scenarios(case):
+    run = _e04_run(case)
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is True and "route_errors" not in rec
+    _e04_closed_in_order(run)
+
+
+def test_e04_a_context_that_fails_while_opening_is_still_closed():
+    run = _e04_run("open_fails")
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is False and rec["error"]["stage"] == "open"
+    _e04_closed_in_order(run)
+
+
+def test_e04_a_scenario_that_throws_closes_every_context_it_opened():
+    run = _e04_run("scenario_throws_after_open")
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is False and "hint" not in rec["error"]
+    assert [e for e in run["log"] if e.endswith(".new")] == ["ctx1.new", "ctx2.new"]
+    _e04_closed_in_order(run)
+
+
+def test_e04_a_record_carrying_the_token_is_replaced_by_a_failure():
+    run = _e04_run("scenario_reports_the_token")
+
+    (rec,) = _e04_records(run)
+    assert rec == {
+        "id": "echo",
+        "ids": [],
+        "source": "app",
+        "pass": False,
+        "error": {"code": "secret_in_record", "stage": "echo"},
+    }
+
+
+def test_e04_a_locator_timeout_keeps_its_first_line_and_drops_the_call_log():
+    run = _e04_run("harmless_hint_is_kept")
+
+    (rec,) = _e04_records(run)
+    assert rec["error"]["hint"] == "locator.click: Timeout 5000ms exceeded."
+
+
+def test_e04_a_context_left_open_outside_a_scenario_is_closed_at_the_end():
+    run = _e04_run("open_outside_a_scenario")
+
+    (rec,) = _e04_records(run)
+    assert rec["id"] == "runner" and rec["pass"] is False
+    assert _e04_done(run)["incomplete"] is True
+    _e04_closed_in_order(run)
+
+
+def test_e04_the_job_server_refuses_a_record_that_carries_the_token():
+    kept = e04_evidence.keep_record(
+        {"id": "x", "ids": ["E4-B01"], "pass": True, "measured": {"t": "Bearer tok-1"}}, "tok-1"
+    )
+
+    assert kept == {
+        "id": "x",
+        "ids": ["E4-B01"],
+        "pass": False,
+        "error": {"code": "secret_in_record", "stage": "serve"},
+    }
+    assert e04_evidence.keep_record({"id": "y", "pass": True}, "tok-1") == {"id": "y", "pass": True}

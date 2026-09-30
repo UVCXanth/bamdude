@@ -81,6 +81,19 @@ def header(manifest: dict) -> dict:
     }
 
 
+def keep_record(record: dict, token: str) -> dict:
+    """What the manifest keeps of a runner record: a record that carries the stand's token is
+    replaced by a failure saying so — the runner scrubs its own, this is the last guard."""
+    if token and token in json.dumps(record, ensure_ascii=False):
+        return {
+            "id": record.get("id"),
+            "ids": record.get("ids", []),
+            "pass": False,
+            "error": {"code": "secret_in_record", "stage": "serve"},
+        }
+    return record
+
+
 def serve(name: str = "detail", only: str = "") -> None:
     root = stand.check_root(stand.expected_root("baseline"), mode="baseline")
     manifest = stand.read_manifest(root)
@@ -99,6 +112,7 @@ def serve(name: str = "detail", only: str = "") -> None:
     }
     head = header(manifest)
     records: list[dict] = []
+    done: dict = {}
     finished = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
@@ -117,9 +131,10 @@ def serve(name: str = "detail", only: str = "") -> None:
         def do_POST(self):  # noqa: N802
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             if self.path == "/record":
-                records.append(body)
+                records.append(keep_record(body, job["token"]))
                 self._send(b"{}")
             elif self.path == "/done":
+                done.update(body if isinstance(body, dict) else {})
                 self._send(b"{}")
                 finished.set()
             else:
@@ -136,10 +151,16 @@ def serve(name: str = "detail", only: str = "") -> None:
     httpd.shutdown()
     out = out_dir / f"{name}.json"
     rows = [e02_evidence.with_hashes(r) for r in records]
-    out.write_text(json.dumps({**head, "records": rows}, ensure_ascii=False, indent=1), encoding="utf-8")
+    complete = finished.is_set() and done.get("incomplete") is False
+    out.write_text(
+        json.dumps({**head, "complete": complete, "records": rows}, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
     not_passed = [r["id"] for r in rows if r.get("pass") is not True]
     print(
-        json.dumps({"manifest": str(out), "records": len(rows), "not_passed": not_passed}, ensure_ascii=False),
+        json.dumps(
+            {"manifest": str(out), "complete": complete, "records": len(rows), "not_passed": not_passed},
+            ensure_ascii=False,
+        ),
         flush=True,
     )
 
