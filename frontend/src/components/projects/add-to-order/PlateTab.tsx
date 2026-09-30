@@ -14,6 +14,7 @@ import { Button } from '../../Button';
 import { ListSearchBox } from '../../ListSearchBox';
 import { PaginationBar } from '../../PaginationBar';
 import { RefreshFailedNote } from '../../workshop/RefreshFailedNote';
+import { WorkshopField, WorkshopFormGrid } from '../../workshop/WorkshopFormGrid';
 import { MODEL_CHIP } from '../chips';
 import { MAX_LINE_QTY } from './addToOrderState';
 import type { PlateFile, PlatePick } from './addToOrderState';
@@ -251,16 +252,19 @@ function PlatePane({ pick, onPickChange }: { pick: PlatePick; onPickChange: (nex
           />
         ))}
       </div>
-      <label className="flex items-center gap-2 text-sm text-white">
-        {t('orders.add.plate.copies')}
-        <CountInput
-          value={pick.copies}
-          min={1}
-          max={MAX_LINE_QTY}
-          onCommit={(copies) => onPickChange({ ...pick, copies })}
-          ariaLabel={t('orders.add.plate.copies')}
-        />
-      </label>
+      {/* E08: a field of the form grid under the plates, its label over it. */}
+      <WorkshopFormGrid>
+        <WorkshopField label={t('orders.add.plate.copies')} htmlFor="add-to-order-plate-copies">
+          <CountInput
+            id="add-to-order-plate-copies"
+            value={pick.copies}
+            min={1}
+            max={MAX_LINE_QTY}
+            onCommit={(copies) => onPickChange({ ...pick, copies })}
+            ariaLabel={t('orders.add.plate.copies')}
+          />
+        </WorkshopField>
+      </WorkshopFormGrid>
     </div>
   );
 }

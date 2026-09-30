@@ -9,6 +9,7 @@ import { useState } from 'react';
  * from outside (a reset, a server answer), the field shows the new value.
  */
 export function CountInput({
+  id,
   value,
   min,
   max,
@@ -17,6 +18,7 @@ export function CountInput({
   ariaLabel,
   className,
 }: {
+  id?: string;
   value: number;
   min: number;
   max: number;
@@ -32,6 +34,7 @@ export function CountInput({
   };
   return (
     <input
+      id={id}
       type="number"
       min={min}
       max={max}

@@ -228,12 +228,14 @@ function PartRow({
         </div>
       </td>
       <td className={CELL}>
+        {/* The mockup's `small` (12 px, muted); a file name wraps whole, so on a phone the
+            table scrolls instead of splitting it mid-token. */}
         {best && row.has_sliced_source ? (
-          <div className="[overflow-wrap:anywhere]">
+          <div className="text-xs text-bambu-gray [overflow-wrap:break-word]">
             {fileName} · {plate}
           </div>
         ) : (
-          <div className="text-amber-700 dark:text-amber-400">{t('orders.add.parts.noSliced')}</div>
+          <div className="text-xs text-amber-700 dark:text-amber-400">{t('orders.add.parts.noSliced')}</div>
         )}
         {row.models.length > 0 && (
           <div className="mt-0.5 flex flex-wrap gap-1">

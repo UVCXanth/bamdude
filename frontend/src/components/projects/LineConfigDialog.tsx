@@ -424,7 +424,18 @@ function SourceCell({
       </span>
     );
   }
-  const list = [...(sources ?? [])].sort((a, b) => Number(b.recommended) - Number(a.recommended)).slice(0, SOURCES_SHOWN);
+  // Two files of one model with the same plate and yield read the same — the second would say
+  // nothing, so the cell shows sources a reader can tell apart (recommended first).
+  const seen = new Set<string>();
+  const list = [...(sources ?? [])]
+    .sort((a, b) => Number(b.recommended) - Number(a.recommended))
+    .filter((s) => {
+      const label = `${s.printer_model ?? ''}|${s.plate_index}|${s.yield}`;
+      if (seen.has(label)) return false;
+      seen.add(label);
+      return true;
+    })
+    .slice(0, SOURCES_SHOWN);
   if (list.length === 0) return <span className="text-amber-700 dark:text-amber-400">{t('orders.lineConfig.source.none')}</span>;
   return (
     <span className="flex flex-col gap-0.5">

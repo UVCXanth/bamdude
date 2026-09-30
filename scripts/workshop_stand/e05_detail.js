@@ -611,6 +611,10 @@ async (page, selftest = null) => {
     const row = productRow(p, P);
     const heads = await panelOf(p).locator('thead th').evaluateAll((ths) => ths.map((th) => th.textContent.trim()));
     const unpicked = await row.evaluate((tr) => [...tr.children].map((td) => td.innerText.trim().replace(/\s+/g, ' ')));
+    // The mockup writes an unpicked row's configuration, stock and material/colour in `small`
+    // (12 px): what the row COULD be reads quieter than what is picked.
+    const unpickedType = await row.evaluate((tr) => [2, 4, 5].flatMap((i) => [...tr.children[i].querySelectorAll('span, div')]
+      .filter((el) => el.childElementCount === 0 && el.textContent.trim()).map((el) => getComputedStyle(el).fontSize)));
     const qtyDisabled = await row.getByLabel('Кількість').isDisabled();
     const mark = requests.length;
     await tick(row);
@@ -624,8 +628,9 @@ async (page, selftest = null) => {
     await ctx.close();
     return {
       recipe: { url: '/projects/{order:241}', fixture: ['POST /stock/suggest → runner proposal', 'GET /products/?… → the second row of a page marked draft'], actions: [`search ${productP.sku || productP.code}`, 'tick'] },
-      measured: { heads, unpicked, qtyDisabled, picked, detailReads, draftRow, errors },
+      measured: { heads, unpicked, unpickedType, qtyDisabled, picked, detailReads, draftRow, errors },
       pass: heads.join('|') === 'Обрати|Виріб|Конфігурація|Кількість|Зі складу|Матеріал / колір' && /: .+ \/ /.test(unpicked[2] ?? '') &&
+        unpickedType.length >= 3 && unpickedType.every((size) => size === '12px') &&
         /усі конфіг\./.test(unpicked[4] ?? '') && qtyDisabled && picked.selects.length > 0 && /з 5/.test(picked.stock ?? '') &&
         detailReads.length === 0 && /· чернетка/.test(draftRow) && errors.length === 0,
       screenshots: [file],
@@ -732,6 +737,10 @@ async (page, selftest = null) => {
       const cells = await row.evaluate((tr) => [...tr.children].map((td) => td.innerText.trim().replace(/\s+/g, ' ')));
       const heads = await panelOf(p).locator('thead th').evaluateAll((ths) => ths.map((th) => th.textContent.trim()));
       const broken = await splitWords(panelOf(p).locator('[data-testid^="add-part-"] td:nth-child(2) .font-semibold'));
+      // The source reads as the mockup's `small` (12 px), its file name never split mid-token.
+      const fileCell = panelOf(p).locator('[data-testid^="add-part-"] td:nth-child(3) > div:first-child');
+      const fileBroken = await splitWords(fileCell);
+      const fileSize = await fileCell.first().evaluate((el) => getComputedStyle(el).fontSize);
       const summaryText = await footer(p).innerText();
       const overflow = await docOverflow(p);
       const library = requests.filter((r) => /\/api\/v1\/library\//.test(r));
@@ -739,8 +748,8 @@ async (page, selftest = null) => {
       await ctx.close();
       return {
         recipe: { url: '/projects/{order:241}', viewport: w, actions: ['tab «Деталі з виробу»', 'search clm01', 'tick the first (30) and the second'] },
-        measured: { heads, cells, broken, summaryText, overflow, library, errors },
-        pass: heads.length === 5 && broken.length === 0 && /(плита \d+|увесь файл)/.test(cells[2] ?? '') && /\d+ шт\./.test(cells[3] ?? '') &&
+        measured: { heads, cells, broken, fileBroken, fileSize, summaryText, overflow, library, errors },
+        pass: heads.length === 5 && broken.length === 0 && fileBroken.length === 0 && fileSize === '12px' && /(плита \d+|увесь файл)/.test(cells[2] ?? '') && /\d+ шт\./.test(cells[3] ?? '') &&
           /≈ \d+(–\d+)? плит/.test(cells[4] ?? '') && /Обрано деталей: 2 · 31 шт\./.test(summaryText) &&
           overflow <= 0 && library.length === 0 && errors.length === 0,
         screenshots: [file],
@@ -803,6 +812,14 @@ async (page, selftest = null) => {
     await panelOf(p).getByRole('radio').last().check({ timeout: 10000 });
     await panelOf(p).getByLabel('Копій плити').fill('3');
     await p.waitForTimeout(600);
+    // E08: the field sits in the form grid under the plates — its label over it, 88 px wide.
+    const copiesField = await panelOf(p).evaluate((panel) => {
+      const input = panel.querySelector('input[aria-label="Копій плити"]');
+      const label = input && input.id ? panel.querySelector(`label[for="${input.id}"]`) : null;
+      const i = input.getBoundingClientRect();
+      const l = label ? label.getBoundingClientRect() : null;
+      return { width: Math.round(i.width), labelAbove: l ? l.bottom <= i.top + 1 : false };
+    });
     const fileSliced = await shoot(p, 'add-plate@1440');
     // The chosen file survives a search that takes it off the list.
     await search(p, 'price_holder');
@@ -821,8 +838,8 @@ async (page, selftest = null) => {
     const plateLine = (sentBatches[0]?.body?.lines ?? []).find((l) => l.kind === 'plate');
     return {
       recipe: { url: '/projects/{order:241}', fixture: ['POST …/lines/batch → intercepted', TAGGED_NOTE], actions: ['STL rem06_buttons', 'unsliced sign_holder.3mf', 'cable_clip_set: last plate, copies 3', 'search price_holder (the chosen file leaves the list)', 'price_holder_v2: first plate', 'Add'] },
-      measured: { stlRow, stlPane: stlPane.slice(0, 300), stlPrimary, unslicedRow, unslicedPane: unslicedPane.slice(0, 300), unslicedPrimary, refusedReads, slicedRow, survives, kept, plateLine, errors },
-      pass: /STL — не додається/.test(stlRow) && /Цей тип файлу не додається/.test(stlPane) && stlPrimary &&
+      measured: { stlRow, stlPane: stlPane.slice(0, 300), stlPrimary, unslicedRow, unslicedPane: unslicedPane.slice(0, 300), unslicedPrimary, refusedReads, slicedRow, copiesField, survives, kept, plateLine, errors },
+      pass: /STL — не додається/.test(stlRow) && copiesField.labelAbove && Math.abs(copiesField.width - 88) <= 1 && /Цей тип файлу не додається/.test(stlPane) && stlPrimary &&
         /не нарізано/.test(unslicedRow) && /не нарізаний/.test(unslicedPane) && unslicedPrimary && refusedReads === 0 &&
         !/не нарізано/.test(slicedRow) && survives === 1 && kept.copies === '3' && kept.checked === 0 &&
         plateLine?.library_file_id === F['price_holder_v2.gcode.3mf'] && plateLine?.copies === 3 && errors.length === 0,

@@ -299,12 +299,13 @@ function ProductRow({
         </div>
       </td>
       <td className={CELL}>
+        {/* What the row COULD be reads as the mockup's `small` (12 px, muted). */}
         {groups.length === 0 ? (
-          <span className="text-bambu-gray">{t('orders.add.noVariants')}</span>
+          <span className="text-xs text-bambu-gray">{t('orders.add.noVariants')}</span>
         ) : pick ? (
           <PickedConfiguration groups={groups} pick={pick} onChange={onChange} />
         ) : (
-          <span className="text-bambu-gray">{groupsText(groups)}</span>
+          <span className="text-xs text-bambu-gray">{groupsText(groups)}</span>
         )}
       </td>
       <td className={CELL}>
@@ -322,7 +323,7 @@ function ProductRow({
           {pick && stock ? (
             <StockCell pick={pick} stock={stock} onRetry={onRetryStock} onChange={onChange} />
           ) : (
-            <span className="whitespace-nowrap text-bambu-gray">
+            <span className="whitespace-nowrap text-xs text-bambu-gray">
               {t(groups.length > 0 ? 'orders.add.stock.listedAll' : 'orders.add.stock.listed', {
                 ready: product.finished_available,
                 kits: product.kits_available,
@@ -363,7 +364,7 @@ function ProductRow({
           </div>
         ) : (
           <>
-            <div>{product.materials.join(', ') || t('orders.add.any')}</div>
+            <div className="text-xs text-bambu-gray">{product.materials.join(', ') || t('orders.add.any')}</div>
             <div className="text-xs text-bambu-gray">{colours || t('orders.add.anyColor')}</div>
           </>
         )}

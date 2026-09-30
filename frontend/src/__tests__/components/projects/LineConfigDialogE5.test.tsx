@@ -143,6 +143,19 @@ describe('LineConfigDialog (WS-13 E5 F)', () => {
     expect(within(screen.getByTestId('config-part-6')).getByText('no plate')).toBeInTheDocument();
   });
 
+  it('shows two sources a reader can tell apart, not one repeated (WS-13 E5 T7)', async () => {
+    // Two files of one model, same plate and yield, read the same: the second says nothing.
+    vi.spyOn(api, 'getProductSources').mockResolvedValue({
+      parts: [
+        { part_id: 5, sources: [src(2, 'X1C', 6, true), src(2, 'X1C', 6), src(1, 'P1S', 4)], has_sliced_source: true, yield_min: 4, yield_max: 6, hidden_sources: 0 },
+      ],
+    } as never);
+    open();
+    const flask = within(await screen.findByTestId('config-part-5'));
+    expect(await flask.findByText('pl. 1 × 4')).toBeInTheDocument();
+    expect(flask.getAllByText('pl. 2 × 6')).toHaveLength(1);
+  });
+
   it('does not wait on the sources: a failed read leaves a dash', async () => {
     vi.spyOn(api, 'getProductSources').mockRejectedValue(new ApiError('boom', 500));
     open();
