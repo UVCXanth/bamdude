@@ -16,6 +16,8 @@ async (page, selftest = null) => {
   let job = null;
   let stage = 'job';
   let incomplete = false;
+  let sent = 0; // records the job server accepted — the count `/done` reports
+  const declared = []; // every scenario this runner has, run or filtered out
 
   // ⚠️ **No raw error leaves this runner.** A Playwright error's text can carry its call log —
   // the request headers, the app token among them — so a failure is reported as a code, the
@@ -39,12 +41,16 @@ async (page, selftest = null) => {
     return out;
   };
   const failure = (code, where) => Object.assign(new Error(code), { name: 'RunnerFailure', code, where });
+  // A post the job server did not accept — no answer or not 2xx — makes the run incomplete;
+  // the server compares the count of accepted records with what it holds.
   const post = async (path, data) => {
+    let res = null;
     try {
-      await page.request.post(`${base}${path}`, { data });
-    } catch {
-      incomplete = true; // the job server did not take it; the manifest will say so by its absence
-    }
+      res = await page.request.post(`${base}${path}`, { data });
+    } catch { /* below */ }
+    if (res && res.ok()) return true;
+    incomplete = true;
+    return false;
   };
   // The last guard: a record that carries the token, whatever put it there, is replaced by a
   // failure that says so — and never sent.
@@ -58,8 +64,13 @@ async (page, selftest = null) => {
   const record = async (raw) => {
     const r = scrub(raw);
     summary.push(`${r.pass ? 'ok  ' : r.pass === null ? 'PEND' : 'FAIL'} ${r.id}`);
-    await post('/record', r);
+    if (await post('/record', r)) sent += 1;
   };
+  // A wait with a deadline, failing by a code — a fixed pause proves nothing about an order of events.
+  const within = (promise, ms, code) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(failure(code, 'wait')), ms);
+    promise.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
+  });
   // The routes are the PAGE's (the runner's own and a scenario's fixtures), so each page lets go
   // of them before the context closes; an error from here on is the closing's, not a scenario's.
   const closeContext = async (ctx) => {
@@ -192,6 +203,7 @@ async (page, selftest = null) => {
   // Every context a scenario opened is closed whatever the scenario did; a route failure during
   // it makes it a FAIL whatever it measured.
   const scenario = async (id, ids, fn) => {
+    declared.push(id);
     if (ONLY.length && !ONLY.some((o) => id.startsWith(o))) return;
     stage = id;
     const before = new Set(live.keys());
@@ -1126,23 +1138,59 @@ async (page, selftest = null) => {
   });
   await scenario('attachments-late@1440', ['E4-G04', 'R09'], async () => {
     const files = [{ filename: 'parcel.png', original_name: 'Пакування.png', size: 48213, uploaded_at: '2026-09-28T09:40:00Z' }];
-    const { ctx, p } = await open(1440, { rewrite: [[exact(`/projects/${A}`), (o) => ({ ...o, attachments: files })]] });
-    // The viewer closes before the picture comes, and the app drops that request: a late answer
-    // with nothing left to fulfil is the case under test, so its refusal is not a fixture failure.
-    await p.route(/\/attachments\/parcel\.png/, async (route) => {
-      await new Promise((r) => setTimeout(r, 2500));
-      await route.fulfill({ status: 200, body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'), contentType: 'image/png' }).catch(() => {});
+    const { ctx, p, route, errors } = await open(1440, { rewrite: [[exact(`/projects/${A}`), (o) => ({ ...o, attachments: files })]] });
+    // The app does not cancel the read when the viewer closes — it drops the answer. So the answer is
+    // held until the viewer has been shown and closed, then delivered in full, and the client is seen
+    // to take it and let it go; a fixture that cannot deliver it fails the scenario.
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    let requested;
+    const asked = new Promise((resolve) => { requested = resolve; });
+    let delivered = false;
+    await route(/\/attachments\/parcel\.png/, async (r) => {
+      requested();
+      await gate;
+      await r.fulfill({ status: 200, body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'), contentType: 'image/png' });
+      delivered = true;
     });
     await p.goto(detail(A), { waitUntil: 'networkidle' });
     await ready(p);
     await tab(p, 'Вкладення');
+    // Every object URL the page makes and lets go of, from here on.
+    await p.evaluate(() => {
+      const seen = { created: [], revoked: [] };
+      const create = URL.createObjectURL.bind(URL);
+      const revoke = URL.revokeObjectURL.bind(URL);
+      URL.createObjectURL = (blob) => { const u = create(blob); seen.created.push(u); return u; };
+      URL.revokeObjectURL = (u) => { seen.revoked.push(u); revoke(u); };
+      window.__e04blobs = seen;
+    });
+    const finished = p.waitForEvent('requestfinished', { predicate: (q) => /\/attachments\/parcel\.png/.test(q.url()), timeout: 30000 }).catch(() => null);
     await p.getByRole('button', { name: 'Переглянути' }).click();
-    await p.waitForTimeout(300);
+    await within(asked, 10000, 'picture_not_requested');
+    const lightbox = p.locator('[role="dialog"]');
+    await lightbox.waitFor({ state: 'visible', timeout: 5000 });
+    const whileReading = (await lightbox.innerText()).trim();
     await p.keyboard.press('Escape');
-    await p.waitForTimeout(3000);
-    const open_ = await p.locator('[role="dialog"]').count();
+    await lightbox.waitFor({ state: 'detached', timeout: 5000 });
+    const made = await p.evaluate(() => window.__e04blobs.created.length);
+    release();
+    const request = await finished;
+    if (!request) throw failure('late_answer_not_finished', 'attachments-late');
+    const status = (await request.response())?.status() ?? null;
+    // The client read the late answer: the URL it made of it is revoked, and nothing reopened.
+    await p.waitForFunction((n) => {
+      const seen = window.__e04blobs;
+      const late = seen.created.slice(n);
+      return late.length > 0 && late.every((u) => seen.revoked.includes(u));
+    }, made, { timeout: 10000 });
+    const after = await p.evaluate(() => ({ dialogs: document.querySelectorAll('[role="dialog"]').length, blobImages: document.querySelectorAll('img[src^="blob:"]').length }));
     await ctx.close();
-    return { recipe: { fixture: ['GET attachments/parcel.png answered after 2.5 s; the viewer closed at 0.3 s'] }, measured: { dialogs: open_ }, pass: open_ === 0 };
+    return {
+      recipe: { fixture: ['GET attachments/parcel.png held until the viewer was shown and closed, then answered 200 with a PNG'] },
+      measured: { whileReading, delivered, status, ...after, errors },
+      pass: delivered && status === 200 && whileReading.length > 0 && after.dialogs === 0 && after.blobImages === 0 && errors.length === 0,
+    };
   });
 
   // ======================= 9. hit tests at 390 and the themes =======================
@@ -1261,7 +1309,7 @@ async (page, selftest = null) => {
     await record({ id: 'runner', ids: [], source: 'runner', pass: false, error: safeError(e, stage) });
   } finally {
     for (const ctx of [...live.keys()]) await closeContext(ctx);
-    await post('/done', { count: summary.length, incomplete });
+    await post('/done', { count: sent, incomplete, declared });
   }
-  return { records: summary.length, incomplete, summary };
+  return { records: summary.length, sent, incomplete, summary };
 }

@@ -46,6 +46,64 @@ STAGE = "e04-lines-plan-tabs"
 # (completed), 248 (defects), 250 (cancelled).
 ORDERS = ("241", "244", "245", "248", "250")
 BASE_RECIPES = ("order-detail", "order-detail-line-expanded")
+# Every scenario of the detail runner (e04_detail.js), in its order. A full run is complete only
+# when each of them has exactly one record; the runner reports what it declares, and a unit test
+# holds the two together.
+DETAIL_SCENARIOS = (
+    "geometry@2560",
+    "geometry@1920",
+    "geometry@1440",
+    "geometry@1280",
+    "geometry@1024",
+    "geometry@768",
+    "geometry@390",
+    "lines-menu@1440",
+    "lines-reader@1440",
+    "lines-delete-confirm@1440",
+    "parts-241@1440",
+    "parts-241@390",
+    "parts-244@1440",
+    "parts-244@390",
+    "edit-product@1440",
+    "edit-product@390",
+    "edit-moved-inactive@1440",
+    "edit-refusal@1440",
+    "edit-sources-cold@1440",
+    "edit-sources-failed@1440",
+    "edit-to-config@1440",
+    "config-gate@1440",
+    "plan-stepper-split@1440",
+    "plan-proposal-editor@1440",
+    "plan-proposal-reader@1440",
+    "plan-printer@1440",
+    "plan-printer-loading@1440",
+    "plan-printer-failed@1440",
+    "plan-printer-gone@1440",
+    "plan-unsatisfiable@1440",
+    "prints-page@1440",
+    "prints-failed@1440",
+    "prints-partial@1440",
+    "prints-rights@1440",
+    "prints-printers-500@1440",
+    "prints-clamp@1440",
+    "prints-move@1440",
+    "prints-assign-dialog@1440",
+    "prints-defects-dialog@1440",
+    "prints-unlink-confirm@1440",
+    "prints-390",
+    "prints-pane-1024",
+    "procurement@1440",
+    "issues-empty@1440",
+    "notes@1440",
+    "notes-empty@1440",
+    "attachments@1440",
+    "attachments-late@1440",
+    "hits@390",
+    "theme-light@1440",
+    "theme-oled@1440",
+    "E12-plan-dialog@1440",
+    "E12-plan-dialog@390",
+)
 
 
 def job_entities(mapping: dict) -> dict:
@@ -94,6 +152,84 @@ def keep_record(record: dict, token: str) -> dict:
     return record
 
 
+def run_completeness(
+    *, finished: bool, done: dict, records: list[dict], only: str, expected: tuple[str, ...] = DETAIL_SCENARIOS
+) -> dict:
+    """Whether the manifest holds the WHOLE run — a set, apart from whether its scenarios passed.
+
+    The runner says how many records the server accepted and which scenarios it has; a lost or
+    doubled record, a filtered run and a runner that stopped early are each named."""
+    problems: list[str] = []
+    ids = [r.get("id") for r in records]
+    if not finished:
+        problems.append("no_done")
+    if done.get("incomplete") is not False:
+        problems.append("runner_incomplete")
+    if done.get("count") != len(records):
+        problems.append("count_mismatch")
+    if len(set(ids)) != len(ids):
+        problems.append("duplicate_ids")
+    if only:
+        problems.append("partial_filter")
+    if list(done.get("declared") or []) != list(expected):
+        problems.append("declared_mismatch")
+    missing = sorted(set(expected) - set(ids))
+    unexpected = sorted({str(i) for i in ids} - set(expected))
+    if missing:
+        problems.append("missing_ids")
+    if unexpected:
+        problems.append("unexpected_ids")
+    return {"complete": not problems, "problems": problems, "missing": missing, "unexpected": unexpected}
+
+
+def job_handler(job: dict, records: list[dict], done: dict, finished: threading.Event) -> type:
+    """The runner's job server: `/job.json` out, `/record` and `/done` in. A record that is not a
+    JSON object with an id is refused (400) — the runner counts only what was accepted — and
+    `/done` ends the wait whatever it carried, so the verdict judges what it said."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def _send(self, body: bytes) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):  # noqa: N802
+            if self.path == "/job.json":
+                self._send(json.dumps(job).encode())
+            else:
+                self.send_error(404)
+
+        def do_POST(self):  # noqa: N802
+            if self.path not in ("/record", "/done"):
+                self.send_error(404)
+                return
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            except ValueError:
+                body = None
+            if self.path == "/record":
+                if not isinstance(body, dict) or not isinstance(body.get("id"), str):
+                    self.send_error(400)
+                    return
+                records.append(keep_record(body, job["token"]))
+                self._send(b"{}")
+                return
+            try:
+                if isinstance(body, dict):
+                    done.update(body)
+                    self._send(b"{}")
+                else:
+                    self.send_error(400)
+            finally:
+                finished.set()
+
+        def log_message(self, *args):
+            pass
+
+    return Handler
+
+
 def serve(name: str = "detail", only: str = "") -> None:
     root = stand.check_root(stand.expected_root("baseline"), mode="baseline")
     manifest = stand.read_manifest(root)
@@ -115,50 +251,33 @@ def serve(name: str = "detail", only: str = "") -> None:
     done: dict = {}
     finished = threading.Event()
 
-    class Handler(BaseHTTPRequestHandler):
-        def _send(self, body: bytes) -> None:
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(body)
-
-        def do_GET(self):  # noqa: N802
-            if self.path == "/job.json":
-                self._send(json.dumps(job).encode())
-            else:
-                self.send_error(404)
-
-        def do_POST(self):  # noqa: N802
-            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-            if self.path == "/record":
-                records.append(keep_record(body, job["token"]))
-                self._send(b"{}")
-            elif self.path == "/done":
-                done.update(body if isinstance(body, dict) else {})
-                self._send(b"{}")
-                finished.set()
-            else:
-                self.send_error(404)
-
-        def log_message(self, *args):
-            pass
-
     stand.require_free_port(PORT)
-    httpd = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    httpd = ThreadingHTTPServer(("127.0.0.1", PORT), job_handler(job, records, done, finished))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     print(json.dumps({"serving": f"http://127.0.0.1:{PORT}"}), flush=True)
     finished.wait(timeout=2 * 3600)
     httpd.shutdown()
     out = out_dir / f"{name}.json"
     rows = [e02_evidence.with_hashes(r) for r in records]
-    complete = finished.is_set() and done.get("incomplete") is False
+    verdict = run_completeness(finished=finished.is_set(), done=done, records=records, only=only)
     out.write_text(
-        json.dumps({**head, "complete": complete, "records": rows}, ensure_ascii=False, indent=1), encoding="utf-8"
+        json.dumps(
+            {**head, "complete": verdict["complete"], "completeness": verdict, "records": rows},
+            ensure_ascii=False,
+            indent=1,
+        ),
+        encoding="utf-8",
     )
     not_passed = [r["id"] for r in rows if r.get("pass") is not True]
     print(
         json.dumps(
-            {"manifest": str(out), "complete": complete, "records": len(rows), "not_passed": not_passed},
+            {
+                "manifest": str(out),
+                "complete": verdict["complete"],
+                "problems": verdict["problems"],
+                "records": len(rows),
+                "not_passed": not_passed,
+            },
             ensure_ascii=False,
         ),
         flush=True,

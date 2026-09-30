@@ -748,3 +748,115 @@ def test_e04_the_job_server_refuses_a_record_that_carries_the_token():
         "error": {"code": "secret_in_record", "stage": "serve"},
     }
     assert e04_evidence.keep_record({"id": "y", "pass": True}, "tok-1") == {"id": "y", "pass": True}
+
+
+def test_e04_a_refused_record_makes_the_run_incomplete():
+    run = _e04_run("record_refused")
+
+    assert [p["status"] for p in run["posts"] if p["path"] == "/record"] == [500]
+    assert _e04_done(run) == {"count": 0, "incomplete": True, "declared": ["one"]}
+    assert run["returned"]["incomplete"] is True
+
+
+def test_e04_a_refused_end_of_run_makes_the_run_incomplete():
+    run = _e04_run("done_refused")
+
+    assert run["returned"]["incomplete"] is True
+
+
+def test_e04_the_runner_declares_exactly_the_scenarios_the_manifest_expects():
+    run = _e04_run("declared")
+
+    assert _e04_records(run) == []
+    assert _e04_done(run)["declared"] == list(e04_evidence.DETAIL_SCENARIOS)
+
+
+def _e04_full(**over) -> dict:
+    ids = list(e04_evidence.DETAIL_SCENARIOS)
+    args = {
+        "finished": True,
+        "done": {"count": len(ids), "incomplete": False, "declared": ids},
+        "records": [{"id": i} for i in ids],
+        "only": "",
+    }
+    return {**args, **over}
+
+
+def test_e04_a_full_delivered_run_is_complete():
+    assert e04_evidence.run_completeness(**_e04_full()) == {
+        "complete": True,
+        "problems": [],
+        "missing": [],
+        "unexpected": [],
+    }
+
+
+_E04_IDS = list(e04_evidence.DETAIL_SCENARIOS)
+
+
+@pytest.mark.parametrize(
+    ("over", "problem"),
+    [
+        ({"records": [{"id": i} for i in _E04_IDS[1:]]}, "count_mismatch"),
+        ({"records": [{"id": i} for i in _E04_IDS[1:]]}, "missing_ids"),
+        ({"done": {"count": len(_E04_IDS) + 1, "incomplete": False, "declared": _E04_IDS}}, "count_mismatch"),
+        ({"done": {"count": len(_E04_IDS), "incomplete": True, "declared": _E04_IDS}}, "runner_incomplete"),
+        ({"finished": False, "done": {}}, "no_done"),
+        ({"only": "notes"}, "partial_filter"),
+        ({"done": {"count": len(_E04_IDS), "incomplete": False, "declared": _E04_IDS[1:]}}, "declared_mismatch"),
+        (
+            {
+                "records": [{"id": i} for i in [*_E04_IDS, _E04_IDS[0]]],
+                "done": {"count": len(_E04_IDS) + 1, "incomplete": False, "declared": _E04_IDS},
+            },
+            "duplicate_ids",
+        ),
+        (
+            {
+                "records": [{"id": i} for i in [*_E04_IDS[1:], "bogus"]],
+                "done": {"count": len(_E04_IDS), "incomplete": False, "declared": _E04_IDS},
+            },
+            "unexpected_ids",
+        ),
+    ],
+)
+def test_e04_a_run_that_lost_or_filtered_a_scenario_is_not_complete(over, problem):
+    verdict = e04_evidence.run_completeness(**_e04_full(**over))
+
+    assert verdict["complete"] is False
+    assert problem in verdict["problems"]
+
+
+def test_e04_the_job_server_keeps_valid_records_and_always_ends_on_done():
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    records: list[dict] = []
+    done: dict = {}
+    finished = threading.Event()
+    job = {"token": "tok-1"}
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), e04_evidence.job_handler(job, records, done, finished))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+    def post(path: str, raw: bytes) -> int:
+        req = urllib.request.Request(base + path, data=raw, method="POST", headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as res:
+                return res.status
+        except urllib.error.HTTPError as err:
+            return err.code
+
+    try:
+        assert post("/record", json.dumps({"id": "a", "pass": True}).encode()) == 200
+        assert post("/record", b"[]") == 400
+        assert post("/record", b"{not json") == 400
+        assert post("/record", json.dumps({"id": "b", "measured": "Bearer tok-1"}).encode()) == 200
+        assert [r["id"] for r in records] == ["a", "b"]
+        assert records[1]["error"]["code"] == "secret_in_record"
+        assert post("/done", b"{not json") == 400
+        assert finished.is_set() and done == {}
+    finally:
+        httpd.shutdown()

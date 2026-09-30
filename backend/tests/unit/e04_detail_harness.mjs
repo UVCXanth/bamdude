@@ -74,9 +74,12 @@ const page = (c) => {
         }
         return response(200, FIX[path.split('?')[0]] ?? {});
       },
+      // `refuse`: { path: status } — the job server answering that post with an error.
       post: async (url, { data }) => {
-        posts.push({ path: new URL(url).pathname, data: JSON.parse(JSON.stringify(data)) });
-        return response(200, {});
+        const path = new URL(url).pathname;
+        const status = (c.refuse ?? {})[path] ?? 200;
+        posts.push({ path, status, data: JSON.parse(JSON.stringify(data)) });
+        return response(status, {});
       },
     },
   };
@@ -113,6 +116,11 @@ const CASES = {
     await scenario('timeout', [], async () => { throw new Error('locator.click: Timeout 5000ms exceeded.\nCall log:\n  - waiting for getByRole(\'button\')'); });
   }],
   open_outside_a_scenario: [{}, async ({ open }) => { await open(1440); throw leaky('page.evaluate: boom'); }],
+  // T7-R03: the job server refusing a record, or the end of the run.
+  record_refused: [{ refuse: { '/record': 500 } }, async ({ scenario }) => { await scenario('one', [], async () => ({ pass: true })); }],
+  done_refused: [{ refuse: { '/done': 500 } }, async ({ scenario }) => { await scenario('one', [], async () => ({ pass: true })); }],
+  // Every scenario the real runner declares, none of them run.
+  declared: [{ only: 'nothing-matches' }],
 };
 
 const [c, selftest] = CASES[name];
