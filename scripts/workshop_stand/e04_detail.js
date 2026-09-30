@@ -165,10 +165,12 @@ async (page, selftest = null) => {
       const url = req.url();
       if (req.method() !== 'GET') {
         const hit = writes.find(([re]) => re.test(url));
-        // Two POSTs only READ — the stock proposal and the print dialog's routing preview —
-        // and are answered here with the shape they have (empty), never with `{}`, which the
-        // print dialog cannot read.
-        const fallback = /\/stock\/suggest/.test(url) ? { items: [] } : /\/printer-routing-preview/.test(url) ? { targets: [] } : {};
+        // Three POSTs only READ — the stock proposal and the print dialog's two routing
+        // previews (per printer, and the auto-queue one) — and are answered here with the
+        // shape they have (empty), never with `{}`, which the print dialog cannot read.
+        const fallback = /\/stock\/suggest/.test(url) ? { items: [] }
+          : /\/printer-routing-preview/.test(url) ? { targets: [] }
+            : /\/auto-queue\/routing-preview/.test(url) ? { plates: [] } : {};
         let answer = hit ? (typeof hit[1] === 'function' ? await hit[1](req) : hit[1]) : fallback;
         if (answer && answer.__status) return route.fulfill({ status: answer.__status, json: answer.json ?? {} });
         return route.fulfill({ status: 200, json: answer });
@@ -260,7 +262,16 @@ async (page, selftest = null) => {
   const menuState = (p) => p.evaluate(() => [...document.querySelectorAll('[role="menu"] [role="menuitem"], [role="menu"] [role="separator"]')]
     .map((el) => (el.getAttribute('role') === 'separator' ? '—' : `${el.textContent.trim()}${el.disabled ? ' [off]' : ''}${el.title ? ` {${el.title}}` : ''}`)));
   const dialogText = (p) => p.evaluate(() => [...document.querySelectorAll('[role="dialog"]')].pop()?.innerText ?? null);
+  // A dialog is pictured once what it reads has come back: no «…ще читається / читаються» hint left.
+  // One that never settles fails its scenario — a read that stays pending is a defect, not a moment.
+  const settled = (p) => p.waitForFunction(() => !/ще чита/.test([...document.querySelectorAll('[role="dialog"]')].pop()?.innerText ?? ''), null, { timeout: 15000 });
   const panel = (p) => p.locator('[role="tabpanel"]:visible').first();
+  // A tab's frame starts at its tab bar: what the tab shows is the evidence, not the page's top.
+  const toTabs = (p) => panel(p).evaluate((el) => {
+    let n = el;
+    while (n && !n.querySelector?.('[role="tablist"]')) n = n.parentElement;
+    (n?.querySelector('[role="tablist"]') ?? el).scrollIntoView({ block: 'start' });
+  });
   // Every query of the app is fresh for a minute (appQueryClient), so a background re-read is
   // a minute passing and the page coming back to the front.
   const refetchLater = async (p) => {
@@ -375,10 +386,12 @@ async (page, selftest = null) => {
   for (const [name, id, order] of [['241', A, orderA], ['244', B, orderB]]) {
     for (const w of [1440, 390]) {
       await scenario(`parts-${name}@${w}`, ['E4-C01', 'E4-C02', 'E4-C03', 'E4-B02', 'E4-B03', 'E4-B04', 'E4-B05'], async () => {
-        // One part of the first line dropped out of the kit — the «out of the kit» row the stand does not hold.
+        // One part of the first line dropped out of the kit — the «out of the kit» row the stand does not hold —
+        // with the figures the server gives such a row: nothing needed, nothing left, every usable print surplus.
         const zeroPart = order.lines[0].parts[0]?.part_id;
+        const outOfKit = (pt) => ({ ...pt, qty_per_unit: 0, need: 0, remaining: 0, surplus: pt.usable });
         const { ctx, p, errors } = await open(w, {
-          rewrite: [[exact(`/projects/${id}`), (o) => ({ ...o, lines: o.lines.map((l, i) => (i === 0 ? { ...l, parts: l.parts.map((pt) => (pt.part_id === zeroPart ? { ...pt, qty_per_unit: 0 } : pt)) } : l)) })]],
+          rewrite: [[exact(`/projects/${id}`), (o) => ({ ...o, lines: o.lines.map((l, i) => (i === 0 ? { ...l, parts: l.parts.map((pt) => (pt.part_id === zeroPart ? outOfKit(pt) : pt)) } : l)) })]],
         });
         await p.goto(detail(id), { waitUntil: 'networkidle' });
         await ready(p);
@@ -404,7 +417,7 @@ async (page, selftest = null) => {
         await ctx.close();
         const sevenCols = m.heads.length > 0 && m.heads.every((h) => h.length === 7 && h[4] === 'У роботі / черзі');
         return {
-          recipe: { url: `/projects/{order:${name}}`, viewport: w, actions: ['expand every line'], fixture: [`GET /projects/{order:${name}} → part ${zeroPart} of the first line at qty_per_unit 0`] },
+          recipe: { url: `/projects/{order:${name}}`, viewport: w, actions: ['expand every line'], fixture: [`GET /projects/{order:${name}} → part ${zeroPart} of the first line at qty_per_unit 0, need 0, remaining 0, surplus = usable`] },
           measured: { ...m, errors },
           pass: sevenCols && m.outOfKit && m.bought === m.countedIn && m.docOverflow <= 0 && (name !== '244' || m.dash) && errors.length === 0,
           screenshots: [file, file2],
@@ -511,7 +524,7 @@ async (page, selftest = null) => {
     return {
       recipe: { fixture: ['GET /products/{product}, its stock and kits → 500'] },
       measured: { text: text?.slice(0, 700) },
-      pass: /не вдалося прочитати матеріали виробу/.test(text ?? '') && /Не вдалося прочитати склад/.test(text ?? '') && !/доступно 0/.test(text ?? ''),
+      pass: /не вдалося прочитати матеріали виробу/.test(text ?? '') && /не вдалося прочитати склад/.test(text ?? '') && !/доступно 0/.test(text ?? ''),
       screenshots: [file],
     };
   });
@@ -532,6 +545,7 @@ async (page, selftest = null) => {
     await p.getByRole('menuitem', { name: 'Редагувати позицію…' }).click();
     const edit = p.getByRole('dialog', { name: 'Редагувати позицію' });
     await edit.waitFor();
+    await settled(p);
     const editText = await dialogText(p);
     const fileEdit = await shoot(p, 'edit-parts-line@1440');
     await edit.getByRole('button', { name: 'Змінити кількості деталей…' }).click();
@@ -578,6 +592,7 @@ async (page, selftest = null) => {
     await edit.waitFor();
     const button = edit.getByRole('button', { name: 'Змінити кількості деталей…' });
     const state = { disabled: await button.isDisabled(), title: await button.getAttribute('title') };
+    await settled(p);
     const file = await shoot(p, 'config-gate-edit@1440');
     await ctx.close();
     const reason = 'Склад цієї позиції вже рухався — додайте, взявши зі складу';
@@ -642,8 +657,12 @@ async (page, selftest = null) => {
       await p.waitForTimeout(400);
       const m = await p.evaluate(() => {
         const panel = document.querySelector('[data-testid$="-split-panel"]');
+        // The farm's numbers stand by their files — under each field for an editor, after each
+        // name for a reader — and no list labelled by model repeats them.
         return {
-          proposal: panel?.querySelector('[data-testid$="-proposal"]')?.textContent ?? null,
+          summary: panel?.querySelector('[data-testid$="-proposal"]')?.textContent ?? null,
+          perFile: [...(panel?.querySelectorAll('[data-testid*="-proposal-"]') ?? [])].map((el) => el.textContent.trim()),
+          readerNumbers: [...(panel?.children ?? [])].filter((el) => /— \d+$/.test(el.textContent.trim())).length,
           inputs: panel?.querySelectorAll('input').length ?? null,
           buttons: [...(panel?.querySelectorAll('button') ?? [])].map((b) => b.textContent.trim()),
         };
@@ -654,8 +673,11 @@ async (page, selftest = null) => {
       return {
         recipe: { url: '/projects/{order:241}', fixture: ['GET /projects/{order:241}/forecast → a proposed split on the first row with alternatives', ...(reader ? ['GET /auth/me → Administrators without queue:create'] : [])] },
         measured: { label, ...m },
-        pass: !!m.proposal && m.proposal.startsWith('за фермою:') &&
-          (reader ? label === 'Пропозиція ферми' && m.inputs === 0 && m.buttons.length === 0 : label === 'Розділити між файлами' && m.inputs > 0 && m.buttons.includes('Застосувати пропозицію ферми')),
+        pass: m.summary === null &&
+          (reader
+            ? label === 'Пропозиція ферми' && m.inputs === 0 && m.buttons.length === 0 && m.readerNumbers > 1
+            : label === 'Розділити між файлами' && m.inputs > 1 && m.perFile.length === m.inputs && m.perFile.every((s) => /^за фермою: \d+$/.test(s)) &&
+              m.buttons.includes('Застосувати пропозицію ферми')),
         screenshots: [file],
       };
     });
@@ -765,6 +787,7 @@ async (page, selftest = null) => {
       pagers: [...document.querySelectorAll('[data-testid^="prints-"] [data-pagination]')].map((p) => p.querySelector('span')?.textContent.trim()),
       where: [...document.querySelectorAll('[data-testid^="print-where-"]')].slice(0, 3).map((el) => el.textContent.trim()),
     }));
+    await toTabs(p);
     const file = await shoot(p, 'prints-page@1440');
     await ctx.close();
     return {
@@ -782,6 +805,7 @@ async (page, selftest = null) => {
     await p.waitForTimeout(1200);
     await panel(p).getByText('Не вдалося завантажити друки').waitFor({ timeout: 15000 }).catch(() => {});
     const text = await panel(p).innerText();
+    await toTabs(p);
     const file = await shoot(p, 'prints-failed@1440');
     await ctx.close();
     return { recipe: { fixture: ['GET /projects/{order:241}/archives → 500'] }, measured: { text: text.slice(0, 200) }, pass: /Не вдалося завантажити друки/.test(text) && /Спробувати знову/.test(text) && !/Друків ще немає/.test(text), screenshots: [file] };
@@ -802,6 +826,7 @@ async (page, selftest = null) => {
     await tab(p, 'Друки');
     await panel(p).getByText('Завантажено не всі друки замовлення').waitFor({ timeout: 30000 }).catch(() => {});
     const text = await panel(p).innerText();
+    await toTabs(p);
     const file = await shoot(p, 'prints-partial@1440');
     const pagesBefore = requests.filter((u) => /\/archives\?/.test(u)).length;
     await panel(p).getByRole('button', { name: 'Завантажити давніші' }).click();
@@ -921,6 +946,8 @@ async (page, selftest = null) => {
     await dlg.getByRole('button', { name: 'Призначити' }).click();
     await p.waitForTimeout(2000);
     const otherAfter = await countOf('[data-testid="prints-other"]');
+    // The frame shows where the print went: the «other prints» group.
+    await panel(p).locator('[data-testid="prints-other"]').evaluate((el) => el.scrollIntoView({ block: 'start' }));
     const file = await shoot(p, 'prints-move@1440');
     await ctx.close();
     return {
@@ -1019,26 +1046,45 @@ async (page, selftest = null) => {
   // ======================= 8. the other tabs (G01–G04) =======================
   await scenario('procurement@1440', ['E4-G01', 'R07'], async () => {
     const sent = [];
+    // The write is answered as the server answers it — the order with the bought count and what is
+    // left of it — and every later read of the order carries it too.
+    let saved = null;
+    const withSaved = (o) => ({
+      ...o,
+      procurement: o.procurement.map((r, i) => {
+        const row = i === 0 ? { ...r, sourcing_url: 'https://example.com/part' } : { ...r, planned_cost: null };
+        return i === 0 && saved != null ? { ...row, acquired: saved, remaining: Math.max(0, row.need - saved) } : row;
+      }),
+    });
     const { ctx, p } = await open(1440, {
-      rewrite: [[exact(`/projects/${A}`), (o) => ({ ...o, procurement: o.procurement.map((r, i) => (i === 0 ? { ...r, sourcing_url: 'https://example.com/part' } : { ...r, planned_cost: null })) })]],
-      writes: [[/\/procurement\/\d+/, async (req) => { sent.push(req.postDataJSON()); await new Promise((r) => setTimeout(r, 1500)); return orderA; }]],
+      rewrite: [[exact(`/projects/${A}`), withSaved]],
+      writes: [[/\/procurement\/\d+/, async (req) => {
+        const body = req.postDataJSON();
+        sent.push(body);
+        await new Promise((r) => setTimeout(r, 1500));
+        saved = body.quantity_acquired;
+        return withSaved(orderA);
+      }]],
     });
     await p.goto(detail(A), { waitUntil: 'networkidle' });
     await ready(p);
     await tab(p, 'Куповані');
     const heads = await panel(p).locator('thead th').allTextContents();
     const input = p.locator('[data-testid$="-acquired"]').first();
+    const answered = p.waitForResponse((r) => /\/procurement\/\d+/.test(r.url()) && r.request().method() !== 'GET', { timeout: 10000 });
     await input.fill('7');
     await input.press('Enter');
     await input.press('Tab').catch(() => {});
-    await p.waitForTimeout(400);
+    await answered;
+    await p.waitForTimeout(800);
+    const row = await panel(p).locator('tbody tr').first().innerText();
+    await toTabs(p);
     const file = await shoot(p, 'procurement@1440');
-    await p.waitForTimeout(1500);
     await ctx.close();
     return {
-      recipe: { fixture: ['GET order → the first purchased part with a supplier link, the others without a price', 'PATCH procurement answered after 1.5 s'] },
-      measured: { heads, sent },
-      pass: heads.join('|') === 'Деталь|Потрібно|Придбано|Лишилось|Ціна' && sent.length === 1,
+      recipe: { fixture: ['GET order → the first purchased part with a supplier link, the others without a price', 'PATCH procurement answered after 1.5 s with the order carrying the bought count'] },
+      measured: { heads, sent, row },
+      pass: heads.join('|') === 'Деталь|Потрібно|Придбано|Лишилось|Ціна' && sent.length === 1 && row.includes(String(Math.max(0, orderA.procurement[0].need - 7))),
       screenshots: [file],
     };
   });
@@ -1049,6 +1095,7 @@ async (page, selftest = null) => {
     await tab(p, 'Видачі');
     await p.waitForTimeout(600);
     const text = await panel(p).innerText();
+    await toTabs(p);
     const file = await shoot(p, 'issues-empty@1440');
     await ctx.close();
     return { recipe: { fixture: ['GET /stock-issues → empty'] }, measured: { text }, pass: /Видач ще не було/.test(text) && /Склад і видача/.test(text), screenshots: [file] };
@@ -1062,6 +1109,7 @@ async (page, selftest = null) => {
     await tab(p, 'Нотатки');
     const notes = panel(p);
     const saveOff = await notes.getByRole('button', { name: 'Зберегти нотатки' }).isDisabled();
+    await toTabs(p);
     const file = await shoot(p, 'notes@1440');
     // A clean editor follows a background re-read.
     second = true;
@@ -1096,7 +1144,6 @@ async (page, selftest = null) => {
     return { recipe: { fixture: ['GET order → notes null'] }, measured: { saveOff, discard }, pass: saveOff && discard === 0 };
   });
   await scenario('attachments@1440', ['E4-G04', 'R09'], async () => {
-    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
     const files = [
       { filename: 'parcel.png', original_name: 'Пакування.png', size: 48213, uploaded_at: '2026-09-28T09:40:00Z' },
       { filename: 'spec.pdf', original_name: 'Специфікація.pdf', size: 204800, uploaded_at: '2026-09-27T15:10:00Z' },
@@ -1106,11 +1153,25 @@ async (page, selftest = null) => {
       rewrite: [[exact(`/projects/${A}`), (o) => ({ ...o, attachments: files })]],
       writes: [[/\/attachments$/, (req) => { posts.push(req.method()); return { status: 'ok', filename: 'x', original_name: 'x', size: 1 }; }]],
     });
+    // A picture a person can see in the viewer (a 1×1 pixel shows nothing), drawn by the page itself.
+    const png = Buffer.from((await p.evaluate(() => {
+      const c = document.createElement('canvas');
+      c.width = 640;
+      c.height = 400;
+      const g = c.getContext('2d');
+      g.fillStyle = '#1f5f3f';
+      g.fillRect(0, 0, 640, 400);
+      g.fillStyle = '#ffffff';
+      g.font = 'bold 44px sans-serif';
+      g.fillText('Пакування', 48, 215);
+      return c.toDataURL('image/png');
+    })).split(',')[1], 'base64');
     await route(/\/attachments\/parcel\.png/, (r) => r.fulfill({ status: 200, body: png, contentType: 'image/png' }));
     await p.goto(detail(A), { waitUntil: 'networkidle' });
     await ready(p);
     await tab(p, 'Вкладення');
     const text = await panel(p).innerText();
+    await toTabs(p);
     const file = await shoot(p, 'attachments@1440');
     await p.getByRole('button', { name: 'Переглянути' }).click();
     await p.waitForTimeout(700);

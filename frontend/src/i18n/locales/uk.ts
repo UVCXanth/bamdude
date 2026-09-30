@@ -5981,7 +5981,7 @@ export default {
       finishedAvailable: 'доступно {{count}} у позиції «{{config}}»',
       kitsAvailable: 'доступно {{count}} під цю конфігурацію',
       availabilityLoading: 'доступність ще читається',
-      availabilityFailed: 'Не вдалося прочитати склад',
+      availabilityFailed: 'не вдалося прочитати склад',
       pickHint: 'готові цієї конфігурації, потім комплекти — до кількості',
       material: 'Матеріал',
       materialHint: 'жорсткий фільтр плит',

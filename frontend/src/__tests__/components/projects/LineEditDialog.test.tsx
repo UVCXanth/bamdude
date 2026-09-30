@@ -411,7 +411,8 @@ describe('LineEditDialog · its own rules (E4 D02, D03, D05)', () => {
 
     vi.spyOn(api, 'getProductStock').mockRejectedValue(new Error('boom'));
     const second = open(lid);
-    expect(await screen.findByText('Could not read the stock')).toBeInTheDocument();
+    // A hint under a field, lower-case like every other hint of the dialog.
+    expect(await screen.findByText('could not read the stock')).toBeInTheDocument();
     second.unmount();
 
     vi.spyOn(api, 'getProductStock').mockResolvedValue({ ...stock, kits_available: 0 } as never);

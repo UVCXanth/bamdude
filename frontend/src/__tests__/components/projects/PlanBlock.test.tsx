@@ -833,6 +833,17 @@ describe('PlanBlock', () => {
     expect(panel).not.toHaveTextContent('null');
   });
 
+  it('ends a file name the switch cannot fit with an ellipsis, the full name in its title', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planHiding(false, true));
+    render(<PlanBlock order={order} canEdit />);
+
+    // Measured in Chromium: a narrow <select> cut the name mid-letter until it was
+    // given text-overflow: ellipsis (Tailwind's `truncate`).
+    const files = await screen.findByTestId('plan-row-10-100-file');
+    expect(files).toHaveClass('truncate');
+    expect(files).toHaveAttribute('title', 'big.3mf (X1C)');
+  });
+
   it('sends a printer only a plate the reader may open: hidden row, visible alternative', async () => {
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planHiding(true, false));
     render(<PlanBlock order={order} canEdit />);
@@ -1625,10 +1636,14 @@ describe('PlanBlock', () => {
     vi.spyOn(api, 'getOrderForecast').mockResolvedValue(proposing);
     render(<PlanBlock order={order} canEdit />);
     expect(await screen.findByTestId('plan-line-10-ready')).toHaveTextContent(/ready ≈/);
-    // WS-13 E4 E07/E08: the proposal lives in the panel now, not in the actions cell.
-    expect(screen.queryByTestId('plan-row-10-100-proposal')).not.toBeInTheDocument();
+    // WS-13 E4 E07/E08: the proposal lives in the panel now, not in the actions cell —
+    // under each file's own field, because a list labelled by model reads nothing when
+    // two files are for the same model.
+    expect(screen.queryByTestId('plan-row-10-100-proposal-100')).not.toBeInTheDocument();
     await userEvent.click(screen.getByTestId('plan-row-10-100-split'));
-    expect(await screen.findByTestId('plan-row-10-100-proposal')).toHaveTextContent('by the farm: 0 X1C · 1 P1S');
+    expect(await screen.findByTestId('plan-row-10-100-proposal-100')).toHaveTextContent('by the farm: 0');
+    expect(screen.getByTestId('plan-row-10-100-proposal-400')).toHaveTextContent('by the farm: 1');
+    expect(screen.queryByTestId('plan-row-10-100-proposal')).not.toBeInTheDocument();
     // Opening the editor shows the default — every print on the row's own file — not the proposal.
     expect(screen.getByTestId('plan-row-10-100-split-100')).toHaveValue(1);
     expect(screen.getByTestId('plan-row-10-100-split-400')).toHaveValue(0);
@@ -1637,7 +1652,7 @@ describe('PlanBlock', () => {
     expect(screen.getByTestId('plan-row-10-100-split-400')).toHaveValue(1);
     expect(screen.getByTestId('plan-forecast-stale')).toHaveTextContent('previous plan');
     expect(screen.queryByTestId('plan-line-10-ready')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('plan-row-10-100-proposal')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('plan-row-10-100-proposal-100')).not.toBeInTheDocument();
 
     // The comparison is against effective enqueue items, not whether an editor
     // map exists: returning exactly to the server plan makes its forecast fresh.
@@ -1645,7 +1660,7 @@ describe('PlanBlock', () => {
     fireEvent.change(screen.getByTestId('plan-row-10-100-split-400'), { target: { value: '0' } });
     expect(screen.queryByTestId('plan-forecast-stale')).not.toBeInTheDocument();
     expect(screen.getByTestId('plan-line-10-ready')).toBeInTheDocument();
-    expect(screen.getByTestId('plan-row-10-100-proposal')).toBeInTheDocument();
+    expect(screen.getByTestId('plan-row-10-100-proposal-400')).toHaveTextContent('by the farm: 1');
   });
 
   it('opens the split as a row of its own under the plate, not inside the actions cell', async () => {
@@ -1677,7 +1692,8 @@ describe('PlanBlock', () => {
     await waitFor(() => expect(toggle).toHaveTextContent('Farm proposal'));
     fireEvent.click(toggle);
     const panel = screen.getByTestId('plan-row-10-100-split-panel');
-    expect(within(panel).getByTestId('plan-row-10-100-proposal')).toHaveTextContent('by the farm: 0 X1C · 1 P1S');
+    // The numbers stand beside their files; no second list repeats them by model.
+    expect(within(panel).queryByTestId('plan-row-10-100-proposal')).not.toBeInTheDocument();
     expect(panel).toHaveTextContent(/big\.3mf\s*X1C\s*— 0/);
     expect(panel).toHaveTextContent(/big-p1s\.3mf\s*P1S\s*— 1/);
     expect(within(panel).queryByRole('spinbutton')).not.toBeInTheDocument();

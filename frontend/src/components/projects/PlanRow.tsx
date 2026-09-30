@@ -146,12 +146,6 @@ export function PlanRow({
     : panelOpen
       ? t('orders.plan.split.hideProposal')
       : t('orders.plan.split.proposal');
-  const proposalText =
-    proposal != null
-      ? t('orders.plan.row.byFarm', {
-          split: options.map((o) => `${proposal[o.plate_id] ?? 0} ${o.printer_model ?? '?'}`).join(' · '),
-        })
-      : null;
 
   return (
     <>
@@ -163,11 +157,12 @@ export function PlanRow({
           {hasAlternatives ? (
             <Select
               size="sm"
-              className="w-full"
+              className="w-full truncate"
               data-testid={`plan-row-${lineId}-${row.plate_id}-file`}
               aria-label={t('orders.plan.row.file')}
-              // In a narrow table (the «Plan from files» dialog) the chosen name may be
-              // clipped by the select; its title keeps it readable in full.
+              // A name the column cannot fit (the order page below 1920, the «Plan from files»
+              // dialog) ends in an ellipsis — Chromium honours text-overflow on a <select>;
+              // without it the name was cut mid-letter. Its title keeps it readable in full.
               title={optionLabel(plate, hiddenLabel)}
               value={plate.plate_id}
               onChange={(e) => onChoose(Number(e.currentTarget.value))}
@@ -375,6 +370,16 @@ export function PlanRow({
                         }
                         className="w-24 px-2 py-1 text-right tabular-nums bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:border-bambu-green focus:outline-none"
                       />
+                      {/* The farm's number stands under its own file: a list labelled by
+                          model reads nothing when two files are for the same model. */}
+                      {proposal != null && (
+                        <span
+                          className="text-bambu-gray tabular-nums"
+                          data-testid={`plan-row-${lineId}-${row.plate_id}-proposal-${option.plate_id}`}
+                        >
+                          {t('orders.plan.row.byFarm', { split: proposal[option.plate_id] ?? 0 })}
+                        </span>
+                      )}
                     </label>
                   ))
                 : proposal != null &&
@@ -390,11 +395,6 @@ export function PlanRow({
                       {` — ${proposal[option.plate_id] ?? 0}`}
                     </span>
                   ))}
-              {proposalText && (
-                <span className="text-bambu-gray" data-testid={`plan-row-${lineId}-${row.plate_id}-proposal`}>
-                  {proposalText}
-                </span>
-              )}
               {canQueue && proposal != null && (
                 <Button
                   size="sm"

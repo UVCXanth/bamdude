@@ -5914,7 +5914,7 @@ export default {
       finishedAvailable: 'available {{count}} in the position «{{config}}»',
       kitsAvailable: 'available {{count}} for this configuration',
       availabilityLoading: 'availability is still being read',
-      availabilityFailed: 'Could not read the stock',
+      availabilityFailed: 'could not read the stock',
       pickHint: 'ready units of this configuration first, then kits — up to the quantity',
       material: 'Material',
       materialHint: 'a hard filter for plates',
