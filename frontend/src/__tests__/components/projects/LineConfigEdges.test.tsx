@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { Order, Product, ProjectLine } from '../../../api/client';
@@ -62,9 +62,11 @@ const line = {
 describe('a completed order', () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it('does not offer to reconfigure its lines, and says why', () => {
+  it('does not offer to reconfigure its lines, and says why', async () => {
     render(<OrderLinesTable order={{ id: 9, status: 'completed', lines: [line] } as unknown as Order} canEdit />);
-    const button = screen.getByTestId('line-21-configure');
+    // WS-13 E4 B06: the row's menu item, where the icon button was.
+    fireEvent.click(screen.getByRole('button', { name: 'Line actions: Pipe' }));
+    const button = within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Part configuration…' });
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute('title', expect.stringMatching(/reopen/i));
   });
@@ -102,9 +104,11 @@ describe('kits offered from the shelf', () => {
   it('are the line’s own configuration’s when editing it', async () => {
     const kits = vi.spyOn(api, 'getConfigurationKits').mockResolvedValue({ kits_available: 2 });
     render(<OrderLinesTable order={{ id: 9, status: 'active', lines: [line] } as unknown as Order} canEdit />);
-    fireEvent.click(screen.getByTestId('line-21-edit'));
+    // WS-13 E4 D01: «Edit line…» from the row's menu opens the dialog the cells became.
+    fireEvent.click(screen.getByRole('button', { name: 'Line actions: Pipe' }));
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Edit line…' }));
     await waitFor(() => expect(kits).toHaveBeenCalledWith(7, { options: [12], counts: {} }));
     // Two free kits of the angled configuration plus the one this line holds.
-    await waitFor(() => expect(screen.getByTestId('line-21-from-stock')).toHaveAttribute('max', '3'));
+    await waitFor(() => expect(screen.getByLabelText('From stock — part kits')).toHaveAttribute('max', '3'));
   });
 });
