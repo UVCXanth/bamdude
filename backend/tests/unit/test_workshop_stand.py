@@ -662,12 +662,12 @@ _E04_RUNNER = Path(__file__).resolve().parents[3] / "scripts" / "workshop_stand"
 _E04_HARNESS = Path(__file__).resolve().parent / "e04_detail_harness.mjs"
 
 
-def _e04_run(case: str) -> dict:
+def _e04_run(case: str, runner: Path = _E04_RUNNER) -> dict:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not installed")
     out = subprocess.run(
-        [node, str(_E04_HARNESS), str(_E04_RUNNER), case], capture_output=True, text=True, timeout=60, check=False
+        [node, str(_E04_HARNESS), str(runner), case], capture_output=True, text=True, timeout=60, check=False
     )
     # The marker is the fake token: it may reach nothing the runner writes, returns or lets escape.
     assert _E04_MARKER not in out.stdout + out.stderr
@@ -929,3 +929,147 @@ def test_every_e04_pair_shows_one_order_on_both_sides_with_plain_fixtures():
             "app", recipe["app"], lambda r, n=number: r.replace(f"{{order:{n}}}", "1")
         ):
             assert rewrite["path"].startswith("/api/v1/projects/1"), recipe["id"]
+
+
+# ---- WS-13 E5 detail runner (e05_detail.js): E4's harness around E5's scenarios ----
+
+import e05_evidence  # noqa: E402
+
+_E05_RUNNER = Path(__file__).resolve().parents[3] / "scripts" / "workshop_stand" / "e05_detail.js"
+
+
+@pytest.mark.parametrize(
+    ("case", "code", "at"),
+    [
+        ("prep_read_throws", "read_network", "/projects/1"),
+        ("prep_read_refused", "read_http_401", "/groups/"),
+    ],
+)
+def test_e05_a_failed_preparation_read_ends_the_run_incomplete_and_names_no_secret(case, code, at):
+    run = _e04_run(case, _E05_RUNNER)
+
+    records = _e04_records(run)
+    assert [r["id"] for r in records] == ["runner"]
+    assert records[0]["error"] == {"code": code, "stage": "prepare", "name": "RunnerFailure", "at": at}
+    assert _e04_done(run)["incomplete"] is True
+
+
+def test_e05_a_real_scenario_that_throws_fails_safely_and_closes_its_context():
+    run = _e04_run("e05_real_scenario_throws", _E05_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["id"] == "add-geometry@2560" and rec["pass"] is False
+    assert rec["error"] == {"code": "error", "stage": "add-geometry@2560", "name": "Error"}
+    assert _e04_done(run)["incomplete"] is False
+    _e04_closed_in_order(run)
+
+
+@pytest.mark.parametrize("case", ["route_fails_live", "scenario_reports_the_token", "open_outside_a_scenario"])
+def test_e05_keeps_the_e04_guards(case):
+    run = _e04_run(case, _E05_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is False
+    if case != "scenario_reports_the_token":  # that one opens no context
+        _e04_closed_in_order(run)
+
+
+def test_e05_a_record_carrying_the_media_token_is_replaced_by_a_failure():
+    run = _e04_run("scenario_reports_the_media_token", _E05_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["error"] == {"code": "secret_in_record", "stage": "echo"}
+    assert "mq7-media-marker-fake" not in json.dumps(run["posts"])
+
+
+def test_e05_the_runner_declares_exactly_the_scenarios_the_manifest_expects():
+    run = _e04_run("declared", _E05_RUNNER)
+
+    assert _e04_records(run) == []
+    assert _e04_done(run)["declared"] == list(e05_evidence.DETAIL_SCENARIOS)
+
+
+def test_e05_a_full_run_is_judged_against_the_e05_scenarios():
+    ids = list(e05_evidence.DETAIL_SCENARIOS)
+    done = {"count": len(ids), "incomplete": False, "declared": ids}
+    records = [{"id": i} for i in ids]
+
+    verdict = e04_evidence.run_completeness(
+        finished=True, done=done, records=records, only="", expected=e05_evidence.DETAIL_SCENARIOS
+    )
+    assert verdict["complete"] is True
+    # E4's list is not E5's: judged against it, the same run is not complete.
+    assert e04_evidence.run_completeness(finished=True, done=done, records=records, only="")["complete"] is False
+
+
+def test_the_e05_boundary_pairs_straddle_the_plate_tabs_breakpoint_on_a_copy_of_the_plan():
+    base = json.loads((Path(e05_evidence.HERE) / "capture_plan.json").read_text(encoding="utf-8"))
+
+    plan, only, stage = e05_evidence.pairs_plan(base, boundary=True)
+    assert only == ["e05-add-plate"] and stage.endswith("-pairs-boundary")
+    assert plan["widths"] == {"wide": [1101, 1100], "narrow": []}
+    assert plan["heights"]["1101"] == plan["heights"]["1100"] == 800
+    # The E0 plan itself is untouched.
+    assert 1101 not in base["widths"]["wide"] and "1101" not in base["heights"]
+
+    plan, only, stage = e05_evidence.pairs_plan(base, boundary=False)
+    assert only == [r["id"] for r in e05_evidence.e05_recipes()] and stage.endswith("-pairs")
+    assert plan["widths"] == base["widths"]
+
+
+def test_every_e05_pair_is_a_plain_recipe_on_both_sides():
+    # F6: the mockup side takes no fixture; the app side's are validated GET rewrites.
+    ids = []
+    for recipe in e05_evidence.e05_recipes():
+        ids.append(recipe["id"])
+        kind, number = recipe["pair"].split(":")
+        assert kind in ("order", "product"), recipe["id"]
+        assert recipe["app"]["route"].startswith("/projects/{order:" if kind == "order" else "/products/{product:")
+        assert capture_serve.side_rewrites("mockup", recipe["mockup"], str) == []
+        capture_serve.side_rewrites("app", recipe["app"], str)
+    assert ids == ["e05-add-products", "e05-add-parts", "e05-add-plate", "e05-config-241", "e05-product-to-order"]
+
+
+def test_an_e05_pair_that_names_stand_rows_gets_them_tagged_as_the_tag_writer_would():
+    # The stand's seeded library rows carry no `file_tags`; the pair answers the list with the
+    # named rows, tagged by name and type, through a merge the E0 runner validates.
+    row = {"id": 223, "filename": "cable_clip_set.gcode.3mf", "file_type": "gcode", "file_tags": []}
+    asked = []
+
+    def rows_for(names):
+        asked.append(names)
+        return [row]
+
+    (plate,) = [r for r in e05_evidence.e05_recipes() if r["id"] == "e05-add-plate"]
+    out = e05_evidence.with_stand_rows(plate, rows_for)
+
+    assert asked == [["cable_clip_set.gcode.3mf"]]
+    assert "stand_rows" not in out["app"]
+    (rewrite,) = capture_serve.side_rewrites("app", out["app"], str)
+    assert rewrite["path"] == "/api/v1/library/files"
+    assert rewrite["merge"]["items"] == [{**row, "file_tags": ["gcode", "3mf"]}]
+    assert rewrite["merge"]["meta"]["total"] == 1
+    # A recipe without stand rows passes through untouched.
+    (products,) = [r for r in e05_evidence.e05_recipes() if r["id"] == "e05-add-products"]
+    assert e05_evidence.with_stand_rows(products, rows_for) == products
+    assert len(asked) == 1
+
+
+@pytest.mark.parametrize(
+    ("name", "file_type", "tags"),
+    [
+        ("a.gcode.3mf", "gcode", ["gcode", "3mf"]),
+        ("a.gcode", "gcode", ["gcode"]),
+        ("a.3mf", "3mf", ["3mf", "project"]),
+        ("a.stl", "stl", ["stl", "geometry"]),
+        ("a.txt", "txt", []),
+    ],
+)
+def test_the_e05_stand_row_tags_follow_the_tag_writers_name_rule(name, file_type, tags):
+    from backend.app.services.library_helpers import compute_file_tags
+
+    assert e05_evidence.format_tags(name, file_type) == tags
+    written = compute_file_tags(
+        filename=name, file_type=file_type, file_metadata={}, source_type=None, swap_compatible=False
+    )
+    assert [t for t in written if t in {"gcode", "3mf", "stl", "project", "geometry"}] == tags

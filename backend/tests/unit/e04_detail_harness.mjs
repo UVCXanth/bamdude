@@ -61,7 +61,7 @@ const page = (c) => {
       };
     },
   };
-  const job = { token: MARKER, api: 'http://stand', ui: 'http://ui', out: 'out', orders: { 241: 1, 244: 2 }, only: c.only ?? '' };
+  const job = { token: MARKER, api: 'http://stand', ui: 'http://ui', out: 'out', orders: { 241: 1, 244: 2 }, only: c.only ?? '', ...(c.media ? { media_token: c.media } : {}) };
   return {
     context: () => ({ browser: () => browser }),
     request: {
@@ -93,6 +93,8 @@ const CASES = {
   late_prep_read_fails: [{ only: 'nothing-matches', readFails: /\/plan$/, readFailsWith: 500 }],
   // T7-R02 through a real scenario: navigation fails with the headers in its message.
   real_scenario_throws: [{ only: 'geometry@2560', gotoFails: true }],
+  // …and through E5's runner (e05_detail.js), whose scenarios have their own names.
+  e05_real_scenario_throws: [{ only: 'add-geometry@2560', gotoFails: true }],
   // T7-R02 through the harness's own scenarios.
   route_fails_live: [{ routeFailsLive: true }, async ({ scenario, open }) => {
     await scenario('live', [], async () => { const { p } = await open(1440); await p.goto('http://ui/'); return { pass: true }; });
@@ -111,6 +113,10 @@ const CASES = {
   }],
   scenario_reports_the_token: [{}, async ({ scenario }) => {
     await scenario('echo', [], async () => ({ pass: true, measured: { text: `Bearer ${MARKER}` } }));
+  }],
+  // E5: the media token the job hands the runner is guarded like the app token.
+  scenario_reports_the_media_token: [{ media: 'mq7-media-marker-fake' }, async ({ scenario }) => {
+    await scenario('echo', [], async () => ({ pass: true, measured: { src: '/api/v1/x.png?token=mq7-media-marker-fake' } }));
   }],
   harmless_hint_is_kept: [{}, async ({ scenario }) => {
     await scenario('timeout', [], async () => { throw new Error('locator.click: Timeout 5000ms exceeded.\nCall log:\n  - waiting for getByRole(\'button\')'); });

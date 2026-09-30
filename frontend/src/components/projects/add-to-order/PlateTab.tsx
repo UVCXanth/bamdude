@@ -82,8 +82,10 @@ function LibraryPlatePicker({ pick, onPickChange }: { pick: PlatePick; onPickCha
   }, []);
   const { typed, setTyped } = useSearchBox(q, setQ);
 
+  // The whole library: without a folder the server lists the root's files alone unless
+  // `include_root` is off (`recursive` means nothing without a folder).
   const params = {
-    recursive: true,
+    include_root: false,
     page,
     ...(perPage === -1 ? { all: true } : { per_page: perPage }),
     ...(q ? { q } : {}),

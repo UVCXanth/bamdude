@@ -208,7 +208,7 @@ function PartRow({
         />
       </td>
       <td className={CELL}>
-        <div className="font-semibold [overflow-wrap:anywhere]">
+        <div className="font-semibold [overflow-wrap:break-word]">
           {row.name}
           {row.variant && (
             <span className={`ml-1.5 ${VARIANT_CHIP}`} title={`${row.variant.group}: ${row.variant.option}`}>

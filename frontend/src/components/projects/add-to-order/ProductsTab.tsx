@@ -271,7 +271,8 @@ function ProductRow({
             </span>
           )}
           <div className="min-w-0">
-            <div className="font-semibold [overflow-wrap:anywhere]">{product.name}</div>
+            {/* By words: a word never splits, so on a phone the table scrolls instead (the mockup's). */}
+            <div className="font-semibold [overflow-wrap:break-word]">{product.name}</div>
             <div className="text-xs text-bambu-gray">
               {product.code}
               {product.sku && (

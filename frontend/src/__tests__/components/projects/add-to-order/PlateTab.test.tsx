@@ -39,9 +39,9 @@ describe('the one-off tab of «Add to order»', () => {
   it('searches the whole library on the server', async () => {
     open();
     expect(await screen.findByRole('button', { name: /^flask\.gcode\.3mf/ })).toBeInTheDocument();
-    expect(getFiles).toHaveBeenLastCalledWith({ recursive: true, page: 1, per_page: 24 });
+    expect(getFiles).toHaveBeenLastCalledWith({ include_root: false, page: 1, per_page: 24 });
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'flask' } });
-    await waitFor(() => expect(getFiles).toHaveBeenLastCalledWith({ recursive: true, page: 1, per_page: 24, q: 'flask' }));
+    await waitFor(() => expect(getFiles).toHaveBeenLastCalledWith({ include_root: false, page: 1, per_page: 24, q: 'flask' }));
   });
 
   it('adds a plate of the picked file, in copies', async () => {

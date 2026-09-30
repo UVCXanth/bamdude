@@ -109,6 +109,15 @@ describe('the one-off tab of «Add to order» (WS-13 E5 E)', () => {
     expect(within(fileRow(/clip\.gcode\.3mf/)).queryByText('Clips')).not.toBeInTheDocument();
   });
 
+  it('reads the whole library, not only the files at its root (WS-13 E5 T7)', async () => {
+    await openFiles();
+    // Without a folder the server lists the root's files alone unless `include_root` is
+    // off, and `recursive` means nothing without a folder (routes/library.py list_files):
+    // a library kept in folders showed an empty list.
+    expect(getFiles).toHaveBeenCalledWith(expect.objectContaining({ include_root: false }));
+    expect(getFiles.mock.calls[0][0]).not.toHaveProperty('recursive');
+  });
+
   it('a type that cannot be planned reads no plates and cannot be added (R01)', async () => {
     await openFiles();
     fireEvent.click(fileRow(/model\.stl/));
