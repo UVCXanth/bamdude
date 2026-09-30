@@ -220,13 +220,23 @@ function OrderPrintsOf({ order, canEdit }: OrderPrintsProps) {
     setPaging((prev) => ({ ...prev, [key]: next }));
 
   // F02: a page past a group's end is clamped — and the clamp is KEPT, or the old page
-  // came back by itself once a print was filed back in (final review M5).
-  const clamps = groups.flatMap((group) => {
-    const state = paging[group.key];
-    if (!state || state.perPage === -1) return [];
-    const last = Math.max(1, Math.ceil(group.archives.length / state.perPage));
-    return state.page > last ? [`${group.key}=${last}`] : [];
-  });
+  // came back by itself once a print was filed back in (final review M5). A group that
+  // emptied is not drawn at all, so it is clamped to its first page by its KEY (Codex
+  // review V03) — its page size stays, and so do the other groups' pages.
+  const drawn = new Set(groups.map((group) => group.key));
+  const clamps = [
+    ...groups.flatMap((group) => {
+      const state = paging[group.key];
+      if (!state || state.perPage === -1) return [];
+      const last = Math.max(1, Math.ceil(group.archives.length / state.perPage));
+      return state.page > last ? [`${group.key}=${last}`] : [];
+    }),
+    ...(archives === undefined
+      ? []
+      : Object.entries(paging)
+          .filter(([key, state]) => !drawn.has(key) && state.page > 1)
+          .map(([key]) => `${key}=1`)),
+  ];
   const clampKey = clamps.join('|');
   useEffect(() => {
     if (!clampKey) return;

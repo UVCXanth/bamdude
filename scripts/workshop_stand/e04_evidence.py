@@ -98,6 +98,8 @@ DETAIL_SCENARIOS = (
     "notes-empty@1440",
     "attachments@1440",
     "attachments-late@1440",
+    "attachments@390-editor",
+    "attachments@390-reader",
     "hits@390",
     "theme-light@1440",
     "theme-oled@1440",

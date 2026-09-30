@@ -1266,6 +1266,75 @@ async (page, selftest = null) => {
     };
   });
 
+  // Codex review V02: on a phone an attachment row keeps its name readable and every action
+  // on screen and pressable — the name was squeezed to nothing and «delete» cut off by the
+  // panel, while the document's own width stayed 390 (a document-overflow check alone
+  // could not see it). Editor and reader; a picture, a photo and a document.
+  for (const [id, me] of [
+    ['attachments@390-editor', null],
+    ['attachments@390-reader', { is_admin: false, role: 'user', permissions: without('projects:update') }],
+  ]) {
+    await scenario(id, ['E4-G04', 'V02'], async () => {
+      const files = [
+        { filename: 'parcel.png', original_name: 'Пакування.png', size: 48213, uploaded_at: '2026-09-28T09:40:00Z' },
+        { filename: 'box.jpg', original_name: 'Коробка з наліпкою.jpg', size: 120400, uploaded_at: '2026-09-28T09:41:00Z' },
+        { filename: 'spec.pdf', original_name: 'Специфікація замовника.pdf', size: 204800, uploaded_at: '2026-09-27T15:10:00Z' },
+      ];
+      const { ctx, p, errors } = await open(390, { me, rewrite: [[exact(`/projects/${A}`), (o) => ({ ...o, attachments: files })]] });
+      await p.goto(detail(A), { waitUntil: 'networkidle' });
+      await ready(p);
+      await tab(p, 'Вкладення');
+      const rows = await panel(p).evaluate((root) => [...root.querySelectorAll('ul > li')].map((li) => {
+        const name = li.querySelector('p');
+        const box = name.getBoundingClientRect();
+        const range = document.createRange();
+        range.selectNodeContents(name);
+        const lines = new Set([...range.getClientRects()].filter((x) => x.width > 0).map((x) => Math.round(x.top))).size;
+        // ⚠️ `scrollIntoView` scrolls even an `overflow: hidden` ancestor sideways, which
+        // hid the clipped «delete» from a plain hit test. So: the button sits inside its
+        // own row before anything scrolls, and after a VERTICAL scroll into view no
+        // ancestor has been shifted sideways and the button takes the click.
+        const row = li.getBoundingClientRect();
+        const ancestors = [];
+        for (let el = li.parentElement; el; el = el.parentElement) ancestors.push(el);
+        const actions = [...li.querySelectorAll('button')].map((button) => {
+          const before = button.getBoundingClientRect();
+          const inRow = before.width > 0 && before.left >= row.left - 0.5 && before.right <= row.right + 0.5;
+          button.scrollIntoView({ block: 'center', inline: 'nearest' });
+          const shifted = ancestors.some((el) => el.scrollLeft > 0);
+          const b = button.getBoundingClientRect();
+          const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+          for (const el of ancestors) if (el.scrollLeft > 0) el.scrollLeft = 0;
+          return {
+            label: button.getAttribute('aria-label') || button.textContent.trim(),
+            inView: inRow && !shifted && b.left >= 0 && b.right <= innerWidth + 0.5,
+            hits: !!hit && (hit === button || button.contains(hit)),
+          };
+        });
+        return { name: name.textContent.trim(), nameWidth: Math.round(box.width), nameLines: lines, actions };
+      }));
+      const docOverflow = await p.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      await toTabs(p);
+      const file = await shoot(p, id);
+      await ctx.close();
+      const reader = me != null;
+      // View + download (+ delete) for the two pictures; download (+ delete) for the document.
+      const expected = reader ? [2, 2, 1] : [3, 3, 2];
+      return {
+        recipe: {
+          url: '/projects/{order:241}', viewport: 390, actions: ['tab «Вкладення»'],
+          fixture: ['GET /projects/{order:241} → three attachments: PNG, JPG, PDF', ...(reader ? ['GET /auth/me → without projects:update'] : [])],
+        },
+        measured: { rows, docOverflow, errors },
+        pass: rows.length === 3 && rows.every((row, i) => row.actions.length === expected[i]) &&
+          rows.every((row) => row.nameWidth >= 120 && row.nameLines <= 2) &&
+          rows.every((row) => row.actions.every((a) => a.inView && a.hits)) &&
+          docOverflow <= 0 && errors.length === 0,
+        screenshots: [file],
+      };
+    });
+  }
+
   // ======================= 9. hit tests at 390 and the themes =======================
   await scenario('hits@390', ['E4-B06', 'E4-E07'], async () => {
     const { ctx, p } = await open(390);

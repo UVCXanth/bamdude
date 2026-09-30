@@ -180,14 +180,17 @@ export function OrderAttachments({ order, canEdit }: OrderAttachmentsProps) {
           {attachments.map((attachment) => {
             const name = attachment.original_name || attachment.filename;
             return (
+              // ⚠️ The row WRAPS (Codex review V02): on a phone the actions never shrink,
+              // so a one-line row squeezed the name to nothing and pushed «delete» out of
+              // the panel. The name keeps a readable width; the actions move under it.
               <li
                 key={attachment.filename}
-                className="flex items-center gap-3 border-b border-bambu-dark-tertiary py-2.5 text-sm"
+                className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-bambu-dark-tertiary py-2.5 text-sm"
               >
                 <span className="min-w-[44px] rounded bg-bambu-dark-tertiary px-1.5 py-0.5 text-center text-[11px] font-semibold text-bambu-gray-light">
                   {extension(attachment)}
                 </span>
-                <div className="min-w-0 flex-1">
+                <div className="min-w-[10rem] flex-1">
                   <p className="font-semibold text-white [overflow-wrap:anywhere]">{name}</p>
                   <p className="text-xs text-bambu-gray">
                     {[
@@ -200,7 +203,7 @@ export function OrderAttachments({ order, canEdit }: OrderAttachmentsProps) {
                       .join(' · ')}
                   </p>
                 </div>
-                <div className="flex flex-shrink-0 items-center gap-1">
+                <div className="ml-auto flex flex-shrink-0 flex-wrap items-center justify-end gap-1">
                   {PICTURE.test(name) && (
                     <Button variant="ghost" size="sm" onClick={() => void openPreview(attachment)}>
                       <Eye className="w-4 h-4" />

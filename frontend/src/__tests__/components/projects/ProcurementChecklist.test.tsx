@@ -152,6 +152,41 @@ describe('ProcurementChecklist', () => {
     expect(patch).toHaveBeenCalledWith(1, 4, 25);
   });
 
+  // Codex review V01: the «last sent» record lives for ITS write — until the order is
+  // read again after it — and never comes back just because the number matches again.
+  it('sends the same number again after a confirmed write was reversed elsewhere (V01)', async () => {
+    const patch = vi.spyOn(api, 'updateOrderProcurement').mockResolvedValue({} as Order);
+    const { rerender } = render(<ProcurementChecklist order={withRows(row({ acquired: 10 }))} canEdit />);
+    const field = () => screen.getByTestId('procurement-4-acquired') as HTMLInputElement;
+    fireEvent.change(field(), { target: { value: '25' } });
+    fireEvent.blur(field());
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+    // The re-read confirms 25, then another operator puts 10 back.
+    rerender(<ProcurementChecklist order={withRows(row({ acquired: 25 }))} canEdit />);
+    rerender(<ProcurementChecklist order={withRows(row({ acquired: 10 }))} canEdit />);
+    expect(field().value).toBe('10');
+    fireEvent.change(field(), { target: { value: '25' } });
+    fireEvent.blur(field());
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
+    expect(patch).toHaveBeenLastCalledWith(1, 4, 25);
+  });
+
+  it('sends the same number again when the re-read after a write still says the old one (V01)', async () => {
+    // The write was accepted, but by the time the order was read again somebody had put
+    // 10 back: the server's number never moved on screen, and the record must not
+    // outlive its write anyway.
+    const patch = vi.spyOn(api, 'updateOrderProcurement').mockResolvedValue({} as Order);
+    render(<ProcurementChecklist order={withRows(row({ acquired: 10 }))} canEdit />);
+    const field = () => screen.getByTestId('procurement-4-acquired') as HTMLInputElement;
+    fireEvent.change(field(), { target: { value: '25' } });
+    fireEvent.blur(field());
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 0));
+    fireEvent.focus(field());
+    fireEvent.blur(field());
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
+  });
+
   it('leaves the numbers read-only without the permission', () => {
     render(
       <ProcurementChecklist

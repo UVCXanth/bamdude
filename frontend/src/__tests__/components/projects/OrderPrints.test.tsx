@@ -312,6 +312,35 @@ describe('OrderPrints', () => {
     });
   });
 
+  // Codex review V03: a group that empties and disappears must not bring its old page
+  // back when it fills again — the line's group and «other prints» alike.
+  it.each([
+    ['a line’s group', 'prints-line-10', (ids: number[]) => lineOrder(ids)],
+    [
+      'other prints',
+      'prints-other',
+      (ids: number[]) =>
+        ({
+          id: 1,
+          other_archive_ids: ids,
+          lines: [{ id: 10, product_name: 'Flask', quantity: 2, mode: 'product', archive_ids: [] }],
+        }) as unknown as Order,
+    ],
+  ])('starts %s again at page one after it emptied (V03)', async (_name, testId, orderOf) => {
+    const ids = Array.from({ length: 30 }, (_, i) => i + 1);
+    const lineId = testId === 'prints-other' ? null : 10;
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue(rows(ids, lineId) as never);
+    const { rerender } = render(<OrderPrints order={orderOf(ids)} canEdit={false} />);
+    const group = await screen.findByTestId(testId);
+    fireEvent.click(within(group).getByRole('button', { name: /next page/i }));
+    expect(within(group).getByText('Showing 25-30 of 30 prints')).toBeInTheDocument();
+
+    rerender(<OrderPrints order={orderOf([])} canEdit={false} />);
+    await waitFor(() => expect(screen.queryByTestId(testId)).not.toBeInTheDocument());
+    rerender(<OrderPrints order={orderOf(ids)} canEdit={false} />);
+    await waitFor(() => expect(within(screen.getByTestId(testId)).getByText('Showing 1-24 of 30 prints')).toBeInTheDocument());
+  });
+
   it('keeps reading pages until every archive the order names is loaded', async () => {
     const all = rows(Array.from({ length: 750 }, (_, i) => i + 1));
     const getArchives = vi

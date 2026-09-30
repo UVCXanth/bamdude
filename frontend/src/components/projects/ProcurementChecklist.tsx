@@ -31,6 +31,12 @@ interface ProcurementChecklistProps {
  * cannot see — the server's number did not change — so a per-row rejection
  * counter joins it; see `rejections` below.
  */
+/** What one write sent, and against which server value. */
+interface SentRecord {
+  value: number;
+  base: number;
+}
+
 export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -54,22 +60,32 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
   // ⚠️ What was last SENT per row, and against which server value (R07). Enter blurs
   // the box and the blur commits; a second blur with the same number — Tab, a click
   // elsewhere — while the first PATCH flies must send nothing. The record is good only
-  // while the server still says what it said when the number was sent: once the
-  // refetch lands (with it or with anything else), the server's number is the one to
-  // compare with again.
-  const sent = useRef<Record<number, { value: number; base: number }>>({});
+  // while the server still says what it said when the number was sent.
+  // ⚠️ **And it lives for ITS write only** (Codex review V01): it is dropped when the
+  // write is refused, and when the order has been read again after the write was
+  // accepted. Kept past that, a later reversal elsewhere (25 → 10) brought the old
+  // record back to life through the matching base, and typing 25 again sent nothing.
+  const sent = useRef<Record<number, SentRecord>>({});
+  const release = (partId: number, record: SentRecord) => {
+    if (sent.current[partId] === record) delete sent.current[partId];
+  };
 
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
 
   const save = useMutation({
-    mutationFn: ({ partId, acquired }: { partId: number; acquired: number }) =>
+    mutationFn: ({ partId, acquired }: { partId: number; acquired: number; record: SentRecord }) =>
       api.updateOrderProcurement(order.id, partId, acquired),
-    onSuccess: () => {
+    onSuccess: (_order, { partId, record }) => {
       invalidateOrderViews(queryClient, { orderId: order.id });
+      // The record ends with the re-read its write started — the fetch already under
+      // way, not a second one (`cancelRefetch: false`).
+      void queryClient
+        .refetchQueries({ queryKey: ['project', order.id], type: 'active' }, { cancelRefetch: false })
+        .finally(() => release(partId, record));
     },
-    onError: (e: Error, { partId }) => {
+    onError: (e: Error, { partId, record }) => {
       showToast(e.message, 'error');
-      delete sent.current[partId];
+      release(partId, record);
       setRejections((prev) => ({ ...prev, [partId]: (prev[partId] ?? 0) + 1 }));
     },
   });
@@ -95,8 +111,9 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
     // operator abandoned, so it patches nothing.
     if (raw !== '' && Number.isInteger(next) && next >= 0) {
       if (next === current) return;
-      sent.current[row.part_id] = { value: next, base: row.acquired };
-      save.mutate({ partId: row.part_id, acquired: next });
+      const record = { value: next, base: row.acquired };
+      sent.current[row.part_id] = record;
+      save.mutate({ partId: row.part_id, acquired: next, record });
       return;
     }
     // ⚠️ And the box has to say so. The input is uncontrolled and keyed on the
