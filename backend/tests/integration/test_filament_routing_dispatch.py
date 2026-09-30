@@ -697,7 +697,7 @@ async def test_a_block_recorded_the_old_way_no_longer_holds_a_compatible_job(
         }
     )
     item.filament_routing = json.dumps(
-        {**json.loads(item.filament_routing), "runtime": {"reason": "feed_state_changed", "blocked_revision": stale}}
+        {**json.loads(item.filament_routing), "runtime": {"reason": "feed_settle_timeout", "blocked_revision": stale}}
     )
     await db_session.commit()
     assert (await preflight_item(db_session, item, printer.id)).plan is not None
@@ -725,17 +725,32 @@ async def test_the_same_old_block_still_holds_a_job_that_kept_the_profile(
         }
     )
     item.filament_routing = json.dumps(
-        {**json.loads(item.filament_routing), "runtime": {"reason": "feed_state_changed", "blocked_revision": stale}}
+        {**json.loads(item.filament_routing), "runtime": {"reason": "feed_settle_timeout", "blocked_revision": stale}}
     )
     await db_session.commit()
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+    with pytest.raises(RoutingDeferred, match="feed_settle_timeout"):
         await preflight_item(db_session, item, printer.id)
 
 
-async def test_a_block_recorded_the_new_way_still_holds_while_nothing_changes(
+async def test_a_settle_timeout_still_holds_the_job_while_nothing_changes(
     db_session, tmp_path, printer_factory, monkeypatch
 ):
     """The latch itself is untouched — only the key it is written under changed."""
+    item, _source, printer, _plate, _mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    item.filament_routing = json.dumps(
+        {
+            **json.loads(item.filament_routing),
+            "runtime": {"reason": "feed_settle_timeout", "blocked_revision": guard.revision},
+        }
+    )
+    await db_session.commit()
+    with pytest.raises(RoutingDeferred, match="feed_settle_timeout"):
+        await preflight_item(db_session, item, printer.id)
+
+
+async def test_a_refusal_for_a_changed_feed_does_not_park_the_job(db_session, tmp_path, printer_factory, monkeypatch):
+    """The latch recorded the feed AFTER the change — a state nobody has tried (spec Д3)."""
     item, _source, printer, _plate, _mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
     guard = await preflight_item(db_session, item, printer.id)
     item.filament_routing = json.dumps(
@@ -745,5 +760,14 @@ async def test_a_block_recorded_the_new_way_still_holds_while_nothing_changes(
         }
     )
     await db_session.commit()
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
-        await preflight_item(db_session, item, printer.id)
+    assert (await preflight_item(db_session, item, printer.id)).plan is not None
+
+
+async def test_a_runtime_without_a_reason_does_not_park_the_job(db_session, tmp_path, printer_factory, monkeypatch):
+    item, _source, printer, _plate, _mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    item.filament_routing = json.dumps(
+        {**json.loads(item.filament_routing), "runtime": {"blocked_revision": guard.revision}}
+    )
+    await db_session.commit()
+    assert (await preflight_item(db_session, item, printer.id)).plan is not None

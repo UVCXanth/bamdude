@@ -133,6 +133,16 @@ def revision_for(req, policy, snapshot):
     )
 
 
+#: The refusals whose ``runtime.blocked_revision`` keeps a job from trying again
+#: on the same evidence. Only a settle timeout: the printer never finished
+#: reporting, so the next attempt waits for it to say something new. A refusal
+#: because the feed CHANGED records the feed after the change — a state nobody
+#: has tried — and must never park a job on it (spec dispatch-guard-follows-the-
+#: plan Д3); the resolver's own refusals re-refuse before the latch is read. A
+#: whitelist, so a reason added later does not latch by accident.
+LATCHING_REASONS = frozenset({"feed_settle_timeout"})
+
+
 async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None):
     # The captured source when there is one (m173): a snapshot-backed job is
     # answered from its blob, and the archive / library rows it was built from
@@ -211,9 +221,11 @@ async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None
     # did when it became policy-aware — an old block simply stops matching by
     # construction, and this job is re-evaluated on its next tick like any
     # other. An unconditional clear would instead re-dispatch every genuinely
-    # blocked row on the first boot after such a change.
-    if saved.get("runtime", {}).get("blocked_revision") == revision:
-        raise RoutingDeferred(saved["runtime"].get("reason", "feed_state_changed"), revision=revision)
+    # blocked row on the first boot after such a change. Only
+    # ``LATCHING_REASONS`` latch — see there.
+    runtime = saved.get("runtime", {})
+    if runtime.get("reason") in LATCHING_REASONS and runtime.get("blocked_revision") == revision:
+        raise RoutingDeferred(runtime["reason"], revision=revision)
     return DispatchRoutingGuard(req, policy, result.plan, exact_model, revision, feed_signature(policy, snapshot))
 
 
