@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, replace
 
 from backend.app.models.queue_source import FORMAT_GCODE
@@ -60,8 +60,9 @@ class DispatchRoutingGuard:
     nozzle_diameters: dict[int, tuple[float, ...]]
     #: ``requires_left_tpu_firmware_check(model)``, answered when the guard was
     #: built: its first call reads the mirrored printer config from disk, and
-    #: ``validate`` runs under the MQTT routing lock, where nothing may.
-    left_tpu_check: bool = False
+    #: ``validate`` runs under the MQTT routing lock, where nothing may. No
+    #: default — a safety check must never be off because an argument was forgotten.
+    left_tpu_check: bool
 
     def validate(self, snapshot, *, mapping, use_ams, plate_id):
         """Under the client's routing lock: no await and no file read before publish."""
@@ -99,7 +100,7 @@ def plan_holds(guard, snapshot, *, with_model: bool = True) -> tuple[bool, str |
         return False, refusal.reason, refusal.status == "unknown"
     slots = effective_slots(req, policy)
     if slots is None:
-        return False, "override_slot_not_used", True
+        return False, "override_slot_not_used", False  # nothing the printer reports can change it
     now_fitted = planned_nozzle_diameters(req, policy, plan, snapshot)
     for nozzle, fitted in guard.nozzle_diameters.items():
         if not fitted:
@@ -113,7 +114,9 @@ def plan_holds(guard, snapshot, *, with_model: bool = True) -> tuple[bool, str |
     for slot in slots:
         planned = plan.assignments.get(slot["slot_id"])
         if planned is None:
-            continue
+            # A complete plan assigns every used channel; one that does not is
+            # not a plan this guard may pass.
+            return False, "mapping_review_required", False
         refusal = channel_refusal(req, slot, snapshot)
         if refusal is not None:
             return False, refusal.reason, refusal.status == "unknown"
@@ -220,9 +223,10 @@ def revision_for(req, policy, snapshot):
     source the hash, never the copy's mtime, or a restore would clear every
     recorded block and re-ask a question whose answer had not changed.
 
-    The feed half is the policy-aware :func:`feed_signature`, the same one the
-    guard compares, so the block a deferral records and the question the next
-    preflight asks are the same question.
+    The feed half is the policy-aware :func:`feed_signature` — the dispatch
+    guard itself asks ``plan_holds`` — so the block a latching deferral records
+    (``LATCHING_REASONS``) and the question the next preflight asks are the same
+    question.
     """
     identity = req.source_identity
     return fingerprint(
@@ -407,8 +411,13 @@ async def settle_plan(
     timeout: float = FEED_SETTLE_TIMEOUT,
     poll: float = FEED_SETTLE_POLL,
     converge: float = FEED_SETTLE_CONVERGE,
+    on_wait: Callable[[str], Awaitable[None]] | None = None,
 ) -> bool:
     """Before the final check: wait — once, bounded — until the prepared plan holds.
+
+    ``on_wait(reason)`` is awaited once, when the wait turns out to be for a
+    planned slot the operator has emptied — the dispatch toast then says what
+    the start is waiting for instead of «Starting print…».
 
     One deadline for everything that can put a prepared print here (spec
     dispatch-guard-follows-the-plan Д6):
@@ -441,6 +450,7 @@ async def settle_plan(
     deadline = loop.time() + timeout
     converge_until = None
     reason = None
+    told = False
     while True:
         raise_if_cancelled()
         snapshot = printer_manager.get_feed_snapshot(printer_id)
@@ -455,6 +465,9 @@ async def settle_plan(
             holds, reason, unknown = plan_holds(guard, snapshot)
             if holds:
                 return session_changed
+            if reason == "planned_source_empty" and on_wait is not None and not told:
+                told = True
+                await on_wait(reason)
             if not unknown:
                 # Loaded and known not to fit: a separately reported fact or our
                 # own slot write may still be on its way. A bounded grace; a real

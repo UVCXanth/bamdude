@@ -2528,6 +2528,9 @@ class BackgroundDispatchService:
                     job.routing_guard,
                     job.printer_id,
                     raise_if_cancelled=lambda: self._raise_if_cancel_requested(job),
+                    on_wait=lambda _reason: self._set_active_message(
+                        job, f"Waiting for a filament slot on {printer_name}...", phase="starting"
+                    ),
                 )
                 # The pre-start K bind went to another session, or the slot now
                 # holds another spool than it bound for: send it again. The final
@@ -3251,6 +3254,9 @@ class BackgroundDispatchService:
                     job.routing_guard,
                     job.printer_id,
                     raise_if_cancelled=lambda: self._raise_if_cancel_requested(job),
+                    on_wait=lambda _reason: self._set_active_message(
+                        job, f"Waiting for a filament slot on {printer_name}...", phase="starting"
+                    ),
                 )
                 # The pre-start K bind went to another session, or the slot now
                 # holds another spool than it bound for: send it again. The final

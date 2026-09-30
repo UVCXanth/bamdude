@@ -103,6 +103,8 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
         status="printing",
         started_at=datetime.now(),
         origin=owner,
+        # A stale copy: only a CONFIRMED start may overwrite it with what was sent.
+        ams_mapping="[0]",
     )
     db_session.add(item)
     await db_session.flush()
@@ -263,6 +265,7 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
         assert command["use_ams"] is False and command["param"] == "Metadata/plate_15.gcode"
         register.assert_called_once()
         assert register.call_args.kwargs["ams_mapping"] == [-1, -1, 254]
+        assert json.loads(item.ams_mapping) == [-1, -1, 254]  # the row keeps what was sent
         withdraw.assert_not_called()
         failure.assert_not_awaited()
         # The reconnect happens during the upload, so the pre-start K bind is
@@ -282,6 +285,7 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
         assert await db_session.get(PrintQueueItem, item_id) is None
     else:
         await db_session.refresh(item)
+        assert json.loads(item.ams_mapping) == [0]  # nothing was started, nothing recorded
     if change in {"cancel", "reclaim"}:
         assert item.status == ("cancelled" if change == "cancel" else "printing")
     elif change != "delete":

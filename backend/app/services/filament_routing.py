@@ -304,18 +304,22 @@ def source_fits(
     ``requires_left_tpu_firmware_check(model)`` answered by the caller once:
     its first call reads a file, which the publish boundary may not.
     """
+    # A source this channel may not take (not the pinned slot, not one of its
+    # backup twins) is no candidate whatever else is true of it — and its
+    # reasons are not this channel's: an external spool on an FTS printer must
+    # not lend its refusal to an empty pinned AMS slot (final review).
+    if allowed is not None and source.id not in allowed:
+        return False, None, False
     # Firmware (and Bambu Studio) refuse any external feed while FTS is
     # installed, including an external TPU Feed Assist path. Asked before the
-    # source-policy/pin selection so external_only cannot turn a physical
-    # refusal into an accidental bypass.
+    # feed-policy selection so external_only cannot turn a physical refusal
+    # into an accidental bypass.
     if (snapshot.fts or snapshot.fts_pending_confirmation) and source.kind == "external":
         reason = "fts_external_unsupported" if snapshot.fts else "fts_state_unavailable"
         return False, reason, snapshot.fts_pending_confirmation
     if policy.feed_policy == "ams_only" and source.kind != "ams":
         return False, None, False
     if policy.feed_policy == "external_only" and source.kind != "external":
-        return False, None, False
-    if allowed is not None and source.id not in allowed:
         return False, None, False
     if not filament_types_compatible(source.material, slot["type"]):
         return False, None, False
@@ -439,9 +443,9 @@ def resolve_filament_routing(
             if fits:
                 candidates.append(source)
         if not candidates:
-            if pin and pin["source_id"] not in present and reason == "material_mismatch":
-                # Nothing more specific was said: the chosen slot is simply empty
-                # (and no backup twin could stand in) — not "no compatible filament".
+            if pin and pin["source_id"] not in present:
+                # The chosen slot is empty and no backup twin could stand in —
+                # the one sentence that is true, whatever a twin was refused for.
                 reason = "pinned_source_empty"
             unknown |= (
                 (not snapshot.ams_known and policy.feed_policy != "external_only")

@@ -311,7 +311,8 @@ def test_a_twin_still_meets_a_forced_colour_by_what_was_declared():
     forced = replace(PIN_0, force_color_match=True)
     assert resolve_filament_routing(PETG_BLACK, forced, twin_state()).plan.mapping == [1]
     red = requirements({"type": "PETG", "color": "#FF0000"})
-    assert resolve_filament_routing(red, forced, twin_state()).reason == "color_mismatch"
+    # The chosen slot is empty and no twin can stand in: that is what the operator is told.
+    assert resolve_filament_routing(red, forced, twin_state()).reason == "pinned_source_empty"
 
 
 @pytest.mark.parametrize("backup", [False, None])
@@ -328,7 +329,16 @@ def test_a_twin_on_another_nozzle_is_not_used():
     state = snapshot(
         FeedSource(1, "ams", "PETG", "000000FF", nozzles=(1,)), backup_enabled=True, backup_membership={0: (0, 1)}
     )
-    assert resolve_filament_routing(PETG_BLACK, PIN_0, state).plan is None
+    result = resolve_filament_routing(PETG_BLACK, PIN_0, state)
+    assert result.plan is None and result.reason == "pinned_source_empty"
+
+
+@pytest.mark.parametrize("fts", [{"fts": True}, {"fts_pending_confirmation": True}])
+def test_an_empty_pinned_slot_is_not_blamed_on_another_holder(fts):
+    """Final review: an external spool on an FTS printer used to lend its FTS
+    reason to an empty pinned AMS slot."""
+    state = snapshot(feed(254, "000000FF", material="PETG"), backup_enabled=True, **fts)
+    assert resolve_filament_routing(PETG_BLACK, PIN_0, state).reason == "pinned_source_empty"
 
 
 def test_a_loaded_pinned_slot_is_never_swapped_for_a_twin():
@@ -511,11 +521,19 @@ def a_plan(policy, state, req=None):
 
 def a_guard(policy, state, req=None):
     from backend.app.services.filament_preflight import planned_nozzle_diameters
+    from backend.app.utils.printer_configs import requires_left_tpu_firmware_check
 
     req = req or requirements({})
     plan = a_plan(policy, state, req)
     return DispatchRoutingGuard(
-        req, policy, plan, True, "revision", state.generation, planned_nozzle_diameters(req, policy, plan, state)
+        req,
+        policy,
+        plan,
+        True,
+        "revision",
+        state.generation,
+        planned_nozzle_diameters(req, policy, plan, state),
+        requires_left_tpu_firmware_check(state.model),
     )
 
 
@@ -713,6 +731,23 @@ def test_the_guard_refuses_a_hotend_swapped_on_a_nozzle_the_plan_uses():
     validate(guard, replace(state, nozzle_diameters={0: (0.4,), 1: (0.6,)}))  # a nozzle the plan does not use
     with pytest.raises(RoutingDeferred, match="nozzle_state_unavailable"):
         validate(guard, replace(state, nozzle_diameters={}))  # not reported yet: wait, never pass
+
+
+def test_the_guard_must_be_told_the_left_tpu_answer():
+    """A safety check with a fail-open default is one forgotten argument away from off."""
+    with pytest.raises(TypeError):
+        DispatchRoutingGuard(requirements({}), RoutingPolicy(), None, True, "revision", 1, {})
+
+
+def test_plan_holds_edge_cases_refuse_in_words():
+    from backend.app.services.filament_preflight import plan_holds
+
+    state = snapshot(feed(0, kind="ams"))
+    guard = a_guard(RoutingPolicy(), state)
+    unused = replace(guard, policy=RoutingPolicy(filament_overrides=({"slot_id": 9},)))
+    assert plan_holds(unused, state) == (False, "override_slot_not_used", False)  # nothing to wait for
+    unassigned = replace(guard, plan=replace(guard.plan, assignments={}))
+    assert plan_holds(unassigned, state) == (False, "mapping_review_required", False)
 
 
 def test_an_unknown_fact_is_never_a_pass():

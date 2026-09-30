@@ -609,6 +609,19 @@ async def test_a_planned_slot_refilled_within_the_wait_starts(db_session, tmp_pa
     assert (await final_guard(guard, printer.id)).plan.mapping == guard.plan.mapping
 
 
+async def test_the_operator_is_told_the_start_waits_for_a_slot(db_session, tmp_path, printer_factory, monkeypatch):
+    """Final review: during the wait the dispatch toast said «Starting print…»."""
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    told = AsyncMock()
+    await settle_plan(guard, printer.id, timeout=0.05, poll=0.01, on_wait=told)  # healthy: nothing to say
+    told.assert_not_awaited()
+    empty_the_spool(mqtt)
+    asyncio.get_running_loop().call_later(0.05, report_the_spool, mqtt)
+    await settle_plan(guard, printer.id, timeout=2, poll=0.01, on_wait=told)
+    told.assert_awaited_once_with("planned_source_empty")
+
+
 async def test_a_planned_slot_that_stays_empty_is_refused_without_a_latch(
     db_session, tmp_path, printer_factory, monkeypatch
 ):
@@ -889,3 +902,87 @@ async def test_a_runtime_without_a_reason_does_not_park_the_job(db_session, tmp_
     )
     await db_session.commit()
     assert (await preflight_item(db_session, item, printer.id)).plan is not None
+
+
+def ams_report(*loaded, filam_bak=None):
+    """AMS 0 with PLA red in the ``loaded`` slots and the others empty."""
+    trays = [
+        {"id": t, "tray_type": "PLA", "tray_color": "FF0000FF"} if t in loaded else {"id": t, "tray_type": ""}
+        for t in range(4)
+    ]
+    report = {"command": "push_status", "ams": {"ams_exist_bits": "1", "ams": [{"id": 0, "tray": trays}]}}
+    if filam_bak is not None:
+        report["filam_bak"] = filam_bak
+    return {"print": report}
+
+
+async def a_job_pinned_to_ams_slot_0(db, tmp_path, printer_factory, monkeypatch, *, filam_bak):
+    from backend.app.services.filament_policy_write import prepare_routing
+
+    source, printer, queue, mqtt = await setup_source(db, tmp_path, printer_factory, monkeypatch)
+    mqtt._process_message(ams_report(0, 1, filam_bak=filam_bak))
+    routing, plate = await prepare_routing(
+        db,
+        printer_id=printer.id,
+        library_file_id=source.id,
+        options={"manual_mapping": True, "ams_mapping": [-1, -1, 0]},
+    )
+    item = PrintQueueItem(queue_id=queue.id, library_file_id=source.id, plate_id=plate, filament_routing=routing)
+    db.add(item)
+    await db.commit()
+    return item, source, printer, plate, mqtt
+
+
+async def test_a_pinned_slot_that_ran_dry_prints_from_its_twin_end_to_end(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    """Spec §6 (final review): the dispatcher's own preflight picks the AMS Backup
+    twin, and the command published to the printer names it."""
+    item, source, printer, plate, mqtt = await a_job_pinned_to_ams_slot_0(
+        db_session, tmp_path, printer_factory, monkeypatch, filam_bak=[3]
+    )
+    mqtt._process_message(ams_report(1, filam_bak=[]))  # slot 0 ran dry; the firmware drops the group
+    mqtt.state.ams_auto_switch_filament = True
+    guard = await preflight_item(db_session, item, printer.id)
+    assert guard.plan.mapping == [-1, -1, 1]
+    guard = await final_guard(guard, printer.id)
+    assert printer_manager.start_print(
+        printer.id,
+        source.filename,
+        plate,
+        ams_mapping=guard.plan.mapping,
+        use_ams=guard.plan.use_ams,
+        routing_guard=guard,
+    )
+    command = json.loads(mqtt._client.publish.call_args.args[1])["print"]
+    assert 1 in command["ams_mapping"] and 0 not in command["ams_mapping"]
+
+
+async def test_an_empty_pinned_slot_is_never_parked_and_plans_once_its_group_is_known(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    """Spec §6: ``pinned_source_empty`` carries a revision from the dispatcher's
+    preflight, yet it must not latch — the job plans as soon as the group is known."""
+    from backend.app.services.filament_preflight import revision_for
+
+    item, _source, printer, _plate, mqtt = await a_job_pinned_to_ams_slot_0(
+        db_session, tmp_path, printer_factory, monkeypatch, filam_bak=None
+    )
+    mqtt._process_message(ams_report(1))  # slot 0 dry, no group ever reported
+    mqtt.state.ams_auto_switch_filament = True
+    with pytest.raises(RoutingDeferred, match="pinned_source_empty"):
+        await preflight_item(db_session, item, printer.id)
+    mqtt._process_message(ams_report(1, filam_bak=[3]))  # the firmware reports the group
+    revision = revision_for(
+        await read_item_requirements(db_session, item),
+        queue_policy(item),
+        printer_manager.get_feed_snapshot(printer.id),
+    )
+    item.filament_routing = json.dumps(
+        {
+            **json.loads(item.filament_routing),
+            "runtime": {"reason": "pinned_source_empty", "blocked_revision": revision},
+        }
+    )
+    await db_session.commit()
+    assert (await preflight_item(db_session, item, printer.id)).plan.mapping == [-1, -1, 1]

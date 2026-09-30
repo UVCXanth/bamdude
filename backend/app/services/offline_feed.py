@@ -102,13 +102,34 @@ def _reported_slots(reading: dict) -> dict[tuple[int, int], tuple[str, dict]]:
     return slots
 
 
+def rfid_slots(reading: dict) -> frozenset[tuple[int, int]]:
+    """AMS slots whose last reading carries a valid RFID tag.
+
+    The backup-compatibility projection never masks those
+    (``ams_backup_compatibility.slot_is_rfid``), so the wake step must not give
+    them the declared colour either.
+    """
+    from backend.app.services.ams_backup_compatibility import slot_is_rfid
+
+    return frozenset(
+        key
+        for key, (kind, tray) in _reported_slots(reading).items()
+        if kind == "ams" and slot_is_rfid(tray, None, None)
+    )
+
+
 def feed_from(
-    reading: dict, bound: dict[tuple[int, int], BoundSpool | None], *, declared_color: str | None = None
+    reading: dict,
+    bound: dict[tuple[int, int], BoundSpool | None],
+    *,
+    declared_color: str | None = None,
+    rfid_keys: frozenset[tuple[int, int]] = frozenset(),
 ) -> OfflineFeed:
     """Combine the assigned inventory with the last reading — see the module.
 
     ``declared_color`` is the printer's backup-compatibility canonical colour,
-    when its policy advertises one: a bound AMS spool carries it beside its own.
+    when its policy advertises one: a bound AMS spool carries it beside its own,
+    unless its slot is an RFID one (``rfid_keys``), which is never masked.
     """
     reported = _reported_slots(reading)
     ams_known = isinstance(reading.get("ams"), list)
@@ -129,7 +150,7 @@ def feed_from(
                     external_known = False
                 continue
             materials, color = spool
-            declared = declared_color if kind == "ams" else None
+            declared = declared_color if kind == "ams" and key not in rfid_keys else None
             for material in dict.fromkeys(m for m in materials if m):
                 sources.append(OfflineSource(kind, material, color, declared))
             continue
@@ -270,7 +291,8 @@ async def read_offline_feed(db, printer_id: int) -> OfflineFeed:
             declared = policy.canonical_color_rgba
     except Exception:  # noqa: BLE001 — a declaration we cannot read declares nothing
         logger.debug("offline feed: backup policy of printer %s unreadable", printer_id, exc_info=True)
-    return feed_from(printer_manager.last_tray_reading(printer_id), bound, declared_color=declared)
+    reading = printer_manager.last_tray_reading(printer_id)
+    return feed_from(reading, bound, declared_color=declared, rfid_keys=rfid_slots(reading))
 
 
 class OfflineFeedCache:
