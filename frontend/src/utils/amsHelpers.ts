@@ -145,8 +145,9 @@ export interface FilamentMatchRequirement {
  */
 export function filamentRequirementMatches(
   req: FilamentMatchRequirement,
-  loaded: { type?: string; trayInfoIdx?: string },
+  loaded: { type?: string; trayInfoIdx?: string; advertisedTrayInfoIdx?: string },
 ): boolean {
+  const profile = declaredTrayInfoIdx(loaded);
   return filamentTypesCompatible(loaded.type, req.type) && !(
     // ⚠️ `ignore_profile` first, and structurally rather than by convention:
     // the two flags are answers to the same question and the caller that sets
@@ -154,24 +155,43 @@ export function filamentRequirementMatches(
     !req.ignore_profile &&
     req.strict_profile_match &&
     req.tray_info_idx &&
-    loaded.trayInfoIdx &&
-    req.tray_info_idx !== loaded.trayInfoIdx
+    profile &&
+    req.tray_info_idx !== profile
   );
 }
 
 /**
+ * What a STRICT check reads on a tray: what the operator declared to the AMS
+ * (backup-compatibility emulation), else the spool. The owner's rule
+ * (2026-09-30): a backup group deliberately built from leftovers outranks the
+ * «exact colour» box and the strict profile, so both — and colour ranking —
+ * are judged by the declaration. Base material is always the spool's.
+ * Mirrors `FeedSource.rule_color` / `rule_variant` on the server.
+ */
+export function declaredColor(loaded: { color?: string; advertisedColor?: string }): string | undefined {
+  return loaded.advertisedColor || loaded.color;
+}
+
+export function declaredTrayInfoIdx(
+  loaded: { trayInfoIdx?: string; advertisedTrayInfoIdx?: string },
+): string | undefined {
+  return loaded.advertisedTrayInfoIdx || loaded.trayInfoIdx;
+}
+
+/**
  * Compare the requested colour with a loaded slot. Strict colour policy is
- * exact after normalisation; the ordinary matcher may still use its visual
- * similarity fallback.
+ * exact after normalisation, against the declared colour; the ordinary
+ * matcher reads the spool and may still use its visual similarity fallback.
  */
 export function filamentColorMatches(
   req: Pick<FilamentMatchRequirement, 'color' | 'strict_color_match'>,
-  loaded: { color?: string },
+  loaded: { color?: string; advertisedColor?: string },
 ): boolean {
   const required = normalizeColorForCompare(req.color);
   if (!required) return true;
+  if (req.strict_color_match) return normalizeColorForCompare(declaredColor(loaded)) === required;
   const actual = normalizeColorForCompare(loaded.color);
-  return actual === required || (!req.strict_color_match && colorsAreSimilar(actual, required));
+  return actual === required || colorsAreSimilar(actual, required);
 }
 
 /**
@@ -430,7 +450,16 @@ export function sortByRemainAscending<T extends { remain?: number }>(items: T[])
  */
 export function autoMatchFilament(
   req: FilamentMatchRequirement & { nozzle_id?: number | null },
-  loadedFilaments: { globalTrayId: number; type?: string; color?: string; trayInfoIdx?: string; extruderId?: number; remain?: number }[],
+  loadedFilaments: {
+    globalTrayId: number;
+    type?: string;
+    color?: string;
+    trayInfoIdx?: string;
+    extruderId?: number;
+    remain?: number;
+    advertisedColor?: string;
+    advertisedTrayInfoIdx?: string;
+  }[],
   usedTrayIds: Set<number>,
   preferredTrayId?: number | null,
   preferLowest = false,
@@ -453,7 +482,8 @@ export function autoMatchFilament(
     (f) =>
       !usedTrayIds.has(f.globalTrayId) &&
       filamentRequirementMatches(req, f) &&
-      normalizeColorForCompare(f.color) === normalizeColorForCompare(req.color)
+      // В1 (owner, 2026-09-30): a colour declared for AMS backup ranks as exact.
+      normalizeColorForCompare(declaredColor(f)) === normalizeColorForCompare(req.color)
   );
   // ⚠️ `reduce`, not `find`: among the spools the tolerance admits, take the
   // one that LOOKS closest rather than the one that happens to sit first. The

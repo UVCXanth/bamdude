@@ -24,4 +24,12 @@ describe('complete assignment under routing policy', () => {
     ] };
     expect(buildAmsMapping(buildFilamentComparison(requirements, [tray(0, 'A', '#00FF00'), tray(1, 'B', '#0000FF')], {}))).toEqual([1, 0]);
   });
+  it('ranks a tray declared in the wanted colour as exact, so lowest-remain starts on the leftovers', () => {
+    // В1 (owner, 2026-09-30): the colour the operator declared for AMS backup counts as exact.
+    const requirements = { filaments: [{ slot_id: 1, type: 'PLA', color: '#000000', used_grams: 1,
+      strict_profile_match: true }] };
+    const full = { ...tray(0, '', '#000000'), remain: 90 };
+    const leftovers = { ...tray(1, '', '#FF0000'), remain: 10, advertisedColor: '#000000' };
+    expect(buildAmsMapping(buildFilamentComparison(requirements, [full, leftovers], {}, false, undefined, true))).toEqual([1]);
+  });
 });

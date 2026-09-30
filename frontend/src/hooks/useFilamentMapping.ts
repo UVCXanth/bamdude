@@ -10,6 +10,8 @@ import {
   matchLoadedExtruderTray,
   filamentRequirementMatches,
   filamentColorMatches,
+  declaredColor,
+  declaredTrayInfoIdx,
 } from '../utils/amsHelpers';
 import { api } from '../api/client';
 import type { PrinterStatus } from '../api/client';
@@ -406,11 +408,13 @@ export function buildFilamentComparison(
     // agreeing trays (#2650 — Basic is not Matte) without deciding the verdict.
     let idxTypeOnly: LoadedFilament | undefined;
     if (reqTrayInfoIdx) {
-      const idxMatches = available.filter((f) => f.trayInfoIdx === reqTrayInfoIdx);
+      // В1 (owner, 2026-09-30): the profile and colour the operator DECLARED
+      // for AMS backup rank a tray as exact — the server does the same.
+      const idxMatches = available.filter((f) => declaredTrayInfoIdx(f) === reqTrayInfoIdx);
       exactMatch = idxMatches.find(
         (f) =>
           loadedFilamentMatches(req, f) &&
-          normalizeColorForCompare(f.color) === normalizeColorForCompare(req.color)
+          normalizeColorForCompare(declaredColor(f)) === normalizeColorForCompare(req.color)
       );
       if (!exactMatch) {
         similarMatch = idxMatches.find(
@@ -433,7 +437,7 @@ export function buildFilamentComparison(
       exactMatch = available.find(
         (f) =>
           loadedFilamentMatches(req, f) &&
-          normalizeColorForCompare(f.color) === normalizeColorForCompare(req.color)
+          normalizeColorForCompare(declaredColor(f)) === normalizeColorForCompare(req.color)
       );
       if (!exactMatch) {
         similarMatch = available.find(
@@ -501,7 +505,7 @@ function buildPolicyComparison(
 ): FilamentComparison[] {
   const ranked = preferLowest ? sortByRemainAscending(loaded) : loaded;
   const score = (req: FilamentRequirement, source: LoadedFilament) =>
-    (normalizeColorForCompare(req.color) === normalizeColorForCompare(source.color) ? 1 : 0) *
+    (normalizeColorForCompare(req.color) === normalizeColorForCompare(declaredColor(source)) ? 1 : 0) *
       ((ranked.length + 1) * requirements.length + 1) - (preferLowest ? ranked.indexOf(source) : 0);
   const candidates = requirements.map(req => loaded.filter(source =>
     (manual[req.slot_id] === undefined || manual[req.slot_id] === source.globalTrayId) &&
