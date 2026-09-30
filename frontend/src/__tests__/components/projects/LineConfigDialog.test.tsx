@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import i18n from '../../../i18n';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
@@ -88,19 +88,22 @@ describe('LineConfigDialog', () => {
   });
 
   it('never offers a part marked not counted', async () => {
-    render(<LineConfigDialog orderId={9} line={line} onClose={() => {}} />);
+    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={line} onClose={() => {}} />);
     expect(await screen.findByText('Колба')).toBeInTheDocument();
     expect(screen.queryByText('test cube')).not.toBeInTheDocument();
   });
 
   it('shows a choice per group and each part with its per-unit count', async () => {
-    render(<LineConfigDialog orderId={9} line={line} onClose={() => {}} />);
-    const select = (await screen.findByLabelText('Хвіст')) as HTMLSelectElement;
-    expect(select.value).toBe('11');
+    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={line} onClose={() => {}} />);
+    // WS-13 E5 F03: the group is radios, the standard one chosen.
+    const group = await screen.findByRole('group', { name: 'Хвіст' });
+    expect(within(group).getByRole('radio', { name: /прямий/ })).toBeChecked();
     expect(screen.getByLabelText('Колба — in the kit')).toBeChecked();
     expect(screen.getByLabelText('straight tail — in the kit')).toBeChecked();
     expect(screen.getByLabelText('angled tail — in the kit')).not.toBeChecked();
-    expect(screen.getByLabelText('Колба — per unit')).toHaveAttribute('placeholder', '1');
+    // E5 F04: the field shows the count, with the standard beside it.
+    expect(screen.getByLabelText('Колба — per unit')).toHaveValue(1);
+    expect(screen.getAllByText('standard 1').length).toBeGreaterThan(0);
   });
 
   it('asks the server what a change would do before saving it', async () => {
@@ -113,14 +116,14 @@ describe('LineConfigDialog', () => {
     });
     const save = vi.spyOn(api, 'setLineConfiguration').mockResolvedValue({ id: 9, lines: [] } as unknown as Order);
     const onClose = vi.fn();
-    render(<LineConfigDialog orderId={9} line={line} onClose={onClose} />);
-    fireEvent.change(await screen.findByLabelText('Хвіст'), { target: { value: '12' } });
+    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={line} onClose={onClose} />);
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Хвіст' })).getByRole('radio', { name: 'кутовий' }));
 
     await waitFor(() => expect(preview).toHaveBeenCalledWith(9, 21, { choices: { 3: 12 }, part_counts: {} }));
-    expect(await screen.findByText(/3 printed, 1 queued will become surplus/)).toBeInTheDocument();
-    expect(screen.getByText(/reserve 4 → 2/)).toBeInTheDocument();
+    expect(await screen.findByText('straight tail: 3 printed, 1 queued will become surplus')).toBeInTheDocument();
+    expect(screen.getByText('Kit reserve: 4 → 2')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(9, 21, { choices: { 3: 12 }, part_counts: {} }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
@@ -133,9 +136,10 @@ describe('LineConfigDialog', () => {
       finished_after: 0,
       dropping: [],
     });
-    render(<LineConfigDialog orderId={9} line={line} onClose={() => {}} />);
-    fireEvent.change(await screen.findByLabelText('Хвіст'), { target: { value: '12' } });
-    expect(await screen.findByText('reserve 2 → 1 · ready 2 → 0')).toBeInTheDocument();
+    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={line} onClose={() => {}} />);
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Хвіст' })).getByRole('radio', { name: 'кутовий' }));
+    expect(await screen.findByText('Kit reserve: 2 → 1')).toBeInTheDocument();
+    expect(screen.getByText('Ready from stock: 2 → 0')).toBeInTheDocument();
   });
 
   it('resets to the standard options and counts', async () => {
@@ -148,21 +152,21 @@ describe('LineConfigDialog', () => {
         changed_parts: [{ part_id: 5, name: 'Колба', qty: 3, standard_qty: 1 }],
       },
     } as ProjectLine;
-    render(<LineConfigDialog orderId={9} line={angled} onClose={() => {}} />);
-    expect(((await screen.findByLabelText('Хвіст')) as HTMLSelectElement).value).toBe('12');
+    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={angled} onClose={() => {}} />);
+    expect(within(await screen.findByRole('group', { name: 'Хвіст' })).getByRole('radio', { name: 'кутовий' })).toBeChecked();
     fireEvent.click(screen.getByRole('button', { name: 'Reset to standard' }));
     // Save waits for the dry run's answer.
-    await screen.findByText('Nothing printed or queued is affected.');
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('The reserve will not change; there will be no extra surplus.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(9, 21, { choices: { 3: 11 }, part_counts: {} }));
   });
 
   it('closes without a request when nothing changed', async () => {
     const save = vi.spyOn(api, 'setLineConfiguration');
     const onClose = vi.fn();
-    render(<LineConfigDialog orderId={9} line={line} onClose={onClose} />);
-    await screen.findByLabelText('Хвіст');
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={line} onClose={onClose} />);
+    await screen.findByRole('group', { name: 'Хвіст' });
+    fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
     expect(onClose).toHaveBeenCalled();
     expect(save).not.toHaveBeenCalled();
   });
@@ -170,11 +174,11 @@ describe('LineConfigDialog', () => {
   it('keeps a changed count that differs from the configuration', async () => {
     vi.spyOn(api, 'previewLineConfiguration').mockResolvedValue({ reserved_before: 0, reserved_after: 0, finished_before: 0, finished_after: 0, dropping: [] });
     const save = vi.spyOn(api, 'setLineConfiguration').mockResolvedValue({ id: 9, lines: [] } as unknown as Order);
-    render(<LineConfigDialog orderId={9} line={line} onClose={() => {}} />);
+    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={line} onClose={() => {}} />);
     fireEvent.change(await screen.findByLabelText('Колба — per unit'), { target: { value: '2' } });
     fireEvent.click(screen.getByLabelText('straight tail — in the kit'));
-    await screen.findByText('Nothing printed or queued is affected.');
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('The reserve will not change; there will be no extra surplus.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(9, 21, { choices: { 3: 11 }, part_counts: { 5: 2, 6: 0 } }));
   });
 });

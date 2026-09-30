@@ -4,6 +4,9 @@ import { useState } from 'react';
  * A count typed as text (WS-13 E5 C05, D06): a whole number in range is taken as it
  * is typed; an empty or broken field goes back to the last good number when it is
  * left — so retyping never passes through a clamped minimum (the E4 I1 lesson).
+ *
+ * The typed text belongs to the value it was typed against: when the value changes
+ * from outside (a reset, a server answer), the field shows the new value.
  */
 export function CountInput({
   value,
@@ -22,7 +25,7 @@ export function CountInput({
   ariaLabel: string;
   className?: string;
 }) {
-  const [text, setText] = useState<string | null>(null);
+  const [buffer, setBuffer] = useState<{ text: string; base: number } | null>(null);
   const parse = (raw: string) => {
     const n = Number(raw);
     return raw.trim() !== '' && Number.isInteger(n) && n >= min && n <= max ? n : null;
@@ -32,14 +35,14 @@ export function CountInput({
       type="number"
       min={min}
       max={max}
-      value={text ?? String(value)}
+      value={buffer && buffer.base === value ? buffer.text : String(value)}
       disabled={disabled}
       onChange={(e) => {
-        setText(e.target.value);
         const n = parse(e.target.value);
+        setBuffer({ text: e.target.value, base: n ?? value });
         if (n != null) onCommit(n);
       }}
-      onBlur={() => setText(null)}
+      onBlur={() => setBuffer(null)}
       aria-label={ariaLabel}
       className={
         className ??

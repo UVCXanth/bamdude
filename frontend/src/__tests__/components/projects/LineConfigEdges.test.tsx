@@ -85,11 +85,12 @@ describe('LineConfigDialog · save waits for the warning', () => {
         answer = resolve;
       }) as never,
     );
-    render(<LineConfigDialog orderId={9} line={line} onClose={() => {}} />);
-    fireEvent.change(await screen.findByLabelText('Хвіст'), { target: { value: '11' } });
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={line} onClose={() => {}} />);
+    // WS-13 E5 F03: the group is radios now.
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Хвіст' })).getByRole('radio', { name: /прямий/ }));
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
     answer({ reserved_before: 1, reserved_after: 1, dropping: [] });
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled());
   });
 });
 

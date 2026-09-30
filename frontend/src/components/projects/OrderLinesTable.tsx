@@ -399,7 +399,9 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2 }: OrderLines
         />
       )}
 
-      {configuring && <LineConfigDialog orderId={order.id} line={configuring} onClose={() => setConfiguring(null)} />}
+      {configuring && (
+        <LineConfigDialog orderId={order.id} orderCode={order.code} line={configuring} onClose={() => setConfiguring(null)} />
+      )}
 
       {deleting && (
         <ConfirmModal

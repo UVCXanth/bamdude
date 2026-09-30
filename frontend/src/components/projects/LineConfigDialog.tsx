@@ -1,18 +1,31 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Loader2 } from 'lucide-react';
 import { api } from '../../api/client';
-import type { LineConfigurationBody, LineConfigurationImpact, Product, ProductPart, ProjectLine } from '../../api/client';
-import { useToast } from '../../contexts/ToastContext';
+import type {
+  LineConfigurationBody,
+  LineConfigurationImpact,
+  PartSource,
+  Product,
+  ProductPart,
+  ProjectLine,
+} from '../../api/client';
 import { useProductDetail } from '../../hooks/useProductDetail';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 import { Button } from '../Button';
-import { Modal } from '../Modal';
-import { Select } from '../Select';
+import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
+import { WorkshopDialog } from '../workshop/WorkshopDialog';
+import { WorkshopTableScroll } from '../workshop/WorkshopPanel';
+import { MODEL_CHIP, VARIANT_CHIP } from './chips';
+import { CountInput } from './add-to-order/CountInput';
+import { saveAllowed } from './lineConfigSave';
 
-const FIELD_CLASS =
-  'w-20 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm text-right tabular-nums focus:border-bambu-green focus:outline-none';
+const HEAD = 'px-3 py-2 text-left text-xs font-normal text-bambu-gray whitespace-nowrap';
+const CELL = 'px-3 py-2 align-top';
+/** The server's cap on one part's count (`line_config.MAX_COUNT`). */
+const MAX_COUNT = 9999;
+/** At most this many sources per part in the «Source» cell (the mockup shows two). */
+const SOURCES_SHOWN = 2;
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -27,7 +40,7 @@ function byOrder(a: ProductPart, b: ProductPart): number {
   return (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.id - b.id;
 }
 
-/** Every group's standard option. */
+/** Every group's standard option — a group without one is left out, as the server leaves it (E5 R11). */
 function defaultsOf(product: Product | undefined): Record<number, number> {
   const out: Record<number, number> = {};
   for (const group of product?.variant_groups ?? []) {
@@ -72,28 +85,43 @@ function bodyOf(
 
 /**
  * Change an order line's configuration (spec workshop-product-variants, rules
- * 11–14, 26): the option of each group, and per part whether it is in the kit
- * and how many per unit — or, for a parts line, how many of each.
+ * 11–14, 26; WS-13 E5 F — the mockup's `renderConfig`): the option of each group,
+ * and per part whether it is in the kit and how many per unit — or, for a parts
+ * line, how many of each.
  *
  * Every change is previewed by the server's dry run before anything is saved:
  * which parts drop out, what of them is already printed or queued (it becomes
  * surplus), and what the line's reservation becomes. The figures are the
  * server's; this dialog only says them.
+ *
+ * ⚠️ «Reset to standard» is the FULL reset — the standard options AND no changed
+ * count (E5 R03; the mockup's resets only the counts). A group without a standard
+ * option stays unchosen through it (R11).
  */
 export function LineConfigDialog({
   orderId,
+  orderCode,
   line,
   onClose,
 }: {
   orderId: number;
+  orderCode: string;
   line: ProjectLine;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
-  const { showToast } = useToast();
   const queryClient = useQueryClient();
-  const { data: product } = useProductDetail(line.product_id);
+  const productQuery = useProductDetail(line.product_id);
+  const product = productQuery.data;
   const isParts = line.mode === 'parts';
+  const sources = useQuery({
+    queryKey: ['product-part-sources', line.product_id],
+    queryFn: () => api.getProductSources(line.product_id),
+  });
+  const sourcesOf = useMemo(
+    () => new Map((sources.data?.parts ?? []).map((p) => [p.part_id, p.sources])),
+    [sources.data],
+  );
 
   const initialChoices = useMemo(
     () => Object.fromEntries((line.configuration?.choices ?? []).map((c) => [c.group_id, c.option_id])),
@@ -126,19 +154,28 @@ export function LineConfigDialog({
       invalidateOrderViews(queryClient, { orderId });
       onClose();
     },
-    onError: (e: Error) => showToast(e.message, 'error'),
   });
 
-  const chosenSet = new Set(Object.values({ ...defaultsOf(product), ...choices }));
+  const defaults = defaultsOf(product);
+  const chosenSet = new Set(Object.values({ ...defaults, ...choices }));
   // «Не рахувати» is not a part a line can want (spec workshop-order-issue-followups, rule 34).
   const parts = [...(product?.parts ?? [])].filter((p) => !p.ignored).sort(byOrder);
+  const optionName = new Map((product?.variant_groups ?? []).flatMap((g) => g.options.map((o) => [o.id, o.name] as const)));
 
   /** A count back at what the options give is no longer a change. */
-  const setCount = (part: ProductPart, qty: number | null) =>
+  const setCount = (part: ProductPart, qty: number) =>
     setCounts((prev) => {
       const next = { ...prev };
-      if (qty == null || (!isParts && qty === basePer(part, chosenSet))) delete next[part.id];
+      if (!isParts && qty === basePer(part, chosenSet)) delete next[part.id];
       else next[part.id] = qty;
+      return next;
+    });
+
+  const choose = (groupId: number, optionId: number | null) =>
+    setChoices((prev) => {
+      const next = { ...prev };
+      if (optionId == null) delete next[groupId];
+      else next[groupId] = optionId;
       return next;
     });
 
@@ -147,149 +184,298 @@ export function LineConfigDialog({
     setCounts({});
   };
 
-  const impactText = (impact: LineConfigurationImpact): string => {
-    const printed = impact.dropping.reduce((sum, d) => sum + d.printed, 0);
-    const queued = impact.dropping.reduce((sum, d) => sum + d.queued, 0);
-    const bits: string[] = [];
-    if (printed > 0 || queued > 0) bits.push(t('orders.lineConfig.impactSurplus', { printed, queued }));
-    if (impact.reserved_before > 0 || impact.reserved_after > 0) {
-      bits.push(t('orders.lineConfig.impactReserve', { before: impact.reserved_before, after: impact.reserved_after }));
-    }
-    // Ready units move to the new configuration's position — as many as it has free.
-    if (impact.finished_before > 0 || impact.finished_after > 0) {
-      bits.push(t('orders.lineConfig.impactReady', { before: impact.finished_before, after: impact.finished_after }));
-    }
-    return bits.length ? bits.join(' · ') : t('orders.lineConfig.impactNone');
-  };
+  const nonStandardOptions = (product?.variant_groups ?? []).some(
+    (g) => (choices[g.id] ?? g.default_option_id ?? null) !== (g.default_option_id ?? null),
+  );
+  const overrides = Object.keys(counts).length;
+  const settled = debouncedKey === bodyKey;
+  const canSave = saveAllowed({
+    productRead: product != null,
+    dirty,
+    settled,
+    fetching: preview.isFetching,
+    status: preview.status,
+  });
+  const pending = save.isPending;
 
-  const previewing = dirty && (debouncedKey !== bodyKey || preview.isFetching);
+  const subtitle = isParts
+    ? t('orders.lineConfig.subtitleParts', { order: orderCode, product: line.product_name })
+    : t('orders.lineConfig.subtitle', { order: orderCode, product: line.product_name, qty: line.quantity });
 
   return (
-    <Modal
+    <WorkshopDialog
       onClose={onClose}
-      title={t('orders.lineConfig.title', { product: line.product_name })}
+      title={t('orders.lineConfig.title')}
+      subtitle={subtitle}
       size="lg"
-      closeDisabled={save.isPending}
+      pending={pending}
+      error={save.isError ? save.error.message : undefined}
       footer={
-        <div className="flex items-center justify-between gap-2 w-full">
-          <div>
-            {!isParts && (product?.variant_groups?.length ?? 0) + parts.length > 0 && (
-              <Button variant="ghost" size="sm" onClick={reset} disabled={save.isPending}>
-                {t('orders.lineConfig.reset')}
-              </Button>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="secondary" onClick={onClose} disabled={save.isPending}>
-              {t('common.cancel')}
-            </Button>
-            {/* Not while the impact is still being asked: a quick Save would skip
-                the warning the dry run exists to give (spec rules 14, 26). */}
-            <Button
-              onClick={() => (dirty ? save.mutate() : onClose())}
-              disabled={product == null || save.isPending || previewing}
-            >
-              {t('common.save')}
-            </Button>
-          </div>
-        </div>
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={pending}>
+            {t('common.cancel')}
+          </Button>
+          <Button onClick={() => (dirty ? save.mutate() : onClose())} disabled={!canSave || pending}>
+            {t('orders.lineConfig.save')}
+          </Button>
+        </>
       }
     >
-      {product == null ? (
-        <div className="flex justify-center p-6">
-          <Loader2 className="w-5 h-5 animate-spin text-bambu-gray" />
+      {productQuery.isPending ? (
+        <p className="py-6 text-center text-sm text-bambu-gray">{t('common.loading')}</p>
+      ) : productQuery.isError && !product ? (
+        <div className="space-y-1 py-4 text-sm">
+          <p className="text-amber-700 dark:text-amber-400">{t('orders.lineConfig.productFailed')}</p>
+          <p className="text-bambu-gray">{productQuery.error.message}</p>
+          <Button size="sm" variant="ghost" onClick={() => productQuery.refetch()}>
+            {t('common.retry')}
+          </Button>
         </div>
-      ) : (
-        <div className="p-4 space-y-4">
-          {!isParts && product.variant_groups.length > 0 && (
-            <div className="space-y-2">
-              <h3 className="text-sm text-bambu-gray">{t('orders.lineConfig.options')}</h3>
-              {product.variant_groups.map((group) => (
-                <label key={group.id} className="flex items-center gap-3 text-sm text-white">
-                  <span className="min-w-[8rem]">{group.name}</span>
-                  <Select
-                    size="sm"
-                    aria-label={group.name}
-                    value={String(choices[group.id] ?? group.default_option_id ?? '')}
-                    onChange={(e) => {
-                      const optionId = Number(e.target.value);
-                      setChoices((prev) => ({ ...prev, [group.id]: optionId }));
-                    }}
+      ) : product ? (
+        <fieldset disabled={pending} className="m-0 min-w-0 space-y-3 border-0 p-0">
+          {productQuery.isError && <RefreshFailedNote onRetry={() => productQuery.refetch()} />}
+
+          {!isParts &&
+            (product.variant_groups.length > 0 ? (
+              product.variant_groups.map((group) => {
+                const current = choices[group.id] ?? group.default_option_id ?? null;
+                return (
+                  <fieldset
+                    key={group.id}
+                    className="m-0 flex flex-wrap items-center gap-4 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2.5"
                   >
-                    {group.options.map((o) => (
-                      <option key={o.id} value={o.id}>
-                        {o.name}
-                      </option>
+                    <legend className="float-left mr-2 p-0 text-sm font-semibold text-white">{group.name}</legend>
+                    {group.default_option_id == null && (
+                      <label className="inline-flex items-center gap-1.5 text-sm text-white">
+                        <input
+                          type="radio"
+                          name={`cfg-group-${group.id}`}
+                          checked={current == null}
+                          onChange={() => choose(group.id, null)}
+                          className="accent-bambu-green"
+                        />
+                        {t('orders.lineConfig.noChoice')}
+                      </label>
+                    )}
+                    {group.options.map((option) => (
+                      <label key={option.id} className="inline-flex items-center gap-1.5 text-sm text-white">
+                        <input
+                          type="radio"
+                          name={`cfg-group-${group.id}`}
+                          checked={current === option.id}
+                          onChange={() => choose(group.id, option.id)}
+                          className="accent-bambu-green"
+                        />
+                        {option.name}
+                        {option.id === group.default_option_id && (
+                          <span className="text-xs text-bambu-gray">{t('orders.lineConfig.standardOption')}</span>
+                        )}
+                      </label>
                     ))}
-                  </Select>
-                </label>
-              ))}
+                  </fieldset>
+                );
+              })
+            ) : (
+              <p className="text-sm text-bambu-gray">{t('orders.lineConfig.noVariants')}</p>
+            ))}
+
+          {parts.length === 0 ? (
+            <p className="text-sm text-bambu-gray">{t('orders.lineConfig.noParts')}</p>
+          ) : (
+            <div className="rounded-lg border border-bambu-dark-tertiary">
+              <WorkshopTableScroll label={t('orders.lineConfig.title')}>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr>
+                      {!isParts && <th className={HEAD}>{t('orders.lineConfig.head.inKit')}</th>}
+                      <th className={HEAD}>{t('orders.lineConfig.head.part')}</th>
+                      <th className={HEAD}>
+                        {t(isParts ? 'orders.lineConfig.head.needed' : 'orders.lineConfig.head.perUnit')}
+                      </th>
+                      {!isParts && (
+                        <th className={HEAD}>{t('orders.lineConfig.head.total', { qty: line.quantity })}</th>
+                      )}
+                      <th className={HEAD}>{t('orders.lineConfig.head.source')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {parts.map((part) => {
+                      const base = isParts ? 0 : basePer(part, chosenSet);
+                      const shown = counts[part.id] ?? base;
+                      const off = !isParts && shown === 0;
+                      const variant = part.variant_option_id != null ? optionName.get(part.variant_option_id) : null;
+                      return (
+                        <tr
+                          key={part.id}
+                          data-testid={`config-part-${part.id}`}
+                          className={`border-t border-bambu-dark-tertiary text-white ${off ? 'opacity-50' : ''}`}
+                        >
+                          {!isParts && (
+                            <td className={CELL}>
+                              <input
+                                type="checkbox"
+                                checked={shown > 0}
+                                aria-label={t('orders.lineConfig.inKitFor', { name: part.name })}
+                                onChange={() =>
+                                  setCount(part, shown > 0 ? 0 : base > 0 ? base : Math.max(1, part.qty_per_unit))
+                                }
+                                className="accent-bambu-green"
+                              />
+                            </td>
+                          )}
+                          <td className={CELL}>
+                            <span className="[overflow-wrap:anywhere]">{part.name}</span>
+                            {part.kind === 'purchased' && (
+                              <span className={`ml-1.5 ${VARIANT_CHIP}`}>{t('orders.lineConfig.chip.bought')}</span>
+                            )}
+                            {variant && (
+                              <span className={`ml-1.5 ${VARIANT_CHIP}`}>
+                                {t('orders.lineConfig.chip.variant', { option: variant })}
+                              </span>
+                            )}
+                            {!isParts && counts[part.id] != null && (
+                              <span className="ml-1.5 inline-block rounded bg-bambu-green/20 px-1.5 py-px align-[1px] text-[11px] font-medium leading-4 text-bambu-green">
+                                {t('orders.lineConfig.chip.changed')}
+                              </span>
+                            )}
+                          </td>
+                          <td className={`${CELL} whitespace-nowrap`}>
+                            <CountInput
+                              value={isParts ? (counts[part.id] ?? 0) : shown}
+                              min={0}
+                              max={MAX_COUNT}
+                              onCommit={(qty) => setCount(part, qty)}
+                              ariaLabel={t(isParts ? 'orders.lineConfig.needFor' : 'orders.lineConfig.perUnitFor', {
+                                name: part.name,
+                              })}
+                              className="w-[68px] rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-2 py-1 text-right tabular-nums text-white focus:border-bambu-green focus:outline-none"
+                            />
+                            {!isParts && (
+                              <span className="ml-2 text-xs text-bambu-gray">
+                                {base > 0
+                                  ? t('orders.lineConfig.standardN', { n: base })
+                                  : t('orders.lineConfig.outsideStandard')}
+                              </span>
+                            )}
+                          </td>
+                          {!isParts && (
+                            <td className={`${CELL} tabular-nums`}>{shown > 0 ? shown * line.quantity : '—'}</td>
+                          )}
+                          <td className={CELL}>
+                            <SourceCell
+                              part={part}
+                              sources={sourcesOf.get(part.id)}
+                              loading={sources.isPending}
+                              failed={sources.isError}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </WorkshopTableScroll>
             </div>
           )}
 
-          <div className="space-y-1.5">
-            <h3 className="text-sm text-bambu-gray">{t('orders.lineConfig.parts')}</h3>
-            <table className="w-full text-sm">
-              <tbody>
-                {parts.map((part) => {
-                  const base = isParts ? 0 : basePer(part, chosenSet);
-                  const shown = counts[part.id] ?? base;
-                  return (
-                    <tr key={part.id} className="text-white">
-                      {!isParts && (
-                        <td className="py-1 pr-2 w-6">
-                          <input
-                            type="checkbox"
-                            checked={shown > 0}
-                            aria-label={t('orders.lineConfig.inKitFor', { name: part.name })}
-                            onChange={() =>
-                              setCount(part, shown > 0 ? 0 : base > 0 ? base : Math.max(1, part.qty_per_unit))
-                            }
-                            className="accent-bambu-green"
-                          />
-                        </td>
-                      )}
-                      <td className="py-1 pr-3">{part.name}</td>
-                      <td className="py-1 text-right">
-                        <input
-                          type="number"
-                          min={0}
-                          value={counts[part.id] != null ? String(counts[part.id]) : ''}
-                          placeholder={String(base)}
-                          aria-label={t(isParts ? 'orders.lineConfig.needFor' : 'orders.lineConfig.perUnitFor', {
-                            name: part.name,
-                          })}
-                          onChange={(e) => {
-                            const raw = e.target.value.trim();
-                            const qty = Number(raw);
-                            if (raw === '') setCount(part, null);
-                            else if (Number.isInteger(qty) && qty >= 0) setCount(part, qty);
-                          }}
-                          className={FIELD_CLASS}
-                        />
-                        <span className="ml-2 text-xs text-bambu-gray">
-                          {t(isParts ? 'orders.lineConfig.needed' : 'orders.lineConfig.perUnit')}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          {!isParts && parts.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-bambu-gray">
+              <span>
+                {overrides > 0
+                  ? t('orders.lineConfig.hint.changed', { count: overrides })
+                  : nonStandardOptions
+                    ? t('orders.lineConfig.hint.chosen')
+                    : t('orders.lineConfig.hint.standard')}
+              </span>
+              {(overrides > 0 || nonStandardOptions) && (
+                <Button size="sm" variant="ghost" title={t('orders.lineConfig.resetTitle')} onClick={reset}>
+                  {t('orders.lineConfig.reset')}
+                </Button>
+              )}
+            </div>
+          )}
 
-          {dirty &&
-            (preview.isError && !previewing ? (
-              <p className="text-sm text-red-400" data-testid="line-config-impact">
-                {preview.error.message}
-              </p>
-            ) : (
-              <p className="text-sm text-amber-400" data-testid="line-config-impact">
-                {previewing || !preview.data ? t('orders.lineConfig.checking') : impactText(preview.data)}
-              </p>
-            ))}
-        </div>
-      )}
-    </Modal>
+          {dirty && <Impact preview={preview} settled={settled} />}
+        </fieldset>
+      ) : null}
+    </WorkshopDialog>
+  );
+}
+
+/** «Source»: a bought part's purchase; a printed part's first sources, recommended first. */
+function SourceCell({
+  part,
+  sources,
+  loading,
+  failed,
+}: {
+  part: ProductPart;
+  sources: PartSource[] | undefined;
+  loading: boolean;
+  failed: boolean;
+}) {
+  const { t } = useTranslation();
+  if (part.kind === 'purchased') return <span className="text-bambu-gray">{t('orders.lineConfig.source.purchase')}</span>;
+  if (loading) return <span className="text-bambu-gray">…</span>;
+  if (failed) {
+    return (
+      <span className="text-bambu-gray" title={t('orders.lineConfig.source.failed')}>
+        —
+      </span>
+    );
+  }
+  const list = [...(sources ?? [])].sort((a, b) => Number(b.recommended) - Number(a.recommended)).slice(0, SOURCES_SHOWN);
+  if (list.length === 0) return <span className="text-amber-700 dark:text-amber-400">{t('orders.lineConfig.source.none')}</span>;
+  return (
+    <span className="flex flex-col gap-0.5">
+      {list.map((s) => (
+        <span key={s.plate_id} className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-bambu-gray">
+          {s.printer_model && <span className={MODEL_CHIP}>{s.printer_model}</span>}
+          <span>{t('orders.lineConfig.source.plate', { n: s.plate_index, yield: s.yield })}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** The dry run's answer for this draft, said line by line (E5 F07). */
+function Impact({
+  preview,
+  settled,
+}: {
+  preview: UseQueryResult<LineConfigurationImpact>;
+  settled: boolean;
+}) {
+  const { t } = useTranslation();
+  if (!settled || preview.isFetching || preview.isPending) {
+    return <p className="text-sm text-bambu-gray" data-testid="line-config-impact">{t('orders.lineConfig.checking')}</p>;
+  }
+  if (preview.isError) {
+    return (
+      <p className="flex flex-wrap items-center gap-2 text-sm" data-testid="line-config-impact">
+        <span className="text-amber-700 dark:text-amber-400">{preview.error.message}</span>
+        <Button size="sm" variant="ghost" onClick={() => preview.refetch()}>
+          {t('common.retry')}
+        </Button>
+      </p>
+    );
+  }
+  const impact = preview.data;
+  const lines: string[] = [];
+  if (impact.reserved_before !== impact.reserved_after) {
+    lines.push(t('orders.lineConfig.impact.reserve', { before: impact.reserved_before, after: impact.reserved_after }));
+  }
+  if (impact.finished_before !== impact.finished_after) {
+    lines.push(t('orders.lineConfig.impact.ready', { before: impact.finished_before, after: impact.finished_after }));
+  }
+  for (const d of impact.dropping) {
+    if (d.printed > 0 || d.queued > 0) {
+      lines.push(t('orders.lineConfig.impact.dropping', { name: d.name, printed: d.printed, queued: d.queued }));
+    }
+  }
+  return (
+    <div className="space-y-0.5 text-sm text-amber-700 dark:text-amber-400" data-testid="line-config-impact">
+      {lines.length > 0 ? lines.map((l) => <p key={l}>{l}</p>) : <p>{t('orders.lineConfig.impact.none')}</p>}
+    </div>
   );
 }
