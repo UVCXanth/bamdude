@@ -29,13 +29,15 @@ from backend.app.services.printer_manager import printer_manager
 from backend.app.services.source_io import SourceUnavailable
 from backend.app.utils.printer_configs import requires_left_tpu_firmware_check
 
-#: How long a prepared attempt waits for a reconnected printer's first complete
-#: feed report before it is refused (spec direct-print-silent-cancel §4.3).
+#: The one deadline of ``settle_plan``: how long a prepared attempt waits for the
+#: plan to hold again — a reconnected printer's first complete report, an empty
+#: planned slot the operator is refilling (spec direct-print-silent-cancel §4.3,
+#: dispatch-guard-follows-the-plan Д6; owner's В2, 2026-09-30).
 FEED_SETTLE_TIMEOUT = 60.0
 FEED_SETTLE_POLL = 1.0
-#: Once the new session's feed looks complete but still differs from the prepared
-#: one, how long to let separately reported facts (the FTS confirmation, a nozzle
-#: diameter, a tag) catch up before handing the difference to ``final_guard``.
+#: The grace inside that deadline for a planned slot that is loaded but does not
+#: fit yet — separately reported facts (the FTS confirmation, a nozzle diameter)
+#: or BamDude's own slot writes catching up — before ``final_guard`` names it.
 FEED_SETTLE_CONVERGE = 5.0
 
 
@@ -360,22 +362,7 @@ async def ranked_feed(db, printer_id, policy, prefer_lowest=None):
     return snapshot, prefer_lowest, source_priority
 
 
-def _settled(snapshot, prepared_generation: int) -> bool:
-    """A NEW session whose feed is complete — evidence gathered from scratch.
-
-    The client empties the feed cache with every new generation, so a complete
-    feed here can only have come from reports on this session.
-    """
-    return (
-        snapshot.connected
-        and snapshot.generation != prepared_generation
-        and snapshot.ams_known
-        and snapshot.external_known
-        and not snapshot.incomplete
-    )
-
-
-async def settle_feed(
+async def settle_plan(
     guard,
     printer_id: int,
     *,
@@ -384,46 +371,69 @@ async def settle_feed(
     poll: float = FEED_SETTLE_POLL,
     converge: float = FEED_SETTLE_CONVERGE,
 ) -> bool:
-    """Before the final check: if the session changed since preparation, wait for its first complete report.
+    """Before the final check: wait — once, bounded — until the prepared plan holds.
 
-    A reconnect mid-upload used to refuse every prepared print, because the new
-    session starts with an empty feed cache (2026-09-24, two A1 mini). Now the
-    attempt asks for a full report and waits — bounded — so ``final_guard`` can
-    compare the FRESH feed with the prepared one. The comparison, and the refusal
-    when the content differs, stay ``final_guard``'s. The wait sits BEFORE that
-    check, so nothing awaits between a passed check and the publish.
+    One deadline for everything that can put a prepared print here (spec
+    dispatch-guard-follows-the-plan Д6):
+    - the MQTT session changed since preparation — its feed cache starts empty,
+      so the new session is asked for a full report first (2026-09-24, two A1 mini);
+    - a planned slot is empty — an operator mid-swap;
+    - a planned slot holds something that does not fit — BamDude's own writes
+      after a spool goes in (the pre-config replay in ``on_ams_change``, assign,
+      ``publish_slot_plan``) pass the tray through intermediate states, so this
+      gets the short ``converge`` window rather than a refusal.
 
-    Returns whether the session changed: whatever was sent to the old one before
-    the wait (the pre-start calibration bind) is the caller's to send again. A
-    healthy printer (same generation, connected) returns ``False`` at once — no
+    Returns whether the session changed: the pre-start K bind went to the old
+    one and is the caller's to send again. Raises ``feed_settle_timeout`` when a
+    changed session never completed its report (latched — see
+    ``LATCHING_REASONS``) and ``planned_source_empty`` when a planned slot stayed
+    empty; any other refusal is ``final_guard``'s to name. The wait sits BEFORE
+    that check, so nothing awaits between a passed check and the publish. A
+    healthy printer on the same session whose plan holds returns at once — no
     pushall.
     """
     if guard is None:
         return False
-    prepared_generation = guard.generation
     snapshot = printer_manager.get_feed_snapshot(printer_id)
-    if snapshot.connected and snapshot.generation == prepared_generation:
+    session_changed = not snapshot.connected or snapshot.generation != guard.generation
+    if not session_changed and plan_holds(guard, snapshot)[0]:
         return False
-    printer_manager.request_status_update(printer_id)
+    if session_changed:
+        printer_manager.request_status_update(printer_id)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     converge_until = None
+    reason = None
     while True:
         raise_if_cancelled()
         snapshot = printer_manager.get_feed_snapshot(printer_id)
-        if _settled(snapshot, prepared_generation):
-            if plan_holds(guard, snapshot)[0]:
-                return True
-            # Complete-looking but different: a separately reported fact may still
-            # be on its way. A bounded grace; a real difference is final_guard's.
-            if converge_until is None:
-                converge_until = min(deadline, loop.time() + converge)
-            if loop.time() >= converge_until:
-                return True
-        elif loop.time() >= deadline:
-            raise RoutingDeferred(
-                "feed_settle_timeout", revision=revision_for(guard.requirements, guard.policy, snapshot)
-            )
+        now = loop.time()
+        if not session_changed and (not snapshot.connected or snapshot.generation != guard.generation):
+            session_changed = True
+            printer_manager.request_status_update(printer_id)
+        # A new session's feed cache starts empty (the client resets it with the
+        # generation), so a complete feed on it can only come from its own reports.
+        reported = snapshot.connected and snapshot.ams_known and snapshot.external_known and not snapshot.incomplete
+        if reported or not session_changed:
+            holds, reason, unknown = plan_holds(guard, snapshot)
+            if holds:
+                return session_changed
+            if not unknown:
+                # Loaded and known not to fit: a separately reported fact or our
+                # own slot write may still be on its way. A bounded grace; a real
+                # difference is final_guard's to refuse.
+                if converge_until is None:
+                    converge_until = min(deadline, now + converge)
+                if now >= converge_until:
+                    return session_changed
+        if now >= deadline:
+            if session_changed and not reported:
+                raise RoutingDeferred(
+                    "feed_settle_timeout", revision=revision_for(guard.requirements, guard.policy, snapshot)
+                )
+            if reason == "planned_source_empty":
+                raise RoutingDeferred("planned_source_empty")
+            return session_changed
         await asyncio.sleep(poll)
 
 

@@ -43,7 +43,7 @@ from backend.app.services.bambu_ftp import (
     with_ftp_retry,
 )
 from backend.app.services.filament_intake import item_descriptor, routing_detail, source_display_filename
-from backend.app.services.filament_preflight import final_guard, preflight_item, settle_feed
+from backend.app.services.filament_preflight import final_guard, preflight_item, settle_plan
 from backend.app.services.filament_routing import RoutingDeferred
 from backend.app.services.gcode_patcher import GcodeInjectionSpec
 from backend.app.services.printer_files.factory import transport_for
@@ -2413,9 +2413,10 @@ class BackgroundDispatchService:
                 effective_timelapse = _timelapse_or_off(
                     job.printer_id, printer, bool(job.options.get("timelapse", False))
                 )
-                # A session that changed during preparation gets to report again
-                # before the final check (spec direct-print-silent-cancel §4.3).
-                if await settle_feed(
+                # One bounded wait until the prepared plan holds: a new session,
+                # an operator mid-swap, our own slot writes (spec dispatch-guard-
+                # follows-the-plan Д6; direct-print-silent-cancel §4.3).
+                if await settle_plan(
                     job.routing_guard,
                     job.printer_id,
                     raise_if_cancelled=lambda: self._raise_if_cancel_requested(job),
@@ -3125,9 +3126,10 @@ class BackgroundDispatchService:
                 effective_timelapse = _timelapse_or_off(
                     job.printer_id, printer, bool(job.options.get("timelapse", False))
                 )
-                # A session that changed during preparation gets to report again
-                # before the final check (spec direct-print-silent-cancel §4.3).
-                if await settle_feed(
+                # One bounded wait until the prepared plan holds: a new session,
+                # an operator mid-swap, our own slot writes (spec dispatch-guard-
+                # follows-the-plan Д6; direct-print-silent-cancel §4.3).
+                if await settle_plan(
                     job.routing_guard,
                     job.printer_id,
                     raise_if_cancelled=lambda: self._raise_if_cancel_requested(job),

@@ -22,7 +22,7 @@ from backend.app.services.bambu_mqtt import BambuMQTTClient
 from backend.app.services.filament_deferred import defer_claim
 from backend.app.services.filament_intake import read_item_requirements
 from backend.app.services.filament_policy import deserialize_policy, queue_policy
-from backend.app.services.filament_preflight import final_guard, preflight_item, settle_feed
+from backend.app.services.filament_preflight import final_guard, preflight_item, settle_plan
 from backend.app.services.filament_routing import RoutingDeferred, fingerprint
 from backend.app.services.printer_feed_snapshot import FeedTelemetry
 from backend.app.services.printer_manager import printer_manager
@@ -482,7 +482,7 @@ async def test_a_reconnect_that_reports_the_same_feed_keeps_the_prepared_job(
     monkeypatch.setattr(printer_manager, "request_status_update", MagicMock(return_value=True))
     reconnect(mqtt)
     asyncio.get_running_loop().call_later(0.05, report_the_spool, mqtt)
-    await settle_feed(guard, printer.id, timeout=2, poll=0.01)
+    await settle_plan(guard, printer.id, timeout=2, poll=0.01)
     guard = await final_guard(guard, printer.id)
     assert printer_manager.start_print(
         printer.id,
@@ -503,21 +503,21 @@ async def test_a_reconnect_that_reports_another_spool_defers(db_session, tmp_pat
     reconnect(mqtt)
     # Another tag on the same filament is the same plan now; another MATERIAL is not.
     report_the_spool(mqtt, tray_type="PETG")
-    await settle_feed(guard, printer.id, timeout=2, poll=0.01, converge=0.05)
+    await settle_plan(guard, printer.id, timeout=2, poll=0.01, converge=0.05)
     with pytest.raises(RoutingDeferred, match="material_mismatch"):
         await final_guard(guard, printer.id)
     mqtt._client.publish.assert_not_called()
 
 
-async def test_settle_feed_says_whether_the_session_changed(db_session, tmp_path, printer_factory, monkeypatch):
+async def test_settle_plan_says_whether_the_session_changed(db_session, tmp_path, printer_factory, monkeypatch):
     """The runner re-binds the pre-start calibration only after a session change."""
     item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
     guard = await preflight_item(db_session, item, printer.id)
     monkeypatch.setattr(printer_manager, "request_status_update", MagicMock(return_value=True))
-    assert await settle_feed(guard, printer.id, timeout=0.01, poll=0.01) is False
+    assert await settle_plan(guard, printer.id, timeout=0.01, poll=0.01) is False
     reconnect(mqtt)
     report_the_spool(mqtt)
-    assert await settle_feed(guard, printer.id, timeout=2, poll=0.01) is True
+    assert await settle_plan(guard, printer.id, timeout=2, poll=0.01) is True
 
 
 async def test_a_new_session_whose_first_report_is_partial_still_keeps_the_job(
@@ -532,7 +532,7 @@ async def test_a_new_session_whose_first_report_is_partial_still_keeps_the_job(
     reconnect(mqtt)
     report_the_spool(mqtt, tray_uuid="")
     asyncio.get_running_loop().call_later(0.05, report_the_spool, mqtt)
-    await settle_feed(guard, printer.id, timeout=2, poll=0.01, converge=1)
+    await settle_plan(guard, printer.id, timeout=2, poll=0.01, converge=1)
     guard = await final_guard(guard, printer.id)
     assert printer_manager.start_print(
         printer.id,
@@ -554,7 +554,7 @@ async def test_a_reconnect_that_never_reports_defers_with_the_settle_timeout(
     asked = MagicMock(return_value=True)
     monkeypatch.setattr(printer_manager, "request_status_update", asked)
     with pytest.raises(RoutingDeferred, match="feed_settle_timeout"):
-        await settle_feed(guard, printer.id, timeout=0.05, poll=0.01)
+        await settle_plan(guard, printer.id, timeout=0.05, poll=0.01)
     asked.assert_called_once_with(printer.id)
 
 
@@ -575,11 +575,11 @@ async def test_a_healthy_printer_does_not_wait(db_session, tmp_path, printer_fac
     guard = await preflight_item(db_session, item, printer.id)
     asked = MagicMock(return_value=True)
     monkeypatch.setattr(printer_manager, "request_status_update", asked)
-    await settle_feed(guard, printer.id, timeout=0.01, poll=0.01)
+    await settle_plan(guard, printer.id, timeout=0.01, poll=0.01)
     asked.assert_not_called()
 
 
-async def test_settle_feed_honours_a_cancel(db_session, tmp_path, printer_factory, monkeypatch):
+async def test_settle_plan_honours_a_cancel(db_session, tmp_path, printer_factory, monkeypatch):
     """The Cancel button works during the wait."""
     item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
     guard = await preflight_item(db_session, item, printer.id)
@@ -593,7 +593,69 @@ async def test_settle_feed_honours_a_cancel(db_session, tmp_path, printer_factor
         raise Cancelled
 
     with pytest.raises(Cancelled):
-        await settle_feed(guard, printer.id, raise_if_cancelled=raise_if_cancelled, timeout=2, poll=0.01)
+        await settle_plan(guard, printer.id, raise_if_cancelled=raise_if_cancelled, timeout=2, poll=0.01)
+
+
+def empty_the_spool(mqtt):
+    mqtt._process_message({"print": {"command": "push_status", "vt_tray": {"id": 254, "tray_type": ""}}})
+
+
+async def test_a_planned_slot_refilled_within_the_wait_starts(db_session, tmp_path, printer_factory, monkeypatch):
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    empty_the_spool(mqtt)
+    asyncio.get_running_loop().call_later(0.05, report_the_spool, mqtt)
+    assert await settle_plan(guard, printer.id, timeout=2, poll=0.01, converge=0.05) is False
+    assert (await final_guard(guard, printer.id)).plan.mapping == guard.plan.mapping
+
+
+async def test_a_planned_slot_that_stays_empty_is_refused_without_a_latch(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    empty_the_spool(mqtt)
+    with pytest.raises(RoutingDeferred, match="planned_source_empty") as refusal:
+        await settle_plan(guard, printer.id, timeout=0.1, poll=0.01, converge=0.05)
+    assert refusal.value.revision is None
+
+
+async def test_a_slot_passing_through_our_own_writes_converges(db_session, tmp_path, printer_factory, monkeypatch):
+    """A spool put in at Clear plate: BamDude's own writes show a wrong type for a moment."""
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    report_the_spool(mqtt, tray_type="PETG")
+    asyncio.get_running_loop().call_later(0.03, report_the_spool, mqtt)
+    await settle_plan(guard, printer.id, timeout=2, poll=0.01, converge=1)
+    assert await final_guard(guard, printer.id)
+
+
+async def test_a_reconnect_with_a_change_elsewhere_does_not_wait_out_the_grace(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    """Review Focus 1: a reconnect mid-upload and a spool swap in a slot the job does not use."""
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    monkeypatch.setattr(printer_manager, "request_status_update", MagicMock(return_value=True))
+    reconnect(mqtt)
+    mqtt._process_message(
+        {
+            "print": {
+                "command": "push_status",
+                "ams": {"ams": [{"id": 0, "tray": [{"id": 0, "tray_type": "ABS", "tray_color": "FFFFFFFF"}]}]},
+                "vt_tray": {
+                    "id": 254,
+                    "tray_type": "PLA",
+                    "tray_color": "0000FF",
+                    "tray_info_idx": "GFA00",
+                    "tray_uuid": "THE-SPOOL",
+                },
+            }
+        }
+    )
+    started = asyncio.get_running_loop().time()
+    assert await settle_plan(guard, printer.id, timeout=5, poll=0.01, converge=3) is True
+    assert asyncio.get_running_loop().time() - started < 1
 
 
 async def test_edit_echoing_mapping_keeps_original_pin_evidence(
