@@ -72,6 +72,8 @@
 
 - **Smaller list conveniences.** Customers can be filtered to those with active orders. Order search also finds an order by its tags. `/` focuses the search of any Projects list, and the keyboard help lists it. An order's description is shown under its title on the order page.
 
+- **Swap Mode on the A2L.** The SwapMod A2L STL plate swapper (swap-systems.com, from the author of the A1 Mini STL edition) is a new swap profile, **A2L — STL Edition**: an A2L can now switch swap mode on in its printer settings, and the update adds the mod's two built-in macros — the start sequence that seats the first plate before a print and the change-table sequence that swaps the finished plate out after one — taken from the mod's own processed G-code. The saved print profiles in Settings offer swap macros for every model a swap profile covers, instead of only the A1 and A1 Mini, and the macro editor can now target the A2L and X2D.
+
 ### Changed
 
 - **The workshop lists open as a table until you pick a view.** The orders list, the product catalog and a customer's orders used to open as cards for anyone who had never chosen; they now open as a table, and the orders table sorts by due date — so a shared link without a sort shows the nearest deadlines first to such a reader. A view you picked is kept, and a sort in the link still wins.

@@ -175,7 +175,7 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 ### Smaller, but still ours
 
 - **Ukrainian.** Upstream ships twelve locales and Ukrainian is not among them. BamDude ships English and Ukrainian only, and both are strict: a key missing from either fails CI, and so does a placeholder that drifted between them.
-- **Swap Mode** — driving an A1 / A1 Mini plate swapper, with Kit, STL and JobOx profiles, swap files detected automatically, and the swap macro fired between queued prints.
+- **Swap Mode** — driving an A1 / A1 Mini / A2L plate swapper, with Kit, STL and JobOx profiles, swap files detected automatically, and the swap macro fired between queued prints.
 - **Low-stock forecast alerts** — the reorder forecast raises a notification rather than only colouring a panel nobody has open.
 - **An audit row for every applied change** to printer settings, AMS settings and calibration — what was sent, when, and by whom.
 - **Notes on library files**, and **print-dialog options remembered per user and per printer model**.
@@ -261,7 +261,7 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - Auto error-pause on print failure (queue stops, user decides next step)
 - Staggered start for farms (limit concurrent heating — farm-wide or per electrical phase and room via printer tags and locations, each group with its own cap if needed; bed temp monitoring)
 - Printer tags with colours; the Printers page filters and groups by tag
-- **Swap Mode** — A1 Mini / A1 plate swapper with multi-profile support (Kit, STL, JobOx), auto-detect swap files, per-job event selection (start sequence / change table), plate-clear auto-bypass
+- **Swap Mode** — A1 Mini / A1 / A2L plate swapper with multi-profile support (Kit, STL, JobOx, A2L STL), auto-detect swap files, per-job event selection (start sequence / change table), plate-clear auto-bypass
 - **Swap macro auto-execution** — `swap_mode_start` before print, `swap_mode_change_table` after print, with ACK + stg_cur completion tracking, queue pause on failure
 - **Quick Vibration Check toggle** — per-job toggle; when disabled, 3MF gcode post-processor comments out `M970` commands, recalculates MD5 sidecars, repacks archive
 - **Auto-Print G-code Injection** — per-job toggle that splices operator-defined snippets into the plate gcode at `; MACHINE_START_GCODE_END` (start) / EOF (end), with `{placeholder}` substitution from 3MF header (incl. PrusaSlicer→Bambu aliases). Snippets stored as per-printer-model JSON in settings; folded into the same single 3MF open/repack cycle as Quick Vibration Check so multi-plate 50+ MB files aren't unzipped twice

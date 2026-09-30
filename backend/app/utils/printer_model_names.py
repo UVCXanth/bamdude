@@ -18,4 +18,6 @@ PRINTER_MODEL_DISPLAY_NAMES: dict[str, str] = {
     "H2D Pro": "H2D Pro",
     "H2C": "H2C",
     "H2S": "H2S",
+    "X2D": "X2D",
+    "A2L": "A2L",
 }

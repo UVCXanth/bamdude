@@ -64,15 +64,6 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleString();
 }
 
-// Swap-mode plate macros only make sense on the A1 family — the other
-// printers don't have an external plate swapper. Anywhere else we force
-// the swap_macros payload off so a stale "execute=true" can't slip in
-// when an admin edits a P1S/X1C/H2D row.
-const SWAP_ELIGIBLE_MODELS = new Set(['A1', 'A1 Mini']);
-function isSwapEligibleModel(model: string): boolean {
-  return SWAP_ELIGIBLE_MODELS.has(model);
-}
-
 export function PrintOptionsPreferencesPanel() {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -323,19 +314,28 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
     );
   }, [editingExisting, existingEntries, userId, printerModel]);
 
-  const swapEligible = isSwapEligibleModel(printerModel);
+  // Swap-mode plate macros exist only for a model some swap profile names —
+  // the catalog is the one answer (a model gains swap mode when a profile
+  // lists it), never a list of this panel's own. Undefined until it answers:
+  // Save waits for it, and a catalog that failed strips nothing.
+  const { data: swapProfiles, isPending: swapProfilesPending } = useQuery({
+    queryKey: ['macros', 'swap-profiles'],
+    queryFn: macrosApi.getSwapProfiles,
+    staleTime: Infinity,
+  });
+  const swapEligible = swapProfiles?.some((p) => p.models.includes(printerModel.trim()));
 
   const isSystemRow = userId === SYSTEM_USER_ID;
 
   const upsertMutation = useMutation({
     mutationFn: () => {
-      // Strip swap_macros for non-A1 models so the row never carries a
-      // misleading "execute=true" — the panel hides the controls in that
-      // case, but a row edited after the model was changed could otherwise
-      // retain stale swap state. System rows never carry swap macros (they
-      // only feed the virtual-printer slicer-silent fallback).
+      // Strip swap_macros for a model no swap profile names, so the row never
+      // carries a misleading "execute=true" — the panel hides the controls in
+      // that case, but a row edited after the model was changed could
+      // otherwise retain stale swap state. System rows never carry swap macros
+      // (they only feed the virtual-printer slicer-silent fallback).
       const payload: PrintOptionsPreferenceData =
-        swapEligible && !isSystemRow ? data : { ...data, swap_macros: { execute: false, events: [] } };
+        isSystemRow || swapEligible === false ? { ...data, swap_macros: { execute: false, events: [] } } : data;
       return isSystemRow
         ? api.upsertSystemPrintOptionsPreference(printerModel.trim(), payload)
         : api.adminUpsertPrintOptionsPreference(userId, printerModel.trim(), payload);
@@ -356,6 +356,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
     (userId > 0 || isSystemRow) &&
     printerModel.trim().length > 0 &&
     !collidesWithExisting &&
+    !swapProfilesPending &&
     !upsertMutation.isPending;
 
   const togglePrintOption = (key: keyof PrintOptionsPreferenceData['print_options']) => {
