@@ -62,36 +62,37 @@ function suggestItemFor(line: ProjectLine, quantity: number): StockSuggestItem {
 }
 
 /**
- * Only what the operator actually changed.
+ * Only what the operator actually changed — judged against the draft taken when the
+ * dialog OPENED, never against the line as it is now (final review M3).
  *
  * A PATCH carrying every field would overwrite a value somebody else edited
- * between this dialog opening and Save being pressed — and, worse, would write
- * back whatever the dialog was showing for fields the operator never touched.
- * An empty box means null on the wire, never `""`.
+ * between this dialog opening and Save being pressed; so would comparing the
+ * opening draft with a line that was re-read meanwhile — a note, a material or a
+ * kit assembled elsewhere would be written back for a box the operator never
+ * touched. An empty box means null on the wire, never `""`.
  *
  * ⚠️ The material is upper-cased HERE: the server stores it verbatim, so a row
  * that arrived holding a lower-case `petg` (typed before this page existed)
  * would otherwise keep failing to match the plates, which spell theirs
- * upper-case. Saving such a row repairs it, which is why the comparison can
- * report a change the operator did not make.
+ * upper-case. Saving such a row repairs it — the one field sent although the
+ * operator did not move it, and only while nobody else has changed it since.
  */
-function changedFields(line: ProjectLine, draft: Draft): ProjectLineUpdate {
+function changedFields(initial: Draft, draft: Draft, line: ProjectLine): ProjectLineUpdate {
   const patch: ProjectLineUpdate = {};
-  if (draft.quantity !== line.quantity) patch.quantity = draft.quantity;
+  if (draft.quantity !== initial.quantity) patch.quantity = draft.quantity;
   const material = draft.material.trim().toUpperCase() || null;
-  if (material !== (line.material ?? null)) patch.material = material;
-  const color = draft.color.trim() || null;
-  if (color !== (line.color ?? null)) patch.color = color;
-  const note = draft.note.trim() || null;
-  if (note !== (line.note ?? null)) patch.note = note;
+  if (draft.material !== initial.material) patch.material = material;
+  else if ((line.material ?? '') === initial.material && material !== (line.material ?? null)) patch.material = material;
+  if (draft.color !== initial.color) patch.color = draft.color.trim() || null;
+  if (draft.note !== initial.note) patch.note = draft.note.trim() || null;
   // ⚠️ Sent only when the operator MOVED the box. On this field alone, absent
   // means "leave the reservation alone" and a number means "rewrite it"
   // (release + reserve in one server transaction) — so restating the current
   // value would burn a rewrite, and with it the ledger rows that record one,
   // on every save that touched a note.
-  if (draft.fromStock !== liveKits(line)) patch.from_stock_units = draft.fromStock;
+  if (draft.fromStock !== initial.fromStock) patch.from_stock_units = draft.fromStock;
   // The same rule for the ready units: absent leaves them alone.
-  if (draft.fromFinished !== line.from_finished) patch.from_finished = draft.fromFinished;
+  if (draft.fromFinished !== initial.fromFinished) patch.from_finished = draft.fromFinished;
   return patch;
 }
 
@@ -106,9 +107,9 @@ function sameDraft(a: Draft, b: Draft): boolean {
   );
 }
 
-/** The product's values, then the line's own when the product no longer offers it. */
-function withCurrent(values: string[], current: string): string[] {
-  return current && !values.includes(current) ? [...values, current] : values;
+/** The product's values, then the line's own ones the product does not offer. */
+function withCurrent(values: string[], ...own: string[]): string[] {
+  return own.reduce((list, value) => (value && !list.includes(value) ? [...list, value] : list), values);
 }
 
 const HEX = /^#?[0-9a-f]{6}([0-9a-f]{2})?$/i;
@@ -142,6 +143,12 @@ export function LineEditDialog({ order, line, onClose, onConfigure }: LineEditDi
   const [draft, setDraft] = useState<Draft>(initial);
   const [error, setError] = useState<string | null>(null);
   const [leaving, setLeaving] = useState(false);
+  // ⚠️ **What is typed is text until the box is left** (final review I1). The quantity's
+  // rule — a floor, and «lowering takes kits first» — applied per keystroke turned
+  // retyping 10 → 12 into «1» and lowered the reservation to one kit for good; on a
+  // moved line «12» became «42». The rule runs when the box is left, and on Save.
+  const [quantityText, setQuantityText] = useState<string | null>(null);
+  const [finishedText, setFinishedText] = useState<string | null>(null);
 
   // Only an active order takes ready units (spec workshop-add-to-order, rule 7).
   const orderActive = order.status === 'active';
@@ -216,13 +223,50 @@ export function LineEditDialog({ order, line, onClose, onConfigure }: LineEditDi
 
   const busy = save.isPending || pick.isPending;
 
+  /** The quantity's rule, applied to a typed value. */
+  const withQuantity = (d: Draft, raw: string): Draft => {
+    if (moved) {
+      // Moved stock is not rewritten: the quantity alone changes, never below what
+      // went out and what waits on the shelf; the server fits the kits under it.
+      return { ...d, quantity: Math.max(quantityFloor, Number(raw) || quantityFloor) };
+    }
+    // ⚠️ Lowering the quantity lowers the reservation with it. A line for two units
+    // holding five kits is not a reservation, it is stock taken out of circulation —
+    // the server clamps it away anyway (Ruling 16). Kits go back first, then ready
+    // units (spec rule 6).
+    const quantity = Math.max(1, Number(raw) || 1);
+    // ⚠️ Only an ACTIVE order's ready units shrink with it: a completed one shipped
+    // them, and a PATCH naming them there is refused (final review I3).
+    const fromFinished = orderActive ? Math.min(d.fromFinished, quantity) : d.fromFinished;
+    return { ...d, quantity, fromFinished, fromStock: Math.min(d.fromStock, Math.max(0, quantity - fromFinished)) };
+  };
+
+  /** The ready units' rule: within what is free and the quantity; kits fit under them. */
+  const withFinished = (d: Draft, raw: string): Draft => {
+    const fromFinished = Math.min(Math.max(0, Number(raw) || 0), Math.min(editFreeFinished, d.quantity));
+    return { ...d, fromFinished, fromStock: Math.min(d.fromStock, d.quantity - fromFinished) };
+  };
+
+  /** The draft with every box that is still being typed in settled by its rule. */
+  const settle = (): Draft => {
+    let d = draft;
+    if (quantityText != null) d = withQuantity(d, quantityText);
+    if (finishedText != null) d = withFinished(d, finishedText);
+    if (quantityText != null || finishedText != null) {
+      setQuantityText(null);
+      setFinishedText(null);
+      setDraft(d);
+    }
+    return d;
+  };
+
   /**
    * Save, unless there is nothing to save. A `PATCH {}` asks the server to change
    * nothing and bumps the order's `updated_at`; pressing Save on an untouched draft
    * is the same gesture as Cancel, so it does the same thing.
    */
   const submit = () => {
-    const data = changedFields(line, draft);
+    const data = changedFields(initial, settle(), line);
     if (Object.keys(data).length === 0) {
       onClose();
       return;
@@ -233,12 +277,13 @@ export function LineEditDialog({ order, line, onClose, onConfigure }: LineEditDi
 
   /** D03 / R01: to the configuration — straight from a clean draft, asked from a dirty one. */
   const toConfiguration = () => {
-    if (sameDraft(draft, initial)) onConfigure();
+    if (sameDraft(settle(), initial)) onConfigure();
     else setLeaving(true);
   };
 
-  const materials = withCurrent(product.data?.materials ?? [], draft.material);
-  const colors = withCurrent(product.data?.colors ?? [], draft.color);
+  // D02: the product's values, the line's own (as it opened) and the draft's (final review M4).
+  const materials = withCurrent(product.data?.materials ?? [], initial.material, draft.material);
+  const colors = withCurrent(product.data?.colors ?? [], initial.color, draft.color);
   const optionsNote = product.isPending
     ? t('orders.lineEdit.optionsLoading')
     : product.isError && !product.data
@@ -301,35 +346,20 @@ export function LineEditDialog({ order, line, onClose, onConfigure }: LineEditDi
             </div>
           ) : (
             <>
-              <WorkshopField label={t('orders.lineEdit.quantity')} htmlFor={`line-${line.id}-quantity`}>
+              <WorkshopField
+                label={t('orders.lineEdit.quantity')}
+                htmlFor={`line-${line.id}-quantity`}
+                // M9: a moved line's floor is said, not only enforced.
+                hint={moved ? t('orders.lineEdit.quantityFloor', { count: quantityFloor }) : undefined}
+              >
                 <input
                   id={`line-${line.id}-quantity`}
                   type="number"
                   min={quantityFloor}
-                  value={draft.quantity}
-                  onChange={(e) => {
-                    if (moved) {
-                      // Moved stock is not rewritten: the quantity alone changes, never
-                      // below what went out and what waits on the shelf; the server fits
-                      // the kits under it.
-                      setDraft({ ...draft, quantity: Math.max(quantityFloor, Number(e.target.value) || quantityFloor) });
-                      return;
-                    }
-                    // ⚠️ Lowering the quantity lowers the reservation with it. A line for
-                    // two units holding five kits is not a reservation, it is stock taken
-                    // out of circulation — the server clamps it away anyway (Ruling 16).
-                    // Kits go back first, then ready units (spec rule 6).
-                    const quantity = Math.max(1, Number(e.target.value) || 1);
-                    // ⚠️ Only an ACTIVE order's ready units shrink with it: a completed one
-                    // shipped them, and a PATCH naming them there is refused (final review I3).
-                    const fromFinished = orderActive ? Math.min(draft.fromFinished, quantity) : draft.fromFinished;
-                    setDraft({
-                      ...draft,
-                      quantity,
-                      fromFinished,
-                      fromStock: Math.min(draft.fromStock, Math.max(0, quantity - fromFinished)),
-                    });
-                  }}
+                  value={quantityText ?? draft.quantity}
+                  aria-describedby={moved ? `line-${line.id}-quantity-hint` : undefined}
+                  onChange={(e) => setQuantityText(e.target.value)}
+                  onBlur={() => settle()}
                   className={FIELD_CLASS}
                 />
               </WorkshopField>
@@ -357,18 +387,11 @@ export function LineEditDialog({ order, line, onClose, onConfigure }: LineEditDi
                       type="number"
                       min={0}
                       max={Math.min(editFreeFinished, draft.quantity)}
-                      value={draft.fromFinished}
+                      value={finishedText ?? draft.fromFinished}
                       disabled={!orderActive}
                       aria-describedby={`line-${line.id}-from-finished-hint`}
-                      onChange={(e) => {
-                        const max = Math.min(editFreeFinished, draft.quantity);
-                        const fromFinished = Math.min(Math.max(0, Number(e.target.value) || 0), max);
-                        setDraft({
-                          ...draft,
-                          fromFinished,
-                          fromStock: Math.min(draft.fromStock, draft.quantity - fromFinished),
-                        });
-                      }}
+                      onChange={(e) => setFinishedText(e.target.value)}
+                      onBlur={() => settle()}
                       className={FIELD_CLASS}
                     />
                   </WorkshopField>
@@ -385,7 +408,7 @@ export function LineEditDialog({ order, line, onClose, onConfigure }: LineEditDi
                   />
                   {orderActive && (
                     <div className="col-span-full flex flex-wrap items-center gap-2">
-                      <Button variant="ghost" size="sm" onClick={() => pick.mutate(draft.quantity)} disabled={busy}>
+                      <Button variant="ghost" size="sm" onClick={() => pick.mutate(settle().quantity)} disabled={busy}>
                         {t('stock.line.pick')}
                       </Button>
                       <span className="text-xs text-bambu-gray">{t('orders.lineEdit.pickHint')}</span>

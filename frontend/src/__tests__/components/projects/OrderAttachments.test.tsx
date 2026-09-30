@@ -142,6 +142,38 @@ describe('OrderAttachments', () => {
     expect(revoked).toEqual(['blob:test/1']);
   });
 
+  it('refreshes the session once on a 401 and then shows the picture (final review M10)', async () => {
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url.endsWith('/auth/refresh')) {
+        return { ok: true, status: 200, json: async () => ({ access_token: 'fresh' }) } as unknown as Response;
+      }
+      return calls.filter((u) => u.endsWith('/p.png')).length === 1
+        ? ({ ok: false, status: 401, json: async () => ({ detail: 'Token has expired' }) } as unknown as Response)
+        : ({ ok: true, status: 200, blob: async () => new Blob(['x']) } as unknown as Response);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<OrderAttachments order={pictures} canEdit />);
+
+    fireEvent.click(within(screen.getByText('Parcel.png').closest('li') as HTMLElement).getByRole('button', { name: 'View' }));
+    const viewer = await screen.findByRole('dialog', { name: 'Parcel.png' });
+    await waitFor(() => expect(within(viewer).getByRole('img')).toHaveAttribute('src', 'blob:test/1'));
+    expect(calls.filter((u) => u.endsWith('/auth/refresh'))).toHaveLength(1);
+    expect(calls.filter((u) => u.endsWith('/p.png'))).toHaveLength(2);
+  });
+
+  it('says the server’s sentence when a download is refused, not «HTTP 403» (final review M10)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 403, json: async () => ({ detail: 'You may not read this order' }) }) as unknown as Response),
+    );
+    render(<OrderAttachments order={order} canEdit />);
+    fireEvent.click(screen.getByTestId('attachment-download-a.pdf'));
+    expect(await screen.findByText('You may not read this order')).toBeInTheDocument();
+    expect(screen.queryByText('HTTP 403')).not.toBeInTheDocument();
+  });
+
   it('lets the previous URL go when another picture replaces it, and the last one on unmount', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob(['x']) }) as unknown as Response));
     const { unmount } = render(<OrderAttachments order={pictures} canEdit />);

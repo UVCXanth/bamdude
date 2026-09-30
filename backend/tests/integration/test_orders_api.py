@@ -4048,6 +4048,28 @@ async def test_a_line_less_row_between_two_alike_lines_is_queued_nowhere(committ
     ]
 
 
+@pytest.mark.asyncio
+async def test_a_part_out_of_the_kit_shows_nothing_queued_as_the_plan_counts(committing_client, db_session, catalog):
+    """H04 / final review M1: the card's counted set is the plan's own
+    (``plan_engine.counted_parts_by_line`` — parts with ``per > 0``). A part the
+    configuration dropped but the order printed reads as a ``per = 0`` row; the plan
+    does not subtract a queued plate's yield of it, so neither does the card."""
+    lamp = catalog["product"].id
+    arm = (await _parts_of(db_session, lamp))["arm"]
+    body = {"name": "No arm", "lines": [{"product_id": lamp, "quantity": 10, "part_counts": {str(arm): 0}}]}
+    r = await committing_client.post("/api/v1/projects/", json=body)
+    assert r.status_code in (200, 201), r.text
+    pid = r.json()["id"]
+    line_id = r.json()["lines"][0]["id"]
+    await _completed_print(db_session, pid, catalog["file"].id, line_id)
+    await _queue_rows(db_session, pid, catalog["file"].id, line_id)
+
+    [line] = (await _detail(committing_client, pid))["lines"]
+    parts = _line_parts(line)
+    assert parts["arm"]["qty_per_unit"] == 0
+    assert (parts["shade"]["queued"], parts["arm"]["queued"]) == (2, 0)
+
+
 async def _products_on_their_own_plates(db, n):
     """``n`` products, each with one printed and one purchased part, on a plate of its own file."""
     ids = []

@@ -382,12 +382,13 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2 }: OrderLines
       {editing && (
         <LineEditDialog
           order={order}
-          // The CURRENT line, so `changedFields` compares with what the server holds now;
-          // the dialog's draft is its own from the moment it opened.
+          // The CURRENT line; the dialog's draft is its own from the moment it opened.
           line={order.lines.find((l) => l.id === editing.id) ?? editing}
           onClose={() => setEditing(null)}
           onConfigure={() => {
-            setConfiguring(editing);
+            // The configuration dialog seeds from the line it is given and PUTs the whole
+            // body — so it gets the line as the order holds it now (final review M2).
+            setConfiguring(order.lines.find((l) => l.id === editing.id) ?? editing);
             setEditing(null);
           }}
         />

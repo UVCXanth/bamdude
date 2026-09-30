@@ -182,7 +182,7 @@ from backend.app.services.order_queue import (
     live_archive_conditions,
     queued_printer_row_conditions,
 )
-from backend.app.services.plan_engine import OrderPlan, plan_for_order, queued_yield_by_line
+from backend.app.services.plan_engine import OrderPlan, counted_parts_by_line, plan_for_order, queued_yield_by_line
 from backend.app.services.print_option_defaults import preference_options
 from backend.app.services.product_composition import PlateRecipe, recipes_for_products
 from backend.app.services.product_files import (
@@ -328,12 +328,15 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
     part_counters = await part_stock.line_part_stock(db, [line.id for line in ctx.lines if line.mode == "parts"])
     # WS-13 E4 H04: what each line already has waiting — ONE call of the plan's own
     # map over every line, recipes from one batch and the counted parts from the same
-    # ``attribute`` pass, so the card and the plan subtract the same thing.
+    # ``attribute`` pass, so the card and the plan subtract the same thing. The counted
+    # set is the plan's own too (``per > 0``): a part the configuration dropped reads as
+    # a ``per = 0`` row, and the plan does not subtract what a queued plate makes of it
+    # (final review M1).
     queued = await queued_yield_by_line(
         db,
         await recipes_for_products(db, ctx.products_by_id.values()),
         ctx.lines,
-        {line.id: {p.part_id for p in figs[line.id].parts} for line in ctx.lines},
+        counted_parts_by_line({ctx.project.id: figs}),
     )
     variant_parts = {
         part.id for parts in ctx.parts_by_product.values() for part in parts if part.variant_option_id is not None

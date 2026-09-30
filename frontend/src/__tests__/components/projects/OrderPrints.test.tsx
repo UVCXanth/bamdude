@@ -191,6 +191,25 @@ describe('OrderPrints', () => {
     expect(within(cardOf('b.3mf')).getByText('printing')).toBeInTheDocument();
   });
 
+  it('writes the year on a card of a print from another year (final review M6)', async () => {
+    const lastYear = `${new Date().getFullYear() - 1}-03-05T09:42:00Z`;
+    const thisYear = `${new Date().getFullYear()}-01-02T09:42:00Z`;
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
+      { id: 1, filename: 'old.3mf', status: 'completed', project_line_id: 10, plate_index: 0, completed_at: lastYear },
+      { id: 2, filename: 'new.3mf', status: 'completed', project_line_id: 10, plate_index: 0, completed_at: thisYear },
+    ] as never);
+
+    render(<OrderPrints order={lineOrder([1, 2])} canEdit />);
+
+    await screen.findByText('old.3mf');
+    expect(screen.getByTestId('print-where-1')).toHaveTextContent(
+      formatDateTime(lastYear, 'system', 'system', { ...PRINT_WHEN, year: 'numeric' }),
+    );
+    expect(screen.getByTestId('print-where-1')).toHaveTextContent(String(new Date().getFullYear() - 1));
+    expect(screen.getByTestId('print-where-2')).toHaveTextContent(formatDateTime(thisYear, 'system', 'system', PRINT_WHEN));
+    expect(screen.getByTestId('print-where-2')).not.toHaveTextContent(String(new Date().getFullYear()));
+  });
+
   it('asks nothing about printers without the right to read them, and keeps the cards', async () => {
     auth.granted = new Set(['projects:update', 'archives:update_all']);
     vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
@@ -284,6 +303,12 @@ describe('OrderPrints', () => {
       rerender(<OrderPrints order={lineOrder(all.slice(0, 24).map((a) => a.id))} canEdit />);
       await waitFor(() => expect(screen.getByTestId('prints-line-10').querySelectorAll('[data-print-card]')).toHaveLength(24));
       expect(within(screen.getByTestId('prints-line-10')).getByText('Showing 1-24 of 24 prints')).toBeInTheDocument();
+
+      // The clamp is kept: a print filed back in does not bring page two back by itself
+      // (final review M5).
+      get.mockResolvedValue(all as never);
+      rerender(<OrderPrints order={lineOrder(all.map((a) => a.id))} canEdit />);
+      await waitFor(() => expect(within(screen.getByTestId('prints-line-10')).getByText('Showing 1-24 of 30 prints')).toBeInTheDocument());
     });
   });
 
@@ -335,6 +360,18 @@ describe('OrderPrints', () => {
       lines: [
         { id: 10, product_name: 'Flask', quantity: 4, mode: 'product', archive_ids: [], configuration: { choices: [], changed_parts: [] } },
         { id: 11, product_name: 'Lid', quantity: 1, mode: 'parts', archive_ids: [] },
+        // Two lines of one product told apart by their configuration (final review M7).
+        {
+          id: 12, product_name: 'Flask', quantity: 4, mode: 'product', archive_ids: [],
+          configuration: { choices: [], changed_parts: [{ part_id: 1, name: 'body', qty: 2, standard_qty: 1 }] },
+        },
+        {
+          id: 13, product_name: 'Flask', quantity: 2, mode: 'product', archive_ids: [],
+          configuration: {
+            choices: [{ group_id: 1, group_name: 'Mount', option_id: 2, option_name: 'DIN', is_default: false }],
+            changed_parts: [],
+          },
+        },
       ],
     } as unknown as Order;
 
@@ -349,6 +386,8 @@ describe('OrderPrints', () => {
       'No line (other prints)',
       'Flask — × 4',
       'Lid — parts',
+      'Flask — 1 part changed · × 4',
+      'Flask — Mount: DIN · × 2',
     ]);
     const submit = within(dialog).getByRole('button', { name: 'File' });
     expect(submit).toBeDisabled();

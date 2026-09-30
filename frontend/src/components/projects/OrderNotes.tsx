@@ -84,12 +84,14 @@ export function OrderNotes({ order, canEdit }: OrderNotesProps) {
   });
 
   if (!canEdit) {
+    // A stored empty document is no notes, as for the editor (final review M11).
+    const notes = normalize(order.notes);
     return (
       <section className="space-y-3">
-        {order.notes ? (
+        {notes ? (
           <div
             className="prose prose-invert prose-sm max-w-none"
-            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(order.notes) }}
+            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(notes) }}
           />
         ) : (
           <p className="text-sm text-bambu-gray">{t('orders.notes.empty')}</p>

@@ -354,6 +354,8 @@ describe('PlanBlock', () => {
     // hand the dialog the file that machine was sliced for. A plan without one
     // asks nothing — the query is gated — and this mock covers both.
     vi.spyOn(api, 'getPrinters').mockResolvedValue(farm);
+    // The model matrix «To printer» filters by — read, and empty unless a test says otherwise.
+    vi.spyOn(api, 'getModelCompatibility').mockResolvedValue({ models: {} });
     vi.spyOn(api, 'getOrderForecast').mockResolvedValue(EMPTY_FORECAST);
     vi.spyOn(api, 'getOrderFilament').mockResolvedValue(EMPTY_NEEDS);
   });
@@ -430,7 +432,8 @@ describe('PlanBlock', () => {
     expect(plate).toHaveTextContent('plate 1');
     expect(plate).toHaveTextContent('X1C');
     // No model, no chip — and never a «—» in its place.
-    expect(screen.getByTestId('plan-row-10-200-plate')).toHaveTextContent(/^Whole file$/);
+    // Lower-case like «plate N» it stands for (final review M8).
+    expect(screen.getByTestId('plan-row-10-200-plate')).toHaveTextContent(/^whole file$/);
   });
 
   it('adds the plan up in one line under the lines', async () => {
@@ -1468,6 +1471,45 @@ describe('PlanBlock', () => {
     expect(within(dialog).getByText('Loading printers…')).toBeInTheDocument();
     expect(within(dialog).queryByText('No active printer of this model')).not.toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'Next — print dialog' })).toBeDisabled();
+  });
+
+  describe('the model matrix is read too (final review I2, R09)', () => {
+    // The farm's only machine is an X1E, which takes the row's X1C file only through the matrix.
+    const x1e = [{ id: 7, name: 'Echo', model: 'X1E', is_active: true }] as unknown as Printer[];
+
+    it('says it is still reading while the matrix is, and never calls the farm empty', async () => {
+      vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+      vi.spyOn(api, 'getPrinters').mockResolvedValue(x1e);
+      vi.spyOn(api, 'getModelCompatibility').mockReturnValue(new Promise(() => {}));
+
+      render(<PlanBlock order={order} canEdit />);
+
+      fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
+      const dialog = await screen.findByRole('dialog', { name: 'To printer' });
+      await waitFor(() => expect(api.getPrinters).toHaveBeenCalled());
+      expect(await within(dialog).findByText('Loading printers…')).toBeInTheDocument();
+      expect(within(dialog).queryByText('No active printer of this model')).not.toBeInTheDocument();
+      expect(within(dialog).getByRole('button', { name: 'Next — print dialog' })).toBeDisabled();
+    });
+
+    it('says the matrix could not be read, offers to try again, and then offers the compatible printer', async () => {
+      vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+      vi.spyOn(api, 'getPrinters').mockResolvedValue(x1e);
+      const matrix = vi.spyOn(api, 'getModelCompatibility').mockRejectedValue(new Error('Gateway timeout'));
+
+      render(<PlanBlock order={order} canEdit />);
+
+      fireEvent.click(await screen.findByTestId('plan-row-10-100-printer'));
+      const dialog = await screen.findByRole('dialog', { name: 'To printer' });
+      expect(await within(dialog).findByText('Could not read which printer models fit these files')).toBeInTheDocument();
+      expect(within(dialog).queryByText('No active printer of this model')).not.toBeInTheDocument();
+      expect(within(dialog).getByRole('button', { name: 'Next — print dialog' })).toBeDisabled();
+
+      matrix.mockResolvedValue({ models: { X1E: ['X1C'] } });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Try again' }));
+      const pick = await within(dialog).findByLabelText('Printer');
+      expect([...pick.querySelectorAll('option')].map((o) => o.textContent)).toEqual(['Echo (X1E)']);
+    });
   });
 
   it('says the printers could not be read and offers to try again, instead of «no printer»', async () => {

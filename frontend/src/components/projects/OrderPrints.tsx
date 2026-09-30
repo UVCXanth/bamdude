@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
@@ -19,6 +19,7 @@ import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { OrderPrintDefectsDialog } from './OrderPrintDefectsDialog';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
+import { lineConfigLabel } from './lineConfigLabel';
 
 interface OrderPrintsProps {
   order: Order;
@@ -35,6 +36,14 @@ interface Group {
 /** A card's date and time: day, month and time, as the other order views write them —
  *  a print of this year does not need its year on every card. */
 const PRINT_WHEN: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' };
+/** …and one of another year does, or a long order's old print reads as this year's
+ *  (final review M6). */
+const PRINT_WHEN_YEAR: Intl.DateTimeFormatOptions = { ...PRINT_WHEN, year: 'numeric' };
+
+function printWhenOptions(value: string | null | undefined): Intl.DateTimeFormatOptions {
+  const at = value ? new Date(value) : null;
+  return at && !Number.isNaN(at.getTime()) && at.getFullYear() !== new Date().getFullYear() ? PRINT_WHEN_YEAR : PRINT_WHEN;
+}
 
 /** A group's page size until the operator picks another (WS-13 E4 F02). */
 const GROUP_PAGE = 24;
@@ -210,6 +219,27 @@ function OrderPrintsOf({ order, canEdit }: OrderPrintsProps) {
   const setGroupPage = (key: string, next: { page: number; perPage: number }) =>
     setPaging((prev) => ({ ...prev, [key]: next }));
 
+  // F02: a page past a group's end is clamped — and the clamp is KEPT, or the old page
+  // came back by itself once a print was filed back in (final review M5).
+  const clamps = groups.flatMap((group) => {
+    const state = paging[group.key];
+    if (!state || state.perPage === -1) return [];
+    const last = Math.max(1, Math.ceil(group.archives.length / state.perPage));
+    return state.page > last ? [`${group.key}=${last}`] : [];
+  });
+  const clampKey = clamps.join('|');
+  useEffect(() => {
+    if (!clampKey) return;
+    setPaging((prev) => {
+      const next = { ...prev };
+      for (const entry of clampKey.split('|')) {
+        const [key, last] = entry.split('=');
+        if (next[key]) next[key] = { ...next[key], page: Number(last) };
+      }
+      return next;
+    });
+  }, [clampKey]);
+
   return (
     // No heading of its own — the «Prints» tab names it (WS-13 E3 F05).
     <section className="space-y-3">
@@ -267,7 +297,7 @@ function OrderPrintsOf({ order, canEdit }: OrderPrintsProps) {
                       archive.completed_at || archive.started_at || archive.created_at,
                       settings?.time_format,
                       settings?.date_format,
-                      PRINT_WHEN,
+                      printWhenOptions(archive.completed_at || archive.started_at || archive.created_at),
                     )}
                   />
                 ))}
@@ -321,14 +351,12 @@ function AssignLineDialog({ archive, order, onClose }: { archive: Archive; order
     onError: (e: Error) => setError(e.message),
   });
 
+  // The line's configuration as every other view names it (`lineConfigLabel`), with
+  // its quantity — so two lines of one product are told apart (final review M7).
   const label = (line: ProjectLine) => {
     if (line.mode === 'parts') return `${line.product_name} — ${t('orders.prints.partsGroup')}`;
-    const config = line.configuration;
-    const custom =
-      config != null && (config.choices.some((c) => !c.is_default) || config.changed_parts.length > 0)
-        ? config.choices.filter((c) => !c.is_default).map((c) => `${c.group_name}: ${c.option_name}`).join(' · ')
-        : '';
-    return `${line.product_name} — ${custom || `× ${line.quantity}`}`;
+    const config = lineConfigLabel(line.configuration, line.mode, t);
+    return `${line.product_name} — ${config ? `${config} · ` : ''}× ${line.quantity}`;
   };
 
   return (

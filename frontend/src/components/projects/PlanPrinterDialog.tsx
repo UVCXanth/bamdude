@@ -42,11 +42,12 @@ export function PlanPrinterDialog({ row, plate, onClose, onNext }: PlanPrinterDi
   const options = useMemo(() => plateOptions(row), [row]);
 
   const printersQuery = useQuery({ queryKey: ['printers'], queryFn: api.getPrinters });
-  const { data: modelMatrix } = useQuery({
+  const matrixQuery = useQuery({
     queryKey: ['modelCompatibility'],
     queryFn: api.getModelCompatibility,
     staleTime: 60 * 60 * 1000,
   });
+  const modelMatrix = matrixQuery.data;
   const allPrinters = printersQuery.data;
   const statusQueries = useQueries({
     queries: (allPrinters ?? []).map((printer) => ({
@@ -115,7 +116,14 @@ export function PlanPrinterDialog({ row, plate, onClose, onNext }: PlanPrinterDi
     if (target.hidden) return t('orders.plan.printer.hiddenFile');
     return null;
   };
-  const ready = printersQuery.data !== undefined;
+  // ⚠️ The matrix is the second read (final review I2): without it a printer that only
+  // COMPATIBLY takes the row's file is filtered out, and the dialog would call the farm
+  // empty. It is waited for — and a failure is said, with a retry — whenever a file of
+  // the row names a model.
+  const needsMatrix = models.size > 0;
+  const matrixPending = needsMatrix && modelMatrix === undefined && !matrixQuery.isError;
+  const matrixFailed = needsMatrix && modelMatrix === undefined && matrixQuery.isError;
+  const ready = printersQuery.data !== undefined && (!needsMatrix || modelMatrix !== undefined);
   const blocked = selected != null ? refusal(selected) : null;
   const canGo = ready && selected != null && blocked == null;
 
@@ -154,12 +162,19 @@ export function PlanPrinterDialog({ row, plate, onClose, onNext }: PlanPrinterDi
       }
     >
       <div className="space-y-3">
-        {printersQuery.isPending ? (
+        {printersQuery.isPending || (matrixPending && !printersQuery.isError) ? (
           <p className="text-sm text-bambu-gray">{t('orders.plan.printer.loading')}</p>
         ) : printersQuery.isError && !allPrinters ? (
           <div className="flex items-center gap-3 flex-wrap text-sm">
             <p className="text-red-400">{t('orders.plan.printer.failed')}</p>
             <Button size="sm" variant="secondary" onClick={() => void printersQuery.refetch()}>
+              {t('orders.plan.printer.retry')}
+            </Button>
+          </div>
+        ) : matrixFailed ? (
+          <div className="flex items-center gap-3 flex-wrap text-sm">
+            <p className="text-red-400">{t('orders.plan.printer.matrixFailed')}</p>
+            <Button size="sm" variant="secondary" onClick={() => void matrixQuery.refetch()}>
               {t('orders.plan.printer.retry')}
             </Button>
           </div>

@@ -12898,6 +12898,26 @@ export const api = {
   },
   getProjectAttachmentUrl: (projectId: number, filename: string) =>
     `${API_BASE}/projects/${projectId}/attachments/${encodeURIComponent(filename)}`,
+  /**
+   * An order attachment's bytes, for the viewer and the download (WS-13 E4 G04).
+   *
+   * Not `request<T>()` — the body is a file, not JSON — but on its terms: the token is
+   * refreshed first when it is about to expire and once more after a 401, and a refusal
+   * is the server's sentence, never «HTTP 401» (final review M10). A bare fetch with the
+   * stored token failed for good an hour into a session until something else refreshed it.
+   */
+  getProjectAttachment: async (projectId: number, filename: string): Promise<Blob> => {
+    if (authToken && isTokenNearExpiry()) await refreshAccessToken();
+    const url = `${API_BASE}/projects/${projectId}/attachments/${encodeURIComponent(filename)}`;
+    const send = () => fetch(url, { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {} });
+    let response = await send();
+    if (response.status === 401 && (await refreshAccessToken())) response = await send();
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new ApiError(formatErrorDetail(error.detail, response.status), response.status);
+    }
+    return response.blob();
+  },
   deleteProjectAttachment: (projectId: number, filename: string) =>
     request<{ status: string; message: string; attachments: ProjectAttachment[] | null }>(
       `/projects/${projectId}/attachments/${encodeURIComponent(filename)}`,

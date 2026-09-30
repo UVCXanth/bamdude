@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Download, Eye, Loader2, Trash2, Upload } from 'lucide-react';
-import { api, getAuthToken } from '../../api/client';
+import { api } from '../../api/client';
 import type { Order, ProjectAttachment } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 // The app-wide byte formatter, rather than the third hand-rolled `MB / KB / B`
@@ -95,14 +95,10 @@ export function OrderAttachments({ order, canEdit }: OrderAttachmentsProps) {
     refresh();
   };
 
-  const fetchBlob = async (attachment: ProjectAttachment): Promise<Blob> => {
-    const token = getAuthToken();
-    const response = await fetch(api.getProjectAttachmentUrl(order.id, attachment.filename), {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return response.blob();
-  };
+  // The session is refreshed as `request<T>()` does it, and a refusal is the server's
+  // sentence (final review M10).
+  const fetchBlob = (attachment: ProjectAttachment): Promise<Blob> =>
+    api.getProjectAttachment(order.id, attachment.filename);
 
   const download = async (attachment: ProjectAttachment) => {
     setDownloadingName(attachment.filename);

@@ -126,5 +126,8 @@ describe('OrderNotes', () => {
     expect(editor()).toBeNull();
     rerender(<OrderNotes order={order(null)} canEdit={false} />);
     expect(screen.getByText('No notes yet.')).toBeInTheDocument();
+    // A stored empty document is no notes too — not a blank block (final review M11).
+    rerender(<OrderNotes order={order('<p></p>')} canEdit={false} />);
+    expect(screen.getByText('No notes yet.')).toBeInTheDocument();
   });
 });

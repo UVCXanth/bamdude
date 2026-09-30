@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import userEvent from '@testing-library/user-event';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { Order, ProjectLine } from '../../../api/client';
@@ -168,7 +169,10 @@ describe('LineEditDialog · moved from the table cells', () => {
     open(flask);
     const box = (await screen.findByLabelText('From stock — part kits')) as HTMLInputElement;
     expect(box.value).toBe('2');
-    fireEvent.change(screen.getByLabelText('Quantity, pcs'), { target: { value: '1' } });
+    const quantity = screen.getByLabelText('Quantity, pcs');
+    fireEvent.change(quantity, { target: { value: '1' } });
+    // The rule is applied when the box is left, not per keystroke (final review I1).
+    fireEvent.blur(quantity);
     expect((screen.getByLabelText('From stock — part kits') as HTMLInputElement).value).toBe('1');
     save();
     await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 10, { quantity: 1, from_stock_units: 1 }));
@@ -282,7 +286,8 @@ describe('LineEditDialog · ready units', () => {
   it('an order that is not active keeps its ready units and says why', async () => {
     open(ready, { status: 'completed' });
     expect(await screen.findByLabelText('From stock — ready')).toBeDisabled();
-    expect(screen.getByText('Only an active order takes ready units from stock')).toBeInTheDocument();
+    // A hint under a field, lower-case like every other hint of the dialog (final review M8).
+    expect(screen.getByText('only an active order takes ready units from stock')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Pick from stock' })).not.toBeInTheDocument();
   });
 
@@ -538,5 +543,99 @@ describe('LineEditDialog · its own rules (E4 D02, D03, D05)', () => {
       expect(button).toBeDisabled();
       expect(button).toHaveAttribute('title', "This line's stock has moved — take more from stock instead");
     });
+  });
+});
+
+describe('LineEditDialog · final review (I1, M3, M4, M9)', () => {
+  // Ten units, eight kits held; one more kit free — a pool of nine.
+  const big = { ...flask, id: 12, quantity: 10, from_stock_units: 8, from_kit_units: 8 };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(api, 'getProduct').mockResolvedValue(product as never);
+    vi.spyOn(api, 'getProductStock').mockResolvedValue(stock as never);
+    vi.spyOn(api, 'suggestStock').mockResolvedValue({ items: [{ ...suggestion, from_finished: 0, finished_free: 0 }] });
+  });
+
+  it('retyping a quantity through a smaller number keeps the reservation (I1)', async () => {
+    const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(order);
+    open(big);
+    const kits = (await screen.findByLabelText('From stock — part kits')) as HTMLInputElement;
+    await waitFor(() => expect(kits).toHaveAttribute('max', '9'));
+    const quantity = screen.getByLabelText('Quantity, pcs');
+    // 10 → 12 typed the usual way passes through «1».
+    fireEvent.change(quantity, { target: { value: '1' } });
+    fireEvent.change(quantity, { target: { value: '12' } });
+    expect(kits.value).toBe('8');
+    fireEvent.blur(quantity);
+    expect(kits.value).toBe('8');
+    save();
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 12, { quantity: 12 }));
+  });
+
+  it('applies the quantity rule on Save even when the box was never left (I1)', async () => {
+    const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(order);
+    open(big);
+    await screen.findByLabelText('From stock — part kits');
+    fireEvent.change(screen.getByLabelText('Quantity, pcs'), { target: { value: '5' } });
+    save();
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 12, { quantity: 5, from_stock_units: 5 }));
+  });
+
+  it('a moved line’s quantity is not snapped to its floor while it is typed (I1)', async () => {
+    const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(order);
+    // 6 ordered, 2 issued, 2 held: the floor is 4.
+    open({ ...flask, quantity: 6, assembled: 1, received: 1, issued: 2, held: 2, from_finished: 2, from_kit_units: 2 });
+    const quantity = await screen.findByLabelText('Quantity, pcs');
+    // Typed key by key: clamped per keystroke, «1» became 4 and «12» became «42».
+    await userEvent.clear(quantity);
+    await userEvent.type(quantity, '12');
+    expect(quantity).toHaveValue(12);
+    save();
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 10, { quantity: 12 }));
+  });
+
+  it('says why a moved line’s quantity cannot go lower (M9)', async () => {
+    open({ ...flask, quantity: 6, assembled: 1, received: 1, issued: 2, held: 2, from_finished: 2, from_kit_units: 2 });
+    await screen.findByLabelText('Quantity, pcs');
+    expect(screen.getByText('at least 4 — issued and held on the shelf for the order')).toBeInTheDocument();
+  });
+
+  it('writes back only what the operator changed, not what changed elsewhere meanwhile (M3)', async () => {
+    const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(order);
+    const view = open(big);
+    await screen.findByLabelText('From stock — part kits');
+    // Another session: a note, another material, and a kit assembled off the reservation.
+    const fresh = { ...big, note: 'from elsewhere', material: 'PLA', from_kit_units: 7 };
+    view.rerender(
+      <LineEditDialog order={{ ...order, lines: [fresh, lid] }} line={fresh} onClose={vi.fn()} onConfigure={vi.fn()} />,
+    );
+    fireEvent.change(screen.getByLabelText('Quantity, pcs'), { target: { value: '11' } });
+    save();
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 12, { quantity: 11 }));
+  });
+
+  it('does not «repair» a lower-case material somebody else has replaced meanwhile (M3)', async () => {
+    const patch = vi.spyOn(api, 'updateOrderLine').mockResolvedValue(order);
+    const legacy = { ...lid, material: 'petg' };
+    const view = open(legacy);
+    await screen.findByLabelText('Note');
+    const fresh = { ...legacy, material: 'PLA' };
+    view.rerender(
+      <LineEditDialog order={{ ...order, lines: [flask, fresh] }} line={fresh} onClose={vi.fn()} onConfigure={vi.fn()} />,
+    );
+    fireEvent.change(screen.getByLabelText('Note'), { target: { value: 'urgent' } });
+    save();
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 11, { note: 'urgent' }));
+  });
+
+  it('keeps offering the line’s own off-catalogue material after another is picked (M4)', async () => {
+    open({ ...flask, material: 'PLA-CF' });
+    const material = await screen.findByLabelText('Material');
+    await waitFor(() => expect(within(material).getByRole('option', { name: 'PETG' })).toBeInTheDocument());
+    fireEvent.change(material, { target: { value: 'PETG' } });
+    expect(within(material).getByRole('option', { name: 'PLA-CF' })).toBeInTheDocument();
+    fireEvent.change(material, { target: { value: 'PLA-CF' } });
+    expect(material).toHaveValue('PLA-CF');
   });
 });
