@@ -264,17 +264,23 @@ async (page) => {
     const pr = para.getBoundingClientRect();
     const br = button.getBoundingClientRect();
     const configs = [...para.querySelectorAll('.text-amber-700')];
+    // The theme's own amber, read the way the browser resolves it (Tailwind 4 writes it in oklch).
+    const probe = document.createElement('span');
+    probe.className = 'text-amber-700 dark:text-amber-400';
+    para.appendChild(probe);
+    const amber = getComputedStyle(probe).color;
+    probe.remove();
     return {
       banner: Math.round(banner.getBoundingClientRect().width),
       paraWidth: Math.round(pr.width), paraHeight: Math.round(pr.height), paraBottom: Math.round(pr.bottom), paraRight: Math.round(pr.right),
       buttonTop: Math.round(br.top), buttonLeft: Math.round(br.left), buttonWidth: Math.round(br.width),
       button: br.top >= pr.bottom - 1 ? 'below' : 'beside',
       configs: configs.length, configColors: [...new Set(configs.map((el) => getComputedStyle(el).color))],
+      amber, sentenceColor: getComputedStyle(para).color,
       bannerOverflow: banner.scrollWidth - banner.clientWidth,
       docOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
     };
   });
-  const AMBER_DARK = 'rgb(251, 191, 36)';
   const bannerCase = async ({ name, w, url, storage = {}, long = false }) => {
     const rewrite = [];
     if (long) {
@@ -304,7 +310,7 @@ async (page) => {
     ];
     const ok = cases.every((c) =>
       c.docOverflow <= 0 && c.bannerOverflow <= 0 && c.errors.length === 0 &&
-      c.configs === (c.long ? 3 : 1) && c.configColors.length === 1 && c.configColors[0] === AMBER_DARK &&
+      c.configs === (c.long ? 3 : 1) && c.configColors.length === 1 && c.configColors[0] === c.amber && c.amber !== c.sentenceColor &&
       (c.viewport === 390 ? c.button === 'below' : true) &&
       (c.viewport === 1440 ? c.button === 'beside' && c.buttonLeft > c.paraRight : true) &&
       (c.button === 'beside' ? c.paraWidth >= 320 : true));
