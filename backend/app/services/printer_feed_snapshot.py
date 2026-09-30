@@ -23,6 +23,23 @@ class FeedSource:
     nozzles: tuple[int, ...] = ()
     remain: float = -1
     identity: str = ""
+    #: What BamDude told the printer this slot holds (backup-compatibility
+    #: emulation), set only while that advertisement is APPLIED
+    #: (``ams_advertised_overlay.matches_live``). ``color`` / ``variant`` stay the
+    #: SPOOL. The routing rule reads these for the forced-colour and the
+    #: strict-profile checks and for colour ranking — the operator's own
+    #: declaration outranks the job's exact checks (owner, 2026-09-30). Base
+    #: material is always the spool's.
+    declared_color: str | None = None
+    declared_variant: str | None = None
+
+    @property
+    def rule_color(self) -> str | None:
+        return self.declared_color or self.color
+
+    @property
+    def rule_variant(self) -> str | None:
+        return self.declared_variant or self.variant
 
 
 @dataclass(frozen=True)
@@ -274,9 +291,11 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
         except (TypeError, ValueError):
             remain = -1
         color, variant = tray.get("tray_color"), tray.get("tray_info_idx")
+        declared_color = declared_variant = None
         entry = overlay.get(key) if overlay and key is not None else None
         if entry is not None and matches_live(entry, tray):
             material, color, variant = entry.actual_material, entry.actual_color, entry.actual_variant
+            declared_color, declared_variant = entry.advertised_color or None, entry.advertised_variant or None
             applied_overlay.append([key[0], key[1], material, color, variant])
         sources.append(
             FeedSource(
@@ -288,6 +307,8 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
                 nozzles=nozzles,
                 remain=remain,
                 identity=str(tray.get("tray_uuid") or tray.get("tag_uid") or ""),
+                declared_color=declared_color,
+                declared_variant=declared_variant,
             )
         )
 

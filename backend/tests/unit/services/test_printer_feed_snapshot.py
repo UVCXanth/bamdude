@@ -234,6 +234,26 @@ def test_a_dormant_overlay_entry_is_not_applied():
     assert dormant.revision == snapshot_from_state(1, "P1S", state).revision
 
 
+def test_an_applied_advertisement_is_carried_beside_the_spool():
+    from backend.app.services.ams_advertised_overlay import OverlayEntry
+
+    state = PrinterState(connected=True, connection_generation=1)
+    _ams_slot(state, "000000FF", "GFG99")
+    entry = OverlayEntry("PETG", "FF0000FF", "GFG00", (), "000000FF", "GFG99", "internal")
+    source = snapshot_from_state(1, "P1S", state, overlay={(0, 1): entry}).sources[0]
+    assert (source.color, source.variant) == ("FF0000FF", "GFG00")
+    assert (source.declared_color, source.declared_variant) == ("000000FF", "GFG99")
+    assert (source.rule_color, source.rule_variant) == ("000000FF", "GFG99")
+
+
+def test_a_slot_without_an_applied_advertisement_declares_nothing():
+    state = PrinterState(connected=True, connection_generation=1)
+    _ams_slot(state, "FF0000FF", "GFG00")
+    source = snapshot_from_state(1, "P1S", state).sources[0]
+    assert source.declared_color is None and source.declared_variant is None
+    assert (source.rule_color, source.rule_variant) == ("FF0000FF", "GFG00")
+
+
 def test_a_strict_variant_job_does_not_match_the_generic_the_slot_advertises():
     """Generic mode masks the VARIANT, and a strict job asks for exactly that.
 

@@ -71,7 +71,9 @@ def feed_signature(policy, snapshot) -> tuple[int, str]:
     physical survives verbatim: each source's tag (``tray_uuid``/``tag_uid``),
     material, colour, nozzle binding, feed kind and slot id, plus the connection
     generation and the shape of the feed itself. A swapped spool, a re-coloured
-    one, a lost AMS or a reconnect all still move this.
+    one, a lost AMS or a reconnect all still move this. With it ON,
+    ``declared_variant`` is left out beside ``variant``: re-advertising a Generic
+    family moves no filament either.
 
     The one fact of ``snapshot_from_state``'s own payload that cannot travel here
     is which sources an advertised-profile overlay masked: it is folded into the
@@ -104,7 +106,7 @@ def feed_signature(policy, snapshot) -> tuple[int, str]:
                 "backup_enabled": snapshot.backup_enabled,
                 "incomplete": snapshot.incomplete,
                 "sources": [
-                    {k: v for k, v in asdict(source).items() if k not in ("remain", "variant")}
+                    {k: v for k, v in asdict(source).items() if k not in ("remain", "variant", "declared_variant")}
                     for source in snapshot.sources
                 ],
             }

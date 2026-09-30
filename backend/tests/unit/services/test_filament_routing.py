@@ -472,6 +472,13 @@ def test_the_feed_signature_keeps_the_connection_and_the_shape_of_the_feed(chang
     assert feed_signature(policy, state) != feed_signature(policy, replace(state, **changed))
 
 
+def test_re_advertising_the_generic_family_does_not_move_the_on_signature():
+    policy = RoutingPolicy(allow_base_material_match=True)
+    source = feed(0, kind="ams", variant="GFG00", declared_variant="GFG99")
+    moved = replace(source, declared_variant="GFG98")
+    assert feed_signature(policy, snapshot(source)) == feed_signature(policy, snapshot(moved))
+
+
 def test_the_guard_runs_without_an_await_and_lets_a_retag_through():
     """``validate`` is called inside the MQTT client's routing lock: no await, ever."""
     assert not inspect.iscoroutinefunction(DispatchRoutingGuard.validate)
