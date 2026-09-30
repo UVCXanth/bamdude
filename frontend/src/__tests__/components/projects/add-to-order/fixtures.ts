@@ -118,7 +118,7 @@ export const partsPage = (items: ProductPartRow[], total = items.length) => ({
   meta: { total, current_page: 1, per_page: 24, last_page: Math.max(1, Math.ceil(total / 24)) },
 });
 
-export const libraryFile = (id: number, filename: string) =>
+export const libraryFile = (id: number, filename: string, over: Record<string, unknown> = {}) =>
   ({
     id,
     filename,
@@ -129,6 +129,7 @@ export const libraryFile = (id: number, filename: string) =>
     plan_eligible: true,
     sliced_for_model: null,
     print_name: null,
+    ...over,
   }) as unknown as LibraryFileListItem;
 
 export const filesPage = (items: LibraryFileListItem[]) => ({

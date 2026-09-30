@@ -21,7 +21,7 @@ describe('the one-off tab of «Add to order»', () => {
     vi.spyOn(api, 'getProductFacets').mockResolvedValue({ materials: [], colors: [], models: [] });
     getFiles = vi
       .spyOn(api, 'getLibraryFilesPaged')
-      .mockResolvedValue(filesPage([libraryFile(31, 'flask.gcode.3mf'), libraryFile(32, 'model.stl')]) as never);
+      .mockResolvedValue(filesPage([libraryFile(31, 'flask.gcode.3mf'), libraryFile(32, 'model.stl', { file_type: 'stl', file_tags: ['stl'], plan_eligible: false })]) as never);
     getPlates = vi.spyOn(api, 'getLibraryFilePlates').mockImplementation(async (id) => ({
       file_id: id,
       filename: 'flask.gcode.3mf',
@@ -38,7 +38,7 @@ describe('the one-off tab of «Add to order»', () => {
 
   it('searches the whole library on the server', async () => {
     open();
-    expect(await screen.findByRole('button', { name: 'flask.gcode.3mf' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /^flask\.gcode\.3mf/ })).toBeInTheDocument();
     expect(getFiles).toHaveBeenLastCalledWith({ recursive: true, page: 1, per_page: 24 });
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'flask' } });
     await waitFor(() => expect(getFiles).toHaveBeenLastCalledWith({ recursive: true, page: 1, per_page: 24, q: 'flask' }));
@@ -46,11 +46,12 @@ describe('the one-off tab of «Add to order»', () => {
 
   it('adds a plate of the picked file, in copies', async () => {
     open();
-    fireEvent.click(await screen.findByRole('button', { name: 'flask.gcode.3mf' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^flask\.gcode\.3mf/ }));
     expect(getPlates).toHaveBeenCalledWith(31);
     const second = await screen.findByRole('radio', { name: /Plate 2 · Lids/ });
-    expect(screen.getAllByText('3 objects')).toHaveLength(1);
-    expect(screen.getAllByText('1h 30m · 12g')).toHaveLength(2);
+    // WS-13 E5 E07: each plate's objects counted, then time and weight.
+    expect(screen.getByText('lid × 1 · 1h 30m · 12g')).toBeInTheDocument();
+    expect(screen.getAllByText(/1h 30m · 12g/)).toHaveLength(2);
     fireEvent.click(second);
     fireEvent.change(screen.getByLabelText('Copies of the plate'), { target: { value: '4' } });
     // WS-13 E5 B03: the summary names the plate and the copies.
@@ -61,17 +62,20 @@ describe('the one-off tab of «Add to order»', () => {
     );
   });
 
-  it('a file with no plates has to be sliced first', async () => {
+  it('a file whose type cannot be planned says so and cannot be added', async () => {
     open();
-    fireEvent.click(await screen.findByRole('button', { name: 'model.stl' }));
-    expect(await screen.findByText('Slice it first — the file has no plates yet')).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /^model\.stl/ }));
+    // WS-13 E5 R01: a type that cannot be planned is said as such, and reads no plates.
+    expect(
+      await screen.findByText('This type of file cannot be added — slice the model and save it as a 3MF.'),
+    ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Create and add' })).toBeDisabled();
   });
 
   it('a refusal of the server is its sentence', async () => {
     add.mockRejectedValue(new ApiError('Only 3MF files can be planned', 422));
     open();
-    fireEvent.click(await screen.findByRole('button', { name: 'flask.gcode.3mf' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^flask\.gcode\.3mf/ }));
     fireEvent.click(await screen.findByRole('radio', { name: /Plate 1/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Create and add' }));
     expect(await screen.findByText('Only 3MF files can be planned')).toBeInTheDocument();

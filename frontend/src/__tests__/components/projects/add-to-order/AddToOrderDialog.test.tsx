@@ -133,7 +133,7 @@ describe('AddToOrderDialog', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Parts of a product' }));
     fireEvent.click(within(await screen.findByTestId('add-part-11')).getByRole('checkbox'));
     fireEvent.click(screen.getByRole('tab', { name: 'One-off from a file' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'flask.gcode.3mf' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^flask\.gcode\.3mf/ }));
     fireEvent.click(await screen.findByRole('radio', { name: /Plate 1/ }));
     expect(screen.getByText(/Selected: 1 product · 1 pcs · Selected parts: 1 · 1 pcs/)).toBeInTheDocument();
     // WS-13 E5 B03: the summary is one line over the whole selection.

@@ -26,8 +26,25 @@ export interface ProductPick {
 export type ProductPicks = Map<number, ProductPick>;
 /** Part id → how many to order; parts of one product become ONE line. */
 export type PartPicks = Map<number, { productId: number; qty: number }>;
+/**
+ * The file the one-off tab picked, as its list row said at the click (WS-13 E5 E05):
+ * a search or another page that takes the row off the list changes neither the pick
+ * nor the answers the right pane gives about it.
+ */
+export interface PlateFile {
+  id: number;
+  filename: string;
+  folderId: number | null;
+  fileType: string;
+  /** The server's tags — `gcode` is «sliced» (`isPrintable`). */
+  fileTags: string[];
+  /** The server's «this TYPE can be planned» (E5 H02). */
+  planEligible: boolean;
+  slicedForModel: string | null;
+}
+
 /** The one-off tab's pick: the file stays picked while its plate is not chosen yet. */
-export type PlatePick = { fileId: number; filename: string; plateIndex: number | null; copies: number } | null;
+export type PlatePick = { file: PlateFile; plateIndex: number | null; copies: number } | null;
 
 /** The server's cap on a line's quantity (`schemas/project.MAX_QTY`). */
 export const MAX_LINE_QTY = 1_000_000;
@@ -138,7 +155,7 @@ export function partUnits(picks: PartPicks): number {
 /** The plate line, once a plate is chosen; stock is kits only, picked by the server (rule 11). */
 export function plateLines(pick: PlatePick): BatchLine[] {
   if (!pick || pick.plateIndex == null) return [];
-  return [{ kind: 'plate', library_file_id: pick.fileId, plate_index: pick.plateIndex, copies: pick.copies }];
+  return [{ kind: 'plate', library_file_id: pick.file.id, plate_index: pick.plateIndex, copies: pick.copies }];
 }
 
 /** A line whose shelf gave less than was asked — the shelf moved (rule 23). */
