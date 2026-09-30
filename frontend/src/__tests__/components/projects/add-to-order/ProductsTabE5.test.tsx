@@ -169,6 +169,14 @@ describe('the products tab of «Add to order» (WS-13 E5 C)', () => {
     focusManager.setFocused(undefined);
   });
 
+  it('an answer to its own question that leaves the row out is a failure, not an endless wait (R02)', async () => {
+    suggest.mockImplementation(async () => ({ items: [] }));
+    open();
+    const row = await tick(1);
+    expect(await within(row).findByText('Could not read the stock')).toBeInTheDocument();
+    expect(within(row).queryByText('reading the stock…')).not.toBeInTheDocument();
+  });
+
   it('a row the operator set keeps its numbers while the proposal is re-read (R02)', async () => {
     suggest.mockImplementation(async (items: StockSuggestItem[]) =>
       items[0].options?.includes(101) ? new Promise(() => {}) : { items: [suggestion({})] },

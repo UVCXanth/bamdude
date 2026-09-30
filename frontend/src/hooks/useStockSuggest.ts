@@ -71,6 +71,9 @@ export function useStockSuggest(items: StockSuggestItem[], enabled: boolean) {
         status.set(item.product_id, 'current');
         // An answer to this very question stands, but re-reading it failed.
         if (query.isError && !inFlight) refreshFailed.add(item.product_id);
+      } else if (!inFlight && !query.isError && answered.get(item.product_id) === itemKey(item)) {
+        // Answered for exactly this question, yet without this row: nothing more is coming.
+        status.set(item.product_id, 'failed');
       } else {
         status.set(item.product_id, inFlight || !query.isError ? 'waiting' : 'failed');
       }

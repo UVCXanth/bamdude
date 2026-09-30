@@ -172,7 +172,9 @@ describe('AddToOrderDialog — choosing the order (WS-13 E5 G02)', () => {
     vi.spyOn(api, 'getProduct').mockResolvedValue(pipeDetail as never);
     vi.spyOn(api, 'getProductCategories').mockResolvedValue([]);
     vi.spyOn(api, 'getProductFacets').mockResolvedValue({ materials: [], colors: [], models: [] });
-    vi.spyOn(api, 'suggestStock').mockResolvedValue({ items: [] });
+    vi.spyOn(api, 'suggestStock').mockImplementation(async (items) => ({
+      items: items.map((item) => suggestion({ product_id: item.product_id })),
+    }));
   });
 
   const open = () => render(<AddToOrderDialog preselectProduct={{ id: 1, code: 'PR-0001' }} onClose={() => {}} />);
