@@ -235,7 +235,9 @@ export function PlanLine({
       </div>
 
       {line.rows.length > 0 && (
-        <div className="mt-2.5 overflow-x-auto" data-testid={`plan-line-${line.line_id}-scroll`}>
+        // `relative`: the sr-only «Actions» header is positioned inside this scroll, not
+        // outside it, where it would widen the page.
+        <div className="relative mt-2.5 overflow-x-auto" data-testid={`plan-line-${line.line_id}-scroll`}>
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-bambu-gray">
@@ -251,7 +253,9 @@ export function PlanLine({
                 <th scope="col" className={head}>
                   {t('orders.plan.col.timeFilament')}
                 </th>
-                <th scope="col" className={`${head} w-px`}>
+                {/* No width of its own: with room the buttons stand in one row (the
+                    mockup's), in a narrow table the cell wraps them — never their text. */}
+                <th scope="col" className={head}>
                   <span className="sr-only">{t('orders.plan.col.actions')}</span>
                 </th>
               </tr>

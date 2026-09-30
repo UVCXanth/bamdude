@@ -57,7 +57,7 @@ export function LinePartsTable({
       </thead>
       <tbody>
         {parts.map((part) => (
-          <tr key={part.part_id} className="text-white">
+          <tr key={part.part_id} className="border-t border-bambu-dark-tertiary text-white">
             <td className={CELL}>
               {part.name}
               {part.variant && <span className={CHIP_CLASS}>{t('orders.parts.variant')}</span>}
@@ -76,20 +76,20 @@ export function LinePartsTable({
             <td className={`${CELL} tabular-nums`}>{`${part.in_progress} / ${part.queued ?? 0}`}</td>
             <td
               data-testid={`part-${part.part_id}-remaining`}
-              className={`${CELL} tabular-nums ${part.remaining > 0 ? 'font-semibold' : 'text-bambu-gray'}`}
+              className={`${CELL} tabular-nums ${part.remaining > 0 ? 'font-semibold' : ''}`}
             >
               {part.remaining}
             </td>
             <td
               data-testid={`part-${part.part_id}-surplus`}
-              className={`${CELL} tabular-nums ${part.surplus > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-bambu-gray'}`}
+              className={`${CELL} tabular-nums ${part.surplus > 0 ? 'text-amber-700 dark:text-amber-400' : ''}`}
             >
               {part.surplus}
             </td>
           </tr>
         ))}
         {purchased.map((part) => (
-          <tr key={`bought-${part.part_id}`} className="text-bambu-gray-light">
+          <tr key={`bought-${part.part_id}`} className="border-t border-bambu-dark-tertiary text-bambu-gray-light">
             <td className={CELL}>
               {part.name}
               <span className={CHIP_CLASS}>{t('orders.parts.purchased')}</span>

@@ -353,7 +353,15 @@ export function PlanRow({
               {canQueue
                 ? options.map((option) => (
                     <label key={option.plate_id} className="flex flex-col gap-1 text-bambu-gray-light">
-                      <span className="[overflow-wrap:anywhere]">{optionLabel(option, hiddenLabel)}</span>
+                      <span className="[overflow-wrap:anywhere]">
+                        {plateName(option, hiddenLabel)}
+                        {option.printer_model && (
+                          <>
+                            {' '}
+                            <span className={MODEL_CHIP}>{option.printer_model}</span>
+                          </>
+                        )}
+                      </span>
                       <input
                         type="number"
                         min={0}
@@ -372,7 +380,14 @@ export function PlanRow({
                 : proposal != null &&
                   options.map((option) => (
                     <span key={option.plate_id} className="text-bambu-gray-light">
-                      {`${optionLabel(option, hiddenLabel)} — ${proposal[option.plate_id] ?? 0}`}
+                      {plateName(option, hiddenLabel)}
+                      {option.printer_model && (
+                        <>
+                          {' '}
+                          <span className={MODEL_CHIP}>{option.printer_model}</span>
+                        </>
+                      )}
+                      {` — ${proposal[option.plate_id] ?? 0}`}
                     </span>
                   ))}
               {proposalText && (

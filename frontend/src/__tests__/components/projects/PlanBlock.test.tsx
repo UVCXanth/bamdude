@@ -829,7 +829,7 @@ describe('PlanBlock', () => {
     ]);
     fireEvent.click(screen.getByTestId('plan-row-10-100-split'));
     const panel = screen.getByTestId('plan-row-10-100-split-panel');
-    expect(within(panel).getByText('File you cannot open (P1S)')).toBeInTheDocument();
+    expect(panel).toHaveTextContent(/File you cannot open\s*P1S/);
     expect(panel).not.toHaveTextContent('null');
   });
 
@@ -1678,8 +1678,8 @@ describe('PlanBlock', () => {
     fireEvent.click(toggle);
     const panel = screen.getByTestId('plan-row-10-100-split-panel');
     expect(within(panel).getByTestId('plan-row-10-100-proposal')).toHaveTextContent('by the farm: 0 X1C · 1 P1S');
-    expect(panel).toHaveTextContent('big.3mf (X1C) — 0');
-    expect(panel).toHaveTextContent('big-p1s.3mf (P1S) — 1');
+    expect(panel).toHaveTextContent(/big\.3mf\s*X1C\s*— 0/);
+    expect(panel).toHaveTextContent(/big-p1s\.3mf\s*P1S\s*— 1/);
     expect(within(panel).queryByRole('spinbutton')).not.toBeInTheDocument();
     expect(screen.queryByTestId('plan-row-10-100-apply-farm')).not.toBeInTheDocument();
     expect(screen.queryByTestId('plan-row-10-100-split-apply')).not.toBeInTheDocument();

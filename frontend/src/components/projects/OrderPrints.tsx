@@ -32,6 +32,10 @@ interface Group {
   archives: Archive[];
 }
 
+/** A card's date and time: day, month and time, as the other order views write them —
+ *  a print of this year does not need its year on every card. */
+const PRINT_WHEN: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' };
+
 /** A group's page size until the operator picks another (WS-13 E4 F02). */
 const GROUP_PAGE = 24;
 
@@ -263,6 +267,7 @@ function OrderPrintsOf({ order, canEdit }: OrderPrintsProps) {
                       archive.completed_at || archive.started_at || archive.created_at,
                       settings?.time_format,
                       settings?.date_format,
+                      PRINT_WHEN,
                     )}
                   />
                 ))}
@@ -330,7 +335,7 @@ function AssignLineDialog({ archive, order, onClose }: { archive: Archive; order
     <WorkshopDialog
       title={t('orders.prints.assign.title')}
       subtitle={printSubtitle(archive, t)}
-      size="sm"
+      size="md"
       pending={save.isPending}
       error={error ?? undefined}
       onClose={onClose}
@@ -412,6 +417,7 @@ function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: Arch
   return (
     <div
       data-print-card
+      data-status={archive.status}
       className="flex gap-3 items-start rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary p-3 text-[13px]"
     >
       {/* ⚠️ `fileName`, not `search` — ArchivesPage reads `printer`, `file` and

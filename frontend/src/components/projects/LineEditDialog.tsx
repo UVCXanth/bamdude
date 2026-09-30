@@ -177,7 +177,7 @@ export function LineEditDialog({ order, line, onClose, onConfigure }: LineEditDi
     queryFn: () => api.suggestStock([suggestItemFor(line, line.quantity)]),
     enabled: takesFinished,
   });
-  const freeFinished = suggest.data?.items[0]?.finished_free;
+  const freeFinished = suggest.data?.items?.[0]?.finished_free;
   // While a figure is unknown the ceiling is what the line itself holds — the box never
   // offers what nobody has confirmed; the hint says the figure is still coming.
   const editFreeKits = freeKits ?? 0;
@@ -186,7 +186,7 @@ export function LineEditDialog({ order, line, onClose, onConfigure }: LineEditDi
   const pick = useMutation({
     mutationFn: (quantity: number) => api.suggestStock([suggestItemFor(line, quantity)]),
     onSuccess: (answer) => {
-      const s = answer.items[0];
+      const s = answer.items?.[0];
       if (!s) return;
       setDraft((d) => ({ ...d, fromFinished: s.from_finished, fromStock: s.from_kits }));
     },

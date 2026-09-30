@@ -59,7 +59,10 @@ export function WorkshopTableScroll({ label, children }: { label: string; childr
       role="region"
       aria-label={label}
       tabIndex={0}
-      className="min-w-0 max-w-full overflow-x-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-bambu-green"
+      // `relative`: an absolutely positioned child — a `sr-only` header — takes its box
+      // from here, not from an ancestor outside the scroll; otherwise it escapes the
+      // clipping and widens the whole page (measured at 390, WS-13 E4).
+      className="relative min-w-0 max-w-full overflow-x-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-bambu-green"
     >
       {children}
     </div>

@@ -115,16 +115,16 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
           <thead>
             <tr className="text-left text-bambu-gray border-b border-bambu-dark-tertiary">
               <th className="px-3 py-2 font-normal">{t('orders.procurement.part')}</th>
-              <th className="px-3 py-2 font-normal text-right">{t('orders.procurement.need')}</th>
-              <th className="px-3 py-2 font-normal text-right">{t('orders.procurement.acquired')}</th>
-              <th className="px-3 py-2 font-normal text-right">{t('orders.procurement.remaining')}</th>
-              <th className="px-3 py-2 font-normal text-right">{t('orders.procurement.price')}</th>
+              <th className="px-3 py-2 font-normal">{t('orders.procurement.need')}</th>
+              <th className="px-3 py-2 font-normal">{t('orders.procurement.acquired')}</th>
+              <th className="px-3 py-2 font-normal">{t('orders.procurement.remaining')}</th>
+              <th className="px-3 py-2 font-normal">{t('orders.procurement.price')}</th>
             </tr>
           </thead>
           <tbody>
             {order.procurement.map((row) => (
               <tr key={row.part_id} className="border-b border-bambu-dark-tertiary last:border-0">
-                <td className="px-3 py-2 text-white">
+                <td className="px-3 py-2 align-middle text-white">
                   {row.name}
                   {row.sourcing_url && (
                     <a
@@ -139,8 +139,8 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
                     </a>
                   )}
                 </td>
-                <td className="px-3 py-2 text-right text-bambu-gray tabular-nums">{row.need}</td>
-                <td className="px-3 py-2 text-right">
+                <td className="px-3 py-2 align-middle text-white tabular-nums">{row.need}</td>
+                <td className="px-3 py-2 align-middle">
                   <input
                     key={`${row.acquired}:${rejections[row.part_id] ?? 0}`}
                     data-testid={`procurement-${row.part_id}-acquired`}
@@ -154,16 +154,16 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
                       if (e.key === 'Enter') e.currentTarget.blur();
                     }}
                     aria-label={`${row.name} — ${t('orders.procurement.acquired')}`}
-                    className="w-20 px-2 py-1 text-right tabular-nums bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:border-bambu-green focus:outline-none disabled:opacity-60"
+                    className="w-[88px] px-3 py-2 tabular-nums bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none disabled:opacity-60"
                   />
                 </td>
                 <td
                   data-testid={`procurement-${row.part_id}-remaining`}
-                  className={`px-3 py-2 text-right tabular-nums ${row.remaining > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-bambu-green'}`}
+                  className={`px-3 py-2 align-middle tabular-nums ${row.remaining > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-bambu-green'}`}
                 >
                   {row.remaining}
                 </td>
-                <td className="px-3 py-2 text-right tabular-nums text-bambu-gray" data-testid={`procurement-${row.part_id}-price`}>
+                <td className="px-3 py-2 align-middle tabular-nums text-white" data-testid={`procurement-${row.part_id}-price`}>
                   {row.planned_cost != null ? (
                     formatMoney(row.planned_cost, settings?.currency)
                   ) : (

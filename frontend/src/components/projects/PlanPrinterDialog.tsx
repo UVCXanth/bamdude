@@ -138,7 +138,8 @@ export function PlanPrinterDialog({ row, plate, onClose, onNext }: PlanPrinterDi
     <WorkshopDialog
       title={t('orders.plan.printer.title')}
       subtitle={subtitle}
-      size="sm"
+      // The mockup's frame for this dialog is the default width (560), not the narrow one.
+      size="md"
       onClose={onClose}
       error={ready && blocked ? blocked : undefined}
       footer={

@@ -47,6 +47,9 @@ vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
   };
 });
 
+/** The card writes day, month and time — the other order views' format. */
+const PRINT_WHEN: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' };
+
 /** `id` → a minimal archive row, the shape `getProjectArchives` answers with. */
 function rows(ids: number[], lineId: number | null = 10) {
   return ids.map((id) => ({
@@ -181,10 +184,10 @@ describe('OrderPrints', () => {
     await screen.findByText('a.3mf');
     const first = cardOf('a.3mf');
     await waitFor(() => expect(within(first).getByTestId('print-where-1')).toHaveTextContent('P1S-02'));
-    expect(within(first).getByTestId('print-where-1')).toHaveTextContent(`plate 2 · P1S-02 · ${formatDateTime(when)}`);
+    expect(within(first).getByTestId('print-where-1')).toHaveTextContent(`plate 2 · P1S-02 · ${formatDateTime(when, 'system', 'system', PRINT_WHEN)}`);
     expect(screen.getByTestId('print-defects-1')).toHaveTextContent('6 pcs · 1 defective');
     // An unknown printer id is skipped, never shown as a number; a whole-file print says no plate.
-    expect(within(cardOf('b.3mf')).getByTestId('print-where-2')).toHaveTextContent(new RegExp(`^${formatDateTime(when)}$`));
+    expect(within(cardOf('b.3mf')).getByTestId('print-where-2')).toHaveTextContent(new RegExp(`^${formatDateTime(when, 'system', 'system', PRINT_WHEN)}$`));
     expect(within(cardOf('b.3mf')).getByText('printing')).toBeInTheDocument();
   });
 
