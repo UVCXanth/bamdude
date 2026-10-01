@@ -13,7 +13,7 @@ import { join, relative, sep } from 'node:path';
 
 const SRC = join(process.cwd(), 'src');
 const HOST_DIR = ['components', 'projects', 'orderActions'].join(sep);
-const DIALOGS = ['FulfilmentDialog', 'DuplicateOrderModal', 'OrderModal', 'OrderCoverDialog'];
+const DIALOGS = ['FulfilmentDialog', 'DuplicateOrderModal', 'OrderModal', 'OrderCoverDialog', 'BankSurplusDialog'];
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const d of readdirSync(dir, { withFileTypes: true })) {

@@ -40,7 +40,19 @@ describe('TakeStockBanner', () => {
         ],
       }),
     );
-    expect(await screen.findByText('Taken from stock')).toBeInTheDocument();
+    // What the shelf actually gave, summed off the server's answer (WS-13 E6 F02).
+    expect(await screen.findByText('Taken from stock: 2 ready · 4 kits — the print plan shrank')).toBeInTheDocument();
+  });
+
+  it('reads the offers again after a refusal and says why (WS-13 E6 F02)', async () => {
+    const get = vi.spyOn(api, 'getStockOffers').mockResolvedValueOnce(offers).mockResolvedValue([]);
+    vi.spyOn(api, 'takeStock').mockRejectedValue(new Error('The order’s stock changed while this was being saved — try again'));
+    render(<TakeStockBanner orderId={5} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Take from stock' }));
+    expect(await screen.findByText(/stock changed while this was being saved/)).toBeInTheDocument();
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    // The fresh answer has nothing to take — the banner goes.
+    await waitFor(() => expect(screen.queryByTestId('take-stock')).not.toBeInTheDocument());
   });
 
   it('says so when the shelf gave less than it showed', async () => {

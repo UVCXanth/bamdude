@@ -56,9 +56,19 @@ export function TakeStockBanner({ orderId, lines = [] }: { orderId: number; line
           return t('orders.add.clampedLine', { name: names.get(r.line_id) ?? '', what });
         });
       if (short.length > 0) showToast(t('orders.take.clamped', { detail: short.join('; ') }), 'warning');
-      else showToast(t('orders.take.taken'));
+      else {
+        // What the shelf actually gave, off the server's answer (WS-13 E6 F02).
+        const ready = result.results.reduce((sum, r) => sum + r.got_finished, 0);
+        const kits = result.results.reduce((sum, r) => sum + r.got_kits, 0);
+        showToast(t('orders.take.takenCounts', { ready, kits }));
+      }
     },
-    onError: (e: Error) => showToast(e.message, 'error'),
+    // A refusal means the shelf moved: say why, and read the offers again — the banner
+    // shows the fresh offer or goes (WS-13 E6 F02).
+    onError: (e: Error) => {
+      showToast(e.message, 'error');
+      invalidateOrderViews(qc, { orderId });
+    },
   });
 
   if (offers.length === 0) return null;

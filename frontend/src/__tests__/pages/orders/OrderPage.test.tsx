@@ -476,7 +476,7 @@ describe('OrderPage', () => {
         {
           ...order.lines[0],
           parts: [
-            { part_id: 1, name: 'lid', qty_per_unit: 1, need: 2, usable: 7, in_progress: 0, remaining: 0, surplus: 5 },
+            { part_id: 1, name: 'lid', qty_per_unit: 1, need: 2, usable: 7, in_progress: 0, remaining: 0, surplus: 5, bankable: 5 },
           ],
         },
       ],
@@ -496,6 +496,8 @@ describe('OrderPage', () => {
       );
 
       fireEvent.click(await screen.findByTestId('order-bank-surplus'));
+      // It asks first, with the server's preview (WS-13 E6 F01).
+      fireEvent.click(await screen.findByRole('button', { name: 'Move (5)' }));
 
       await waitFor(() => expect(bank).toHaveBeenCalledWith(1));
       // Data, not keys — the counts and part names are the server's, the
@@ -515,6 +517,8 @@ describe('OrderPage', () => {
       );
 
       fireEvent.click(await screen.findByTestId('order-bank-surplus'));
+      // It asks first, with the server's preview (WS-13 E6 F01).
+      fireEvent.click(await screen.findByRole('button', { name: 'Move (5)' }));
 
       // ⚠️ Neutral, never an error: the surplus was already banked, which is
       // exactly what the operator wanted to be true.
@@ -546,6 +550,8 @@ describe('OrderPage', () => {
       await waitFor(() => expect(products).toHaveBeenCalledTimes(1));
 
       fireEvent.click(await screen.findByTestId('order-bank-surplus'));
+      // It asks first, with the server's preview (WS-13 E6 F01).
+      fireEvent.click(await screen.findByRole('button', { name: 'Move (5)' }));
 
       await waitFor(() => expect(products).toHaveBeenCalledTimes(2));
     });

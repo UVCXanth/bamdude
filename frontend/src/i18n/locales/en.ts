@@ -5436,9 +5436,9 @@ export default {
       lineConfigured: '{{product}} ({{config}})',
       action: 'Take from stock',
       taken: 'Taken from stock',
+      takenCounts: 'Taken from stock: {{ready}} ready · {{kits}} kits — the print plan shrank',
       clamped: 'The shelf changed: {{detail}}',
     },
-    // spec workshop-order-issue: the «Stock & issue» dialog.
     // WS-13 E6 §E: «Stock & issue» in the mockup's words, with the app's additions (E03–E06).
     fulfil: {
       title: 'Stock & issue',
@@ -6946,6 +6946,17 @@ export default {
       actionCount: 'Bank the surplus ({{count}})',
       done: '{{moved}} → free stock of {{product}}',
       nothing: 'Nothing to bank — this surplus is already on the shelf.',
+      // WS-13 E6 F01: the confirmation with the server's preview.
+      dialogTitle: 'Surplus to free stock',
+      dialogExplain: 'What was printed beyond the order goes to the product’s free stock of parts — other orders can take it. This is not a defect write-off and not an issue of finished goods.',
+      dialogRecount: 'The server recounts the surplus at the moment it moves it; what is shown is the state when it was read.',
+      colPart: 'Part',
+      colLine: 'Line',
+      colMoves: 'Moves, pcs',
+      total: 'Total',
+      nothingToMove: 'There is no surplus to move.',
+      submitCount: 'Move ({{count}})',
+      loadFailed: 'Could not read the order.',
     },
     line: {
       readyLabel: 'Ready units from stock',

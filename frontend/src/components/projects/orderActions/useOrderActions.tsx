@@ -1,11 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
-import { useTranslation } from 'react-i18next';
-import { api } from '../../../api/client';
 import type { Order, OrderListItem } from '../../../api/client';
-import { useToast } from '../../../contexts/ToastContext';
-import { invalidateOrderViews } from '../../../utils/queryInvalidation';
+import { BankSurplusDialog } from '../BankSurplusDialog';
 import { DuplicateOrderModal } from '../DuplicateOrderModal';
 import { OrderModal } from '../OrderModal';
 import { OrderCoverDialog } from '../OrderCover';
@@ -37,6 +33,7 @@ type Active =
   | { kind: 'duplicate'; ref: OrderRef }
   | { kind: 'fulfil'; ref: OrderRef; mode: FulfilmentMode; complete: boolean }
   | { kind: 'confirm'; which: OrderConfirmKind; ref: OrderRef; onDeleted?: () => void }
+  | { kind: 'bank'; ref: OrderRef; order: Order | undefined }
   | { kind: 'cover'; order: Order };
 
 function isDetail(order: Order | OrderListItem | undefined): order is Order {
@@ -62,10 +59,7 @@ export function useOrderActions({
   fallbackFocusRef: RefObject<HTMLElement | null>;
   onDeleted?: (id: number) => void;
 }): OrderActions & { dialogs: ReactNode } {
-  const { t } = useTranslation();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const { showToast } = useToast();
   const [active, setActive] = useState<Active | null>(null);
   const opened = useRef(false);
 
@@ -85,23 +79,6 @@ export function useOrderActions({
     return () => window.clearTimeout(timer);
   }, [active, fallbackFocusRef]);
 
-  // «Bank the surplus» until its own dialog lands (T6): the server moves what it
-  // counts; `nothing_to_bank` is a second press, answered as a success.
-  const bank = useMutation({
-    mutationFn: ({ ref }: { ref: OrderRef; order?: Order | OrderListItem }) => api.bankOrderSurplus(ref.id),
-    onSuccess: (result, { ref, order }) => {
-      invalidateOrderViews(queryClient, { orderId: ref.id });
-      if (result.nothing_to_bank) {
-        showToast(t('stock.bank.nothing'), 'info');
-        return;
-      }
-      const moved = result.moved.map((m) => `${m.delta} ${m.name}`).join(', ');
-      const products = isDetail(order) ? [...new Set(order.lines.map((line) => line.product_name))].join(', ') : '';
-      showToast(t('stock.bank.done', { moved, product: products }));
-    },
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
-
   const run: OrderActions['run'] = (action, ref, extra = {}) => {
     switch (action) {
       case 'open':
@@ -120,7 +97,7 @@ export function useOrderActions({
         setActive({ kind: 'fulfil', ref, mode: 'all', complete: true });
         return;
       case 'bank':
-        bank.mutate({ ref, order: extra.order });
+        setActive({ kind: 'bank', ref, order: isDetail(extra.order) ? extra.order : undefined });
         return;
       case 'cancel':
       case 'reopen':
@@ -168,6 +145,8 @@ export function useOrderActions({
         onPageDeleted={onDeleted}
       />
     );
+  } else if (active?.kind === 'bank') {
+    dialogs = <BankSurplusDialog order={active.ref} detail={active.order} onClose={close} />;
   } else if (active?.kind === 'cover') {
     dialogs = <OrderCoverDialog order={active.order} onClose={close} />;
   }
