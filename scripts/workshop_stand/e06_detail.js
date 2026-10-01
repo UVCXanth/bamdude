@@ -1145,7 +1145,14 @@ async (page, selftest = null) => {
     await toggle.click();
     const opened = await toggle.getAttribute('aria-expanded');
     const controls = await toggle.getAttribute('aria-controls');
-    const reasonInside = await p.evaluate((id) => !!document.getElementById(id)?.querySelector('input'), controls);
+    // E03: the toggle controls the column (the table) and the reason — a list of ids.
+    const controlled = await p.evaluate((ids) => (ids ?? '').split(' ').map((id) => document.getElementById(id)).filter(Boolean).map((el) => ({
+      tag: el.tagName,
+      reason: !!el.querySelector('input:not([type="number"])'),
+      column: !!el.querySelector('input[aria-label^="Списати — "]'),
+    })), controls);
+    const reasonInside = controlled.some((c) => c.reason);
+    const columnControlled = controlled.some((c) => c.tag === 'TABLE' && c.column);
     const wo = dialog(p).locator('input[aria-label^="Списати — "]').first();
     await wo.fill('1');
     const noReason = await footer(p).getByRole('button', { name: 'Виконати' }).isDisabled();
@@ -1158,8 +1165,8 @@ async (page, selftest = null) => {
     await ctx.close();
     return {
       recipe: { url: '/projects/{order:241}', actions: ['«Списати…»', 'write off 1', 'reason', '«Списати…» again'] },
-      measured: { closed, opened, reasonInside, noReason, withReason, summary: summary.slice(0, 160), gone, errors },
-      pass: closed === 'false' && opened === 'true' && reasonInside && noReason && withReason && /списати: 1/.test(summary) && gone && errors.length === 0,
+      measured: { closed, opened, controlled, reasonInside, columnControlled, noReason, withReason, summary: summary.slice(0, 160), gone, errors },
+      pass: closed === 'false' && opened === 'true' && reasonInside && columnControlled && noReason && withReason && /списати: 1/.test(summary) && gone && errors.length === 0,
       screenshots: [file],
     };
   });
