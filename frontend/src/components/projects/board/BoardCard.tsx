@@ -67,9 +67,13 @@ export function BoardCard({ order, column, draggable, actions, pending, onStage 
         style={order.color ? { backgroundColor: order.color } : undefined}
       />
       <div className="p-3 space-y-1.5">
-        <div data-part="top" className="flex items-center gap-2">
+        {/* Wraps rather than cutting: a 240 px column holds a wide stage badge and the handle,
+            and the code is read whole (it is how the card is named in speech). */}
+        <div data-part="top" className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <OrderThumbs order={order} />
-          <span className="min-w-0 truncate text-xs text-bambu-gray">{order.code}</span>
+          <span data-code className="flex-shrink-0 whitespace-nowrap text-xs text-bambu-gray">
+            {order.code}
+          </span>
           <span className="ml-auto flex flex-shrink-0 items-center gap-1">
             {draggable ? (
               <BoardStageMenu

@@ -196,7 +196,12 @@ function DueCard({ due }: { due: DeadlineOrder }) {
       />
       <StageBadge stage={order.stage} status={order.status} />
       {active &&
-        (eta ? (
+        (order.remaining <= 0 && !eta ? (
+          // Nothing left to cover: the lists' word (B03), not «no estimate».
+          <span data-testid={`deadline-eta-${order.id}`} className="block text-[11px] text-bambu-green">
+            {t('orders.row.allCovered')}
+          </span>
+        ) : eta ? (
           <span
             data-testid={`deadline-eta-${order.id}`}
             className={`flex items-center text-[11px] ${late ? 'text-red-500' : 'text-bambu-green'}`}

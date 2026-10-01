@@ -198,11 +198,13 @@ function WorkspaceRow({ order }: { order: OrderListItem }) {
           {order.due_date && (
             <>
               {' · '}
-              <OrderDue order={order} variant="inline" />
+              <OrderDue order={order} variant="plain" />
             </>
           )}
         </span>
-        <StageBadge stage={order.stage} status={order.status} />
+        <span className="flex-shrink-0 whitespace-nowrap">
+          <StageBadge stage={order.stage} status={order.status} />
+        </span>
       </span>
       <span className="block text-sm font-semibold text-white truncate">{order.name}</span>
       <span className="block text-xs text-bambu-gray truncate">{order.customer_name ?? t('orders.list.noCustomer')}</span>

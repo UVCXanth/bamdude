@@ -133,6 +133,15 @@ describe('OrdersDeadlines', () => {
     expect(screen.getByTestId('deadline-eta-7')).toHaveTextContent('no estimate');
     expect(screen.queryByTestId('deadline-eta-8')).not.toBeInTheDocument();
   });
+  it('calls a fully covered active order covered — the word of the lists — never «no estimate»', async () => {
+    vi.spyOn(api, 'getOrderDeadlines').mockResolvedValue(
+      answer({ due: [{ order: order({ id: 9, code: 'OR-0009', name: 'Full', due_date: '2026-10-07T00:00:00', remaining: 0, covered_units: 10, progress: 1 }), eta: null, late: false, estimate_reasons: [] }] }),
+    );
+    render(<OrdersDeadlines filters={{}} week={0} onWeek={() => {}} />);
+    const eta = await screen.findByTestId('deadline-eta-9');
+    expect(eta).toHaveTextContent('all covered');
+    expect(eta).not.toHaveTextContent('no estimate');
+  });
   it('marks where another order is forecast to be ready, with the time', async () => {
     vi.spyOn(api, 'getOrderDeadlines').mockResolvedValue(answer());
     render(<OrdersDeadlines filters={{}} week={0} onWeek={() => {}} />);

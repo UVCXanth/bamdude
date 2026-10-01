@@ -178,6 +178,13 @@ describe('OrdersWorkspace', () => {
     expect(screen.queryByRole('link', { name: 'Orders' })).not.toBeInTheDocument();
   });
   describe('WS-13 E7 G', () => {
+    it('marks an overdue row by the red date alone — «code · date», as the mockup', async () => {
+      render(<OrdersWorkspace data={page([row({ id: 1, due_date: '2020-01-02T00:00:00' })])} {...props} picked={null} onPick={() => {}} />);
+      const button = within(await screen.findByRole('list', { name: 'Orders' })).getByRole('button', { name: /Ten flasks/ });
+      expect(button).not.toHaveTextContent('overdue');
+      expect(within(button).getByTestId('order-1-due').querySelector('.text-red-500')).not.toBeNull();
+    });
+
     it('says so when the order the URL names is not on this page, and links to it', async () => {
       render(<OrdersWorkspace data={page(ROWS)} {...props} picked={99} onPick={() => {}} />);
       const note = await screen.findByTestId('workspace-fallback');

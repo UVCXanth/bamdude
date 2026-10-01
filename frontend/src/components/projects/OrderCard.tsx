@@ -50,9 +50,11 @@ export function OrderCard({ order, actions, readiness }: OrderCardProps) {
       />
 
       <div className="flex flex-1 flex-col p-4">
-        <div data-part="top" className="mb-3 flex items-center gap-2">
+        <div data-part="top" className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1">
           <OrderThumbs order={order} />
-          <span className="min-w-0 truncate text-xs text-bambu-gray">{order.code}</span>
+          <span data-code className="flex-shrink-0 whitespace-nowrap text-xs text-bambu-gray">
+            {order.code}
+          </span>
           <span className="ml-auto flex-shrink-0">
             <StageBadge stage={order.stage} status={order.status} />
           </span>

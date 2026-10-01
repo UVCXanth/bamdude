@@ -801,6 +801,8 @@ async (page, selftest = null) => {
       const totals = {};
       for (const key of ['prep', 'printing', 'qc', 'done']) totals[key] = (await textOf(p.getByTestId(`board-total-${key}`))).trim();
       const doneCards = await p.locator('[data-board-column="done"] [data-testid^="board-card-"]').count();
+      // Every card's code is read whole, however wide its stage badge (a 240 px column).
+      const cutCodes = await region.evaluate((el) => [...el.querySelectorAll('[data-part="top"] [data-code]')].filter((c) => c.scrollWidth > c.clientWidth + 1).map((c) => c.textContent));
       const card = p.getByTestId(`board-card-${A}`);
       const parts = (await card.count()) ? await card.locator('[data-part]').evaluateAll((els) => els.map((el) => el.getAttribute('data-part'))) : [];
       const hint = await textOf(p.getByTestId('orders-board-hint'));
@@ -811,9 +813,9 @@ async (page, selftest = null) => {
       return {
         recipe: { url: '/projects', storage: { 'projects.view': 'kanban' } },
         env: { viewport: [w, HEIGHTS[w]] },
-        measured: { geo, totals, want, doneCards, parts, hint, overflow, errors },
+        measured: { geo, totals, want, doneCards, cutCodes, parts, hint, overflow, errors },
         pass: geo.columns.length === 4 && geo.columns.every((c) => c.w >= 240 && c.oy === 'visible') && (w > 1100 || geo.sw > geo.cw) &&
-          JSON.stringify(totals) === JSON.stringify(want) && doneCards <= 6 &&
+          JSON.stringify(totals) === JSON.stringify(want) && doneCards <= 6 && cutCodes.length === 0 &&
           ['rail', 'top', 'name', 'customer', 'coverage', 'line', 'footer'].every((x, i) => parts[i] === x) &&
           /Етап ставиться вручну/.test(hint) && overflow <= 0 && errors.length === 0,
         screenshots: [file],
@@ -981,6 +983,13 @@ async (page, selftest = null) => {
           pane: r ? { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), clipped: pane.scrollWidth > pane.clientWidth + 1 } : null,
           vw: innerWidth,
           rowsAreButtons: [...(list?.querySelectorAll('li > *') ?? [])].every((el) => el.tagName === 'BUTTON'),
+          // The row's first line — code · deadline — read whole, its stage badge on ONE line.
+          cutRows: [...(list?.querySelectorAll('li > button') ?? [])].filter((b) => {
+            const head = b.firstElementChild;
+            const lead = head?.firstElementChild;
+            const badge = head?.lastElementChild;
+            return (lead && lead.scrollWidth > lead.clientWidth + 1) || (badge && badge.getBoundingClientRect().height > 26);
+          }).length,
         };
       });
       const actions = await hitTest(p, '[data-testid="order-actions"] button');
@@ -993,7 +1002,7 @@ async (page, selftest = null) => {
         recipe: { url: '/projects', storage: { 'projects.view': 'workspace' } },
         env: { viewport: [w, HEIGHTS[w]] },
         measured: { geo, want: Math.round(want), actions: actions.filter((a) => !a.inView || !a.hits), overflow, errors },
-        pass: !!geo.list && !!geo.pane && geo.rowsAreButtons &&
+        pass: !!geo.list && !!geo.pane && geo.rowsAreButtons && geo.cutRows === 0 &&
           (split ? Math.abs(geo.list.width - want) <= 3 && geo.pane.left > geo.list.left + geo.list.width - 1 : geo.pane.top > geo.list.bottom - 1) &&
           !geo.pane.clipped && actions.length > 0 && actions.every((a) => a.inView && a.hits) && overflow <= 0 && errors.length === 0,
         screenshots: [file],
