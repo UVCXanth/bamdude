@@ -643,7 +643,8 @@ async (page, selftest = null) => {
     await scenario(`table-grouped@${w}`, ['E7-D04', 'S06'], async () => {
       const { ctx, p, errors } = await open(w, view('table', { 'projects.groupByCustomer': '1' }));
       await listPage(p, '?tab=all');
-      const heads = await p.locator('h3').evaluateAll((hs) => hs.map((h) => ({ text: h.textContent.trim(), count: h.querySelector('small')?.getAttribute('aria-label') ?? null })));
+      // The count is read with the heading as TEXT (final review): a screen-reader-only phrase, not a label.
+      const heads = await p.locator('h3').evaluateAll((hs) => hs.map((h) => ({ text: h.textContent.trim(), count: h.querySelector('.sr-only')?.textContent ?? null })));
       const tables = await p.locator('table').count();
       const bars = await p.locator('[data-pagination]').count();
       const overflow = await docOverflow(p);
@@ -891,7 +892,9 @@ async (page, selftest = null) => {
     // card — on its stage — never falling to the page.
     const focusAfter = await p.evaluate((code) => {
       const a = document.activeElement;
-      const card = a?.closest('[data-testid^="board-card-"]');
+      // The CARD — the trigger itself carries `board-card-<id>-stage`, so the walk wants the bare id.
+      let card = a;
+      while (card && !/^board-card-\d+$/.test(card.getAttribute?.('data-testid') ?? '')) card = card.parentElement;
       return { tag: a?.tagName ?? null, label: a?.getAttribute('aria-label') ?? null, inCard: !!card && card.textContent.includes(code) };
     }, codeA);
     // The current stage writes nothing (the board re-read answers the stand's own stage again).
@@ -928,13 +931,22 @@ async (page, selftest = null) => {
     await p.getByRole('menuitemradio', { name: 'Підготовка' }).click();
     await p.waitForTimeout(500);
     const card = p.getByTestId(`board-card-${A}`);
+    // Held, the card keeps both doors (final review, F07): the stage trigger stays enabled and
+    // keeps the focus, its rows are unavailable; the handle stays, inert.
+    const focusHeld = await p.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? null);
+    const handle = card.getByRole('button', { name: `Перемістити ${codeA}` });
     const held = {
       busy: await card.getAttribute('aria-busy'),
       moving: (await card.getByText('Переносимо…').count()) > 0,
       disabled: await stageTrigger(p, codeA, 'Друкується').isDisabled(),
-      handle: await card.getByRole('button', { name: `Перемістити ${codeA}` }).count(),
+      handle: await handle.count(),
+      handleInert: (await handle.count()) ? await handle.getAttribute('aria-disabled') : null,
+      focus: focusHeld,
     };
     const file = await shoot(p, 'kanban-pending@1440');
+    await stageTrigger(p, codeA, 'Друкується').click();
+    held.rowsDisabled = await p.getByRole('menuitemradio', { name: 'Контроль якості' }).isDisabled();
+    await p.keyboard.press('Escape');
     const refused = await toastText(p, /Це замовлення не активне/, 8000).then(() => true, () => false);
     await p.waitForTimeout(500);
     const after = {
@@ -945,7 +957,8 @@ async (page, selftest = null) => {
     return {
       recipe: { url: '/projects', fixture: ['PUT …/stage → 409 after 3.5 s (runner)'], actions: ['stage badge → «Підготовка»'] },
       measured: { held, refused, after, writes: writes.length, errors },
-      pass: held.busy === 'true' && held.moving && held.disabled && held.handle === 0 && refused && after.busy === null && after.inPrinting === 1 && writes.length === 1 && errors.length === 0,
+      pass: held.busy === 'true' && held.moving && !held.disabled && held.handle === 1 && held.handleInert === 'true' && held.rowsDisabled &&
+        /^Етап /.test(held.focus ?? '') && refused && after.busy === null && after.inPrinting === 1 && writes.length === 1 && errors.length === 0,
       screenshots: [file],
     };
   });
