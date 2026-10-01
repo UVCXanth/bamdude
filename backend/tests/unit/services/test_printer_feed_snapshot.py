@@ -285,3 +285,17 @@ def test_emptiness_has_to_be_stated():
         [{"id": 0, "diameter": "0.4"}, {"id": 1, "diameter": "0.4", "serial_number": "N/A", "max_temp": 300}], "H2D"
     )
     assert snap.nozzle_diameters == {0: (0.4,), 1: (0.4,)}
+
+
+def test_h2d_fixed_hotends_are_not_treated_as_empty():
+    # H2D 01.03.00.00 reports both installed fixed hotends with the same
+    # sn/tm fields that identify an empty rack-capable H2C hotend.  Unlike an
+    # H2C, an H2D cannot park either nozzle, so both diameters are authoritative.
+    snap = _nozzle_state(
+        [
+            {"id": 0, "diameter": 0.4, "sn": "N/A", "stat": 5, "tm": 0, "type": "HS01"},
+            {"id": 1, "diameter": 0.4, "sn": "N/A", "stat": 5, "tm": 0, "type": "HS01"},
+        ],
+        "H2D",
+    )
+    assert snap.nozzle_diameters == {0: (0.4,), 1: (0.4,)}
