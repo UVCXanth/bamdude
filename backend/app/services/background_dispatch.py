@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.app.core.config import settings
 from backend.app.core.database import async_session
@@ -43,7 +43,7 @@ from backend.app.services.bambu_ftp import (
     with_ftp_retry,
 )
 from backend.app.services.filament_intake import item_descriptor, routing_detail, source_display_filename
-from backend.app.services.filament_preflight import final_guard, preflight_item, settle_feed
+from backend.app.services.filament_preflight import final_guard, preflight_item, settle_plan
 from backend.app.services.filament_routing import RoutingDeferred
 from backend.app.services.gcode_patcher import GcodeInjectionSpec
 from backend.app.services.printer_files.factory import transport_for
@@ -312,36 +312,60 @@ async def _warn_on_filament_deficit(db, job, archive) -> None:
         logger.debug("Filament deficit check failed for printer %s", job.printer_id, exc_info=True)
 
 
-async def _apply_calibrations_for_print(
+def _bind_target(printer_id: int, ams_id: int, slot_id: int, filament_id: str, nozzle, spool) -> tuple[tuple, dict]:
+    """One slot the pre-print bind binds: its key, and the kwargs it binds with.
+
+    The key is what the bind READS — the slot, the effective filament (the
+    assigned spool's family, else the slot's live profile id), the spool and the
+    nozzle it feeds — so ``_rebind_if_moved`` can tell whether it would bind
+    something else now.
+    """
+    kwargs = {
+        "printer_id": printer_id,
+        "ams_id": ams_id,
+        "slot_id": slot_id,
+        "filament_id": filament_id,
+        "nozzle_diameter": nozzle.diameter_float,
+        "nozzle_volume_type": nozzle.flow_or_standard,
+        "extruder_id": nozzle.extruder_or_default,
+        "spool_id": spool.id if spool else None,
+    }
+    key = (
+        ams_id,
+        slot_id,
+        filament_id,
+        kwargs["spool_id"],
+        kwargs["nozzle_diameter"],
+        kwargs["nozzle_volume_type"],
+        kwargs["extruder_id"],
+    )
+    return key, kwargs
+
+
+async def _calibration_targets(
     db,
     printer_id: int,
     ams_mapping: list[int] | None,
     is_calibration: bool = False,
-) -> None:
-    """Pre-print bind hook. For every AMS slot the job will use, resolve the
-    active calibration and fire ``extrusion_cali_sel``.
+) -> list[tuple[tuple, dict]]:
+    """Every slot the pre-print bind would bind now, as ``(key, bind kwargs)``.
 
-    Closes the silent-drift gap when prints start without going through the
-    spool-link / RFID paths (queued prints, scheduled prints, manual restarts).
-    Calibration prints skip this — their wizard's ``save_result`` runs its own
-    bind. Best-effort: failures are logged, never block ``start_print``.
+    Reads only — the printer's state, the slot assignments and the catalogue;
+    ``_apply_calibrations_for_print`` binds what this returns.
     """
     if is_calibration:
-        return
+        return []
     client = printer_manager.get_client(printer_id)
     if not client or not client.state.connected:
-        return
+        return []
 
     from backend.app.models.spool_assignment import SpoolAssignment as SA
-    from backend.app.services.calibration_service import (
-        apply_active_calibration_to_slot,
-        derive_effective_filament_id,
-    )
+    from backend.app.services.calibration_service import derive_effective_filament_id
     from backend.app.utils.slot_nozzle import slot_nozzle
 
     state = printer_manager.get_status(printer_id)
     if not state:
-        return
+        return []
 
     ams_raw = (state.raw_data or {}).get("ams", [])
     if isinstance(ams_raw, dict):
@@ -355,6 +379,7 @@ async def _apply_calibrations_for_print(
 
     from sqlalchemy.orm import selectinload as _sl
 
+    targets: list[tuple[tuple, dict]] = []
     for unit in ams_raw:
         if not isinstance(unit, dict):
             continue
@@ -373,7 +398,10 @@ async def _apply_calibrations_for_print(
                 continue
             if slot_id < 0:
                 continue
-            global_slot = ams_id * 4 + slot_id
+            # An AMS-HT unit is one slot whose global id IS the unit id (128+),
+            # as in the plan's mapping — ``ams_id * 4`` never matched it, so HT
+            # slots were never bound before a print.
+            global_slot = ams_id if ams_id >= 128 else ams_id * 4 + slot_id
             if used_global is not None and global_slot not in used_global:
                 continue
             tray_info_idx = tray.get("tray_info_idx") or ""
@@ -398,26 +426,7 @@ async def _apply_calibrations_for_print(
             )
             if not filament_id:
                 continue
-            try:
-                await apply_active_calibration_to_slot(
-                    db=db,
-                    printer_id=printer_id,
-                    ams_id=ams_id,
-                    slot_id=slot_id,
-                    filament_id=filament_id,
-                    nozzle_diameter=nozzle.diameter_float,
-                    nozzle_volume_type=nozzle.flow_or_standard,
-                    extruder_id=nozzle.extruder_or_default,
-                    spool_id=spool.id if spool else None,
-                )
-            except Exception as e:
-                logger.warning(
-                    "Pre-print apply failed printer=%s ams=%s slot=%s: %s",
-                    printer_id,
-                    ams_id,
-                    slot_id,
-                    e,
-                )
+            targets.append(_bind_target(printer_id, ams_id, slot_id, filament_id, nozzle, spool))
 
     # External slots are always available regardless of AMS presence (operator
     # can mid-print swap to external on an AMS-equipped X1C, and no-AMS
@@ -464,25 +473,121 @@ async def _apply_calibrations_for_print(
             )
             if not filament_id:
                 continue
-            try:
-                await apply_active_calibration_to_slot(
-                    db=db,
-                    printer_id=printer_id,
-                    ams_id=255,
-                    slot_id=ext_slot,
-                    filament_id=filament_id,
-                    nozzle_diameter=nozzle.diameter_float,
-                    nozzle_volume_type=nozzle.flow_or_standard,
-                    extruder_id=nozzle.extruder_or_default,
-                    spool_id=spool.id if spool else None,
-                )
-            except Exception as e:
+            targets.append(_bind_target(printer_id, 255, ext_slot, filament_id, nozzle, spool))
+    return targets
+
+
+async def _apply_calibrations_for_print(
+    db,
+    printer_id: int,
+    ams_mapping: list[int] | None,
+    is_calibration: bool = False,
+) -> frozenset:
+    """Pre-print bind hook. For every AMS slot the job will use, resolve the
+    active calibration and fire ``extrusion_cali_sel``.
+
+    Closes the silent-drift gap when prints start without going through the
+    spool-link / RFID paths (queued prints, scheduled prints, manual restarts).
+    Calibration prints skip this — their wizard's ``save_result`` runs its own
+    bind. Best-effort: failures are logged, never block ``start_print``.
+
+    Returns the keys of what it bound (``_bind_target``), for
+    ``_rebind_if_moved``.
+    """
+    from backend.app.services.calibration_service import apply_active_calibration_to_slot
+
+    targets = await _calibration_targets(db, printer_id, ams_mapping, is_calibration)
+    for _key, kwargs in targets:
+        try:
+            await apply_active_calibration_to_slot(db=db, **kwargs)
+        except Exception as e:
+            if kwargs["ams_id"] == 255:
                 logger.warning(
                     "Pre-print apply (external) failed printer=%s vt_slot=%s: %s",
                     printer_id,
-                    ext_slot,
+                    kwargs["slot_id"],
                     e,
                 )
+            else:
+                logger.warning(
+                    "Pre-print apply failed printer=%s ams=%s slot=%s: %s",
+                    printer_id,
+                    kwargs["ams_id"],
+                    kwargs["slot_id"],
+                    e,
+                )
+    return frozenset(key for key, _ in targets)
+
+
+async def _calibration_bind_keys(db, printer_id: int, ams_mapping, is_calibration: bool = False) -> frozenset:
+    """What the pre-start bind would bind now, without binding it."""
+    return frozenset(key for key, _ in await _calibration_targets(db, printer_id, ams_mapping, is_calibration))
+
+
+def _session_generation(printer_id: int) -> int:
+    """The MQTT session a command sent now would reach."""
+    return printer_manager.get_feed_snapshot(printer_id).generation
+
+
+async def _rebind_if_moved(
+    db, *, printer_id, ams_mapping, is_calibration, bound, bound_generation
+) -> tuple[frozenset, int]:
+    """Send the pre-start K bind again when it went to another session or another spool.
+
+    ``bound_generation`` is the session the last bind was sent on (read just
+    before sending it). A session that changed since dropped it
+    (``_on_connect`` discards what paho was still retrying), so it is re-sent;
+    the bind is also keyed on what IT reads — the assigned spool, the slot's live
+    profile id and its nozzle — not on the routing feed: a spool re-assigned in
+    a slot whose tray looks the same changes nothing in ``FeedSource`` but
+    everything about the K it needs (spec dispatch-guard-follows-the-plan Д5).
+    Re-sending is safe: ``extrusion_cali_sel`` is idempotent.
+
+    Returns the keys bound and the session they were sent on, which
+    ``final_guard`` holds the start to (final review I2).
+    """
+    generation = _session_generation(printer_id)
+    if (
+        generation != bound_generation
+        or await _calibration_bind_keys(db, printer_id, ams_mapping, is_calibration) != bound
+    ):
+        keys = await _apply_calibrations_for_print(
+            db=db, printer_id=printer_id, ams_mapping=ams_mapping, is_calibration=is_calibration
+        )
+        return keys, generation
+    return bound, bound_generation
+
+
+async def _record_dispatched_mapping(job) -> None:
+    """The queue row keeps the mapping the printer was actually sent.
+
+    The scheduler's preflight wrote its own plan's mapping; the dispatcher's may
+    have chosen differently (a backup twin, a lower-remain spool), and the row's
+    copy is the attribution fallback (``usage_tracker``) and what
+    ``unlose_external_markers`` reads. A row without a routing intent re-reads
+    its PINS from this column, so it is left alone — it never gets a twin anyway
+    (``allow_backup_twins``). Best-effort: the print has started.
+    """
+    from backend.app.models.print_queue import PrintQueueItem
+
+    plan = getattr(job.routing_guard, "plan", None) if job.routing_guard else None
+    if plan is None or job.queue_item_id is None:
+        return
+    try:
+        async with async_session() as db:
+            await db.execute(
+                update(PrintQueueItem)
+                .where(
+                    PrintQueueItem.id == job.queue_item_id,
+                    PrintQueueItem.started_at == job.claim_started_at,
+                    PrintQueueItem.filament_routing.is_not(None),
+                )
+                .values(ams_mapping=json.dumps(plan.mapping), use_ams=plan.use_ams)
+                .execution_options(synchronize_session=False)
+            )
+            await db.commit()
+    except Exception:  # noqa: BLE001 — never fail a print that has started
+        logger.warning("Dispatch %s: could not record the dispatched mapping", getattr(job, "id", None), exc_info=True)
 
 
 def _timelapse_or_off(printer_id: int, printer, requested: bool) -> bool:
@@ -2396,7 +2501,10 @@ class BackgroundDispatchService:
                     await db.commit()
 
                 await self._set_active_message(job, f"Starting print on {printer_name}...", phase="starting")
-                await _apply_calibrations_for_print(
+                # The session the bind reaches, read BEFORE it is sent: a reconnect
+                # while it is on the wire then shows as a later session.
+                bind_generation = _session_generation(job.printer_id)
+                bound = await _apply_calibrations_for_print(
                     db=db,
                     printer_id=job.printer_id,
                     ams_mapping=job.options.get("ams_mapping"),
@@ -2413,22 +2521,31 @@ class BackgroundDispatchService:
                 effective_timelapse = _timelapse_or_off(
                     job.printer_id, printer, bool(job.options.get("timelapse", False))
                 )
-                # A session that changed during preparation gets to report again
-                # before the final check (spec direct-print-silent-cancel §4.3).
-                if await settle_feed(
+                # One bounded wait until the prepared plan holds: a new session,
+                # an operator mid-swap, our own slot writes (spec dispatch-guard-
+                # follows-the-plan Д6; direct-print-silent-cancel §4.3).
+                await settle_plan(
                     job.routing_guard,
                     job.printer_id,
                     raise_if_cancelled=lambda: self._raise_if_cancel_requested(job),
-                ):
-                    # The session changed: the pre-start K-profile bind above went
-                    # to the old one, so it is sent again on the new one.
-                    await _apply_calibrations_for_print(
-                        db=db,
-                        printer_id=job.printer_id,
-                        ams_mapping=job.options.get("ams_mapping"),
-                        is_calibration=bool(job.options.get("is_calibration")),
-                    )
-                job.routing_guard = await final_guard(job.routing_guard, job.printer_id)
+                    on_wait=lambda _reason: self._set_active_message(
+                        job, f"Waiting for a filament slot on {printer_name}...", phase="starting"
+                    ),
+                )
+                # The pre-start K bind went to another session, or the slot now
+                # holds another spool than it bound for: send it again. The final
+                # check then holds the start to the session it reached.
+                bound, bind_generation = await _rebind_if_moved(
+                    db,
+                    printer_id=job.printer_id,
+                    ams_mapping=job.options.get("ams_mapping"),
+                    is_calibration=bool(job.options.get("is_calibration")),
+                    bound=bound,
+                    bound_generation=bind_generation,
+                )
+                job.routing_guard = await final_guard(
+                    job.routing_guard, job.printer_id, bind_generation=bind_generation
+                )
                 await self._verify_routing_claim(db, job)
                 started = printer_manager.start_print(
                     job.printer_id,
@@ -2467,6 +2584,8 @@ class BackgroundDispatchService:
                     # The print owns the heaters from here; preheat must not
                     # undo its own work on the way out.
                     preheat_service.clear_pin(job.printer_id)
+                    # The row keeps the mapping the printer was actually sent.
+                    await _record_dispatched_mapping(job)
 
                 if not started:
                     await self._cleanup_sd_card_file(
@@ -3108,7 +3227,10 @@ class BackgroundDispatchService:
                     await db.commit()
 
                 await self._set_active_message(job, f"Starting print on {printer_name}...", phase="starting")
-                await _apply_calibrations_for_print(
+                # The session the bind reaches, read BEFORE it is sent: a reconnect
+                # while it is on the wire then shows as a later session.
+                bind_generation = _session_generation(job.printer_id)
+                bound = await _apply_calibrations_for_print(
                     db=db,
                     printer_id=job.printer_id,
                     ams_mapping=job.options.get("ams_mapping"),
@@ -3125,22 +3247,31 @@ class BackgroundDispatchService:
                 effective_timelapse = _timelapse_or_off(
                     job.printer_id, printer, bool(job.options.get("timelapse", False))
                 )
-                # A session that changed during preparation gets to report again
-                # before the final check (spec direct-print-silent-cancel §4.3).
-                if await settle_feed(
+                # One bounded wait until the prepared plan holds: a new session,
+                # an operator mid-swap, our own slot writes (spec dispatch-guard-
+                # follows-the-plan Д6; direct-print-silent-cancel §4.3).
+                await settle_plan(
                     job.routing_guard,
                     job.printer_id,
                     raise_if_cancelled=lambda: self._raise_if_cancel_requested(job),
-                ):
-                    # The session changed: the pre-start K-profile bind above went
-                    # to the old one, so it is sent again on the new one.
-                    await _apply_calibrations_for_print(
-                        db=db,
-                        printer_id=job.printer_id,
-                        ams_mapping=job.options.get("ams_mapping"),
-                        is_calibration=bool(job.options.get("is_calibration")),
-                    )
-                job.routing_guard = await final_guard(job.routing_guard, job.printer_id)
+                    on_wait=lambda _reason: self._set_active_message(
+                        job, f"Waiting for a filament slot on {printer_name}...", phase="starting"
+                    ),
+                )
+                # The pre-start K bind went to another session, or the slot now
+                # holds another spool than it bound for: send it again. The final
+                # check then holds the start to the session it reached.
+                bound, bind_generation = await _rebind_if_moved(
+                    db,
+                    printer_id=job.printer_id,
+                    ams_mapping=job.options.get("ams_mapping"),
+                    is_calibration=bool(job.options.get("is_calibration")),
+                    bound=bound,
+                    bound_generation=bind_generation,
+                )
+                job.routing_guard = await final_guard(
+                    job.routing_guard, job.printer_id, bind_generation=bind_generation
+                )
                 await self._verify_routing_claim(db, job)
                 started = printer_manager.start_print(
                     job.printer_id,
@@ -3179,6 +3310,8 @@ class BackgroundDispatchService:
                     # The print owns the heaters from here; preheat must not
                     # undo its own work on the way out.
                     preheat_service.clear_pin(job.printer_id)
+                    # The row keeps the mapping the printer was actually sent.
+                    await _record_dispatched_mapping(job)
 
                 if not started:
                     await self._cleanup_sd_card_file(

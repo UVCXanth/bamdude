@@ -226,13 +226,177 @@ def test_explicit_external_only_works_even_with_ams():
     assert result.plan.mapping == [254]
 
 
-def test_pinned_sources_are_not_remapped_and_unknown_legacy_colour_needs_review():
+def test_a_legacy_pin_without_a_colour_holds_unless_the_colour_is_forced():
+    """П4 (owner, 2026-09-30): a pin's colour counts only when the colour is forced."""
     req = requirements({})
     policy = RoutingPolicy(mode="pinned", physical_pins={1: {"source_id": 0}})
     state = snapshot(feed(0, "00FF00", kind="ams"), feed(1, kind="ams"))
-    assert resolve_filament_routing(req, policy, state).reason == "mapping_review_required"
-    explicit = replace(policy, physical_pins={1: {"source_id": 0, "color": "00FF00", "type": "PLA"}})
-    assert resolve_filament_routing(req, explicit, state).plan.mapping == [0]
+    assert resolve_filament_routing(req, policy, state).plan.mapping == [0]
+    assert resolve_filament_routing(req, replace(policy, force_color_match=True), state).reason == "color_mismatch"
+
+
+def masked(sid, *, color, declared_color, variant="GFG00", declared_variant="GFG99", material="PETG", remain=-1):
+    return FeedSource(
+        sid,
+        "ams",
+        material,
+        color,
+        variant,
+        (0,),
+        remain,
+        declared_color=declared_color,
+        declared_variant=declared_variant,
+    )
+
+
+def test_a_forced_colour_is_judged_by_the_colour_the_operator_declared():
+    state = snapshot(masked(0, color="FF0000FF", declared_color="000000FF"))
+    forced = RoutingPolicy(force_color_match=True)
+    black = requirements({"type": "PETG", "color": "#000000"})
+    red = requirements({"type": "PETG", "color": "#FF0000"})
+    assert resolve_filament_routing(black, forced, state).plan.mapping == [0]
+    assert resolve_filament_routing(red, forced, state).reason == "color_mismatch"
+
+
+def test_a_strict_profile_is_judged_by_the_profile_the_operator_declared():
+    state = snapshot(masked(0, color="000000FF", declared_color="000000FF", variant="GFG02", declared_variant="GFG99"))
+    strict = RoutingPolicy(allow_base_material_match=False)
+    generic = requirements({"type": "PETG", "color": "#000000", "tray_info_idx": "GFG99"})
+    hf = requirements({"type": "PETG", "color": "#000000", "tray_info_idx": "GFG02"})
+    assert resolve_filament_routing(generic, strict, state).status == "compatible"
+    result = resolve_filament_routing(hf, strict, state)
+    assert result.reason == "variant_mismatch"
+    assert result.params["loaded"] == "PETG (GFG99)"  # the refusal names what the rule read
+
+
+def test_the_base_material_is_always_the_spools():
+    state = snapshot(masked(0, color="000000FF", declared_color="000000FF"))
+    assert (
+        resolve_filament_routing(requirements({"type": "PLA", "color": "#000000"}), RoutingPolicy(), state).plan is None
+    )
+
+
+def test_a_pin_checks_colour_only_when_the_colour_is_forced():
+    pinned = RoutingPolicy(
+        mode="pinned", physical_pins={1: {"source_id": 0, "type": "PLA", "color": "00FF00FF", "nozzles": [0]}}
+    )
+    state = snapshot(feed(0, "0000FFFF", kind="ams"))
+    assert resolve_filament_routing(requirements({}), pinned, state).plan.mapping == [0]
+    assert (
+        resolve_filament_routing(requirements({}), replace(pinned, force_color_match=True), state).reason
+        == "color_mismatch"
+    )
+
+
+PIN_0 = RoutingPolicy(
+    mode="pinned", physical_pins={1: {"source_id": 0, "type": "PETG", "color": "000000FF", "nozzles": [0]}}
+)
+PETG_BLACK = requirements({"type": "PETG", "color": "#000000"})
+
+
+def twin_state(*, backup=True, membership=None):
+    return snapshot(
+        FeedSource(1, "ams", "PETG", "FF0000FF", nozzles=(0,), declared_color="000000FF"),
+        FeedSource(2, "ams", "PLA", "000000FF", nozzles=(0,)),
+        backup_enabled=backup,
+        backup_membership={0: (0, 1), 1: (0, 1)} if membership is None else membership,
+    )
+
+
+def test_an_empty_pinned_slot_prints_from_its_backup_twin():
+    assert resolve_filament_routing(PETG_BLACK, PIN_0, twin_state()).plan.mapping == [1]
+
+
+def test_a_twin_still_meets_a_forced_colour_by_what_was_declared():
+    forced = replace(PIN_0, force_color_match=True)
+    assert resolve_filament_routing(PETG_BLACK, forced, twin_state()).plan.mapping == [1]
+    red = requirements({"type": "PETG", "color": "#FF0000"})
+    # The chosen slot is empty and no twin can stand in: that is what the operator is told.
+    assert resolve_filament_routing(red, forced, twin_state()).reason == "pinned_source_empty"
+
+
+@pytest.mark.parametrize("backup", [False, None])
+def test_without_backup_an_empty_pinned_slot_waits(backup):
+    assert resolve_filament_routing(PETG_BLACK, PIN_0, twin_state(backup=backup)).reason == "pinned_source_empty"
+
+
+def test_a_slot_never_seen_in_a_group_has_no_twin():
+    """Also the state after a BamDude restart: the memory is empty."""
+    assert resolve_filament_routing(PETG_BLACK, PIN_0, twin_state(membership={})).reason == "pinned_source_empty"
+
+
+def test_a_twin_on_another_nozzle_is_not_used():
+    state = snapshot(
+        FeedSource(1, "ams", "PETG", "000000FF", nozzles=(1,)), backup_enabled=True, backup_membership={0: (0, 1)}
+    )
+    result = resolve_filament_routing(PETG_BLACK, PIN_0, state)
+    assert result.plan is None and result.reason == "pinned_source_empty"
+
+
+@pytest.mark.parametrize("fts", [{"fts": True}, {"fts_pending_confirmation": True}])
+def test_an_empty_pinned_slot_is_not_blamed_on_another_holder(fts):
+    """Final review: an external spool on an FTS printer used to lend its FTS
+    reason to an empty pinned AMS slot."""
+    state = snapshot(feed(254, "000000FF", material="PETG"), backup_enabled=True, **fts)
+    assert resolve_filament_routing(PETG_BLACK, PIN_0, state).reason == "pinned_source_empty"
+
+
+def test_a_loaded_pinned_slot_is_never_swapped_for_a_twin():
+    state = snapshot(
+        FeedSource(0, "ams", "PLA", "000000FF", nozzles=(0,)),
+        FeedSource(1, "ams", "PETG", "000000FF", nozzles=(0,)),
+        backup_enabled=True,
+        backup_membership={0: (0, 1), 1: (0, 1)},
+    )
+    result = resolve_filament_routing(PETG_BLACK, PIN_0, state)
+    assert result.plan is None and result.reason == "material_mismatch"
+
+
+def test_an_external_holder_is_never_a_twin():
+    state = snapshot(feed(254, "000000FF", material="PETG"), backup_enabled=True, backup_membership={0: (0, 254)})
+    assert resolve_filament_routing(PETG_BLACK, PIN_0, state).reason == "pinned_source_empty"
+
+
+def test_an_ams_ht_slot_has_twins_too():
+    pin = RoutingPolicy(mode="pinned", physical_pins={1: {"source_id": 128, "type": "PETG", "nozzles": [0]}})
+    state = snapshot(
+        FeedSource(129, "ams", "PETG", "000000FF", nozzles=(0,)),
+        backup_enabled=True,
+        backup_membership={128: (128, 129)},
+    )
+    assert resolve_filament_routing(PETG_BLACK, pin, state).plan.mapping == [129]
+
+
+def test_a_legacy_row_gets_no_twin():
+    result = resolve_filament_routing(PETG_BLACK, PIN_0, twin_state(), allow_backup_twins=False)
+    assert result.reason == "pinned_source_empty"
+
+
+def test_a_twin_already_serving_another_channel_is_not_taken_twice():
+    req = requirements({"type": "PETG", "color": "#000000"}, {"type": "PETG", "color": "#000000"})
+    policy = RoutingPolicy(
+        mode="pinned",
+        physical_pins={
+            1: {"source_id": 0, "type": "PETG", "nozzles": [0]},
+            2: {"source_id": 1, "type": "PETG", "nozzles": [0]},
+        },
+    )
+    state = snapshot(
+        FeedSource(1, "ams", "PETG", "000000FF", nozzles=(0,)),
+        backup_enabled=True,
+        backup_membership={0: (0, 1), 1: (0, 1)},
+    )
+    assert resolve_filament_routing(req, policy, state).plan is None
+
+
+def test_the_ranking_counts_a_declared_colour_as_exact():
+    """В1: in a leftover group declared black, «lowest remain first» starts on the leftovers."""
+    state = snapshot(
+        FeedSource(0, "ams", "PETG", "000000FF", nozzles=(0,), remain=90),
+        FeedSource(1, "ams", "PETG", "FF0000FF", nozzles=(0,), remain=10, declared_color="000000FF"),
+    )
+    req = requirements({"type": "PETG", "color": "#000000"})
+    assert resolve_filament_routing(req, RoutingPolicy(), state, prefer_lowest=True).plan.mapping == [1]
 
 
 def test_a_pinned_tray_that_was_only_re_profiled_is_still_the_pinned_tray():
@@ -356,48 +520,30 @@ def a_plan(policy, state, req=None):
 
 
 def a_guard(policy, state, req=None):
+    from backend.app.services.filament_preflight import planned_nozzle_diameters
+    from backend.app.utils.printer_configs import requires_left_tpu_firmware_check
+
     req = req or requirements({})
+    plan = a_plan(policy, state, req)
     return DispatchRoutingGuard(
-        req, policy, a_plan(policy, state, req), True, "revision", feed_signature(policy, state)
+        req,
+        policy,
+        plan,
+        True,
+        "revision",
+        state.generation,
+        planned_nozzle_diameters(req, policy, plan, state),
+        requires_left_tpu_firmware_check(state.model),
     )
+
+
+def validate(guard, state):
+    guard.validate(state, mapping=guard.plan.mapping, use_ams=guard.plan.use_ams, plate_id=guard.plan.resolved_plate_id)
 
 
 def retagged(state, source, variant="GFB99"):
     """The one change this feature is about: a new profile id on the same spool."""
     return replace(state, sources=(replace(source, variant=variant),), revision="the raw revision moved")
-
-
-def test_the_plan_records_whether_the_profile_is_part_of_its_identity():
-    state = snapshot(feed(0, kind="ams", variant="GFA00"))
-    assert a_plan(RoutingPolicy(allow_base_material_match=True), state).variant_sensitive is False
-    assert a_plan(RoutingPolicy(allow_base_material_match=False), state).variant_sensitive is True
-
-
-def test_a_profile_only_retag_is_not_a_changed_plan_when_the_option_is_on():
-    policy = RoutingPolicy(allow_base_material_match=True)
-    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
-    state = snapshot(source)
-    assert a_plan(policy, state).fingerprint == a_plan(policy, retagged(state, source)).fingerprint
-
-
-def test_the_same_retag_is_a_changed_plan_when_the_option_is_off():
-    policy = RoutingPolicy(allow_base_material_match=False)
-    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
-    state = snapshot(source)
-    assert a_plan(policy, state).fingerprint != a_plan(policy, retagged(state, source)).fingerprint
-
-
-@pytest.mark.parametrize(
-    "changed",
-    [{"color": "00FF00FF"}, {"identity": "ANOTHER-SPOOL"}, {"nozzles": (0, 1)}, {"kind": "external"}, {"id": 1}],
-)
-def test_the_plan_keeps_every_physical_fact_with_the_option_on(changed):
-    """Only the profile becomes policy-dependent; the spool itself never does."""
-    policy = RoutingPolicy(allow_base_material_match=True)
-    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
-    state = snapshot(source)
-    moved = replace(state, sources=(replace(source, **changed),))
-    assert a_plan(policy, state).fingerprint != a_plan(policy, moved).fingerprint
 
 
 def test_a_changed_material_never_reaches_the_plan_comparison_at_all():
@@ -472,6 +618,13 @@ def test_the_feed_signature_keeps_the_connection_and_the_shape_of_the_feed(chang
     assert feed_signature(policy, state) != feed_signature(policy, replace(state, **changed))
 
 
+def test_re_advertising_the_generic_family_does_not_move_the_on_signature():
+    policy = RoutingPolicy(allow_base_material_match=True)
+    source = feed(0, kind="ams", variant="GFG00", declared_variant="GFG99")
+    moved = replace(source, declared_variant="GFG98")
+    assert feed_signature(policy, snapshot(source)) == feed_signature(policy, snapshot(moved))
+
+
 def test_the_guard_runs_without_an_await_and_lets_a_retag_through():
     """``validate`` is called inside the MQTT client's routing lock: no await, ever."""
     assert not inspect.iscoroutinefunction(DispatchRoutingGuard.validate)
@@ -489,40 +642,116 @@ def test_the_guard_runs_without_an_await_and_lets_a_retag_through():
     )
 
 
-@pytest.mark.parametrize(
-    "changed", [{"material": "PETG"}, {"color": "00FF00FF"}, {"identity": "ANOTHER-SPOOL"}, {"nozzles": (1,)}]
-)
-def test_the_guard_still_refuses_a_swapped_spool_with_the_option_on(changed):
+@pytest.mark.parametrize("changed", [{"color": "00FF00FF"}, {"identity": "ANOTHER-SPOOL"}, {"variant": "GFB99"}])
+def test_the_guard_lets_the_same_filament_through_whatever_its_tag_or_colour(changed):
     policy = RoutingPolicy(allow_base_material_match=True)
     source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
-    state = snapshot(source)
-    guard = a_guard(policy, state)
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
-        guard.validate(
-            replace(state, sources=(replace(source, **changed),)),
-            mapping=guard.plan.mapping,
-            use_ams=guard.plan.use_ams,
-            plate_id=guard.plan.resolved_plate_id,
-        )
+    guard = a_guard(policy, snapshot(source))
+    validate(guard, replace(snapshot(source), sources=(replace(source, **changed),)))
 
 
-@pytest.mark.parametrize("changed", [{"generation": 2}, {"connected": False}, {"sources": ()}])
-def test_the_guard_still_refuses_a_lost_connection_or_an_empty_feed(changed):
+@pytest.mark.parametrize(
+    ("changed", "reason"), [({"material": "PETG"}, "material_mismatch"), ({"nozzles": (1,)}, "nozzle_mismatch")]
+)
+def test_the_guard_refuses_a_spool_that_no_longer_fits_its_channel(changed, reason):
+    policy = RoutingPolicy(allow_base_material_match=True)
+    source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
+    guard = a_guard(policy, snapshot(source))
+    with pytest.raises(RoutingDeferred, match=reason):
+        validate(guard, replace(snapshot(source), sources=(replace(source, **changed),)))
+
+
+@pytest.mark.parametrize(
+    ("changed", "reason"),
+    [
+        ({"generation": 2}, "printer_reconnected"),
+        ({"connected": False}, "printer_offline"),
+        ({"sources": ()}, "planned_source_empty"),
+    ],
+)
+def test_the_guard_still_refuses_a_lost_connection_or_an_empty_feed(changed, reason):
     policy = RoutingPolicy(allow_base_material_match=True)
     guard = a_guard(policy, snapshot(feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")))
     state = replace(snapshot(feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")), **changed)
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
-        guard.validate(state, mapping=guard.plan.mapping, use_ams=guard.plan.use_ams, plate_id=4)
+    with pytest.raises(RoutingDeferred, match=reason):
+        validate(guard, state)
 
 
-def test_the_guard_refuses_a_profile_only_retag_when_the_option_is_off():
-    policy = RoutingPolicy(allow_base_material_match=False)
+def test_the_guard_refuses_a_profile_retag_only_when_the_job_is_strict_about_it():
     source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
-    guard = a_guard(policy, snapshot(source))
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
-        guard.validate(
-            retagged(snapshot(source), source),
-            mapping=guard.plan.mapping,
-            use_ams=guard.plan.use_ams,
-            plate_id=guard.plan.resolved_plate_id,
-        )
+    strict = RoutingPolicy(allow_base_material_match=False)
+    named = requirements({"tray_info_idx": "GFA00"})
+    guard = a_guard(strict, snapshot(source), named)
+    with pytest.raises(RoutingDeferred, match="variant_mismatch"):
+        validate(guard, retagged(snapshot(source), source))
+    validate(a_guard(strict, snapshot(source)), retagged(snapshot(source), source))  # the file names no profile
+
+
+def test_a_change_in_a_slot_the_plan_does_not_use_is_not_a_changed_plan():
+    policy = RoutingPolicy()
+    used, spare = feed(0, kind="ams"), feed(1, "00FF00FF", kind="ams", material="PETG")
+    guard = a_guard(policy, snapshot(used, spare))
+    assert guard.plan.mapping == [0]
+    validate(guard, snapshot(used, replace(spare, material="ABS", identity="NEW")))
+    validate(guard, snapshot(used))  # and a spare slot emptied
+
+
+def test_the_guard_reads_the_declared_colour_for_a_forced_colour():
+    forced = RoutingPolicy(force_color_match=True)
+    black = requirements({"type": "PETG", "color": "#000000"})
+    source = FeedSource(0, "ams", "PETG", "000000FF", nozzles=(0,))
+    guard = a_guard(forced, snapshot(source), black)
+    validate(guard, snapshot(replace(source, color="FF0000FF", declared_color="000000FF")))
+    with pytest.raises(RoutingDeferred, match="color_mismatch"):
+        validate(guard, snapshot(replace(source, color="FF0000FF")))
+
+
+def test_the_guard_refuses_a_nozzle_that_no_longer_fits_the_plate():
+    req = PrintRequirements(
+        "ok",
+        source_identity=SourceIdentity("synthetic", 1, 1),
+        resolved_plate_id=4,
+        model="P1P",
+        used_filaments=({"slot_id": 1, "type": "PLA", "color": "#FF0000", "nozzle_id": 0, "used_grams": 1},),
+        nozzle_constraints={"nozzle_diameter": [0.2]},
+    )
+    state = snapshot(feed(0, kind="ams"), nozzle_diameters={0: (0.2,)})
+    guard = a_guard(RoutingPolicy(), state, req)
+    with pytest.raises(RoutingDeferred, match="nozzle_mismatch"):
+        validate(guard, replace(state, nozzle_diameters={0: (0.4,)}))
+
+
+def test_the_guard_refuses_a_hotend_swapped_on_a_nozzle_the_plan_uses():
+    """Final review I1: a plate with no diameter constraint, or an H2C rack whose
+    chosen dock was re-fitted during the soak, is still a changed plan."""
+    state = snapshot(feed(0, kind="ams"), nozzle_diameters={0: (0.4,)})
+    guard = a_guard(RoutingPolicy(), state)
+    with pytest.raises(RoutingDeferred, match="nozzle_mismatch"):
+        validate(guard, replace(state, nozzle_diameters={0: (0.6,)}))
+    validate(guard, replace(state, nozzle_diameters={0: (0.4,), 1: (0.6,)}))  # a nozzle the plan does not use
+    with pytest.raises(RoutingDeferred, match="nozzle_state_unavailable"):
+        validate(guard, replace(state, nozzle_diameters={}))  # not reported yet: wait, never pass
+
+
+def test_the_guard_must_be_told_the_left_tpu_answer():
+    """A safety check with a fail-open default is one forgotten argument away from off."""
+    with pytest.raises(TypeError):
+        DispatchRoutingGuard(requirements({}), RoutingPolicy(), None, True, "revision", 1, {})
+
+
+def test_plan_holds_edge_cases_refuse_in_words():
+    from backend.app.services.filament_preflight import plan_holds
+
+    state = snapshot(feed(0, kind="ams"))
+    guard = a_guard(RoutingPolicy(), state)
+    unused = replace(guard, policy=RoutingPolicy(filament_overrides=({"slot_id": 9},)))
+    assert plan_holds(unused, state) == (False, "override_slot_not_used", False)  # nothing to wait for
+    unassigned = replace(guard, plan=replace(guard.plan, assignments={}))
+    assert plan_holds(unassigned, state) == (False, "mapping_review_required", False)
+
+
+def test_an_unknown_fact_is_never_a_pass():
+    source = feed(254)
+    guard = a_guard(RoutingPolicy(), snapshot(source))
+    with pytest.raises(RoutingDeferred, match="fts_state_unavailable"):
+        validate(guard, snapshot(source, fts_pending_confirmation=True))

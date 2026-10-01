@@ -81,6 +81,79 @@ async def test_the_pre_print_hook_binds_each_slot_against_its_own_nozzle(db_sess
 
 
 @pytest.mark.asyncio
+async def test_an_ams_ht_slot_the_plan_uses_is_bound(db_session):
+    from backend.app.services.background_dispatch import _apply_calibrations_for_print
+
+    state = SimpleNamespace(
+        connected=True,
+        nozzles=[NozzleInfo(nozzle_diameter="0.4", nozzle_flow="standard")],
+        ams_extruder_map={"128": 0},
+        support_user_preset=False,
+        raw_data={"ams": [{"id": 128, "tray": [{"id": 0, "tray_info_idx": "GFL99"}]}]},
+    )
+    client = MagicMock(state=SimpleNamespace(connected=True))
+    apply = AsyncMock(return_value=(False, None))
+    with (
+        patch("backend.app.services.background_dispatch.printer_manager") as pm,
+        patch("backend.app.services.calibration_service.apply_active_calibration_to_slot", new=apply),
+    ):
+        pm.get_client.return_value = client
+        pm.get_status.return_value = state
+        await _apply_calibrations_for_print(db_session, 1, ams_mapping=[128])
+    assert [args[:2] for args in _bind_args(apply)] == [(128, 0)]
+
+
+@pytest.mark.asyncio
+async def test_the_bind_is_sent_again_when_the_slot_now_holds_another_filament(db_session):
+    from backend.app.services.background_dispatch import _apply_calibrations_for_print, _rebind_if_moved
+
+    state = _h2d_state(raw_data={"ams": [{"id": 1, "tray": [{"id": 0, "tray_info_idx": "GFL99"}]}]})
+    client = MagicMock(state=SimpleNamespace(connected=True))
+    apply = AsyncMock(return_value=(False, None))
+    with (
+        patch("backend.app.services.background_dispatch.printer_manager") as pm,
+        patch("backend.app.services.calibration_service.apply_active_calibration_to_slot", new=apply),
+    ):
+        pm.get_client.return_value = client
+        pm.get_status.return_value = state
+        pm.get_feed_snapshot.return_value = SimpleNamespace(generation=1)
+        bound = await _apply_calibrations_for_print(db_session, 1, ams_mapping=[4])
+        assert apply.await_count == 1
+        kept, generation = await _rebind_if_moved(
+            db_session, printer_id=1, ams_mapping=[4], is_calibration=False, bound=bound, bound_generation=1
+        )
+        assert apply.await_count == 1 and (kept, generation) == (bound, 1)
+        state.raw_data["ams"][0]["tray"][0]["tray_info_idx"] = "GFA00"
+        moved, generation = await _rebind_if_moved(
+            db_session, printer_id=1, ams_mapping=[4], is_calibration=False, bound=bound, bound_generation=1
+        )
+        assert apply.await_count == 2 and moved != bound and generation == 1
+
+
+@pytest.mark.asyncio
+async def test_the_bind_is_sent_again_on_the_session_it_did_not_reach(db_session):
+    """Final review I2: the generation the bind was sent on is recorded; a later
+    session re-sends it and reports the new generation for the final check."""
+    from backend.app.services.background_dispatch import _apply_calibrations_for_print, _rebind_if_moved
+
+    state = _h2d_state(raw_data={"ams": [{"id": 1, "tray": [{"id": 0, "tray_info_idx": "GFL99"}]}]})
+    client = MagicMock(state=SimpleNamespace(connected=True))
+    apply = AsyncMock(return_value=(False, None))
+    with (
+        patch("backend.app.services.background_dispatch.printer_manager") as pm,
+        patch("backend.app.services.calibration_service.apply_active_calibration_to_slot", new=apply),
+    ):
+        pm.get_client.return_value = client
+        pm.get_status.return_value = state
+        pm.get_feed_snapshot.return_value = SimpleNamespace(generation=2)
+        bound = await _apply_calibrations_for_print(db_session, 1, ams_mapping=[4])
+        rebound, generation = await _rebind_if_moved(
+            db_session, printer_id=1, ams_mapping=[4], is_calibration=False, bound=bound, bound_generation=1
+        )
+        assert apply.await_count == 2 and rebound == bound and generation == 2
+
+
+@pytest.mark.asyncio
 async def test_assigning_a_spool_binds_against_the_slots_nozzle(db_session):
     from backend.app.api.routes.inventory import apply_spool_to_slot_via_mqtt
     from backend.app.models.printer import Printer

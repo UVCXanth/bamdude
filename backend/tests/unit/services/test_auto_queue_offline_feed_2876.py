@@ -116,6 +116,29 @@ class TestWhenItIsPassedOver:
         # PA-CF / PA12-CF / PAHT-CF are one group for routing, so for this too.
         assert offline_shortfall(_req(("PA12-CF", None)), RoutingPolicy(), _feed(("ams", "PA-CF", None))) == []
 
+    def test_a_bound_spool_under_a_declared_colour_is_not_ruled_out_for_that_colour(self):
+        """П3 offline (owner, 2026-09-30): a printer told a canonical colour for
+        backup is not passed over for that colour."""
+        bound = {(0, 0): (("PETG",), "FF0000FF")}
+        reading = {"ams": [], "vt_tray": []}
+        black = _req(("PETG", "000000FF"))
+        forced = RoutingPolicy(force_color_match=True)
+        assert offline_shortfall(black, forced, feed_from(reading, bound))
+        assert offline_shortfall(black, forced, feed_from(reading, bound, declared_color="000000FF")) == []
+
+    def test_an_rfid_spool_is_never_given_the_declared_colour(self):
+        """The projection never masks an RFID spool, so neither may the wake step."""
+        from backend.app.services.offline_feed import rfid_slots
+
+        tag = {"tag_uid": "1A2B3C4D5E6F7788", "tray_uuid": "0123456789ABCDEF0123456789ABCDEF"}
+        reading = _reading([_tray(0, "PETG", "FF0000FF", **tag)])
+        bound = {(0, 0): (("PETG",), "FF0000FF")}
+        black = _req(("PETG", "000000FF"))
+        forced = RoutingPolicy(force_color_match=True)
+        assert rfid_slots(reading) == frozenset({(0, 0)})
+        fed = feed_from(reading, bound, declared_color="000000FF", rfid_keys=rfid_slots(reading))
+        assert offline_shortfall(black, forced, fed)
+
     def test_a_forced_colour_that_is_not_loaded(self):
         policy = RoutingPolicy(force_color_match=True)
         missing = offline_shortfall(_req(("PLA", "FF0000FF")), policy, _feed(("ams", "PLA", "00FF00FF")))

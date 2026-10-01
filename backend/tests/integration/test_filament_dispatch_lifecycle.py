@@ -1,7 +1,8 @@
 """Drive both real runners through public owners with only device I/O mocked."""
 
 import asyncio
-from datetime import datetime, timedelta
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -102,6 +103,8 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
         status="printing",
         started_at=datetime.now(),
         origin=owner,
+        # A stale copy: only a CONFIRMED start may overwrite it with what was sent.
+        ams_mapping="[0]",
     )
     db_session.add(item)
     await db_session.flush()
@@ -185,12 +188,16 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
                     owned_queue.current_item_id, owned_queue.status = None, "idle"
                     await concurrent.delete(claimed)
                 await concurrent.commit()
+        return frozenset()  # the keys of what it bound — none, in this harness
 
     upload_mock = AsyncMock(side_effect=upload)
     monkeypatch.setattr(bd, "upload_file_async", upload_mock)
     monkeypatch.setattr("backend.app.services.preheat.preheat_and_soak", AsyncMock(side_effect=preheat))
     calibrate = AsyncMock(side_effect=calibration)
     monkeypatch.setattr(bd, "_apply_calibrations_for_print", calibrate)
+    # The bind is stubbed, so what it would bind now is stubbed with it: only a
+    # session change re-sends it here (the key comparison has its own unit test).
+    monkeypatch.setattr(bd, "_calibration_bind_keys", AsyncMock(return_value=frozenset()))
     service = BackgroundDispatchService()
     monkeypatch.setattr(service, "_ensure_live_connection_before_start", AsyncMock())
     monkeypatch.setattr(service, "_run_swap_macro_if_needed", AsyncMock())
@@ -249,8 +256,6 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
         if ok:
             assert job.outcome["success"] is True
     if ok:
-        import json
-
         from backend.app.services.filament_policy import restore_routing_source
 
         await db_session.refresh(item)
@@ -260,10 +265,13 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
         assert command["use_ams"] is False and command["param"] == "Metadata/plate_15.gcode"
         register.assert_called_once()
         assert register.call_args.kwargs["ams_mapping"] == [-1, -1, 254]
+        assert json.loads(item.ams_mapping) == [-1, -1, 254]  # the row keeps what was sent
         withdraw.assert_not_called()
         failure.assert_not_awaited()
-        # The pre-start K-profile bind went to the old session; it is sent again.
-        assert calibrate.await_count == (2 if change == "reconnect" else 1)
+        # The reconnect happens during the upload, so the pre-start K bind is
+        # sent on the NEW session already: the generation it was sent on is
+        # recorded, and it is not re-sent (final review I2).
+        assert calibrate.await_count == 1
         if owner == "direct" and kind == "print_library_file":
             saved = json.loads(item.filament_routing)
             assert saved["source_identity"]["kind"] == "archive"
@@ -277,6 +285,7 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
         assert await db_session.get(PrintQueueItem, item_id) is None
     else:
         await db_session.refresh(item)
+        assert json.loads(item.ams_mapping) == [0]  # nothing was started, nothing recorded
     if change in {"cancel", "reclaim"}:
         assert item.status == ("cancelled" if change == "cancel" else "printing")
     elif change != "delete":
@@ -312,3 +321,38 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
     if owner == "queue" and change not in {"cancel", "reclaim", "delete"}:
         with pytest.raises(RoutingDeferred):
             await preflight_item(db_session, item, printer_id)
+
+
+async def test_the_row_keeps_the_mapping_the_printer_was_sent(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from backend.app.services import background_dispatch as bd
+    from backend.app.services.background_dispatch import _record_dispatched_mapping
+
+    monkeypatch.setattr(bd, "async_session", async_sessionmaker(test_engine, expire_on_commit=False))
+    _source, _printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    started = datetime.now(timezone.utc)
+    intent = PrintQueueItem(
+        queue_id=queue.id, status="printing", started_at=started, filament_routing="{}", ams_mapping="[0]"
+    )
+    legacy = PrintQueueItem(
+        queue_id=queue.id, status="printing", started_at=started, filament_routing=None, ams_mapping="[0]"
+    )
+    db_session.add_all([intent, legacy])
+    await db_session.commit()
+
+    for row in (intent, legacy):
+        # The dispatcher's claim stamp is the value it READ off the row.
+        await db_session.refresh(row)
+        job = SimpleNamespace(
+            queue_item_id=row.id,
+            claim_started_at=row.started_at,
+            routing_guard=SimpleNamespace(plan=SimpleNamespace(mapping=[1], use_ams=True)),
+        )
+        await _record_dispatched_mapping(job)
+    await db_session.refresh(intent)
+    await db_session.refresh(legacy)
+    assert json.loads(intent.ams_mapping) == [1]
+    assert json.loads(legacy.ams_mapping) == [0]  # a legacy row's mapping IS its pins

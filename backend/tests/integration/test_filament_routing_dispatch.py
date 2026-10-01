@@ -4,7 +4,7 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import select
@@ -22,7 +22,7 @@ from backend.app.services.bambu_mqtt import BambuMQTTClient
 from backend.app.services.filament_deferred import defer_claim
 from backend.app.services.filament_intake import read_item_requirements
 from backend.app.services.filament_policy import deserialize_policy, queue_policy
-from backend.app.services.filament_preflight import final_guard, preflight_item, settle_feed
+from backend.app.services.filament_preflight import final_guard, preflight_item, settle_plan
 from backend.app.services.filament_routing import RoutingDeferred, fingerprint
 from backend.app.services.printer_feed_snapshot import FeedTelemetry
 from backend.app.services.printer_manager import printer_manager
@@ -214,7 +214,9 @@ async def test_publish_boundary_catches_change_after_final_preflight(
     await db_session.commit()
     guard = await final_guard(await preflight_item(db_session, item, printer.id), printer.id)
     mqtt._process_message({"print": {"vt_tray": {"id": 254, "tray_type": "PETG"}}})
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+    # The boundary asks the plan's own slot under the channel rule, so it names
+    # what is wrong with it rather than "something changed".
+    with pytest.raises(RoutingDeferred, match="material_mismatch"):
         printer_manager.start_print(
             printer.id,
             source.filename,
@@ -432,17 +434,17 @@ async def test_a_retagged_spool_no_longer_stops_a_prepared_job(
     mqtt._client.publish.assert_called_once()
 
 
-async def test_the_same_retag_still_stops_the_job_when_the_option_is_off(
+async def test_a_retag_does_not_stop_a_job_whose_file_names_no_profile(
     db_session, tmp_path, printer_factory, monkeypatch
 ):
-    """With the option off the operator asked for that exact profile, here too."""
+    """With the option off the operator asked for the FILE's profile — and this
+    file names none, so a new profile id on the loaded spool asks nothing of it (П2)."""
     item, _source, printer, _plate, mqtt = await a_routed_job(
         db_session, tmp_path, printer_factory, monkeypatch, allow_base_material_match=False
     )
     guard = await preflight_item(db_session, item, printer.id)
     retag(mqtt)
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
-        await final_guard(guard, printer.id)
+    assert (await final_guard(guard, printer.id)).plan.mapping == guard.plan.mapping
 
 
 def reconnect(mqtt):
@@ -480,7 +482,7 @@ async def test_a_reconnect_that_reports_the_same_feed_keeps_the_prepared_job(
     monkeypatch.setattr(printer_manager, "request_status_update", MagicMock(return_value=True))
     reconnect(mqtt)
     asyncio.get_running_loop().call_later(0.05, report_the_spool, mqtt)
-    await settle_feed(guard, printer.id, timeout=2, poll=0.01)
+    await settle_plan(guard, printer.id, timeout=2, poll=0.01)
     guard = await final_guard(guard, printer.id)
     assert printer_manager.start_print(
         printer.id,
@@ -499,22 +501,23 @@ async def test_a_reconnect_that_reports_another_spool_defers(db_session, tmp_pat
     guard = await preflight_item(db_session, item, printer.id)
     monkeypatch.setattr(printer_manager, "request_status_update", MagicMock(return_value=True))
     reconnect(mqtt)
-    report_the_spool(mqtt, tray_uuid="ANOTHER-SPOOL")
-    await settle_feed(guard, printer.id, timeout=2, poll=0.01, converge=0.05)
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+    # Another tag on the same filament is the same plan now; another MATERIAL is not.
+    report_the_spool(mqtt, tray_type="PETG")
+    await settle_plan(guard, printer.id, timeout=2, poll=0.01, converge=0.05)
+    with pytest.raises(RoutingDeferred, match="material_mismatch"):
         await final_guard(guard, printer.id)
     mqtt._client.publish.assert_not_called()
 
 
-async def test_settle_feed_says_whether_the_session_changed(db_session, tmp_path, printer_factory, monkeypatch):
+async def test_settle_plan_says_whether_the_session_changed(db_session, tmp_path, printer_factory, monkeypatch):
     """The runner re-binds the pre-start calibration only after a session change."""
     item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
     guard = await preflight_item(db_session, item, printer.id)
     monkeypatch.setattr(printer_manager, "request_status_update", MagicMock(return_value=True))
-    assert await settle_feed(guard, printer.id, timeout=0.01, poll=0.01) is False
+    assert await settle_plan(guard, printer.id, timeout=0.01, poll=0.01) is False
     reconnect(mqtt)
     report_the_spool(mqtt)
-    assert await settle_feed(guard, printer.id, timeout=2, poll=0.01) is True
+    assert await settle_plan(guard, printer.id, timeout=2, poll=0.01) is True
 
 
 async def test_a_new_session_whose_first_report_is_partial_still_keeps_the_job(
@@ -529,7 +532,7 @@ async def test_a_new_session_whose_first_report_is_partial_still_keeps_the_job(
     reconnect(mqtt)
     report_the_spool(mqtt, tray_uuid="")
     asyncio.get_running_loop().call_later(0.05, report_the_spool, mqtt)
-    await settle_feed(guard, printer.id, timeout=2, poll=0.01, converge=1)
+    await settle_plan(guard, printer.id, timeout=2, poll=0.01, converge=1)
     guard = await final_guard(guard, printer.id)
     assert printer_manager.start_print(
         printer.id,
@@ -551,7 +554,7 @@ async def test_a_reconnect_that_never_reports_defers_with_the_settle_timeout(
     asked = MagicMock(return_value=True)
     monkeypatch.setattr(printer_manager, "request_status_update", asked)
     with pytest.raises(RoutingDeferred, match="feed_settle_timeout"):
-        await settle_feed(guard, printer.id, timeout=0.05, poll=0.01)
+        await settle_plan(guard, printer.id, timeout=0.05, poll=0.01)
     asked.assert_called_once_with(printer.id)
 
 
@@ -572,11 +575,11 @@ async def test_a_healthy_printer_does_not_wait(db_session, tmp_path, printer_fac
     guard = await preflight_item(db_session, item, printer.id)
     asked = MagicMock(return_value=True)
     monkeypatch.setattr(printer_manager, "request_status_update", asked)
-    await settle_feed(guard, printer.id, timeout=0.01, poll=0.01)
+    await settle_plan(guard, printer.id, timeout=0.01, poll=0.01)
     asked.assert_not_called()
 
 
-async def test_settle_feed_honours_a_cancel(db_session, tmp_path, printer_factory, monkeypatch):
+async def test_settle_plan_honours_a_cancel(db_session, tmp_path, printer_factory, monkeypatch):
     """The Cancel button works during the wait."""
     item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
     guard = await preflight_item(db_session, item, printer.id)
@@ -590,7 +593,82 @@ async def test_settle_feed_honours_a_cancel(db_session, tmp_path, printer_factor
         raise Cancelled
 
     with pytest.raises(Cancelled):
-        await settle_feed(guard, printer.id, raise_if_cancelled=raise_if_cancelled, timeout=2, poll=0.01)
+        await settle_plan(guard, printer.id, raise_if_cancelled=raise_if_cancelled, timeout=2, poll=0.01)
+
+
+def empty_the_spool(mqtt):
+    mqtt._process_message({"print": {"command": "push_status", "vt_tray": {"id": 254, "tray_type": ""}}})
+
+
+async def test_a_planned_slot_refilled_within_the_wait_starts(db_session, tmp_path, printer_factory, monkeypatch):
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    empty_the_spool(mqtt)
+    asyncio.get_running_loop().call_later(0.05, report_the_spool, mqtt)
+    assert await settle_plan(guard, printer.id, timeout=2, poll=0.01, converge=0.05) is False
+    assert (await final_guard(guard, printer.id)).plan.mapping == guard.plan.mapping
+
+
+async def test_the_operator_is_told_the_start_waits_for_a_slot(db_session, tmp_path, printer_factory, monkeypatch):
+    """Final review: during the wait the dispatch toast said «Starting print…»."""
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    told = AsyncMock()
+    await settle_plan(guard, printer.id, timeout=0.05, poll=0.01, on_wait=told)  # healthy: nothing to say
+    told.assert_not_awaited()
+    empty_the_spool(mqtt)
+    asyncio.get_running_loop().call_later(0.05, report_the_spool, mqtt)
+    await settle_plan(guard, printer.id, timeout=2, poll=0.01, on_wait=told)
+    told.assert_awaited_once_with("planned_source_empty")
+
+
+async def test_a_planned_slot_that_stays_empty_is_refused_without_a_latch(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    empty_the_spool(mqtt)
+    with pytest.raises(RoutingDeferred, match="planned_source_empty") as refusal:
+        await settle_plan(guard, printer.id, timeout=0.1, poll=0.01, converge=0.05)
+    assert refusal.value.revision is None
+
+
+async def test_a_slot_passing_through_our_own_writes_converges(db_session, tmp_path, printer_factory, monkeypatch):
+    """A spool put in at Clear plate: BamDude's own writes show a wrong type for a moment."""
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    report_the_spool(mqtt, tray_type="PETG")
+    asyncio.get_running_loop().call_later(0.03, report_the_spool, mqtt)
+    await settle_plan(guard, printer.id, timeout=2, poll=0.01, converge=1)
+    assert await final_guard(guard, printer.id)
+
+
+async def test_a_reconnect_with_a_change_elsewhere_does_not_wait_out_the_grace(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    """Review Focus 1: a reconnect mid-upload and a spool swap in a slot the job does not use."""
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    monkeypatch.setattr(printer_manager, "request_status_update", MagicMock(return_value=True))
+    reconnect(mqtt)
+    mqtt._process_message(
+        {
+            "print": {
+                "command": "push_status",
+                "ams": {"ams": [{"id": 0, "tray": [{"id": 0, "tray_type": "ABS", "tray_color": "FFFFFFFF"}]}]},
+                "vt_tray": {
+                    "id": 254,
+                    "tray_type": "PLA",
+                    "tray_color": "0000FF",
+                    "tray_info_idx": "GFA00",
+                    "tray_uuid": "THE-SPOOL",
+                },
+            }
+        }
+    )
+    started = asyncio.get_running_loop().time()
+    assert await settle_plan(guard, printer.id, timeout=5, poll=0.01, converge=3) is True
+    assert asyncio.get_running_loop().time() - started < 1
 
 
 async def test_edit_echoing_mapping_keeps_original_pin_evidence(
@@ -621,8 +699,8 @@ async def test_edit_echoing_mapping_keeps_original_pin_evidence(
     assert edited.status_code == 200, edited.text
     await db_session.refresh(item)
     assert json.loads(item.filament_routing)["physical_pins"] == before
-    with pytest.raises(RoutingDeferred, match="mapping_review_required"):
-        await preflight_item(db_session, item, printer.id)
+    # П4: without a forced colour a recoloured spool still holds the pin.
+    assert await preflight_item(db_session, item, printer.id)
     reviewed = await committing_client.patch(
         f"/api/v1/queue/{item.id}",
         json={
@@ -637,36 +715,71 @@ async def test_edit_echoing_mapping_keeps_original_pin_evidence(
     assert await preflight_item(db_session, item, printer.id)
 
 
-@pytest.mark.parametrize(
-    ("change", "reason"),
-    [({"tray_type": "PETG"}, "material_mismatch"), ({"tray_uuid": "ANOTHER-SPOOL"}, "feed_state_changed")],
-)
 async def test_final_guard_still_refuses_a_swapped_spool_with_the_option_on(
-    db_session, tmp_path, printer_factory, monkeypatch, change, reason
+    db_session, tmp_path, printer_factory, monkeypatch
 ):
     item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
     guard = await preflight_item(db_session, item, printer.id)
-    mqtt._process_message({"print": {"vt_tray": {"id": 254, **change}}})
-    with pytest.raises(RoutingDeferred, match=reason):
+    mqtt._process_message({"print": {"vt_tray": {"id": 254, "tray_type": "PETG"}}})
+    with pytest.raises(RoutingDeferred, match="material_mismatch"):
         await final_guard(guard, printer.id)
 
 
-@pytest.mark.parametrize("change", ["material", "colour", "identity", "reconnect"])
+async def test_final_guard_refuses_when_the_bind_went_to_another_session(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    """Final review I2: the K bind went to the session it was sent on; a start on
+    another one would print with no K selected."""
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    bind_generation = mqtt.state.connection_generation
+    reconnect(mqtt)
+    report_the_spool(mqtt)
+    with pytest.raises(RoutingDeferred, match="printer_reconnected") as refusal:
+        await final_guard(guard, printer.id, bind_generation=bind_generation)
+    assert refusal.value.revision is None  # never latched
+
+
+@pytest.mark.parametrize(("pinned", "asked"), [(254, False), (0, True)])
+async def test_a_pinned_job_ranks_the_inventory_only_when_a_twin_may_be_needed(
+    db_session, tmp_path, printer_factory, monkeypatch, pinned, asked
+):
+    """Final review: ranking a pinned job cost a Spoolman read per bound slot on
+    every preflight; it only matters when the pinned slot is empty."""
+    from backend.app.services.filament_preflight import ranked_feed
+    from backend.app.services.filament_routing import RoutingPolicy
+    from backend.app.services.print_scheduler import scheduler
+
+    _item, _source, printer, _plate, _mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    overrides = AsyncMock(return_value={})
+    monkeypatch.setattr(scheduler, "_build_inventory_remain_overrides", overrides)
+    policy = RoutingPolicy(mode="pinned", physical_pins={1: {"source_id": pinned}})
+    await ranked_feed(db_session, printer.id, policy, prefer_lowest=True)
+    assert overrides.await_count == (1 if asked else 0)
+
+
+async def test_final_guard_lets_a_new_tag_on_the_same_filament_through(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    mqtt._process_message({"print": {"vt_tray": {"id": 254, "tray_uuid": "ANOTHER-SPOOL"}}})
+    assert (await final_guard(guard, printer.id)).plan.mapping == guard.plan.mapping
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"), [("material", "material_mismatch"), ("reconnect", "printer_reconnected")]
+)
 async def test_the_publish_boundary_still_catches_a_real_change_with_the_option_on(
-    db_session, tmp_path, printer_factory, monkeypatch, change
+    db_session, tmp_path, printer_factory, monkeypatch, change, reason
 ):
     item, source, printer, plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
     guard = await final_guard(await preflight_item(db_session, item, printer.id), printer.id)
     if change == "reconnect":
         mqtt.state.connection_generation += 1
     else:
-        tray = {
-            "material": {"tray_type": "PETG"},
-            "colour": {"tray_color": "00FF00"},
-            "identity": {"tray_uuid": "ANOTHER-SPOOL"},
-        }[change]
-        mqtt._process_message({"print": {"vt_tray": {"id": 254, **tray}}})
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+        mqtt._process_message({"print": {"vt_tray": {"id": 254, "tray_type": "PETG"}}})
+    with pytest.raises(RoutingDeferred, match=reason):
         printer_manager.start_print(
             printer.id,
             source.filename,
@@ -676,6 +789,24 @@ async def test_the_publish_boundary_still_catches_a_real_change_with_the_option_
             routing_guard=guard,
         )
     mqtt._client.publish.assert_not_called()
+
+
+@pytest.mark.parametrize("tray", [{"tray_color": "00FF00"}, {"tray_uuid": "ANOTHER-SPOOL"}])
+async def test_the_publish_boundary_lets_a_new_colour_or_tag_through(
+    db_session, tmp_path, printer_factory, monkeypatch, tray
+):
+    item, source, printer, plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await final_guard(await preflight_item(db_session, item, printer.id), printer.id)
+    mqtt._process_message({"print": {"vt_tray": {"id": 254, **tray}}})
+    assert printer_manager.start_print(
+        printer.id,
+        source.filename,
+        plate,
+        ams_mapping=guard.plan.mapping,
+        use_ams=guard.plan.use_ams,
+        routing_guard=guard,
+    )
+    mqtt._client.publish.assert_called_once()
 
 
 async def test_a_block_recorded_the_old_way_no_longer_holds_a_compatible_job(
@@ -697,7 +828,7 @@ async def test_a_block_recorded_the_old_way_no_longer_holds_a_compatible_job(
         }
     )
     item.filament_routing = json.dumps(
-        {**json.loads(item.filament_routing), "runtime": {"reason": "feed_state_changed", "blocked_revision": stale}}
+        {**json.loads(item.filament_routing), "runtime": {"reason": "feed_settle_timeout", "blocked_revision": stale}}
     )
     await db_session.commit()
     assert (await preflight_item(db_session, item, printer.id)).plan is not None
@@ -725,17 +856,32 @@ async def test_the_same_old_block_still_holds_a_job_that_kept_the_profile(
         }
     )
     item.filament_routing = json.dumps(
-        {**json.loads(item.filament_routing), "runtime": {"reason": "feed_state_changed", "blocked_revision": stale}}
+        {**json.loads(item.filament_routing), "runtime": {"reason": "feed_settle_timeout", "blocked_revision": stale}}
     )
     await db_session.commit()
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+    with pytest.raises(RoutingDeferred, match="feed_settle_timeout"):
         await preflight_item(db_session, item, printer.id)
 
 
-async def test_a_block_recorded_the_new_way_still_holds_while_nothing_changes(
+async def test_a_settle_timeout_still_holds_the_job_while_nothing_changes(
     db_session, tmp_path, printer_factory, monkeypatch
 ):
     """The latch itself is untouched — only the key it is written under changed."""
+    item, _source, printer, _plate, _mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    item.filament_routing = json.dumps(
+        {
+            **json.loads(item.filament_routing),
+            "runtime": {"reason": "feed_settle_timeout", "blocked_revision": guard.revision},
+        }
+    )
+    await db_session.commit()
+    with pytest.raises(RoutingDeferred, match="feed_settle_timeout"):
+        await preflight_item(db_session, item, printer.id)
+
+
+async def test_a_refusal_for_a_changed_feed_does_not_park_the_job(db_session, tmp_path, printer_factory, monkeypatch):
+    """The latch recorded the feed AFTER the change — a state nobody has tried (spec Д3)."""
     item, _source, printer, _plate, _mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
     guard = await preflight_item(db_session, item, printer.id)
     item.filament_routing = json.dumps(
@@ -745,5 +891,98 @@ async def test_a_block_recorded_the_new_way_still_holds_while_nothing_changes(
         }
     )
     await db_session.commit()
-    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+    assert (await preflight_item(db_session, item, printer.id)).plan is not None
+
+
+async def test_a_runtime_without_a_reason_does_not_park_the_job(db_session, tmp_path, printer_factory, monkeypatch):
+    item, _source, printer, _plate, _mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    item.filament_routing = json.dumps(
+        {**json.loads(item.filament_routing), "runtime": {"blocked_revision": guard.revision}}
+    )
+    await db_session.commit()
+    assert (await preflight_item(db_session, item, printer.id)).plan is not None
+
+
+def ams_report(*loaded, filam_bak=None):
+    """AMS 0 with PLA red in the ``loaded`` slots and the others empty."""
+    trays = [
+        {"id": t, "tray_type": "PLA", "tray_color": "FF0000FF"} if t in loaded else {"id": t, "tray_type": ""}
+        for t in range(4)
+    ]
+    report = {"command": "push_status", "ams": {"ams_exist_bits": "1", "ams": [{"id": 0, "tray": trays}]}}
+    if filam_bak is not None:
+        report["filam_bak"] = filam_bak
+    return {"print": report}
+
+
+async def a_job_pinned_to_ams_slot_0(db, tmp_path, printer_factory, monkeypatch, *, filam_bak):
+    from backend.app.services.filament_policy_write import prepare_routing
+
+    source, printer, queue, mqtt = await setup_source(db, tmp_path, printer_factory, monkeypatch)
+    mqtt._process_message(ams_report(0, 1, filam_bak=filam_bak))
+    routing, plate = await prepare_routing(
+        db,
+        printer_id=printer.id,
+        library_file_id=source.id,
+        options={"manual_mapping": True, "ams_mapping": [-1, -1, 0]},
+    )
+    item = PrintQueueItem(queue_id=queue.id, library_file_id=source.id, plate_id=plate, filament_routing=routing)
+    db.add(item)
+    await db.commit()
+    return item, source, printer, plate, mqtt
+
+
+async def test_a_pinned_slot_that_ran_dry_prints_from_its_twin_end_to_end(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    """Spec §6 (final review): the dispatcher's own preflight picks the AMS Backup
+    twin, and the command published to the printer names it."""
+    item, source, printer, plate, mqtt = await a_job_pinned_to_ams_slot_0(
+        db_session, tmp_path, printer_factory, monkeypatch, filam_bak=[3]
+    )
+    mqtt._process_message(ams_report(1, filam_bak=[]))  # slot 0 ran dry; the firmware drops the group
+    mqtt.state.ams_auto_switch_filament = True
+    guard = await preflight_item(db_session, item, printer.id)
+    assert guard.plan.mapping == [-1, -1, 1]
+    guard = await final_guard(guard, printer.id)
+    assert printer_manager.start_print(
+        printer.id,
+        source.filename,
+        plate,
+        ams_mapping=guard.plan.mapping,
+        use_ams=guard.plan.use_ams,
+        routing_guard=guard,
+    )
+    command = json.loads(mqtt._client.publish.call_args.args[1])["print"]
+    assert 1 in command["ams_mapping"] and 0 not in command["ams_mapping"]
+
+
+async def test_an_empty_pinned_slot_is_never_parked_and_plans_once_its_group_is_known(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    """Spec §6: ``pinned_source_empty`` carries a revision from the dispatcher's
+    preflight, yet it must not latch — the job plans as soon as the group is known."""
+    from backend.app.services.filament_preflight import revision_for
+
+    item, _source, printer, _plate, mqtt = await a_job_pinned_to_ams_slot_0(
+        db_session, tmp_path, printer_factory, monkeypatch, filam_bak=None
+    )
+    mqtt._process_message(ams_report(1))  # slot 0 dry, no group ever reported
+    mqtt.state.ams_auto_switch_filament = True
+    with pytest.raises(RoutingDeferred, match="pinned_source_empty"):
         await preflight_item(db_session, item, printer.id)
+    mqtt._process_message(ams_report(1, filam_bak=[3]))  # the firmware reports the group
+    revision = revision_for(
+        await read_item_requirements(db_session, item),
+        queue_policy(item),
+        printer_manager.get_feed_snapshot(printer.id),
+    )
+    item.filament_routing = json.dumps(
+        {
+            **json.loads(item.filament_routing),
+            "runtime": {"reason": "pinned_source_empty", "blocked_revision": revision},
+        }
+    )
+    await db_session.commit()
+    assert (await preflight_item(db_session, item, printer.id)).plan.mapping == [-1, -1, 1]

@@ -211,9 +211,12 @@ def test_overlay_returns_the_actual_spool_and_moves_the_revision():
     assert overlaid.revision != plain.revision
 
     red_job = requirements({"type": "PETG", "color": "#FF0000", "tray_info_idx": "GFG00"}, model="P1S")
+    black_job = requirements({"type": "PETG", "color": "#000000", "tray_info_idx": "GFG99"}, model="P1S")
     strict = RoutingPolicy(force_color_match=True, allow_base_material_match=False)
-    assert resolve_filament_routing(red_job, strict, plain).status != "compatible"
-    assert resolve_filament_routing(red_job, strict, overlaid).status == "compatible"
+    # The owner's rule (2026-09-30): what the operator declared outranks the
+    # job's exact checks, so the overlaid slot is judged as the black generic.
+    assert resolve_filament_routing(red_job, strict, overlaid).status != "compatible"
+    assert resolve_filament_routing(black_job, strict, overlaid).status == "compatible"
 
 
 def test_a_dormant_overlay_entry_is_not_applied():
@@ -234,12 +237,33 @@ def test_a_dormant_overlay_entry_is_not_applied():
     assert dormant.revision == snapshot_from_state(1, "P1S", state).revision
 
 
-def test_a_strict_variant_job_does_not_match_the_generic_the_slot_advertises():
-    """Generic mode masks the VARIANT, and a strict job asks for exactly that.
+def test_an_applied_advertisement_is_carried_beside_the_spool():
+    from backend.app.services.ams_advertised_overlay import OverlayEntry
+
+    state = PrinterState(connected=True, connection_generation=1)
+    _ams_slot(state, "000000FF", "GFG99")
+    entry = OverlayEntry("PETG", "FF0000FF", "GFG00", (), "000000FF", "GFG99", "internal")
+    source = snapshot_from_state(1, "P1S", state, overlay={(0, 1): entry}).sources[0]
+    assert (source.color, source.variant) == ("FF0000FF", "GFG00")
+    assert (source.declared_color, source.declared_variant) == ("000000FF", "GFG99")
+    assert (source.rule_color, source.rule_variant) == ("000000FF", "GFG99")
+
+
+def test_a_slot_without_an_applied_advertisement_declares_nothing():
+    state = PrinterState(connected=True, connection_generation=1)
+    _ams_slot(state, "FF0000FF", "GFG00")
+    source = snapshot_from_state(1, "P1S", state).sources[0]
+    assert source.declared_color is None and source.declared_variant is None
+    assert (source.rule_color, source.rule_variant) == ("FF0000FF", "GFG00")
+
+
+def test_a_strict_variant_job_is_judged_by_the_generic_the_slot_advertises():
+    """Generic mode masks the VARIANT, and the owner's rule (2026-09-30) makes
+    the declared Generic outrank the strict profile.
 
     Mirrors the colour case above: the spool is PLA Matte, the slot is
-    advertised as Generic PLA, and with ``allow_base_material_match=False`` the
-    job is compatible only when routing can see through the mask.
+    advertised as Generic PLA, and with ``allow_base_material_match=False`` a
+    job asking for Generic PLA fits it while one asking for PLA Matte does not.
     """
     from backend.app.services.ams_advertised_overlay import OverlayEntry
     from backend.app.services.filament_routing import RoutingPolicy, resolve_filament_routing
@@ -252,9 +276,11 @@ def test_a_strict_variant_job_does_not_match_the_generic_the_slot_advertises():
     overlaid = snapshot_from_state(1, "P1S", state, overlay={(0, 1): entry})
 
     matte_job = requirements({"type": "PLA", "color": "#FF0000", "tray_info_idx": "GFA01"}, model="P1S")
+    generic_job = requirements({"type": "PLA", "color": "#FF0000", "tray_info_idx": "GFL99"}, model="P1S")
     strict = RoutingPolicy(force_color_match=True, allow_base_material_match=False)
     assert resolve_filament_routing(matte_job, strict, plain).status != "compatible"
-    assert resolve_filament_routing(matte_job, strict, overlaid).status == "compatible"
+    assert resolve_filament_routing(matte_job, strict, overlaid).status != "compatible"
+    assert resolve_filament_routing(generic_job, strict, overlaid).status == "compatible"
 
 
 def _nozzle_state(info, model="H2C"):

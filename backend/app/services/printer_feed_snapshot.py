@@ -23,6 +23,23 @@ class FeedSource:
     nozzles: tuple[int, ...] = ()
     remain: float = -1
     identity: str = ""
+    #: What BamDude told the printer this slot holds (backup-compatibility
+    #: emulation), set only while that advertisement is APPLIED
+    #: (``ams_advertised_overlay.matches_live``). ``color`` / ``variant`` stay the
+    #: SPOOL. The routing rule reads these for the forced-colour and the
+    #: strict-profile checks and for colour ranking — the operator's own
+    #: declaration outranks the job's exact checks (owner, 2026-09-30). Base
+    #: material is always the spool's.
+    declared_color: str | None = None
+    declared_variant: str | None = None
+
+    @property
+    def rule_color(self) -> str | None:
+        return self.declared_color or self.color
+
+    @property
+    def rule_variant(self) -> str | None:
+        return self.declared_variant or self.variant
 
 
 @dataclass(frozen=True)
@@ -44,6 +61,12 @@ class PrinterFeedSnapshot:
     # this connection has not supplied the capability yet, not "firmware says no".
     left_tpu_firmware: bool | None = None
     fts_pending_confirmation: bool = False
+    #: Which AMS slots the firmware would substitute for one another (AMS
+    #: Backup): global slot id → every member of its group, itself included.
+    #: The group the firmware reports now wins; a slot it no longer groups —
+    #: one that ran dry — keeps the group it was last in while loaded
+    #: (``backup_group_memory``). Read only for a pinned slot that is empty.
+    backup_membership: dict[int, tuple[int, ...]] = field(default_factory=dict)
 
     @property
     def marker(self) -> tuple[int, str]:
@@ -243,6 +266,16 @@ class FeedTelemetry:
                 self.nozzles.pop(nid, None)
                 self._diameter(nid, report[key])
 
+    def loaded_source_ids(self) -> set[int]:
+        """Global ids of the AMS slots whose tray reports a filament type now."""
+        ids: set[int] = set()
+        for uid, unit in self.units.items():
+            for tray in unit.get("tray", []):
+                tid = _integer(tray.get("id"))
+                if tid is not None and tray.get("tray_type"):
+                    ids.add(uid if uid >= 128 else uid * 4 + tid)
+        return ids
+
     def _diameter(self, nozzle_id, value):
         try:
             diameter = float(value)
@@ -252,7 +285,9 @@ class FeedTelemetry:
             pass
 
 
-def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None) -> PrinterFeedSnapshot:
+def snapshot_from_state(
+    printer_id: int, model: str | None, state, overlay=None, remembered_groups=None
+) -> PrinterFeedSnapshot:
     normalized = normalize_model_name(model)
     routing_model = effective_model_for_state(model, state)
     dual = is_dual_nozzle_model(normalized)
@@ -274,9 +309,11 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
         except (TypeError, ValueError):
             remain = -1
         color, variant = tray.get("tray_color"), tray.get("tray_info_idx")
+        declared_color = declared_variant = None
         entry = overlay.get(key) if overlay and key is not None else None
         if entry is not None and matches_live(entry, tray):
             material, color, variant = entry.actual_material, entry.actual_color, entry.actual_variant
+            declared_color, declared_variant = entry.advertised_color or None, entry.advertised_variant or None
             applied_overlay.append([key[0], key[1], material, color, variant])
         sources.append(
             FeedSource(
@@ -288,6 +325,8 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
                 nozzles=nozzles,
                 remain=remain,
                 identity=str(tray.get("tray_uuid") or tray.get("tag_uid") or ""),
+                declared_color=declared_color,
+                declared_variant=declared_variant,
             )
         )
 
@@ -318,6 +357,15 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
         )
     )
     diameters = {k: tuple(sorted(v)) for k, v in telemetry.nozzles.items()}
+    membership: dict[int, tuple[int, ...]] = {
+        member: tuple(sorted(members)) for member, members in (remembered_groups or {}).items()
+    }
+    for extruder_groups in (getattr(state, "ams_backup_groups", None) or {}).values():
+        for group in extruder_groups:
+            members = tuple(sorted(set(group)))
+            if len(members) >= 2:
+                for member in members:
+                    membership[member] = members
     payload = {
         "model": routing_model,
         "ams_known": telemetry.ams_known,
@@ -334,6 +382,7 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
         # nothing semantically changed, and the dispatcher's final guard would
         # abort a perfectly good print with ``feed_state_changed``.
         "overlay": sorted(applied_overlay),
+        "backup_membership": sorted([member, list(members)] for member, members in membership.items()),
     }
     revision = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     return PrinterFeedSnapshot(
@@ -352,4 +401,5 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
         incomplete,
         telemetry.left_tpu_firmware,
         getattr(state, "fts_pending_confirmation", False) is True,
+        backup_membership=membership,
     )

@@ -734,7 +734,7 @@ async def test_a_routing_block_recorded_under_the_old_fingerprint_does_not_park_
     )
     item = items[0]
     stored = json.loads(item.filament_routing)
-    stored["runtime"] = {"reason": "feed_state_changed", "blocked_revision": "a fingerprint of the old shape"}
+    stored["runtime"] = {"reason": "feed_settle_timeout", "blocked_revision": "a fingerprint of the old shape"}
     item.filament_routing = json.dumps(stored)
     await db_session.commit()
 
@@ -746,7 +746,7 @@ async def test_a_routing_block_recorded_under_the_old_fingerprint_does_not_park_
     await db_session.commit()
     with pytest.raises(RoutingDeferred) as refusal:
         await preflight_item(db_session, item, printer.id)
-    assert refusal.value.reason == "feed_state_changed"
+    assert refusal.value.reason == "feed_settle_timeout"
 
 
 async def test_an_edit_of_a_snapshot_job_re_reads_the_snapshot(

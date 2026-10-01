@@ -145,7 +145,7 @@ class Printer(Base):
     plate_detection_roi_h: Mapped[float | None] = mapped_column(Float, nullable=True)  # Height %
     # Staggered start: per-printer interval override (0 = use system default)
     stagger_interval_minutes: Mapped[int] = mapped_column(default=0)
-    # Swap mode: A1 Mini plate swapper (swap-systems.com)
+    # Swap mode: an automatic plate swapper (models with a profile in core/swap_profiles.py)
     swap_mode_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # Active swap-mode variant (catalog key from core/swap_profiles.py).
     # Null when swap_mode_enabled is False, or when swap is enabled without a

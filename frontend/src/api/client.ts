@@ -716,7 +716,7 @@ export interface Printer {
   plate_detection_enabled: boolean;  // Check plate before print
   plate_detection_roi?: PlateDetectionROI;  // ROI for plate detection
   stagger_interval_minutes: number;  // Per-printer stagger interval override (0 = system default)
-  swap_mode_enabled: boolean;  // A1 Mini plate swapper
+  swap_mode_enabled: boolean;  // Automatic plate swapper (models with a swap profile)
   swap_profile: string | null;  // Active swap-mode variant (see /macros/swap-profiles)
   require_plate_clear: boolean;  // Require plate-clear confirmation before next queued print
   ams_policies: AmsPolicies;     // What this printer may be TOLD about its manually assigned slots

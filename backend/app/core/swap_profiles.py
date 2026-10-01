@@ -42,4 +42,9 @@ SWAP_PROFILES: dict[str, dict[str, Any]] = {
         "label": "JobOx A1",
         "description": "JobOx swap mechanism for the full-size A1.",
     },
+    "a2l_stl": {
+        "models": ["A2L"],
+        "label": "STL Edition",
+        "description": "A2L swap mechanism - SwapMod A2L STL, self-printed.",
+    },
 }

@@ -3635,6 +3635,14 @@ class BambuMQTTClient:
                     if self.on_state_change:
                         self.on_state_change(self.state)
 
+        # Backup groups are remembered per slot while it holds filament, so a
+        # pinned slot that ran dry still knows its twins (backup_group_memory).
+        from backend.app.services import backup_group_memory
+
+        backup_group_memory.observe(
+            self.serial_number, self.state.ams_backup_groups, self.state.feed_telemetry.loaded_source_ids()
+        )
+
     def _handle_system_response(self, data: dict):
         """Handle system responses including accessories info.
 
@@ -7927,9 +7935,16 @@ class BambuMQTTClient:
     def get_feed_snapshot(self, printer_id: int):
         # Read fresh on every call — a snapshot taken before the printer echoed
         # our push must not be the one a later routing decision is made on.
+        from backend.app.services import backup_group_memory
         from backend.app.services.ams_advertised_overlay import entries_for
 
-        return snapshot_from_state(printer_id, self.model, self.state, overlay=entries_for(printer_id))
+        return snapshot_from_state(
+            printer_id,
+            self.model,
+            self.state,
+            overlay=entries_for(printer_id),
+            remembered_groups=backup_group_memory.membership(self.serial_number),
+        )
 
     @_routing_locked
     def start_print(

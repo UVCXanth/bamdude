@@ -202,7 +202,7 @@ export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: 
   });
 
   // Swap-mode (automated plate swapper) — only relevant for printer models
-  // that have at least one swap profile registered (currently A1 / A1 Mini).
+  // that have at least one swap profile registered (currently A1, A1 Mini, A2L).
   // We render the bool indicator AND the active profile label; both are
   // hidden for models without any swap profile so the info card stays
   // compact for X1/P1/H2 series owners.
