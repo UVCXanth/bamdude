@@ -10,8 +10,9 @@ describe('DispatchNoteCreated', () => {
   it('names the note and opens it', () => {
     const onClose = vi.fn();
     render(<DispatchNoteCreated id={42} code="DN-0042" onClose={onClose} />);
-    expect(screen.getByText('Dispatch note DN-0042 is made')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+    // WS-13 E6 E15: the mockup's «Накладну оформлено», the code under it, «Open and print».
+    expect(screen.getByRole('dialog', { name: 'Dispatch note issued' })).toHaveTextContent('DN-0042');
+    fireEvent.click(screen.getByRole('button', { name: 'Open and print' }));
     expect(onClose).toHaveBeenCalled();
     expect(navigate).toHaveBeenCalledWith('/stock/dispatch-notes/42');
   });

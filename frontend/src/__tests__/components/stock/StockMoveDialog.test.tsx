@@ -101,7 +101,7 @@ describe('StockMoveDialog', () => {
     await screen.findByRole('option', { name: 'CU-0009 · ACME' });
     fireEvent.change(customer, { target: { value: '9' } });
     fireEvent.click(screen.getByTestId('stock-move-submit'));
-    expect(await screen.findByText('Dispatch note DN-0007 is made')).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'Dispatch note issued' })).toHaveTextContent('DN-0007');
     expect(onClose).not.toHaveBeenCalled();
   });
 

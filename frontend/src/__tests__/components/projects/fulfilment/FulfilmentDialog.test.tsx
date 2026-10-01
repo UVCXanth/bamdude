@@ -4,6 +4,7 @@ import { render } from '../../../utils';
 import { api, ApiError } from '../../../../api/client';
 import type { FulfilmentState } from '../../../../api/client';
 import { FulfilmentDialog } from '../../../../components/projects/fulfilment/FulfilmentDialog';
+import type { OrderRef } from '../../../../components/projects/orderActions/orderRef';
 import {
   clampDraft,
   completesOrder,
@@ -14,6 +15,8 @@ import {
   withoutWriteOffs,
   writingOff,
 } from '../../../../components/projects/fulfilment/fulfilmentState';
+
+const REF: OrderRef = { id: 5, code: 'OR-0005', name: 'Pipes', status: 'active', customer_name: 'ACME', bankable_surplus: 0, due_date: null };
 
 // The spec's line (10 ordered: 2 ready, 3 kits, 5 printed) and a parts line.
 const state: FulfilmentState = {
@@ -116,24 +119,25 @@ describe('FulfilmentDialog', () => {
   });
 
   it('shows one row per line with the server numbers and expands a parts line', async () => {
-    render(<FulfilmentDialog orderId={5} onClose={() => {}} />);
+    render(<FulfilmentDialog order={REF} onClose={() => {}} />);
     const pipe = await screen.findByTestId('fulfil-line-7');
-    expect(within(pipe).getByLabelText('Assemble — Pipe')).toHaveValue(3);
-    expect(within(pipe).getByLabelText('Receive — Pipe')).toHaveValue(5);
+    expect(within(pipe).getByLabelText('Assemble from kits — Pipe')).toHaveValue(3);
+    expect(within(pipe).getByLabelText('Receive printed — Pipe')).toHaveValue(5);
     expect(within(pipe).getByLabelText('Issue now — Pipe')).toHaveValue(10);
     expect(within(pipe).getByText('of 3')).toBeInTheDocument();
-    expect(screen.getByLabelText('Receive — base')).toHaveValue(1);
-    expect(screen.getByText('Issue now: 14 pcs')).toBeInTheDocument();
+    expect(screen.getByLabelText('Receive printed — base')).toHaveValue(1);
+    expect(screen.getByRole('dialog')).toHaveTextContent('Assemble: 3 · receive: 9 · issue now: 14 pcs');
   });
 
   it('opens with nothing to issue when it only receives', async () => {
-    render(<FulfilmentDialog orderId={5} mode="receive" onClose={() => {}} />);
+    render(<FulfilmentDialog order={REF} mode="receive" onClose={() => {}} />);
     expect(await screen.findByLabelText('Issue now — Pipe')).toHaveValue(0);
-    expect(screen.getByText('Issue now: 0 pcs')).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toHaveTextContent('Assemble: 3 · receive: 9');
+    expect(screen.getByRole('dialog')).not.toHaveTextContent('issue now');
   });
 
   it('prefills the recipient and limits the waybill', async () => {
-    render(<FulfilmentDialog orderId={5} onClose={() => {}} />);
+    render(<FulfilmentDialog order={REF} onClose={() => {}} />);
     expect(await screen.findByLabelText('Recipient name')).toHaveValue('Ivan');
     expect(screen.getByLabelText('Phone')).toHaveValue('+380501112233');
     expect(screen.getByLabelText('Delivery method')).toHaveValue('Nova Poshta');
@@ -143,8 +147,8 @@ describe('FulfilmentDialog', () => {
   it('closes the order only when this issue hands over everything', async () => {
     const complete = { ...state, lines: [state.lines[0]], ordered: 10 };
     vi.spyOn(api, 'getFulfilment').mockResolvedValue(complete);
-    render(<FulfilmentDialog orderId={5} onClose={() => {}} />);
-    const close = await screen.findByLabelText('Close the order');
+    render(<FulfilmentDialog order={REF} onClose={() => {}} />);
+    const close = await screen.findByLabelText('Mark the order completed');
     expect(close).toBeEnabled();
     fireEvent.change(screen.getByLabelText('Issue now — Pipe'), { target: { value: '4' } });
     expect(close).toBeDisabled();
@@ -152,7 +156,7 @@ describe('FulfilmentDialog', () => {
 
   it('posts the batch, then names the dispatch note it made and closes from there', async () => {
     const onClose = vi.fn();
-    render(<FulfilmentDialog orderId={5} onClose={onClose} />);
+    render(<FulfilmentDialog order={REF} onClose={onClose} />);
     fireEvent.change(await screen.findByLabelText('Issue now — Pipe'), { target: { value: '4' } });
     fireEvent.change(screen.getByLabelText('Waybill no.'), { target: { value: ' 2045 ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Execute' }));
@@ -176,7 +180,7 @@ describe('FulfilmentDialog', () => {
       }),
     );
     // spec workshop-dispatch-notes, rule 24: the issue made DN-0012 — say so before closing.
-    expect(await screen.findByText('Dispatch note DN-0012 is made')).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'Dispatch note issued' })).toHaveTextContent('DN-0012 · 3 pcs');
     expect(onClose).not.toHaveBeenCalled();
     fireEvent.click(screen.getAllByRole('button', { name: 'Close' })[0]);
     expect(onClose).toHaveBeenCalled();
@@ -185,17 +189,20 @@ describe('FulfilmentDialog', () => {
   it('closes at once when the batch issued nothing', async () => {
     fulfil.mockResolvedValue({ order: { id: 5 } as never, issue_id: null, issue_code: null, issue_units: null });
     const onClose = vi.fn();
-    render(<FulfilmentDialog orderId={5} mode="receive" onClose={onClose} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Execute' }));
+    render(<FulfilmentDialog order={REF} mode="receive" onClose={onClose} />);
+    // The reading shell has its own (disabled) «Execute» — the table first.
+    await screen.findByTestId('fulfil-line-7');
+    fireEvent.click(screen.getByRole('button', { name: 'Execute' }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
-    expect(screen.queryByText(/is made/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Dispatch note issued' })).not.toBeInTheDocument();
   });
 
   it('keeps the dialog with the server sentence when it refuses', async () => {
     fulfil.mockRejectedValue(new ApiError('«Pipe»: only 2 can be issued', 409));
     const onClose = vi.fn();
-    render(<FulfilmentDialog orderId={5} onClose={onClose} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Execute' }));
+    render(<FulfilmentDialog order={REF} onClose={onClose} />);
+    await screen.findByTestId('fulfil-line-7');
+    fireEvent.click(screen.getByRole('button', { name: 'Execute' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('«Pipe»: only 2 can be issued');
     expect(onClose).not.toHaveBeenCalled();
   });
@@ -214,19 +221,20 @@ describe('FulfilmentDialog · after a refusal', () => {
     };
     const get = vi.spyOn(api, 'getFulfilment').mockResolvedValueOnce(state).mockResolvedValue(moved);
     vi.spyOn(api, 'fulfilOrder').mockRejectedValue(new ApiError('«Pipe»: only 1 can be received', 409));
-    render(<FulfilmentDialog orderId={5} onClose={() => {}} />);
+    render(<FulfilmentDialog order={REF} onClose={() => {}} />);
     fireEvent.change(await screen.findByLabelText('Waybill no.'), { target: { value: '2045' } });
     fireEvent.click(screen.getByRole('button', { name: 'Execute' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('«Pipe»: only 1 can be received');
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.getByLabelText('Receive — Pipe')).toHaveValue(1));
-    expect(screen.getByLabelText('Assemble — Pipe')).toHaveValue(0);
+    await waitFor(() => expect(screen.getByLabelText('Receive printed — Pipe')).toHaveValue(1));
+    // Nothing to assemble any more: a dash, not a dead field (WS-13 E6 E05).
+    expect(screen.queryByLabelText('Assemble from kits — Pipe')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Waybill no.')).toHaveValue('2045'); // what was typed stays
   });
 
   it('bounds the recipient fields as the server does', async () => {
     vi.spyOn(api, 'getFulfilment').mockResolvedValue(state);
-    render(<FulfilmentDialog orderId={5} onClose={() => {}} />);
+    render(<FulfilmentDialog order={REF} onClose={() => {}} />);
     for (const label of ['Recipient name', 'Phone', 'Delivery details']) {
       expect(await screen.findByLabelText(label)).toHaveAttribute('maxLength', '255');
     }
@@ -263,11 +271,11 @@ describe('FulfilmentDialog · write-offs and closing to stock', () => {
     const shelf = { ...state, lines: [{ ...state.lines[0], can_assemble: 0, can_receive: 0, held: 4 }] };
     vi.spyOn(api, 'getFulfilment').mockResolvedValue(shelf);
     const fulfil = vi.spyOn(api, 'fulfilOrder').mockResolvedValue({ order: { id: 5 } as never, issue_id: null, issue_code: null, issue_units: null });
-    render(<FulfilmentDialog orderId={5} mode="receive" onClose={() => {}} />);
+    render(<FulfilmentDialog order={REF} mode="receive" onClose={() => {}} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Write off…' }));
     fireEvent.change(screen.getByLabelText('Write off — Pipe'), { target: { value: '1' } });
     expect(screen.getByRole('button', { name: 'Execute' })).toBeDisabled();
-    fireEvent.change(screen.getByLabelText('Why it is written off'), { target: { value: ' dropped ' } });
+    fireEvent.change(screen.getByLabelText('Write-off reason'), { target: { value: ' dropped ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Execute' }));
     await waitFor(() =>
       expect(fulfil).toHaveBeenCalledWith(
@@ -282,8 +290,8 @@ describe('FulfilmentDialog · write-offs and closing to stock', () => {
 
   it('an order without a customer shows no issue column and closes to stock', async () => {
     vi.spyOn(api, 'getFulfilment').mockResolvedValue({ ...state, closes_to_stock: true, lines: [state.lines[0]] });
-    render(<FulfilmentDialog orderId={5} complete onClose={() => {}} />);
-    expect(await screen.findByText('Set the order’s customer to issue goods')).toBeInTheDocument();
+    render(<FulfilmentDialog order={REF} complete onClose={() => {}} />);
+    expect(await screen.findByText(/No customer — nothing is issued/)).toBeInTheDocument();
     expect(screen.queryByLabelText('Issue now — Pipe')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Recipient name')).not.toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: 'Close to stock' })).toBeChecked();
@@ -324,10 +332,10 @@ describe('FulfilmentDialog · closing the write-off column', () => {
     const shelf = { ...state, lines: [{ ...state.lines[0], can_assemble: 0, can_receive: 0, held: 4 }] };
     vi.spyOn(api, 'getFulfilment').mockResolvedValue(shelf);
     const fulfil = vi.spyOn(api, 'fulfilOrder').mockResolvedValue({ order: { id: 5 } as never, issue_id: 3, issue_code: 'DN-0003', issue_units: 4 });
-    render(<FulfilmentDialog orderId={5} onClose={() => {}} />);
+    render(<FulfilmentDialog order={REF} onClose={() => {}} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Write off…' }));
     fireEvent.change(screen.getByLabelText('Write off — Pipe'), { target: { value: '1' } });
-    fireEvent.change(screen.getByLabelText('Why it is written off'), { target: { value: 'dropped' } });
+    fireEvent.change(screen.getByLabelText('Write-off reason'), { target: { value: 'dropped' } });
     expect(screen.getByLabelText('Issue now — Pipe')).toHaveValue(3);
     fireEvent.click(screen.getByRole('button', { name: 'Write off…' }));
     expect(screen.getByLabelText('Issue now — Pipe')).toHaveValue(4);

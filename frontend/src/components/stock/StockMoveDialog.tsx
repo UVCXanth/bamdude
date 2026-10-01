@@ -81,13 +81,13 @@ export function StockMoveDialog({
   const creates = CREATES.has(kind);
 
   // An issue made a dispatch note: say so, with a way to open it (spec workshop-dispatch-notes, rule 24).
-  const [created, setCreated] = useState<{ id: number; code: string } | null>(null);
+  const [created, setCreated] = useState<{ id: number; code: string; units: number } | null>(null);
   const move = useMutation({
     mutationFn: (body: StockMoveBody) => api.moveStock(body),
     onSuccess: (result) => {
       invalidateStock(queryClient);
       if (result.issue_id != null && result.issue_code) {
-        setCreated({ id: result.issue_id, code: result.issue_code });
+        setCreated({ id: result.issue_id, code: result.issue_code, units: Number(qty) });
         return;
       }
       showToast(t(result.moved ? 'stock.move.saved' : 'stock.move.nothingMoved'));
@@ -131,7 +131,8 @@ export function StockMoveDialog({
     move.mutate(body);
   };
 
-  if (created) return <DispatchNoteCreated id={created.id} code={created.code} fromOrder={false} onClose={onClose} />;
+  if (created)
+    return <DispatchNoteCreated id={created.id} code={created.code} units={created.units} fromOrder={false} onClose={onClose} />;
   return (
     <Modal onClose={onClose} title={t(`stock.finished.action.${kind}`)} size="md">
       <div className="p-4 space-y-3">

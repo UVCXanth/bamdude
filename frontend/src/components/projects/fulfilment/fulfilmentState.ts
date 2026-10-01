@@ -129,6 +129,84 @@ export function clampDraft(draft: Draft, state: FulfilmentState): Draft {
   return out;
 }
 
+/**
+ * The STORED draft brought inside a new state (WS-13 E6 E13, R04): a record, not a view —
+ * so a bound that grows back does not return the units it took; only the operator does.
+ * `changed` says whether any number the operator had was cut (a line the draft never had
+ * starts at nothing and is not a change).
+ */
+export function clampStored(draft: Draft, state: FulfilmentState): { draft: Draft; changed: boolean } {
+  const next = clampDraft(draft, state);
+  let changed = false;
+  for (const [id, before] of Object.entries(draft)) {
+    const after = next[Number(id)];
+    if (!after) continue;
+    if (after.assemble !== before.assemble || after.receive !== before.receive || after.writeOff !== before.writeOff || after.issue !== before.issue) {
+      changed = true;
+    }
+    for (const [partId, p] of Object.entries(before.parts)) {
+      const q = after.parts[Number(partId)];
+      if (q && (q.receive !== p.receive || q.writeOff !== p.writeOff || q.issue !== p.issue)) changed = true;
+    }
+  }
+  return { draft: next, changed };
+}
+
+/** The two columns a parts line's «all N parts» drives (E6 E06). */
+export type PartsColumn = 'receive' | 'issue';
+
+function partMax(part: FulfilmentPartState, p: PartDraft, column: PartsColumn): number {
+  return column === 'receive' ? part.can_receive : part.held + p.receive - p.writeOff;
+}
+
+/** N of «all N parts»: the sum of what each part of the line can take in that column now. */
+export function partsColumnTotal(line: FulfilmentLineState, d: LineDraft, column: PartsColumn): number {
+  return line.parts.reduce((sum, part) => sum + partMax(part, d.parts[part.part_id] ?? { receive: 0, writeOff: 0, issue: 0 }, column), 0);
+}
+
+/** Whether every part is at its bound (`all`), none moves (`none`), or some do (`mixed`). */
+export function partsColumnState(line: FulfilmentLineState, d: LineDraft, column: PartsColumn): 'all' | 'none' | 'mixed' {
+  let full = true;
+  let empty = true;
+  for (const part of line.parts) {
+    const p = d.parts[part.part_id] ?? { receive: 0, writeOff: 0, issue: 0 };
+    const max = partMax(part, p, column);
+    if (p[column] !== max) full = false;
+    if (p[column] !== 0) empty = false;
+  }
+  return full ? 'all' : empty ? 'none' : 'mixed';
+}
+
+/** Every part of the line to its bound (`on`) or to nothing — the checkbox of E06. */
+export function setAllParts(line: FulfilmentLineState, d: LineDraft, column: PartsColumn, on: boolean): LineDraft {
+  const parts: Record<number, PartDraft> = { ...d.parts };
+  for (const part of line.parts) {
+    const p = parts[part.part_id] ?? { receive: 0, writeOff: 0, issue: 0 };
+    parts[part.part_id] = { ...p, [column]: on ? partMax(part, p, column) : 0 };
+  }
+  return { ...d, parts };
+}
+
+/** What the batch does, per operation — the footer's summary (E6 E12). Units: a parts line counts parts. */
+export function batchTotals(draft: Draft): { assemble: number; receive: number; writeOff: number; issue: number } {
+  let assemble = 0;
+  let receive = 0;
+  for (const d of Object.values(draft)) {
+    assemble += d.assemble;
+    receive += d.receive;
+    for (const p of Object.values(d.parts)) receive += p.receive;
+  }
+  return { assemble, receive, writeOff: writingOff(draft), issue: issuingUnits(draft) };
+}
+
+/** «X of Y» after this batch (E6 E09): issued so far plus what this batch issues — or, closing
+ *  to stock, what is issued or on the shelf after it. Off the VISIBLE draft. */
+export function doneAfter(state: FulfilmentState, draft: Draft): number {
+  const t = batchTotals(draft);
+  if (state.closes_to_stock) return state.issued + state.held + t.assemble + t.receive - t.writeOff;
+  return state.issued + t.issue;
+}
+
 /** The request's lines — only what is not zero; a parts line names its parts. */
 export function requestFrom(draft: Draft): FulfilmentLineBody[] {
   const out: FulfilmentLineBody[] = [];

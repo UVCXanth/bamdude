@@ -1,293 +1,449 @@
-import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useId, useRef, useState } from 'react';
+import { useMutation, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WAYBILL_MAX } from '../../../api/client';
 import type { FulfilmentLineState, FulfilmentRecipient, FulfilmentResult, FulfilmentState } from '../../../api/client';
+import { useAuth } from '../../../contexts/AuthContext';
 import { useToast } from '../../../contexts/ToastContext';
 import { useFulfilment } from '../../../hooks/useFulfilment';
 import { invalidateOrderViews } from '../../../utils/queryInvalidation';
 import { Button } from '../../Button';
-import { Modal } from '../../Modal';
 import { DispatchNoteCreated } from '../../stock/DispatchNoteCreated';
+import { WorkshopDialog } from '../../workshop/WorkshopDialog';
+import { WorkshopFormGrid } from '../../workshop/WorkshopFormGrid';
+import { WorkshopTableScroll } from '../../workshop/WorkshopPanel';
+import { RefreshFailedNote } from '../../workshop/RefreshFailedNote';
+import { lineConfigLabel } from '../lineConfigLabel';
+import type { OrderRef } from '../orderActions/orderRef';
 import { RecipientFields } from './RecipientFields';
 import {
+  batchTotals,
   clampDraft,
+  clampStored,
   completesOrder,
+  doneAfter,
   draftFrom,
   issueCeiling,
-  issuingUnits,
+  partsColumnState,
+  partsColumnTotal,
   requestFrom,
+  setAllParts,
   withLineWriteOff,
   withoutWriteOffs,
   withPartWriteOff,
-  writingOff,
 } from './fulfilmentState';
-import type { Draft, FulfilmentMode, LineDraft, PartDraft } from './fulfilmentState';
+import type { Draft, FulfilmentMode, LineDraft, PartDraft, PartsColumn } from './fulfilmentState';
 
 const NUMBER_CLS =
-  'w-20 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white disabled:opacity-50';
+  'w-[68px] px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white disabled:opacity-50';
 const FIELD_CLS = 'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white';
+const TH = 'px-3 py-2 text-left text-xs font-normal text-bambu-gray whitespace-nowrap';
+const TD = 'px-3 py-2.5 align-top';
 
 /**
- * «Склад і видача» (spec workshop-order-issue, rule 27): per line — assemble the
- * reserved kits, receive the printed units onto the shelf under the order, issue
- * part of what is there or all; a parts line part by part. One «Виконати» is one
- * batch and at most one issue; «Close the order» is offered only when this batch
- * hands over everything ordered (rule 12).
+ * «Склад і видача» (spec workshop-order-issue, rule 27; WS-13 E6 §E): per line — assemble
+ * the reserved kits, receive the printed units onto the shelf under the order, write off
+ * what broke, issue part of what is there or all; a parts line part by part. One
+ * «Execute» is one batch and at most one issue — and every issue is a dispatch note.
  *
- * «Списати…» opens a column for what broke on the shelf — a note is then required
- * (spec workshop-order-issue-followups, rules 46–48). An order without a customer
- * has no issue column: it closes to stock once everything is received (rules 36–39).
- *
- * The numbers are the server's (`getFulfilment` — the same state the POST checks
- * under its locks); the draft only keeps the form inside them. A refusal is the
- * server's sentence and the dialog stays.
+ * The numbers are the server's (`getFulfilment` — the same state the POST checks under
+ * its locks); the draft only keeps the form inside them. ⚠️ After a refusal nothing is
+ * sent again until a state read AFTER it has answered (R04), and a new state trims the
+ * STORED draft — a bound that grows back does not return what it took.
  */
 export function FulfilmentDialog({
-  orderId,
+  order,
   mode = 'all',
   complete = false,
   onClose,
   onDone,
 }: {
-  orderId: number;
+  order: OrderRef;
   mode?: FulfilmentMode;
-  /** Opened from a «done» door: the close box starts ticked (it still needs a full issue). */
+  /** Opened by a «done» door: an explicit wish to close (E6 B04, R09). */
   complete?: boolean;
   onClose: () => void;
   onDone?: (result: FulfilmentResult) => void;
 }) {
   const { t } = useTranslation();
-  const { data: state, isLoading } = useFulfilment(orderId);
-  // The batch made a dispatch note: say so, with a way to open it (spec workshop-dispatch-notes, rule 24).
-  const [created, setCreated] = useState<{ id: number; code: string } | null>(null);
-  if (created) return <DispatchNoteCreated id={created.id} code={created.code} onClose={onClose} />;
+  const query = useFulfilment(order.id);
+  // The batch made a dispatch note: the dialog becomes its window (E15).
+  const [created, setCreated] = useState<{ id: number; code: string; units: number | null } | null>(null);
+  if (created) return <DispatchNoteCreated id={created.id} code={created.code} units={created.units} onClose={onClose} />;
+
+  const subtitle = `${order.code} · ${order.name} · ${order.customer_name ?? t('orders.fulfil.subtitleNoCustomer')}`;
+  if (!query.data) {
+    return (
+      <WorkshopDialog
+        onClose={onClose}
+        title={t('orders.fulfil.title')}
+        subtitle={subtitle}
+        size="xl"
+        footer={
+          <>
+            <Button variant="secondary" onClick={onClose}>
+              {t('common.cancel')}
+            </Button>
+            <Button disabled>{t('orders.fulfil.submit')}</Button>
+          </>
+        }
+      >
+        {query.isError ? (
+          // A failed first read says so and asks again — never «loading» for ever (E02).
+          <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-red-500">
+            <span>
+              {t('orders.fulfil.readFailed')} {(query.error as Error)?.message}
+            </span>
+            <Button variant="secondary" size="sm" onClick={() => void query.refetch()}>
+              {t('common.retry')}
+            </Button>
+          </div>
+        ) : (
+          <div role="status" aria-busy className="space-y-2">
+            <span className="sr-only">{t('common.loading')}</span>
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="h-10 rounded-lg bg-bambu-dark-tertiary/60 animate-pulse" />
+            ))}
+          </div>
+        )}
+      </WorkshopDialog>
+    );
+  }
+
   return (
-    <Modal onClose={onClose} title={t('orders.fulfil.title')} size="6xl">
-      {isLoading || !state ? (
-        <p className="text-bambu-gray">{t('common.loading')}</p>
-      ) : (
-        <FulfilmentForm
-          orderId={orderId}
-          state={state}
-          mode={mode}
-          complete={complete}
-          onClose={onClose}
-          onDone={onDone}
-          onIssued={setCreated}
-        />
-      )}
-    </Modal>
+    <FulfilmentForm
+      order={order}
+      subtitle={subtitle}
+      state={query.data}
+      query={query}
+      mode={mode}
+      complete={complete}
+      onClose={onClose}
+      onDone={onDone}
+      onIssued={setCreated}
+    />
   );
 }
 
 function FulfilmentForm({
-  orderId,
+  order,
+  subtitle,
   state,
+  query,
   mode,
   complete: completeAsked,
   onClose,
   onDone,
   onIssued,
 }: {
-  orderId: number;
+  order: OrderRef;
+  subtitle: string;
   state: FulfilmentState;
+  query: UseQueryResult<FulfilmentState>;
   mode: FulfilmentMode;
   complete: boolean;
   onClose: () => void;
   onDone?: (result: FulfilmentResult) => void;
   /** The batch opened an issue — its dispatch note replaces the dialog. */
-  onIssued: (note: { id: number; code: string }) => void;
+  onIssued: (note: { id: number; code: string; units: number | null }) => void;
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const { showToast } = useToast();
-  const [typed, setDraft] = useState<Draft>(() => draftFrom(state, mode));
-  // Always inside the CURRENT state: after a refusal the state is read again, and what the
-  // operator typed is kept only as far as it still fits (final review I2).
+  const { user } = useAuth();
+  const writeOffId = useId();
+  const root = useRef<HTMLDivElement>(null);
+
+  // The STORED draft (R04): each new state trims it, as a record — never re-derived.
+  const [typed, setTyped] = useState<Draft>(() => draftFrom(state, mode));
+  const [seen, setSeen] = useState(state);
+  const [trimmed, setTrimmed] = useState(false);
+  if (state !== seen) {
+    const next = clampStored(typed, state);
+    setSeen(state);
+    setTyped(next.draft);
+    if (next.changed) setTrimmed(true);
+  }
   const draft = clampDraft(typed, state);
+
   const [recipient, setRecipient] = useState<FulfilmentRecipient>(state.recipient);
   const [waybill, setWaybill] = useState('');
   const [note, setNote] = useState('');
   const [writeOffOpen, setWriteOffOpen] = useState(false);
   const [writeOffNote, setWriteOffNote] = useState('');
-  const [closeAsked, setCloseAsked] = useState(completeAsked);
+  // The close mark is set ONCE, on the first state (R09): asked by a «done» door, or — in
+  // the full mode — when the first batch closes the order. Later reads never re-tick it.
+  const [closeAsked, setCloseAsked] = useState(
+    () => completeAsked || (mode === 'all' && completesOrder(state, draftFrom(state, mode))),
+  );
   const [error, setError] = useState<string | null>(null);
+  // After a refusal: the state read again — `reading` until an answer that came after it.
+  const [reread, setReread] = useState<'idle' | 'reading' | 'failed'>('idle');
+  const sent = useRef(false);
 
   // No customer: nothing is issued, the order closes to stock (followups, rules 35–39).
   const issuing = !state.closes_to_stock;
   const completes = completesOrder(state, draft);
   const closing = closeAsked && completes;
   const lines = requestFrom(draft);
-  const units = issuingUnits(draft);
-  const writing = writingOff(draft);
-  const noteMissing = writing > 0 && writeOffNote.trim() === '';
+  const totals = batchTotals(draft);
+  const noteMissing = totals.writeOff > 0 && writeOffNote.trim() === '';
+
+  // The first focus is the first number of the table (the mockup's `openDialog`), after
+  // the Modal's own focus of its panel.
+  useEffect(() => {
+    root.current?.querySelector<HTMLInputElement>('table input[type="number"]:not(:disabled)')?.focus();
+  }, []);
 
   const change = (lineId: number, patch: (d: LineDraft) => LineDraft) =>
-    setDraft((prev) => {
+    setTyped((prev) => {
       const current = clampDraft(prev, state);
       return clampDraft({ ...current, [lineId]: patch(current[lineId]) }, state);
     });
 
+  const readAgain = async () => {
+    setReread('reading');
+    try {
+      await qc.fetchQuery({
+        queryKey: ['project-fulfilment', order.id],
+        queryFn: () => api.getFulfilment(order.id),
+        staleTime: 0,
+      });
+      setReread('idle');
+    } catch {
+      setReread('failed');
+    }
+  };
+
   const fulfil = useMutation({
     mutationFn: () =>
-      api.fulfilOrder(orderId, {
+      api.fulfilOrder(order.id, {
         lines,
         recipient,
         waybill: waybill.trim() || null,
         note: note.trim() || null,
         complete: closing,
-        write_off_note: writing > 0 ? writeOffNote.trim() : null,
+        write_off_note: totals.writeOff > 0 ? writeOffNote.trim() : null,
       }),
     onSuccess: (result) => {
-      invalidateOrderViews(qc, { orderId });
+      invalidateOrderViews(qc, { orderId: order.id });
       onDone?.(result);
       if (result.issue_id != null && result.issue_code) {
-        onIssued({ id: result.issue_id, code: result.issue_code });
+        onIssued({ id: result.issue_id, code: result.issue_code, units: result.issue_units ?? null });
         return;
       }
-      showToast(t('orders.fulfil.done'));
+      showToast(t(closing ? 'orders.fulfil.doneCompleted' : 'orders.fulfil.done'));
       onClose();
     },
-    // The server's sentence, and the numbers read again — the refusal means they moved.
+    // The server's sentence, and the state read again — nothing is sent until it answers.
     onError: (err: Error) => {
+      sent.current = false;
       setError(err.message);
-      void qc.invalidateQueries({ queryKey: ['project-fulfilment', orderId] });
+      void readAgain();
     },
   });
 
-  const canSubmit = (lines.length > 0 || closing) && !noteMissing && !fulfil.isPending;
+  const pending = fulfil.isPending;
+  const canSubmit = (lines.length > 0 || closing) && !noteMissing && !pending && reread === 'idle';
+  const submit = () => {
+    if (!canSubmit || sent.current) return;
+    sent.current = true;
+    setTrimmed(false);
+    fulfil.mutate();
+  };
+
   // Closing the column takes its numbers back — nothing hidden is written off (final review I2).
   const toggleWriteOff = () => {
     if (writeOffOpen) {
-      setDraft((prev) => clampDraft(withoutWriteOffs(state, clampDraft(prev, state)), state));
+      setTyped((prev) => clampDraft(withoutWriteOffs(state, clampDraft(prev, state)), state));
       setWriteOffNote('');
     }
     setWriteOffOpen(!writeOffOpen);
   };
+
+  const summaryParts = [
+    totals.assemble > 0 && t('orders.fulfil.summaryAssemble', { count: totals.assemble }),
+    totals.receive > 0 && t('orders.fulfil.summaryReceive', { count: totals.receive }),
+    totals.writeOff > 0 && t('orders.fulfil.summaryWriteOff', { count: totals.writeOff }),
+    totals.issue > 0 && t('orders.fulfil.summaryIssue', { count: totals.issue }),
+  ].filter(Boolean) as string[];
+  const summaryText = summaryParts.length ? summaryParts.join(' · ') : t('orders.fulfil.summaryNothing');
+  const summary = summaryText.charAt(0).toUpperCase() + summaryText.slice(1);
+
   const completeLabel = t(issuing ? 'orders.fulfil.complete' : 'orders.fulfil.completeToStock');
-  const completeHint = t(issuing ? 'orders.fulfil.completeHint' : 'orders.fulfil.completeToStockHint');
+  const afterThis = t(issuing ? 'orders.fulfil.afterThis' : 'orders.fulfil.afterThisToStock', {
+    done: doneAfter(state, draft),
+    ordered: state.ordered,
+  });
 
-  return (
-    <div className="space-y-4">
-      {lines.length === 0 && !completes && <p className="text-bambu-gray">{t('orders.fulfil.nothing')}</p>}
-      {!issuing && <p className="text-sm text-bambu-gray">{t('orders.fulfil.noCustomer')}</p>}
-      <div className="flex justify-end">
-        <Button variant="secondary" size="sm" onClick={toggleWriteOff}>
-          {t('orders.fulfil.writeOffToggle')}
-        </Button>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-bambu-gray">
-              <th className="p-2">{t('orders.fulfil.columns.line')}</th>
-              <th className="p-2">{t('orders.fulfil.columns.ordered')}</th>
-              <th className="p-2">{t('orders.fulfil.columns.assemble')}</th>
-              <th className="p-2">{t('orders.fulfil.columns.receive')}</th>
-              <th className="p-2">{t('orders.fulfil.columns.held')}</th>
-              {writeOffOpen && <th className="p-2">{t('orders.fulfil.columns.writeOff')}</th>}
-              {issuing && <th className="p-2">{t('orders.fulfil.columns.issueNow')}</th>}
-              <th className="p-2">{t('orders.fulfil.columns.issued')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {state.lines.map((line) =>
-              line.mode === 'parts' ? (
-                <PartsLineRows
-                  key={line.line_id}
-                  line={line}
-                  draft={draft[line.line_id]}
-                  onChange={change}
-                  writeOffOpen={writeOffOpen}
-                  issuing={issuing}
-                />
-              ) : (
-                <ProductLineRow
-                  key={line.line_id}
-                  line={line}
-                  draft={draft[line.line_id]}
-                  onChange={change}
-                  writeOffOpen={writeOffOpen}
-                  issuing={issuing}
-                />
-              ),
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {writeOffOpen && (
-        <label className="block text-sm space-y-1">
-          <span className="text-bambu-gray">{t('orders.fulfil.writeOffNote')}</span>
-          <input
-            value={writeOffNote}
-            maxLength={2000}
-            onChange={(e) => setWriteOffNote(e.target.value)}
-            aria-label={t('orders.fulfil.writeOffNote')}
-            aria-invalid={noteMissing}
-            className={FIELD_CLS}
-          />
-        </label>
-      )}
-
-      {issuing && (
-        <fieldset className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <legend className="text-sm text-bambu-gray mb-1">{t('orders.fulfil.recipient')}</legend>
-          <RecipientFields value={recipient} onChange={setRecipient} />
-          <label className="text-sm space-y-1">
-            <span className="text-bambu-gray">{t('orders.fulfil.waybill')}</span>
-            <input
-              value={waybill}
-              maxLength={WAYBILL_MAX}
-              onChange={(e) => setWaybill(e.target.value)}
-              aria-label={t('orders.fulfil.waybill')}
-              className={FIELD_CLS}
-            />
-          </label>
-          <label className="text-sm space-y-1">
-            <span className="text-bambu-gray">{t('orders.fulfil.note')}</span>
-            <input
-              value={note}
-              maxLength={2000}
-              onChange={(e) => setNote(e.target.value)}
-              aria-label={t('orders.fulfil.note')}
-              className={FIELD_CLS}
-            />
-          </label>
-        </fieldset>
-      )}
-
-      <label className="flex items-center gap-2 text-sm" title={completes ? undefined : completeHint}>
-        <input
-          type="checkbox"
-          checked={closing}
-          disabled={!completes}
-          onChange={(e) => setCloseAsked(e.target.checked)}
-          aria-label={completeLabel}
-        />
-        <span className={completes ? 'text-white' : 'text-bambu-gray'}>{completeLabel}</span>
-        {!completes && <span className="text-xs text-bambu-gray">{completeHint}</span>}
-      </label>
-
-      {error && (
-        <p role="alert" className="text-sm text-red-400">
-          {error}
+  const trimmedNote = trimmed ? <p className="text-sm text-bambu-gray">{t('orders.fulfil.trimmed')}</p> : null;
+  const errorNode = error ? (
+    <div className="space-y-1">
+      <p>{error}</p>
+      {reread === 'reading' && <p className="text-sm text-bambu-gray">{t('orders.fulfil.rereading')}</p>}
+      {reread === 'failed' && (
+        <p className="flex flex-wrap items-center gap-2 text-sm">
+          {t('orders.fulfil.readFailed')}
+          <Button variant="secondary" size="sm" onClick={() => void readAgain()}>
+            {t('orders.fulfil.reread')}
+          </Button>
         </p>
       )}
-
-      <div className="flex items-center justify-end gap-2 pt-2 border-t border-bambu-dark-tertiary">
-        <span className="mr-auto text-sm text-bambu-gray">
-          {issuing && t('orders.fulfil.summary', { count: units })}
-        </span>
-        <Button variant="secondary" onClick={onClose}>
-          {t('common.cancel')}
-        </Button>
-        <Button onClick={() => fulfil.mutate()} disabled={!canSubmit}>
-          {t('orders.fulfil.submit')}
-        </Button>
-      </div>
+      {trimmedNote}
     </div>
+  ) : undefined;
+
+  return (
+    <WorkshopDialog
+      onClose={onClose}
+      title={t('orders.fulfil.title')}
+      subtitle={subtitle}
+      size="xl"
+      pending={pending}
+      error={errorNode}
+      summary={<span className="text-sm text-bambu-gray-light">{summary}</span>}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={pending}>
+            {t('common.cancel')}
+          </Button>
+          <Button onClick={submit} disabled={!canSubmit}>
+            {pending ? t('orders.fulfil.submitting') : t('orders.fulfil.submit')}
+          </Button>
+        </>
+      }
+    >
+      <div ref={root}>
+        <fieldset disabled={pending} className="min-w-0 space-y-4">
+          {lines.length === 0 && !completes && <p className="text-sm text-bambu-gray">{t('orders.fulfil.nothing')}</p>}
+          {!issuing && <p className="text-sm text-bambu-gray">{t('orders.fulfil.noCustomer')}</p>}
+          {query.isError && reread === 'idle' && <RefreshFailedNote onRetry={() => void query.refetch()} />}
+          {!error && trimmedNote}
+
+          <div className="flex justify-end">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={toggleWriteOff}
+              aria-expanded={writeOffOpen}
+              aria-controls={writeOffId}
+            >
+              {t('orders.fulfil.writeOffToggle')}
+            </Button>
+          </div>
+
+          <WorkshopTableScroll label={t('orders.fulfil.title')}>
+            <table className="w-full text-sm">
+              <thead>
+                <tr>
+                  <th className={TH}>{t('orders.fulfil.columns.line')}</th>
+                  <th className={TH}>{t('orders.fulfil.columns.ordered')}</th>
+                  <th className={TH}>{t('orders.fulfil.columns.assemble')}</th>
+                  <th className={TH}>{t('orders.fulfil.columns.receive')}</th>
+                  <th className={TH}>{t('orders.fulfil.columns.held')}</th>
+                  {writeOffOpen && <th className={TH}>{t('orders.fulfil.columns.writeOff')}</th>}
+                  {issuing && <th className={TH}>{t('orders.fulfil.columns.issueNow')}</th>}
+                  <th className={TH}>{t('orders.fulfil.columns.issued')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.lines.map((line) =>
+                  line.mode === 'parts' ? (
+                    <PartsLineRows
+                      key={line.line_id}
+                      line={line}
+                      draft={draft[line.line_id]}
+                      onChange={change}
+                      writeOffOpen={writeOffOpen}
+                      issuing={issuing}
+                    />
+                  ) : (
+                    <ProductLineRow
+                      key={line.line_id}
+                      line={line}
+                      draft={draft[line.line_id]}
+                      onChange={change}
+                      writeOffOpen={writeOffOpen}
+                      issuing={issuing}
+                    />
+                  ),
+                )}
+              </tbody>
+            </table>
+          </WorkshopTableScroll>
+
+          <div id={writeOffId}>
+            {writeOffOpen && (
+              <label className="block text-sm space-y-1">
+                <span className="text-bambu-gray-light">{t('orders.fulfil.writeOffNote')}</span>
+                <input
+                  value={writeOffNote}
+                  maxLength={2000}
+                  onChange={(e) => setWriteOffNote(e.target.value)}
+                  aria-label={t('orders.fulfil.writeOffNote')}
+                  aria-invalid={noteMissing}
+                  className={FIELD_CLS}
+                />
+              </label>
+            )}
+          </div>
+
+          {issuing && totals.issue > 0 && (
+            <section aria-label={t('orders.fulfil.recipient')} className="space-y-1">
+              <h3 className="text-sm font-semibold text-white">{t('orders.fulfil.recipient')}</h3>
+              <WorkshopFormGrid>
+                <RecipientFields value={recipient} onChange={setRecipient} />
+                <label className="text-sm space-y-1">
+                  <span className="text-bambu-gray">{t('orders.fulfil.waybill')}</span>
+                  <input
+                    value={waybill}
+                    maxLength={WAYBILL_MAX}
+                    onChange={(e) => setWaybill(e.target.value)}
+                    aria-label={t('orders.fulfil.waybill')}
+                    className={FIELD_CLS}
+                  />
+                </label>
+                <label className="text-sm space-y-1">
+                  <span className="text-bambu-gray">{t('orders.fulfil.note')}</span>
+                  <input
+                    value={note}
+                    maxLength={2000}
+                    onChange={(e) => setNote(e.target.value)}
+                    aria-label={t('orders.fulfil.note')}
+                    className={FIELD_CLS}
+                  />
+                </label>
+              </WorkshopFormGrid>
+              <p className="text-xs text-bambu-gray">{t('orders.fulfil.recipientHint')}</p>
+            </section>
+          )}
+
+          <WorkshopFormGrid>
+            <div data-testid="fulfil-performer" className="flex min-w-0 flex-col gap-1 text-sm">
+              <span className="text-bambu-gray-light">{t('orders.fulfil.performer')}</span>
+              <span className="text-white">{user?.username ?? '—'}</span>
+              <small className="text-xs text-bambu-gray">{t('orders.fulfil.performerHint')}</small>
+            </div>
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={closing}
+                disabled={!completes}
+                onChange={(e) => setCloseAsked(e.target.checked)}
+                aria-label={completeLabel}
+              />
+              <span className={completes ? 'text-white' : 'text-bambu-gray'}>
+                {completeLabel}
+                {!completes && <small className="ml-1 text-xs text-bambu-gray">{afterThis}</small>}
+              </span>
+            </label>
+          </WorkshopFormGrid>
+
+          <p className="text-xs leading-5 text-bambu-gray">{t('orders.fulfil.explain')}</p>
+        </fieldset>
+      </div>
+    </WorkshopDialog>
   );
 }
 
@@ -303,6 +459,8 @@ function NumberCell({
   onChange: (n: number) => void;
 }) {
   const { t } = useTranslation();
+  // Nothing to do in this column: a dash, not a dead field (E05).
+  if (max === 0) return <span className="text-bambu-gray">—</span>;
   return (
     <div className="flex items-center gap-2 whitespace-nowrap">
       <input
@@ -310,12 +468,11 @@ function NumberCell({
         min={0}
         max={max}
         value={value}
-        disabled={max === 0}
         onChange={(e) => onChange(Number(e.target.value))}
         aria-label={label}
         className={NUMBER_CLS}
       />
-      <span className="text-bambu-gray">{t('orders.fulfil.ofN', { count: max })}</span>
+      <small className="text-xs text-bambu-gray">{t('orders.fulfil.ofN', { count: max })}</small>
     </div>
   );
 }
@@ -335,11 +492,20 @@ function ProductLineRow({
 }) {
   const { t } = useTranslation();
   const name = line.product_name;
+  const config = lineConfigLabel(line.configuration ?? undefined, line.mode, t) || t('orders.fulfil.standardConfig');
   return (
     <tr data-testid={`fulfil-line-${line.line_id}`} className="border-t border-bambu-dark-tertiary">
-      <td className="p-2 text-white">{name}</td>
-      <td className="p-2">{line.ordered}</td>
-      <td className="p-2">
+      <td className={TD}>
+        <div className="font-semibold text-white">{name}</div>
+        <small className="block text-xs text-bambu-gray">{config}</small>
+        {line.stock_position && (
+          <small className="block text-xs text-bambu-gray">
+            {t('orders.fulfil.cell', { location: line.stock_position.location || t('orders.fulfil.cellUnassigned') })}
+          </small>
+        )}
+      </td>
+      <td className={TD}>{line.ordered}</td>
+      <td className={TD}>
         <NumberCell
           value={draft.assemble}
           max={line.can_assemble}
@@ -347,7 +513,7 @@ function ProductLineRow({
           onChange={(n) => onChange(line.line_id, (d) => ({ ...d, assemble: n }))}
         />
       </td>
-      <td className="p-2">
+      <td className={TD}>
         <NumberCell
           value={draft.receive}
           max={line.can_receive}
@@ -355,9 +521,9 @@ function ProductLineRow({
           onChange={(n) => onChange(line.line_id, (d) => ({ ...d, receive: n }))}
         />
       </td>
-      <td className="p-2">{line.held}</td>
+      <td className={TD}>{line.held}</td>
       {writeOffOpen && (
-        <td className="p-2">
+        <td className={TD}>
           <NumberCell
             value={draft.writeOff}
             max={line.held + draft.assemble + draft.receive}
@@ -367,7 +533,7 @@ function ProductLineRow({
         </td>
       )}
       {issuing && (
-        <td className="p-2">
+        <td className={TD}>
           <NumberCell
             value={draft.issue}
             max={issueCeiling(line, draft)}
@@ -376,8 +542,44 @@ function ProductLineRow({
           />
         </td>
       )}
-      <td className="p-2 whitespace-nowrap">{t('orders.fulfil.issuedOf', { issued: line.issued, ordered: line.ordered })}</td>
+      <td className={`${TD} whitespace-nowrap`}>{t('orders.fulfil.issuedOf', { issued: line.issued, ordered: line.ordered })}</td>
     </tr>
+  );
+}
+
+/** «all N parts» of one column of a parts line (E06): ticked, cleared, or mixed. */
+function AllPartsCell({
+  line,
+  draft,
+  column,
+  onChange,
+}: {
+  line: FulfilmentLineState;
+  draft: LineDraft;
+  column: PartsColumn;
+  onChange: (lineId: number, patch: (d: LineDraft) => LineDraft) => void;
+}) {
+  const { t } = useTranslation();
+  const box = useRef<HTMLInputElement>(null);
+  const total = partsColumnTotal(line, draft, column);
+  const at = partsColumnState(line, draft, column);
+  useEffect(() => {
+    if (box.current) box.current.indeterminate = at === 'mixed';
+  });
+  // Nothing any part can take — no checkbox that would read as «done» (K8).
+  if (total === 0) return <span className="text-bambu-gray">—</span>;
+  const columnName = t(column === 'receive' ? 'orders.fulfil.columns.receive' : 'orders.fulfil.columns.issueNow');
+  return (
+    <label className="inline-flex items-center gap-2 whitespace-nowrap text-sm">
+      <input
+        ref={box}
+        type="checkbox"
+        checked={at === 'all'}
+        onChange={(e) => onChange(line.line_id, (d) => setAllParts(line, d, column, e.target.checked))}
+        aria-label={t('orders.fulfil.allPartsLabel', { column: columnName, name: line.product_name })}
+      />
+      <span className="text-white">{t('orders.fulfil.allParts', { count: total })}</span>
+    </label>
   );
 }
 
@@ -405,25 +607,32 @@ function PartsLineRows({
   return (
     <>
       <tr data-testid={`fulfil-line-${line.line_id}`} className="border-t border-bambu-dark-tertiary">
-        <td className="p-2 text-white">
-          {line.product_name} <span className="text-xs text-bambu-gray">{t('orders.fulfil.partsLine')}</span>
+        <td className={TD}>
+          <div className="font-semibold text-white">{line.product_name}</div>
+          <small className="block text-xs text-bambu-gray">{t('orders.fulfil.partsLine')}</small>
         </td>
-        <td className="p-2">{line.ordered}</td>
-        <td className="p-2" />
-        <td className="p-2" />
-        <td className="p-2">{line.held}</td>
-        {writeOffOpen && <td className="p-2" />}
-        {issuing && <td className="p-2" />}
-        <td className="p-2 whitespace-nowrap">{t('orders.fulfil.issuedOf', { issued: line.issued, ordered: line.ordered })}</td>
+        <td className={TD}>{line.ordered}</td>
+        <td className={`${TD} text-bambu-gray`}>—</td>
+        <td className={TD}>
+          <AllPartsCell line={line} draft={draft} column="receive" onChange={onChange} />
+        </td>
+        <td className={TD}>{line.held}</td>
+        {writeOffOpen && <td className={TD} />}
+        {issuing && (
+          <td className={TD}>
+            <AllPartsCell line={line} draft={draft} column="issue" onChange={onChange} />
+          </td>
+        )}
+        <td className={`${TD} whitespace-nowrap`}>{t('orders.fulfil.issuedOf', { issued: line.issued, ordered: line.ordered })}</td>
       </tr>
       {line.parts.map((part) => {
         const d = draft.parts[part.part_id] ?? { receive: 0, writeOff: 0, issue: 0 };
         return (
-          <tr key={part.part_id} className="text-bambu-gray">
-            <td className="p-2 pl-6">{part.name}</td>
-            <td className="p-2">{part.wanted}</td>
-            <td className="p-2" />
-            <td className="p-2">
+          <tr key={part.part_id} className="text-bambu-gray-light">
+            <td className={`${TD} pl-8`}>{part.name}</td>
+            <td className={TD}>{part.wanted}</td>
+            <td className={TD} />
+            <td className={TD}>
               <NumberCell
                 value={d.receive}
                 max={part.can_receive}
@@ -431,9 +640,9 @@ function PartsLineRows({
                 onChange={(n) => setPart(part.part_id, 'receive', n)}
               />
             </td>
-            <td className="p-2">{part.held}</td>
+            <td className={TD}>{part.held}</td>
             {writeOffOpen && (
-              <td className="p-2">
+              <td className={TD}>
                 <NumberCell
                   value={d.writeOff}
                   max={part.held + d.receive}
@@ -443,7 +652,7 @@ function PartsLineRows({
               </td>
             )}
             {issuing && (
-              <td className="p-2">
+              <td className={TD}>
                 <NumberCell
                   value={d.issue}
                   max={part.held + d.receive - d.writeOff}
@@ -452,7 +661,7 @@ function PartsLineRows({
                 />
               </td>
             )}
-            <td className="p-2 whitespace-nowrap">
+            <td className={`${TD} whitespace-nowrap`}>
               {t('orders.fulfil.issuedOf', { issued: part.issued, ordered: part.wanted })}
             </td>
           </tr>

@@ -157,7 +157,7 @@ export function useOrderActions({
   } else if (active?.kind === 'duplicate') {
     dialogs = <DuplicateOrderModal order={active.ref} onClose={close} />;
   } else if (active?.kind === 'fulfil') {
-    dialogs = <FulfilmentDialog orderId={active.ref.id} mode={active.mode} complete={active.complete} onClose={close} />;
+    dialogs = <FulfilmentDialog order={active.ref} mode={active.mode} complete={active.complete} onClose={close} />;
   } else if (active?.kind === 'confirm') {
     dialogs = (
       <OrderStatusConfirm
