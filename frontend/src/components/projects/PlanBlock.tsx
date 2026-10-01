@@ -459,15 +459,15 @@ export function PlanBlock({
           again) is the same whichever line was cut short. */}
       {plan.truncated && (
         <div className="flex items-center gap-2 text-sm" data-testid="plan-truncated">
-          <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
-          <span className="text-amber-300">{t('orders.plan.truncated')}</span>
+          <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-500 shrink-0" />
+          <span className="text-amber-700 dark:text-amber-300">{t('orders.plan.truncated')}</span>
         </div>
       )}
 
       {draftChanged && (
         <div className="flex items-center gap-2 text-sm" data-testid="plan-forecast-stale">
-          <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
-          <span className="text-amber-300">{t('orders.plan.forecastStale')}</span>
+          <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-500 shrink-0" />
+          <span className="text-amber-700 dark:text-amber-300">{t('orders.plan.forecastStale')}</span>
         </div>
       )}
 

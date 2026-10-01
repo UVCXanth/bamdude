@@ -58,7 +58,7 @@ export function OrderForecastPanel({
     return (
       <div className="space-y-2 text-sm">
         {view.refreshFailed && (
-          <p className="flex flex-wrap items-center gap-2 text-xs text-amber-400">
+          <p className="flex flex-wrap items-center gap-2 text-xs text-amber-700 dark:text-amber-400">
             {t('orders.detail.refreshFailed')}
             <button type="button" onClick={onRetry} className="text-bambu-green hover:underline">
               {t('common.retry')}
@@ -106,7 +106,7 @@ export function OrderForecastPanel({
                 {' · '}
                 {t('orders.forecast.prints', { count: m.prints })}
                 {m.accepting_printers === 0 && (
-                  <span className="block text-xs text-amber-400">{t('orders.forecast.noPrinters')}</span>
+                  <span className="block text-xs text-amber-700 dark:text-amber-400">{t('orders.forecast.noPrinters')}</span>
                 )}
               </dt>
               <dd className="text-right font-medium text-white tabular-nums">{hoursMinutes(m.seconds)}</dd>
@@ -115,7 +115,7 @@ export function OrderForecastPanel({
         </dl>
 
         {f.incomplete_reasons.map((reason) => (
-          <small key={reason.code} data-testid="order-forecast-reason" className="block text-xs text-amber-400">
+          <small key={reason.code} data-testid="order-forecast-reason" className="block text-xs text-amber-700 dark:text-amber-400">
             {t(`projects.estimateReasons.${reason.code}`)}
             {reason.count != null && `: ${reason.count}`}
           </small>

@@ -29,9 +29,9 @@ export function FilamentNeedsRows({ needs }: { needs: OrderNeeds }) {
         ))}
       </ul>
       {needs.unknown_prints > 0 && (
-        <p className="mt-2 text-xs text-amber-400">{t('orders.filament.unattributedPrints', { count: needs.unknown_prints })}</p>
+        <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">{t('orders.filament.unattributedPrints', { count: needs.unknown_prints })}</p>
       )}
-      {needs.stock_unavailable && <p className="mt-2 text-xs text-amber-400">{t('orders.filament.stockUnavailable')}</p>}
+      {needs.stock_unavailable && <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">{t('orders.filament.stockUnavailable')}</p>}
     </div>
   );
 }
@@ -57,7 +57,7 @@ function NeedRowItem({ row }: { row: NeedRow }) {
       data-testid={needTestId(row.material, row.colour)}
       data-short={String(short)}
       className={`flex flex-wrap items-baseline gap-x-3.5 gap-y-1 border-b border-bambu-dark-tertiary py-2 text-[13px] last:border-b-0 ${
-        short ? 'text-amber-400' : 'text-bambu-gray-light'
+        short ? 'text-amber-700 dark:text-amber-400' : 'text-bambu-gray-light'
       }`}
     >
       <span className="flex w-full items-center gap-1.5 font-medium text-white">
@@ -81,13 +81,13 @@ function NeedRowItem({ row }: { row: NeedRow }) {
         )}
       </span>
       {short && (
-        <span className="text-amber-400">
+        <span className="text-amber-700 dark:text-amber-400">
           {t(partial ? 'orders.filament.shortAtLeast' : 'orders.filament.short', { amount: formatWeight(row.short_g as number) })}
         </span>
       )}
       {!short && shelfKnown && !partial && <span className="text-bambu-green">{t('orders.filament.enough')}</span>}
       {!short && shelfKnown && partial && <span className="text-bambu-gray">{t('orders.filament.enoughKnown')}</span>}
-      {partial && <span className="text-amber-400">{t('orders.filament.unknownPrints', { count: row.unknown_prints })}</span>}
+      {partial && <span className="text-amber-700 dark:text-amber-400">{t('orders.filament.unknownPrints', { count: row.unknown_prints })}</span>}
     </li>
   );
 }

@@ -304,7 +304,7 @@ function AwaitingRow({ item, lineName }: { item: AutoQueueItem; lineName: string
           lineName && t('orders.queue.line', { name: lineName }),
         ]}
       />
-      {item.waiting_reason && <small className="mt-0.5 block text-xs text-amber-400">{item.waiting_reason}</small>}
+      {item.waiting_reason && <small className="mt-0.5 block text-xs text-amber-700 dark:text-amber-400">{item.waiting_reason}</small>}
       </div>
     </li>
   );

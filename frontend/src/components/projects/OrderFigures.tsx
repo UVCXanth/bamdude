@@ -15,7 +15,7 @@ type Tone = 'ok' | 'warn' | 'late';
 
 const TONE_CLASS: Record<Tone, string> = {
   ok: 'text-bambu-green',
-  warn: 'text-amber-400',
+  warn: 'text-amber-700 dark:text-amber-400',
   late: 'text-red-500',
 };
 
@@ -153,7 +153,7 @@ function ReadyValue({
         <AlertTriangle
           role="img"
           aria-label={t('orders.figures.readyIncomplete')}
-          className="ml-1.5 inline h-3.5 w-3.5 align-[-1px] text-amber-400"
+          className="ml-1.5 inline h-3.5 w-3.5 align-[-1px] text-amber-600 dark:text-amber-400"
         />
       )}
     </Value>

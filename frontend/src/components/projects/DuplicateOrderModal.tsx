@@ -119,7 +119,7 @@ export function DuplicateOrderModal({ order, onClose }: { order: OrderRef; onClo
           {t('orders.duplicate.copies')} {t('orders.duplicate.excludes')}
         </p>
         {pastDue && order.due_date && (
-          <p className="mt-2 text-sm text-amber-500">
+          <p className="mt-2 text-sm text-amber-700 dark:text-amber-400">
             {t('orders.duplicate.pastDue', {
               date: formatCalendarDate(order.due_date, { day: 'numeric', month: 'short' }, settings?.date_format),
             })}

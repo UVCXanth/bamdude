@@ -9,7 +9,7 @@ import { useTranslation } from 'react-i18next';
 export function RefreshFailedNote({ onRetry }: { onRetry: () => void }) {
   const { t } = useTranslation();
   return (
-    <p className="mb-2 flex flex-wrap items-center gap-2 text-xs text-amber-400">
+    <p className="mb-2 flex flex-wrap items-center gap-2 text-xs text-amber-700 dark:text-amber-400">
       {t('orders.detail.refreshFailed')}
       <button type="button" onClick={onRetry} className="text-bambu-green hover:underline">
         {t('common.retry')}
