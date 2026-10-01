@@ -5734,25 +5734,36 @@ export default {
         cancelled: 'Moving {{code}} was cancelled.',
       },
     },
+    // WS-13 E7 §G: the workspace.
+    workspace: {
+      notOnPage: 'The chosen order is not on this page — showing {{shown}}',
+      openChosen: 'Open the chosen order',
+    },
     // The deadlines board (spec workshop-order-views, rules 14–17).
     deadlines: {
       previous: 'Previous',
       next: 'Next',
       today: 'Today',
       range: '{{from}} — {{to}}',
-      dueLabel: 'deadline',
       readyAt: 'ready ≈ {{when}}',
       late: 'late',
       etaMark: '{{code}} ready ≈ {{when}}',
+      // WS-13 E7 §H.
+      etaMarkTitle: 'Forecast: {{when}}',
+      legendCard: 'Card — the deadline;',
+      legendEta: '— the day the forecast promises ready; red frame — forecast after the deadline',
+      calendar: 'Deadlines calendar',
+      cardCode: '{{code}} · deadline',
       attention: 'Needs attention',
-      attentionHint: 'overdue, no deadline, or forecast after the deadline',
-      reason: {
-        overdue: 'Overdue',
-        late_eta: 'Ready after the deadline',
-        partial: 'Incomplete estimate',
-        no_due: 'No deadline',
+      attentionHint: 'overdue, no deadline, an incomplete estimate or a forecast after the deadline',
+      badge: {
+        overdue: 'overdue',
+        late_eta: 'ready ≈ {{eta}} with the deadline {{due}}',
+        partial: 'incomplete estimate · deadline {{due}}',
+        no_due: 'no deadline',
       },
-      empty: 'Nothing needs attention',
+      noRisks: 'No risks',
+      noRisksBody: 'Every active order makes its deadline.',
       loadFailed: 'Could not load the deadlines.',
     },
     list: {

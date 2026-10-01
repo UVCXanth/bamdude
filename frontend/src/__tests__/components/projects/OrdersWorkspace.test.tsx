@@ -5,8 +5,10 @@ import { api } from '../../../api/client';
 import type { OrderListItem, OrderListPage } from '../../../api/client';
 import { OrdersWorkspace } from '../../../components/projects/OrdersWorkspace';
 import { NO_ACTIONS, WithOrderActions } from '../../fixtures/orderActionsHost';
+import { ORDER_ROW_DEFAULTS } from '../../wireDefaults';
 
 const row = (over: Partial<OrderListItem>): OrderListItem => ({
+  ...ORDER_ROW_DEFAULTS,
   id: 1, code: 'OR-0001', name: 'Ten flasks', customer_id: 2, customer_name: 'ACME', color: null, status: 'active',
   stage: 'prep', responsible_id: null, responsible_name: null, due_date: '2026-10-03T00:00:00', priority: 'normal',
   price: null, tags: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00Z', lines_count: 1, ordered: 10,
@@ -34,12 +36,12 @@ const detail = (id: number, name: string) => ({
     all_printed: false, bankable_surplus: 0 },
 });
 
-/** Tailwind's `lg` — the workspace has two columns only from there (spec rule 13). */
+/** Two columns from a 761 px viewport (WS-13 E7 G01) — the mockup's and the spec's edge. */
 function screenIsWide(wide: boolean) {
   vi.spyOn(window, 'matchMedia').mockImplementation(
     (query: string) =>
       ({
-        matches: wide && query.includes('min-width: 1024px'),
+        matches: wide && query.includes('min-width: 761px'),
         media: query,
         onchange: null,
         addListener: vi.fn(),
@@ -51,7 +53,7 @@ function screenIsWide(wide: boolean) {
   );
 }
 
-const props = { isLoading: false, isPlaceholderData: false, perPage: 24, onPageChange: () => {}, onPerPageChange: () => {}, actions: NO_ACTIONS };
+const props = { isError: false, onRetry: () => {}, isPlaceholderData: false, perPage: 24, onPageChange: () => {}, onPerPageChange: () => {}, actions: NO_ACTIONS };
 
 afterEach(() => {
   window.history.pushState({}, '', '/');
@@ -91,17 +93,29 @@ describe('OrdersWorkspace', () => {
     render(<OrdersWorkspace data={page(ROWS)} {...props} picked={null} onPick={() => {}} />);
     const lamp = within(await screen.findByRole('list', { name: 'Orders' })).getByRole('button', { name: /Lamp/ });
     expect(lamp).toHaveTextContent('OR-0002');
-    expect(lamp).toHaveTextContent(new Date('2026-10-03T00:00:00').toLocaleDateString());
+    expect(lamp).toHaveTextContent(new Date(2026, 9, 3).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }));
     expect(lamp).toHaveTextContent('Quality check');
     expect(lamp).toHaveTextContent('Globex');
     expect(within(lamp).getByText('4 / 10')).toBeInTheDocument();
   });
-  it('on a narrow screen a row is a link to the order page and nothing is fetched beside it', async () => {
+  // WS-13 E7 G06: at 760 and narrower the list stands above the shown order — not a list of links.
+  it('on a narrow screen the list stands above the shown order, and a pick scrolls to it', async () => {
     screenIsWide(false);
-    render(<OrdersWorkspace data={page(ROWS)} {...props} picked={null} onPick={() => {}} />);
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const onPick = vi.fn();
+    const { rerender } = render(<OrdersWorkspace data={page(ROWS)} {...props} picked={null} onPick={onPick} />);
     const rows = await screen.findByRole('list', { name: 'Orders' });
-    expect(within(rows).getByRole('link', { name: /Lamp/ })).toHaveAttribute('href', '/projects/2');
-    expect(api.getOrder).not.toHaveBeenCalled();
+    expect(within(rows).queryByRole('link')).not.toBeInTheDocument();
+    const pane = await screen.findByRole('heading', { name: 'Ten flasks' });
+    // The pane comes after the list in the document — stacked, not beside it.
+    expect(rows.compareDocumentPosition(pane) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(within(rows).getByRole('button', { name: /Lamp/ }));
+    expect(onPick).toHaveBeenCalledWith(2);
+    rerender(<OrdersWorkspace data={page(ROWS)} {...props} picked={2} onPick={onPick} />);
+    await screen.findByRole('heading', { name: 'Lamp' });
+    await waitFor(() => expect(scroll).toHaveBeenCalled());
+    expect(within(rows).getByRole('button', { name: /Lamp/ })).toHaveAttribute('aria-current', 'true');
   });
   it('deleting the shown order moves the pane on to the next one at once', async () => {
     const onPick = vi.fn();
@@ -162,5 +176,58 @@ describe('OrdersWorkspace', () => {
     expect(heading.tagName).toBe('H2');
     expect(screen.queryByRole('navigation', { name: /breadcrumb/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Orders' })).not.toBeInTheDocument();
+  });
+  describe('WS-13 E7 G', () => {
+    it('says so when the order the URL names is not on this page, and links to it', async () => {
+      render(<OrdersWorkspace data={page(ROWS)} {...props} picked={99} onPick={() => {}} />);
+      const note = await screen.findByTestId('workspace-fallback');
+      expect(note).toHaveAttribute('role', 'status');
+      expect(note).toHaveTextContent('The chosen order is not on this page — showing OR-0001');
+      expect(within(note).getByRole('link', { name: 'Open the chosen order' })).toHaveAttribute('href', '/projects/99');
+    });
+
+    it('says nothing when the pick is on the page, when nothing is picked, or while the next page loads', async () => {
+      const { unmount } = render(<OrdersWorkspace data={page(ROWS)} {...props} picked={2} onPick={() => {}} />);
+      await screen.findByRole('heading', { name: 'Lamp' });
+      expect(screen.queryByTestId('workspace-fallback')).not.toBeInTheDocument();
+      unmount();
+      const second = render(<OrdersWorkspace data={page(ROWS)} {...props} picked={null} onPick={() => {}} />);
+      await screen.findByRole('heading', { name: 'Ten flasks' });
+      expect(screen.queryByTestId('workspace-fallback')).not.toBeInTheDocument();
+      second.unmount();
+      render(<OrdersWorkspace data={page(ROWS)} {...props} isPlaceholderData picked={99} onPick={() => {}} />);
+      await screen.findByRole('list', { name: 'Orders' });
+      expect(screen.queryByTestId('workspace-fallback')).not.toBeInTheDocument();
+    });
+
+    it('a failed page is an alert with a retry — no rows, no pane', async () => {
+      const retry = vi.fn();
+      render(<OrdersWorkspace data={undefined} {...props} isError onRetry={retry} picked={1} onPick={() => {}} />);
+      const alert = screen.getByRole('alert');
+      expect(alert).toHaveTextContent('Could not load the orders');
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+      expect(retry).toHaveBeenCalled();
+      expect(screen.queryByRole('list', { name: 'Orders' })).not.toBeInTheDocument();
+      expect(api.getOrder).not.toHaveBeenCalled();
+    });
+
+    it('a failed re-read keeps its rows and pane under a note', async () => {
+      render(<OrdersWorkspace data={page(ROWS)} {...props} isError picked={null} onPick={() => {}} />);
+      expect(await screen.findByRole('heading', { name: 'Ten flasks' })).toBeInTheDocument();
+      expect(screen.getByText('Could not refresh')).toBeInTheDocument();
+    });
+
+    it('keeps the list in one sticky panel with its page bar pinned to the bottom of it', async () => {
+      render(<OrdersWorkspace data={page(ROWS)} {...props} picked={null} onPick={() => {}} />);
+      const panel = await screen.findByTestId('workspace-list');
+      expect(panel.className).toContain('sticky');
+      expect(panel.className).toContain('overflow-y-auto');
+      const bar = within(panel).getByTestId('workspace-pager');
+      expect(bar.className).toContain('sticky');
+      expect(bar.className).toContain('bottom-0');
+      const chosen = within(panel).getByRole('button', { name: /Ten flasks/ });
+      expect(chosen).toHaveAttribute('aria-current', 'true');
+      expect(chosen.className).toContain('shadow-[inset_3px_0_0');
+    });
   });
 });

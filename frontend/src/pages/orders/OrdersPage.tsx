@@ -319,7 +319,8 @@ export function OrdersPage() {
           {view === 'workspace' && (
             <OrdersWorkspace
               data={data}
-              isLoading={state === 'loading'}
+              isError={isError}
+              onRetry={() => void refetch()}
               isPlaceholderData={isPlaceholderData}
               perPage={perPage}
               onPageChange={setPage}

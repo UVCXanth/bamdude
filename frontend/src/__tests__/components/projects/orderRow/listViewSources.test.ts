@@ -15,6 +15,8 @@ const LIST_VIEWS: string[] = [
   'components/projects/OrdersTable.tsx',
   'components/projects/OrderCard.tsx',
   'components/projects/board/BoardCard.tsx',
+  'components/projects/OrdersWorkspace.tsx',
+  'components/projects/OrdersDeadlines.tsx',
 ];
 
 const read = (rel: string) => readFileSync(join(SRC, rel), 'utf8');
