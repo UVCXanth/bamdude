@@ -360,11 +360,13 @@ async (page, selftest = null) => {
 
   // ======================= 1. the frame at every width (B01, B02, E02, R07) =======================
   for (const w of [2560, 1920, 1440, 1280, 1101, 1100, 1024, 768, 390]) {
-    await scenario(`add-geometry@${w}`, ['E5-B01', 'E5-B02', 'E5-E02', 'R07'], async () => {
+    await scenario(`add-geometry@${w}`, ['E5-B01', 'E5-B02', 'E5-B06', 'E5-E02', 'R07'], async () => {
       const { ctx, p, errors } = await open(w, { writes: [SUGGEST], rewrite: [TAGGED] });
       await p.goto(detail(A), { waitUntil: 'networkidle' });
       await ready(p);
       await openAdd(p);
+      // B06: the first focus is the open tab's search box.
+      const focusAtOpen = await p.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? null);
       await tick(panelOf(p).locator('[data-testid^="add-product-"]').first());
       await p.waitForTimeout(800);
       const frame = await frameOf(p);
@@ -376,12 +378,17 @@ async (page, selftest = null) => {
       await tabIn(p, 'Разовий з файлу');
       await panelOf(p).locator('ul li button').first().click();
       await p.waitForTimeout(1200);
-      // The file list and the plates: two columns above 1100 px of window, one at or below it.
-      const grid = await panelOf(p).evaluate((panel) => {
+      // The file list and the plates: two columns above 1100 px of window, one at or below it —
+      // and a line between them either way (beside, or under the list).
+      const { grid, divider } = await panelOf(p).evaluate((panel) => {
         let n = panel.querySelector('ul');
         while (n && n !== panel && getComputedStyle(n).display !== 'grid') n = n.parentElement;
-        if (!n || n === panel) return null;
-        return getComputedStyle(n).gridTemplateColumns.split(' ').filter(Boolean).length;
+        if (!n || n === panel) return { grid: null, divider: null };
+        const left = getComputedStyle(n.firstElementChild);
+        return {
+          grid: getComputedStyle(n).gridTemplateColumns.split(' ').filter(Boolean).length,
+          divider: { right: left.borderRightWidth, bottom: left.borderBottomWidth },
+        };
       });
       const overflowPlate = await docOverflow(p);
       const filePlate = await shoot(p, `add-geometry-plate@${w}`);
@@ -389,8 +396,9 @@ async (page, selftest = null) => {
       const expected = expectedWidth(frame, 1560, 0.95);
       return {
         recipe: { url: '/projects/{order:241}', viewport: w, fixture: ['POST /stock/suggest → runner proposal', TAGGED_NOTE], actions: ['«Додати в замовлення»', 'tick the first product', 'tab «Разовий з файлу»', 'the first file'] },
-        measured: { frame, expected: Math.round(expected), subtitle, table, broken, grid, overflowProducts, overflowPlate, errors },
-        pass: Math.abs(frame.width - expected) <= 2 && subtitle === `${orderA.code} · ${orderA.name}` && grid === (w > 1100 ? 2 : 1) && broken.length === 0 &&
+        measured: { frame, expected: Math.round(expected), subtitle, focusAtOpen, table, broken, grid, divider, overflowProducts, overflowPlate, errors },
+        pass: Math.abs(frame.width - expected) <= 2 && focusAtOpen === 'Виріб, артикул, категорія, матеріал або назва деталі…' && subtitle === `${orderA.code} · ${orderA.name}` && grid === (w > 1100 ? 2 : 1) && broken.length === 0 &&
+          (w > 1100 ? parseFloat(divider?.right) > 0 && parseFloat(divider?.bottom) === 0 : parseFloat(divider?.bottom) > 0 && parseFloat(divider?.right) === 0) &&
           overflowProducts <= 0 && overflowPlate <= 0 && errors.length === 0,
         screenshots: [file, filePlate],
       };
@@ -431,7 +439,7 @@ async (page, selftest = null) => {
   }
 
   // ======================= 2. one draft across tabs, pages and orders (B02, B04, G02, I4.1) =======================
-  await scenario('add-draft@1440', ['E5-B02', 'E5-B04', 'E5-G02', 'R09', 'I4-1'], async () => {
+  await scenario('add-draft@1440', ['E5-B02', 'E5-B04', 'E5-B06', 'E5-G02', 'R09', 'I4-1'], async () => {
     const sentBatches = [];
     const { ctx, p, errors, requests } = await open(1440, { writes: [SUGGEST, batchWrite(sentBatches)], rewrite: [TAGGED] });
     await p.goto(`${job.ui}/products/${P}`, { waitUntil: 'networkidle' });
@@ -439,6 +447,8 @@ async (page, selftest = null) => {
     const mark = requests.length;
     await openAdd(p);
     const lazy = requests.slice(mark);
+    // B06: from a product the first focus is the order search.
+    const focusAtOpen = await p.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? null);
     const subtitleBefore = await subtitleOf(p);
     const d = dialog(p);
     await d.getByLabel('Знайти замовлення…').fill(orderA.code);
@@ -485,8 +495,8 @@ async (page, selftest = null) => {
     const plateLine = lines.find((l) => l.kind === 'plate');
     return {
       recipe: { url: '/products/{product:2}', fixture: ['POST /stock/suggest → runner proposal', 'POST …/lines/batch → intercepted', TAGGED_NOTE], actions: ['«Додати в замовлення»', `order ${orderA.code}`, 'products: clear search, page 2, tick', 'parts: search clm01, tick', 'file: cable_clip_set, last plate, copies 3', 'back to products', `order ${orderB.code}`, 'Add'] },
-      measured: { lazy: { products_parts: lazy.some((r) => /\/products\/parts/.test(r)), library_files: lazy.some((r) => /\/library\/files\?/.test(r)) }, partsRead, filesRead, subtitleBefore, subtitleA, preselected, page2Id, kept, summaryText, batches: sentBatches.map((b) => b.path), kinds, plateLine, errors },
-      pass: !lazy.some((r) => /\/products\/parts|\/library\/files\?/.test(r)) && partsRead && filesRead && subtitleBefore === 'Оберіть замовлення' &&
+      measured: { focusAtOpen, lazy: { products_parts: lazy.some((r) => /\/products\/parts/.test(r)), library_files: lazy.some((r) => /\/library\/files\?/.test(r)) }, partsRead, filesRead, subtitleBefore, subtitleA, preselected, page2Id, kept, summaryText, batches: sentBatches.map((b) => b.path), kinds, plateLine, errors },
+      pass: !lazy.some((r) => /\/products\/parts|\/library\/files\?/.test(r)) && partsRead && filesRead && subtitleBefore === 'Оберіть замовлення' && focusAtOpen === 'Знайти замовлення…' &&
         subtitleA === `${orderA.code} · ${orderA.name}` && preselected && kept.search === '' && kept.page2Row && kept.page2Ticked &&
         sentBatches.length === 1 && sentBatches[0].path === `/api/v1/projects/${B}/lines/batch` &&
         kinds.filter((k) => k === 'product').length === 2 && kinds.includes('parts') && plateLine?.copies === 3 && errors.length === 0,
@@ -1229,7 +1239,7 @@ async (page, selftest = null) => {
   });
 
   // ======================= 9. hit tests at 390, themes =======================
-  await scenario('hits@390', ['E5-B06', 'E5-C05', 'E5-E07', 'E5-F03'], async () => {
+  await scenario('hits@390', ['E5-C05', 'E5-E07', 'E5-F03'], async () => {
     const { ctx, p, errors } = await open(390, { writes: [SUGGEST], rewrite: [TAGGED] });
     await p.goto(detail(A), { waitUntil: 'networkidle' });
     await ready(p);

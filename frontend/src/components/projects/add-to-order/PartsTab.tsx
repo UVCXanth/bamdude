@@ -14,6 +14,7 @@ import { MODEL_CHIP, VARIANT_CHIP } from '../chips';
 import { MAX_PART_COUNT } from './addToOrderState';
 import type { PartPicks } from './addToOrderState';
 import { CountInput } from './CountInput';
+import { LoadingRows } from './LoadingRows';
 
 const PAGE_SIZE = 24;
 const HEAD = 'px-3 py-2 text-left text-xs font-normal text-bambu-gray whitespace-nowrap';
@@ -127,13 +128,7 @@ export function PartsTab({ picks, onPicksChange }: { picks: PartPicks; onPicksCh
                   onQty={(qty) => setQty(row, qty)}
                 />
               ))}
-              {isPending && (
-                <tr>
-                  <td colSpan={5} className="p-6 text-center text-bambu-gray">
-                    {t('common.loading')}
-                  </td>
-                </tr>
-              )}
+              {isPending && <LoadingRows colSpan={5} />}
               {isError && !data && (
                 <tr>
                   <td colSpan={5} className="p-6 text-center">

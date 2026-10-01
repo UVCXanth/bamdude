@@ -51,6 +51,31 @@ describe('AddToOrderDialog — the frame (WS-13 E5)', () => {
     }));
   });
 
+  it('puts the first focus in the active tab’s search box, or in the order search from a product (B06)', async () => {
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage([]) as never);
+    const fromOrder = render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByLabelText('Product, SKU, category, material or part name…')).toHaveFocus());
+    fromOrder.unmount();
+
+    render(<AddToOrderDialog preselectProduct={{ id: 1, code: 'PR-0001' }} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByLabelText('Find an order…')).toHaveFocus());
+  });
+
+  it('shows placeholder rows while a tab is first read (C07, D07, E03)', async () => {
+    const never = () => new Promise<never>(() => {});
+    vi.spyOn(api, 'getProductsPaged').mockImplementation(never);
+    vi.spyOn(api, 'getProductParts').mockImplementation(never);
+    vi.spyOn(api, 'getLibraryFilesPaged').mockImplementation(never);
+    vi.spyOn(api, 'getLibraryFolders').mockResolvedValue([] as never);
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
+    for (const tab of ['Products', 'Parts of a product', 'One-off from a file']) {
+      fireEvent.click(screen.getByRole('tab', { name: tab }));
+      const busy = await within(screen.getByRole('tabpanel')).findByRole('status');
+      expect(busy).toHaveAttribute('aria-busy', 'true');
+      expect(within(busy).getByText('Loading...')).toBeInTheDocument();
+    }
+  });
+
   it('is a Workshop xl dialog that names the order it adds to (B01)', async () => {
     render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
     const dialog = await screen.findByRole('dialog', { name: 'Add to order' });

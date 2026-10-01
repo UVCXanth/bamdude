@@ -187,7 +187,9 @@ export function LineConfigDialog({
   const nonStandardOptions = (product?.variant_groups ?? []).some(
     (g) => (choices[g.id] ?? g.default_option_id ?? null) !== (g.default_option_id ?? null),
   );
-  const overrides = Object.keys(counts).length;
+  // An override is what the body carries — a count the chosen options would not give anyway.
+  // A draft key the options have since caught up with is no override (review M2).
+  const overrides = isParts ? Object.keys(counts).length : Object.keys(body.part_counts).length;
   const settled = debouncedKey === bodyKey;
   const canSave = saveAllowed({
     productRead: product != null,
@@ -333,7 +335,7 @@ export function LineConfigDialog({
                                 {t('orders.lineConfig.chip.variant', { option: variant })}
                               </span>
                             )}
-                            {!isParts && counts[part.id] != null && (
+                            {!isParts && part.id in body.part_counts && (
                               <span className="ml-1.5 inline-block rounded bg-bambu-green/20 px-1.5 py-px align-[1px] text-[11px] font-medium leading-4 text-bambu-green">
                                 {t('orders.lineConfig.chip.changed')}
                               </span>
@@ -424,10 +426,12 @@ function SourceCell({
       </span>
     );
   }
+  // Only what the plan can print from: an unsliced file names a model but is no plate.
   // Two files of one model with the same plate and yield read the same — the second would say
   // nothing, so the cell shows sources a reader can tell apart (recommended first).
   const seen = new Set<string>();
-  const list = [...(sources ?? [])]
+  const list = (sources ?? [])
+    .filter((s) => s.sliced)
     .sort((a, b) => Number(b.recommended) - Number(a.recommended))
     .filter((s) => {
       const label = `${s.printer_model ?? ''}|${s.plate_index}|${s.yield}`;

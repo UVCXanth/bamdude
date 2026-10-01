@@ -109,6 +109,14 @@ describe('the one-off tab of «Add to order» (WS-13 E5 E)', () => {
     expect(within(fileRow(/clip\.gcode\.3mf/)).queryByText('Clips')).not.toBeInTheDocument();
   });
 
+  it('keeps the chosen plate when the chosen file is clicked again (review M4)', async () => {
+    await openFiles();
+    fireEvent.click(fileRow(/clip\.gcode\.3mf/));
+    fireEvent.click(await screen.findByRole('radio', { name: /Plate 2/ }));
+    fireEvent.click(fileRow(/clip\.gcode\.3mf/));
+    expect(screen.getByRole('radio', { name: /Plate 2/ })).toBeChecked();
+  });
+
   it('reads the whole library, not only the files at its root (WS-13 E5 T7)', async () => {
     await openFiles();
     // Without a folder the server lists the root's files alone unless `include_root` is

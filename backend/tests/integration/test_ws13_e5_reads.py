@@ -16,6 +16,7 @@ from sqlalchemy import select
 from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
+from backend.app.models.project import Project
 from backend.app.services.library_helpers import compute_file_tags
 from backend.tests.unit.services.test_product_composition import counting_statements
 
@@ -149,3 +150,46 @@ async def test_the_gcode_tag_of_a_library_row_is_is_printable(committing_client,
     assert tagged == printable
     # The cases the rule turns on: content beats the name; an unknown gcode flag is «yes».
     assert printable == {"a.gcode.3mf", "c.gcode", "d.3mf"}
+
+
+@pytest.mark.asyncio
+async def test_a_file_the_list_calls_not_plannable_is_the_one_the_batch_refuses(committing_client, db_session):
+    """H02 is the batch's own rule: the STL the list marks ``plan_eligible: false`` is the
+    file a plate line of the batch refuses — not a second opinion (review M6)."""
+    stl = _file("f.stl", "stl", None)
+    order = Project(name="O", status="active")
+    db_session.add_all([stl, order])
+    await db_session.commit()
+
+    r = await committing_client.get("/api/v1/library/files", params={"page": 1, "per_page": 50})
+    (row,) = [row for row in r.json()["items"] if row["id"] == stl.id]
+    assert row["plan_eligible"] is False
+
+    refused = await committing_client.post(
+        f"/api/v1/projects/{order.id}/lines/batch",
+        json={"lines": [{"kind": "plate", "library_file_id": stl.id, "plate_index": 1, "copies": 1}]},
+    )
+    assert refused.status_code == 400
+    assert refused.json()["detail"] == "Only 3MF files can be planned"
+
+
+@pytest.mark.asyncio
+async def test_the_library_list_reads_in_a_fixed_number_of_statements(committing_client, db_session, test_engine):
+    """``plan_eligible`` is computed from the row, never read per file (review M6)."""
+    db_session.add(_file("one.gcode.3mf", "gcode", True))
+    await db_session.commit()
+
+    async def page():
+        r = await committing_client.get("/api/v1/library/files", params={"page": 1, "per_page": 50})
+        assert r.status_code == 200, r.text
+
+    await page()  # the first request of a session also asks one-off auth questions
+    with counting_statements(test_engine) as one:
+        await page()
+
+    db_session.add_all([_file(name, file_type, sliced) for name, file_type, sliced, _ in CASES])
+    await db_session.commit()
+    with counting_statements(test_engine) as eight:
+        await page()
+
+    assert len(eight) == len(one)

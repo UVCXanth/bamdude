@@ -19,6 +19,7 @@ import { MODEL_CHIP } from '../chips';
 import { MAX_LINE_QTY } from './addToOrderState';
 import type { PlateFile, PlatePick } from './addToOrderState';
 import { CountInput } from './CountInput';
+import { LoadingRows } from './LoadingRows';
 
 const PAGE_SIZE = 24;
 
@@ -107,7 +108,8 @@ function LibraryPlatePicker({ pick, onPickChange }: { pick: PlatePick; onPickCha
     <div className="space-y-3">
       <p className="my-2.5 text-[13px] text-bambu-gray">{t('orders.add.help.plate')}</p>
       <div className="grid min-h-[260px] rounded-lg border border-bambu-dark-tertiary min-[1101px]:grid-cols-[340px_1fr]">
-        <div className="min-w-0 border-bambu-dark-tertiary max-[1100px]:border-b min-[1101px]:border-r">
+        {/* `max-[1100px]:` is `< 1100` in Tailwind 4: the one-column rule is «1100 and narrower». */}
+        <div className="min-w-0 border-b border-bambu-dark-tertiary min-[1101px]:border-r min-[1101px]:border-b-0">
           <div className="p-3">
             <ListSearchBox value={typed} onChange={setTyped} placeholder={t('orders.add.plate.search')} layout="picker" />
           </div>
@@ -123,12 +125,16 @@ function LibraryPlatePicker({ pick, onPickChange }: { pick: PlatePick; onPickCha
                   file={file}
                   chosen={pick?.file.id === file.id}
                   folder={file.folder_id == null ? t('orders.add.plate.root') : treeRead ? names.get(file.folder_id) : undefined}
-                  // A new file resets the plate, never the copies (E5 R08).
-                  onPick={() => onPickChange({ file: snapshot(file), plateIndex: null, copies: pick?.copies ?? 1 })}
+                  // A new file resets the plate, never the copies (E5 R08); the chosen file
+                  // clicked again changes nothing (review M4).
+                  onPick={() => {
+                    if (pick?.file.id === file.id) return;
+                    onPickChange({ file: snapshot(file), plateIndex: null, copies: pick?.copies ?? 1 });
+                  }}
                 />
               </li>
             ))}
-            {isPending && <li className="p-4 text-center text-sm text-bambu-gray">{t('common.loading')}</li>}
+            {isPending && <LoadingRows />}
             {isError && !data && (
               <li className="p-4 text-center text-sm">
                 <span className="text-amber-700 dark:text-amber-400">{t('orders.add.plate.filesFailed')}</span>{' '}

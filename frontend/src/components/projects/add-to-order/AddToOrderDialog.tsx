@@ -1,4 +1,4 @@
-import { useCallback, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
@@ -92,6 +92,12 @@ export function AddToOrderDialog({
     setTab(next);
   }, []);
   const switchTo = useTabScroll(tab, showTab, anchor);
+  // B06: the first focus goes where a person starts typing — the order search from a product,
+  // else the open tab's search. Here, in the dialog itself: `Modal` focuses its panel in a
+  // passive effect, which runs before this one (a child's effects run first).
+  useEffect(() => {
+    anchor.current?.querySelector<HTMLInputElement>('input[type="search"]')?.focus();
+  }, []);
 
   const target = order ?? chosen;
   // A chosen order came from the active list; a given one says what it is.
@@ -108,8 +114,9 @@ export function AddToOrderDialog({
   const lines: BatchLine[] = [...productBatch, ...partsBatch, ...plateBatch];
 
   const add = useMutation({
-    // `shown` rides with the request: what the rows showed when «Add» was pressed.
-    mutationFn: ({ id }: { id: number; shown: Shown[] }) => api.addOrderLines(id, lines),
+    // The batch and `shown` ride together: what was sent and what the rows showed, both
+    // taken from the render in which «Add» was pressed (C06).
+    mutationFn: ({ id, lines: batch }: { id: number; lines: BatchLine[]; shown: Shown[] }) => api.addOrderLines(id, batch),
     onMutate: () => setError(null),
     onSuccess: (result, { id, shown }) => {
       // Both shelves' keys are order views (`ORDER_VIEW_KEYS`), each once.
@@ -192,7 +199,7 @@ export function AddToOrderDialog({
           </Button>
           <Button
             onClick={() =>
-              target != null && !pending && add.mutate({ id: target.id, shown: shownForLines(products, current, takesStock) })
+              target != null && !pending && add.mutate({ id: target.id, lines, shown: shownForLines(products, current, takesStock) })
             }
             disabled={!canSubmit}
           >

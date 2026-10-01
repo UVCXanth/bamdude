@@ -6,7 +6,10 @@
  * standard option left unchosen (R11).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import type { QueryClient } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api, ApiError } from '../../../api/client';
 import type { Order, Product, ProjectLine } from '../../../api/client';
@@ -154,6 +157,67 @@ describe('LineConfigDialog (WS-13 E5 F)', () => {
     const flask = within(await screen.findByTestId('config-part-5'));
     expect(await flask.findByText('pl. 1 × 4')).toBeInTheDocument();
     expect(flask.getAllByText('pl. 2 × 6')).toHaveLength(1);
+  });
+
+  it('shows only sliced sources: a part with an unsliced file alone has no plate (review I2)', async () => {
+    // An unsliced 3MF is a source the plan cannot print from, whatever model it names.
+    const unsliced = (n: number, model: string, y: number) => ({ ...src(n, model, y), plate_id: 100 + n, sliced: false });
+    vi.spyOn(api, 'getProductSources').mockResolvedValue({
+      parts: [
+        { part_id: 5, sources: [src(2, 'X1C', 6, true), unsliced(2, 'X1C', 6)], has_sliced_source: true, yield_min: 6, yield_max: 6, hidden_sources: 0 },
+        { part_id: 6, sources: [unsliced(1, 'P1S', 4)], has_sliced_source: false, yield_min: null, yield_max: null, hidden_sources: 0 },
+      ],
+    } as never);
+    open();
+    const flask = within(await screen.findByTestId('config-part-5'));
+    expect(await flask.findByText('pl. 2 × 6')).toBeInTheDocument();
+    expect(flask.getAllByText(/^pl\. /)).toHaveLength(1);
+    const cap = within(screen.getByTestId('config-part-6'));
+    expect(await cap.findByText('no plate')).toBeInTheDocument();
+    expect(cap.queryByText('pl. 1 × 4')).not.toBeInTheDocument();
+  });
+
+  it('marks as changed only the counts that will be saved (review M2)', async () => {
+    // Untick the straight tail (an override of 0), then choose the angled tail, which gives
+    // it 0 anyway: nothing is overridden any more, and the dialog must not say otherwise.
+    open();
+    const straight = within(await screen.findByTestId('config-part-6'));
+    fireEvent.click(straight.getByLabelText('straight tail — in the kit'));
+    expect(await straight.findByText('changed')).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('group', { name: 'Хвіст' })).getByRole('radio', { name: 'кутовий' }));
+    await waitFor(() => expect(straight.queryByText('changed')).not.toBeInTheDocument());
+    expect(screen.getByText('The kit follows the chosen variants.')).toBeInTheDocument();
+  });
+
+  it('disables Save when the re-read of the same preview fails, and enables it after a good retry (R05, review M6)', async () => {
+    // The wiring, not only `saveAllowed`: an answer stays cached while its re-read fails.
+    const held: { client: QueryClient | null } = { client: null };
+    function Grab() {
+      const client = useQueryClient();
+      useEffect(() => {
+        held.client = client;
+      }, [client]);
+      return null;
+    }
+    preview
+      .mockResolvedValueOnce(noImpact)
+      .mockRejectedValueOnce(new ApiError('Could not check', 500))
+      .mockResolvedValue(noImpact);
+    render(
+      <>
+        <LineConfigDialog orderId={9} orderCode="OR-0009" line={line} onClose={() => {}} />
+        <Grab />
+      </>,
+    );
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Хвіст' })).getByRole('radio', { name: 'кутовий' }));
+    const save = screen.getByRole('button', { name: 'Save configuration' });
+    await waitFor(() => expect(save).toBeEnabled());
+    await act(async () => {
+      await held.client!.refetchQueries({ queryKey: ['line-config-preview'] });
+    });
+    await waitFor(() => expect(save).toBeDisabled());
+    fireEvent.click(within(screen.getByTestId('line-config-impact')).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(save).toBeEnabled());
   });
 
   it('does not wait on the sources: a failed read leaves a dash', async () => {

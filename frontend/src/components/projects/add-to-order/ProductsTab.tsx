@@ -16,6 +16,7 @@ import { WorkshopTableScroll } from '../../workshop/WorkshopPanel';
 import { MODEL_CHIP } from '../chips';
 import { MAX_LINE_QTY, newProductPick, shownStock, withStock } from './addToOrderState';
 import { CountInput } from './CountInput';
+import { LoadingRows } from './LoadingRows';
 import type { ProductPick, ProductPicks } from './addToOrderState';
 
 const PAGE_SIZE = 24;
@@ -174,13 +175,7 @@ export function ProductsTab({
                   onChange={(pick) => update(product.id, pick)}
                 />
               ))}
-              {isPending && (
-                <tr>
-                  <td colSpan={columns} className="p-6 text-center text-bambu-gray">
-                    {t('common.loading')}
-                  </td>
-                </tr>
-              )}
+              {isPending && <LoadingRows colSpan={columns} />}
               {isError && !data && (
                 <tr>
                   <td colSpan={columns} className="p-6 text-center">
@@ -487,7 +482,7 @@ function StockCell({
         )}
         {shown.toPrint > 0 && <span className="text-bambu-gray">{t('orders.add.stock.toPrint', { n: shown.toPrint })}</span>}
       </span>
-      {refreshFailed && <span className="text-amber-700 dark:text-amber-400">{t('orders.add.stock.refreshFailed')}</span>}
+      {refreshFailed && <span className="text-bambu-gray">{t('orders.add.stock.refreshFailed')}</span>}
     </div>
   );
 }
