@@ -70,7 +70,8 @@ export function WorkshopDialog({
       bodyClassName="px-4 pt-3 pb-4"
       subheader={
         subtitle !== undefined ? (
-          <p id={subtitleId} className="px-4 pt-3 text-sm text-bambu-gray">
+          // A subtitle names an order or a product: one long word wraps, it never scrolls sideways.
+          <p id={subtitleId} className="px-4 pt-3 text-sm text-bambu-gray break-words">
             {subtitle}
           </p>
         ) : undefined

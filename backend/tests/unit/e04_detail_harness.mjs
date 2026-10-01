@@ -23,11 +23,14 @@ const FIX = {
   '/auth/me': { id: 1 },
 };
 
-// A route the page is answering: `continue` fails as a disposed request context does.
+// A route the page is answering: `continue` fails as a disposed request context does; `fulfill` is logged
+// (status, and the JSON it answered with), `fetch` returns a plain JSON answer for a rewrite to change.
 const fire = async (handlers) => {
   const route = {
     request: () => ({ method: () => 'GET', url: () => 'http://stand/api/v1/projects/1' }),
     continue: async () => { throw leaky('route.continue: Request context disposed.'); },
+    fetch: async () => ({ headers: () => ({ 'content-type': 'application/json' }), json: async () => ({ n: 1 }) }),
+    fulfill: async (o) => { log.push(`fulfill.${o.status ?? 200}.${JSON.stringify(o.json ?? null)}`); },
   };
   for (const h of [...handlers]) await h(route);
 };
@@ -53,6 +56,7 @@ const page = (c) => {
           goto: async () => {
             if (c.gotoFails) throw leaky('page.goto: net::ERR_CONNECTION_REFUSED at http://ui/projects/1');
             if (c.routeFailsLive) await fire(handlers);
+            for (let k = 0; k < (c.fires ?? 0); k += 1) await fire(handlers);
           },
         }),
         // A context-level unroute would leave the page's routes in place — logged apart so a test sees which ran.
@@ -95,6 +99,17 @@ const CASES = {
   real_scenario_throws: [{ only: 'geometry@2560', gotoFails: true }],
   // …and through E5's runner (e05_detail.js), whose scenarios have their own names.
   e05_real_scenario_throws: [{ only: 'add-geometry@2560', gotoFails: true }],
+  // …and through E6's runner (e06_detail.js).
+  e06_real_scenario_throws: [{ only: 'form-geometry@1920', gotoFails: true }],
+  // E6: a GET answered by its turn — failed the first time, rewritten the second.
+  gets_by_turn: [{ fires: 2 }, async ({ scenario, open }) => {
+    let n = 0;
+    await scenario('turns', [], async () => {
+      const { p } = await open(1440, { gets: [[/\/projects\/1$/, () => { n += 1; return n === 1 ? { fail: 500 } : { rewrite: (b) => ({ ...b, seen: n }) }; }]] });
+      await p.goto('http://ui/');
+      return { pass: true };
+    });
+  }],
   // T7-R02 through the harness's own scenarios.
   route_fails_live: [{ routeFailsLive: true }, async ({ scenario, open }) => {
     await scenario('live', [], async () => { const { p } = await open(1440); await p.goto('http://ui/'); return { pass: true }; });

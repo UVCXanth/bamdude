@@ -5,7 +5,7 @@ import { api, WAYBILL_MAX } from '../../../api/client';
 import type { FulfilmentLineState, FulfilmentRecipient, FulfilmentResult, FulfilmentState } from '../../../api/client';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useToast } from '../../../contexts/ToastContext';
-import { useFulfilment } from '../../../hooks/useFulfilment';
+import { fulfilmentQuery, useFulfilment } from '../../../hooks/useFulfilment';
 import { invalidateOrderViews } from '../../../utils/queryInvalidation';
 import { Button } from '../../Button';
 import { DispatchNoteCreated } from '../../stock/DispatchNoteCreated';
@@ -204,11 +204,7 @@ function FulfilmentForm({
   const readAgain = async () => {
     setReread('reading');
     try {
-      await qc.fetchQuery({
-        queryKey: ['project-fulfilment', order.id],
-        queryFn: () => api.getFulfilment(order.id),
-        staleTime: 0,
-      });
+      await qc.fetchQuery({ ...fulfilmentQuery(order.id), staleTime: 0 });
       setReread('idle');
     } catch {
       setReread('failed');

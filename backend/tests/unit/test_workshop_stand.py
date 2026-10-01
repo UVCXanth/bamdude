@@ -1118,3 +1118,162 @@ def test_the_stand_seed_writes_a_real_plate_picture_and_says_so():
     }
     assert seed_direct._metadata({**spec, "thumbnail": [1, 2, 3]})["plates"][0]["has_thumbnail"] is True
     assert seed_direct._metadata(spec)["plates"][0]["has_thumbnail"] is False
+
+
+# ---- WS-13 E6 detail runner (e06_detail.js): E4's harness around E6's scenarios ----
+
+import e06_evidence  # noqa: E402
+
+_E06_RUNNER = Path(__file__).resolve().parents[3] / "scripts" / "workshop_stand" / "e06_detail.js"
+
+
+@pytest.mark.parametrize(
+    ("case", "code", "at"),
+    [
+        ("prep_read_throws", "read_network", "/projects/1"),
+        ("prep_read_refused", "read_http_401", "/groups/"),
+    ],
+)
+def test_e06_a_failed_preparation_read_ends_the_run_incomplete_and_names_no_secret(case, code, at):
+    run = _e04_run(case, _E06_RUNNER)
+
+    records = _e04_records(run)
+    assert [r["id"] for r in records] == ["runner"]
+    assert records[0]["error"] == {"code": code, "stage": "prepare", "name": "RunnerFailure", "at": at}
+    assert _e04_done(run)["incomplete"] is True
+
+
+def test_e06_a_real_scenario_that_throws_fails_safely_and_closes_its_context():
+    run = _e04_run("e06_real_scenario_throws", _E06_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["id"] == "form-geometry@1920" and rec["pass"] is False
+    assert rec["error"] == {"code": "error", "stage": "form-geometry@1920", "name": "Error"}
+    assert _e04_done(run)["incomplete"] is False
+    _e04_closed_in_order(run)
+
+
+@pytest.mark.parametrize("case", ["route_fails_live", "scenario_reports_the_token", "open_outside_a_scenario"])
+def test_e06_keeps_the_e04_guards(case):
+    run = _e04_run(case, _E06_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is False
+    if case != "scenario_reports_the_token":  # that one opens no context
+        _e04_closed_in_order(run)
+
+
+def test_e06_a_record_carrying_the_media_token_is_replaced_by_a_failure():
+    run = _e04_run("scenario_reports_the_media_token", _E06_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["error"] == {"code": "secret_in_record", "stage": "echo"}
+    assert "mq7-media-marker-fake" not in json.dumps(run["posts"])
+
+
+def test_e06_a_get_is_answered_by_its_turn():
+    """``gets``: the first read of the order fails, the second is the stand's answer rewritten —
+    the refusal and re-read scenarios stand on it."""
+    run = _e04_run("gets_by_turn", _E06_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is True
+    answered = [e for e in run["log"] if e.startswith("fulfill.")]
+    assert answered == ['fulfill.500.{"detail":"e06 runner"}', 'fulfill.200.{"n":1,"seen":2}']
+    _e04_closed_in_order(run)
+
+
+def test_e06_the_runner_declares_exactly_the_scenarios_the_manifest_expects():
+    run = _e04_run("declared", _E06_RUNNER)
+
+    assert _e04_records(run) == []
+    assert _e04_done(run)["declared"] == list(e06_evidence.DETAIL_SCENARIOS)
+
+
+def test_e06_a_full_run_is_judged_against_the_e06_scenarios():
+    ids = list(e06_evidence.DETAIL_SCENARIOS)
+    done = {"count": len(ids), "incomplete": False, "declared": ids}
+    records = [{"id": i} for i in ids]
+
+    verdict = e04_evidence.run_completeness(
+        finished=True, done=done, records=records, only="", expected=e06_evidence.DETAIL_SCENARIOS
+    )
+    assert verdict["complete"] is True
+    assert (
+        e04_evidence.run_completeness(
+            finished=True, done=done, records=records, only="", expected=e05_evidence.DETAIL_SCENARIOS
+        )["complete"]
+        is False
+    )
+
+
+def test_the_e06_boundary_pairs_straddle_the_order_forms_breakpoint_on_a_copy_of_the_plan():
+    base = json.loads((Path(e06_evidence.HERE) / "capture_plan.json").read_text(encoding="utf-8"))
+
+    plan, only, stage = e06_evidence.pairs_plan(base, boundary=True)
+    assert only == ["e06-order-new"] and stage.endswith("-pairs-boundary")
+    assert plan["widths"] == {"wide": [761, 760], "narrow": []}
+    assert plan["heights"]["761"] == plan["heights"]["760"] == 800
+    # The E0 plan itself is untouched.
+    assert 761 not in base["widths"]["wide"] and "761" not in base["heights"]
+
+    plan, only, stage = e06_evidence.pairs_plan(base, boundary=False)
+    assert only == [r["id"] for r in e06_evidence.e06_recipes()] and stage.endswith("-pairs")
+    assert plan["widths"] == base["widths"]
+
+
+def test_every_e06_pair_is_a_plain_recipe_on_both_sides():
+    # F6: the mockup side takes no fixture; the app side takes none either — the forms and the
+    # issue dialog are shot over the baseline as it is.
+    ids = []
+    for recipe in e06_evidence.e06_recipes():
+        ids.append(recipe["id"])
+        if "pair" in recipe:
+            kind, number = recipe["pair"].split(":")
+            assert kind == "order" and number in e06_evidence.ORDERS, recipe["id"]
+            assert recipe["app"]["route"] == f"/projects/{{order:{number}}}"
+        assert capture_serve.side_rewrites("mockup", recipe["mockup"], str) == []
+        assert capture_serve.side_rewrites("app", recipe["app"], str) == []
+    assert ids == [
+        "e06-order-new",
+        "e06-order-edit",
+        "e06-order-duplicate",
+        "e06-order-menu",
+        "e06-order-cancel",
+        "e06-fulfilment-241",
+        "e06-fulfilment-244",
+        "e06-fulfilment-251",
+    ]
+
+
+def test_an_e06_job_names_the_orders_the_note_and_the_e0_mockup():
+    mapping = {f"order:{n}": {"id": int(n) - 200} for n in e06_evidence.ORDERS}
+    mapping |= {"doc:90000": {"id": 7}}
+    base = json.loads((Path(e06_evidence.HERE) / "capture_plan.json").read_text(encoding="utf-8"))
+
+    entities = e06_evidence.job_entities(mapping)
+    assert entities["orders"]["251"] == 51 and entities["docs"] == {"90000": 7}
+    mockup = e06_evidence.mockup_job(base)
+    assert mockup["mockup"] == capture_serve.MOCKUP.as_uri()
+    assert mockup["mockup_pref_key"] == capture_serve.MOCKUP_PREF_KEY
+    assert json.loads(mockup["mockup_pref"]) == {"theme": base["theme"]["mockup"]}
+
+
+def test_the_f26_pair_becomes_e0_manifest_rows_for_the_composites(tmp_path, monkeypatch):
+    monkeypatch.setattr(stand, "REPO", tmp_path)
+    shot = tmp_path / "temp" / "m.png"
+    shot.parent.mkdir(parents=True)
+    shot.write_bytes(b"png")
+    records = [
+        {"id": "f26-pair@390", "pass": True, "pair": {"mockup": [str(shot)], "app": [str(tmp_path / "gone.png")]}},
+        {"id": "dup@390", "pass": True},
+    ]
+
+    rows = e06_evidence.pair_rows(records)
+    assert [(r["recipe"], r["side"], r["width"], r["scenario"]) for r in rows] == [
+        ("e06-dispatch-note-window", "mockup", 390, "f26-pair@390"),
+        ("e06-dispatch-note-window", "app", 390, "f26-pair@390"),
+    ]
+    assert rows[0]["frames"][0]["file"] == "temp/m.png" and rows[0]["frames"][0]["sha256"]
+    # A picture that is not on disk is kept, named, with no hash.
+    assert rows[1]["frames"][0]["sha256"] is None

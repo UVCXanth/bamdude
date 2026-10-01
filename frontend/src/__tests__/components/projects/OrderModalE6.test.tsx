@@ -14,6 +14,7 @@ import { render } from '../../utils';
 import { api, ApiError } from '../../../api/client';
 import type { Order } from '../../../api/client';
 import { OrderModal } from '../../../components/projects/OrderModal';
+import { getColorName } from '../../../utils/colors';
 import { makeOrder } from '../../fixtures/orderDetail';
 
 const ORDER: Order = makeOrder({
@@ -115,6 +116,17 @@ describe('OrderModal · colour (C03)', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Ten flasks!' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(update).toHaveBeenCalledWith(5, { name: 'Ten flasks!' }));
+  });
+
+  it('gives every swatch a name of its own — two colours named alike carry their hex', () => {
+    render(<OrderModal order={{ ...ORDER, color: '#6c6c6c' }} onClose={() => {}} />);
+    const names = within(screen.getByRole('radiogroup', { name: 'Card colour' }))
+      .getAllByRole('radio')
+      .map((radio) => radio.getAttribute('aria-label'));
+    expect(new Set(names).size).toBe(names.length);
+    // The palette's two ambers fall back to one coarse family name; the hex tells them apart.
+    expect(names).toContain(`${getColorName('#d0863c')} (#D0863C)`);
+    expect(names).toContain(`${getColorName('#c9a23f')} (#C9A23F)`);
   });
 
   it('keeps a colour from outside the palette as one more, chosen swatch', () => {

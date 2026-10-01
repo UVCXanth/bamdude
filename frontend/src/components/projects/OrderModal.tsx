@@ -213,6 +213,13 @@ function OrderForm({
   // A colour from outside the palette is one more, chosen swatch — saving must not lose it.
   const swatches = [...ORDER_COLORS];
   if (initial.color && !ORDER_COLORS.includes(initial.color.toLowerCase())) swatches.push(initial.color);
+  // A colour the catalogue does not hold gets a coarse family name, and two of the palette's
+  // fall into one («Orange»): a name shared by several swatches carries the hex that differs.
+  const swatchNames = swatches.map((hex) => getColorName(hex));
+  const swatchLabel = (hex: string, index: number) =>
+    swatchNames.filter((n) => n === swatchNames[index]).length > 1
+      ? `${swatchNames[index]} (${hex.toUpperCase()})`
+      : swatchNames[index];
 
   /** The fields that differ from the session's base — the status is not one of them. */
   function changedFields(): OrderUpdate {
@@ -481,13 +488,13 @@ function OrderForm({
                 disabled={pending}
                 onChoose={() => setColor(null)}
               />
-              {swatches.map((hex) => (
+              {swatches.map((hex, index) => (
                 <ColorSwatch
                   key={hex}
                   value={hex}
                   checked={color?.toLowerCase() === hex.toLowerCase()}
                   name={`${formId}-color`}
-                  label={getColorName(hex)}
+                  label={swatchLabel(hex, index)}
                   disabled={pending}
                   onChoose={() => setColor(hex)}
                 />
@@ -584,14 +591,16 @@ function ColorSwatch({
         aria-label={label}
         className="peer sr-only"
       />
+      {/* The chosen frame is the theme's text colour (`text-white` follows the theme), so it
+          shows on the light panel too — a white frame vanished there. */}
       <span
         aria-hidden
-        className={`flex h-6 w-6 items-center justify-center rounded-md border-2 peer-focus-visible:ring-2 peer-focus-visible:ring-bambu-green peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-bambu-dark-secondary ${
-          checked ? 'border-white ring-2 ring-white/40' : 'border-transparent'
-        } ${value == null ? 'bg-bambu-dark text-bambu-gray' : ''}`}
+        className={`flex h-6 w-6 items-center justify-center rounded-md border-2 text-white peer-focus-visible:ring-2 peer-focus-visible:ring-bambu-green peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-bambu-dark-secondary ${
+          checked ? 'border-current ring-2 ring-current/40' : 'border-transparent'
+        } ${value == null ? 'bg-bambu-dark' : ''}`}
         style={value != null ? { backgroundColor: value } : undefined}
       >
-        {value == null && <Ban className="h-4 w-4" />}
+        {value == null && <Ban className="h-4 w-4 text-bambu-gray" />}
       </span>
     </label>
   );
