@@ -273,7 +273,7 @@ export function CustomerPage() {
             <OrdersListView
               data={ordersQuery.data}
               isError={ordersQuery.isError}
-              onRetry={() => void ordersQuery.refetch()}
+              onRetry={() => ordersQuery.refetch()}
               isPlaceholderData={ordersQuery.isPlaceholderData}
               view={view}
               sort={sort}

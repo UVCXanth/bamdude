@@ -27,7 +27,7 @@ export function ReadyEstimate({ readiness, testId = 'ready-estimate' }: { readin
     case 'error':
       return (
         <span data-testid={testId} className="text-bambu-gray">
-          <span title={t('orders.row.forecastNotRead')}>—</span>
+          <span title={t('orders.row.forecastNotRead')} className="relative z-10">—</span>
         </span>
       );
     case 'partial':
@@ -46,7 +46,7 @@ export function ReadyEstimate({ readiness, testId = 'ready-estimate' }: { readin
             <span
               data-late={readiness.late ? 'true' : undefined}
               title={etaFull(readiness.eta, timeFormat, dateFormat)}
-              className={`tabular-nums ${readiness.late ? 'text-red-500' : 'text-white'}`}
+              className={`relative z-10 tabular-nums ${readiness.late ? 'text-red-600 dark:text-red-500' : 'text-white'}`}
             >
               {etaLabel(readiness.eta, dateFormat)}
               {readiness.late && <span className="sr-only"> ({t('orders.forecast.late')})</span>}

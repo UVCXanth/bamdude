@@ -85,14 +85,17 @@ export function BoardCard({ order, column, draggable, actions, pending, onStage 
             ) : (
               <StageBadge stage={order.stage} status={order.status} />
             )}
-            {canMove && (
+            {/* Kept while the card is written — inert (`aria-disabled` from dnd-kit), so a keyboard
+                drop that is refused leaves the focus on it rather than on the page. */}
+            {draggable && (
               <button
                 type="button"
                 ref={setActivatorNodeRef}
                 {...attributes}
                 {...listeners}
+                data-testid={`board-card-${order.id}-handle`}
                 aria-label={t('orders.board.drag', { code: order.code })}
-                className="relative z-10 p-1 rounded text-bambu-gray hover:text-white cursor-grab touch-none focus:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green"
+                className="relative z-10 p-1 rounded text-bambu-gray hover:text-white cursor-grab touch-none focus:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green aria-disabled:cursor-default aria-disabled:opacity-50"
               >
                 <GripVertical className="w-4 h-4" />
               </button>
@@ -119,7 +122,8 @@ export function BoardCard({ order, column, draggable, actions, pending, onStage 
           {pending && <span className="text-bambu-green">{t('orders.board.moving')}</span>}
         </p>
 
-        {/* The list card's line, the same rule (spec workshop-order-issue-followups, rule 50). */}
+        {/* «Issued X of Y» — the table's stage cell carries the same line (spec workshop-order-issue-followups,
+            rule 50); the list CARD dropped it in WS-13 E7, as the mockup's card has none. */}
         {order.status === 'active' && order.issued_units > 0 && (
           <p className="text-xs text-bambu-gray" data-testid={`board-card-${order.id}-issued`}>
             {t('orders.row.issued', { issued: order.issued_units, ordered: order.ordered })}

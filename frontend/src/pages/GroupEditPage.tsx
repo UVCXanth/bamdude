@@ -258,7 +258,7 @@ export function GroupEditPage() {
 
             return (
               <Card key={category.name}>
-                <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-3 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary rounded-t-xl">
+                <div className="sticky top-(--app-top) z-10 flex items-center justify-between px-4 py-3 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary rounded-t-xl">
                   <div className="flex items-center gap-3">
                     <button
                       type="button"

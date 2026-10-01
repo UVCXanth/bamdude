@@ -2943,7 +2943,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               a selection made at the bottom of a long list must stay actionable
               without scrolling back up. */}
           {selectedIds.size > 0 && (
-            <div className="sticky top-0 z-20 mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-bambu-green/30 bg-bambu-dark-secondary/95 backdrop-blur-sm px-3 py-2">
+            <div className="sticky top-(--app-top) z-20 mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-bambu-green/30 bg-bambu-dark-secondary/95 backdrop-blur-sm px-3 py-2">
               <span className="text-sm font-medium text-white">
                 {t('inventory.bulk.selectedCount', { count: selectedIds.size })}
               </span>

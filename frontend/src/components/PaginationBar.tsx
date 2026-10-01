@@ -17,7 +17,7 @@ export interface PaginationBarProps {
   items: string;
   /** `card` — a footer inside a bordered card, for table views. `bare` — under
    *  a grid of cards, which has no card of its own to sit in. */
-  variant?: 'card' | 'bare';
+  variant?: 'card' | 'bare' | 'panel';
   perPageOptions?: number[];
   /** Offer «All» among the sizes (the default). A list whose server refuses the whole
    *  list — the parts picker (WS-13 E1 K7) — turns it off. */
@@ -70,10 +70,13 @@ export function PaginationBar({
 
   // Extra right padding keeps the last-page button clear of the fixed
   // bottom-right bug-report bubble (BugReportBubble, ~64px corner footprint).
+  // A `panel` is a narrow column the bubble never covers (the orders workspace list).
   const wrapper =
     variant === 'card'
       ? 'py-3 pl-4 pr-14 bg-bambu-dark-tertiary/50 border-t border-bambu-dark-tertiary'
-      : 'pt-2 pr-14';
+      : variant === 'panel'
+        ? 'py-3 px-4 bg-bambu-dark-tertiary/50 border-t border-bambu-dark-tertiary'
+        : 'pt-2 pr-14';
 
   const arrow =
     'p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors';

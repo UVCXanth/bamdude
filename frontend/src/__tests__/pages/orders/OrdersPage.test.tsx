@@ -737,6 +737,15 @@ describe('OrdersPage', () => {
       expect(screen.queryByRole('button', { name: 'Reset' })).not.toBeInTheDocument();
     });
 
+    it('Reset clears the conditions, never the place: the tab, the chosen order and its section, the week', async () => {
+      vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+      window.history.pushState({}, '', '/projects?tab=completed&q=lamp&order=31&section=prints&week=2');
+      render(<OrdersPage />);
+      await userEvent.click(await screen.findByRole('button', { name: 'Reset' }));
+      await waitFor(() => expect(window.location.search).not.toContain('q='));
+      for (const kept of ['tab=completed', 'order=31', 'section=prints', 'week=2']) expect(window.location.search).toContain(kept);
+    });
+
     it('says the list could not be read — never «no orders» — and retries the same page', async () => {
       const get = vi.spyOn(api, 'getOrdersPaged').mockRejectedValue(new Error('down'));
       window.history.pushState({}, '', '/projects?page=4');

@@ -46,7 +46,7 @@ export function OrdersDeadlines({ filters, week, onWeek }: OrdersDeadlinesProps)
   const today = localDateKey(new Date());
   const { dateFormat, timeFormat } = useDateSettings();
 
-  const { data, isError, isPlaceholderData, refetch } = useQuery({
+  const { data, isError, isPending, isPlaceholderData, refetch } = useQuery({
     // Under `projects`, so every order write re-reads it (`invalidateOrderViews`).
     queryKey: ['projects', 'deadlines', start, filters],
     queryFn: () => api.getOrderDeadlines({ start, days: DAYS, ...filters }),
@@ -89,7 +89,7 @@ export function OrdersDeadlines({ filters, week, onWeek }: OrdersDeadlinesProps)
       </div>
 
       {/* A failed read with nothing to show is said out loud: an empty fortnight would read as «nothing due». */}
-      {isError && !data && <LoadFailedNote message={t('orders.deadlines.loadFailed')} onRetry={() => void refetch()} />}
+      {isError && !data && <LoadFailedNote message={t('orders.deadlines.loadFailed')} onRetry={() => refetch()} />}
       {isError && data && <RefreshFailedNote onRetry={() => void refetch()} />}
 
       {/* WS-13 E7 H05: one panel, two week rows of seven, its own horizontal scroll (geometry of WS-13).
@@ -99,7 +99,7 @@ export function OrdersDeadlines({ filters, week, onWeek }: OrdersDeadlinesProps)
         role="region"
         aria-label={t('orders.deadlines.calendar')}
         tabIndex={0}
-        aria-busy={isPlaceholderData}
+        aria-busy={isPending || isPlaceholderData}
         className={`relative overflow-x-auto rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green transition-opacity ${
           isPlaceholderData ? 'opacity-60' : ''
         }`}
@@ -116,8 +116,9 @@ export function OrdersDeadlines({ filters, week, onWeek }: OrdersDeadlinesProps)
               const weekend = dow === 0 || dow === 6;
               const isToday = key === today;
               return (
-                <section
+                <div
                   key={key}
+                  role="group"
                   data-testid={`deadline-day-${key}`}
                   aria-current={isToday ? 'date' : undefined}
                   aria-label={dueLabel(key, dateFormat)}
@@ -141,7 +142,7 @@ export function OrdersDeadlines({ filters, week, onWeek }: OrdersDeadlinesProps)
                       full={etaFull(mark.eta, timeFormat, dateFormat)}
                     />
                   ))}
-                </section>
+                </div>
               );
             })}
           </div>
@@ -196,7 +197,12 @@ function DueCard({ due }: { due: DeadlineOrder }) {
       />
       <StageBadge stage={order.stage} status={order.status} />
       {active &&
-        (order.remaining <= 0 && !eta ? (
+        (order.ordered <= 0 ? (
+          // Nothing ordered — a draft: no readiness at all, as in the lists (B03).
+          <span data-testid={`deadline-eta-${order.id}`} className="block text-[11px] text-bambu-gray">
+            —
+          </span>
+        ) : order.remaining <= 0 && !eta ? (
           // Nothing left to cover: the lists' word (B03), not «no estimate».
           <span data-testid={`deadline-eta-${order.id}`} className="block text-[11px] text-bambu-green">
             {t('orders.row.allCovered')}
@@ -204,7 +210,7 @@ function DueCard({ due }: { due: DeadlineOrder }) {
         ) : eta ? (
           <span
             data-testid={`deadline-eta-${order.id}`}
-            className={`flex items-center text-[11px] ${late ? 'text-red-500' : 'text-bambu-green'}`}
+            className={`flex items-center text-[11px] ${late ? 'text-red-600 dark:text-red-500' : 'text-bambu-green'}`}
           >
             {t('orders.deadlines.readyAt', { when: etaLabel(eta, dateFormat) })}
             {late && <span className="sr-only"> ({t('orders.deadlines.late')})</span>}
@@ -239,7 +245,7 @@ function EtaMarkLink({ mark, time, full }: { mark: EtaMark; time: string; full: 
 }
 
 const BADGE_CLASS: Record<AttentionOrder['reason'], string> = {
-  overdue: 'bg-red-500/20 text-red-500',
+  overdue: 'bg-red-500/20 text-red-600 dark:text-red-500',
   late_eta: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
   partial: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
   no_due: 'bg-bambu-dark-tertiary text-bambu-gray',

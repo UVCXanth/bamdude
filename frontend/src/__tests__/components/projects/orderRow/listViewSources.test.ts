@@ -31,4 +31,11 @@ describe('order list view sources', () => {
     const offenders = files.filter((f) => read(f).includes('toLocaleDateString('));
     expect(offenders).toEqual([]);
   });
+
+  // B07: a row's menu is the order's one action model (E6) — never a menu of the view's own.
+  it('draw each row menu with the order action menu', () => {
+    for (const f of ['components/projects/OrdersTable.tsx', 'components/projects/OrderCard.tsx', 'components/projects/board/BoardCard.tsx']) {
+      expect(read(f), f).toContain('<OrderActionMenu');
+    }
+  });
 });

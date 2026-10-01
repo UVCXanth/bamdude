@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router';
 import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, BookOpen, Cpu, Thermometer, type LucideIcon } from 'lucide-react';
 import { GitHubIcon, TelegramIcon, MakerWorldIcon } from './BrandIcons';
@@ -175,6 +175,17 @@ export function Layout() {
   const ThemeIcon = { dark: Sun, light: Monitor, system: Moon }[mode];
   const themeSwitchTitle = t({ dark: 'nav.switchToLight', light: 'nav.switchToSystem', system: 'nav.switchToDark' }[mode]);
   const isSidebarCompact = useIsSidebarCompact();
+  // WS-13 E7 (final review): <main> is no scroll box, so a page's `sticky` bar sticks to the
+  // WINDOW — where the fixed compact header (h-14) covers the top. Its height is said ONCE, as
+  // `--app-top` on the document: every page-level sticky offsets by it, and index.css makes it
+  // the document's scroll padding, so a scrolled-to or focused element never lands under it.
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty('--app-top', isSidebarCompact ? '3.5rem' : '0px');
+    return () => {
+      root.style.removeProperty('--app-top');
+    };
+  }, [isSidebarCompact]);
 
   // Bug-report panel state lives here because the trigger MOVES. Below the
   // sidebar-compact breakpoint the floating disc is replaced by a button in

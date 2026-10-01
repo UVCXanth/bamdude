@@ -59,7 +59,7 @@ export function FilamentStrip() {
       <section data-testid="filament-strip" aria-labelledby={headingId} aria-busy={!isError} className={panel}>
         {title}
         {isError ? (
-          <LoadFailedNote role="status" message={t('orders.filament.stripFailed')} onRetry={() => void refetch()} />
+          <LoadFailedNote role="status" message={t('orders.filament.stripFailed')} onRetry={() => refetch()} />
         ) : (
           <span className="text-xs text-bambu-gray">
             …<span className="sr-only">{t('common.loading')}</span>

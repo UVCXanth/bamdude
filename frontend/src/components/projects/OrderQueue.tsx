@@ -77,7 +77,7 @@ export function OrderQueue({ orderId, headingLevel = 2 }: OrderQueueProps) {
   const body = () => {
     if (!tiers) {
       return isError ? (
-        <div className="flex flex-wrap items-center gap-2 text-sm text-red-400">
+        <div className="flex flex-wrap items-center gap-2 text-sm text-red-600 dark:text-red-400">
           <span>{t('orders.queue.error')}</span>
           <Button size="sm" variant="secondary" onClick={() => refetch()}>
             {t('common.retry')}

@@ -786,6 +786,27 @@ async (page, selftest = null) => {
     };
   });
 
+  // E (final review): the card's overlay link lies over the whole card, so a tooltip in it — the
+  // full forecast date, the reasons of an incomplete estimate — was never reached by the mouse.
+  await scenario('cards-titles@1440', ['E7-B03', 'E7-E03'], async () => {
+    const { ctx, p, errors } = await open(1440, view('cards'));
+    await listPage(p);
+    await p.getByTestId('order-actions').first().waitFor({ timeout: 15000 }).catch(() => {});
+    await p.waitForTimeout(600);
+    const titles = await p.evaluate(() => [...document.querySelectorAll('[data-part="meta"] [title]')].filter((el) => el.getClientRects().length).map((el) => {
+      el.scrollIntoView({ block: 'center' });
+      const r = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { title: (el.getAttribute('title') ?? '').slice(0, 40), hits: !!hit && (hit === el || el.contains(hit)) };
+    }));
+    await ctx.close();
+    return {
+      recipe: { url: '/projects', storage: { 'projects.view': 'cards' }, actions: ['hit-test every [title] in a card\'s meta cells'] },
+      measured: { total: titles.length, covered: titles.filter((x) => !x.hits), errors },
+      pass: titles.length > 0 && titles.every((x) => x.hits) && errors.length === 0,
+    };
+  });
+
   // ======================= 7. kanban (F) =======================
   for (const w of [1920, 1440, 1024, 390]) {
     await scenario(`kanban@${w}`, ['E7-F01', 'E7-F02', 'E7-F03', 'O07', 'R08'], async () => {
@@ -866,6 +887,13 @@ async (page, selftest = null) => {
     await p.keyboard.press('Enter');
     await p.waitForTimeout(900);
     const afterQc = writes.map((x) => x.body);
+    // F07 (final review): through the write and the board's re-read the focus stays with the
+    // card — on its stage — never falling to the page.
+    const focusAfter = await p.evaluate((code) => {
+      const a = document.activeElement;
+      const card = a?.closest('[data-testid^="board-card-"]');
+      return { tag: a?.tagName ?? null, label: a?.getAttribute('aria-label') ?? null, inCard: !!card && card.textContent.includes(code) };
+    }, codeA);
     // The current stage writes nothing (the board re-read answers the stand's own stage again).
     const again = stageTrigger(p, codeA, 'Друкується');
     if (await again.count()) {
@@ -877,9 +905,10 @@ async (page, selftest = null) => {
     await ctx.close();
     return {
       recipe: { url: '/projects', storage: { 'projects.view': 'kanban' }, actions: ['stage badge → Enter', 'ArrowDown to «Контроль якості»', 'Enter', 'the current stage'] },
-      measured: { radios, command, afterQc, total: writes.length, stayed, errors },
+      measured: { radios, command, afterQc, focusAfter, total: writes.length, stayed, errors },
       pass: radios.map((r) => r[0]).join('|') === 'Підготовка|Друкується|Контроль якості' && radios[1][1] === 'true' &&
-        command.includes('Готово — склад і видача…') && afterQc.length === 1 && afterQc[0]?.stage === 'qc' && writes.length === 1 && stayed && errors.length === 0,
+        command.includes('Готово — склад і видача…') && afterQc.length === 1 && afterQc[0]?.stage === 'qc' && writes.length === 1 && stayed &&
+        focusAfter.inCard && /^Етап /.test(focusAfter.label ?? '') && errors.length === 0,
     };
   });
 
@@ -1069,6 +1098,71 @@ async (page, selftest = null) => {
       recipe: { url: '/projects', fixture: ['GET /projects/ → 500'] },
       measured: { alert, list, detailAsked, errors },
       pass: /Не вдалося завантажити замовлення/.test(alert ?? '') && list === 0 && !detailAsked,
+    };
+  });
+
+  // G06 (final review): stacked, a pick scrolls to the order — below the fixed compact header, not under it.
+  await scenario('workspace-pick@390', ['E7-G06'], async () => {
+    const { ctx, p, errors } = await open(390, view('workspace'));
+    await listPage(p);
+    await p.getByTestId('order-actions').first().waitFor({ timeout: 15000 }).catch(() => {});
+    await p.waitForTimeout(600);
+    const rows = p.getByTestId('workspace-list').locator('li > button');
+    const n = await rows.count();
+    // Room below the page, so the pick CAN bring the order to the top: a short order cannot be
+    // scrolled up to the header, and the probe would measure the document's end instead.
+    await p.evaluate(() => { document.body.style.paddingBottom = '3000px'; });
+    if (n > 2) await rows.nth(2).click();
+    await p.waitForTimeout(1500);
+    const geo = await p.evaluate(() => {
+      const header = document.querySelector('header.fixed');
+      const list = document.querySelector('[data-testid="workspace-list"]');
+      const pane = list?.parentElement?.children[1] ?? null;
+      return {
+        headerBottom: header ? Math.round(header.getBoundingClientRect().bottom) : 0,
+        paneTop: pane ? Math.round(pane.getBoundingClientRect().top) : null,
+        scrolled: Math.round(scrollY),
+      };
+    });
+    const file = await shoot(p, 'workspace-pick@390');
+    await ctx.close();
+    return {
+      recipe: { url: '/projects', storage: { 'projects.view': 'workspace' }, actions: ['click the third row'] },
+      env: { viewport: [390, HEIGHTS[390]] },
+      measured: { rows: n, geo, errors },
+      pass: n > 2 && geo.scrolled > 0 && geo.paneTop !== null && geo.paneTop >= geo.headerBottom - 1 && geo.paneTop <= geo.headerBottom + 40 && errors.length === 0,
+      screenshots: [file],
+    };
+  });
+
+  // G02 (final review): a long list — the keyboard reaches its last row, and the page bar is never over it.
+  await scenario('workspace-focus@1440', ['E7-G02'], async () => {
+    const { ctx, p, errors } = await open(1440, view('workspace', { 'projects.perPage': '50' }));
+    await listPage(p, '?tab=all');
+    await p.getByTestId('order-actions').first().waitFor({ timeout: 15000 }).catch(() => {});
+    await p.waitForTimeout(800);
+    const rows = p.getByTestId('workspace-list').locator('li > button');
+    const n = await rows.count();
+    if (n > 1) {
+      await rows.nth(n - 2).focus();
+      await p.keyboard.press('Tab');
+    }
+    await p.waitForTimeout(500);
+    const geo = await p.evaluate(() => {
+      const a = document.activeElement;
+      const row = a?.getBoundingClientRect();
+      const bar = document.querySelector('[data-testid="workspace-pager"]')?.getBoundingClientRect();
+      return row && bar
+        ? { isRow: !!a.closest('[data-testid="workspace-list"] li'), rowTop: Math.round(row.top), rowBottom: Math.round(row.bottom), barTop: Math.round(bar.top), vh: innerHeight }
+        : null;
+    });
+    const file = await shoot(p, 'workspace-focus@1440');
+    await ctx.close();
+    return {
+      recipe: { url: '/projects?tab=all', storage: { 'projects.view': 'workspace', 'projects.perPage': '50' }, actions: ['focus the row before the last', 'Tab'] },
+      measured: { rows: n, geo, errors },
+      pass: n > 20 && !!geo && geo.isRow && geo.rowTop >= 0 && geo.rowBottom <= geo.barTop + 1 && errors.length === 0,
+      screenshots: [file],
     };
   });
 
@@ -1315,15 +1409,76 @@ async (page, selftest = null) => {
       const file = await shoot(p, `layout-pages@${w}-last`);
       await ctx.close();
       const wide = rows.filter((r) => r.overflow > 0);
-      // A regression is a page wide NOW that was not wide under the old rule; one that was already
-      // too wide for the screen (it scrolled sideways inside <main>) is named, not counted.
+      // A regression is a page wide NOW that was not wide under the old rule. One that was already
+      // too wide (it scrolled sideways inside <main>) pans the whole page now — the final review's
+      // ruling: it fails too, so the pages are fixed rather than named.
       const regressions = wide.filter((r) => r.before <= 0);
       return {
         recipe: { pages: PAGES, viewport: w },
         env: { viewport: [w, HEIGHTS[w]] },
         measured: { wide, regressions, preexisting: wide.filter((r) => r.before > 0).map((r) => r.path), pages: rows.length, errors },
-        pass: regressions.length === 0 && errors.length === 0,
+        pass: wide.length === 0 && errors.length === 0,
         screenshots: [file],
+      };
+    });
+  }
+
+  // ======================= 12. sticky bars below the fixed header (final review) =======================
+  // With <main> no scroll box, every page-level `sticky` sticks to the WINDOW — under the fixed
+  // compact header (below 1144 px) unless its offset is the header's height. Each page is scrolled
+  // and every STUCK sticky (not one inside a scroll box of its own) must sit below the header.
+  const STICKY_PAGES = [
+    { label: 'files', path: '/files' },
+    { label: 'group', path: '/groups/new' },
+    { label: 'inventory', path: '/inventory', select: 'tbody input[type="checkbox"]' },
+    { label: 'workspace', path: '/projects', storage: { 'projects.view': 'workspace' } },
+  ];
+  for (const w of [1024, 768]) {
+    await scenario(`sticky-header@${w}`, ['E7-G02'], async () => {
+      const pages = [];
+      for (const pg of STICKY_PAGES) {
+        const { ctx, p, errors } = await open(w, { storage: pg.storage ?? {} });
+        await p.goto(`${job.ui}${pg.path}`, { waitUntil: 'networkidle' }).catch(() => {});
+        await p.waitForTimeout(800);
+        let selected = null;
+        if (pg.select) {
+          const box = p.locator(pg.select).first();
+          selected = (await box.count()) > 0;
+          if (selected) await box.check({ timeout: 5000 }).catch(() => { selected = false; });
+          await p.waitForTimeout(300);
+        }
+        const geo = await p.evaluate(async () => {
+          window.scrollTo(0, Math.max(0, Math.min(800, document.documentElement.scrollHeight - innerHeight)));
+          await new Promise((r) => setTimeout(r, 400));
+          const header = document.querySelector('header.fixed');
+          const headerBottom = header ? header.getBoundingClientRect().bottom : 0;
+          const ownBox = (el) => {
+            for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) {
+              const s = getComputedStyle(a);
+              if (/(auto|scroll|hidden|clip)/.test(`${s.overflowY} ${s.overflowX}`)) return true;
+            }
+            return false;
+          };
+          const rows = [...document.querySelectorAll('body *')]
+            .filter((el) => getComputedStyle(el).position === 'sticky' && el.getClientRects().length && !ownBox(el))
+            .map((el) => {
+              const r = el.getBoundingClientRect();
+              const top = parseFloat(getComputedStyle(el).top);
+              const stuck = scrollY > 0 && Number.isFinite(top) && Math.abs(r.top - top) < 2;
+              return { what: `${el.tagName.toLowerCase()}.${String(el.className).split(' ').slice(0, 3).join('.')}`, top: Math.round(r.top), stuck, under: stuck && r.top < headerBottom - 1 };
+            });
+          return { scrolled: Math.round(scrollY), headerBottom: Math.round(headerBottom), rows };
+        });
+        pages.push({ page: pg.label, selected, ...geo, errors });
+        await ctx.close();
+      }
+      const under = pages.flatMap((pg) => pg.rows.filter((x) => x.under).map((x) => `${pg.page}: ${x.what} @${x.top}`));
+      const stuck = pages.reduce((n, pg) => n + pg.rows.filter((x) => x.stuck).length, 0);
+      return {
+        recipe: { pages: STICKY_PAGES.map((pg) => pg.path), viewport: w, actions: ['inventory: tick the first row', 'scroll the window by up to 800 px'] },
+        env: { viewport: [w, HEIGHTS[w]] },
+        measured: { pages, under, stuck },
+        pass: under.length === 0 && stuck > 0 && pages.every((pg) => pg.errors.length === 0),
       };
     });
   }

@@ -34,6 +34,11 @@ import { splitSortBy } from '../../utils/listSort';
 const GROUP_STORAGE_KEY = 'projects.groupByCustomer';
 const VIEW_STORAGE_KEY = 'projects.view';
 const PER_PAGE_STORAGE_KEY = 'projects.perPage';
+/**
+ * What Reset keeps (WS-13 E7 C04): it clears the CONDITIONS — search, customer, responsible,
+ * stage — never the place: the tab, the chosen order and its section, the deadlines' week.
+ */
+const PLACE_KEYS = ['tab', 'order', 'section', 'week'];
 
 /**
  * The order list: status tabs, a customer filter, a search and an optional
@@ -147,7 +152,7 @@ export function OrdersPage() {
   const headerlessSort = view === 'table' && !(TABLE_SORT_KEYS as readonly string[]).includes(sortKey);
   const resetConditions = () => {
     forget();
-    resetFilters(['tab']);
+    resetFilters(PLACE_KEYS);
     searchRef.current?.focus();
   };
 
@@ -301,7 +306,7 @@ export function OrdersPage() {
             <OrdersListView
               data={data}
               isError={isError}
-              onRetry={() => void refetch()}
+              onRetry={() => refetch()}
               isPlaceholderData={isPlaceholderData}
               view={view}
               sort={sort}
@@ -320,7 +325,7 @@ export function OrdersPage() {
             <OrdersWorkspace
               data={data}
               isError={isError}
-              onRetry={() => void refetch()}
+              onRetry={() => refetch()}
               isPlaceholderData={isPlaceholderData}
               perPage={perPage}
               onPageChange={setPage}
@@ -348,7 +353,7 @@ export function OrdersPage() {
           onOpenList={() => setViewPref('table')}
           onReset={() => {
             forget();
-            resetFilters(['tab']);
+            resetFilters(PLACE_KEYS);
           }}
         />
       )}

@@ -416,7 +416,7 @@ export function PlanBlock({
       <section id="order-plan" className="space-y-3" data-testid="plan-block">
         {heading}
         <div className="flex items-center gap-3 flex-wrap text-sm">
-          <p className="text-red-400" data-testid="plan-error">
+          <p className="text-red-600 dark:text-red-400" data-testid="plan-error">
             {t('orders.plan.loadFailed')}
           </p>
           <Button size="sm" variant="outline" data-testid="plan-retry" onClick={() => refetch()}>

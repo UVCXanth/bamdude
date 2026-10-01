@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ReactNode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { ToastProvider } from '../../../../contexts/ToastContext';
 import { api } from '../../../../api/client';
 import { useBoardActions } from '../../../../components/projects/board/useBoardActions';
@@ -62,6 +62,30 @@ describe('useBoardActions', () => {
     expect(stage).toHaveBeenCalledTimes(1);
     expect(result.current.pendingIds.has(6)).toBe(false);
     await act(async () => finish());
+    await waitFor(() => expect(result.current.pendingIds.has(5)).toBe(false));
+  });
+  // Released at the write's answer, the card flashed back undimmed in its old column — and could be
+  // written again — until the board's re-read moved it. It is held until that re-read lands.
+  it('holds the card until the board has been read again, not only until the write answers', async () => {
+    vi.spyOn(api, 'setOrderStage').mockResolvedValue({} as never);
+    let reads = 0;
+    let release!: () => void;
+    const { result } = renderHook(() => {
+      useQuery({
+        queryKey: ['projects', 'board', {}],
+        queryFn: () => {
+          reads += 1;
+          return reads === 1 ? Promise.resolve({}) : new Promise((r) => { release = () => r({}); });
+        },
+      });
+      return useBoardActions(vi.fn());
+    }, { wrapper });
+    await waitFor(() => expect(reads).toBe(1));
+    act(() => result.current.setStage(5, 'qc'));
+    await waitFor(() => expect(reads).toBe(2));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(result.current.pendingIds.has(5)).toBe(true);
+    await act(async () => release());
     await waitFor(() => expect(result.current.pendingIds.has(5)).toBe(false));
   });
 });

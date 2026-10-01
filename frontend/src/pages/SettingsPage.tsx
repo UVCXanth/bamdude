@@ -2065,7 +2065,7 @@ export function SettingsPage() {
               <h2 className="text-lg font-semibold text-white">{t('settings.sidebar')}</h2>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="text-white">{t('settings.sidebarOrder')}</p>
                   <p className="text-sm text-bambu-gray">
@@ -2073,7 +2073,7 @@ export function SettingsPage() {
                     {authEnabled && hasPermission('settings:update') && ` ${t('settings.sidebarOrderSetDefaultHint')}`}
                   </p>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     variant="secondary"
                     size="sm"
@@ -6457,8 +6457,8 @@ export function SettingsPage() {
       {/* ══════ USERS TAB ══════ */}
       {activeTab === 'users' && (
         <div className="space-y-4">
-          {/* Sub-tab Navigation */}
-          <div className="flex gap-1 border-b border-bambu-dark-tertiary">
+          {/* Sub-tab Navigation — wraps on a phone rather than widening the page (WS-13 E7). */}
+          <div className="flex flex-wrap gap-1 border-b border-bambu-dark-tertiary">
             <button
               onClick={() => setUsersSubTab('users')}
               className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${

@@ -120,7 +120,7 @@ export function OrderPrintDefectsDialog({ orderId, archive, onClose }: OrderPrin
         // Save disabled and Cancel the only exit. The message is already translated by
         // the API boundary — rendered, never branched on.
         <div className="space-y-2" data-testid="print-defects-error">
-          <p className="text-sm text-red-400">{(error as Error)?.message}</p>
+          <p className="text-sm text-red-600 dark:text-red-400">{(error as Error)?.message}</p>
           <Button type="button" variant="secondary" onClick={() => refetch()} disabled={isFetching}>
             {t('common.retry')}
           </Button>

@@ -230,12 +230,10 @@ export function OrdersListView({
                 {/* The group's rows ON THIS PAGE — grouping groups the page, never the list (WS-01). */}
                 <h3 className="text-sm font-semibold text-white mb-2">
                   {customerName}{' '}
-                  <small
-                    className="text-xs font-normal text-bambu-gray tabular-nums"
-                    aria-label={t('orders.list.groupCount', { count: group.length })}
-                  >
+                  <small aria-hidden="true" className="text-xs font-normal text-bambu-gray tabular-nums">
                     {group.length}
                   </small>
+                  <span className="sr-only">{t('orders.list.groupCount', { count: group.length })}</span>
                 </h3>
                 {view === 'table' ? (
                   <OrdersTable orders={group} forecast={forecast} sort={sort} onSortChange={onSortChange} actions={actions} />

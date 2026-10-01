@@ -16,7 +16,7 @@ type Tone = 'ok' | 'warn' | 'late';
 const TONE_CLASS: Record<Tone, string> = {
   ok: 'text-bambu-green',
   warn: 'text-amber-700 dark:text-amber-400',
-  late: 'text-red-500',
+  late: 'text-red-600 dark:text-red-500',
 };
 
 /** One figure, as the server counted it — this component never adds anything up. */

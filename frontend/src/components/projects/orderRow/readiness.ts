@@ -32,7 +32,8 @@ export function readiness(
   if (order.status !== 'active' || order.ordered <= 0) return { kind: 'closed' };
   // Not «everything printed»: the stage is the operator's (E01); coverage is the fact.
   if (order.remaining <= 0) return { kind: 'covered' };
-  if (!forecast) return state === 'error' ? { kind: 'error' } : { kind: 'loading' };
+  // An answered set without this row is «not read», never «loading» for ever.
+  if (!forecast) return state === 'error' || state === 'data' ? { kind: 'error' } : { kind: 'loading' };
   const reasons = forecast.incomplete_reasons ?? [];
   if (!forecast.eta_complete) return { kind: 'partial', reasons };
   if (!forecast.now_eta) return reasons.length > 0 ? { kind: 'partial', reasons } : { kind: 'none' };

@@ -102,7 +102,7 @@ export function OrderModal({ order, orderId, defaultCustomerId, onClose, onStatu
         }
       >
         {read.isError ? (
-          <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-red-500">
+          <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-red-600 dark:text-red-500">
             <span>
               {t('orders.modal.loadFailed')} {(read.error as Error)?.message}
             </span>

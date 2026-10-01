@@ -2649,7 +2649,7 @@ export function FileManagerPage() {
         {/* Folder sidebar - resizable, hidden on mobile */}
         <div
           ref={sidebarRef}
-          className="hidden lg:flex flex-shrink-0 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary overflow-hidden flex-col relative lg:sticky lg:top-4 lg:self-start lg:min-h-[calc(100vh-14rem)] lg:max-h-[calc(100vh-6rem)]"
+          className="hidden lg:flex flex-shrink-0 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary overflow-hidden flex-col relative lg:sticky lg:top-[calc(var(--app-top)+1rem)] lg:self-start lg:min-h-[calc(100vh-14rem)] lg:max-h-[calc(100vh-6rem)]"
           style={{ width: `${sidebarWidth}px` }}
         >
           {/* Resize handle - drag to resize, double-click to reset */}
@@ -2928,7 +2928,7 @@ export function FileManagerPage() {
               otherwise hide this toolbar exactly when it's needed to clear or
               adjust the filter, so `anyFilterActive` keeps it up regardless. */}
           {files && (files.length > 0 || anyFilterActive) && (
-            <div className="flex flex-col gap-2 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sticky top-0 z-10 lg:static">
+            <div className="flex flex-col gap-2 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sticky top-(--app-top) z-10 lg:static">
             <div className="flex flex-wrap items-stretch gap-2">
               {/* Search */}
               <div className="relative w-full sm:w-[28rem] h-9">

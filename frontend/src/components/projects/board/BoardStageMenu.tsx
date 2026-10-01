@@ -15,6 +15,9 @@ const ACTIVE_STAGES: OrderStage[] = ['prep', 'printing', 'qc'];
  * choosing it writes nothing) and, after a separator, a COMMAND — «Done — stock
  * and issue…» — that opens the issue dialog: an order closes by issuing, never by
  * a stage switch (E6-B04).
+ *
+ * While the card is written the trigger stays enabled — a disabled one would drop
+ * the focus the operator left on it — and the menu's rows are unavailable instead.
  */
 export function BoardStageMenu({
   order,
@@ -34,7 +37,6 @@ export function BoardStageMenu({
       label={t('orders.board.stageMenu', { code: order.code, stage: current ? t(`orders.stage.${current}`) : '' })}
       testId={`board-card-${order.id}-stage`}
       width="max-content"
-      disabled={pending}
       triggerClassName="relative z-10 inline-flex items-center gap-0.5 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green disabled:opacity-60"
       icon={
         <>
@@ -50,6 +52,7 @@ export function BoardStageMenu({
               key={stage}
               role="menuitemradio"
               checked={stage === current}
+              disabled={pending}
               onSelect={() => {
                 close();
                 if (stage !== current) onStage(stage);
@@ -60,6 +63,7 @@ export function BoardStageMenu({
           ))}
           <div role="separator" className="my-1 border-t border-bambu-dark-tertiary" />
           <CardActionMenuItem
+            disabled={pending}
             onSelect={() => {
               close();
               onComplete();

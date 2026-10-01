@@ -169,7 +169,7 @@ export function OrderView({
       <div className={embedded ? '' : 'p-4'}>
         {crumbs}
         {isError ? (
-          <div className="text-sm text-red-500">
+          <div className="text-sm text-red-600 dark:text-red-500">
             {t('orders.page.loadFailed')} {(error as Error)?.message}
           </div>
         ) : (

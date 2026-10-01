@@ -29,6 +29,17 @@ const base = {
   actions: { run: () => {}, create: () => {} },
 };
 
+// WS-13 E7 D04: a group's count is read with its heading — as text, not as a label on a <small>.
+describe('OrdersListView groups', () => {
+  it('names each customer group with the count of its rows on this page', () => {
+    const named = { ...row, customer_id: 4, customer_name: 'ACME', status: 'active' as const };
+    render(<OrdersListView {...base} data={{ ...page, items: [named] } as OrderListPage} isError={false} onRetry={() => {}} view="table" groupByCustomer />);
+    const heading = screen.getByRole('heading', { level: 3, name: /ACME/ });
+    // Text a screen reader reads with the heading — an aria-label on a <small> is not.
+    expect(heading).toHaveTextContent('1 on this page');
+  });
+});
+
 // WS-13 E7 C05: the list draws loading, transition and failures off listState.
 describe('OrdersListView states', () => {
   it('waits with a skeleton shaped like the view', () => {

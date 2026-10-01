@@ -70,7 +70,7 @@ export function OrderTimeline({ orderId, headingLevel = 2 }: OrderTimelineProps)
           <LoadingBlock label={t('common.loading')} className="py-4 text-bambu-gray" />
         ) : isError && !timeline ? (
           // A journal that could not be read is not an empty one (review 7).
-          <div className="flex flex-wrap items-center gap-2 text-sm text-red-400">
+          <div className="flex flex-wrap items-center gap-2 text-sm text-red-600 dark:text-red-400">
             <span>{t('orders.timeline.error')}</span>
             <Button size="sm" variant="secondary" onClick={() => void refetch()}>
               {t('common.retry')}

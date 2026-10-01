@@ -71,6 +71,11 @@ describe('readiness', () => {
     });
   });
 
+  it('an answered forecast that lacks the row is «not read», not «loading» for ever', () => {
+    expect(readiness(order(), undefined, 'data')).toEqual({ kind: 'error' });
+    expect(readiness(order(), undefined, 'loading')).toEqual({ kind: 'loading' });
+  });
+
   it('adds «after N more urgent» only when the queue moves the date', () => {
     const later = readiness(order(), fc({ after_eta: '2026-10-08T09:00:00Z', ahead_count: 2 }), 'data');
     expect(later).toMatchObject({ kind: 'eta', after: { eta: '2026-10-08T09:00:00Z', ahead: 2 } });

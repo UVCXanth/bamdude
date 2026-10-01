@@ -90,7 +90,7 @@ export function FulfilmentDialog({
       >
         {query.isError ? (
           // A failed first read says so and asks again — never «loading» for ever (E02).
-          <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-red-500">
+          <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-red-600 dark:text-red-500">
             <span>
               {t('orders.fulfil.readFailed')} {(query.error as Error)?.message}
             </span>

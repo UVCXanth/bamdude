@@ -120,7 +120,7 @@ describe('OrderDue', () => {
     render(<OrderDue order={row({ due_date: '2020-01-02T00:00:00' })} variant="cell" />);
     const due = screen.getByTestId('order-7-due');
     expect(due).toHaveTextContent('overdue');
-    expect(due.querySelector('.text-red-500')).not.toBeNull();
+    expect(due.querySelector('.text-red-600')).not.toBeNull();
   });
   it('shows a dash without a deadline', () => {
     render(<OrderDue order={row()} variant="cell" />);

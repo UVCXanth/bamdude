@@ -80,7 +80,7 @@ export function WorkshopDialog({
         error !== undefined && error !== null && error !== false ? (
           <div
             role="alert"
-            className="mx-4 mb-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400"
+            className="mx-4 mb-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-600 dark:text-red-400"
           >
             {error}
           </div>

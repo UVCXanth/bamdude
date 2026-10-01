@@ -50,7 +50,7 @@ export function OrdersTiles() {
       />
     </StatTiles>
     {failed && (
-      <LoadFailedNote role="status" className="-mt-2 mb-4" message={t('orders.tiles.failed')} onRetry={() => void refetch()} />
+      <LoadFailedNote role="status" className="-mt-2 mb-4" message={t('orders.tiles.failed')} onRetry={() => refetch()} />
     )}
     </>
   );

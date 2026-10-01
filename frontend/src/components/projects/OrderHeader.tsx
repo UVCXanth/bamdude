@@ -125,7 +125,7 @@ export function OrderHeader({
                 <PriorityBadge priority={order.priority} />
               </span>
             )}
-            <span data-fact="due" data-overdue={overdue ? 'true' : undefined} className={overdue ? 'text-red-500' : ''}>
+            <span data-fact="due" data-overdue={overdue ? 'true' : undefined} className={overdue ? 'text-red-600 dark:text-red-500' : ''}>
               {t('orders.header.due', {
                 date: order.due_date
                   ? formatCalendarDate(order.due_date, { day: 'numeric', month: 'short' }, settings?.date_format)
@@ -148,7 +148,7 @@ export function OrderHeader({
                 {' · '}
                 {t('orders.header.marginShort')}{' '}
                 {margin != null ? (
-                  <b data-testid="order-margin" className={`font-semibold tabular-nums ${margin < 0 ? 'text-red-500' : 'text-bambu-green'}`}>
+                  <b data-testid="order-margin" className={`font-semibold tabular-nums ${margin < 0 ? 'text-red-600 dark:text-red-500' : 'text-bambu-green'}`}>
                     {formatMoney(margin, settings?.currency)}
                   </b>
                 ) : (

@@ -103,6 +103,7 @@ export function OrdersWorkspace({
   }, [picked, split]);
 
   if (state === 'failed') return <LoadFailedNote message={t('orders.list.loadFailed')} onRetry={onRetry} />;
+  if (state === 'loading') return <WorkspaceSkeleton />;
   if (!data || items.length === 0) return null;
 
   return (
@@ -110,16 +111,19 @@ export function OrdersWorkspace({
       <div
         data-testid="workspace-list"
         aria-busy={isPlaceholderData}
-        className={`flex flex-col rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary overflow-y-auto transition-opacity ${
+        // Sticky 12 px below the app's header (`--app-top`: the fixed compact one, else 0); the
+        // panel itself never scrolls — its rows do, in their own box, so the page bar below them
+        // never lies over the row the keyboard reached (G02). Tailwind 4 `max-[761px]` is < 761.
+        className={`flex flex-col overflow-hidden rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary transition-opacity ${
           isPlaceholderData ? 'opacity-60' : ''
-        } max-[760px]:max-h-[50vh] min-[761px]:sticky min-[761px]:top-3 min-[761px]:max-h-[calc(100dvh-1.5rem)] min-[761px]:max-[1143px]:top-[68px] min-[761px]:max-[1143px]:max-h-[calc(100dvh-5rem)]`}
+        } max-[761px]:max-h-[50vh] min-[761px]:sticky min-[761px]:top-[calc(var(--app-top)+0.75rem)] min-[761px]:max-h-[calc(100dvh-1.5rem-var(--app-top))]`}
       >
         {state === 'refresh-failed' && (
           <div className="px-4 pt-2">
             <RefreshFailedNote onRetry={onRetry} />
           </div>
         )}
-        <ul aria-label={t('orders.list.title')} className="flex-1">
+        <ul aria-label={t('orders.list.title')} className="min-h-0 flex-1 overflow-y-auto">
           {items.map((order) => (
             <li key={order.id} className="border-b border-bambu-dark-tertiary last:border-b-0">
               <button
@@ -135,8 +139,8 @@ export function OrdersWorkspace({
             </li>
           ))}
         </ul>
-        {/* An opaque, pinned page bar: visible without scrolling the list to its end (G02). */}
-        <div data-testid="workspace-pager" className="sticky bottom-0 bg-bambu-dark-secondary">
+        {/* The page bar below the rows' own scroll: always in view, never over a row (G02). */}
+        <div data-testid="workspace-pager" className="flex-shrink-0">
           <PaginationBar
             page={data.meta.current_page}
             totalPages={data.meta.last_page}
@@ -145,7 +149,7 @@ export function OrdersWorkspace({
             onPageChange={onPageChange}
             onPerPageChange={onPerPageChange}
             items={t('orders.list.items', { count: total })}
-            variant="card"
+            variant="panel"
           />
         </div>
       </div>
@@ -180,9 +184,34 @@ export function OrdersWorkspace({
   );
 }
 
+/** The first read (C05, G07): the list panel's shape, busy — never an empty area. */
+function WorkspaceSkeleton() {
+  const { t } = useTranslation();
+  return (
+    <div
+      role="status"
+      aria-busy="true"
+      data-testid="workspace-skeleton"
+      className="grid gap-4 items-start min-[761px]:grid-cols-[clamp(280px,20vw,400px)_minmax(0,1fr)]"
+    >
+      <span className="sr-only">{t('common.loading')}</span>
+      <div className="rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary">
+        {Array.from({ length: 6 }, (_, i) => (
+          <div key={i} className="px-4 py-3.5 space-y-2 border-b border-bambu-dark-tertiary last:border-b-0">
+            <div className="h-3 w-1/2 rounded bg-bambu-dark-tertiary animate-pulse" />
+            <div className="h-4 w-3/4 rounded bg-bambu-dark-tertiary animate-pulse" />
+            <div className="h-2 w-full rounded bg-bambu-dark-tertiary animate-pulse" />
+          </div>
+        ))}
+      </div>
+      <div className="hidden min-[761px]:block h-64 rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary animate-pulse" />
+    </div>
+  );
+}
+
 /** The mockup's row: padding 14 16, a hover tint, the chosen one in the accent with a 3 px inset rail (G03). */
 function rowClass(current: boolean) {
-  return `block w-full text-left px-4 py-3.5 space-y-1 scroll-my-12 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-bambu-green ${
+  return `block w-full text-left px-4 py-3.5 space-y-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-bambu-green ${
     current ? 'bg-bambu-green/10 shadow-[inset_3px_0_0_var(--color-bambu-green)]' : 'hover:bg-bambu-dark-tertiary/40'
   }`;
 }

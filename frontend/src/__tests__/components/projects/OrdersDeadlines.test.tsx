@@ -93,7 +93,7 @@ describe('OrdersDeadlines', () => {
     expect(card).toHaveTextContent('4 / 10');
     expect(card).toHaveStyle({ borderLeftColor: '#4eac48' });
     expect(within(card).getByTestId('deadline-eta-1')).toHaveTextContent(`ready ≈ ${day(2026, 10, 6)}`);
-    expect(within(card).getByTestId('deadline-eta-1')).not.toHaveClass('text-red-500');
+    expect(within(card).getByTestId('deadline-eta-1')).not.toHaveClass('text-red-600');
   });
   it('marks risk only where the server says late — never by its own date math', async () => {
     vi.spyOn(api, 'getOrderDeadlines').mockResolvedValue(
@@ -111,7 +111,7 @@ describe('OrdersDeadlines', () => {
     const second = within(screen.getByTestId('deadline-day-2026-10-08')).getByRole('link', { name: /Lamp/ });
     expect(first).not.toHaveAttribute('data-risk');
     expect(second).toHaveAttribute('data-risk', 'true');
-    expect(within(second).getByTestId('deadline-eta-2')).toHaveClass('text-red-500');
+    expect(within(second).getByTestId('deadline-eta-2')).toHaveClass('text-red-600');
     expect(second).toHaveTextContent('late');
   });
   it('tells a partial estimate from none, and keeps a date beside its reasons', async () => {
@@ -141,6 +141,27 @@ describe('OrdersDeadlines', () => {
     const eta = await screen.findByTestId('deadline-eta-9');
     expect(eta).toHaveTextContent('all covered');
     expect(eta).not.toHaveTextContent('no estimate');
+  });
+  it('an order with nothing ordered has no readiness — «—», as in the lists, never «all covered»', async () => {
+    vi.spyOn(api, 'getOrderDeadlines').mockResolvedValue(
+      answer({ due: [{ order: order({ id: 9, code: 'OR-0009', name: 'Draft', due_date: '2026-10-07T00:00:00', ordered: 0, remaining: 0, covered_units: 0, progress: 0 }), eta: null, late: false, estimate_reasons: [] }] }),
+    );
+    render(<OrdersDeadlines filters={{}} week={0} onWeek={() => {}} />);
+    const eta = await screen.findByTestId('deadline-eta-9');
+    expect(eta).toHaveTextContent('—');
+    expect(eta).not.toHaveTextContent('all covered');
+  });
+  it('is busy while the first fortnight is read — never an empty fortnight that reads as «nothing due»', () => {
+    vi.spyOn(api, 'getOrderDeadlines').mockImplementation(() => new Promise(() => {}));
+    render(<OrdersDeadlines filters={{}} week={0} onWeek={() => {}} />);
+    expect(screen.getByRole('region', { name: 'Deadlines calendar' })).toHaveAttribute('aria-busy', 'true');
+  });
+  it('names each day as a group, not as fourteen page landmarks', async () => {
+    vi.spyOn(api, 'getOrderDeadlines').mockResolvedValue(answer());
+    render(<OrdersDeadlines filters={{}} week={0} onWeek={() => {}} />);
+    const region = await screen.findByRole('region', { name: 'Deadlines calendar' });
+    expect(within(region).queryAllByRole('region')).toHaveLength(0);
+    expect(within(region).getAllByRole('group')).toHaveLength(14);
   });
   it('marks where another order is forecast to be ready, with the time', async () => {
     vi.spyOn(api, 'getOrderDeadlines').mockResolvedValue(answer());

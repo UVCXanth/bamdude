@@ -57,6 +57,12 @@
    Click-outside backdrops are deliberately excluded: a full-screen sheet
    advertising itself as a button is worse than one that says nothing. */
 @layer base {
+  /* The fixed compact header's height (Layout sets `--app-top`): anything scrolled to —
+     an anchor, a focused element, `scrollIntoView` — stops below it, not under it. */
+  html {
+    scroll-padding-top: var(--app-top, 0px);
+  }
+
   button:not(:disabled),
   select:not(:disabled),
   summary,

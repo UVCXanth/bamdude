@@ -264,8 +264,15 @@ describe('OrdersBoard', () => {
       const card = screen.getByTestId('board-card-1');
       await waitFor(() => expect(card).toHaveAttribute('aria-busy', 'true'));
       expect(card).toHaveTextContent('Moving…');
-      expect(within(card).getByRole('button', { name: 'Stage OR-0001: Preparation — change' })).toBeDisabled();
-      expect(within(card).queryByRole('button', { name: 'Move OR-0001' })).toBeNull();
+      // Neither door goes away while the card is held, so the focus stays where it was (F07):
+      // the stage menu opens with its stages unavailable, the handle is there but inert.
+      const held = within(card).getByRole('button', { name: 'Stage OR-0001: Preparation — change' });
+      expect(held).not.toBeDisabled();
+      expect(within(card).getByRole('button', { name: 'Move OR-0001' })).toHaveAttribute('aria-disabled', 'true');
+      fireEvent.click(held);
+      const qc = await screen.findByRole('menuitemradio', { name: 'Quality check' });
+      expect(qc).toBeDisabled();
+      fireEvent.click(qc);
       // The other card is not held.
       expect(screen.getByTestId('board-card-2')).not.toHaveAttribute('aria-busy', 'true');
       await act(async () => refuse(new Error('This order is not active')));
@@ -273,6 +280,24 @@ describe('OrdersBoard', () => {
       expect(within(screen.getByRole('region', { name: 'Preparation' })).getByTestId('board-card-1')).toBeInTheDocument();
       expect(await screen.findByText('This order is not active')).toBeInTheDocument();
       expect(stage).toHaveBeenCalledTimes(1);
+    });
+
+    // F07 (final review): the re-read moves the card to its new column — a new element — and the
+    // focus the operator left on its stage would fall to the page. It follows the card instead.
+    it('keeps the focus on the card’s stage when the re-read moves it to another column', async () => {
+      const get = vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
+      vi.spyOn(api, 'setOrderStage').mockImplementation(async () => {
+        get.mockResolvedValue(board({ prep: { items: [], total: 0 }, qc: { items: [order({ id: 1, stage: 'qc' })], total: 1 } }));
+        return {} as never;
+      });
+      render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
+      const trigger = await screen.findByRole('button', { name: 'Stage OR-0001: Preparation — change' });
+      trigger.focus();
+      fireEvent.click(trigger);
+      fireEvent.click(await screen.findByRole('menuitemradio', { name: 'Quality check' }));
+      const column = screen.getByRole('region', { name: 'Quality check' });
+      const moved = await within(column).findByRole('button', { name: 'Stage OR-0001: Quality check — change' });
+      await waitFor(() => expect(moved).toHaveFocus());
     });
   });
 });

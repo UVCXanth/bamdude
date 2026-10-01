@@ -2867,8 +2867,8 @@ export function ProfilesPage() {
           <p className="text-sm text-bambu-gray">{t('profiles.subtitle')}</p>
         </div>
 
-        {/* Tab Navigation */}
-        <div className="flex border-b border-bambu-dark-tertiary mb-4">
+        {/* Tab Navigation — wraps on a phone rather than widening the page (WS-13 E7). */}
+        <div className="flex flex-wrap border-b border-bambu-dark-tertiary mb-4">
           <button
             onClick={() => setActiveTab('cloud')}
             className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${

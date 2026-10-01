@@ -30,12 +30,12 @@ export function OrderDue({
   const overdue = isOverdue(order);
   return (
     <span data-testid={testId} className={variant === 'cell' ? 'block' : undefined}>
-      <span className={`tabular-nums ${overdue ? 'text-red-500' : ''}`}>{dueLabel(order.due_date, dateFormat)}</span>
+      <span className={`tabular-nums ${overdue ? 'text-red-600 dark:text-red-500' : ''}`}>{dueLabel(order.due_date, dateFormat)}</span>
       {overdue && variant !== 'plain' &&
         (variant === 'cell' ? (
-          <small className="block text-xs text-red-500">{t('orders.row.overdue')}</small>
+          <small className="block text-xs text-red-600 dark:text-red-500">{t('orders.row.overdue')}</small>
         ) : (
-          <span className="text-red-500"> · {t('orders.row.overdue')}</span>
+          <span className="text-red-600 dark:text-red-500"> · {t('orders.row.overdue')}</span>
         ))}
     </span>
   );

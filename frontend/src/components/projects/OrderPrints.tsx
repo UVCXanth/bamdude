@@ -274,7 +274,7 @@ function OrderPrintsOf({ order, canEdit }: OrderPrintsProps) {
         <LoadingBlock label={t('common.loading')} className="py-4 text-bambu-gray" />
       ) : isError && !data ? (
         <div className="flex flex-wrap items-center gap-3 py-2 text-sm">
-          <p className="text-red-400">{t('orders.prints.loadFailed')}</p>
+          <p className="text-red-600 dark:text-red-400">{t('orders.prints.loadFailed')}</p>
           <Button size="sm" variant="secondary" onClick={() => void refetch()}>
             {t('orders.prints.retry')}
           </Button>

@@ -64,7 +64,7 @@ export function OrderFilamentPanel({
 function Failed({ text, onRetry }: { text: string; onRetry: () => void }) {
   const { t } = useTranslation();
   return (
-    <div className="flex flex-wrap items-center gap-2 text-sm text-red-400">
+    <div className="flex flex-wrap items-center gap-2 text-sm text-red-600 dark:text-red-400">
       <span>{text}</span>
       <Button size="sm" variant="secondary" onClick={onRetry}>
         {t('common.retry')}

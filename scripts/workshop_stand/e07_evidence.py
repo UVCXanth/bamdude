@@ -98,6 +98,7 @@ DETAIL_SCENARIOS = (
     "cards@1024",
     "cards@390",
     "cards-thumbs@1440",
+    "cards-titles@1440",
     "kanban@1920",
     "kanban@1440",
     "kanban@1024",
@@ -118,6 +119,8 @@ DETAIL_SCENARIOS = (
     "workspace-sticky@1440",
     "workspace-fallback@1440",
     "workspace-states@1440",
+    "workspace-pick@390",
+    "workspace-focus@1440",
     "deadlines@1920",
     "deadlines@1440",
     "deadlines@1024",
@@ -131,6 +134,8 @@ DETAIL_SCENARIOS = (
     "layout-pages@1440",
     "layout-pages@1024",
     "layout-pages@390",
+    "sticky-header@1024",
+    "sticky-header@768",
 )
 
 

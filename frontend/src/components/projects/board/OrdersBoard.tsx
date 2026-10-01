@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Link, useLocation } from 'react-router';
 import { useTranslation } from 'react-i18next';
@@ -55,6 +56,23 @@ export function OrdersBoard({ filters, onOpenList, onReset, actions }: OrdersBoa
     const order = BOARD_COLUMNS.flatMap((key) => data?.[key].items ?? []).find((o) => o.id === orderId);
     if (order) actions.run('complete', toOrderRef(order));
   });
+  // F07 (final review): a stage write moves the card to another column — a NEW element — once the
+  // board is read again, and the focus the operator left on it would fall to the page. The door
+  // it was moved through is remembered and focused again on the card's new element, unless the
+  // operator has moved on meanwhile.
+  const refocus = useRef<{ id: number; part: 'stage' | 'handle' } | null>(null);
+  useEffect(() => {
+    const want = refocus.current;
+    if (!want || pendingIds.has(want.id)) return;
+    refocus.current = null;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    document.querySelector<HTMLElement>(`[data-testid="board-card-${want.id}-${want.part}"]`)?.focus();
+  }, [data, pendingIds]);
+  const stageFromMenu = (orderId: number, stage: OrderStage) => {
+    refocus.current = { id: orderId, part: 'stage' };
+    setStage(orderId, stage);
+  };
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: boardKeyboardCoordinates }),
@@ -78,11 +96,14 @@ export function OrdersBoard({ filters, onOpenList, onReset, actions }: OrdersBoa
 
   const onDragEnd = ({ active, over }: DragEndEvent) => {
     const from = active.data.current?.from as BoardColumnKey | undefined;
-    if (over && from) drop(Number(active.id), from, over.id as BoardColumnKey);
+    if (over && from) {
+      refocus.current = { id: Number(active.id), part: 'handle' };
+      drop(Number(active.id), from, over.id as BoardColumnKey);
+    }
   };
 
   // A failed read with nothing to show is said out loud: four empty columns would read as «no orders».
-  if (isError && !data) return <LoadFailedNote message={t('orders.board.loadFailed')} onRetry={() => void refetch()} />;
+  if (isError && !data) return <LoadFailedNote message={t('orders.board.loadFailed')} onRetry={() => refetch()} />;
 
   return (
     <>
@@ -123,7 +144,7 @@ export function OrdersBoard({ filters, onOpenList, onReset, actions }: OrdersBoa
               onOpenList={onOpenList}
               actions={actions}
               pendingIds={pendingIds}
-              onStage={setStage}
+              onStage={stageFromMenu}
             />
           ))}
         </div>

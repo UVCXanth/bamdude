@@ -43,7 +43,7 @@ export function OrderForecastPanel({
     if (view.kind === 'loading') return <p className="text-sm text-bambu-gray">{t('common.loading')}</p>;
     if (view.kind === 'error') {
       return (
-        <div className="flex flex-wrap items-center gap-2 text-sm text-red-400">
+        <div className="flex flex-wrap items-center gap-2 text-sm text-red-600 dark:text-red-400">
           <span>{t('farmForecast.error')}</span>
           <Button size="sm" variant="secondary" onClick={onRetry}>
             {t('common.retry')}
@@ -70,7 +70,7 @@ export function OrderForecastPanel({
             <div
               data-testid="order-forecast-eta"
               data-tone={f.late ? 'late' : undefined}
-              className={`text-xl leading-7 font-semibold ${f.late ? 'text-red-500' : 'text-bambu-green'}`}
+              className={`text-xl leading-7 font-semibold ${f.late ? 'text-red-600 dark:text-red-500' : 'text-bambu-green'}`}
             >
               {when(f.now_eta)}
             </div>
@@ -79,7 +79,7 @@ export function OrderForecastPanel({
               {f.late && (
                 <>
                   {' — '}
-                  <b className="font-semibold text-red-500">{t('orders.forecast.late')}</b>
+                  <b className="font-semibold text-red-600 dark:text-red-500">{t('orders.forecast.late')}</b>
                 </>
               )}
             </small>

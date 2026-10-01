@@ -166,14 +166,14 @@ export function PlanPrinterDialog({ row, plate, onClose, onNext }: PlanPrinterDi
           <p className="text-sm text-bambu-gray">{t('orders.plan.printer.loading')}</p>
         ) : printersQuery.isError && !allPrinters ? (
           <div className="flex items-center gap-3 flex-wrap text-sm">
-            <p className="text-red-400">{t('orders.plan.printer.failed')}</p>
+            <p className="text-red-600 dark:text-red-400">{t('orders.plan.printer.failed')}</p>
             <Button size="sm" variant="secondary" onClick={() => void printersQuery.refetch()}>
               {t('orders.plan.printer.retry')}
             </Button>
           </div>
         ) : matrixFailed ? (
           <div className="flex items-center gap-3 flex-wrap text-sm">
-            <p className="text-red-400">{t('orders.plan.printer.matrixFailed')}</p>
+            <p className="text-red-600 dark:text-red-400">{t('orders.plan.printer.matrixFailed')}</p>
             <Button size="sm" variant="secondary" onClick={() => void matrixQuery.refetch()}>
               {t('orders.plan.printer.retry')}
             </Button>

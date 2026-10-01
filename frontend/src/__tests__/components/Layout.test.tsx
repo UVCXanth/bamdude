@@ -97,6 +97,40 @@ describe('Layout', () => {
       expect(main.className).toContain('min-w-0');
     });
 
+    // The same change lets every page-level `sticky` stick to the WINDOW — where the fixed
+    // compact header (h-14, below 1144 px) covers the top. Layout says its height once, as
+    // `--app-top`, for those bars and for the document's scroll padding.
+    it('tells the page how tall the fixed compact header is, and zero when there is none', async () => {
+      // Swapped by hand and put back: a spy's restore would reset setup.ts's own mock.
+      const original = window.matchMedia;
+      const compact = (on: boolean) => {
+        window.matchMedia = ((query: string) =>
+          ({
+            matches: on && query.includes('max-width: 1143px'),
+            media: query,
+            onchange: null,
+            addListener: vi.fn(),
+            removeListener: vi.fn(),
+            addEventListener: vi.fn(),
+            removeEventListener: vi.fn(),
+            dispatchEvent: vi.fn(),
+          }) as unknown as MediaQueryList) as typeof window.matchMedia;
+      };
+      try {
+        compact(true);
+        const { unmount } = render(<Layout />);
+        await waitFor(() => expect(document.documentElement.style.getPropertyValue('--app-top')).toBe('3.5rem'));
+        unmount();
+        expect(document.documentElement.style.getPropertyValue('--app-top')).toBe('');
+        compact(false);
+        render(<Layout />);
+        await waitFor(() => expect(document.querySelector('main')).toBeInTheDocument());
+        await waitFor(() => expect(document.documentElement.style.getPropertyValue('--app-top')).toBe('0px'));
+      } finally {
+        window.matchMedia = original;
+      }
+    });
+
     it('renders navigation links', async () => {
       render(<Layout />);
 

@@ -34,7 +34,13 @@ export function useBoardActions(onComplete: (orderId: number) => void) {
   const write = useMutation({
     mutationFn: ({ id, stage }: { id: number; stage: OrderStage }) => api.setOrderStage(id, stage),
     onMutate: ({ id }) => hold(id, true),
-    onSuccess: () => invalidateOrderViews(queryClient),
+    // Held until the board itself is read again: released at the write's answer, the card
+    // flashed back undimmed in its old column — and writable — until the re-read moved it.
+    // `cancelRefetch: false` joins the read invalidateOrderViews has just started, never a second.
+    onSuccess: async () => {
+      invalidateOrderViews(queryClient);
+      await queryClient.refetchQueries({ queryKey: ['projects', 'board'], type: 'active' }, { cancelRefetch: false });
+    },
     onError: (e: Error) => showToast(e.message, 'error'),
     onSettled: (_data, _error, { id }) => hold(id, false),
   });

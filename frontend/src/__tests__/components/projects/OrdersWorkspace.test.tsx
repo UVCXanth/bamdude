@@ -182,7 +182,7 @@ describe('OrdersWorkspace', () => {
       render(<OrdersWorkspace data={page([row({ id: 1, due_date: '2020-01-02T00:00:00' })])} {...props} picked={null} onPick={() => {}} />);
       const button = within(await screen.findByRole('list', { name: 'Orders' })).getByRole('button', { name: /Ten flasks/ });
       expect(button).not.toHaveTextContent('overdue');
-      expect(within(button).getByTestId('order-1-due').querySelector('.text-red-500')).not.toBeNull();
+      expect(within(button).getByTestId('order-1-due').querySelector('.text-red-600')).not.toBeNull();
     });
 
     it('says so when the order the URL names is not on this page, and links to it', async () => {
@@ -224,17 +224,41 @@ describe('OrdersWorkspace', () => {
       expect(screen.getByText('Could not refresh')).toBeInTheDocument();
     });
 
-    it('keeps the list in one sticky panel with its page bar pinned to the bottom of it', async () => {
+    // G02 (final review): the page bar of a 280–400 px column wraps to two or three lines, so
+    // pinned OVER the rows it hid the one the keyboard had reached. The rows scroll in a box of
+    // their own and the bar sits below that box — never over a row.
+    it('scrolls the rows in their own box, with the page bar below it rather than over a row', async () => {
       render(<OrdersWorkspace data={page(ROWS)} {...props} picked={null} onPick={() => {}} />);
       const panel = await screen.findByTestId('workspace-list');
       expect(panel.className).toContain('sticky');
-      expect(panel.className).toContain('overflow-y-auto');
+      expect(panel.className).not.toContain('overflow-y-auto');
+      const rows = within(panel).getByRole('list', { name: 'Orders' });
+      expect(rows.className).toContain('overflow-y-auto');
       const bar = within(panel).getByTestId('workspace-pager');
-      expect(bar.className).toContain('sticky');
-      expect(bar.className).toContain('bottom-0');
+      expect(rows.contains(bar)).toBe(false);
+      expect(bar.className).not.toContain('sticky');
+      // No room kept for the floating bug bubble: it never sits over this column.
+      expect(bar.querySelector('.pr-14')).toBeNull();
       const chosen = within(panel).getByRole('button', { name: /Ten flasks/ });
       expect(chosen).toHaveAttribute('aria-current', 'true');
       expect(chosen.className).toContain('shadow-[inset_3px_0_0');
+    });
+
+    it('caps the stacked list at 760 px itself, and keeps the sticky panel below the app header', async () => {
+      render(<OrdersWorkspace data={page(ROWS)} {...props} picked={null} onPick={() => {}} />);
+      const panel = await screen.findByTestId('workspace-list');
+      // Tailwind 4: `max-[N]` is width < N, so the 760 px edge itself needs 761.
+      expect(panel.className).toContain('max-[761px]:max-h-[50vh]');
+      expect(panel.className).toContain('var(--app-top)');
+      expect(panel.className).not.toContain('1143px');
+    });
+
+    it('says the first read is under way — a skeleton of the list, never an empty area (C05, G07)', () => {
+      render(<OrdersWorkspace data={undefined} {...props} picked={null} onPick={() => {}} />);
+      const busy = screen.getByRole('status');
+      expect(busy).toHaveAttribute('aria-busy', 'true');
+      expect(screen.getByTestId('workspace-skeleton')).toBeInTheDocument();
+      expect(api.getOrder).not.toHaveBeenCalled();
     });
   });
 });

@@ -93,7 +93,7 @@ export function BankSurplusDialog({ order, detail, onClose }: { order: OrderRef;
         <p className="text-white">{t('stock.bank.dialogExplain')}</p>
         {!full ? (
           read.isError ? (
-            <div role="alert" className="flex flex-wrap items-center gap-3 text-red-500">
+            <div role="alert" className="flex flex-wrap items-center gap-3 text-red-600 dark:text-red-500">
               <span>{t('stock.bank.loadFailed')}</span>
               <Button variant="secondary" size="sm" onClick={() => void read.refetch()}>
                 {t('common.retry')}

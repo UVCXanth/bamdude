@@ -24,7 +24,7 @@ export function forecastIdsFor(orders: Pick<OrderListItem, 'id' | 'status' | 'or
 export function useOrdersForecast(
   orders: Pick<OrderListItem, 'id' | 'status' | 'ordered' | 'remaining'>[],
   enabled: boolean,
-): { state: ForecastState; byId: Record<number, OrderForecast>; refetch: () => void } {
+): { state: ForecastState; byId: Record<number, OrderForecast>; refetch: () => Promise<unknown> } {
   const ids = useMemo(() => forecastIdsFor(orders), [orders]);
   const asks = enabled && ids.length > 0;
   const query = useQuery({
@@ -38,5 +38,5 @@ export function useOrdersForecast(
     [query.data],
   );
   const state: ForecastState = !asks ? 'idle' : query.isError ? 'error' : query.data ? 'data' : 'loading';
-  return { state, byId, refetch: () => void query.refetch() };
+  return { state, byId, refetch: () => query.refetch() };
 }
