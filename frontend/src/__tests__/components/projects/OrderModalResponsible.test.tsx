@@ -17,7 +17,7 @@ describe('OrderModal · responsible', () => {
     vi.spyOn(api, 'getOrderAssignees').mockResolvedValue(assignees);
   });
 
-  it('a new order is the signed-in user’s unless another is chosen, and «Not assigned» sends nobody', async () => {
+  it('a new order is the signed-in user’s unless another is chosen', async () => {
     const create = vi.spyOn(api, 'createOrder').mockResolvedValue({ id: 9 } as never);
     render(<OrderModal onClose={() => {}} />);
     const select = await screen.findByLabelText('Responsible');
@@ -26,9 +26,16 @@ describe('OrderModal · responsible', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Lamps' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
     await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ responsible_id: 1 })));
+  });
 
-    create.mockClear();
+  it('«Not assigned» sends nobody', async () => {
+    // A created order opens at once (WS-13 E6 C09), so the second case is a form of its own.
+    const create = vi.spyOn(api, 'createOrder').mockResolvedValue({ id: 9 } as never);
+    render(<OrderModal onClose={() => {}} />);
+    const select = await screen.findByLabelText('Responsible');
+    await screen.findByRole('option', { name: 'ira' });
     fireEvent.change(select, { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Lamps' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
     await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ responsible_id: null })));
   });
@@ -44,13 +51,15 @@ describe('OrderModal · responsible', () => {
       responsible_id: 9,
       responsible_name: 'gone',
     } as never;
-    render(<OrderModal order={order} onClose={() => {}} />);
+    const onClose = vi.fn();
+    render(<OrderModal order={order} onClose={onClose} />);
     const select = await screen.findByLabelText('Responsible');
     await screen.findByRole('option', { name: 'ira' });
     expect(screen.getByRole('option', { name: 'gone' })).toBeInTheDocument();
     expect(select).toHaveValue('9');
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(update).toHaveBeenCalled());
-    expect(update.mock.calls[0][1]).not.toHaveProperty('responsible_id');
+    // An untouched edit sends no request at all (WS-13 E6 C05).
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(update).not.toHaveBeenCalled();
   });
 });

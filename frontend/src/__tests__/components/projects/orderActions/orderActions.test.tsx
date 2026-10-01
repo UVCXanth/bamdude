@@ -234,6 +234,24 @@ describe('the order action host', () => {
     expect(remove).toHaveBeenCalledTimes(1);
   });
 
+  it('routes «Completed» chosen in the form to «Stock & issue», writing no status (B04 end to end)', async () => {
+    const update = vi.spyOn(api, 'updateOrder');
+    vi.spyOn(api, 'getOrder').mockResolvedValue(makeOrder({ id: 1, code: 'OR-0001', name: 'Ten flasks', status: 'active' }));
+    vi.spyOn(api, 'getCustomers').mockResolvedValue([]);
+    vi.spyOn(api, 'getOrderAssignees').mockResolvedValue([]);
+    vi.spyOn(api, 'getFulfilment').mockReturnValue(new Promise(() => {}));
+    vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
+    render(<Page initial={[row()]} />);
+    openMenu();
+    pick('Edit');
+    const status = (await screen.findByLabelText('Status')) as HTMLSelectElement;
+    fireEvent.change(status, { target: { value: 'completed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('dialog', { name: /Stock & issue/ })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Edit order' })).not.toBeInTheDocument();
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it('shows a reader no menu trigger at all (R06)', () => {
     auth.granted = new Set(['projects:read']);
     render(<Page initial={[row()]} />);

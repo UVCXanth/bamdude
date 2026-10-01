@@ -1,36 +1,29 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Loader2 } from 'lucide-react';
+import { useNavigate } from 'react-router';
+import { Ban, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
-import type { Order, OrderCreate, OrderListItem, OrderUpdate, ProjectPriority, ProjectStatus } from '../../api/client';
+import type { Order, OrderCreate, OrderUpdate, ProjectPriority, ProjectStatus } from '../../api/client';
 import { Button } from '../Button';
 import { WorkshopDialog } from '../workshop/WorkshopDialog';
+import { WorkshopField, WorkshopFormGrid } from '../workshop/WorkshopFormGrid';
 import { CustomerPicker } from '../pickers/CustomerPicker';
 import { contactOption } from '../customers/contactFormat';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
+import { getCurrencySymbol } from '../../utils/currency';
+import { getColorName } from '../../utils/colors';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
+import { useOrderDetail } from '../../hooks/useOrderDetail';
 import { Select } from '../Select';
-import { useFulfilment } from '../../hooks/useFulfilment';
+import { toOrderRef, type OrderRef } from './orderActions/orderRef';
 
-/** Same nine presets as the old project colour picker — deliberately the only
- *  part of that modal carried over into this one. */
-const ORDER_COLORS = [
-  '#ef4444', // red
-  '#f97316', // orange
-  '#eab308', // yellow
-  '#22c55e', // green
-  '#06b6d4', // cyan
-  '#3b82f6', // blue
-  '#8b5cf6', // violet
-  '#ec4899', // pink
-  '#6b7280', // gray
-];
+/** The mockup's nine card colours (WS-13 E6 C03), in its order. */
+const ORDER_COLORS = ['#4eac48', '#5983b1', '#d0863c', '#b04a3f', '#858c55', '#8a8a8a', '#9a6fb0', '#3fa7a0', '#c9a23f'];
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
-const LABEL_CLASS = 'block text-sm font-medium text-white mb-1';
 
 /**
  * The price field as a number, or `fallback` when it cannot be read as one.
@@ -53,186 +46,294 @@ function readPrice(raw: string, fallback: number | null): number | null {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+/** The status a form may move to from `from` (WS-13 E6 C06, R01): a closed order only reopens. */
+function statusOffered(from: ProjectStatus, to: ProjectStatus): boolean {
+  return from === 'active' || to === from || to === 'active';
+}
+
 interface OrderModalProps {
-  order?: OrderListItem | Order | null;
+  /** The full order (the detail hands it over), or null for a new order. */
+  order?: Order | null;
+  /** An order opened from a list: the form reads the full one by id (C07). */
+  orderId?: number;
   defaultCustomerId?: number | null;
   onClose: () => void;
+  /** The status chosen in the form, run AFTER the fields are saved — never sent as a field (C06). */
+  onStatusAction?: (ref: OrderRef, next: ProjectStatus) => void;
 }
 
 /**
- * Create/edit dialog for one order.
+ * Create / edit an order (WS-13 E6 §C). Line editing lives on the order page, not
+ * here — this form only ever touches the order's own fields.
  *
- * Line editing lives on the order page, not here (design decision 5) — this
- * modal only ever touches the order's own fields. An edit sends only the
- * fields that changed from what this modal was opened with: a list row lacks
- * `description`/`url` entirely, so those two fields are hidden rather than
- * shown as blank boxes a user could type into and silently overwrite text
- * they were never shown.
+ * ⚠️ **One session, one base (C07, R03).** An order opened from a list is read in
+ * full first; the FIRST usable answer becomes the session's base and its initial
+ * draft, once. A background refetch of the same order changes neither — what was
+ * typed stays, and the PATCH carries only what differs from that base.
  *
- * There is deliberately no `onSaved` callback — the same decision
- * `CustomerModal` records: every call site here just closes the dialog, and the
- * saved record reaches every list through `invalidateOrderViews` below. A prop
- * nobody passes is a second way to learn the same fact, and the one that goes
- * uncalled when somebody adds another call site.
+ * ⚠️ **The status is not a field (C06, R01).** «Save» sends the changed fields;
+ * a different status then goes to the order action model (`onStatusAction`) — F06
+ * for «completed», a confirmation for «cancelled» and for reopening — with the
+ * order as the PATCH returned it. No door writes `completed`.
  */
-export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProps) {
+export function OrderModal({ order, orderId, defaultCustomerId, onClose, onStatusAction }: OrderModalProps) {
+  const { t } = useTranslation();
+  const editing = order != null || orderId != null;
+  const read = useOrderDetail(order ? null : (orderId ?? null));
+  // The session's base: handed over, or the first usable read — taken once, while rendering.
+  const [base, setBase] = useState<Order | null>(order ?? null);
+  if (base == null && read.data) setBase(read.data);
+
+  if (editing && base == null) {
+    return (
+      <WorkshopDialog
+        onClose={onClose}
+        title={t('orders.modal.editTitle')}
+        size="lg"
+        footer={
+          <>
+            <Button type="button" variant="secondary" onClick={onClose}>
+              {t('common.cancel')}
+            </Button>
+            <Button type="button" disabled>
+              {t('orders.modal.save')}
+            </Button>
+          </>
+        }
+      >
+        {read.isError ? (
+          <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-red-500">
+            <span>
+              {t('orders.modal.loadFailed')} {(read.error as Error)?.message}
+            </span>
+            <Button variant="secondary" size="sm" onClick={() => void read.refetch()}>
+              {t('common.retry')}
+            </Button>
+          </div>
+        ) : (
+          <div role="status" aria-busy className="space-y-3">
+            <span className="sr-only">{t('common.loading')}</span>
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="h-9 rounded-lg bg-bambu-dark-tertiary/60 animate-pulse" />
+            ))}
+          </div>
+        )}
+      </WorkshopDialog>
+    );
+  }
+
+  return (
+    <OrderForm
+      base={base}
+      defaultCustomerId={defaultCustomerId ?? null}
+      onClose={onClose}
+      onStatusAction={onStatusAction}
+    />
+  );
+}
+
+function OrderForm({
+  base,
+  defaultCustomerId,
+  onClose,
+  onStatusAction,
+}: {
+  base: Order | null;
+  defaultCustomerId: number | null;
+  onClose: () => void;
+  onStatusAction?: (ref: OrderRef, next: ProjectStatus) => void;
+}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { showToast } = useToast();
-  const isEdit = !!order;
-
-  // A list row (`OrderListItem`) carries neither field at all — not "empty",
-  // absent. Showing an input for either would invite typing into a box that
-  // looks blank but may not be: whatever gets typed REPLACES text the user
-  // was never shown. Only a full `Order` (or a brand new order) gets the field.
-  const hasDescription = !order || 'description' in order;
-  const hasUrl = !order || 'url' in order;
-  const initialDescription = order && 'description' in order ? (order.description ?? '') : '';
-  const initialUrl = order && 'url' in order ? (order.url ?? '') : '';
-  const initialColor = order?.color ?? null;
-  // `defaultCustomerId` (the page's customer filter) seeds only a NEW order —
-  // on edit the picker must reflect the order's own customer, or the page's
-  // active filter leaks into an order that has none.
-  const initialCustomerId = order ? (order.customer_id ?? null) : (defaultCustomerId ?? null);
-  const initialTags = order?.tags ?? null;
-  // `due_date` arrives as a full datetime string (`ProjectResponse`/
-  // `ProjectListResponse` declare it `datetime`, e.g. "2026-09-10T00:00:00"),
-  // but `<input type="date">` only accepts an exact `YYYY-MM-DD` — anything
-  // else is silently discarded, rendering the field blank. Normalise to the
-  // date-only form HERE, once, so both the seeded value and the edit-diff
-  // compare like with like (comparing the raw datetime against the trimmed
-  // input value would treat an untouched field as "changed" and resend it).
-  const initialDueDate = order?.due_date?.slice(0, 10) ?? null;
-  const initialPriority: ProjectPriority = order?.priority ?? 'normal';
-  const initialPrice = order?.price ?? null;
-  const initialStatus: ProjectStatus = order?.status ?? 'active';
-
-  // The order's contact person (spec workshop-customers, rule 23). A list row has
-  // no `contact_id` — like `description`, the field is shown only when known.
-  const hasContact = !order || 'contact_id' in order;
-  const initialContactId = order && 'contact_id' in order ? order.contact_id : null;
-  const customerFieldId = useId();
-  const contactFieldId = useId();
+  const { user } = useAuth();
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
   // The customers the picker already reads — same key, one cache — carry their contacts.
   const { data: customers = [] } = useQuery({ queryKey: ['customers'], queryFn: api.getCustomers });
-
-  // Who is responsible (spec workshop-order-stage, rules 9–10). A new order is
-  // the signed-in user's unless another is chosen; `undefined` means «not chosen
-  // yet» and resolves to that user, so the field never flashes «Not assigned»
-  // before `/auth/me` answers. An edit starts from the order's own value.
-  const { user } = useAuth();
   const { data: assignees = [] } = useQuery({ queryKey: ['order-assignees'], queryFn: api.getOrderAssignees });
-  // An active order completes only fully issued (spec workshop-order-issue, rule 12) — or,
-  // without a customer, fully on the shelf (followups, rule 36): the option stays offered but
-  // closed until the server's `can_complete` says so.
-  const activeId = order && order.status === 'active' ? order.id : null;
-  const { data: fulfilment } = useFulfilment(activeId);
-  const completeRefused = activeId != null && !fulfilment?.can_complete;
-  const responsibleFieldId = useId();
-  const initialResponsibleId = order ? (order.responsible_id ?? null) : null;
+
+  const isEdit = base != null;
+  const ids = {
+    name: useId(),
+    customer: useId(),
+    contact: useId(),
+    responsible: useId(),
+    due: useId(),
+    priority: useId(),
+    price: useId(),
+    tags: useId(),
+    color: useId(),
+    description: useId(),
+    url: useId(),
+    status: useId(),
+  };
+
+  // `due_date` arrives as a datetime; `<input type="date">` takes only `YYYY-MM-DD` —
+  // normalised once here, so the seeded value and the diff compare like with like.
+  const initial = {
+    name: base?.name ?? '',
+    customerId: base ? (base.customer_id ?? null) : defaultCustomerId,
+    contactId: base ? (base.contact_id ?? null) : null,
+    responsibleId: base ? (base.responsible_id ?? null) : null,
+    description: base?.description ?? '',
+    color: base ? (base.color ?? null) : ORDER_COLORS[0],
+    tags: base?.tags ?? null,
+    dueDate: base?.due_date?.slice(0, 10) ?? null,
+    priority: (base?.priority ?? 'normal') as ProjectPriority,
+    price: base?.price ?? null,
+    url: base?.url ?? '',
+    status: (base?.status ?? 'active') as ProjectStatus,
+  };
+
+  const [name, setName] = useState(initial.name);
+  const [customerId, setCustomerId] = useState<number | null>(initial.customerId);
+  // `undefined` = «the main contact of whichever customer is chosen»; a number or
+  // null is the operator's own pick. Choosing a customer resets it to the main one.
+  const [contactChoice, setContactChoice] = useState<number | null | undefined>(base ? initial.contactId : undefined);
+  const contactsOf = customers.find((c) => c.id === customerId)?.contacts ?? [];
+  const contactId = contactChoice === undefined ? (contactsOf[0]?.id ?? null) : contactChoice;
+  // A new order is the signed-in user's unless another is chosen; `undefined` means «not
+  // chosen yet», so the field never flashes «Not assigned» before `/auth/me` answers.
   const [responsibleChoice, setResponsibleChoice] = useState<number | null | undefined>(
-    order ? initialResponsibleId : undefined,
+    base ? initial.responsibleId : undefined,
   );
   const responsibleId = responsibleChoice === undefined ? (user?.id ?? null) : responsibleChoice;
   // A responsible user deactivated since stays a choice, under the name the order carries.
-  const keepsGoneResponsible =
-    order?.responsible_id != null && !assignees.some((u) => u.id === order.responsible_id);
+  const keepsGoneResponsible = base?.responsible_id != null && !assignees.some((u) => u.id === base.responsible_id);
+  const [description, setDescription] = useState(initial.description);
+  const [color, setColor] = useState<string | null>(initial.color);
+  const [tags, setTags] = useState(initial.tags ?? '');
+  const [dueDate, setDueDate] = useState(initial.dueDate ?? '');
+  const [priority, setPriority] = useState<ProjectPriority>(initial.priority);
+  const [price, setPrice] = useState(initial.price != null ? String(initial.price) : '');
+  const [url, setUrl] = useState(initial.url);
+  const [status, setStatus] = useState<ProjectStatus>(initial.status);
 
-  const [name, setName] = useState(order?.name ?? '');
-  const [customerId, setCustomerId] = useState<number | null>(initialCustomerId);
-  // `undefined` = «the main contact of whichever customer is chosen»; a number or
-  // null is the operator's own pick. Choosing a customer resets it to the main one.
-  const [contactChoice, setContactChoice] = useState<number | null | undefined>(order ? initialContactId : undefined);
-  const contactsOf = customers.find((c) => c.id === customerId)?.contacts ?? [];
-  const contactId = contactChoice === undefined ? (contactsOf[0]?.id ?? null) : contactChoice;
-  const [description, setDescription] = useState(initialDescription);
-  const [color, setColor] = useState<string | null>(order ? initialColor : ORDER_COLORS[0]);
-  const [tags, setTags] = useState(initialTags ?? '');
-  const [dueDate, setDueDate] = useState(initialDueDate ?? '');
-  const [priority, setPriority] = useState<ProjectPriority>(initialPriority);
-  const [price, setPrice] = useState(initialPrice != null ? String(initialPrice) : '');
-  const [url, setUrl] = useState(initialUrl);
-  const [status, setStatus] = useState<ProjectStatus>(initialStatus);
+  // A colour from outside the palette is one more, chosen swatch — saving must not lose it.
+  const swatches = [...ORDER_COLORS];
+  if (initial.color && !ORDER_COLORS.includes(initial.color.toLowerCase())) swatches.push(initial.color);
+
+  /** The fields that differ from the session's base — the status is not one of them. */
+  function changedFields(): OrderUpdate {
+    const data: OrderUpdate = {};
+    if (name.trim() !== initial.name) data.name = name.trim();
+    if (customerId !== initial.customerId) data.customer_id = customerId;
+    if (contactId !== initial.contactId) data.contact_id = contactId;
+    if (responsibleId !== initial.responsibleId) data.responsible_id = responsibleId;
+    const normDescription = description.trim() === '' ? null : description.trim();
+    if (normDescription !== (initial.description === '' ? null : initial.description)) data.description = normDescription;
+    if (color !== initial.color) data.color = color;
+    const normTags = tags.trim() === '' ? null : tags.trim();
+    if (normTags !== initial.tags) data.tags = normTags;
+    const normDueDate = dueDate === '' ? null : dueDate;
+    if (normDueDate !== initial.dueDate) data.due_date = normDueDate;
+    if (priority !== initial.priority) data.priority = priority;
+    // An unparseable value counts as "no change" — see `readPrice`.
+    const normPrice = readPrice(price, initial.price);
+    if (normPrice !== initial.price) data.price = normPrice;
+    const normUrl = url.trim() === '' ? null : url.trim();
+    if (normUrl !== (initial.url === '' ? null : initial.url)) data.url = normUrl;
+    return data;
+  }
+
+  const statusChange = isEdit && status !== initial.status ? status : null;
+
+  /** After the fields: close, then hand the order as it now is to the status step (C06). */
+  function finish(saved: Order) {
+    onClose();
+    if (statusChange) onStatusAction?.(toOrderRef(saved), statusChange);
+  }
 
   const mutation = useMutation({
-    mutationFn: () => {
-      if (order) {
-        const data: OrderUpdate = {};
-        if (name.trim() !== order.name) data.name = name.trim();
-        if (customerId !== initialCustomerId) data.customer_id = customerId;
-        if (hasContact && contactId !== initialContactId) data.contact_id = contactId;
-        if (responsibleId !== initialResponsibleId) data.responsible_id = responsibleId;
-        const normDescription = description.trim() === '' ? null : description.trim();
-        if (normDescription !== (initialDescription === '' ? null : initialDescription)) data.description = normDescription;
-        if (color !== initialColor) data.color = color;
-        const normTags = tags.trim() === '' ? null : tags.trim();
-        if (normTags !== initialTags) data.tags = normTags;
-        const normDueDate = dueDate === '' ? null : dueDate;
-        if (normDueDate !== initialDueDate) data.due_date = normDueDate;
-        if (priority !== initialPriority) data.priority = priority;
-        // An unparseable value counts as "no change" — it can never serialise
-        // to the `null` that clears a price. See `readPrice` for what can and
-        // cannot reach it through a `type="number"` field.
-        const normPrice = readPrice(price, initialPrice);
-        if (normPrice !== initialPrice) data.price = normPrice;
-        const normUrl = url.trim() === '' ? null : url.trim();
-        if (normUrl !== (initialUrl === '' ? null : initialUrl)) data.url = normUrl;
-        if (status !== initialStatus) data.status = status;
-        return api.updateOrder(order.id, data);
-      }
-      const data: OrderCreate = {
-        name: name.trim(),
-        customer_id: customerId,
-        contact_id: contactId,
-        responsible_id: responsibleId,
-        description: description.trim() === '' ? null : description.trim(),
-        color,
-        tags: tags.trim() === '' ? null : tags.trim(),
-        due_date: dueDate === '' ? null : dueDate,
-        priority,
-        price: readPrice(price, null),
-        url: url.trim() === '' ? null : url.trim(),
-      };
-      return api.createOrder(data);
-    },
+    mutationFn: (data: OrderUpdate | OrderCreate) =>
+      base ? api.updateOrder(base.id, data as OrderUpdate) : api.createOrder(data as OrderCreate),
     onSuccess: (saved) => {
-      // ⚠️ Prefixes throughout, which is why this is one call and not a list
-      // per call site: an order can move between customers, so the customer it
-      // LEFT is stale as well as the one it landed on.
-      invalidateOrderViews(queryClient, { orderId: order?.id ?? saved.id });
-      showToast(t('orders.toast.saved'));
+      // ⚠️ Prefixes throughout: an order can move between customers, so the customer
+      // it LEFT is stale as well as the one it landed on.
+      invalidateOrderViews(queryClient, { orderId: saved.id });
+      if (base) {
+        showToast(t('orders.toast.saved'));
+        finish(saved);
+        return;
+      }
+      showToast(t('orders.toast.created'));
       onClose();
+      // The new order opens at once, from wherever it was made (C09, the mockup's `order-save`).
+      navigate(`/projects/${saved.id}`);
     },
-    onError: (e: Error) => showToast(e.message, 'error'),
   });
 
-  const canSubmit = name.trim() !== '' && !mutation.isPending;
+  // A second press in the same tick sees `isPending` still false — the ref makes «one
+  // press, one request» hold; a refusal re-arms it.
+  const sent = useRef(false);
   const formId = useId();
+  const submitId = `${formId}-submit`;
+  // After a refusal the fields are live again: focus goes back to the button that sent
+  // it, never to BODY (C08; the E2 finding).
+  useEffect(() => {
+    if (mutation.isError) {
+      sent.current = false;
+      document.getElementById(submitId)?.focus();
+    }
+  }, [mutation.isError, mutation.error, submitId]);
 
-  // WS-13 E2 T4 — the Workshop frame only: the fields, their order, validation,
-  // permissions and the toast on a refusal are this form's and did not move. The
-  // actions are the dialog's footer now, outside the scrolling body, and the
-  // submit reaches the one form through its `form` attribute (Enter in a field
-  // still submits it; a textarea still takes a new line). F01's layout is E6's.
+  const canSubmit = name.trim() !== '' && !mutation.isPending;
+
+  function submit() {
+    if (!canSubmit || sent.current) return;
+    if (base) {
+      const data = changedFields();
+      if (Object.keys(data).length === 0) {
+        // Nothing to save: the status step alone, with the order the form was opened on.
+        finish(base);
+        return;
+      }
+      sent.current = true;
+      mutation.mutate(data);
+      return;
+    }
+    sent.current = true;
+    mutation.mutate({
+      name: name.trim(),
+      customer_id: customerId,
+      contact_id: contactId,
+      responsible_id: responsibleId,
+      description: description.trim() === '' ? null : description.trim(),
+      color,
+      tags: tags.trim() === '' ? null : tags.trim(),
+      due_date: dueDate === '' ? null : dueDate,
+      priority,
+      price: readPrice(price, null),
+      url: url.trim() === '' ? null : url.trim(),
+    });
+  }
+
+  const pending = mutation.isPending;
+  const currency = getCurrencySymbol(settings?.currency || 'USD');
+
   return (
     <WorkshopDialog
       onClose={onClose}
       title={isEdit ? t('orders.modal.editTitle') : t('orders.modal.createTitle')}
+      subtitle={isEdit ? base.code : t('orders.modal.createSubtitle')}
       size="lg"
-      pending={mutation.isPending}
+      pending={pending}
+      error={mutation.isError ? (mutation.error as Error).message : undefined}
       footer={
         <>
-          <Button type="button" variant="secondary" onClick={onClose} disabled={mutation.isPending}>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={pending}>
             {t('common.cancel')}
           </Button>
-          <Button type="submit" form={formId} disabled={!canSubmit}>
-            {mutation.isPending ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : isEdit ? (
-              t('orders.modal.save')
-            ) : (
-              t('orders.modal.create')
-            )}
+          <Button id={submitId} type="submit" form={formId} disabled={!canSubmit}>
+            {pending && <Loader2 className="w-4 h-4 animate-spin" />}
+            {pending
+              ? isEdit
+                ? t('orders.modal.saving')
+                : t('orders.modal.creating')
+              : isEdit
+                ? t('orders.modal.save')
+                : t('orders.modal.create')}
           </Button>
         </>
       }
@@ -241,72 +342,43 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
         id={formId}
         onSubmit={(e) => {
           e.preventDefault();
-          if (canSubmit) mutation.mutate();
+          submit();
         }}
       >
-        <div className="space-y-4">
-          <div>
-            <label className={LABEL_CLASS} htmlFor="order-name">
-              {t('orders.modal.name')}
-            </label>
+        <WorkshopFormGrid>
+          <WorkshopField label={t('orders.modal.name')} htmlFor={ids.name} full>
             <input
-              id="order-name"
+              id={ids.name}
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              placeholder={t('orders.modal.namePlaceholder')}
+              maxLength={255}
               className={FIELD_CLASS}
-              disabled={mutation.isPending}
+              disabled={pending}
               required
             />
-          </div>
+          </WorkshopField>
 
-          <div>
-            <label className={LABEL_CLASS} htmlFor={customerFieldId}>
-              {t('orders.modal.customer')}
-            </label>
+          <WorkshopField label={t('orders.modal.customer')} htmlFor={ids.customer}>
             <CustomerPicker
-              id={customerFieldId}
+              id={ids.customer}
               value={customerId}
               onChange={(id) => {
                 setCustomerId(id);
                 setContactChoice(undefined);
               }}
-              disabled={mutation.isPending}
+              disabled={pending}
               allowCreate
             />
-          </div>
+          </WorkshopField>
 
-          {hasContact && (
-            <div>
-              <label className={LABEL_CLASS} htmlFor={contactFieldId}>
-                {t('orders.modal.contact')}
-              </label>
-              <Select
-                id={contactFieldId}
-                className="w-full"
-                value={contactId ?? ''}
-                disabled={mutation.isPending || customerId == null || contactsOf.length === 0}
-                onChange={(e) => setContactChoice(e.target.value ? Number(e.target.value) : null)}
-              >
-                <option value="">{t('orders.modal.noContact')}</option>
-                {contactsOf.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {contactOption(c)}
-                  </option>
-                ))}
-              </Select>
-            </div>
-          )}
-
-          <div>
-            <label className={LABEL_CLASS} htmlFor={responsibleFieldId}>
-              {t('orders.modal.responsible')}
-            </label>
+          <WorkshopField label={t('orders.modal.responsible')} htmlFor={ids.responsible}>
             <Select
-              id={responsibleFieldId}
+              id={ids.responsible}
               className="w-full"
               value={responsibleId ?? ''}
-              disabled={mutation.isPending}
+              disabled={pending}
               onChange={(e) => setResponsibleChoice(e.target.value ? Number(e.target.value) : null)}
             >
               <option value="">{t('orders.modal.noResponsible')}</option>
@@ -315,150 +387,212 @@ export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProp
                   {u.username}
                 </option>
               ))}
-              {keepsGoneResponsible && order?.responsible_id != null && (
-                <option value={order.responsible_id}>{order.responsible_name ?? `#${order.responsible_id}`}</option>
+              {keepsGoneResponsible && base?.responsible_id != null && (
+                <option value={base.responsible_id}>{base.responsible_name ?? `#${base.responsible_id}`}</option>
               )}
             </Select>
-          </div>
+          </WorkshopField>
 
-          {hasDescription && (
-            <div>
-              <label className={LABEL_CLASS} htmlFor="order-description">
-                {t('orders.modal.description')}
-              </label>
-              <textarea
-                id="order-description"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                className={`${FIELD_CLASS} min-h-[72px]`}
-                disabled={mutation.isPending}
-              />
-            </div>
+          {/* Under the customer, only once there is one (E08: the app's own addition). */}
+          {customerId != null && (
+            <>
+              <WorkshopField label={t('orders.modal.contact')} htmlFor={ids.contact}>
+                <Select
+                  id={ids.contact}
+                  className="w-full"
+                  value={contactId ?? ''}
+                  disabled={pending || contactsOf.length === 0}
+                  onChange={(e) => setContactChoice(e.target.value ? Number(e.target.value) : null)}
+                >
+                  <option value="">{t('orders.modal.noContact')}</option>
+                  {contactsOf.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {contactOption(c)}
+                    </option>
+                  ))}
+                </Select>
+              </WorkshopField>
+              <div aria-hidden className="max-[761px]:hidden" />
+            </>
           )}
 
-          <div>
-            <label className={LABEL_CLASS}>{t('orders.modal.color')}</label>
-            <div className="flex gap-2 flex-wrap">
-              {ORDER_COLORS.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setColor(c)}
-                  disabled={mutation.isPending}
-                  className={`w-8 h-8 rounded-full transition-transform ${
-                    color === c ? 'ring-2 ring-white ring-offset-2 ring-offset-bambu-dark-secondary scale-110' : ''
-                  }`}
-                  style={{ backgroundColor: c }}
+          <WorkshopField label={t('orders.modal.dueDate')} htmlFor={ids.due}>
+            <input
+              id={ids.due}
+              type="date"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+              className={FIELD_CLASS}
+              disabled={pending}
+            />
+          </WorkshopField>
+
+          <WorkshopField label={t('orders.modal.priority')} htmlFor={ids.priority}>
+            <Select
+              className="w-full"
+              id={ids.priority}
+              value={priority}
+              onChange={(e) => setPriority(e.target.value as ProjectPriority)}
+              disabled={pending}
+            >
+              {(['low', 'normal', 'high', 'urgent'] as const).map((p) => (
+                <option key={p} value={p}>
+                  {t(`orders.priority.${p}`)}
+                </option>
+              ))}
+            </Select>
+          </WorkshopField>
+
+          <WorkshopField label={t('orders.modal.price', { currency })} htmlFor={ids.price}>
+            <input
+              id={ids.price}
+              type="number"
+              min="0"
+              step="0.01"
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+              className={FIELD_CLASS}
+              disabled={pending}
+            />
+          </WorkshopField>
+
+          <WorkshopField label={t('orders.modal.tags')} htmlFor={ids.tags}>
+            <input
+              id={ids.tags}
+              type="text"
+              value={tags}
+              onChange={(e) => setTags(e.target.value)}
+              placeholder={t('orders.modal.tagsPlaceholder')}
+              className={FIELD_CLASS}
+              disabled={pending}
+            />
+          </WorkshopField>
+
+          <div className="col-span-full flex min-w-0 flex-col gap-1">
+            <label id={ids.color} className="text-sm text-bambu-gray-light">
+              {t('orders.modal.color')}
+            </label>
+            <div role="radiogroup" aria-labelledby={ids.color} className="flex flex-wrap gap-2">
+              <ColorSwatch
+                value={null}
+                checked={color === null}
+                name={`${formId}-color`}
+                label={t('orders.modal.noColor')}
+                disabled={pending}
+                onChoose={() => setColor(null)}
+              />
+              {swatches.map((hex) => (
+                <ColorSwatch
+                  key={hex}
+                  value={hex}
+                  checked={color?.toLowerCase() === hex.toLowerCase()}
+                  name={`${formId}-color`}
+                  label={getColorName(hex)}
+                  disabled={pending}
+                  onChoose={() => setColor(hex)}
                 />
               ))}
             </div>
           </div>
 
-          <div>
-            <label className={LABEL_CLASS} htmlFor="order-tags">
-              {t('orders.modal.tags')}
-            </label>
-            <input
-              id="order-tags"
-              type="text"
-              value={tags}
-              onChange={(e) => setTags(e.target.value)}
+          <WorkshopField label={t('orders.modal.description')} htmlFor={ids.description} full>
+            <textarea
+              id={ids.description}
+              rows={2}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
               className={FIELD_CLASS}
-              disabled={mutation.isPending}
+              disabled={pending}
             />
-          </div>
+          </WorkshopField>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className={LABEL_CLASS} htmlFor="order-due-date">
-                {t('orders.modal.dueDate')}
-              </label>
-              <input
-                id="order-due-date"
-                type="date"
-                value={dueDate}
-                onChange={(e) => setDueDate(e.target.value)}
-                className={FIELD_CLASS}
-                disabled={mutation.isPending}
-              />
-            </div>
-            <div>
-              <label className={LABEL_CLASS} htmlFor="order-priority">
-                {t('orders.modal.priority')}
-              </label>
+          <WorkshopField label={t('orders.modal.url')} htmlFor={ids.url} full>
+            <input
+              id={ids.url}
+              type="url"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder={t('orders.modal.urlPlaceholder')}
+              className={FIELD_CLASS}
+              disabled={pending}
+            />
+          </WorkshopField>
+
+          {isEdit && (
+            <WorkshopField
+              label={t('orders.modal.status')}
+              htmlFor={ids.status}
+              hint={
+                statusChange
+                  ? t('orders.modal.statusTwoSteps')
+                  : initial.status !== 'active'
+                    ? t('orders.modal.statusLocked')
+                    : undefined
+              }
+            >
               <Select
                 className="w-full"
-                id="order-priority"
-                value={priority}
-                onChange={(e) => setPriority(e.target.value as ProjectPriority)}
-                disabled={mutation.isPending}
+                id={ids.status}
+                value={status}
+                aria-describedby={statusChange || initial.status !== 'active' ? `${ids.status}-hint` : undefined}
+                onChange={(e) => setStatus(e.target.value as ProjectStatus)}
+                disabled={pending}
               >
-                {(['low', 'normal', 'high', 'urgent'] as const).map((p) => (
-                  <option key={p} value={p}>
-                    {t(`orders.priority.${p}`)}
+                {(['active', 'completed', 'cancelled'] as const).map((s) => (
+                  <option key={s} value={s} disabled={!statusOffered(initial.status, s)}>
+                    {t(`orders.status.${s}`)}
                   </option>
                 ))}
               </Select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className={LABEL_CLASS} htmlFor="order-price">
-                {t('orders.modal.price')}
-              </label>
-              <input
-                id="order-price"
-                type="number"
-                min="0"
-                value={price}
-                onChange={(e) => setPrice(e.target.value)}
-                className={FIELD_CLASS}
-                disabled={mutation.isPending}
-              />
-            </div>
-            {isEdit && (
-              <div>
-                <label className={LABEL_CLASS} htmlFor="order-status">
-                  {t('orders.modal.status')}
-                </label>
-                <Select
-                  className="w-full"
-                  id="order-status"
-                  value={status}
-                  onChange={(e) => setStatus(e.target.value as ProjectStatus)}
-                  disabled={mutation.isPending}
-                >
-                  {(['active', 'completed', 'cancelled'] as const).map((s) => (
-                    <option key={s} value={s} disabled={s === 'completed' && completeRefused}>
-                      {t(`orders.status.${s}`)}
-                    </option>
-                  ))}
-                </Select>
-                {completeRefused && (
-                  <p className="mt-1 text-xs text-bambu-gray">{t('orders.modal.completeHint')}</p>
-                )}
-              </div>
-            )}
-          </div>
-
-          {hasUrl && (
-            <div>
-              <label className={LABEL_CLASS} htmlFor="order-url">
-                {t('orders.modal.url')}
-              </label>
-              <input
-                id="order-url"
-                type="url"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                className={FIELD_CLASS}
-                disabled={mutation.isPending}
-              />
-            </div>
+            </WorkshopField>
           )}
-        </div>
+        </WorkshopFormGrid>
       </form>
     </WorkshopDialog>
+  );
+}
+
+/**
+ * One swatch of the card colour (C03): a native radio — so the group is named, arrows
+ * move the choice and the state is announced — visually hidden inside a 24×24 swatch
+ * with a 2 px border; the chosen one gets the text-colour border and a ring.
+ */
+function ColorSwatch({
+  value,
+  checked,
+  name,
+  label,
+  disabled,
+  onChoose,
+}: {
+  value: string | null;
+  checked: boolean;
+  name: string;
+  label: string;
+  disabled: boolean;
+  onChoose: () => void;
+}) {
+  return (
+    <label title={label} className="relative inline-flex cursor-pointer">
+      <input
+        type="radio"
+        name={name}
+        value={value ?? ''}
+        checked={checked}
+        onChange={onChoose}
+        disabled={disabled}
+        aria-label={label}
+        className="peer sr-only"
+      />
+      <span
+        aria-hidden
+        className={`flex h-6 w-6 items-center justify-center rounded-md border-2 peer-focus-visible:ring-2 peer-focus-visible:ring-bambu-green peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-bambu-dark-secondary ${
+          checked ? 'border-white ring-2 ring-white/40' : 'border-transparent'
+        } ${value == null ? 'bg-bambu-dark text-bambu-gray' : ''}`}
+        style={value != null ? { backgroundColor: value } : undefined}
+      >
+        {value == null && <Ban className="h-4 w-4" />}
+      </span>
+    </label>
   );
 }

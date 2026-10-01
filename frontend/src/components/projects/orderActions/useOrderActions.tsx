@@ -144,7 +144,16 @@ export function useOrderActions({
   if (active?.kind === 'create') {
     dialogs = <OrderModal order={null} defaultCustomerId={active.defaultCustomerId} onClose={close} />;
   } else if (active?.kind === 'edit') {
-    dialogs = active.order ? <OrderModal order={active.order} onClose={close} /> : null;
+    // The detail hands its full order over; a list row is read in full by the form (C07).
+    dialogs = (
+      <OrderModal
+        order={isDetail(active.order) ? active.order : undefined}
+        orderId={isDetail(active.order) ? undefined : active.ref.id}
+        onClose={close}
+        // The form's status is a step of its own, run here with the order as saved (C06).
+        onStatusAction={(saved, next) => run(next === 'completed' ? 'complete' : next === 'cancelled' ? 'cancel' : 'reopen', saved)}
+      />
+    );
   } else if (active?.kind === 'duplicate') {
     dialogs = <DuplicateOrderModal order={active.ref} onClose={close} />;
   } else if (active?.kind === 'fulfil') {

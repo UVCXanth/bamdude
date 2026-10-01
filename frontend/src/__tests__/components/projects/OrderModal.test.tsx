@@ -50,19 +50,18 @@ describe('OrderModal', () => {
     });
   });
 
-  it('shows the stored due date and sends no due_date when the field is untouched', async () => {
+  it('shows the stored due date and sends no request when nothing was touched', async () => {
     const update = vi.spyOn(api, 'updateOrder').mockResolvedValue(order);
-    render(<OrderModal order={order} onClose={() => {}} />);
+    const onClose = vi.fn();
+    render(<OrderModal order={order} onClose={onClose} />);
 
     // The API sends a full datetime; the date input must show only the date part.
-    expect(screen.getByLabelText(/due date/i)).toHaveValue('2026-09-10');
+    expect(screen.getByLabelText('Deadline')).toHaveValue('2026-09-10');
 
     fireEvent.click(screen.getByRole('button', { name: /save/i }));
-
-    // Nothing was touched, so the PATCH body carries no fields at all —
-    // in particular no `due_date`, which a raw-datetime-vs-trimmed-date
-    // comparison would have flagged as "changed".
-    await waitFor(() => expect(update).toHaveBeenCalledWith(5, {}));
+    // An untouched edit sends no PATCH at all (WS-13 E6 C05) — not even an empty one.
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(update).not.toHaveBeenCalled();
   });
 
   // ---- WS-13 E2 T4: the Workshop frame, nothing else ----
@@ -108,6 +107,7 @@ describe('OrderModal', () => {
     const update = vi.spyOn(api, 'updateOrder').mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
     render(<OrderModal order={order} onClose={() => {}} />);
     const save = screen.getByRole('button', { name: /save/i });
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'Twelve flasks' } });
 
     fireEvent.click(save);
     await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
@@ -127,40 +127,12 @@ describe('OrderModal · completing', () => {
     vi.spyOn(api, 'getCustomers').mockResolvedValue([{ id: 2, name: 'ACME', figures: {} }] as never);
   });
 
-  it('offers «Completed» only once everything is issued, and says why', async () => {
-    vi.spyOn(api, 'getFulfilment').mockResolvedValue({
-      lines: [],
-      ordered: 10,
-      issued: 0,
-      held: 0,
-      fully_issued: false,
-      closes_to_stock: false,
-      can_complete: false,
-      can_assemble: 0,
-      can_receive: 0,
-      can_issue: 0,
-      recipient: { name: null, phone: null, delivery_method: null, delivery_details: null },
-    });
+  it('offers «Completed» on an active order whatever is issued — the door is «Stock & issue» (WS-13 E6 C06, R01)', () => {
+    // The old gate on `can_complete` closed the option; now the form opens the issue
+    // dialog, whose own rule decides — a batch there may receive and issue what is left.
+    const getState = vi.spyOn(api, 'getFulfilment');
     render(<OrderModal order={order} onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByRole('option', { name: 'Completed' })).toBeDisabled());
-    expect(screen.getByText('An order completes through «Stock & issue» once everything is issued')).toBeInTheDocument();
-  });
-
-  it('lets a fully issued order be completed here', async () => {
-    vi.spyOn(api, 'getFulfilment').mockResolvedValue({ ...{
-      lines: [],
-      ordered: 10,
-      issued: 0,
-      held: 0,
-      fully_issued: false,
-      closes_to_stock: false,
-      can_complete: false,
-      can_assemble: 0,
-      can_receive: 0,
-      can_issue: 0,
-      recipient: { name: null, phone: null, delivery_method: null, delivery_details: null },
-    }, fully_issued: true, can_complete: true });
-    render(<OrderModal order={order} onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByRole('option', { name: 'Completed' })).toBeEnabled());
+    expect(screen.getByRole('option', { name: 'Completed' })).toBeEnabled();
+    expect(getState).not.toHaveBeenCalled();
   });
 });

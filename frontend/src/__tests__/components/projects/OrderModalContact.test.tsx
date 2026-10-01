@@ -41,13 +41,14 @@ describe('OrderModal · contact person', () => {
     vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
   });
 
-  it('is off without a customer, takes the main contact on choosing one and re-picks it on a switch', async () => {
+  it('appears with a customer, takes the main contact on choosing one and re-picks it on a switch', async () => {
     const create = vi.spyOn(api, 'createOrder').mockResolvedValue({ id: 9 } as never);
     render(<OrderModal onClose={() => {}} />);
-    const contact = await screen.findByLabelText('Contact person');
-    expect(contact).toBeDisabled();
     await screen.findByRole('option', { name: 'CU-0001 · ACME' });
+    // Without a customer there is no contact to name — the field is not there (WS-13 E6 C02).
+    expect(screen.queryByLabelText('Contact person')).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Customer'), { target: { value: '1' } });
+    const contact = await screen.findByLabelText('Contact person');
     await waitFor(() => expect(contact).toHaveValue('10'));
     fireEvent.change(contact, { target: { value: '11' } });
     expect(contact).toHaveValue('11');
@@ -75,23 +76,14 @@ describe('OrderModal · contact person', () => {
     expect(screen.getByRole('option', { name: 'Ira — Buyer' })).toBeInTheDocument();
   });
 
-  it('an order opened from a list row, which carries no contact, shows no contact field', async () => {
-    const row = {
-      id: 5,
-      code: 'OR-0005',
-      name: 'Lamps',
-      customer_id: 1,
-      customer_name: 'ACME',
-      color: null,
-      status: 'active',
-      tags: null,
-      due_date: null,
-      priority: 'normal',
-      price: null,
-      figures: {},
-    } as never;
-    render(<OrderModal order={row} onClose={() => {}} />);
-    await screen.findByRole('option', { name: 'CU-0001 · ACME' });
-    expect(screen.queryByLabelText('Contact person')).not.toBeInTheDocument();
+  it('an order opened from a list row is read in full, so its contact can be edited (WS-13 E6 C07)', async () => {
+    vi.spyOn(api, 'getOrder').mockResolvedValue({
+      id: 5, code: 'OR-0005', name: 'Lamps', customer_id: 1, customer_name: 'ACME', contact_id: 11,
+      color: null, status: 'active', tags: null, due_date: null, priority: 'normal', price: null, url: null,
+      description: null, responsible_id: null, responsible_name: null, figures: {}, lines: [],
+    } as never);
+    render(<OrderModal orderId={5} onClose={() => {}} />);
+    const contact = await screen.findByLabelText('Contact person');
+    await waitFor(() => expect(contact).toHaveValue('11'));
   });
 });
