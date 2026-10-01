@@ -1240,6 +1240,23 @@ async (page, selftest = null) => {
     };
   });
 
+  // A text's contrast against the ground it is read on — translucent grounds blended over the
+  // first opaque one beneath (WCAG's 4.5:1 for text).
+  const textContrast = (locator) => locator.evaluate((el) => {
+    // Colours come as oklch(...) from Tailwind 4: a canvas pixel turns any CSS colour into sRGB.
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 1;
+    const cx = canvas.getContext('2d', { willReadFrequently: true });
+    const parse = (c) => { cx.clearRect(0, 0, 1, 1); cx.fillStyle = '#000'; cx.fillStyle = c; cx.fillRect(0, 0, 1, 1); const [r, g, b, a] = cx.getImageData(0, 0, 1, 1).data; return { r, g, b, a: a / 255 }; };
+    const lum = ({ r, g, b }) => { const f = (v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+    const layers = [];
+    for (let a = el; a; a = a.parentElement) { const c = parse(getComputedStyle(a).backgroundColor); if (c.a > 0) { layers.push(c); if (c.a >= 1) break; } }
+    let ground = layers.length && layers[layers.length - 1].a >= 1 ? layers.pop() : { r: 255, g: 255, b: 255, a: 1 };
+    for (const c of layers.reverse()) ground = { r: c.r * c.a + ground.r * (1 - c.a), g: c.g * c.a + ground.g * (1 - c.a), b: c.b * c.a + ground.b * (1 - c.a), a: 1 };
+    const a = lum(parse(getComputedStyle(el).color));
+    const b = lum(ground);
+    return Math.round(((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)) * 100) / 100;
+  });
   for (const [id, opts, test] of [
     ['theme-light@1440', { storage: { 'theme-mode': 'light' } }, (e) => !/\bdark\b/.test(e.theme)],
     ['theme-oled@1440', { settings: { dark_background: 'oled' } }, (e) => /bg-oled/.test(e.theme)],
@@ -1247,14 +1264,22 @@ async (page, selftest = null) => {
     await scenario(id, ['E2-B01', 'E7-D01', 'E7-F01', 'E7-H05'], async () => {
       const files = [];
       let e = null;
+      let shortChip = null;
       for (const v of ['table', 'kanban', 'deadlines']) {
         const { ctx, p } = await open(1440, { ...opts, storage: { ...(opts.storage ?? {}), 'projects.view': v } });
         await listPage(p);
         e = await env(p);
+        const chip = p.locator('[data-testid^="filament-chip-"][data-short="true"]').first();
+        if (v === 'table' && (await chip.count())) shortChip = await textContrast(chip);
         files.push(await shoot(p, `${id}-${v}`));
         await ctx.close();
       }
-      return { env: e, measured: { views: ['table', 'kanban', 'deadlines'] }, pass: test(e), screenshots: files };
+      return {
+        env: e,
+        measured: { views: ['table', 'kanban', 'deadlines'], shortChip },
+        pass: test(e) && (shortChip === null || shortChip >= 4.5),
+        screenshots: files,
+      };
     });
   }
 

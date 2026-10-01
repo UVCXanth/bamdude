@@ -32,7 +32,7 @@ export function ReadyEstimate({ readiness, testId = 'ready-estimate' }: { readin
       );
     case 'partial':
       return (
-        <span data-testid={testId} className="inline-flex items-center text-amber-400">
+        <span data-testid={testId} className="inline-flex items-center text-amber-700 dark:text-amber-400">
           {t('orders.row.incomplete')}
           <EstimateWarning reasons={readiness.reasons} />
         </span>

@@ -19,7 +19,7 @@ export function LoadFailedNote({
 }) {
   const { t } = useTranslation();
   return (
-    <div role={role} className={`flex flex-wrap items-center gap-2 text-sm text-amber-400 ${className}`}>
+    <div role={role} className={`flex flex-wrap items-center gap-2 text-sm text-amber-700 dark:text-amber-400 ${className}`}>
       <span>{message}</span>
       <button type="button" onClick={onRetry} className="text-bambu-green hover:underline">
         {t('common.retry')}

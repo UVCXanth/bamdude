@@ -153,7 +153,7 @@ export function OrdersWorkspace({
       {shown != null && (
         <div ref={paneRef} className="min-w-0 scroll-mt-4">
           {fallback && (
-            <p data-testid="workspace-fallback" role="status" className="mb-2 flex flex-wrap items-center gap-2 text-xs text-amber-400">
+            <p data-testid="workspace-fallback" role="status" className="mb-2 flex flex-wrap items-center gap-2 text-xs text-amber-700 dark:text-amber-400">
               {t('orders.workspace.notOnPage', { shown: fallback.code })}
               <Link to={`/projects/${picked}`} className="text-bambu-green hover:underline">
                 {t('orders.workspace.openChosen')}

@@ -211,7 +211,7 @@ function DueCard({ due }: { due: DeadlineOrder }) {
             <EstimateWarning reasons={reasons} />
           </span>
         ) : reasons.length > 0 ? (
-          <span data-testid={`deadline-eta-${order.id}`} className="flex items-center text-[11px] text-amber-400">
+          <span data-testid={`deadline-eta-${order.id}`} className="flex items-center text-[11px] text-amber-700 dark:text-amber-400">
             {t('orders.row.incomplete')}
             <EstimateWarning reasons={reasons} />
           </span>
@@ -240,8 +240,8 @@ function EtaMarkLink({ mark, time, full }: { mark: EtaMark; time: string; full: 
 
 const BADGE_CLASS: Record<AttentionOrder['reason'], string> = {
   overdue: 'bg-red-500/20 text-red-500',
-  late_eta: 'bg-amber-400/15 text-amber-300',
-  partial: 'bg-amber-400/15 text-amber-300',
+  late_eta: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
+  partial: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
   no_due: 'bg-bambu-dark-tertiary text-bambu-gray',
 };
 

@@ -76,7 +76,7 @@ export function FilamentStrip() {
       {title}
       {everythingOnTheShelf(farm) && <span className="text-xs text-bambu-green">{t('orders.filament.everythingOnShelf')}</span>}
       {farm.stock_unavailable && (
-        <span className="basis-full text-xs text-amber-400">{t('orders.filament.shelfUnknown')}</span>
+        <span className="basis-full text-xs text-amber-700 dark:text-amber-400">{t('orders.filament.shelfUnknown')}</span>
       )}
       {rows.map((row) => (
         <FilamentChip key={needTestId(row.material, row.colour, 'filament-chip-')} row={row} />
@@ -124,7 +124,7 @@ function FilamentChip({ row }: { row: Row }) {
       data-short={String(short)}
       title={tooltip}
       className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs tabular-nums ${
-        short ? 'border-amber-400/45 bg-amber-400/10 text-amber-300' : 'border-bambu-dark-tertiary bg-bambu-dark text-bambu-gray-light'
+        short ? 'border-amber-500/45 bg-amber-500/10 text-amber-700 dark:text-amber-300' : 'border-bambu-dark-tertiary bg-bambu-dark text-bambu-gray-light'
       }`}
     >
       {swatch && (

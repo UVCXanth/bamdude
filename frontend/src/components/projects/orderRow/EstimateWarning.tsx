@@ -17,7 +17,7 @@ export function EstimateWarning({ reasons }: { reasons: EstimateReason[] }) {
   const name = t('orders.row.incompleteReasons', { reasons: list });
   return (
     <span title={name} className="ml-1 inline-flex flex-shrink-0">
-      <AlertTriangle role="img" aria-label={name} className="h-3.5 w-3.5 text-amber-400" />
+      <AlertTriangle role="img" aria-label={name} className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
     </span>
   );
 }
