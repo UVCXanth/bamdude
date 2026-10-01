@@ -78,6 +78,12 @@ async def test_the_dialog_reads_the_orders_state_and_its_recipient(committing_cl
     r = await committing_client.get(_url(order))
     assert r.status_code == 200, r.text
     body = r.json()
+    # WS-13 E6 H04 added each line's configuration and stock position — pinned on
+    # their own below, so the rest of the row keeps its exact shape.
+    [row] = body["lines"]
+    configuration, position = row.pop("configuration"), row.pop("stock_position")
+    assert configuration["choices"] == [] and configuration["changed_parts"] == []
+    assert position["code"] == f"SK-{position['id']:04d}" and position["location"] is None
     assert body["lines"] == [
         {
             "line_id": order["line_id"],

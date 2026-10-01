@@ -36,10 +36,11 @@ export const FORECAST_DEFAULTS = {
   late: false,
 };
 
-/** `OrderListItem` (OR2, OR3). */
+/** `OrderListItem` (OR2, OR3; WS-13 E6 H02). */
 export const ORDER_ROW_DEFAULTS = {
   materials: [] as string[],
   products: [] as { product_id: number; has_cover: boolean }[],
+  bankable_surplus: 0,
 };
 
 /** `StockProduct` (ST4). */

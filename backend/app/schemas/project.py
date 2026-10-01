@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, Field, StringConstraints, ValidationInfo, field_validator, model_validator
 
 from backend.app.models.stock_issue import WAYBILL_MAX
 from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
@@ -182,19 +182,28 @@ class ProcurementUpdate(BaseModel):
     quantity_acquired: int = Field(ge=0)
 
 
+#: WS-13 E6 G01: a name is trimmed BEFORE its length is checked — blank is refused,
+#: and spaces around 255 characters are not the name. The column is ``String(255)``.
+OrderName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
+#: G03: the columns' own lengths (``projects.color`` 20, ``projects.url`` 2048) — an
+#: overflow is a 422 here rather than a database error on PostgreSQL.
+OrderColor = Annotated[str, StringConstraints(max_length=20)]
+OrderUrl = Annotated[str, StringConstraints(strip_whitespace=True, max_length=2048)]
+
+
 class ProjectCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=255)
+    name: OrderName
     customer_id: int | None = None
     # A contact of ``customer_id`` (checked in the route), who receives the order.
     contact_id: int | None = None
     description: str | None = None
-    color: str | None = None
+    color: OrderColor | None = None
     notes: str | None = None
     tags: str | None = None
     due_date: datetime | None = None
     priority: str = "normal"
     price: float | None = Field(default=None, ge=0)
-    url: str | None = None
+    url: OrderUrl | None = None
     # Absent → the author of the request (spec workshop-order-stage, rule 10); null → nobody.
     responsible_id: int | None = None
     lines: list[ProjectLineCreate] = Field(default_factory=list)
@@ -213,18 +222,18 @@ class ProjectCreate(BaseModel):
 
 
 class ProjectUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=255)
+    name: OrderName | None = None
     customer_id: int | None = None
     contact_id: int | None = None
     description: str | None = None
-    color: str | None = None
+    color: OrderColor | None = None
     status: str | None = None
     notes: str | None = None
     tags: str | None = None
     due_date: datetime | None = None
     priority: str | None = None
     price: float | None = Field(default=None, ge=0)
-    url: str | None = None
+    url: OrderUrl | None = None
     responsible_id: int | None = None
 
     @field_validator("name", "status", "priority")
@@ -263,8 +272,14 @@ class ProjectDuplicate(BaseModel):
         old handler said with ``(data.name or "").strip() or _duplicate_name(...)``.
         Normalising here keeps the route's ``data.name or _duplicate_name(...)``
         honest — without it, ``"   "`` is truthy and becomes the copy's name.
+
+        WS-13 E6 G02: the trimmed name is held to the column's 255 — refused, never
+        silently cut (an operator's own name is theirs to shorten).
         """
-        return (v or "").strip() or None
+        name = (v or "").strip() or None
+        if name is not None and len(name) > 255:
+            raise ValueError("name is at most 255 characters")
+        return name
 
 
 class BatchAddArchives(BaseModel):
@@ -290,6 +305,9 @@ class PartFiguresOut(BaseModel):
     #: WS-13 E4 H04: this line's parts already waiting in a queue — the map the plan
     #: subtracts (``plan_engine.queued_yield_by_line``), never a second copy of its rule.
     queued: int = 0
+    #: WS-13 E6 H01: the part of ``surplus`` still to move — ``PartFigures.bankable``,
+    #: the very number ``bank-surplus`` moves (0 for a part without a shelf).
+    bankable: int = 0
 
 
 class LinePurchasedPartOut(BaseModel):
@@ -510,6 +528,9 @@ class ProjectListResponse(BaseModel):
     # under this order, and pending queue rows of both tiers under it.
     prints_in_progress: int = 0
     prints_queued: int = 0
+    #: WS-13 E6 H02: the order's bankable surplus off the same batch — the list's
+    #: action menu offers «surplus to stock» only when there is some.
+    bankable_surplus: int = 0
     # 0.0–1.0, capped server-side (see ``ProjectLineResponse.progress``).
     # An overprinted order reports its excess through ``printed`` against
     # ``ordered``, which stay uncapped.
@@ -913,6 +934,14 @@ class PartStateOut(BaseModel):
     written_off: int = 0
 
 
+class StockPositionRefOut(BaseModel):
+    """WS-13 E6 H04: where a line's configuration is kept — «комірка» in the issue dialog."""
+
+    id: int
+    code: str
+    location: str | None = None
+
+
 class LineStateOut(BaseModel):
     line_id: int
     product_name: str
@@ -926,6 +955,12 @@ class LineStateOut(BaseModel):
     issued: int
     written_off: int = 0
     parts: list[PartStateOut] = []
+    #: WS-13 E6 H04: the line's configuration with names — two lines of one product
+    #: are told apart by it. Built off the same context ``state`` read.
+    configuration: LineConfigurationOut | None = None
+    #: The stock position of the line's (product, configuration); None for a parts
+    #: line or a configuration nobody has kept yet.
+    stock_position: StockPositionRefOut | None = None
 
 
 class FulfilmentStateOut(BaseModel):
@@ -952,6 +987,8 @@ class FulfilmentOut(BaseModel):
     issue_id: int | None = None
     #: Its dispatch note's code, «DN-0042».
     issue_code: str | None = None
+    #: WS-13 E6 H03: the units the sealed note carries (``issue.units``); None without an issue.
+    issue_units: int | None = None
 
 
 # ---------- «take from stock» (spec workshop-order-issue, rules 17, 20) ----------

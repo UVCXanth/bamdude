@@ -22,6 +22,7 @@ function part(over: Partial<PartFigures> = {}): PartFigures {
     surplus: 0,
     variant: false,
     queued: 0,
+    bankable: 0,
     ...over,
   };
 }

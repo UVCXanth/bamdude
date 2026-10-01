@@ -478,6 +478,7 @@ describe('LineEditDialog · its own rules (E4 D02, D03, D05)', () => {
           surplus: 0,
           variant: false,
           queued: 0,
+          bankable: 0,
         },
       ],
     });

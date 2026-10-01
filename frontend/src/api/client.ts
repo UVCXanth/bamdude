@@ -1786,6 +1786,8 @@ export interface PartFigures {
   /** This line's parts already waiting in a queue — the map the plan subtracts
    *  (WS-13 E4 H04). */
   queued: number;
+  /** The part of `surplus` still to move — the number «bank surplus» moves (WS-13 E6 H01). */
+  bankable: number;
 }
 
 /** A purchased part of one line (WS-13 E4 H03). `need` = per × the line's stored
@@ -2097,6 +2099,8 @@ export interface OrderListItem {
   products: LineProduct[];
   prints_in_progress: number;
   prints_queued: number;
+  /** WS-13 E6 H02 — the order's bankable surplus; the list menu offers «surplus to stock» only above 0. */
+  bankable_surplus: number;
 }
 
 /** An order line's product, reduced to what a card strip needs. */
@@ -3356,6 +3360,10 @@ export interface FulfilmentLineState {
   /** Written off under the order — a parts line sums its parts'. */
   written_off: number;
   parts: FulfilmentPartState[];
+  /** WS-13 E6 H04 — the line's configuration with names; tells two lines of one product apart. */
+  configuration: LineConfiguration | null;
+  /** WS-13 E6 H04 — where the line's configuration is kept; null for a parts line or none yet. */
+  stock_position: { id: number; code: string; location: string | null } | null;
 }
 
 /** `GET /projects/{id}/fulfilment`. */
@@ -3412,6 +3420,8 @@ export interface FulfilmentResult {
   issue_id: number | null;
   /** Its dispatch note, `DN-0042`. */
   issue_code: string | null;
+  /** WS-13 E6 H03 — the units the sealed note carries; null without an issue. */
+  issue_units: number | null;
 }
 
 /** `GET /projects/{id}/stock-offers` — what the shelves could give for what nobody

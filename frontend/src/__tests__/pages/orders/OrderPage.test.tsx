@@ -107,6 +107,8 @@ const fulfilmentState = {
       issued: 0,
       written_off: 0,
       parts: [],
+      configuration: null,
+      stock_position: null,
     },
   ],
   ordered: 2,
@@ -177,6 +179,7 @@ describe('OrderPage', () => {
       order: { ...order, status: 'completed' } as never,
       issue_id: 1,
       issue_code: 'DN-0001',
+      issue_units: 2,
     });
     vi.spyOn(api, 'getDispatchNotes').mockResolvedValue({
       items: [],

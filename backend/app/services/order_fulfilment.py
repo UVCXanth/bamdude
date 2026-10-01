@@ -264,13 +264,26 @@ async def moved_line_ids(db: AsyncSession, lines: Sequence[ProjectLine]) -> set[
     return moved
 
 
-async def state(db: AsyncSession, project: Project, *, to_stock: bool | None = None) -> OrderState:
-    """What each line can assemble, receive and issue now — the order's context and the
-    parts lines' counters read once each, whatever the order's size. ``to_stock`` overrides
-    "has no customer" for a request that changes the customer as it completes (rule 35)."""
+async def load_context(db: AsyncSession, project: Project) -> OrderContext:
+    """The order's context, as ``state`` reads it — for a reader that also needs the
+    context itself (the issue dialog's configuration captions, WS-13 E6 H04)."""
     ctx = await load_order_context(db, project.id)
     if ctx is None:
         raise FulfilmentError("Project not found", 404)
+    return ctx
+
+
+async def state(
+    db: AsyncSession, project: Project, *, to_stock: bool | None = None, ctx: OrderContext | None = None
+) -> OrderState:
+    """What each line can assemble, receive and issue now — the order's context and the
+    parts lines' counters read once each, whatever the order's size. ``to_stock`` overrides
+    "has no customer" for a request that changes the customer as it completes (rule 35).
+
+    ``ctx`` — a context the caller already read with ``load_context``, computed over as is;
+    ``apply`` passes none and reads its own under its locks, as it always did."""
+    if ctx is None:
+        ctx = await load_context(db, project)
     figures, _other = attribute(ctx)
     counters = await part_stock.line_part_stock(db, [line.id for line in ctx.lines if line.mode == "parts"])
     usable, received = _order_parts(ctx, figures, counters)

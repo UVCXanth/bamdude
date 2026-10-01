@@ -85,6 +85,7 @@ const flask = makeLine({
       surplus: 0,
       variant: false,
       queued: 0,
+      bankable: 0,
     },
   ],
 });

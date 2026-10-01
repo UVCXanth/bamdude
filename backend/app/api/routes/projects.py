@@ -128,6 +128,7 @@ from backend.app.schemas.project import (
     RecipientOut,
     StockMovedOut,
     StockOfferOut,
+    StockPositionRefOut,
     TakeStockIn,
     TakeStockOut,
     TimelineEvent,
@@ -376,6 +377,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
                     surplus=p.surplus,
                     variant=p.part_id in variant_parts,
                     queued=queued.get(line.id, {}).get(p.part_id, 0),
+                    bankable=p.bankable,
                 )
                 for p in figs[line.id].parts
             ],
@@ -735,6 +737,7 @@ async def _list_rows(db: AsyncSession, projects: Sequence[Project]) -> list[Proj
                 ),
                 prints_in_progress=pf.prints_in_progress,
                 prints_queued=pf.prints_queued,
+                bankable_surplus=pf.bankable_surplus,
                 progress=pf.progress,
                 line_products=[
                     LineProductOut(product_id=line.product_id, has_cover=line.product_id in covered) for line in lines
@@ -1395,6 +1398,27 @@ def _recipient_out(recipient: stock_issues.Recipient) -> RecipientOut:
     )
 
 
+async def _line_positions(db: AsyncSession, lines) -> dict[int, StockPositionRefOut]:
+    """Each product line's stock position — its (product, configuration key) — in one
+    read whatever the number of lines (WS-13 E6 H04). A parts line has none."""
+    product_lines = [line for line in lines if line.mode != "parts"]
+    if not product_lines:
+        return {}
+    rows = await db.execute(
+        select(StockItem.id, StockItem.product_id, StockItem.config_key, StockItem.location).where(
+            StockItem.product_id.in_({line.product_id for line in product_lines})
+        )
+    )
+    by_key = {(product_id, key): (item_id, location) for item_id, product_id, key, location in rows}
+    out: dict[int, StockPositionRefOut] = {}
+    for line in product_lines:
+        found = by_key.get((line.product_id, line.config_key or ""))
+        if found is not None:
+            item_id, location = found
+            out[line.id] = StockPositionRefOut(id=item_id, code=code_for("stock_item", item_id), location=location)
+    return out
+
+
 @router.get("/{project_id}/fulfilment", response_model=FulfilmentStateOut)
 async def get_fulfilment(
     project_id: int,
@@ -1405,14 +1429,25 @@ async def get_fulfilment(
     shows and the ones ``POST`` checks against (one arithmetic, ``order_fulfilment.state``)
     — and the recipient it starts from."""
     project = await _get_project(db, project_id)
-    state = await order_fulfilment.state(db, project)
+    # WS-13 E6 H04: one context for the numbers AND the captions, read once.
+    ctx = await order_fulfilment.load_context(db, project)
+    state = await order_fulfilment.state(db, project, ctx=ctx)
+    configurations = await _configurations(db, ctx)
+    positions = await _line_positions(db, ctx.lines)
     recipient = (
         await stock_issues.default_recipient(db, project=project, customer_id=project.customer_id)
         if project.customer_id is not None
         else stock_issues.Recipient()
     )
     return FulfilmentStateOut(
-        lines=[LineStateOut(**asdict(row)) for row in state.lines],
+        lines=[
+            LineStateOut(
+                **asdict(row),
+                configuration=configurations.get(row.line_id),
+                stock_position=positions.get(row.line_id),
+            )
+            for row in state.lines
+        ],
         ordered=state.ordered,
         issued=state.issued,
         held=state.held,
@@ -1479,6 +1514,7 @@ async def fulfil_order(
         order=await _response(db, project.id),
         issue_id=issue.id if issue is not None else None,
         issue_code=code_for("dispatch_note", issue.id) if issue is not None else None,
+        issue_units=issue.units if issue is not None else None,
     )
 
 
@@ -2931,20 +2967,33 @@ async def get_project_timeline(
 # ---------- duplicate ----------
 
 
+#: ``projects.name`` is ``String(255)`` — the generated copy name must fit it too.
+_NAME_MAX = 255
+
+
+def _fit_name(base: str, suffix: str) -> str:
+    """``base`` + ``suffix`` within the column: the base gives way, the suffix never."""
+    return f"{base[: _NAME_MAX - len(suffix)].rstrip()}{suffix}"
+
+
 def _duplicate_name(base: str, taken: set[str]) -> str:
     """``"X" -> "X (Copy)"``, then ``"X (Copy 2)"`` and so on.
 
     Project names carry no unique constraint, so this is politeness rather
     than correctness — three rows all called "Voron (Copy)" are legal and
     unusable.
+
+    WS-13 E6 G02 (R05): the suffix is added AFTER the request was validated, so
+    it reserves its own room — the collision number included — and the base is
+    cut to fit; a 255-character original still copies.
     """
-    candidate = f"{base} (Copy)"
+    candidate = _fit_name(base, " (Copy)")
     if candidate not in taken:
         return candidate
     n = 2
-    while f"{base} (Copy {n})" in taken:
+    while _fit_name(base, f" (Copy {n})") in taken:
         n += 1
-    return f"{base} (Copy {n})"
+    return _fit_name(base, f" (Copy {n})")
 
 
 async def _copy_attachment_files(source_id: int, new_id: int) -> bool:
