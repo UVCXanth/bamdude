@@ -52,6 +52,15 @@ class LibraryFileRuntime:
                 closed_cb=self.disconnected,
             )
             js = self.nc.jetstream(timeout=5)
+            # Each process generation gets a private disposable object-store
+            # bucket.  Retire buckets left by earlier process generations before
+            # reserving another 256 MiB, just as the preview and analysis
+            # runtimes do for their own namespaces.  Otherwise clean restarts
+            # eventually exhaust the broker's configured JetStream capacity even
+            # when every old bucket contains zero messages.
+            for stream in await js.streams_info():
+                if stream.config.name.startswith("OBJ_bamdude_library_"):
+                    await js.delete_stream(stream.config.name)
             self.store = await js.create_object_store(
                 bucket=self.bucket,
                 config=ObjectStoreConfig(bucket=self.bucket, max_bytes=256 * 1024 * 1024, ttl=900, storage="file"),

@@ -109,3 +109,32 @@ async def test_worker_crash_restarts_without_restarting_broker(tmp_path):
     finally:
         await runtime.stop()
         await broker.stop()
+
+
+@pytest.mark.asyncio
+async def test_new_runtime_retires_previous_generation_object_store(tmp_path):
+    broker = LocalWorkerBroker(tmp_path / ".cache" / "preview-service")
+    await broker.start()
+    first = LibraryFileRuntime(tmp_path, broker)
+    second = None
+    try:
+        await first.start()
+        first_stream = f"OBJ_{first.bucket}"
+        assert first_stream in {info.config.name for info in await broker.nc.jetstream().streams_info()}
+        await first.stop()
+
+        second = LibraryFileRuntime(tmp_path, broker)
+        await second.start()
+        library_streams = {
+            info.config.name
+            for info in await broker.nc.jetstream().streams_info()
+            if info.config.name.startswith("OBJ_bamdude_library_")
+        }
+        assert library_streams == {f"OBJ_{second.bucket}"}
+        assert first_stream not in library_streams
+    finally:
+        if second is not None:
+            await second.stop()
+        elif not first.closed:
+            await first.stop()
+        await broker.stop()

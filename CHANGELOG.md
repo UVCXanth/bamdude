@@ -96,6 +96,8 @@
 
 ### Fixed
 
+- **Library uploads keep working after BamDude restarts.** Each start now retires the previous disposable library-file object store before reserving a new one, so repeated restarts cannot exhaust the embedded broker's configured storage and leave 3MF/G-code uploads unavailable.
+
 - **Batch firmware updates no longer claim to start when Bambu has announced a version but has not published its offline file.** The batch picker now offers only versions that can be downloaded or are already stored locally, and explains why a newer announced version is missing. A direct request for an unavailable version is rejected before creating a run. The success message now says an upload task was created; applying the firmware still happens on the printer screen.
 
 - **Existing PostgreSQL installations start after the sensor update.** Migrating an existing Zigbee sensor's printer or room binding used SQLite-style numbers for boolean fields, which PostgreSQL rejected and stopped startup. The migration now writes proper boolean values and preserves the sensor's alert state.
