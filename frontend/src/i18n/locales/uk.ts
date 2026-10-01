@@ -5843,6 +5843,24 @@ export default {
       remaining_other: 'Лишилось забезпечити {{count}}',
       live: 'друкується {{printing}} друків · у черзі {{queued}} завдань',
     },
+    // WS-13 E7 §B: спільні частини рядка замовлення в усіх виглядах списку.
+    row: {
+      allCovered: 'усе забезпечено',
+      incomplete: 'неповна оцінка',
+      noEstimate: 'немає оцінки',
+      forecastNotRead: 'Прогноз не прочитано',
+      forecastFailed: 'Прогноз не вдалося прочитати',
+      incompleteReasons: 'Неповна оцінка: {{reasons}}',
+      printed: 'надруковано {{count}}',
+      fromStock: 'зі складу {{count}}',
+      live: 'друкується {{printing}}, у черзі {{queued}}',
+      overdue: 'прострочено',
+      unassigned: 'не призначено',
+      moreProducts_one: 'ще {{count}} виріб',
+      moreProducts_few: 'ще {{count}} вироби',
+      moreProducts_many: 'ще {{count}} виробів',
+      moreProducts_other: 'ще {{count}} виробу',
+    },
     // WS-13 E6 §C: форма замовлення словами мокапу.
     modal: {
       createTitle: 'Нове замовлення',

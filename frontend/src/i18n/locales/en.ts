@@ -5798,6 +5798,22 @@ export default {
       remaining_other: '{{count}} left to cover',
       live: 'printing {{printing}} print(s) · queued {{queued}} job(s)',
     },
+    // WS-13 E7 §B: the parts of an order row every list view shares.
+    row: {
+      allCovered: 'all covered',
+      incomplete: 'incomplete estimate',
+      noEstimate: 'no estimate',
+      forecastNotRead: 'Forecast not read',
+      forecastFailed: 'The forecast could not be read',
+      incompleteReasons: 'Incomplete estimate: {{reasons}}',
+      printed: 'printed {{count}}',
+      fromStock: 'from stock {{count}}',
+      live: 'printing {{printing}}, queued {{queued}}',
+      overdue: 'overdue',
+      unassigned: 'unassigned',
+      moreProducts_one: '{{count}} more product',
+      moreProducts_other: '{{count}} more products',
+    },
     // WS-13 E6 §C: the order form, in the mockup's words.
     modal: {
       createTitle: 'New order',
