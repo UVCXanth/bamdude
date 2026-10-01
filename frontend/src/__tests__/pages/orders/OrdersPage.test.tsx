@@ -91,10 +91,10 @@ describe('OrdersPage', () => {
     window.history.pushState({}, '', '/projects?customer=1&q=lamp');
     render(<OrdersPage />);
     expect(await screen.findByTestId('orders-tile-active')).toHaveTextContent('4');
-    expect(screen.getByTestId('orders-tile-active')).toHaveTextContent('overdue: 1 · urgent: 2');
+    expect(screen.getByTestId('orders-tile-active')).toHaveTextContent('1 overdue · 2 urgent');
     expect(screen.getByTestId('orders-tile-printing')).toHaveTextContent('3 / 7');
     expect(screen.getByTestId('orders-tile-remaining')).toHaveTextContent('12');
-    expect(screen.getByTestId('orders-tile-covered')).toHaveTextContent('1');
+    expect(screen.getByTestId('orders-tile-qc')).toHaveTextContent('0'); // the QC stage, not all_covered (E7 C02)
     expect(api.getOrdersSummary).toHaveBeenCalledWith();
   });
   it('says the search also looks in tags', async () => {
@@ -662,64 +662,87 @@ describe('OrdersPage', () => {
     await waitFor(() => expect(client.getQueryState(['project', 1])).toBeUndefined());
   });
 
-  it('shows a chip per material the active orders need, amber when the shelf is short', async () => {
+  // WS-13 E7 C03: the panel reads its own query; its states are pinned in FilamentStrip.test.
+  it('draws the farm filament panel over the list, whatever the filter', async () => {
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
     vi.spyOn(api, 'getOrdersFilament').mockResolvedValue({
       ...EMPTY_FARM, orders_count: 3,
-      rows: [
-        { material: 'PETG', colour: 'black', need_g: 3200, have_g: 1100, have_type_g: 4200, short_g: 2100, unknown_prints: 0, orders_count: 2 },
-        { material: 'PLA', colour: null, need_g: 400, have_g: 900, have_type_g: 900, short_g: 0, unknown_prints: 0, orders_count: 1 },
-      ],
+      rows: [{ material: 'PETG', colour: 'black', need_g: 3200, have_g: 1100, have_type_g: 4200, short_g: 2100, unknown_prints: 0, orders_count: 2 }],
     });
+    window.history.pushState({}, '', '/projects?customer=1');
     render(<OrdersPage />);
-    const chip = await screen.findByTestId('filament-strip-PETG-black');
-    expect(chip).toHaveTextContent('PETG · black 3.2kg / 1.1kg');
-    expect(chip).toHaveAttribute('data-short', 'true');
-    expect(chip).toHaveAttribute('title', '2 orders');
-    expect(screen.getByTestId('filament-strip-PLA')).toHaveAttribute('data-short', 'false');
+    const chip = await screen.findByTestId('filament-chip-PETG-black');
+    expect(chip).toHaveTextContent('PETG black · need 3.2kg / have 1.1kg · short 2.1kg');
+    expect(api.getOrdersFilament).toHaveBeenCalledWith();
   });
 
-  it('shows chips with a dash for the shelf when it could not be read', async () => {
-    // ⚠️ `stock_unavailable` with NOTHING short is the third state, and it is
-    // not the collapsed line: «everything is on the shelf» would be a claim
-    // the server explicitly refused to make (triage, final review).
-    vi.spyOn(api, 'getOrdersFilament').mockResolvedValue({
-      ...EMPTY_FARM, orders_count: 1, stock_unavailable: true,
-      rows: [{ material: 'PETG', colour: null, need_g: 500, have_g: null, have_type_g: null, short_g: null, unknown_prints: 0, orders_count: 1 }],
+  describe('the toolbar and the list states (WS-13 E7 C04, C05)', () => {
+    it('names the customer filter and says what kanban and deadlines show instead of tabs', async () => {
+      vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+      window.history.pushState({}, '', '/projects');
+      const { unmount } = render(<OrdersPage />);
+      expect(await screen.findByRole('combobox', { name: 'Customer' })).toBeInTheDocument();
+      expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Search: name, code, customer, tag…');
+      expect(screen.queryByTestId('orders-statusless-hint')).not.toBeInTheDocument();
+      unmount();
+      localStorage.setItem('projects.view', 'kanban');
+      const board = render(<OrdersPage />);
+      expect(await screen.findByTestId('orders-statusless-hint')).toHaveTextContent('Kanban: active orders by stage and the latest completed');
+      expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+      board.unmount();
+      localStorage.setItem('projects.view', 'deadlines');
+      vi.spyOn(api, 'getOrderDeadlines').mockResolvedValue({ start: '2026-10-12', days: 14, due: [], eta_marks: [], attention: [] });
+      render(<OrdersPage />);
+      expect(await screen.findByTestId('orders-statusless-hint')).toHaveTextContent('Deadlines: active and completed orders by deadline');
     });
-    render(<OrdersPage />);
-    const chip = await screen.findByTestId('filament-strip-PETG');
-    expect(chip).toHaveTextContent('/ —');
-    expect(chip).toHaveAttribute('data-short', 'false');
-    expect(screen.queryByTestId('filament-strip-covered')).not.toBeInTheDocument();
-  });
 
-  it('collapses to one line when nothing is short, and hides with no rows', async () => {
-    vi.spyOn(api, 'getOrdersFilament').mockResolvedValue({
-      ...EMPTY_FARM, orders_count: 1,
-      rows: [{ material: 'PLA', colour: null, need_g: 400, have_g: 900, have_type_g: 900, short_g: 0, unknown_prints: 0, orders_count: 1 }],
+    it('offers Reset only while a condition holds; it clears them and puts the focus in the search', async () => {
+      const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+      window.history.pushState({}, '', '/projects?tab=completed');
+      const { unmount } = render(<OrdersPage />);
+      await screen.findByText('A');
+      expect(screen.queryByRole('button', { name: 'Reset' })).not.toBeInTheDocument();
+      unmount();
+      window.history.pushState({}, '', '/projects?tab=completed&q=lamp&customer=1&page=3');
+      render(<OrdersPage />);
+      const reset = await screen.findByRole('button', { name: 'Reset' });
+      await userEvent.click(reset);
+      await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1, status: 'completed' })));
+      expect(get.mock.lastCall?.[0]).not.toHaveProperty('q');
+      expect(get.mock.lastCall?.[0]).not.toHaveProperty('customer_id');
+      expect(window.location.search).not.toContain('q=');
+      expect(window.location.search).toContain('tab=completed');
+      expect(screen.getByRole('searchbox')).toHaveFocus();
+      expect(screen.queryByRole('button', { name: 'Reset' })).not.toBeInTheDocument();
     });
-    render(<OrdersPage />);
-    expect(await screen.findByText('Filament: everything is on the shelf')).toBeInTheDocument();
-  });
 
-  it('does not claim the shelf covers a partial or wholly unknown requirement', async () => {
-    vi.spyOn(api, 'getOrdersFilament').mockResolvedValue({
-      ...EMPTY_FARM, orders_count: 1,
-      rows: [
-        { material: 'PETG', colour: null, need_g: 120, have_g: 900, have_type_g: 900, short_g: 0, unknown_prints: 1, orders_count: 1 },
-      ],
+    it('says the list could not be read — never «no orders» — and retries the same page', async () => {
+      const get = vi.spyOn(api, 'getOrdersPaged').mockRejectedValue(new Error('down'));
+      window.history.pushState({}, '', '/projects?page=4');
+      render(<OrdersPage />);
+      const alert = await screen.findByRole('alert', {}, { timeout: 4000 });
+      expect(alert).toHaveTextContent('Could not load the orders');
+      expect(screen.queryByText(/No active orders/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('Nothing matches your search or filters.')).not.toBeInTheDocument();
+      expect(window.location.search).toContain('page=4');
+      const before = get.mock.calls.length;
+      get.mockResolvedValue(pageOf([rowA], { meta: { current_page: 4, last_page: 4, total: 80 } }));
+      await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+      await screen.findByText('A');
+      expect(get.mock.calls.length).toBeGreaterThan(before);
+      expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ page: 4 }));
     });
-    render(<OrdersPage />);
-    const chip = await screen.findByTestId('filament-strip-PETG');
-    expect(chip).toHaveTextContent('at least 120g / 900g');
-    expect(chip).toHaveAttribute('title', '1 order · 1 print without grams');
-    expect(screen.queryByTestId('filament-strip-covered')).not.toBeInTheDocument();
-  });
 
-  it('shows an untyped unknown requirement instead of hiding the strip', async () => {
-    vi.spyOn(api, 'getOrdersFilament').mockResolvedValue({ ...EMPTY_FARM, unknown_prints: 1 });
-    render(<OrdersPage />);
-    expect(await screen.findByTestId('filament-strip')).toHaveTextContent('1 print with unknown filament');
-    expect(screen.queryByTestId('filament-strip-covered')).not.toBeInTheDocument();
+    it('drops the previous rows when a new search fails (R03)', async () => {
+      const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValueOnce(pageOf([rowA])).mockRejectedValue(new Error('down'));
+      window.history.pushState({}, '', '/projects');
+      render(<OrdersPage />);
+      await screen.findByText('A');
+      fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'zzz' } });
+      expect(await screen.findByRole('alert', {}, { timeout: 4000 })).toHaveTextContent('Could not load the orders');
+      expect(screen.queryByText('A')).not.toBeInTheDocument();
+      expect(window.location.search).toContain('q=zzz');
+      expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'zzz' }));
+    });
   });
 });

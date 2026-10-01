@@ -28,6 +28,7 @@ import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 import { useListUrlState } from '../../hooks/useListUrlState';
 import { parseListView, parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
 import { WorkshopTabPanel } from '../../components/workshop/WorkshopTabs';
+import { listState } from '../../components/projects/orderRow/listState';
 
 /**
  * One customer: its figures (three tiles) and one server page of its orders —
@@ -159,7 +160,12 @@ export function CustomerPage() {
 
   const figures = customer.figures;
   const detailed = 'ordered' in figures ? figures : null;
-  const ordersTotal = ordersQuery.data?.meta.total ?? 0;
+  // WS-13 E7 C05 (R03): a failed read of this customer's orders is not «no orders».
+  const ordersState = listState({
+    data: ordersQuery.data,
+    isError: ordersQuery.isError,
+    isPlaceholderData: ordersQuery.isPlaceholderData,
+  });
 
   return (
     <div className="workshop p-4 space-y-4">
@@ -261,12 +267,13 @@ export function CustomerPage() {
 
         {/* The tab's panel is the orders list or its empty state (WS-13 E2 C02). */}
         <WorkshopTabPanel idBase={tabsId} value={tab}>
-          {!ordersQuery.isLoading && ordersTotal === 0 ? (
+          {ordersState === 'empty' ? (
             <p className="text-bambu-gray text-sm">{t(`orders.list.empty.${tab}`)}</p>
           ) : (
             <OrdersListView
               data={ordersQuery.data}
-              isLoading={ordersQuery.isLoading}
+              isError={ordersQuery.isError}
+              onRetry={() => void ordersQuery.refetch()}
               isPlaceholderData={ordersQuery.isPlaceholderData}
               view={view}
               sort={sort}

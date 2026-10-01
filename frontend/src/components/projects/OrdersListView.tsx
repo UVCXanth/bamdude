@@ -10,6 +10,9 @@ import type { OrderActions } from './orderActions/useOrderActions';
 import { OrdersTable } from './OrdersTable';
 import { ORDER_TABS } from './orderList';
 import { WorkshopTabs } from '../workshop/WorkshopTabs';
+import { LoadFailedNote } from '../workshop/LoadFailedNote';
+import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
+import { listState } from './orderRow/listState';
 
 /** How many placeholder cards the first fetch draws. Enough to fill the top of
  *  a normal window without pretending to know how many orders there are. */
@@ -30,12 +33,32 @@ const SKELETON_CARDS = 6;
  * on the wrapper, with one visually-hidden line inside, is what announces the
  * wait; the cards keep their `aria-hidden` so nobody hears six empty ones.
  */
-function OrdersSkeleton() {
+function OrdersSkeleton({ view }: { view: ListView }) {
   const { t } = useTranslation();
+  // WS-13 E7 C05: the wait is shaped like what comes — a table waits as a table.
+  if (view === 'table') {
+    return (
+      <div role="status" aria-busy="true" data-testid="orders-skeleton" data-shape="table">
+        <span className="sr-only">{t('common.loading')}</span>
+        <div aria-hidden="true" className="rounded-xl bg-bambu-dark-secondary border border-bambu-dark-tertiary overflow-hidden">
+          <div className="h-9 bg-bambu-dark-tertiary/50" />
+          {Array.from({ length: SKELETON_CARDS }, (_, i) => (
+            <div key={i} className="animate-pulse flex items-center gap-4 px-3 py-3 border-t border-bambu-dark-tertiary">
+              <div className="h-4 w-1/4 rounded bg-bambu-dark" />
+              <div className="h-4 w-16 rounded bg-bambu-dark" />
+              <div className="h-2 w-40 rounded bg-bambu-dark" />
+              <div className="h-4 w-20 rounded bg-bambu-dark" />
+              <div className="h-4 w-24 rounded bg-bambu-dark" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
   return (
-    <div role="status" aria-busy="true" data-testid="orders-skeleton">
+    <div role="status" aria-busy="true" data-testid="orders-skeleton" data-shape="cards">
       <span className="sr-only">{t('common.loading')}</span>
-      <div aria-hidden="true" className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
+      <div aria-hidden="true" className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(min(300px,100%),1fr))]">
         {Array.from({ length: SKELETON_CARDS }, (_, i) => (
           <div
             key={i}
@@ -107,7 +130,10 @@ export function OrderStatusTabs({
 
 export interface OrdersListViewProps {
   data: OrderListPage | undefined;
-  isLoading: boolean;
+  /** The CURRENT key failed (WS-13 E7 C05): with no rows of its own an alert, with rows a note. */
+  isError: boolean;
+  /** Reads the current key again. */
+  onRetry: () => void;
   isPlaceholderData: boolean;
   view: ListView;
   sort: string;
@@ -129,7 +155,8 @@ export interface OrdersListViewProps {
  */
 export function OrdersListView({
   data,
-  isLoading,
+  isError,
+  onRetry,
   isPlaceholderData,
   view,
   sort,
@@ -166,7 +193,12 @@ export function OrdersListView({
     return Object.fromEntries(forecastQuery.data.orders.map((f) => [f.project_id, f]));
   }, [forecastQuery.data]);
 
-  if (isLoading) return <OrdersSkeleton />;
+  const state = listState({ data, isError, isPlaceholderData });
+  if (state === 'loading') return <OrdersSkeleton view={view} />;
+  // A new page, filter or customer that failed has no rows of its own — never another key's.
+  if (state === 'failed') return <LoadFailedNote message={t('orders.list.loadFailed')} onRetry={onRetry} />;
+  // The page draws its own empty state (it knows whether a filter holds).
+  if (state === 'empty') return null;
 
   const groups = groupByCustomer ? groupBy(visible, (o) => o.customer_name ?? t('orders.list.noCustomer')) : null;
 
@@ -196,6 +228,7 @@ export function OrdersListView({
       aria-busy={isPlaceholderData}
       className={`transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
     >
+      {state === 'refresh-failed' && <RefreshFailedNote onRetry={onRetry} />}
       {groups ? (
         <>
           <div className="space-y-4">

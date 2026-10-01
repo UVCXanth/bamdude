@@ -27,6 +27,7 @@ import { parseOrdersView, parsePageSize, usePersistedState } from '../../hooks/u
 import type { OrdersView } from '../../hooks/usePersistedState';
 import { useSearchBox } from '../../hooks/useSearchBox';
 import { WorkshopTabPanel } from '../../components/workshop/WorkshopTabs';
+import { listState } from '../../components/projects/orderRow/listState';
 
 const GROUP_STORAGE_KEY = 'projects.groupByCustomer';
 const VIEW_STORAGE_KEY = 'projects.view';
@@ -117,7 +118,7 @@ export function OrdersPage() {
     page,
     ...(perPage === -1 ? { all: true } : { per_page: perPage }),
   };
-  const { data, isLoading, isPlaceholderData } = useQuery({
+  const { data, isError, isPlaceholderData, refetch } = useQuery({
     queryKey: ['projects', params],
     queryFn: () => api.getOrdersPaged(params),
     enabled: paged,
@@ -133,13 +134,17 @@ export function OrdersPage() {
     if (data && !isPlaceholderData) clampToLastPage(data.meta.last_page);
   }, [data, isPlaceholderData, clampToLastPage]);
 
-  const total = data?.meta.total ?? 0;
+  // WS-13 E7 C05: one reading of the list's state — a failed key is an alert, never «no orders».
+  const state = listState({ data, isError, isPlaceholderData });
   // Every filter Reset clears — «Mine» with nothing of mine is a filter that
   // matched nothing, never «no orders yet» on a farm full of them.
   const filtered = q !== '' || customerId != null || extra.responsible !== '' || stage !== '';
-
-  // The farm-wide filament strip over the list — every active order, not just the visible tab/filter.
-  const filamentQuery = useQuery({ queryKey: ['orders-filament'], queryFn: api.getOrdersFilament, staleTime: 30_000 });
+  const searchRef = useRef<HTMLInputElement>(null);
+  const resetConditions = () => {
+    forget();
+    resetFilters(['tab']);
+    searchRef.current?.focus();
+  };
 
   const toggleGroupByCustomer = (value: boolean) => {
     setGroupByCustomer(value);
@@ -164,14 +169,10 @@ export function OrdersPage() {
 
       <OrdersTiles />
 
-      {filamentQuery.data && (
-        <div className="mb-4">
-          <FilamentStrip farm={filamentQuery.data} />
-        </div>
-      )}
+      <FilamentStrip />
 
       <div className="flex items-center gap-4 mb-4 flex-wrap">
-        {paged && (
+        {paged ? (
           <OrderStatusTabs
             idBase={tabsId}
             tab={tab}
@@ -179,11 +180,21 @@ export function OrdersPage() {
             busy={isPlaceholderData}
             onChange={(key) => setExtra('tab', key)}
           />
+        ) : (
+          // The kanban and the deadlines have no status tabs: what they show instead,
+          // in words that do not pretend the stage moves by itself (E01).
+          <p data-testid="orders-statusless-hint" className="text-sm text-bambu-gray">
+            {t(view === 'kanban' ? 'orders.list.hintBoard' : 'orders.list.hintDeadlines')}
+          </p>
         )}
 
-        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('orders.list.searchPlaceholder')} />
+        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('orders.list.searchPlaceholder')} inputRef={searchRef} />
 
-        <Select value={customerId ?? ''} onChange={(e) => setExtra('customer', e.target.value)}>
+        <Select
+          aria-label={t('orders.list.customerFilter')}
+          value={customerId ?? ''}
+          onChange={(e) => setExtra('customer', e.target.value)}
+        >
           <option value="">{t('orders.list.customerFilterAll')}</option>
           {customers.map((c) => (
             <option key={c.id} value={c.id}>
@@ -240,22 +251,24 @@ export function OrdersPage() {
             </button>
           </span>
         )}
+
+        {/* Only while a condition holds (S05); the tab, the view and the grouping stay.
+            An empty answer carries its own Reset in the list's place — one button, not two. */}
+        {filtered && !(paged && state === 'empty') && (
+          <Button variant="secondary" onClick={resetConditions}>
+            {t('list.empty.reset')}
+          </Button>
+        )}
       </div>
 
       {/* The tab's panel is the list and its empty state — not the filters above it (WS-13 E2 C02). */}
       {paged && (
         <WorkshopTabPanel idBase={tabsId} value={tab}>
-          {!isLoading && total === 0 && (
+          {state === 'empty' && (
             filtered ? (
               <div className="flex items-center gap-3 text-bambu-gray text-sm">
                 <span>{t('list.empty.noMatch')}</span>
-                <Button
-                  variant="secondary"
-                  onClick={() => {
-                    forget();
-                    resetFilters(['tab']);
-                  }}
-                >
+                <Button variant="secondary" onClick={resetConditions}>
                   {t('list.empty.reset')}
                 </Button>
               </div>
@@ -267,7 +280,8 @@ export function OrdersPage() {
           {listLike && (
             <OrdersListView
               data={data}
-              isLoading={isLoading}
+              isError={isError}
+              onRetry={() => void refetch()}
               isPlaceholderData={isPlaceholderData}
               view={view}
               sort={sort}
@@ -285,7 +299,7 @@ export function OrdersPage() {
           {view === 'workspace' && (
             <OrdersWorkspace
               data={data}
-              isLoading={isLoading}
+              isLoading={state === 'loading'}
               isPlaceholderData={isPlaceholderData}
               perPage={perPage}
               onPageChange={setPage}

@@ -211,6 +211,23 @@ export function hexToColorName(hex: string | null | undefined): string {
 }
 
 /**
+ * The hex of a colour written as text — when the text IS a hex (`#ff0000`,
+ * `ff0000`) or names a catalog colour (case-insensitive) — else `null`.
+ * Never a guess: a swatch of an invented colour is worse than none (WS-13 E7 C03).
+ */
+export function hexForColorName(text: string | null | undefined): string | null {
+  const value = (text ?? '').trim();
+  if (!value) return null;
+  const hex = /^#?([0-9a-f]{6})$/i.exec(value);
+  if (hex) return `#${hex[1].toLowerCase()}`;
+  const wanted = value.toLowerCase();
+  for (const [key, name] of Object.entries(runtimeColorCatalog)) {
+    if (name.toLowerCase() === wanted) return `#${key}`;
+  }
+  return null;
+}
+
+/**
  * Sort key placing a spool colour in rainbow order.
  *
  * Returns a fixed-width string so it drops straight into the Inventory table's

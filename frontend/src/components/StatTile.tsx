@@ -4,11 +4,15 @@ import { useTranslation } from 'react-i18next';
 /**
  * The tile grid above a Workshop list (spec workshop-lists, rules 1, 16): a
  * summary of the farm, never of the list's filters. Four equal columns (three
- * on the customer page); two on a narrow screen.
+ * on the customer page); two at 1100 px and narrower, one at 560 and narrower —
+ * the mockup's one `.stats` rule, for every page that draws tiles (WS-13 E7 C02).
+ * ⚠️ `max-[1101px]`: Tailwind 4 writes `max-*` as `width < N`.
  */
 export function StatTiles({ columns = 4, children }: { columns?: 3 | 4; children: ReactNode }) {
   return (
-    <section className={`grid gap-3 grid-cols-2 ${columns === 3 ? 'lg:grid-cols-3' : 'lg:grid-cols-4'} mb-4`}>
+    <section
+      className={`grid gap-3 ${columns === 3 ? 'grid-cols-3' : 'grid-cols-4'} max-[1101px]:grid-cols-2 max-[561px]:grid-cols-1 mb-4`}
+    >
       {children}
     </section>
   );

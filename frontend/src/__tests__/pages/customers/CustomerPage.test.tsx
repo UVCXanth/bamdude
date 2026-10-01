@@ -367,4 +367,16 @@ describe('CustomerPage', () => {
     await waitFor(() => expect(client.getQueryData(['customer', 1])).toBeUndefined());
     expect(get).toHaveBeenCalledTimes(1);
   });
+  // WS-13 E7 C05 (R03): a failed read of the customer's orders is not «no orders».
+  it('says its orders could not be read instead of showing the empty tab', async () => {
+    vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
+    const get = vi.spyOn(api, 'getOrdersPaged').mockRejectedValue(new Error('down'));
+    mountAt();
+    const alert = await screen.findByRole('alert', {}, { timeout: 4000 });
+    expect(alert).toHaveTextContent('Could not load the orders');
+    expect(screen.queryByText('No active orders')).not.toBeInTheDocument();
+    get.mockResolvedValue(ordersPage as never);
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Flasks')).toBeInTheDocument();
+  });
 });

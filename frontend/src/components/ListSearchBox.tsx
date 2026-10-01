@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import type { RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, X } from 'lucide-react';
 import { useSearchHotkey } from '../hooks/useSearchHotkey';
@@ -20,14 +21,18 @@ export function ListSearchBox({
   onChange,
   placeholder,
   layout = 'list',
+  inputRef,
 }: {
   value: string;
   onChange: (value: string) => void;
   placeholder: string;
   layout?: 'list' | 'picker';
+  /** The page's own handle on the field — «Reset» puts the focus back here (WS-13 E7 C04). */
+  inputRef?: RefObject<HTMLInputElement | null>;
 }) {
   const { t } = useTranslation();
-  const ref = useRef<HTMLInputElement>(null);
+  const ownRef = useRef<HTMLInputElement>(null);
+  const ref = inputRef ?? ownRef;
   useSearchHotkey(ref);
   // ⚠️ `max-[761px]`: Tailwind 4 writes `max-*` as `width < N`; the rule is «760 and narrower».
   const width =
