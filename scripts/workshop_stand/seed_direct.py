@@ -8,7 +8,10 @@ written through the API by ``seed_http.py``; here, only:
   queue through ``printer_queues.ensure_printer_queue`` — the one creator;
 - ``LibraryFile`` with ``file_metadata`` AND real bytes: a 3MF written by
   ``write_routing_3mf`` from the same plate / model / time / material / colour
-  values the metadata holds, so the queue's capture reads a real source;
+  values the metadata holds, so the queue's capture reads a real source; a file
+  spec with ``thumbnail`` (an RGB colour) also carries a real PNG per plate in
+  ``Metadata/plate_N.png`` — the picture ``plate-thumbnail`` serves (WS-13 E5-V03);
+  the row's ``file_tags`` come from the app's own writer, ``compute_file_tags``;
 - ``PrintArchive`` + ``PrintArchivePart``: prints a printer would have reported.
 
     python -c "import seed_direct; seed_direct.main(['files', in.json, out.json])"
@@ -19,7 +22,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import struct
 import sys
+import zipfile
+import zlib
 from datetime import datetime
 from pathlib import Path
 
@@ -29,6 +35,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.library import LibraryFile
 from backend.app.models.printer import Printer
+from backend.app.services.library_helpers import compute_file_tags
 from backend.app.services.printer_queues import ensure_printer_queue
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 
@@ -47,6 +54,26 @@ DUAL_SETTINGS = {
 
 def _dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
+
+
+def plate_png(rgb: list[int], width: int = 160, height: int = 120) -> bytes:
+    """A real PNG (stdlib only): bands of the colour and a lighter shade, so a picture that
+    loaded is told from a blank box by eye too."""
+    light = bytes(min(255, c + 90) for c in rgb)
+    rows = []
+    for y in range(height):
+        rows.append(b"\x00" + (bytes(rgb) if (y // 20) % 2 == 0 else light) * width)
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(b"".join(rows)))
+        + chunk(b"IEND", b"")
+    )
 
 
 def _write_bytes(spec: dict, target: Path) -> None:
@@ -77,6 +104,10 @@ def _write_bytes(spec: dict, target: Path) -> None:
         settings=DUAL_SETTINGS if model == "H2D" else None,
         prediction=prediction,
     )
+    if spec.get("thumbnail"):
+        with zipfile.ZipFile(target, "a") as zf:
+            for plate in spec["plates"]:
+                zf.writestr(f"Metadata/plate_{plate['index']}.png", plate_png(spec["thumbnail"]))
 
 
 def _metadata(spec: dict) -> dict | None:
@@ -97,6 +128,7 @@ def _metadata(spec: dict) -> dict | None:
                 "filaments": [{"type": f["type"], "color": f["color"]} for f in plate["filaments"]],
                 "print_time_seconds": plate["minutes"] * 60,
                 "filament_used_grams": float(plate["grams"]),
+                "has_thumbnail": bool(spec.get("thumbnail")),
             }
         )
     return {
@@ -129,6 +161,7 @@ async def _files(payload: dict) -> dict:
             target = files_dir / f"ws13-{spec['key'].replace(':', '-')}-{spec['filename']}"
             _write_bytes(spec, target)
             data = target.read_bytes()
+            metadata = _metadata(spec)
             row = LibraryFile(
                 filename=spec["filename"],
                 file_path=to_relative_path(target),
@@ -136,7 +169,16 @@ async def _files(payload: dict) -> dict:
                 file_size=len(data),
                 file_hash=hashlib.sha256(data).hexdigest(),
                 folder_id=spec.get("folder_id"),
-                file_metadata=_metadata(spec),
+                file_metadata=metadata,
+                # The cache every real write path fills (upload, scan, m036) — a seeded row
+                # without it reads as «not sliced» to every client.
+                file_tags=compute_file_tags(
+                    filename=spec["filename"],
+                    file_type=spec["file_type"],
+                    file_metadata=metadata,
+                    source_type=None,
+                    swap_compatible=False,
+                ),
                 created_by_id=payload.get("created_by_id"),
             )
             db.add(row)

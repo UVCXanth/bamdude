@@ -27,6 +27,7 @@ import {
   suggestItems,
 } from './addToOrderState';
 import type { PartPicks, PlatePick, ProductPicks, Shown } from './addToOrderState';
+import { usePlatesOf } from './platesQuery';
 import { useTabScroll } from './useTabScroll';
 
 type Tab = 'products' | 'parts' | 'plate';
@@ -86,6 +87,17 @@ export function AddToOrderDialog({
   );
   const [parts, setParts] = useState<PartPicks>(() => new Map());
   const [plate, setPlate] = useState<PlatePick>(null);
+  // E5-V01: a chosen plate a SUCCESSFUL answer no longer has is no longer chosen — the file and
+  // the copies stay, and its return chooses nothing. Settled while rendering, so no batch,
+  // summary or button ever carries it; a failed re-read is not an empty answer.
+  const plates = usePlatesOf(plate?.file ?? null);
+  if (
+    plate?.plateIndex != null &&
+    plates.isSuccess &&
+    !plates.data.plates.some((p) => p.index === plate.plateIndex)
+  ) {
+    setPlate({ ...plate, plateIndex: null });
+  }
 
   const showTab = useCallback((next: Tab) => {
     setVisited((prev) => (prev.has(next) ? prev : new Set(prev).add(next)));

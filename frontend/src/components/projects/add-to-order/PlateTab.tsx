@@ -19,6 +19,7 @@ import { MODEL_CHIP } from '../chips';
 import { MAX_LINE_QTY } from './addToOrderState';
 import type { PlateFile, PlatePick } from './addToOrderState';
 import { CountInput } from './CountInput';
+import { platesReadable, usePlatesOf } from './platesQuery';
 import { LoadingRows } from './LoadingRows';
 
 const PAGE_SIZE = 24;
@@ -220,13 +221,9 @@ function FileRow({
 function PlatePane({ pick, onPickChange }: { pick: PlatePick; onPickChange: (next: PlatePick) => void }) {
   const { t } = useTranslation();
   const file = pick?.file ?? null;
-  const printable = file != null && file.planEligible && isPrintable({ file_tags: file.fileTags });
-  const { data, isPending, isError, refetch } = useQuery({
-    queryKey: ['library-file-plates', file?.id ?? null],
-    queryFn: () => api.getLibraryFilePlates(file!.id),
-    // Only a sliced file of a type that can be planned has plates worth offering.
-    enabled: printable,
-  });
+  const printable = platesReadable(file);
+  // The dialog reads the same query to drop a chosen plate the answer no longer has (V01).
+  const { data, isPending, isError, refetch } = usePlatesOf(file);
 
   if (pick == null || file == null) return <p className="text-sm text-bambu-gray">{t('orders.add.plate.pickFile')}</p>;
   if (!file.planEligible) return <p className="text-sm text-amber-700 dark:text-amber-400">{t('orders.add.plate.typeRefused')}</p>;
@@ -250,7 +247,8 @@ function PlatePane({ pick, onPickChange }: { pick: PlatePick; onPickChange: (nex
       <div role="radiogroup" aria-label={t('orders.add.plate.plates')} className="space-y-2">
         {plates.map((p) => (
           <PlateOption
-            key={p.index}
+            // A plate is its file's: the same number in another file is another picture (V02).
+            key={`${file.id}:${p.index}`}
             fileId={file.id}
             plate={p}
             checked={pick.plateIndex === p.index}
@@ -299,7 +297,10 @@ function PlateOption({
   onChoose: () => void;
 }) {
   const { t } = useTranslation();
-  const [broken, setBroken] = useState(false);
+  // The picture that failed, by its address: another address — another file's plate, or a
+  // new picture of this one — is tried, never taken for the failed one (E5-V02).
+  const src = plate.has_thumbnail && plate.thumbnail_url ? withMediaToken(plate.thumbnail_url) : null;
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const materials = [...new Set((plate.filaments ?? []).map((f) => f.type).filter(Boolean))].join(', ');
   const weight = plate.filament_used_grams != null ? `${formatWeight(plate.filament_used_grams)}${materials ? ` ${materials}` : ''}` : materials;
   const detail = [
@@ -316,12 +317,12 @@ function PlateOption({
       }`}
     >
       <input type="radio" name={`add-to-order-plate-${fileId}`} checked={checked} onChange={onChoose} className="mt-3 accent-bambu-green" />
-      {plate.has_thumbnail && plate.thumbnail_url && !broken ? (
+      {src && src !== failedSrc ? (
         // The picture is a protected media path: the token rides in the URL (media invariant).
         <img
-          src={withMediaToken(plate.thumbnail_url)}
+          src={src}
           alt=""
-          onError={() => setBroken(true)}
+          onError={() => setFailedSrc(src)}
           className="h-10 w-10 flex-shrink-0 rounded-lg bg-bambu-dark-tertiary object-contain"
         />
       ) : (

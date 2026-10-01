@@ -20,8 +20,10 @@ def _key(run, name: str) -> int:
     return run.id(f"edge:{name}")
 
 
-def _file(name: str, model: str, plates: list[dict]) -> dict:
+def _file(name: str, model: str, plates: list[dict], *, thumbnail: list[int] | None = None) -> dict:
     return {
+        # An RGB colour: each plate also carries a real PNG in the 3MF (seed_direct.plate_png).
+        "thumbnail": thumbnail,
         "key": f"edge:file:{name}",
         "filename": name,
         "folder": None,
@@ -121,6 +123,11 @@ def seed(run) -> list[str]:
         _file("q4_unsliced.stl", None, []),
         _file("s1_body.gcode.3mf", "P1S", [_plate(1, {"s1_body": 4, "s1_std": 4, "s1_alt": 4})]),
         _file("q1_long.gcode.3mf", "P1S", [_plate(1, {"q1_a": 6, "q1_b": 6})]),
+        # WS-13 E5-V03: plates with REAL pictures, so the add-to-order dialog's plate thumbnail
+        # is proven through the real `plate-thumbnail` route and the media token — two files,
+        # one plate number, two pictures (V02: a failure of one never hides the other).
+        _file("t1_picture_a.gcode.3mf", "P1S", [_plate(1, {"t1_part": 2})], thumbnail=[42, 161, 152]),
+        _file("t1_picture_b.gcode.3mf", "P1S", [_plate(1, {"t1_part": 2})], thumbnail=[233, 116, 46]),
     ]
     result = run.direct("files", {"printers": [], "files": files})
     for key, server_id in result["files"].items():

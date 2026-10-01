@@ -61,7 +61,7 @@ const page = (c) => {
       };
     },
   };
-  const job = { token: MARKER, api: 'http://stand', ui: 'http://ui', out: 'out', orders: { 241: 1, 244: 2 }, only: c.only ?? '', ...(c.media ? { media_token: c.media } : {}) };
+  const job = { token: MARKER, api: 'http://stand', ui: 'http://ui', out: 'out', orders: { 241: 1, 244: 2 }, only: c.only ?? '', ...(c.media ? { media_token: c.media } : {}), ...(c.mode ? { mode: c.mode } : {}) };
   return {
     context: () => ({ browser: () => browser }),
     request: {
@@ -127,6 +127,8 @@ const CASES = {
   done_refused: [{ refuse: { '/done': 500 } }, async ({ scenario }) => { await scenario('one', [], async () => ({ pass: true })); }],
   // Every scenario the real runner declares, none of them run.
   declared: [{ only: 'nothing-matches' }],
+  // …and the E5 runner's `edges` set (a job with mode «edges»).
+  declared_edges: [{ only: 'nothing-matches', mode: 'edges' }],
 };
 
 const [c, selftest] = CASES[name];

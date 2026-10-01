@@ -358,6 +358,94 @@ async (page, selftest = null) => {
     };
   }];
 
+  // ======================= edges: a REAL plate picture (E5-V03, V02) =======================
+  // The `edges` stand seeds two files whose plates carry real PNGs in the 3MF (edges.py,
+  // seed_direct.plate_png). The thumbnail route and the media token are the real ones; only a
+  // FAILURE of picture A is a fixture. A picture counts when it loaded and decoded at its own
+  // size — a status 200 alone, or the placeholder, is not a picture.
+  if (job.mode === 'edges') {
+    const EF = job.edge_files ?? {};
+    const pictureLoaded = (p) => p.waitForFunction(() => {
+      const img = document.querySelector('[role="dialog"] [role="radiogroup"] img');
+      return !!img && img.complete && img.naturalWidth > 0;
+    }, null, { timeout: 15000 });
+    const thumbAnswers = (p) => {
+      const answers = [];
+      p.on('response', (r) => {
+        if (!r.url().includes('/plate-thumbnail/')) return;
+        const u = new URL(r.url());
+        answers.push({ path: u.pathname, token: u.searchParams.has('token'), status: r.status(), type: r.headers()['content-type'] ?? null });
+      });
+      return answers;
+    };
+    const chooseFile = async (p, name) => {
+      await search(p, name);
+      await panelOf(p).getByRole('button', { name: new RegExp(`^${name}`) }).first().click();
+      await panelOf(p).getByRole('radio').first().waitFor({ timeout: 10000 });
+    };
+    const firstPicture = (p) => panelOf(p).locator('[role="radiogroup"] img').first().evaluate(async (el) => {
+      let decoded = false;
+      try { await el.decode(); decoded = true; } catch { decoded = false; }
+      const r = el.getBoundingClientRect();
+      const u = new URL(el.src);
+      return { complete: el.complete, naturalWidth: el.naturalWidth, naturalHeight: el.naturalHeight, decoded, box: [Math.round(r.width), Math.round(r.height)], path: u.pathname, token: u.searchParams.has('token') };
+    });
+    const pictureFixture = 'edges seed: t1_picture_a / t1_picture_b carry a real 160×120 PNG in Metadata/plate_1.png (edges.py, seed_direct.plate_png)';
+
+    await scenario('plate-thumbnail-loaded@1440', ['E5-E07', 'R04', 'E5-V03'], async () => {
+      const { ctx, p, errors } = await open(1440);
+      const answers = thumbAnswers(p);
+      await p.goto(detail(A), { waitUntil: 'networkidle' });
+      await ready(p);
+      await openAdd(p);
+      await tabIn(p, 'Разовий з файлу');
+      await chooseFile(p, 't1_picture_a');
+      await pictureLoaded(p);
+      const picture = await firstPicture(p);
+      const placeholders = await panelOf(p).locator('[role="radiogroup"] label').first().locator('svg').count();
+      const file = await shoot(p, 'plate-thumbnail-loaded@1440');
+      await ctx.close();
+      const served = answers.length > 0 && answers.every((a) => a.status === 200 && /image\/png/.test(a.type ?? '') && a.token);
+      return {
+        recipe: { stand: 'edges', url: '/projects/{order:241}', fixture: [pictureFixture], actions: ['tab «Разовий з файлу»', 'file t1_picture_a'] },
+        measured: { picture, placeholders, answers, errors },
+        pass: picture.complete && picture.decoded && picture.naturalWidth === 160 && picture.naturalHeight === 120 &&
+          picture.box[0] === 40 && picture.box[1] === 40 && picture.token && /^\/api\/v1\/library\/files\/\d+\/plate-thumbnail\/1$/.test(picture.path) &&
+          placeholders === 0 && served && errors.length === 0,
+        screenshots: [file],
+      };
+    });
+
+    await scenario('plate-thumbnail-a-b@1440', ['E5-E07', 'E5-V02'], async () => {
+      const aId = EF['t1_picture_a.gcode.3mf'];
+      const bId = EF['t1_picture_b.gcode.3mf'];
+      const { ctx, p, errors } = await open(1440, { fail: [[new RegExp(`/api/v1/library/files/${aId}/plate-thumbnail/`), 500]] });
+      await p.goto(detail(A), { waitUntil: 'networkidle' });
+      await ready(p);
+      await openAdd(p);
+      await tabIn(p, 'Разовий з файлу');
+      // B first: its plates are read and kept, as a person looking at both would have them.
+      await chooseFile(p, 't1_picture_b');
+      await pictureLoaded(p);
+      await chooseFile(p, 't1_picture_a');
+      await p.waitForFunction(() => !document.querySelector('[role="dialog"] [role="radiogroup"] img'), null, { timeout: 10000 });
+      const aPlaceholder = await panelOf(p).locator('[role="radiogroup"] label').first().locator('svg').count();
+      const fileA = await shoot(p, 'plate-thumbnail-a-failed@1440');
+      await chooseFile(p, 't1_picture_b');
+      await pictureLoaded(p);
+      const b = await firstPicture(p);
+      const fileB = await shoot(p, 'plate-thumbnail-b-after-a@1440');
+      await ctx.close();
+      return {
+        recipe: { stand: 'edges', url: '/projects/{order:241}', fixture: [pictureFixture, 'GET …/t1_picture_a/plate-thumbnail/… → 500'], actions: ['file B', 'file A (its picture fails)', 'file B again (cached plates)'] },
+        measured: { aPlaceholder, b, errors },
+        pass: aPlaceholder > 0 && b.complete && b.decoded && b.naturalWidth === 160 && b.path === `/api/v1/library/files/${bId}/plate-thumbnail/1` && b.token && errors.length === 0,
+        screenshots: [fileA, fileB],
+      };
+    });
+    return;
+  }
+
   // ======================= 1. the frame at every width (B01, B02, E02, R07) =======================
   for (const w of [2560, 1920, 1440, 1280, 1101, 1100, 1024, 768, 390]) {
     await scenario(`add-geometry@${w}`, ['E5-B01', 'E5-B02', 'E5-B06', 'E5-E02', 'R07'], async () => {
@@ -857,38 +945,60 @@ async (page, selftest = null) => {
     };
   });
 
-  // A plate's picture is a protected media path asked with the media token (R04). None of the
-  // stand's plates carries a picture, so the plates answer is told they do: the REAL
-  // `plate-thumbnail` path is asked, and its status says whether the token was taken (a 404
-  // is «no picture», a 401/403 would be the token refused). A loaded picture stays unproven.
-  await scenario('add-plate-thumbnail@1440', ['E5-E07', 'R04'], async () => {
+  // E5-V01: a chosen plate that a re-read no longer has is no longer chosen nor sent; its
+  // return chooses nothing. The plates answer is the stand's, then the same answer without
+  // plate 2 (a re-sliced file), then the stand's again — a minute later each time, as the app
+  // re-reads it.
+  await scenario('add-plate-vanish@1440', ['E5-E06', 'E5-V01'], async () => {
     const fileId = F['cable_clip_set.gcode.3mf'];
-    const withPictures = (b) => ({ ...b, plates: (b.plates ?? []).map((pl) => ({ ...pl, has_thumbnail: true, thumbnail_url: `/api/v1/library/files/${fileId}/plate-thumbnail/${pl.index}` })) });
-    const { ctx, p, errors } = await open(1440, { rewrite: [TAGGED, [new RegExp(`/api/v1/library/files/${fileId}/plates`), withPictures]] });
-    const answers = [];
-    p.on('response', (r) => {
-      if (!r.url().includes('/plate-thumbnail/')) return;
-      const u = new URL(r.url());
-      answers.push({ path: u.pathname, token: u.searchParams.has('token'), status: r.status() });
+    let platesMode = 'all';
+    const sentBatches = [];
+    const { ctx, p, errors } = await open(1440, {
+      writes: [SUGGEST, batchWrite(sentBatches)],
+      rewrite: [
+        TAGGED,
+        [new RegExp(`/api/v1/library/files/${fileId}/plates`), (b) => (platesMode === 'all' ? b : { ...b, plates: (b.plates ?? []).filter((pl) => pl.index === 1), is_multi_plate: false })],
+      ],
     });
+    await p.clock.install();
     await p.goto(detail(A), { waitUntil: 'networkidle' });
     await ready(p);
     await openAdd(p);
+    await tick(panelOf(p).locator('[data-testid^="add-product-"]').first());
+    await p.waitForTimeout(600);
     await tabIn(p, 'Разовий з файлу');
     await search(p, 'cable_clip');
     await fileRow(p, 'cable_clip_set').click();
-    await panelOf(p).getByRole('radio').first().waitFor({ timeout: 10000 });
-    await p.waitForTimeout(1500);
-    const shown = await panelOf(p).locator('[role="radiogroup"]').evaluate((g) => ({ imgs: g.querySelectorAll('img').length, icons: g.querySelectorAll('svg').length }));
+    await panelOf(p).getByRole('radio', { name: /Плита 2/ }).check({ timeout: 10000 });
+    const before = await footer(p).innerText();
+    platesMode = 'only1';
+    await refetchLater(p);
+    await panelOf(p).getByRole('radio', { name: /Плита 2/ }).waitFor({ state: 'detached', timeout: 10000 });
+    const gone = {
+      plate1Checked: await panelOf(p).getByRole('radio', { name: /Плита 1/ }).isChecked(),
+      summary: await footer(p).innerText(),
+      primary: (await primary(p).innerText()).trim(),
+      primaryEnabled: await primary(p).isEnabled(),
+    };
+    const fileGone = await shoot(p, 'add-plate-vanish@1440');
+    platesMode = 'all';
+    await refetchLater(p);
+    await panelOf(p).getByRole('radio', { name: /Плита 2/ }).waitFor({ timeout: 10000 });
+    const backChecked = await panelOf(p).getByRole('radio', { name: /Плита 2/ }).isChecked();
+    await primary(p).click();
+    await within(p.waitForFunction(() => !document.querySelector('[role="dialog"]')), 10000, 'dialog_stayed');
     await ctx.close();
-    const asked = answers.length > 0 && answers.every((a) => /^\/api\/v1\/library\/files\/\d+\/plate-thumbnail\/\d+$/.test(a.path) && a.token);
-    const taken = answers.every((a) => a.status !== 401 && a.status !== 403);
-    const loaded = answers.length > 0 && answers.every((a) => a.status === 200);
+    const kinds = (sentBatches[0]?.body?.lines ?? []).map((l) => l.kind);
     return {
-      recipe: { url: '/projects/{order:241}', fixture: [TAGGED_NOTE, 'GET …/cable_clip_set/plates → each plate told it has a picture (the real thumbnail path)'], actions: ['file: cable_clip_set'] },
-      measured: { answers, shown, errors },
-      pass: !asked || !taken || errors.length > 0 ? false : loaded ? true : null,
-      pending_reason: asked && taken && !loaded ? 'the stand holds no plate picture: the real path was asked with the media token and not refused, a loaded picture is not proven' : undefined,
+      recipe: {
+        url: '/projects/{order:241}',
+        fixture: ['POST /stock/suggest → runner proposal', 'POST …/lines/batch → intercepted', TAGGED_NOTE, 'GET …/cable_clip_set/plates → the stand\'s, then without plate 2, then the stand\'s again'],
+        actions: ['tick a product', 'file cable_clip_set, plate 2', 'a minute later: plate 2 gone', 'a minute later: plate 2 back', 'Add'],
+      },
+      measured: { before, gone, backChecked, kinds, errors },
+      pass: /разовий виріб з плити 2/.test(before) && !gone.plate1Checked && !/плити/.test(gone.summary) &&
+        gone.primary === 'Додати позиції (1)' && gone.primaryEnabled && !backChecked && kinds.join(',') === 'product' && errors.length === 0,
+      screenshots: [fileGone],
     };
   });
 

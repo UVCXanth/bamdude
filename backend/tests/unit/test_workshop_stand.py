@@ -1073,3 +1073,48 @@ def test_the_e05_stand_row_tags_follow_the_tag_writers_name_rule(name, file_type
         filename=name, file_type=file_type, file_metadata={}, source_type=None, swap_compatible=False
     )
     assert [t for t in written if t in {"gcode", "3mf", "stl", "project", "geometry"}] == tags
+
+
+def test_e05_the_edges_run_declares_its_own_scenarios():
+    run = _e04_run("declared_edges", _E05_RUNNER)
+
+    assert _e04_records(run) == []
+    assert _e04_done(run)["declared"] == list(e05_evidence.EDGE_SCENARIOS)
+    assert e05_evidence.expected_scenarios("edges") == e05_evidence.EDGE_SCENARIOS
+    assert e05_evidence.expected_scenarios("baseline") == e05_evidence.DETAIL_SCENARIOS
+    # The thumbnail is proven on the edges set; the baseline run no longer carries a pending one.
+    assert "add-plate-thumbnail@1440" not in e05_evidence.DETAIL_SCENARIOS
+
+
+def test_e05_an_edges_job_names_the_picture_files():
+    mapping = {f"order:{n}": {"id": int(n)} for n in e05_evidence.ORDERS}
+    mapping |= {f"product:{n}": {"id": int(n)} for n in e05_evidence.PRODUCTS}
+    mapping |= {f"file:{name}": {"id": i} for i, name in enumerate(e05_evidence.FILES)}
+    mapping |= {f"edge:file:{name}": {"id": 900 + i} for i, name in enumerate(e05_evidence.EDGE_FILES)}
+
+    assert "edge_files" not in e05_evidence.job_entities(mapping)
+    assert e05_evidence.job_entities(mapping, "edges")["edge_files"] == {
+        "t1_picture_a.gcode.3mf": 900,
+        "t1_picture_b.gcode.3mf": 901,
+    }
+
+
+def test_the_stand_seed_writes_a_real_plate_picture_and_says_so():
+    """E5-V03: a seeded file with ``thumbnail`` carries a real PNG, and its metadata says the
+    plate has a picture — the route then serves it from the 3MF like any uploaded file."""
+    import io
+
+    import seed_direct
+    from PIL import Image
+
+    image = Image.open(io.BytesIO(seed_direct.plate_png([42, 161, 152])))
+    image.verify()
+    assert image.size == (160, 120)
+
+    spec = {
+        "sliced": True,
+        "model": "P1S",
+        "plates": [{"index": 1, "minutes": 1, "grams": 1, "filaments": [], "objects": {"a": 1}}],
+    }
+    assert seed_direct._metadata({**spec, "thumbnail": [1, 2, 3]})["plates"][0]["has_thumbnail"] is True
+    assert seed_direct._metadata(spec)["plates"][0]["has_thumbnail"] is False

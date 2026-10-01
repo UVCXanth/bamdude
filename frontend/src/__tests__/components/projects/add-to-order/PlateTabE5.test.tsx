@@ -6,12 +6,13 @@
  * another file is chosen (R08).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../../utils';
 import { api, ApiError, withMediaToken } from '../../../../api/client';
 import type { Permission } from '../../../../api/client';
 import { AddToOrderDialog } from '../../../../components/projects/add-to-order/AddToOrderDialog';
-import { filesPage, libraryFile, pageOf, plate } from './fixtures';
+import { filesPage, libraryFile, pageOf, pipe, plate, suggestion } from './fixtures';
 
 const auth = vi.hoisted(() => ({ granted: new Set<string>() }));
 vi.mock('../../../../contexts/AuthContext', async (importOriginal) => {
@@ -115,6 +116,136 @@ describe('the one-off tab of «Add to order» (WS-13 E5 E)', () => {
     fireEvent.click(await screen.findByRole('radio', { name: /Plate 2/ }));
     fireEvent.click(fileRow(/clip\.gcode\.3mf/));
     expect(screen.getByRole('radio', { name: /Plate 2/ })).toBeChecked();
+  });
+
+  // ---- Codex review E5-V01 / V02: the plates the dialog holds follow their answer ----
+
+  /** A client whose plate answers live a minute, as the app's do — a cached answer is reused. */
+  const cachedClient = () => new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } });
+  const platesOf = (id: number, plates: ReturnType<typeof plate>[]) => ({
+    file_id: id,
+    filename: 'x',
+    is_multi_plate: plates.length > 1,
+    plates,
+  });
+  function renderWith(client: QueryClient) {
+    render(
+      <QueryClientProvider client={client}>
+        <AddToOrderDialog order={ORDER} onClose={() => {}} />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: 'One-off from a file' }));
+  }
+
+  it('V02: a picture that failed for file A does not hide the cached picture of file B', async () => {
+    const client = cachedClient();
+    for (const id of [31, 35]) {
+      client.setQueryData(['library-file-plates', id], platesOf(id, [
+        plate(1, { has_thumbnail: true, thumbnail_url: `/api/v1/library/files/${id}/plate-thumbnail/1` }),
+      ]));
+    }
+    renderWith(client);
+    fireEvent.click(await screen.findByRole('button', { name: /clip\.gcode\.3mf/ }));
+    const first = (await screen.findByRole('radio', { name: /Plate 1/ })).closest('label') as HTMLElement;
+    fireEvent.error(first.querySelector('img') as HTMLImageElement);
+    expect(first.querySelector('img')).toBeNull();
+    fireEvent.click(fileRow(/hook\.gcode\.3mf/));
+    const second = (await screen.findByRole('radio', { name: /Plate 1/ })).closest('label') as HTMLElement;
+    expect(second.querySelector('img')).toHaveAttribute('src', withMediaToken('/api/v1/library/files/35/plate-thumbnail/1'));
+  });
+
+  it('V02: a new picture address for the same plate is tried again, not taken for the failed one', async () => {
+    const client = cachedClient();
+    client.setQueryData(['library-file-plates', 31], platesOf(31, [
+      plate(1, { has_thumbnail: true, thumbnail_url: '/api/v1/library/files/31/plate-thumbnail/1' }),
+    ]));
+    renderWith(client);
+    fireEvent.click(await screen.findByRole('button', { name: /clip\.gcode\.3mf/ }));
+    const label = (await screen.findByRole('radio', { name: /Plate 1/ })).closest('label') as HTMLElement;
+    fireEvent.error(label.querySelector('img') as HTMLImageElement);
+    expect(label.querySelector('img')).toBeNull();
+    await act(async () => {
+      client.setQueryData(['library-file-plates', 31], platesOf(31, [
+        plate(1, { has_thumbnail: true, thumbnail_url: '/api/v1/library/files/31/plate-thumbnail/1?v=2' }),
+      ]));
+    });
+    const again = (await screen.findByRole('radio', { name: /Plate 1/ })).closest('label') as HTMLElement;
+    expect(again.querySelector('img')).not.toBeNull();
+  });
+
+  it('V01: a chosen plate that disappears from the answer is no longer chosen nor sent', async () => {
+    const client = cachedClient();
+    client.setQueryData(['library-file-plates', 31], platesOf(31, [plate(1)]));
+    renderWith(client);
+    fireEvent.click(await screen.findByRole('button', { name: /clip\.gcode\.3mf/ }));
+    fireEvent.click(await screen.findByRole('radio', { name: /Plate 1/ }));
+    expect(screen.getByText('One-off from plate 1 × 1')).toBeInTheDocument();
+    await act(async () => {
+      client.setQueryData(['library-file-plates', 31], platesOf(31, []));
+    });
+    expect(await screen.findByText('No plates to add.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create and add' })).toBeDisabled();
+    expect(screen.queryByText(/One-off from plate/)).not.toBeInTheDocument();
+  });
+
+  it('V01: plate 2 gone from an answer that keeps plate 1 — nothing chosen, and its return chooses nothing', async () => {
+    const client = cachedClient();
+    client.setQueryData(['library-file-plates', 31], platesOf(31, [plate(1), plate(2)]));
+    renderWith(client);
+    fireEvent.click(await screen.findByRole('button', { name: /clip\.gcode\.3mf/ }));
+    fireEvent.click(await screen.findByRole('radio', { name: /Plate 2/ }));
+    await act(async () => {
+      client.setQueryData(['library-file-plates', 31], platesOf(31, [plate(1)]));
+    });
+    expect(await screen.findByRole('radio', { name: /Plate 1/ })).not.toBeChecked();
+    expect(screen.queryByRole('radio', { name: /Plate 2/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create and add' })).toBeDisabled();
+    // The plate coming back is not chosen silently.
+    await act(async () => {
+      client.setQueryData(['library-file-plates', 31], platesOf(31, [plate(1), plate(2)]));
+    });
+    expect(await screen.findByRole('radio', { name: /Plate 2/ })).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Create and add' })).toBeDisabled();
+  });
+
+  it('V01: a mixed batch sends the other kinds and not the vanished plate', async () => {
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf([pipe], 1));
+    vi.spyOn(api, 'suggestStock').mockImplementation(async (items) => ({
+      items: items.map((item) => suggestion({ product_id: item.product_id })),
+    }));
+    const client = cachedClient();
+    client.setQueryData(['library-file-plates', 31], platesOf(31, [plate(1)]));
+    render(
+      <QueryClientProvider client={client}>
+        <AddToOrderDialog order={ORDER} onClose={() => {}} />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(within(await screen.findByTestId(`add-product-${pipe.id}`)).getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('tab', { name: 'One-off from a file' }));
+    fireEvent.click(await screen.findByRole('button', { name: /clip\.gcode\.3mf/ }));
+    fireEvent.click(await screen.findByRole('radio', { name: /Plate 1/ }));
+    await act(async () => {
+      client.setQueryData(['library-file-plates', 31], platesOf(31, []));
+    });
+    await screen.findByText('No plates to add.');
+    fireEvent.click(screen.getByRole('button', { name: 'Add lines (1)' }));
+    await waitFor(() => expect(add).toHaveBeenCalled());
+    const [, lines] = add.mock.calls[0] as [number, { kind: string }[]];
+    expect(lines.map((l) => l.kind)).toEqual(['product']);
+  });
+
+  it('V01: a failed re-read of the plates keeps the chosen plate — an error is not an empty answer', async () => {
+    const client = cachedClient();
+    client.setQueryData(['library-file-plates', 31], platesOf(31, [plate(1)]));
+    renderWith(client);
+    fireEvent.click(await screen.findByRole('button', { name: /clip\.gcode\.3mf/ }));
+    fireEvent.click(await screen.findByRole('radio', { name: /Plate 1/ }));
+    getPlates.mockRejectedValueOnce(new ApiError('boom', 500));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['library-file-plates', 31] });
+    });
+    expect(screen.getByRole('radio', { name: /Plate 1/ })).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Create and add' })).toBeEnabled();
   });
 
   it('reads the whole library, not only the files at its root (WS-13 E5 T7)', async () => {

@@ -1,7 +1,7 @@
 """WS-13 E5 acceptance evidence (spec §I1/I2) — a sidecar, loopback only, stdlib only.
 
     python scripts/workshop_stand/e05_evidence.py pairs [boundary]
-    python scripts/workshop_stand/e05_evidence.py serve [name] [scenario-prefix,...]
+    python scripts/workshop_stand/e05_evidence.py serve [name] [scenario-prefix,...] [baseline|edges]
 
 E4's sidecar (``e04_evidence.py``) is reused as it is — its record guard, its completeness
 verdict and its job server — and the universal E0 runner (``capture_serve.py`` +
@@ -89,7 +89,7 @@ DETAIL_SCENARIOS = (
     "add-parts@390",
     "add-parts-hidden@1440",
     "add-plate@1440",
-    "add-plate-thumbnail@1440",
+    "add-plate-vanish@1440",
     "add-plate-states@1440",
     "add-plate-list@1440",
     "add-plate-noaccess@1440",
@@ -107,13 +107,28 @@ DETAIL_SCENARIOS = (
 )
 
 
-def job_entities(mapping: dict) -> dict:
+# The `edges` stand (an isolated set; spec I1 «можна ізольований набір edges», Codex E5-V03):
+# two files whose plates carry REAL pictures — the plate thumbnail proven through the real
+# route and the media token, and the A→B pair of V02.
+EDGE_FILES = ("t1_picture_a.gcode.3mf", "t1_picture_b.gcode.3mf")
+EDGE_SCENARIOS = ("plate-thumbnail-loaded@1440", "plate-thumbnail-a-b@1440")
+MODES = ("baseline", "edges")
+
+
+def job_entities(mapping: dict, mode: str = "baseline") -> dict:
     """The stand's ids of the mockup entities the runner opens, by mockup number or file name."""
-    return {
+    out = {
         "orders": {number: mapping[f"order:{number}"]["id"] for number in ORDERS},
         "products": {number: mapping[f"product:{number}"]["id"] for number in PRODUCTS},
         "files": {name: mapping[f"file:{name}"]["id"] for name in FILES},
     }
+    if mode == "edges":
+        out["edge_files"] = {name: mapping[f"edge:file:{name}"]["id"] for name in EDGE_FILES}
+    return out
+
+
+def expected_scenarios(mode: str) -> tuple[str, ...]:
+    return EDGE_SCENARIOS if mode == "edges" else DETAIL_SCENARIOS
 
 
 def e05_recipes() -> list[dict]:
@@ -205,8 +220,10 @@ def media_token(client) -> str:
     return answer["token"]
 
 
-def serve(name: str = "detail", only: str = "") -> None:
-    root = stand.check_root(stand.expected_root("baseline"), mode="baseline")
+def serve(name: str = "detail", only: str = "", mode: str = "baseline") -> None:
+    if mode not in MODES:
+        raise SystemExit(f"mode is one of {MODES}")
+    root = stand.check_root(stand.expected_root(mode), mode=mode)
     manifest = stand.read_manifest(root)
     mapping = json.loads((root / "mapping.json").read_text(encoding="utf-8"))
     client = stand.logged_in_client(root, manifest)
@@ -222,7 +239,8 @@ def serve(name: str = "detail", only: str = "") -> None:
         "out": str(out_dir / "shots").replace("\\", "/"),
         # A comma list of scenario-id prefixes: a partial run records only those.
         "only": only,
-        **job_entities(mapping),
+        "mode": mode,
+        **job_entities(mapping, mode),
     }
     head = header(manifest)
     records: list[dict] = []
@@ -240,7 +258,7 @@ def serve(name: str = "detail", only: str = "") -> None:
     out = out_dir / f"{name}.json"
     rows = [e02_evidence.with_hashes(r) for r in records]
     verdict = e04_evidence.run_completeness(
-        finished=finished.is_set(), done=done, records=records, only=only, expected=DETAIL_SCENARIOS
+        finished=finished.is_set(), done=done, records=records, only=only, expected=expected_scenarios(mode)
     )
     out.write_text(
         json.dumps(
@@ -268,6 +286,6 @@ def serve(name: str = "detail", only: str = "") -> None:
 
 if __name__ == "__main__":
     if sys.argv[1] == "serve":
-        serve(*sys.argv[2:4])
+        serve(*sys.argv[2:5])
     else:
         {"pairs": pairs}[sys.argv[1]](*sys.argv[2:3])
