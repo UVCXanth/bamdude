@@ -7,7 +7,8 @@ import { api } from '../../../api/client';
 import type { OrderBoardColumn, OrderViewFilters } from '../../../api/client';
 import { useAuth } from '../../../contexts/AuthContext';
 import { Button } from '../../Button';
-import { FulfilmentDialog } from '../fulfilment/FulfilmentDialog';
+import { toOrderRef } from '../orderActions/orderRef';
+import type { OrderActions } from '../orderActions/useOrderActions';
 import { BoardCard } from './BoardCard';
 import { BOARD_COLUMNS, boardKeyboardCoordinates } from './boardDrop';
 import type { BoardColumnKey } from './boardDrop';
@@ -19,6 +20,8 @@ interface OrdersBoardProps {
   onOpenList: () => void;
   /** The page's «Reset» — offered when the filters leave the whole board empty. */
   onReset?: () => void;
+  /** The page's order action host (WS-13 E6 B01) — a drop onto «done» is its «complete» door. */
+  actions: OrderActions;
 }
 
 /** The list's URL for a column's overflow: its tab and stage, the shared filters kept, the place in the list dropped. */
@@ -35,7 +38,7 @@ function listHref(search: string, key: BoardColumnKey): string {
  * board, each column capped by the server with its `total` beside it. A drop
  * writes and re-reads; nothing is rearranged here.
  */
-export function OrdersBoard({ filters, onOpenList, onReset }: OrdersBoardProps) {
+export function OrdersBoard({ filters, onOpenList, onReset, actions }: OrdersBoardProps) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const { search } = useLocation();
@@ -46,7 +49,10 @@ export function OrdersBoard({ filters, onOpenList, onReset }: OrdersBoardProps) 
     // The previous board stays while a new search or filter is asked — no flash of empty columns.
     placeholderData: keepPreviousData,
   });
-  const { drop, fulfilling, closeFulfilment } = useBoardActions();
+  const { drop } = useBoardActions((orderId) => {
+    const order = BOARD_COLUMNS.flatMap((key) => data?.[key].items ?? []).find((o) => o.id === orderId);
+    if (order) actions.run('complete', toOrderRef(order));
+  });
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: boardKeyboardCoordinates }),
@@ -112,8 +118,6 @@ export function OrdersBoard({ filters, onOpenList, onReset }: OrdersBoardProps) 
         </div>
       </DndContext>
 
-      {/* A drop onto «done» is the issue dialog, ticked to close (spec workshop-order-issue, rule 28). */}
-      {fulfilling != null && <FulfilmentDialog orderId={fulfilling} complete onClose={closeFulfilment} />}
     </>
   );
 }

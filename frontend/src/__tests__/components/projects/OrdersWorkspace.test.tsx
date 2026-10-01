@@ -4,6 +4,7 @@ import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { OrderListItem, OrderListPage } from '../../../api/client';
 import { OrdersWorkspace } from '../../../components/projects/OrdersWorkspace';
+import { NO_ACTIONS, WithOrderActions } from '../../fixtures/orderActionsHost';
 
 const row = (over: Partial<OrderListItem>): OrderListItem => ({
   id: 1, code: 'OR-0001', name: 'Ten flasks', customer_id: 2, customer_name: 'ACME', color: null, status: 'active',
@@ -50,7 +51,7 @@ function screenIsWide(wide: boolean) {
   );
 }
 
-const props = { isLoading: false, isPlaceholderData: false, perPage: 24, onPageChange: () => {}, onPerPageChange: () => {} };
+const props = { isLoading: false, isPlaceholderData: false, perPage: 24, onPageChange: () => {}, onPerPageChange: () => {}, actions: NO_ACTIONS };
 
 afterEach(() => {
   window.history.pushState({}, '', '/');
@@ -105,26 +106,55 @@ describe('OrdersWorkspace', () => {
   it('deleting the shown order moves the pane on to the next one at once', async () => {
     const onPick = vi.fn();
     vi.spyOn(api, 'deleteOrder').mockResolvedValue(undefined as never);
-    render(<OrdersWorkspace data={page(ROWS)} {...props} picked={null} onPick={onPick} />);
+    // The delete runs through the PAGE's action host (WS-13 E6 B01) — the pane passes its own way out.
+    // One answer of the list, as `useQuery` hands it: the skip of the deleted row is tied to it.
+    const data = page(ROWS);
+    render(<WithOrderActions>{(actions) => <OrdersWorkspace data={data} {...props} actions={actions} picked={null} onPick={onPick} />}</WithOrderActions>);
     await screen.findByRole('heading', { name: 'Ten flasks' });
     fireEvent.click(screen.getByRole('button', { name: /^Order actions/ }));
     fireEvent.click(screen.getByRole('menuitem', { name: /^delete$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Delete order?' })).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(onPick).toHaveBeenCalledWith(null));
     // The list has not been read again yet — the deleted row is still in it — and the pane is already on the next.
     expect(await screen.findByRole('heading', { name: 'Lamp' })).toBeInTheDocument();
   });
   it('the next answer of the list ends the skip — an order that reuses the id shows', async () => {
     vi.spyOn(api, 'deleteOrder').mockResolvedValue(undefined as never);
-    const { rerender } = render(<OrdersWorkspace data={page(ROWS)} {...props} picked={2} onPick={() => {}} />);
+    const hosted = (data: ReturnType<typeof page>, picked: number | null) => (
+      <WithOrderActions>{(actions) => <OrdersWorkspace data={data} {...props} actions={actions} picked={picked} onPick={() => {}} />}</WithOrderActions>
+    );
+    const first = page(ROWS);
+    const { rerender } = render(hosted(first, 2));
     await screen.findByRole('heading', { name: 'Lamp' });
     fireEvent.click(screen.getByRole('button', { name: /^Order actions/ }));
     fireEvent.click(screen.getByRole('menuitem', { name: /^delete$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Delete order?' })).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(api.deleteOrder).toHaveBeenCalledWith(2));
     // SQLite without AUTOINCREMENT gives the newest id to the next order created.
-    rerender(<OrdersWorkspace data={page([ROWS[0], row({ id: 2, code: 'OR-0002', name: 'Reborn' })])} {...props} picked={null} onPick={() => {}} />);
+    rerender(hosted(page([ROWS[0], row({ id: 2, code: 'OR-0002', name: 'Reborn' })]), null));
     expect(await within(screen.getByRole('list', { name: 'Orders' })).findByRole('button', { name: /Reborn/ })).toBeInTheDocument();
+  });
+  it('keeps an open action on its own order when the pane moves to another (WS-13 E6 R02)', async () => {
+    // The host lives on the page, the pane is keyed by order: an action opened for
+    // order 1 must not follow the pane to order 2, nor close when order 1 leaves the page.
+    const state = vi.spyOn(api, 'getFulfilment').mockReturnValue(new Promise(() => {}));
+    vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
+    const first = page(ROWS);
+    const hosted = (data: ReturnType<typeof page>) => (
+      <WithOrderActions>{(actions) => <OrdersWorkspace data={data} {...props} actions={actions} picked={null} onPick={() => {}} />}</WithOrderActions>
+    );
+    const { rerender } = render(hosted(first));
+    await screen.findByRole('heading', { name: 'Ten flasks' });
+    fireEvent.click(screen.getByRole('button', { name: 'Order actions OR-0001' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mark completed' }));
+    expect(await screen.findByRole('dialog', { name: /Stock & issue/ })).toBeInTheDocument();
+
+    // A refetch drops order 1 — the pane falls back to order 2.
+    rerender(hosted(page([ROWS[1]])));
+    await waitFor(() => expect(api.getOrder).toHaveBeenCalledWith(2));
+    expect(screen.getByRole('dialog', { name: /Stock & issue/ })).toBeInTheDocument();
+    expect(state).toHaveBeenCalledWith(1);
+    expect(state).not.toHaveBeenCalledWith(2);
   });
   it('the pane is the order without the page chrome — no breadcrumb, not the page heading', async () => {
     render(<OrdersWorkspace data={page(ROWS)} {...props} picked={null} onPick={() => {}} />);

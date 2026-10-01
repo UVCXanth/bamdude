@@ -277,6 +277,8 @@ describe('CustomerPage', () => {
     // Cancelling the order invalidates ['customer', id]; that refetch fails.
     fireEvent.click(await screen.findByRole('button', { name: /actions/i }));
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Cancel' }));
+    // Cancelling asks first (WS-13 E6 B05).
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel order' }));
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
 
     expect(screen.getByRole('heading', { name: 'ACME' })).toBeInTheDocument();
@@ -307,6 +309,7 @@ describe('CustomerPage', () => {
     expect(await screen.findByRole('heading', { name: 'ACME' })).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: /actions/i }));
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Cancel' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel order' }));
 
     expect(await screen.findByText(/could not refresh/i)).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'ACME' })).toBeInTheDocument();

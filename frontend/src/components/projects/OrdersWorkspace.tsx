@@ -6,6 +6,7 @@ import { useIsWideLayout } from '../../hooks/useIsWideLayout';
 import { isOverdue } from '../../utils/orderDates';
 import { PaginationBar } from '../PaginationBar';
 import { OrderView } from './OrderView';
+import type { OrderActions } from './orderActions/useOrderActions';
 import { parseOrderSection, type OrderSection } from './orderSections';
 import { ProgressBar } from './ProgressBar';
 import { StageBadge } from './StageBadge';
@@ -24,6 +25,8 @@ interface OrdersWorkspaceProps {
   section?: string;
   /** A tab chosen on the shown order: the owner writes that order AND the tab, in one go. */
   onSection?: (orderId: number, section: OrderSection) => void;
+  /** The PAGE's order action host (WS-13 E6 B01): the pane is keyed by order, the host is not. */
+  actions: OrderActions;
 }
 
 /**
@@ -44,6 +47,7 @@ export function OrdersWorkspace({
   onPick,
   section,
   onSection,
+  actions,
 }: OrdersWorkspaceProps) {
   const { t } = useTranslation();
   const wide = useIsWideLayout();
@@ -118,6 +122,7 @@ export function OrdersWorkspace({
             key={shown}
             id={shown}
             embedded
+            actions={actions}
             section={shownSection}
             onSectionChange={(next) => onSection?.(shown, next)}
             onDeleted={() => {

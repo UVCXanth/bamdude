@@ -1,19 +1,18 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
 import { api } from '../../api/client';
-import type { OrderListItem, ProjectStatus } from '../../api/client';
+import type { ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { ProgressBar } from '../../components/projects/ProgressBar';
 import { OrderStatusTabs, OrdersListView } from '../../components/projects/OrdersListView';
 import { ORDER_TABS, ORDERS_DEFAULT_SORT } from '../../components/projects/orderList';
 import { useOrderSortOptions } from '../../hooks/useOrderSortOptions';
-import { OrderModal } from '../../components/projects/OrderModal';
 import { DispatchNotesSection } from '../../components/stock/DispatchNotesSection';
-import { useFulfilmentDoor } from '../../components/projects/fulfilment/useFulfilmentDoor';
+import { useOrderActions } from '../../components/projects/orderActions/useOrderActions';
 import { CustomerModal } from '../../components/customers/CustomerModal';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
@@ -22,7 +21,7 @@ import { ListViewToggle } from '../../components/ListViewToggle';
 import type { ListView } from '../../components/ListViewToggle';
 import { StatTile, StatTiles } from '../../components/StatTile';
 import { formatMoney } from '../../utils/currency';
-import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
+import { invalidateAfterDelete } from '../../utils/queryInvalidation';
 import { CustomerContactsSection } from '../../components/customers/CustomerContactsSection';
 import { useCardsTableViews } from '../../hooks/useCardsTableViews';
 import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
@@ -71,8 +70,11 @@ export function CustomerPage() {
     : 'active';
   const [editingCustomer, setEditingCustomer] = useState(false);
   const [deletingCustomer, setDeletingCustomer] = useState(false);
-  const [editingOrder, setEditingOrder] = useState<OrderListItem | null | 'new'>(null);
-  const [deletingOrder, setDeletingOrder] = useState<OrderListItem | null>(null);
+  // The page's order action host (WS-13 E6 B01), declared before the early returns —
+  // its dialogs outlive the cards they were opened from; focus with nowhere to return
+  // lands on the customer's heading.
+  const heading = useRef<HTMLHeadingElement>(null);
+  const { run, create, dialogs } = useOrderActions({ fallbackFocusRef: heading });
 
   const {
     data: customer,
@@ -132,35 +134,6 @@ export function CustomerPage() {
     onError: (e: Error) => showToast(e.message, 'error'),
   });
 
-  const { openFulfilment, fulfilmentDialog } = useFulfilmentDoor();
-  const setOrderStatus = useMutation({
-    mutationFn: ({ orderId, status }: { orderId: number; status: ProjectStatus }) =>
-      api.updateOrder(orderId, { status }),
-    onSuccess: () => invalidateOrderViews(queryClient, { customerId: id }),
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
-  const removeOrder = useMutation({
-    mutationFn: (orderId: number) => api.deleteOrder(orderId),
-    // The order LIST on this page — so the id goes, and the deleted order's own
-    // entry leaves the cache with it. (The customer delete above passes none:
-    // that row's page is this one, and it unmounts.)
-    onSuccess: (_res, orderId) => {
-      invalidateAfterDelete(queryClient, 'order', orderId);
-      showToast(t('orders.toast.deleted'));
-      setDeletingOrder(null);
-    },
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
-  const duplicateOrder = useMutation({
-    mutationFn: (orderId: number) => api.duplicateOrder(orderId),
-    onSuccess: (saved) => {
-      invalidateOrderViews(queryClient, { orderId: saved.id, customerId: id });
-      showToast(t('orders.toast.duplicated'));
-      navigate(`/projects/${saved.id}`);
-    },
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
-
   if (isLoading) {
     return (
       <div className="p-4 flex items-center gap-2 text-bambu-gray">
@@ -200,7 +173,9 @@ export function CustomerPage() {
 
       <header className="flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0 space-y-1">
-          <h1 className="text-2xl font-semibold text-white">{customer.name}</h1>
+          <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold text-white outline-none">
+            {customer.name}
+          </h1>
           <p className="text-sm text-bambu-gray">{`${customer.code} · ${t(`customers.kind.${customer.kind}`)}`}</p>
           {customer.notes && <p className="text-sm text-bambu-gray whitespace-pre-line">{customer.notes}</p>}
         </div>
@@ -264,7 +239,7 @@ export function CustomerPage() {
           <div className="flex items-center gap-2 flex-wrap">
             <ListViewToggle value={view} options={views} onChange={setView} />
             {hasPermission('projects:create') && (
-              <Button onClick={() => setEditingOrder('new')}>
+              <Button onClick={() => create(id)}>
                 <Plus className="w-4 h-4" />
                 {t('customers.page.newOrder')}
               </Button>
@@ -302,12 +277,7 @@ export function CustomerPage() {
                 setPerPage(n);
                 setPage(1);
               }}
-              onEdit={setEditingOrder}
-              onDuplicate={(o) => duplicateOrder.mutate(o.id)}
-              onSetStatus={(o, status) =>
-                status === 'completed' ? openFulfilment(o.id) : setOrderStatus.mutate({ orderId: o.id, status })
-              }
-              onDelete={setDeletingOrder}
+              actions={{ run, create }}
             />
           )}
         </WorkshopTabPanel>
@@ -317,15 +287,7 @@ export function CustomerPage() {
 
       <DispatchNotesSection customerId={customer.id} canEdit={hasPermission('projects:update')} />
 
-      {fulfilmentDialog}
-
-      {editingOrder && (
-        <OrderModal
-          order={editingOrder === 'new' ? null : editingOrder}
-          defaultCustomerId={id}
-          onClose={() => setEditingOrder(null)}
-        />
-      )}
+      {dialogs}
 
       {deletingCustomer && (
         <ConfirmModal
@@ -338,16 +300,6 @@ export function CustomerPage() {
         />
       )}
 
-      {deletingOrder && (
-        <ConfirmModal
-          title={t('orders.confirm.deleteTitle')}
-          message={t('orders.confirm.deleteBody')}
-          variant="danger"
-          isLoading={removeOrder.isPending}
-          onConfirm={() => removeOrder.mutate(deletingOrder.id)}
-          onCancel={() => setDeletingOrder(null)}
-        />
-      )}
     </div>
   );
 }

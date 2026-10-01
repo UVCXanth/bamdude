@@ -1,14 +1,11 @@
-import { useEffect, useId, useState } from 'react';
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router';
+import { useEffect, useId, useRef, useState } from 'react';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Plus, X } from 'lucide-react';
 import { api, ORDER_STAGES } from '../../api/client';
-import type { OrderListItem, OrderStage, OrderViewFilters, ProjectStatus } from '../../api/client';
+import type { OrderStage, OrderViewFilters, ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
-import { useToast } from '../../contexts/ToastContext';
-import { OrderModal } from '../../components/projects/OrderModal';
-import { useFulfilmentDoor } from '../../components/projects/fulfilment/useFulfilmentDoor';
+import { useOrderActions } from '../../components/projects/orderActions/useOrderActions';
 import { FilamentStrip } from '../../components/projects/FilamentStrip';
 import { OrdersTiles } from '../../components/projects/OrdersTiles';
 import { OrderStatusTabs, OrdersListView } from '../../components/projects/OrdersListView';
@@ -17,7 +14,6 @@ import { OrdersWorkspace } from '../../components/projects/OrdersWorkspace';
 import { OrdersDeadlines } from '../../components/projects/OrdersDeadlines';
 import { ORDER_TABS, ORDERS_DEFAULT_SORT } from '../../components/projects/orderList';
 import { useOrderSortOptions } from '../../hooks/useOrderSortOptions';
-import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
 import { Select } from '../../components/Select';
 import { ListPageHeader } from '../../components/ListPageHeader';
@@ -30,7 +26,6 @@ import { sectionParam } from '../../components/projects/orderSections';
 import { parseOrdersView, parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
 import type { OrdersView } from '../../hooks/usePersistedState';
 import { useSearchBox } from '../../hooks/useSearchBox';
-import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
 import { WorkshopTabPanel } from '../../components/workshop/WorkshopTabs';
 
 const GROUP_STORAGE_KEY = 'projects.groupByCustomer';
@@ -57,9 +52,6 @@ const PER_PAGE_STORAGE_KEY = 'projects.perPage';
 export function OrdersPage() {
   const { t } = useTranslation();
   const { hasPermission, user } = useAuth();
-  const { showToast } = useToast();
-  const queryClient = useQueryClient();
-  const navigate = useNavigate();
 
   // Nothing chosen (or nothing readable) → the table (WS-13 E2 B05, S03): its default
   // order is `due-asc`, so a URL without `sort` sorts by due date for such a reader.
@@ -105,8 +97,12 @@ export function OrdersPage() {
       return false;
     }
   });
-  const [editing, setEditing] = useState<OrderListItem | null | 'new'>(null);
-  const [deleting, setDeleting] = useState<OrderListItem | null>(null);
+  // The order action host of the whole page (WS-13 E6 B01) — cards, board and the
+  // workspace pane all run through it; its dialogs outlive the rows they were opened
+  // from, and focus with nowhere to return lands on the page's heading.
+  const heading = useRef<HTMLHeadingElement>(null);
+  const { run, create, dialogs } = useOrderActions({ fallbackFocusRef: heading });
+  const actions = { run, create };
 
   const viewFilters: OrderViewFilters = {
     ...(customerId != null ? { customer_id: customerId } : {}),
@@ -145,43 +141,6 @@ export function OrdersPage() {
   // The farm-wide filament strip over the list — every active order, not just the visible tab/filter.
   const filamentQuery = useQuery({ queryKey: ['orders-filament'], queryFn: api.getOrdersFilament, staleTime: 30_000 });
 
-  // `CustomerListFigures` and `CustomerFigures` are computed from these very
-  // orders, so every status change moves a customer tile — and this page
-  // does not know whose order it just touched, which is why every key in the
-  // set is a prefix. See `utils/queryInvalidation.ts`.
-  const invalidate = () => invalidateOrderViews(queryClient);
-
-  const { openFulfilment, fulfilmentDialog } = useFulfilmentDoor();
-  const setStatus = useMutation({
-    mutationFn: ({ id, status }: { id: number; status: ProjectStatus }) => api.updateOrder(id, { status }),
-    onSuccess: invalidate,
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
-  const remove = useMutation({
-    mutationFn: (id: number) => api.deleteOrder(id),
-    // ⚠️ The id is passed because this is a LIST: the deleted order's own
-    // `['project', id]` entry has no observer here, so nothing would ever
-    // clear it and the next visit to a reused id — or a Back into the route
-    // that just went — would render it out of cache inside the 60 s
-    // `staleTime`. The order PAGE passes no id; it uses `useForgetOnUnmount`
-    // instead, for the reason spelled out in `utils/queryInvalidation`.
-    onSuccess: (_res, id) => {
-      invalidateAfterDelete(queryClient, 'order', id);
-      showToast(t('orders.toast.deleted'));
-      setDeleting(null);
-    },
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
-  const duplicate = useMutation({
-    mutationFn: (id: number) => api.duplicateOrder(id),
-    onSuccess: (saved) => {
-      invalidate();
-      showToast(t('orders.toast.duplicated'));
-      navigate(`/projects/${saved.id}`);
-    },
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
-
   const toggleGroupByCustomer = (value: boolean) => {
     setGroupByCustomer(value);
     try {
@@ -193,10 +152,10 @@ export function OrdersPage() {
 
   return (
     <div className="workshop p-4">
-      <ListPageHeader title={t('orders.list.title')} subtitle={t('orders.list.subtitle')}>
+      <ListPageHeader title={t('orders.list.title')} subtitle={t('orders.list.subtitle')} headingRef={heading}>
         <ListViewToggle value={view} options={views} onChange={setView} />
         {hasPermission('projects:create') && (
-          <Button onClick={() => setEditing('new')}>
+          <Button onClick={() => create(customerId)}>
             <Plus className="w-4 h-4" />
             {t('orders.list.newOrder')}
           </Button>
@@ -320,10 +279,7 @@ export function OrdersPage() {
                 setPage(1);
               }}
               groupByCustomer={groupByCustomer}
-              onEdit={setEditing}
-              onDuplicate={(o) => duplicate.mutate(o.id)}
-              onSetStatus={(o, status) => (status === 'completed' ? openFulfilment(o.id) : setStatus.mutate({ id: o.id, status }))}
-              onDelete={setDeleting}
+              actions={actions}
             />
           )}
           {view === 'workspace' && (
@@ -345,6 +301,7 @@ export function OrdersPage() {
               // The shown order and its tab in ONE write — also when the order was
               // the first-row fallback and the URL did not name it yet (F03).
               onSection={(orderId, next) => setExtras({ order: String(orderId), section: sectionParam(next) }, { keepPage: true })}
+              actions={actions}
             />
           )}
         </WorkshopTabPanel>
@@ -352,6 +309,7 @@ export function OrdersPage() {
       {view === 'kanban' && (
         <OrdersBoard
           filters={viewFilters}
+          actions={actions}
           onOpenList={() => setViewPref('table')}
           onReset={() => {
             forget();
@@ -363,22 +321,7 @@ export function OrdersPage() {
         <OrdersDeadlines filters={viewFilters} week={week} onWeek={(n) => setExtra('week', String(n), { keepPage: true })} />
       )}
 
-      {fulfilmentDialog}
-
-      {editing && (
-        <OrderModal order={editing === 'new' ? null : editing} defaultCustomerId={customerId} onClose={() => setEditing(null)} />
-      )}
-
-      {deleting && (
-        <ConfirmModal
-          title={t('orders.confirm.deleteTitle')}
-          message={t('orders.confirm.deleteBody')}
-          variant="danger"
-          isLoading={remove.isPending}
-          onConfirm={() => remove.mutate(deleting.id)}
-          onCancel={() => setDeleting(null)}
-        />
-      )}
+      {dialogs}
     </div>
   );
 }

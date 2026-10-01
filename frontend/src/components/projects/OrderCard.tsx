@@ -1,22 +1,21 @@
 import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { Pencil, Copy, CheckCircle2, RotateCcw, Ban, Trash2, Package } from 'lucide-react';
+import { Package } from 'lucide-react';
 import { api } from '../../api/client';
-import type { OrderListItem, ProjectStatus } from '../../api/client';
-import { useAuth } from '../../contexts/AuthContext';
+import type { OrderListItem } from '../../api/client';
 import { isOverdue } from '../../utils/orderDates';
-import { CardActionMenu, CardActionMenuItem } from '../CardActionMenu';
 import { StageBadge } from './StageBadge';
 import { PriorityBadge } from './PriorityBadge';
 import { ProgressBar } from './ProgressBar';
 import { ResponsibleName } from './ResponsibleName';
+import { OrderActionMenu } from './orderActions/OrderActionMenu';
+import { toOrderRef } from './orderActions/orderRef';
+import type { OrderActions } from './orderActions/useOrderActions';
 
 interface OrderCardProps {
   order: OrderListItem;
-  onEdit: (order: OrderListItem) => void;
-  onDuplicate: (order: OrderListItem) => void;
-  onSetStatus: (order: OrderListItem, status: ProjectStatus) => void;
-  onDelete: (order: OrderListItem) => void;
+  /** The page's order action host (WS-13 E6 B01) — the card's menu runs through it. */
+  actions: OrderActions;
 }
 
 /**
@@ -32,9 +31,8 @@ interface OrderCardProps {
  * (`absolute inset-0`, named by `aria-label` because it wraps no text) and the
  * menu is an ordinary sibling above it: there is nothing left to cancel.
  */
-export function OrderCard({ order, onEdit, onDuplicate, onSetStatus, onDelete }: OrderCardProps) {
+export function OrderCard({ order, actions }: OrderCardProps) {
   const { t } = useTranslation();
-  const { hasPermission } = useAuth();
   const overdue = isOverdue(order);
   // Three at most: the strip is a hint at what is in the order, not its contents.
   const lineProducts = (order.line_products ?? []).slice(0, 3);
@@ -90,79 +88,13 @@ export function OrderCard({ order, onEdit, onDuplicate, onSetStatus, onDelete }:
             </div>
             {/* Above the overlay link, so the trigger is clickable at all. */}
             <div className="relative z-10 flex-shrink-0">
-              <CardActionMenu label={t('common.actions')} testId={`order-${order.id}-menu`} width={160}>
-                {(close) => (
-                  <>
-                    {hasPermission('projects:update') && (
-                      <CardActionMenuItem
-                        onSelect={() => {
-                          onEdit(order);
-                          close();
-                        }}
-                      >
-                        <Pencil className="w-4 h-4" />
-                        {t('orders.card.menu.edit')}
-                      </CardActionMenuItem>
-                    )}
-                    {hasPermission('projects:create') && (
-                      <CardActionMenuItem
-                        onSelect={() => {
-                          onDuplicate(order);
-                          close();
-                        }}
-                      >
-                        <Copy className="w-4 h-4" />
-                        {t('orders.card.menu.duplicate')}
-                      </CardActionMenuItem>
-                    )}
-                    {hasPermission('projects:update') && order.status === 'active' && (
-                      <CardActionMenuItem
-                        onSelect={() => {
-                          onSetStatus(order, 'completed');
-                          close();
-                        }}
-                      >
-                        <CheckCircle2 className="w-4 h-4" />
-                        {t('orders.card.menu.complete')}
-                      </CardActionMenuItem>
-                    )}
-                    {hasPermission('projects:update') && order.status !== 'active' && (
-                      <CardActionMenuItem
-                        onSelect={() => {
-                          onSetStatus(order, 'active');
-                          close();
-                        }}
-                      >
-                        <RotateCcw className="w-4 h-4" />
-                        {t('orders.card.menu.reopen')}
-                      </CardActionMenuItem>
-                    )}
-                    {hasPermission('projects:update') && order.status === 'active' && (
-                      <CardActionMenuItem
-                        onSelect={() => {
-                          onSetStatus(order, 'cancelled');
-                          close();
-                        }}
-                      >
-                        <Ban className="w-4 h-4" />
-                        {t('orders.card.menu.cancel')}
-                      </CardActionMenuItem>
-                    )}
-                    {hasPermission('projects:delete') && (
-                      <CardActionMenuItem
-                        danger
-                        onSelect={() => {
-                          onDelete(order);
-                          close();
-                        }}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        {t('orders.card.menu.delete')}
-                      </CardActionMenuItem>
-                    )}
-                  </>
-                )}
-              </CardActionMenu>
+              <OrderActionMenu
+                order={toOrderRef(order)}
+                context="list"
+                actions={actions}
+                extra={{ order }}
+                testId={`order-${order.id}-menu`}
+              />
             </div>
           </div>
 

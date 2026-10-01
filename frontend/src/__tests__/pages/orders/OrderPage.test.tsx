@@ -449,7 +449,7 @@ describe('OrderPage', () => {
     expect(await screen.findByRole('heading', { name: 'Ten flasks' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /^Order actions/ }));
     fireEvent.click(screen.getByRole('menuitem', { name: /^delete$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Delete order?' })).getByRole('button', { name: 'Delete' }));
 
     expect(await screen.findByText('order list')).toBeInTheDocument();
     await waitFor(() => expect(client.getQueryData(['project', 1])).toBeUndefined());

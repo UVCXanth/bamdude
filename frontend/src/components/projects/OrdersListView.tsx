@@ -6,6 +6,7 @@ import type { OrderListItem, OrderListPage, OrderListTotals, ProjectStatus } fro
 import type { ListView } from '../ListViewToggle';
 import { PaginationBar } from '../PaginationBar';
 import { OrderCard } from './OrderCard';
+import type { OrderActions } from './orderActions/useOrderActions';
 import { OrdersTable } from './OrdersTable';
 import { ORDER_TABS } from './orderList';
 import { WorkshopTabs } from '../workshop/WorkshopTabs';
@@ -116,10 +117,8 @@ export interface OrdersListViewProps {
   onPerPageChange: (perPage: number) => void;
   /** Groups the PAGE by customer — not a sort. */
   groupByCustomer?: boolean;
-  onEdit: (order: OrderListItem) => void;
-  onDuplicate: (order: OrderListItem) => void;
-  onSetStatus: (order: OrderListItem, status: ProjectStatus) => void;
-  onDelete: (order: OrderListItem) => void;
+  /** The page's order action host (WS-13 E6 B01) — handed to every card. */
+  actions: OrderActions;
 }
 
 /**
@@ -139,10 +138,7 @@ export function OrdersListView({
   onPageChange,
   onPerPageChange,
   groupByCustomer = false,
-  onEdit,
-  onDuplicate,
-  onSetStatus,
-  onDelete,
+  actions,
 }: OrdersListViewProps) {
   const { t } = useTranslation();
   const visible = useMemo(() => data?.items ?? [], [data]);
@@ -189,14 +185,7 @@ export function OrdersListView({
     ) : null;
 
   const renderCard = (order: OrderListItem) => (
-    <OrderCard
-      key={order.id}
-      order={order}
-      onEdit={onEdit}
-      onDuplicate={onDuplicate}
-      onSetStatus={onSetStatus}
-      onDelete={onDelete}
-    />
+    <OrderCard key={order.id} order={order} actions={actions} />
   );
 
   return (

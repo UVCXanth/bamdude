@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../../api/client';
 import type { OrderStage } from '../../../api/client';
@@ -12,12 +11,12 @@ import type { BoardColumnKey } from './boardDrop';
  * board never rearranges itself: after either write every order view — the
  * board included, it lives under `projects` — is read again from the server.
  */
-export function useBoardActions() {
+export function useBoardActions(onComplete: (orderId: number) => void) {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  // A drop onto «done» opens the issue dialog: an order completes only fully
-  // issued (spec workshop-order-issue, rule 28), so the board never writes it.
-  const [fulfilling, setFulfilling] = useState<number | null>(null);
+  // A drop onto «done» is a door to the issue dialog: an order completes only fully
+  // issued (spec workshop-order-issue, rule 28), so the board never writes it — the
+  // page's action host opens the dialog (WS-13 E6 B04).
 
   const onError = (e: Error) => showToast(e.message, 'error');
   const setStage = useMutation({
@@ -28,12 +27,8 @@ export function useBoardActions() {
   const drop = (orderId: number, from: BoardColumnKey, to: BoardColumnKey) => {
     const action = resolveDrop(from, to);
     if (action?.kind === 'stage') setStage.mutate({ id: orderId, stage: action.stage });
-    else if (action?.kind === 'complete') setFulfilling(orderId);
+    else if (action?.kind === 'complete') onComplete(orderId);
   };
 
-  return {
-    drop,
-    fulfilling,
-    closeFulfilment: () => setFulfilling(null),
-  };
+  return { drop };
 }

@@ -34,23 +34,18 @@ const noop = () => {};
 
 function mount(
   order: Order,
-  { onBankSurplus = noop, onCover = noop, embedded = false, fulfilment }: {
-    onBankSurplus?: () => void;
-    onCover?: () => void;
+  { run = noop, embedded = false, fulfilment }: {
+    /** The page's action host (WS-13 E6 B01) — every button and menu item runs through it. */
+    run?: (...args: unknown[]) => void;
     embedded?: boolean;
-    fulfilment?: { onOpen: () => void; primary: boolean };
+    fulfilment?: { primary: boolean };
   } = {},
 ) {
   render(
     <OrderHeader
       order={order}
-      onEdit={noop}
-      onDuplicate={noop}
-      onDelete={noop}
-      onSetStatus={noop}
-      onBankSurplus={onBankSurplus}
-      bankingSurplus={false}
-      onCover={onCover}
+      actions={{ run, create: noop }}
+      extra={{ order }}
       embedded={embedded}
       fulfilment={fulfilment}
     />,
@@ -215,15 +210,14 @@ describe('OrderHeader · bank the surplus', () => {
   });
 
   it('is offered with the count while there is, and hands the press up', () => {
-    const onBank = vi.fn();
-    mount(withBankable(5), { onBankSurplus: onBank });
+    const run = vi.fn();
+    mount(withBankable(5), { run });
 
     const button = screen.getByTestId('order-bank-surplus');
     expect(button).toHaveTextContent('(5)');
     fireEvent.click(button);
-    // ⚠️ The header does not POST: the page owns the call and the toast,
-    // because only it knows which products the order's lines are for.
-    expect(onBank).toHaveBeenCalledTimes(1);
+    // ⚠️ The header does not POST: the page's action host owns the call (E6 B01).
+    expect(run).toHaveBeenCalledWith('bank', expect.objectContaining({ id: 1, bankable_surplus: 5 }), expect.anything());
   });
 
   it('is not offered to a reader, whatever the count (spec §I1, R08)', () => {
@@ -235,12 +229,13 @@ describe('OrderHeader · bank the surplus', () => {
 
 describe('OrderHeader · actions', () => {
   it('shows Edit and the issue dialog, and opens the dialog', () => {
-    const onOpen = vi.fn();
-    mount(makeOrder(), { fulfilment: { onOpen, primary: true } });
+    const run = vi.fn();
+    mount(makeOrder(), { run, fulfilment: { primary: true } });
 
     expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('order-fulfilment'));
-    expect(onOpen).toHaveBeenCalled();
+    // The visible button asks for no close (E6 B04, R09): the dialog's own rule decides.
+    expect(run).toHaveBeenCalledWith('fulfil', expect.objectContaining({ id: 1 }), expect.objectContaining({ mode: 'all', complete: false }));
   });
 
   it('draws no issue button when there is nothing to do', () => {
@@ -251,11 +246,13 @@ describe('OrderHeader · actions', () => {
   it('keeps the rest of an active order’s actions in one menu, and nothing about an «auto» stage', () => {
     mount(makeOrder());
     const menu = openMenu();
+    // The one order menu of WS-13 E6 B02 — «Stock & issue…» joined it (O10).
     expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
       'Edit',
       'Duplicate…',
+      'Stock & issue…',
       'Mark completed',
-      'Cancel order',
+      'Cancel',
       'Cover…',
       'Delete',
     ]);
@@ -267,14 +264,14 @@ describe('OrderHeader · actions', () => {
     const items = within(openMenu()).getAllByRole('menuitem').map((item) => item.textContent);
     expect(items).toContain('Reopen');
     expect(items).not.toContain('Mark completed');
-    expect(items).not.toContain('Cancel order');
+    expect(items).not.toContain('Cancel');
   });
 
   it('hands «Cover…» up to the page', () => {
-    const onCover = vi.fn();
-    mount(makeOrder(), { onCover });
+    const run = vi.fn();
+    mount(makeOrder(), { run });
     fireEvent.click(within(openMenu()).getByRole('menuitem', { name: 'Cover…' }));
-    expect(onCover).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith('cover', expect.objectContaining({ id: 1 }), expect.objectContaining({ order: expect.anything() }));
   });
 
   it('gives a reader no actions at all — no buttons and no menu', () => {
@@ -299,10 +296,10 @@ describe('OrderHeader · actions', () => {
 
 describe('OrderHeader · cover', () => {
   it('shows the cover as a small picture that opens the cover dialog for an editor', () => {
-    const onCover = vi.fn();
-    mount(makeOrder({ cover_image_filename: 'cover.png' }), { onCover });
+    const run = vi.fn();
+    mount(makeOrder({ cover_image_filename: 'cover.png' }), { run });
     fireEvent.click(screen.getByRole('button', { name: 'Change cover' }));
-    expect(onCover).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith('cover', expect.objectContaining({ id: 1 }), expect.anything());
     expect(screen.getByTestId('order-cover-image')).toHaveAttribute('src', api.getProjectCoverImageUrl(1));
   });
 

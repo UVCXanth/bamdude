@@ -11,7 +11,8 @@ import { Modal } from '../Modal';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 interface DuplicateOrderModalProps {
-  order: Order;
+  /** The id and name are all it needs — a list row's ref will do (WS-13 E6 D04). */
+  order: Pick<Order, 'id' | 'name'>;
   onClose: () => void;
 }
 

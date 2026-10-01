@@ -17,10 +17,11 @@ vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
 
 const base: OrderListItem = { ...ORDER_ROW_DEFAULTS, id: 1, code: 'OR-0001', name: 'Ten flasks', customer_id: 2, customer_name: 'ACME', color: '#00ae42', status: 'active', stage: 'prep', responsible_id: null, responsible_name: null, due_date: null, priority: 'normal', price: 120, tags: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00Z', lines_count: 2, ordered: 10, printed: 4, covered_units: 4, remaining: 6, from_stock_units: 0, issued_units: 0, progress: 0.4, prints_in_progress: 0, prints_queued: 0, line_products: [{ product_id: 11, has_cover: true }, { product_id: 12, has_cover: false }] };
 const noop = () => {};
+const actions = { run: noop, create: noop };
 
 describe('OrderCard', () => {
   it('shows covered / ordered from the server and links to the order', () => {
-    render(<OrderCard order={base} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    render(<OrderCard order={base} actions={actions} />);
     expect(screen.getByText('4 / 10')).toBeInTheDocument();
     expect(screen.getByRole('link')).toHaveAttribute('href', '/projects/1');
     // The anchor wraps no text any more (it is an overlay), so its accessible
@@ -37,7 +38,7 @@ describe('OrderCard', () => {
     // Pass 8, Decision 5 + Ruling 21: `ProjectListResponse` carries the order's
     // own capped sum, so the card reads it directly. `printed` stays literal —
     // the farm printed four — and this is the other half of "done".
-    render(<OrderCard order={{ ...base, from_stock_units: 3, covered_units: 7, remaining: 3, progress: 0.7 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    render(<OrderCard order={{ ...base, from_stock_units: 3, covered_units: 7, remaining: 3, progress: 0.7 }} actions={actions} />);
     expect(screen.getByTestId('order-1-from-stock')).toHaveTextContent('4 printed · 3 from stock');
     expect(screen.getByTestId('order-1-progress')).toHaveTextContent('7 / 10');
     expect(screen.getByTestId('order-1-remaining')).toHaveTextContent('3 left to cover');
@@ -45,12 +46,12 @@ describe('OrderCard', () => {
   it('shows nothing, and no bare zero, for an order that reserved none', () => {
     // A zero is not "no stock reserved, shown as 0" — it is nothing at all, and
     // a bare `&&` on the number would have rendered the 0 itself.
-    render(<OrderCard order={base} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    render(<OrderCard order={base} actions={actions} />);
     expect(screen.queryByTestId('order-1-from-stock')).not.toBeInTheDocument();
     expect(strayZeroTextNodes(screen.getByTestId('order-1-card'))).toHaveLength(0);
   });
   it("shows each line's product picture whole in the strip", () => {
-    render(<OrderCard order={base} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    render(<OrderCard order={base} actions={actions} />);
     const tile = screen.getByTestId('product-cover');
     expect(tile.className).toContain('object-contain');
     expect(tile.className).not.toContain('object-cover');
@@ -58,17 +59,17 @@ describe('OrderCard', () => {
 
   it('shows at most three product tiles however long the order is', () => {
     const many = [11, 12, 13, 14, 15].map((product_id) => ({ product_id, has_cover: false }));
-    render(<OrderCard order={{ ...base, line_products: many }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    render(<OrderCard order={{ ...base, line_products: many }} actions={actions} />);
     expect(screen.getAllByTestId('product-cover-placeholder')).toHaveLength(3);
   });
   it('an order with nothing ordered yet shows no bar and no stray zero', () => {
-    render(<OrderCard order={{ ...base, ordered: 0, printed: 0, progress: 0, lines_count: 0, line_products: [] }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    render(<OrderCard order={{ ...base, ordered: 0, printed: 0, progress: 0, lines_count: 0, line_products: [] }} actions={actions} />);
     expect(screen.queryByTestId('order-1-progress')).not.toBeInTheDocument();
     // Scoped to the card: the rule is "a hidden bar leaves no bare 0 behind", not "the card never shows a zero" (pre-flight ruling 1).
     expect(strayZeroTextNodes(screen.getByTestId('order-1-card'))).toHaveLength(0);
   });
   it('shows the stage rather than the status, and who is responsible', () => {
-    render(<OrderCard order={{ ...base, stage: 'qc', responsible_name: 'ira' }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    render(<OrderCard order={{ ...base, stage: 'qc', responsible_name: 'ira' }} actions={actions} />);
     expect(screen.getByText('Quality check')).toBeInTheDocument();
     expect(screen.queryByText('Active')).not.toBeInTheDocument();
     expect(screen.getByText('IR')).toBeInTheDocument();
@@ -76,14 +77,14 @@ describe('OrderCard', () => {
   });
 
   it('flags an overdue active order', () => {
-    render(<OrderCard order={{ ...base, due_date: '2020-01-01' }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    render(<OrderCard order={{ ...base, due_date: '2020-01-01' }} actions={actions} />);
     expect(screen.getByText(/overdue/i)).toBeInTheDocument();
   });
   it('shows what is printing and queued right now, and nothing when both are zero', () => {
-    const { rerender } = render(<OrderCard order={{ ...base, prints_in_progress: 2, prints_queued: 3 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    const { rerender } = render(<OrderCard order={{ ...base, prints_in_progress: 2, prints_queued: 3 }} actions={actions} />);
     expect(screen.getByTestId('order-1-live')).toHaveTextContent('printing 2 print(s) · queued 3 job(s)');
 
-    rerender(<OrderCard order={{ ...base, prints_in_progress: 0, prints_queued: 0 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    rerender(<OrderCard order={{ ...base, prints_in_progress: 0, prints_queued: 0 }} actions={actions} />);
     expect(screen.queryByText(/printing/)).not.toBeInTheDocument();
   });
 
@@ -96,7 +97,7 @@ describe('OrderCard', () => {
      * cancel, and nothing to forget.
      */
     it('renders the open menu outside the card anchor, on document.body', () => {
-      render(<OrderCard order={base} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+      render(<OrderCard order={base} actions={actions} />);
 
       fireEvent.click(screen.getByTestId('order-1-menu'));
 
@@ -107,18 +108,20 @@ describe('OrderCard', () => {
     });
 
     it('acts on the item that was clicked, and closes', () => {
-      const onEdit = vi.fn();
-      render(<OrderCard order={base} onEdit={onEdit} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+      // The card runs the page's action model (WS-13 E6 B01): the action, the order's
+      // ref, and the row itself for the dialogs that need more than the ref.
+      const run = vi.fn();
+      render(<OrderCard order={base} actions={{ run, create: noop }} />);
 
       fireEvent.click(screen.getByTestId('order-1-menu'));
       fireEvent.click(screen.getByRole('menuitem', { name: /edit/i }));
 
-      expect(onEdit).toHaveBeenCalledWith(base);
+      expect(run).toHaveBeenCalledWith('edit', expect.objectContaining({ id: 1, code: 'OR-0001' }), { order: base });
       expect(screen.queryByRole('menu')).not.toBeInTheDocument();
     });
 
     it('closes on Escape', () => {
-      render(<OrderCard order={base} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+      render(<OrderCard order={base} actions={actions} />);
 
       fireEvent.click(screen.getByTestId('order-1-menu'));
       expect(screen.getByRole('menu')).toBeInTheDocument();
@@ -128,7 +131,7 @@ describe('OrderCard', () => {
     });
 
     it('names the trigger as a menu before it is opened', () => {
-      render(<OrderCard order={base} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+      render(<OrderCard order={base} actions={actions} />);
 
       const trigger = screen.getByTestId('order-1-menu');
       expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
@@ -142,13 +145,13 @@ describe('OrderCard', () => {
 
 describe('OrderCard · issued', () => {
   it('says how much went out of an active order', () => {
-    render(<OrderCard order={{ ...base, issued_units: 4 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    render(<OrderCard order={{ ...base, issued_units: 4 }} actions={actions} />);
     expect(screen.getByTestId('order-1-issued')).toHaveTextContent('Issued 4 of 10');
   });
 
   it('says nothing of it for a closed order', () => {
     render(
-      <OrderCard order={{ ...base, status: 'completed', stage: 'done', issued_units: 10 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />,
+      <OrderCard order={{ ...base, status: 'completed', stage: 'done', issued_units: 10 }} actions={actions} />,
     );
     expect(screen.queryByTestId('order-1-issued')).not.toBeInTheDocument();
   });

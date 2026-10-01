@@ -1,36 +1,32 @@
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Ban, CheckCircle2, Copy, ExternalLink, Image as ImageIcon, PackageCheck, PackagePlus, Pencil, RotateCcw, Trash2 } from 'lucide-react';
+import { ExternalLink, PackageCheck, PackagePlus, Pencil } from 'lucide-react';
 import { api } from '../../api/client';
-import type { Order, ProjectStatus } from '../../api/client';
+import type { Order } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatMoney } from '../../utils/currency';
 import { formatCalendarDate, formatDateOnly } from '../../utils/date';
 import { isOverdue } from '../../utils/orderDates';
 import { Button } from '../Button';
-import { CardActionMenu, CardActionMenuItem } from '../CardActionMenu';
 import { contactTitle } from '../customers/contactFormat';
 import { OrderCoverThumb } from './OrderCover';
 import { StatusBadge } from './StatusBadge';
 import { PriorityBadge } from './PriorityBadge';
 import { ResponsibleName } from './ResponsibleName';
+import { OrderActionMenu } from './orderActions/OrderActionMenu';
+import { toOrderRef } from './orderActions/orderRef';
+import type { OrderActions, RunExtra } from './orderActions/useOrderActions';
 
 interface OrderHeaderProps {
   order: Order;
-  onEdit: () => void;
-  onDuplicate: () => void;
-  onDelete: () => void;
-  onSetStatus: (status: ProjectStatus) => void;
-  /** «Bank the surplus» (pass 8, Decision 2). The page owns the call and the
-   *  toast — it is the one that knows which products the order is for. */
-  onBankSurplus: () => void;
-  bankingSurplus: boolean;
-  /** The cover dialog — the page owns it, like every other dialog of the order. */
-  onCover: () => void;
+  /** The page's order action host (WS-13 E6 B01): every button and the menu run through it. */
+  actions: OrderActions;
+  /** What the header's runs add — the full order, and the view's forget-on-delete. */
+  extra: RunExtra;
   /** «Stock & issue…» — offered when the order has something to assemble, receive or
    *  issue (spec workshop-order-issue, rule 26); the primary action on the QC stage. */
-  fulfilment?: { onOpen: () => void; primary: boolean };
+  fulfilment?: { primary: boolean };
   /** Drawn inside another page (the orders workspace): an h2 — the page has its own
    *  h1 — and «Open» to the full page as the first action. */
   embedded?: boolean;
@@ -59,13 +55,8 @@ interface OrderHeaderProps {
  */
 export function OrderHeader({
   order,
-  onEdit,
-  onDuplicate,
-  onDelete,
-  onSetStatus,
-  onBankSurplus,
-  bankingSurplus,
-  onCover,
+  actions,
+  extra,
   fulfilment,
   embedded = false,
   openHref,
@@ -77,9 +68,8 @@ export function OrderHeader({
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
 
   const canUpdate = hasPermission('projects:update');
-  const canCreate = hasPermission('projects:create');
-  const canDelete = hasPermission('projects:delete');
   const active = order.status === 'active';
+  const ref = toOrderRef(order);
   const bankable = order.figures.bankable_surplus;
   const margin = order.figures.margin_with_procurement;
   const tags = order.tags ? order.tags.split(',').map((tag) => tag.trim()).filter(Boolean) : [];
@@ -93,7 +83,7 @@ export function OrderHeader({
           the title is squeezed beside the actions — one letter a line at 390. With 20rem
           the actions move under the title block as soon as the two do not fit (C06). */}
       <div className="flex min-w-0 grow basis-80 items-start gap-3">
-        <OrderCoverThumb order={order} canEdit={canUpdate} onOpen={onCover} />
+        <OrderCoverThumb order={order} canEdit={canUpdate} onOpen={() => actions.run('cover', ref, extra)} />
         <div className="min-w-0">
           <p data-testid="order-meta" className="text-xs text-bambu-gray">
             {order.code} · {t('orders.header.created', { date: shortDate(order.created_at) })}
@@ -210,7 +200,7 @@ export function OrderHeader({
           </Link>
         )}
         {canUpdate && (
-          <Button variant="secondary" size="sm" onClick={onEdit}>
+          <Button variant="secondary" size="sm" onClick={() => actions.run('edit', ref, extra)}>
             <Pencil className="w-4 h-4" />
             {t('orders.header.edit')}
           </Button>
@@ -220,7 +210,7 @@ export function OrderHeader({
             variant={fulfilment.primary ? 'primary' : 'secondary'}
             size="sm"
             data-testid="order-fulfilment"
-            onClick={fulfilment.onOpen}
+            onClick={() => actions.run('fulfil', ref, { ...extra, mode: 'all', complete: false })}
           >
             <PackageCheck className="w-4 h-4" />
             {t('orders.header.fulfil')}
@@ -231,67 +221,14 @@ export function OrderHeader({
             variant="secondary"
             size="sm"
             data-testid="order-bank-surplus"
-            onClick={onBankSurplus}
-            disabled={bankingSurplus}
+            onClick={() => actions.run('bank', ref, extra)}
             title={t('orders.header.bankHint')}
           >
             <PackagePlus className="w-4 h-4" />
             {t('stock.bank.actionCount', { count: bankable })}
           </Button>
         )}
-        {(canUpdate || canCreate || canDelete) && (
-          <CardActionMenu label={t('orders.header.menu', { code: order.code })} width="max-content" estimatedHeight={280}>
-            {(close) => (
-              <>
-                {canUpdate && (
-                  <CardActionMenuItem onSelect={() => { close(); onEdit(); }}>
-                    <Pencil className="w-4 h-4" />
-                    {t('orders.header.edit')}
-                  </CardActionMenuItem>
-                )}
-                {canCreate && (
-                  <CardActionMenuItem onSelect={() => { close(); onDuplicate(); }}>
-                    <Copy className="w-4 h-4" />
-                    {t('orders.header.duplicate')}
-                  </CardActionMenuItem>
-                )}
-                {canUpdate && active && (
-                  <>
-                    <CardActionMenuItem onSelect={() => { close(); onSetStatus('completed'); }}>
-                      <CheckCircle2 className="w-4 h-4" />
-                      {t('orders.header.complete')}
-                    </CardActionMenuItem>
-                    <CardActionMenuItem onSelect={() => { close(); onSetStatus('cancelled'); }}>
-                      <Ban className="w-4 h-4" />
-                      {t('orders.header.cancel')}
-                    </CardActionMenuItem>
-                  </>
-                )}
-                {canUpdate && !active && (
-                  <CardActionMenuItem onSelect={() => { close(); onSetStatus('active'); }}>
-                    <RotateCcw className="w-4 h-4" />
-                    {t('orders.header.reopen')}
-                  </CardActionMenuItem>
-                )}
-                {canUpdate && (
-                  <CardActionMenuItem onSelect={() => { close(); onCover(); }}>
-                    <ImageIcon className="w-4 h-4" />
-                    {t('orders.header.cover')}
-                  </CardActionMenuItem>
-                )}
-                {canDelete && (
-                  <>
-                    {(canUpdate || canCreate) && <div role="separator" className="my-1 border-t border-bambu-dark-tertiary" />}
-                    <CardActionMenuItem danger onSelect={() => { close(); onDelete(); }}>
-                      <Trash2 className="w-4 h-4" />
-                      {t('orders.header.delete')}
-                    </CardActionMenuItem>
-                  </>
-                )}
-              </>
-            )}
-          </CardActionMenu>
-        )}
+        <OrderActionMenu order={ref} context="detail" actions={actions} extra={extra} />
       </div>
     </header>
   );

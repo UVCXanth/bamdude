@@ -22,31 +22,32 @@ describe('useBoardActions', () => {
   it('a drop into another active column sets the stage at once', async () => {
     const stage = vi.spyOn(api, 'setOrderStage').mockResolvedValue({} as never);
     const update = vi.spyOn(api, 'updateOrder').mockResolvedValue({} as never);
-    const { result } = renderHook(() => useBoardActions(), { wrapper });
+    const onComplete = vi.fn();
+    const { result } = renderHook(() => useBoardActions(onComplete), { wrapper });
     act(() => result.current.drop(5, 'prep', 'qc'));
     await waitFor(() => expect(stage).toHaveBeenCalledWith(5, 'qc'));
     expect(update).not.toHaveBeenCalled();
-    expect(result.current.fulfilling).toBeNull();
+    expect(onComplete).not.toHaveBeenCalled();
   });
-  it('a drop into «done» opens the issue dialog and writes nothing itself', () => {
+  it('a drop into «done» is the page’s «complete» door and writes nothing itself (WS-13 E6 B04)', () => {
     const stage = vi.spyOn(api, 'setOrderStage').mockResolvedValue({} as never);
     const update = vi.spyOn(api, 'updateOrder').mockResolvedValue({} as never);
-    const { result } = renderHook(() => useBoardActions(), { wrapper });
+    const onComplete = vi.fn();
+    const { result } = renderHook(() => useBoardActions(onComplete), { wrapper });
     act(() => result.current.drop(5, 'qc', 'done'));
-    expect(result.current.fulfilling).toBe(5);
+    expect(onComplete).toHaveBeenCalledWith(5);
     expect(update).not.toHaveBeenCalled();
     expect(stage).not.toHaveBeenCalled();
-    act(() => result.current.closeFulfilment());
-    expect(result.current.fulfilling).toBeNull();
   });
   it('a drop into its own column, or of a completed card, sends nothing', () => {
     const stage = vi.spyOn(api, 'setOrderStage').mockResolvedValue({} as never);
     const update = vi.spyOn(api, 'updateOrder').mockResolvedValue({} as never);
-    const { result } = renderHook(() => useBoardActions(), { wrapper });
+    const onComplete = vi.fn();
+    const { result } = renderHook(() => useBoardActions(onComplete), { wrapper });
     act(() => result.current.drop(5, 'qc', 'qc'));
     act(() => result.current.drop(5, 'done', 'prep'));
     expect(stage).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
-    expect(result.current.fulfilling).toBeNull();
+    expect(onComplete).not.toHaveBeenCalled();
   });
 });

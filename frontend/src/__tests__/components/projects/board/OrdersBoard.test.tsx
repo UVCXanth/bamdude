@@ -4,6 +4,7 @@ import { render } from '../../../utils';
 import { api } from '../../../../api/client';
 import type { OrderBoard, OrderListItem } from '../../../../api/client';
 import { OrdersBoard } from '../../../../components/projects/board/OrdersBoard';
+import { NO_ACTIONS, WithOrderActions } from '../../../fixtures/orderActionsHost';
 
 // Dragging is gated on `projects:update`, and the real provider resolves the
 // admin only after its own request — the hook alone is replaced.
@@ -44,7 +45,7 @@ describe('OrdersBoard', () => {
   });
   it('draws four columns with their titles and totals, and asks with the filters', async () => {
     const get = vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
-    render(<OrdersBoard filters={{ customer_id: 2, q: 'lamp' }} onOpenList={() => {}} />);
+    render(<OrdersBoard filters={{ customer_id: 2, q: 'lamp' }} onOpenList={() => {}} actions={NO_ACTIONS} />);
     await screen.findByText('Lamp');
     expect(get).toHaveBeenCalledWith({ customer_id: 2, q: 'lamp' });
     for (const [key, title, total] of [['prep', 'Preparation', '1'], ['printing', 'Printing', '2'], ['qc', 'Quality check', '0'], ['done', 'Done', '9']]) {
@@ -55,7 +56,7 @@ describe('OrdersBoard', () => {
   });
   it('a card shows code, name, customer, coverage, the live prints and who is responsible', async () => {
     vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
-    render(<OrdersBoard filters={{}} onOpenList={() => {}} />);
+    render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
     const card = await screen.findByTestId('board-card-2');
     expect(within(card).getByText('OR-0002')).toBeInTheDocument();
     expect(within(card).getByRole('link', { name: 'Lamp' })).toHaveAttribute('href', '/projects/2');
@@ -69,7 +70,7 @@ describe('OrdersBoard', () => {
     vi.spyOn(api, 'getOrderBoard').mockResolvedValue(
       board({ prep: { items: [order({ id: 1, issued_units: 4 })], total: 1 } }),
     );
-    render(<OrdersBoard filters={{}} onOpenList={() => {}} />);
+    render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
     const card = await screen.findByTestId('board-card-1');
     expect(within(card).getByTestId('board-card-1-issued')).toHaveTextContent('Issued 4 of 10');
     expect(within(screen.getByTestId('board-card-3')).queryByTestId('board-card-3-issued')).not.toBeInTheDocument();
@@ -83,13 +84,13 @@ describe('OrdersBoard', () => {
         },
       }),
     );
-    render(<OrdersBoard filters={{}} onOpenList={() => {}} />);
+    render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
     expect(await screen.findByTestId('board-card-1-due')).toHaveClass('text-red-500');
     expect(screen.getByTestId('board-card-4-due')).not.toHaveClass('text-red-500');
   });
   it('active cards carry a drag handle; completed cards do not', async () => {
     vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
-    render(<OrdersBoard filters={{}} onOpenList={() => {}} />);
+    render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
     const active = await screen.findByTestId('board-card-1');
     expect(within(active).getByRole('button', { name: 'Move OR-0001' })).toHaveAttribute('aria-roledescription', 'draggable');
     const done = screen.getByTestId('board-card-3');
@@ -100,7 +101,7 @@ describe('OrdersBoard', () => {
     window.history.pushState({}, '', '/projects?customer=2&q=lamp&page=3');
     vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
     const onOpenList = vi.fn();
-    render(<OrdersBoard filters={{ customer_id: 2, q: 'lamp' }} onOpenList={onOpenList} />);
+    render(<OrdersBoard filters={{ customer_id: 2, q: 'lamp' }} onOpenList={onOpenList} actions={NO_ACTIONS} />);
     const printingMore = await screen.findByRole('link', { name: 'and 1 more in the list' });
     expect(printingMore).toHaveAttribute('href', '/projects?customer=2&q=lamp&tab=active&stage=printing');
     const doneMore = screen.getByRole('link', { name: 'and 8 more in the list' });
@@ -112,7 +113,7 @@ describe('OrdersBoard', () => {
   it('a viewer who may not move orders is not invited to drop cards', async () => {
     auth.canUpdate = false;
     vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
-    render(<OrdersBoard filters={{}} onOpenList={() => {}} />);
+    render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
     const qc = await screen.findByRole('region', { name: 'Quality check' });
     expect(await within(qc).findByText('No orders')).toBeInTheDocument();
     expect(screen.queryByText('Drop a card here')).not.toBeInTheDocument();
@@ -122,14 +123,14 @@ describe('OrdersBoard', () => {
     const empty = { items: [], total: 0 };
     vi.spyOn(api, 'getOrderBoard').mockResolvedValue({ prep: empty, printing: empty, qc: empty, done: empty });
     const onReset = vi.fn();
-    render(<OrdersBoard filters={{ q: 'zzz' }} onOpenList={() => {}} onReset={onReset} />);
+    render(<OrdersBoard filters={{ q: 'zzz' }} onOpenList={() => {}} onReset={onReset} actions={NO_ACTIONS} />);
     expect(await screen.findByText('Nothing matches your search or filters.')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
     expect(onReset).toHaveBeenCalled();
   });
   it('a board that could not be read says so, instead of four empty columns', async () => {
     vi.spyOn(api, 'getOrderBoard').mockRejectedValue(new Error('boom'));
-    render(<OrdersBoard filters={{}} onOpenList={() => {}} />);
+    render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
     expect(await screen.findByText('Could not load the board.')).toBeInTheDocument();
     expect(screen.queryByTestId('board-total-prep')).not.toBeInTheDocument();
   });
@@ -151,7 +152,8 @@ describe('OrdersBoard', () => {
     });
     vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
     stubColumnGeometry();
-    render(<OrdersBoard filters={{}} onOpenList={() => {}} />);
+    // The drop is the page's «complete» door (WS-13 E6 B04): the PAGE's host opens the dialog.
+    render(<WithOrderActions>{(actions) => <OrdersBoard filters={{}} onOpenList={() => {}} actions={actions} />}</WithOrderActions>);
     const handle = await screen.findByRole('button', { name: 'Move OR-0002' });
     await keyboardDrag(handle, ['ArrowRight', 'ArrowRight']); // printing → qc → done
     expect(await screen.findByRole('dialog', { name: 'Stock & issue' })).toBeInTheDocument();
@@ -162,7 +164,7 @@ describe('OrdersBoard', () => {
     vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
     const stage = vi.spyOn(api, 'setOrderStage').mockResolvedValue({} as never);
     stubColumnGeometry();
-    render(<OrdersBoard filters={{}} onOpenList={() => {}} />);
+    render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
     const handle = await screen.findByRole('button', { name: 'Move OR-0001' });
     await keyboardDrag(handle, ['ArrowRight']);
     await waitFor(() => expect(stage).toHaveBeenCalledWith(1, 'printing'));

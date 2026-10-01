@@ -470,7 +470,7 @@ describe('OrdersPage', () => {
       await screen.findByRole('heading', { name: 'C' });
       fireEvent.click(screen.getByRole('button', { name: /^Order actions/ }));
       fireEvent.click(await screen.findByRole('menuitem', { name: /^delete$/i }));
-      fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
+      fireEvent.click(within(await screen.findByRole('dialog', { name: 'Delete order?' })).getByRole('button', { name: 'Delete' }));
       await waitFor(() => expect(window.location.search).toBe(''));
     });
     it('deleting the shown order drops it from the URL and stays on the list', async () => {
@@ -481,7 +481,7 @@ describe('OrdersPage', () => {
       // The header's other actions live in its menu (WS-13 E3 C04).
       fireEvent.click(screen.getByRole('button', { name: /^Order actions/ }));
       fireEvent.click(await screen.findByRole('menuitem', { name: /^delete$/i }));
-      fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
+      fireEvent.click(within(await screen.findByRole('dialog', { name: 'Delete order?' })).getByRole('button', { name: 'Delete' }));
       await waitFor(() => expect(window.location.search).not.toContain('order='));
       expect(window.location.pathname).toBe('/projects');
     });
@@ -657,7 +657,7 @@ describe('OrdersPage', () => {
 
     fireEvent.click(screen.getByTestId('order-1-menu'));
     fireEvent.click(await screen.findByRole('menuitem', { name: /delete/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Delete order?' })).getByRole('button', { name: 'Delete' }));
 
     await waitFor(() => expect(client.getQueryState(['project', 1])).toBeUndefined());
   });
