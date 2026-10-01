@@ -5809,7 +5809,7 @@ export default {
       saved: 'Changes saved',
       created: 'Order created — add its lines',
       deleted: 'Order deleted',
-      duplicated: 'Order duplicated',
+      duplicated: 'Copy created — stock reservations are not copied',
       cancelled: 'Order cancelled — reservations returned to stock',
       reopened: 'Order is active again',
     },
@@ -6315,9 +6315,11 @@ export default {
     duplicate: {
       title: 'Duplicate order',
       nameLabel: 'Name of the copy',
-      copySuffix: '(Copy)',
-      copies: 'Copies: customer, lines, price, tags, notes.',
-      excludes: 'Stays with the original: prints, queue items, procurement progress.',
+      copySuffix: '(copy)',
+      // WS-13 E6 D02 — as the server's duplicate copies (projects.py duplicate_project).
+      copies: 'Copies: customer and contact, lines with their configuration, price, deadline, tags, description, notes, attachments.',
+      excludes: 'Stays with the original: prints, queue, procurement, stock reservations and movements, issues; the copy starts at «Preparation».',
+      pastDue: 'The original’s deadline ({{date}}) has passed — change it in the copy.',
       submit: 'Duplicate',
       failed: 'Could not duplicate the order',
     },
