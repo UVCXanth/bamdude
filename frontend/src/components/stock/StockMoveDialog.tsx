@@ -81,13 +81,15 @@ export function StockMoveDialog({
   const creates = CREATES.has(kind);
 
   // An issue made a dispatch note: say so, with a way to open it (spec workshop-dispatch-notes, rule 24).
-  const [created, setCreated] = useState<{ id: number; code: string; units: number } | null>(null);
+  const [created, setCreated] = useState<{ id: number; code: string; units: number | null } | null>(null);
   const move = useMutation({
     mutationFn: (body: StockMoveBody) => api.moveStock(body),
-    onSuccess: (result) => {
+    // The note names the units the request SENT (its variables), never the field: the field
+    // stays editable while the issue is on its way (Codex E6-V01).
+    onSuccess: (result, body) => {
       invalidateStock(queryClient);
       if (result.issue_id != null && result.issue_code) {
-        setCreated({ id: result.issue_id, code: result.issue_code, units: Number(qty) });
+        setCreated({ id: result.issue_id, code: result.issue_code, units: body.qty ?? null });
         return;
       }
       showToast(t(result.moved ? 'stock.move.saved' : 'stock.move.nothingMoved'));

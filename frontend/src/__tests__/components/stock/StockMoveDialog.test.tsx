@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { render } from '../../utils';
 import { api, ApiError } from '../../../api/client';
 import { StockMoveDialog } from '../../../components/stock/StockMoveDialog';
@@ -103,6 +103,25 @@ describe('StockMoveDialog', () => {
     fireEvent.click(screen.getByTestId('stock-move-submit'));
     expect(await screen.findByRole('dialog', { name: 'Dispatch note issued' })).toHaveTextContent('DN-0007');
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  // E6-V01 (Codex): the note's window names the units the request SENT — the field stays
+  // editable while the issue is on its way, and what is typed then was never issued.
+  it.each(['3', '9'])('the note names the issued quantity when the field reads %s by the answer', async (typedMeanwhile) => {
+    vi.spyOn(api, 'getCustomer').mockResolvedValue({ id: 9, name: 'ACME', contacts: [] } as never);
+    vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
+    let finish!: (value: never) => void;
+    move.mockImplementation(() => new Promise((resolve) => (finish = resolve)));
+    render(<StockMoveDialog kind="issue" item={pipeItem} onClose={() => {}} />);
+    await screen.findByRole('option', { name: 'CU-0009 · ACME' });
+    fireEvent.change(screen.getByLabelText('Customer'), { target: { value: '9' } });
+    fireEvent.change(screen.getByLabelText('Quantity'), { target: { value: '3' } });
+    fireEvent.click(screen.getByTestId('stock-move-submit'));
+    await waitFor(() => expect(move).toHaveBeenCalledWith(expect.objectContaining({ qty: 3 })));
+    fireEvent.change(screen.getByLabelText('Quantity'), { target: { value: typedMeanwhile } });
+    await act(async () => finish({ ...pipeItem, moved: true, issue_id: 7, issue_code: 'DN-0007' } as never));
+    expect(await screen.findByRole('dialog', { name: 'Dispatch note issued' })).toHaveTextContent('DN-0007 · 3 pcs');
+    expect(move).toHaveBeenCalledTimes(1);
   });
 
   it('a count that matches the shelf says nothing moved', async () => {
