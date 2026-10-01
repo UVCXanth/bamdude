@@ -12,6 +12,7 @@ import { render } from '../../utils';
 import { api } from '../../../api/client';
 import { CustomerPage } from '../../../pages/customers/CustomerPage';
 import { createAppQueryClient } from '../../../utils/appQueryClient';
+import { ORDER_ROW_DEFAULTS } from '../../wireDefaults';
 
 const blankContact = {
   role: null,
@@ -62,6 +63,7 @@ const customer = {
 
 const orders = [
   {
+    ...ORDER_ROW_DEFAULTS,
     id: 5,
     name: 'Flasks',
     status: 'active',

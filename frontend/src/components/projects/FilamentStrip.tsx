@@ -20,7 +20,7 @@ type Row = FarmNeeds['rows'][number];
  * shelf amount missing on any row, or a print without grams (on a row or on no
  * row at all) leaves the need partly unknown, and a green line would hide that.
  */
-export function everythingOnTheShelf(farm: FarmNeeds): boolean {
+function everythingOnTheShelf(farm: FarmNeeds): boolean {
   return (
     !farm.stock_unavailable &&
     farm.unknown_prints === 0 &&

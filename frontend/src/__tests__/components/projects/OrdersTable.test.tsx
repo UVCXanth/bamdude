@@ -4,7 +4,14 @@ import userEvent from '@testing-library/user-event';
 import { render } from '../../utils';
 import { OrdersTable } from '../../../components/projects/OrdersTable';
 import type { OrderForecast, OrderListItem } from '../../../api/client';
+import type { ForecastState } from '../../../components/projects/orderRow/readiness';
 import { FORECAST_DEFAULTS, ORDER_ROW_DEFAULTS } from '../../wireDefaults';
+
+// The row menu is permission-gated; the provider stays real, only the hook answers «yes».
+vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../contexts/AuthContext')>();
+  return { ...actual, useAuth: () => ({ ...actual.useAuth(), hasPermission: () => true }) };
+});
 
 const row = (over: Partial<OrderListItem>): OrderListItem => ({
   ...ORDER_ROW_DEFAULTS,
@@ -17,71 +24,100 @@ const row = (over: Partial<OrderListItem>): OrderListItem => ({
 const fc = (over: Partial<OrderForecast>): OrderForecast => ({
   ...FORECAST_DEFAULTS,
   project_id: 1, now_eta: null, now_seconds: null, after_eta: null, after_seconds: null, machine_seconds: null,
-  unknown_prints: 0, unroutable_prints: 0, eta_complete: true, ahead_count: 0, assumptions: ['drying'], ...over,
+  unknown_prints: 0, unroutable_prints: 0, eta_complete: true, ahead_count: 0, assumptions: [], ...over,
 });
 
-const noSort = { sort: 'updated-desc', onSortChange: () => {} };
-// The order's name is the link in its first cell; the code sits beneath it.
+const forecastOf = (byId: Record<number, OrderForecast> = {}, state: ForecastState = 'data') => ({ state, byId, refetch: () => {} });
+const actions = { run: vi.fn(), create: vi.fn() };
+const noSort = { sort: 'updated-desc', onSortChange: () => {}, forecast: forecastOf(), actions };
+// The order's name is the link in its first cell.
 const names = () =>
   screen
     .getAllByRole('row')
     .slice(1)
     .map((r) => within(within(r).getAllByRole('cell')[0]).getByRole('link').textContent);
+const cell = (id: number, col: number) => within(screen.getByTestId(`order-row-${id}`)).getAllByRole('cell')[col];
 
-describe('OrdersTable', () => {
-  it('scrolls sideways in its own named region inside the panel, with the page bar under it and outside the scroll (WS-13 E2 E01/E02)', () => {
-    render(<OrdersTable orders={[row({ id: 1 })]} {...noSort} footer={<div data-testid="page-bar">pages</div>} />);
+describe('OrdersTable (WS-13 E7 D)', () => {
+  it('has exactly the nine columns of the mockup, in order', () => {
+    render(<OrdersTable orders={[row({})]} {...noSort} />);
+    const headers = screen.getAllByRole('columnheader').map((h) => h.textContent?.trim() || h.getAttribute('aria-label'));
+    expect(headers).toEqual(['Order / customer', 'Stage', 'Coverage', 'Print / queue', 'Due', 'Ready ≈', 'Material', 'Responsible', 'Actions']);
+  });
 
+  it('scrolls sideways in its own named region inside the panel, the page bar under it and outside the scroll', () => {
+    render(<OrdersTable orders={[row({})]} {...noSort} footer={<div data-testid="page-bar">pages</div>} />);
     const region = screen.getByRole('region', { name: 'Orders' });
     expect(within(region).getByRole('table')).toBeInTheDocument();
     const bar = screen.getByTestId('page-bar');
     expect(region.contains(bar)).toBe(false);
-    // One frame holds both.
     expect(region.parentElement?.contains(bar)).toBe(true);
   });
 
-  it('keeps the server order and asks the server to sort — a fresh numeric column most-first', async () => {
-    const onSort = vi.fn();
-    render(
-      <OrdersTable
-        orders={[row({ id: 1, name: 'A', prints_queued: 3 }), row({ id: 2, name: 'B', prints_queued: 9 })]}
-        sort="updated-desc"
-        onSortChange={onSort}
-      />,
-    );
-    await userEvent.click(screen.getByRole('button', { name: 'Queued (jobs)' }));
-    expect(onSort).toHaveBeenLastCalledWith('queued-desc');
-    // The table never reorders what the server sent.
-    expect(names()).toEqual(['A', 'B']);
-    expect(screen.getAllByText('OR-0001')).toHaveLength(2); // the fixture's code, under each name
-    expect(screen.getByTestId('order-1-queued')).toHaveTextContent('3');
-    expect(screen.getByTestId('order-1-printing')).toHaveTextContent('2');
+  it('names the order, its code above, the customer and the lines below', () => {
+    render(<OrdersTable orders={[row({ id: 1, customer_name: 'ACME', lines_count: 3 }), row({ id: 2, code: 'OR-0002', name: 'B' })]} {...noSort} />);
+    const first = cell(1, 0);
+    expect(within(first).getByRole('link', { name: 'A' })).toHaveAttribute('href', '/projects/1');
+    expect(first.textContent).toMatch(/^OR-0001A/);
+    expect(first).toHaveTextContent('ACME · 3 lines');
+    expect(cell(2, 0)).toHaveTextContent('No customer · 1 line');
   });
 
-  it('flips the active column, and name / due start ascending', async () => {
+  it('keeps the server order and asks the server to sort from the five mockup headers', async () => {
     const onSort = vi.fn();
-    render(<OrdersTable orders={[row({ id: 1 })]} sort="queued-desc" onSortChange={onSort} />);
-    expect(screen.getByRole('columnheader', { name: /Queued/ })).toHaveAttribute('aria-sort', 'descending');
-    await userEvent.click(screen.getByRole('button', { name: /Queued/ }));
-    expect(onSort).toHaveBeenLastCalledWith('queued-asc');
-    await userEvent.click(screen.getByRole('button', { name: 'Order' }));
+    render(<OrdersTable orders={[row({ id: 1, name: 'A' }), row({ id: 2, name: 'B' })]} {...noSort} onSortChange={onSort} />);
+    expect(names()).toEqual(['A', 'B']);
+    await userEvent.click(screen.getByRole('button', { name: 'Order / customer' }));
     expect(onSort).toHaveBeenLastCalledWith('name-asc');
+    await userEvent.click(screen.getByRole('button', { name: 'Stage' }));
+    expect(onSort).toHaveBeenLastCalledWith('stage-asc');
+    await userEvent.click(screen.getByRole('button', { name: 'Coverage' }));
+    expect(onSort).toHaveBeenLastCalledWith('progress-desc');
     await userEvent.click(screen.getByRole('button', { name: 'Due' }));
     expect(onSort).toHaveBeenLastCalledWith('due-asc');
-  });
-
-  it('the forecast columns sort on the server too — soonest ready first, most machine time first', async () => {
-    const onSort = vi.fn();
-    render(<OrdersTable orders={[row({ id: 1 })]} sort="updated-desc" onSortChange={onSort} />);
-    const ready = screen.getByRole('button', { name: 'Ready' });
-    expect(ready).not.toHaveAttribute('title');
-    await userEvent.click(ready);
+    await userEvent.click(screen.getByRole('button', { name: 'Ready ≈' }));
     expect(onSort).toHaveBeenLastCalledWith('ready-asc');
-    await userEvent.click(screen.getByRole('button', { name: 'Machine h' }));
-    expect(onSort).toHaveBeenLastCalledWith('hours-desc');
+    for (const plain of ['Print / queue', 'Material', 'Responsible']) {
+      expect(screen.queryByRole('button', { name: plain })).not.toBeInTheDocument();
+    }
   });
 
-  it('reddens a past deadline but not today’s', () => {
+  it('marks the active header, and none for a key no header carries', () => {
+    const { unmount } = render(<OrdersTable orders={[row({})]} {...noSort} sort="due-desc" />);
+    expect(screen.getByRole('columnheader', { name: /Due/ })).toHaveAttribute('aria-sort', 'descending');
+    unmount();
+    render(<OrdersTable orders={[row({})]} {...noSort} sort="hours-desc" />);
+    expect(screen.getAllByRole('columnheader').filter((h) => h.hasAttribute('aria-sort'))).toHaveLength(0);
+  });
+
+  it('puts the stage, «issued X of Y» and a non-normal priority in the stage cell', () => {
+    render(<OrdersTable orders={[row({ id: 1, stage: 'printing', issued_units: 3, priority: 'high' }), row({ id: 2, stage: null, status: 'cancelled' })]} {...noSort} />);
+    expect(cell(1, 1)).toHaveTextContent('Printing');
+    expect(cell(1, 1)).toHaveTextContent('issued 3 of 10');
+    expect(cell(1, 1)).toHaveTextContent('High');
+    expect(cell(2, 1)).toHaveTextContent('Cancelled');
+    expect(cell(2, 1)).not.toHaveTextContent('issued');
+  });
+
+  it('shows coverage with its sources, live counts, materials and the responsible person', () => {
+    render(
+      <OrdersTable
+        orders={[row({ id: 1, from_stock_units: 2, covered_units: 6, progress: 0.6, materials: ['PLA', 'PETG'], responsible_name: 'olena.koval' }), row({ id: 2, prints_in_progress: 0, prints_queued: 0 })]}
+        {...noSort}
+      />,
+    );
+    expect(cell(1, 2)).toHaveTextContent('6 / 10');
+    expect(cell(1, 2)).toHaveTextContent('60%');
+    expect(cell(1, 2)).toHaveTextContent('printed 4 · from stock 2');
+    expect(within(cell(1, 3)).getByLabelText('printing 2, queued 3')).toBeInTheDocument();
+    expect(cell(2, 3)).toHaveTextContent('—');
+    expect(cell(1, 6)).toHaveTextContent('PLA, PETG');
+    expect(cell(2, 6)).toHaveTextContent('—');
+    expect(cell(1, 7)).toHaveTextContent('olena.koval');
+    expect(cell(2, 7)).toHaveTextContent('unassigned');
+  });
+
+  it('reddens a past deadline with «overdue» under it, but not today’s', () => {
     const p = (n: number) => String(n).padStart(2, '0');
     const day = (offset: number) => {
       const d = new Date();
@@ -89,95 +125,35 @@ describe('OrdersTable', () => {
       return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T00:00:00`;
     };
     render(<OrdersTable orders={[row({ id: 1, due_date: day(0) }), row({ id: 2, due_date: day(-1) })]} {...noSort} />);
-    expect(screen.getByTestId('order-1-due')).not.toHaveClass('text-red-500');
-    expect(screen.getByTestId('order-2-due')).toHaveClass('text-red-500');
+    expect(screen.getByTestId('order-1-due')).not.toHaveTextContent('overdue');
+    expect(screen.getByTestId('order-2-due')).toHaveTextContent('overdue');
   });
 
-  it('shows ready-at and machine hours from the forecast', () => {
-    const forecasts = {
-      1: fc({ project_id: 1, now_eta: '2026-09-07T10:00:00Z', now_seconds: 7200, after_eta: '2026-09-08T10:00:00Z', after_seconds: 93600, machine_seconds: 5400, ahead_count: 1 }),
-      2: fc({ project_id: 2, now_eta: '2026-09-06T14:00:00Z', now_seconds: 3600, after_eta: '2026-09-06T14:00:00Z', after_seconds: 3600, machine_seconds: 3600 }),
+  it('reads «Ready ≈» through one rule, and a failed forecast is a dash, never «no estimate»', () => {
+    const byId = {
+      1: fc({ project_id: 1, now_eta: '2026-09-07T10:00:00Z', after_eta: '2026-09-08T10:00:00Z', ahead_count: 1 }),
+      2: fc({ project_id: 2, eta_complete: false, now_eta: '2026-09-07T10:00:00Z', incomplete_reasons: [{ code: 'unroutable', count: 1 }] }),
+      3: fc({ project_id: 3, now_eta: '2026-09-07T10:00:00Z', incomplete_reasons: [{ code: 'no_plate', count: 6 }] }),
+      4: fc({ project_id: 4 }),
     };
-    render(<OrdersTable orders={[row({ id: 1, name: 'A' }), row({ id: 2, name: 'B' })]} forecasts={forecasts} {...noSort} />);
-    expect(screen.getByTestId('order-1-machine-hours')).toHaveTextContent('1:30');
-    expect(screen.getByTestId('order-1-after')).toHaveTextContent(/after 1 more urgent order/);
-    expect(screen.queryByTestId('order-2-after')).not.toBeInTheDocument();
+    const orders = [row({ id: 1 }), row({ id: 2 }), row({ id: 3 }), row({ id: 4 }), row({ id: 5, remaining: 0 }), row({ id: 6, status: 'completed' })];
+    const { unmount } = render(<OrdersTable orders={orders} {...noSort} forecast={forecastOf(byId)} />);
+    expect(screen.getByTestId('order-1-ready')).toHaveTextContent(/after 1 more urgent order/);
+    expect(screen.getByTestId('order-2-ready')).toHaveTextContent('incomplete estimate');
+    expect(within(screen.getByTestId('order-3-ready')).getByRole('img', { name: /Parts on no plate: 6/ })).toBeInTheDocument();
+    expect(screen.getByTestId('order-4-ready')).toHaveTextContent('no estimate');
+    expect(screen.getByTestId('order-5-ready')).toHaveTextContent('all covered');
+    expect(screen.getByTestId('order-6-ready')).toHaveTextContent('—');
+    unmount();
+    render(<OrdersTable orders={[row({ id: 1 })]} {...noSort} forecast={forecastOf({}, 'error')} />);
+    expect(screen.getByTestId('order-1-ready')).toHaveTextContent('—');
+    expect(screen.getByTestId('order-1-ready')).not.toHaveTextContent('no estimate');
   });
 
-  it('renders «…» while the forecast is missing and «No estimate» for a null ETA', () => {
-    render(<OrdersTable orders={[row({ id: 1, name: 'A' })]} forecasts={{ 1: fc({ unknown_prints: 3 }) }} {...noSort} />);
-    expect(screen.getByTestId('order-1-ready')).toHaveTextContent('No estimate');
-    render(<OrdersTable orders={[row({ id: 5, name: 'C' })]} {...noSort} />);
-    expect(screen.getByTestId('order-5-ready')).toHaveTextContent('…');
-  });
-
-  it('does not call the placed subset ready when the forecast is incomplete', () => {
-    render(
-      <OrdersTable
-        orders={[row({ id: 1, name: 'A' })]}
-        forecasts={{ 1: fc({ now_eta: '2026-09-07T10:00:00Z', eta_complete: false, unroutable_prints: 1 }) }}
-        {...noSort}
-      />,
-    );
-    expect(screen.getByTestId('order-1-ready')).toHaveTextContent('Incomplete estimate');
-    expect(screen.getByTestId('order-1-ready')).not.toHaveTextContent('Sep');
-  });
-
-  it('a failed fetch reads as an error, never as «No estimate»', () => {
-    // ⚠️ Three states share these cells and only one is about the farm.
-    // Mapping a dead request onto «No estimate» — which means «the simulation
-    // could place nothing» — sends the operator hunting a scheduling problem
-    // that is really a broken request.
-    render(<OrdersTable orders={[row({ id: 1, name: 'A' })]} forecastError {...noSort} />);
-    const ready = screen.getByTestId('order-1-ready');
-    expect(ready).toHaveTextContent('—');
-    expect(ready).not.toHaveTextContent('No estimate');
-    expect(within(ready).getByTitle('Forecast unavailable')).toBeInTheDocument();
-    expect(screen.getByTestId('order-1-machine-hours')).toHaveTextContent('—');
-  });
-
-  it('a closed order is dashed in both cells — closed means nothing is planned', () => {
-    // The batch is not even asked about it (spec Decision 9), so `forecasts`
-    // legitimately has no entry; without this branch the cell would read
-    // «No estimate» and invite somebody to go looking for a printer.
-    render(
-      <OrdersTable
-        orders={[row({ id: 1, name: 'A', status: 'completed' })]}
-        forecasts={{ 2: fc({ project_id: 2 }) }}
-        {...noSort}
-      />,
-    );
-    const ready = screen.getByTestId('order-1-ready');
-    expect(ready).toHaveTextContent('—');
-    expect(ready).not.toHaveTextContent('No estimate');
-    expect(screen.getByTestId('order-1-machine-hours')).toHaveTextContent('—');
-  });
-
-  it('shows the stage in place of the status, sorts by it, and names who is responsible', async () => {
-    const onSort = vi.fn();
-    render(
-      <OrdersTable
-        orders={[row({ id: 1, stage: 'printing', responsible_name: 'olena.koval' }), row({ id: 2, stage: null, status: 'cancelled' })]}
-        sort="updated-desc"
-        onSortChange={onSort}
-      />,
-    );
-    expect(screen.queryByRole('columnheader', { name: 'Status' })).not.toBeInTheDocument();
-    expect(screen.getByText('Printing')).toBeInTheDocument();
-    expect(screen.getByText('Cancelled')).toBeInTheDocument(); // a cancelled order has no stage
-    expect(screen.getByText('OK')).toBeInTheDocument();
-    expect(screen.getByText('olena.koval')).toBeInTheDocument();
-    expect(screen.getByRole('columnheader', { name: 'Responsible' })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Stage' }));
-    expect(onSort).toHaveBeenLastCalledWith('stage-asc');
-  });
-});
-
-describe('OrdersTable · issued', () => {
-  it('says how much went out of each active order', () => {
-    render(
-      <OrdersTable orders={[row({ id: 1, name: 'A', issued_units: 3 })]} {...noSort} />,
-    );
-    expect(screen.getByTestId('order-1-issued')).toHaveTextContent('Issued 3 of 10');
+  it('has the order menu in its last column', async () => {
+    render(<OrdersTable orders={[row({ id: 1 })]} {...noSort} />);
+    const trigger = within(cell(1, 8)).getByRole('button', { name: 'Order actions OR-0001' });
+    await userEvent.click(trigger);
+    expect(await screen.findByRole('menuitem', { name: 'Edit' })).toBeInTheDocument();
   });
 });

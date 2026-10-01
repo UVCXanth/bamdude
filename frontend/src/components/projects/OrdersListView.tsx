@@ -1,7 +1,5 @@
 import { useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { api } from '../../api/client';
 import type { OrderListItem, OrderListPage, OrderListTotals, ProjectStatus } from '../../api/client';
 import type { ListView } from '../ListViewToggle';
 import { PaginationBar } from '../PaginationBar';
@@ -13,6 +11,7 @@ import { WorkshopTabs } from '../workshop/WorkshopTabs';
 import { LoadFailedNote } from '../workshop/LoadFailedNote';
 import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { listState } from './orderRow/listState';
+import { useOrdersForecast } from './orderRow/useOrdersForecast';
 
 /** How many placeholder cards the first fetch draws. Enough to fill the top of
  *  a normal window without pretending to know how many orders there are. */
@@ -150,8 +149,8 @@ export interface OrdersListViewProps {
 /**
  * One page of orders as cards or a table, with its page bar — the orders page's
  * list, shared with the customer page so the two cannot drift (spec
- * workshop-lists, rule 17). The forecast batch is asked only in table view,
- * only for this page's active orders.
+ * workshop-lists, rule 17). The forecast is asked in batches for the page's rows
+ * that still need one (WS-13 E7 B04) — table and cards both show «Ready ≈».
  */
 export function OrdersListView({
   data,
@@ -171,27 +170,10 @@ export function OrdersListView({
   const visible = useMemo(() => data?.items ?? [], [data]);
   const total = data?.meta.total ?? 0;
 
-  // Only ACTIVE orders are forecast: «closed = nothing is planned» is the
-  // product rule everywhere else, and the endpoint answers a closed order with
-  // an empty forecast — asking for one buys a row of nulls (spec Decision 9).
-  const forecastIds = visible.filter((o) => o.status === 'active').map((o) => o.id);
-  // The forecast is only meaningful in table view — cards don't show it, and
-  // the farm-wide simulation isn't cheap enough to run on every tab.
-  const forecastQuery = useQuery({
-    queryKey: ['orders-forecast', forecastIds],
-    queryFn: () => api.getOrdersForecast(forecastIds),
-    enabled: view === 'table' && forecastIds.length > 0,
-    staleTime: 30_000,
-  });
-  // `undefined` while loading — every cell reads «…». A FAILED fetch is its
-  // own state, passed down as `forecastError`: mapping it to `{}` here made
-  // every row read «No estimate», which means «the farm could not place this
-  // order», and sent the operator looking for a scheduling problem that was
-  // really a dead request.
-  const forecasts = useMemo(() => {
-    if (!forecastQuery.data) return undefined;
-    return Object.fromEntries(forecastQuery.data.orders.map((f) => [f.project_id, f]));
-  }, [forecastQuery.data]);
+  // ⚠️ A FAILED forecast is its own state (a dash and one retry), never «no
+  // estimate» — that means «the farm could not place this order» and would send
+  // the operator hunting a scheduling problem that is really a dead request.
+  const forecast = useOrdersForecast(visible, view === 'table' || view === 'cards');
 
   const state = listState({ data, isError, isPlaceholderData });
   if (state === 'loading') return <OrdersSkeleton view={view} />;
@@ -229,20 +211,26 @@ export function OrdersListView({
       className={`transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
     >
       {state === 'refresh-failed' && <RefreshFailedNote onRetry={onRetry} />}
+      {forecast.state === 'error' && (
+        <LoadFailedNote role="status" className="mb-2 text-xs" message={t('orders.row.forecastFailed')} onRetry={forecast.refetch} />
+      )}
       {groups ? (
         <>
           <div className="space-y-4">
             {[...groups.entries()].map(([customerName, group]) => (
               <section key={customerName}>
-                <h2 className="text-lg font-medium text-white mb-2">{customerName}</h2>
+                {/* The group's rows ON THIS PAGE — grouping groups the page, never the list (WS-01). */}
+                <h3 className="text-sm font-semibold text-white mb-2">
+                  {customerName}{' '}
+                  <small
+                    className="text-xs font-normal text-bambu-gray tabular-nums"
+                    aria-label={t('orders.list.groupCount', { count: group.length })}
+                  >
+                    {group.length}
+                  </small>
+                </h3>
                 {view === 'table' ? (
-                  <OrdersTable
-                    orders={group}
-                    forecasts={forecasts}
-                    forecastError={forecastQuery.isError}
-                    sort={sort}
-                    onSortChange={onSortChange}
-                  />
+                  <OrdersTable orders={group} forecast={forecast} sort={sort} onSortChange={onSortChange} actions={actions} />
                 ) : (
                   <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">{group.map(renderCard)}</div>
                 )}
@@ -256,11 +244,11 @@ export function OrdersListView({
         total > 0 && (
           <OrdersTable
             orders={visible}
-            forecasts={forecasts}
-            forecastError={forecastQuery.isError}
+            forecast={forecast}
             sort={sort}
             onSortChange={onSortChange}
             footer={pageBar('card')}
+            actions={actions}
           />
         )
       ) : (

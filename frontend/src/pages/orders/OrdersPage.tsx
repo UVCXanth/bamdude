@@ -28,6 +28,8 @@ import type { OrdersView } from '../../hooks/usePersistedState';
 import { useSearchBox } from '../../hooks/useSearchBox';
 import { WorkshopTabPanel } from '../../components/workshop/WorkshopTabs';
 import { listState } from '../../components/projects/orderRow/listState';
+import { TABLE_SORT_KEYS } from '../../components/projects/OrdersTable';
+import { splitSortBy } from '../../utils/listSort';
 
 const GROUP_STORAGE_KEY = 'projects.groupByCustomer';
 const VIEW_STORAGE_KEY = 'projects.view';
@@ -140,6 +142,9 @@ export function OrdersPage() {
   // matched nothing, never «no orders yet» on a farm full of them.
   const filtered = q !== '' || customerId != null || extra.responsible !== '' || stage !== '';
   const searchRef = useRef<HTMLInputElement>(null);
+  // WS-13 E7 D01 (R05): a sort no table header carries still sorts the table — and is named.
+  const { key: sortKey, desc: sortDesc } = splitSortBy(sort);
+  const headerlessSort = view === 'table' && !(TABLE_SORT_KEYS as readonly string[]).includes(sortKey);
   const resetConditions = () => {
     forget();
     resetFilters(['tab']);
@@ -247,6 +252,21 @@ export function OrdersPage() {
           <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-bambu-dark-tertiary text-xs text-white">
             {t('orders.list.stageChip', { stage: t(`orders.stage.${stage}`) })}
             <button type="button" aria-label={t('orders.list.stageChipRemove')} onClick={() => setExtra('stage', '')}>
+              <X className="w-3 h-3" />
+            </button>
+          </span>
+        )}
+
+        {headerlessSort && (
+          <span
+            data-testid="orders-sort-chip"
+            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-bambu-dark-tertiary text-xs text-white"
+          >
+            {t('orders.list.sortChip', {
+              label: sortOptions.find((o) => o.key === sortKey)?.label ?? sortKey,
+              dir: sortDesc ? '↓' : '↑',
+            })}
+            <button type="button" aria-label={t('orders.list.sortChipRemove')} onClick={() => setSort(ORDERS_DEFAULT_SORT.table)}>
               <X className="w-3 h-3" />
             </button>
           </span>

@@ -11,7 +11,7 @@ import { join } from 'node:path';
  */
 const SRC = join(process.cwd(), 'src');
 const ROW_DIR = 'components/projects/orderRow';
-const LIST_VIEWS: string[] = [];
+const LIST_VIEWS: string[] = ['components/projects/OrdersTable.tsx'];
 
 const read = (rel: string) => readFileSync(join(SRC, rel), 'utf8');
 

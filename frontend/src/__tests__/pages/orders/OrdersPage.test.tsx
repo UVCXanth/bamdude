@@ -13,9 +13,10 @@ import { api } from '../../../api/client';
 import type { FarmNeeds, OrderBoard } from '../../../api/client';
 import { OrdersPage } from '../../../pages/orders/OrdersPage';
 import { SEARCH_DEBOUNCE_MS } from '../../../hooks/useSearchBox';
+import { ORDER_ROW_DEFAULTS } from '../../wireDefaults';
 
-const rowA = { id: 1, name: 'A', status: 'active', customer_id: 1, customer_name: 'ACME', ordered: 2, printed: 1, covered_units: 1, remaining: 1, from_stock_units: 0, progress: 0.5, lines_count: 1, priority: 'normal', line_products: [] };
-const rowB = { id: 2, name: 'B', status: 'completed', customer_id: null, customer_name: null, ordered: 1, printed: 1, covered_units: 1, remaining: 0, from_stock_units: 0, progress: 1, lines_count: 1, priority: 'normal', line_products: [] };
+const rowA = { ...ORDER_ROW_DEFAULTS, id: 1, name: 'A', status: 'active', customer_id: 1, customer_name: 'ACME', ordered: 2, printed: 1, covered_units: 1, remaining: 1, from_stock_units: 0, progress: 0.5, lines_count: 1, priority: 'normal', line_products: [] };
+const rowB = { ...ORDER_ROW_DEFAULTS, id: 2, name: 'B', status: 'completed', customer_id: null, customer_name: null, ordered: 1, printed: 1, covered_units: 1, remaining: 0, from_stock_units: 0, progress: 1, lines_count: 1, priority: 'normal', line_products: [] };
 
 /** The paged envelope (spec projects-lists-parity): the tabs count from `totals`. */
 const pageOf = (
@@ -247,8 +248,9 @@ describe('OrdersPage', () => {
     render(<OrdersPage />);
     await screen.findByText('A');
     fireEvent.click(screen.getByLabelText(/group by customer/i));
-    expect(await screen.findByRole('heading', { name: 'ACME' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: /no customer/i })).toBeInTheDocument();
+    // Each group heading carries how many of ITS rows are on this page (WS-13 E7 D04).
+    expect(await screen.findByRole('heading', { name: 'ACME 1 on this page' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /^no customer/i })).toBeInTheDocument();
     fireEvent.change(await screen.findByDisplayValue('All customers'), { target: { value: '1' } });
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ customer_id: 1, page: 1 })));
     expect(window.location.search).toContain('customer=1');
@@ -259,7 +261,7 @@ describe('OrdersPage', () => {
     window.history.pushState({}, '', '/projects');
     render(<OrdersPage />);
     fireEvent.click(await screen.findByRole('button', { name: 'Table' }));
-    fireEvent.click(await screen.findByRole('button', { name: /^Order/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Order / customer' }));
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'name-asc' })));
     fireEvent.click(screen.getByRole('button', { name: /^Ready/ }));
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'ready-asc', page: 1 })));
@@ -527,7 +529,7 @@ describe('OrdersPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Table' }));
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'due-asc', page: 1 })));
     expect(window.location.search).toBe('');
-    fireEvent.click(screen.getByRole('button', { name: /^Order/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Order / customer' }));
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'name-asc' })));
     fireEvent.click(screen.getByRole('button', { name: 'Cards' }));
     await waitFor(() => expect(localStorage.getItem('projects.view')).toBe('cards'));
@@ -544,18 +546,37 @@ describe('OrdersPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Descending' }));
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'priority-asc' })));
   });
-  it('the table sorts by customer on the server and says which column sorts', async () => {
+  // WS-13 E7 D01 (R05): the table sorts from five headers; a key none of them carries
+  // (chosen in the cards, or in a link) still sorts — and the toolbar says so.
+  it('names a sort no table header carries, and removing it returns the table default', async () => {
     localStorage.setItem('projects.view', 'table');
     const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
     vi.spyOn(api, 'getOrdersForecast').mockResolvedValue({ orders: [] } as never);
-    window.history.pushState({}, '', '/projects');
+    window.history.pushState({}, '', '/projects?sort=hours-desc&page=2');
     render(<OrdersPage />);
-    const due = await screen.findByRole('columnheader', { name: /^Due/ });
-    expect(due).toHaveAttribute('aria-sort', 'ascending');
-    fireEvent.click(screen.getByRole('button', { name: /^Customer/ }));
-    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'customer-asc' })));
-    expect(await screen.findByRole('columnheader', { name: /^Customer/ })).toHaveAttribute('aria-sort', 'ascending');
-    expect(screen.getByRole('columnheader', { name: /^Due/ })).not.toHaveAttribute('aria-sort');
+    const chip = await screen.findByTestId('orders-sort-chip');
+    expect(chip).toHaveTextContent('Sorted by: Machine h ↓');
+    expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'hours-desc' }));
+    expect(screen.getAllByRole('columnheader').filter((h) => h.hasAttribute('aria-sort'))).toHaveLength(0);
+    await userEvent.click(within(chip).getByRole('button', { name: 'Back to the table’s default order' }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'due-asc', page: 1 })));
+    expect(screen.queryByTestId('orders-sort-chip')).not.toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: /^Due/ })).toHaveAttribute('aria-sort', 'ascending');
+  });
+
+  it('carries no sort chip for a header key, nor outside the table', async () => {
+    localStorage.setItem('projects.view', 'cards');
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    window.history.pushState({}, '', '/projects?sort=hours-desc');
+    const { unmount } = render(<OrdersPage />);
+    await screen.findByText('A');
+    expect(screen.queryByTestId('orders-sort-chip')).not.toBeInTheDocument();
+    unmount();
+    localStorage.setItem('projects.view', 'table');
+    window.history.pushState({}, '', '/projects?sort=name-desc');
+    render(<OrdersPage />);
+    await screen.findByRole('link', { name: 'A' });
+    expect(screen.queryByTestId('orders-sort-chip')).not.toBeInTheDocument();
   });
   it('in the table, the page bar sits inside the table card', async () => {
     localStorage.setItem('projects.view', 'table');
