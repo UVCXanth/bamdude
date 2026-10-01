@@ -160,6 +160,7 @@ function EtaMarkLink({ mark, when }: { mark: EtaMark; when: (iso: string) => str
 const REASON_CLASS: Record<AttentionOrder['reason'], string> = {
   overdue: 'bg-red-500/20 text-red-500',
   late_eta: 'bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400',
+  partial: 'bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400',
   no_due: 'bg-bambu-dark-tertiary text-bambu-gray',
 };
 

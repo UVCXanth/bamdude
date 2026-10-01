@@ -15,8 +15,10 @@ UTC comparison called it on time. Every comparison goes through
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Literal
 
-AttentionReason = Literal["overdue", "late_eta", "no_due"]
-ATTENTION_ORDER: tuple[AttentionReason, ...] = ("overdue", "late_eta", "no_due")
+# «partial» (WS-13 E7 H02): the production estimate has reasons — whether or not
+# its ETA is admitted; after «late_eta», before «no_due».
+AttentionReason = Literal["overdue", "late_eta", "partial", "no_due"]
+ATTENTION_ORDER: tuple[AttentionReason, ...] = ("overdue", "late_eta", "partial", "no_due")
 
 
 def server_tz() -> tzinfo | None:
@@ -39,15 +41,23 @@ def eta_is_late(eta: datetime | None, due: datetime | None, tz: tzinfo | None = 
 
 
 def attention_reason(
-    due: datetime | None, eta: datetime | None, start_of_today: datetime, tz: tzinfo | None = None
+    due: datetime | None,
+    eta: datetime | None,
+    start_of_today: datetime,
+    tz: tzinfo | None = None,
+    *,
+    partial: bool = False,
 ) -> AttentionReason | None:
     """Why an ACTIVE order needs attention, or None. «Overdue» is the orders
     summary's rule — due before the start of today; a deadline of today is not
-    overdue yet."""
+    overdue yet. ``partial``: the estimate has reasons (``incomplete_reasons``),
+    which ``eta_complete=True`` does not rule out — a part without a plate."""
     if due is None:
         return "no_due"
     if due < start_of_today:
         return "overdue"
     if eta_is_late(eta, due, tz):
         return "late_eta"
+    if partial:
+        return "partial"
     return None

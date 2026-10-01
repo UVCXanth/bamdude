@@ -901,8 +901,18 @@ async def get_order_deadlines(
     ).all()
     forecasts = (await farm_forecast.forecast_projects(db, [p.id for p in active], _utc_now()))[1] if active else {}
     eta = {pid: forecast.now_eta if forecast.eta_complete else None for pid, forecast in forecasts.items()}
+    # WS-13 E7 H01: the estimate's reasons — ``eta_complete=False`` always carries
+    # ``unknown_time`` / ``unroutable``, and an admitted ETA may still carry
+    # ``no_plate`` & co. One rule: an estimate with reasons is «partial».
+    estimate = {
+        pid: [EstimateReasonOut(code=code, count=count) for code, count in forecast.incomplete_reasons]
+        for pid, forecast in forecasts.items()
+    }
     start_of_today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    reasons = {p.id: attention_reason(p.due_date, eta.get(p.id), start_of_today) for p in active}
+    reasons = {
+        p.id: attention_reason(p.due_date, eta.get(p.id), start_of_today, partial=bool(estimate.get(p.id)))
+        for p in active
+    }
     flagged = sorted(
         (p for p in active if reasons[p.id]),
         key=lambda p: (ATTENTION_ORDER.index(reasons[p.id]), p.due_date is None, p.due_date or datetime.max, p.id),
@@ -922,13 +932,22 @@ async def get_order_deadlines(
         start=start,
         days=days,
         due=[
-            DeadlineOrder(order=rows[p.id], eta=eta.get(p.id), late=eta_is_late(eta.get(p.id), p.due_date))
+            DeadlineOrder(
+                order=rows[p.id],
+                eta=eta.get(p.id),
+                late=eta_is_late(eta.get(p.id), p.due_date),
+                estimate_reasons=estimate.get(p.id) if p.status == "active" else None,
+            )
             for p in due_projects
             if p.id in rows
         ],
         eta_marks=sorted(marks, key=lambda m: (m.eta, m.id)),
         attention=[
-            AttentionOrder(order=rows[p.id], reason=reasons[p.id], eta=eta.get(p.id)) for p in flagged if p.id in rows
+            AttentionOrder(
+                order=rows[p.id], reason=reasons[p.id], eta=eta.get(p.id), estimate_reasons=estimate.get(p.id, [])
+            )
+            for p in flagged
+            if p.id in rows
         ],
     )
 

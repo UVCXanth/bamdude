@@ -17,10 +17,17 @@ START = (datetime.now() + timedelta(days=21)).replace(hour=0, minute=0, second=0
 START_PARAM = START.date().isoformat()
 
 
-def _forecasts(etas):
+def _forecasts(etas, reasons=None):
+    reasons = reasons or {}
+
     async def fake(db, ids, now):
         return None, {
-            pid: SimpleNamespace(now_eta=etas.get(pid), eta_complete=etas.get(pid) is not None) for pid in ids
+            pid: SimpleNamespace(
+                now_eta=etas.get(pid),
+                eta_complete=etas.get(pid) is not None,
+                incomplete_reasons=reasons.get(pid, [] if etas.get(pid) is not None else [("unknown_time", 1)]),
+            )
+            for pid in ids
         }
 
     return fake
@@ -67,7 +74,12 @@ async def test_an_incomplete_forecast_is_no_eta_and_never_late(async_client, db_
     await db_session.commit()
 
     async def incomplete(db, ids, now):
-        return None, {pid: SimpleNamespace(now_eta=START + timedelta(days=9), eta_complete=False) for pid in ids}
+        return None, {
+            pid: SimpleNamespace(
+                now_eta=START + timedelta(days=9), eta_complete=False, incomplete_reasons=[("unknown_time", 2)]
+            )
+            for pid in ids
+        }
 
     monkeypatch.setattr(projects_routes.farm_forecast, "forecast_projects", incomplete)
     body = (await async_client.get("/api/v1/projects/deadlines", params={"start": START_PARAM, "q": "E-"})).json()
@@ -111,3 +123,67 @@ async def test_the_window_is_bounded(async_client):
     assert (await async_client.get("/api/v1/projects/deadlines", params={"start": "not-a-date"})).status_code == 422
     # A window that would run past the calendar is refused, never a 500.
     assert (await async_client.get("/api/v1/projects/deadlines", params={"start": "9999-12-31"})).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_the_estimate_reasons_travel_with_the_cards_and_make_an_order_partial(
+    async_client, db_session, monkeypatch
+):
+    # WS-13 E7 H01/H02 (R01): an admitted ETA (eta_complete=True) can still come with
+    # reasons — a part without a plate — and that order is «partial», its date kept.
+    no_plate = Project(name="R-no-plate", due_date=START + timedelta(days=4))
+    slicing = Project(name="R-slicing", due_date=START + timedelta(days=5))
+    unknown = Project(name="R-unknown", due_date=START + timedelta(days=6))
+    whole = Project(name="R-whole", due_date=START + timedelta(days=7))
+    late_and_partial = Project(name="R-late", due_date=START + timedelta(days=2))
+    overdue_partial = Project(name="R-overdue", due_date=datetime.now() - timedelta(days=3))
+    undated_partial = Project(name="R-undated")
+    done = Project(name="R-done", due_date=START + timedelta(days=1), status="completed")
+    db_session.add_all([no_plate, slicing, unknown, whole, late_and_partial, overdue_partial, undated_partial, done])
+    await db_session.commit()
+    monkeypatch.setattr(
+        projects_routes.farm_forecast,
+        "forecast_projects",
+        _forecasts(
+            {
+                no_plate.id: START + timedelta(days=3),
+                slicing.id: START + timedelta(days=4),
+                whole.id: START + timedelta(days=5),
+                late_and_partial.id: START + timedelta(days=6),
+                overdue_partial.id: START + timedelta(days=1),
+                undated_partial.id: START + timedelta(days=1),
+            },
+            {
+                no_plate.id: [("no_plate", 6)],
+                slicing.id: [("needs_slicing", 2)],
+                late_and_partial.id: [("no_plate", 1)],
+                overdue_partial.id: [("no_plate", 1)],
+                undated_partial.id: [("no_plate", 1)],
+            },
+        ),
+    )
+    body = (await async_client.get("/api/v1/projects/deadlines", params={"start": START_PARAM, "q": "R-"})).json()
+    due = {d["order"]["name"]: d for d in body["due"]}
+    assert due["R-no-plate"]["estimate_reasons"] == [{"code": "no_plate", "count": 6}]
+    assert due["R-no-plate"]["eta"] is not None and due["R-no-plate"]["late"] is False  # the date stays
+    assert due["R-slicing"]["estimate_reasons"] == [{"code": "needs_slicing", "count": 2}]
+    assert due["R-unknown"]["estimate_reasons"] == [{"code": "unknown_time", "count": 1}]
+    assert due["R-unknown"]["eta"] is None  # eta_complete=False: no date, as before
+    assert due["R-whole"]["estimate_reasons"] == []
+    assert due["R-done"]["estimate_reasons"] is None  # nothing is planned for a completed order
+    assert due["R-late"]["late"] is True
+    attention = {a["order"]["name"]: a for a in body["attention"]}
+    assert {name: a["reason"] for name, a in attention.items()} == {
+        "R-overdue": "overdue",
+        "R-late": "late_eta",
+        "R-no-plate": "partial",
+        "R-slicing": "partial",
+        "R-unknown": "partial",
+        "R-undated": "no_due",
+    }
+    assert [a["order"]["name"] for a in body["attention"]][:2] == ["R-overdue", "R-late"]
+    assert [a["reason"] for a in body["attention"]] == sorted(
+        (a["reason"] for a in body["attention"]), key=["overdue", "late_eta", "partial", "no_due"].index
+    )
+    assert attention["R-no-plate"]["estimate_reasons"] == [{"code": "no_plate", "count": 6}]
+    assert attention["R-undated"]["estimate_reasons"] == [{"code": "no_plate", "count": 1}]

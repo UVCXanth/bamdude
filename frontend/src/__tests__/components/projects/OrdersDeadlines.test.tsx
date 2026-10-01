@@ -17,14 +17,14 @@ const answer = (over: Partial<OrderDeadlines> = {}): OrderDeadlines => ({
   start: '2026-10-05',
   days: 14,
   due: [
-    { order: order({ id: 1, due_date: '2026-10-07T00:00:00' }), eta: '2026-10-06T09:00:00', late: false },
-    { order: order({ id: 2, code: 'OR-0002', name: 'Lamp', stage: 'qc', due_date: '2026-10-08T00:00:00' }), eta: '2026-10-12T09:00:00', late: true },
+    { order: order({ id: 1, due_date: '2026-10-07T00:00:00' }), eta: '2026-10-06T09:00:00', late: false, estimate_reasons: [] },
+    { order: order({ id: 2, code: 'OR-0002', name: 'Lamp', stage: 'qc', due_date: '2026-10-08T00:00:00' }), eta: '2026-10-12T09:00:00', late: true, estimate_reasons: [] },
   ],
   eta_marks: [{ id: 3, code: 'OR-0003', name: 'Vase', eta: '2026-10-09T09:00:00' }],
   attention: [
-    { order: order({ id: 4, code: 'OR-0004', name: 'Old', due_date: '2026-09-01T00:00:00' }), reason: 'overdue', eta: null },
-    { order: order({ id: 2, code: 'OR-0002', name: 'Lamp', due_date: '2026-10-08T00:00:00' }), reason: 'late_eta', eta: '2026-10-12T09:00:00' },
-    { order: order({ id: 5, code: 'OR-0005', name: 'Open' }), reason: 'no_due', eta: null },
+    { order: order({ id: 4, code: 'OR-0004', name: 'Old', due_date: '2026-09-01T00:00:00' }), reason: 'overdue', eta: null, estimate_reasons: [] },
+    { order: order({ id: 2, code: 'OR-0002', name: 'Lamp', due_date: '2026-10-08T00:00:00' }), reason: 'late_eta', eta: '2026-10-12T09:00:00', estimate_reasons: [] },
+    { order: order({ id: 5, code: 'OR-0005', name: 'Open' }), reason: 'no_due', eta: null, estimate_reasons: [] },
   ],
   ...over,
 });

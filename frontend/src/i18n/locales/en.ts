@@ -5739,6 +5739,7 @@ export default {
       reason: {
         overdue: 'Overdue',
         late_eta: 'Ready after the deadline',
+        partial: 'Incomplete estimate',
         no_due: 'No deadline',
       },
       empty: 'Nothing needs attention',

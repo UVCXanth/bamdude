@@ -2265,6 +2265,9 @@ export interface DeadlineOrder {
   order: OrderListItem;
   eta: string | null;
   late: boolean;
+  /** WS-13 E7 H01 — why the estimate is not whole (`[]` = whole); `null` for an order
+   *  that is not active. Non-empty = «partial», also beside an admitted `eta`. */
+  estimate_reasons: EstimateReason[] | null;
 }
 /** An active order whose forecast lands in the window while its deadline does not. */
 export interface EtaMark {
@@ -2273,11 +2276,12 @@ export interface EtaMark {
   name: string;
   eta: string;
 }
-export type AttentionReason = 'overdue' | 'late_eta' | 'no_due';
+export type AttentionReason = 'overdue' | 'late_eta' | 'partial' | 'no_due';
 export interface AttentionOrder {
   order: OrderListItem;
   reason: AttentionReason;
   eta: string | null;
+  estimate_reasons: EstimateReason[] | null;
 }
 /** `GET /projects/deadlines` — `start` is a date (`YYYY-MM-DD`), `eta` an instant. */
 export interface OrderDeadlines {

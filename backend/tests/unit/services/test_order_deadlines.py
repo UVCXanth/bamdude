@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from backend.app.services.order_deadlines import attention_reason, eta_is_late, server_wall_time
+from backend.app.services.order_deadlines import ATTENTION_ORDER, attention_reason, eta_is_late, server_wall_time
 
 DUE = datetime(2026, 10, 5)  # a deadline is a day, stored at midnight
 UTC = timezone.utc
@@ -33,3 +33,16 @@ def test_attention_reasons_in_their_order():
     assert attention_reason(datetime(2026, 10, 10), None, today, tz=UTC) is None  # due today is not overdue yet
     # The same local-day rule as the card: a finish after local midnight is late.
     assert attention_reason(datetime(2026, 10, 12), datetime(2026, 10, 12, 22, 30), today, tz=KYIV) == "late_eta"
+
+
+def test_an_incomplete_estimate_needs_attention_after_late_and_before_no_due():
+    # WS-13 E7 H02: «partial» is any estimate with reasons — also one whose ETA is
+    # admitted (eta_complete=True with a part that has no plate, R01).
+    today = datetime(2026, 10, 10)
+    assert ATTENTION_ORDER == ("overdue", "late_eta", "partial", "no_due")
+    assert attention_reason(datetime(2026, 10, 12), None, today, tz=UTC, partial=True) == "partial"
+    assert attention_reason(datetime(2026, 10, 12), datetime(2026, 10, 11), today, tz=UTC, partial=True) == "partial"
+    assert attention_reason(datetime(2026, 10, 12), datetime(2026, 10, 14), today, tz=UTC, partial=True) == "late_eta"
+    assert attention_reason(datetime(2026, 10, 9), None, today, tz=UTC, partial=True) == "overdue"
+    assert attention_reason(None, None, today, tz=UTC, partial=True) == "no_due"
+    assert attention_reason(datetime(2026, 10, 12), datetime(2026, 10, 11), today, tz=UTC) is None

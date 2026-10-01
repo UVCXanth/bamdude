@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from backend.app.models.stock_issue import WAYBILL_MAX
 from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.customer import CustomerResponse
+from backend.app.schemas.farm_forecast import EstimateReasonOut
 from backend.app.schemas.product import PartSourceOut, ProductListItem, ProductPartVariantOut
 from backend.app.schemas.project import LineConfigurationOut, ProjectListResponse
 from backend.app.schemas.stock import StockListItem
@@ -59,6 +60,9 @@ class DeadlineOrder(BaseModel):
     order: ProjectListResponse
     eta: datetime | None
     late: bool
+    #: WS-13 E7 H01 — why the production estimate is not whole (``[]`` = whole);
+    #: ``None`` for an order that is not active, which nothing plans.
+    estimate_reasons: list[EstimateReasonOut] | None = None
 
 
 class EtaMark(BaseModel):
@@ -72,8 +76,9 @@ class EtaMark(BaseModel):
 
 class AttentionOrder(BaseModel):
     order: ProjectListResponse
-    reason: Literal["overdue", "late_eta", "no_due"]
+    reason: Literal["overdue", "late_eta", "partial", "no_due"]
     eta: datetime | None
+    estimate_reasons: list[EstimateReasonOut] | None = None
 
 
 class OrderDeadlines(BaseModel):
