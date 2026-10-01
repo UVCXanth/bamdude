@@ -83,7 +83,10 @@ export function CardActionMenu({
    *  opening focus land nowhere when the first entry happens to be the busy
    *  one. */
   const items = useCallback(
-    () => Array.from(panelRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? []),
+    () =>
+      Array.from(
+        panelRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled), [role="menuitemradio"]:not(:disabled)') ?? [],
+      ),
     [],
   );
 
@@ -221,6 +224,8 @@ export function CardActionMenuItem({
   danger,
   disabled,
   title,
+  role = 'menuitem',
+  checked,
   children,
 }: {
   onSelect: () => void;
@@ -229,12 +234,16 @@ export function CardActionMenuItem({
   /** Why the row is disabled, shown on hover — the permission or the state
    *  that stands in the way, so a greyed entry is an explanation, not a riddle. */
   title?: string;
+  /** `menuitemradio` — one of a choice (the board's stage, WS-13 E7 F07); `checked` says which. */
+  role?: 'menuitem' | 'menuitemradio';
+  checked?: boolean;
   children: ReactNode;
 }) {
   return (
     <button
       type="button"
-      role="menuitem"
+      role={role}
+      aria-checked={role === 'menuitemradio' ? !!checked : undefined}
       onClick={onSelect}
       disabled={disabled}
       title={title}

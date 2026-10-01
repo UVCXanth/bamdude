@@ -50,4 +50,18 @@ describe('useBoardActions', () => {
     expect(update).not.toHaveBeenCalled();
     expect(onComplete).not.toHaveBeenCalled();
   });
+  // WS-13 E7 F05: one write per card at a time, from either door.
+  it('holds a card while its stage is written, and refuses a second write for it', async () => {
+    let finish!: () => void;
+    const stage = vi.spyOn(api, 'setOrderStage').mockImplementation(() => new Promise((r) => { finish = () => r({} as never); }));
+    const { result } = renderHook(() => useBoardActions(vi.fn()), { wrapper });
+    act(() => result.current.setStage(5, 'qc'));
+    await waitFor(() => expect(result.current.pendingIds.has(5)).toBe(true));
+    act(() => result.current.drop(5, 'prep', 'printing'));
+    act(() => result.current.setStage(5, 'printing'));
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(result.current.pendingIds.has(6)).toBe(false);
+    await act(async () => finish());
+    await waitFor(() => expect(result.current.pendingIds.has(5)).toBe(false));
+  });
 });

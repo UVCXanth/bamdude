@@ -5,6 +5,7 @@ import { api } from '../../../../api/client';
 import type { OrderBoard, OrderListItem } from '../../../../api/client';
 import { OrdersBoard } from '../../../../components/projects/board/OrdersBoard';
 import { NO_ACTIONS, WithOrderActions } from '../../../fixtures/orderActionsHost';
+import { ORDER_ROW_DEFAULTS } from '../../../wireDefaults';
 
 // Dragging is gated on `projects:update`, and the real provider resolves the
 // admin only after its own request — the hook alone is replaced.
@@ -15,6 +16,7 @@ vi.mock('../../../../contexts/AuthContext', async (importOriginal) => {
 });
 
 const order = (over: Partial<OrderListItem>): OrderListItem => ({
+  ...ORDER_ROW_DEFAULTS,
   id: 1, code: 'OR-0001', name: 'Ten flasks', customer_id: 2, customer_name: 'ACME', color: null, status: 'active',
   stage: 'prep', responsible_id: 7, responsible_name: 'Ira Koval', due_date: null, priority: 'normal', price: null,
   tags: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00Z', lines_count: 1, ordered: 10, printed: 4,
@@ -61,8 +63,8 @@ describe('OrdersBoard', () => {
     expect(within(card).getByText('OR-0002')).toBeInTheDocument();
     expect(within(card).getByRole('link', { name: 'Lamp' })).toHaveAttribute('href', '/projects/2');
     expect(within(card).getByText('ACME')).toBeInTheDocument();
-    expect(within(card).getByText('4 / 10')).toBeInTheDocument();
-    expect(within(card).getByText('printing 1 print(s) · queued 3 job(s)')).toBeInTheDocument();
+    expect(within(card).getByTestId('order-2-coverage')).toHaveTextContent('Covered 4 / 10');
+    expect(within(card).getByLabelText('printing 1, queued 3')).toBeInTheDocument();
     expect(within(card).getByText('IK')).toBeInTheDocument();
   });
   // spec workshop-order-issue-followups, rule 50: the list card's line, the same rule.
@@ -72,7 +74,7 @@ describe('OrdersBoard', () => {
     );
     render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
     const card = await screen.findByTestId('board-card-1');
-    expect(within(card).getByTestId('board-card-1-issued')).toHaveTextContent('Issued 4 of 10');
+    expect(within(card).getByTestId('board-card-1-issued')).toHaveTextContent('issued 4 of 10');
     expect(within(screen.getByTestId('board-card-3')).queryByTestId('board-card-3-issued')).not.toBeInTheDocument();
   });
   it('an overdue deadline is red, a future one is not', async () => {
@@ -85,8 +87,8 @@ describe('OrdersBoard', () => {
       }),
     );
     render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
-    expect(await screen.findByTestId('board-card-1-due')).toHaveClass('text-red-500');
-    expect(screen.getByTestId('board-card-4-due')).not.toHaveClass('text-red-500');
+    expect(await screen.findByTestId('order-1-due')).toHaveTextContent('· overdue');
+    expect(screen.getByTestId('order-4-due')).not.toHaveTextContent('overdue');
   });
   it('active cards carry a drag handle; completed cards do not', async () => {
     vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
@@ -94,7 +96,8 @@ describe('OrdersBoard', () => {
     const active = await screen.findByTestId('board-card-1');
     expect(within(active).getByRole('button', { name: 'Move OR-0001' })).toHaveAttribute('aria-roledescription', 'draggable');
     const done = screen.getByTestId('board-card-3');
-    expect(within(done).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(done).queryByRole('button', { name: /^Move / })).not.toBeInTheDocument();
+    expect(within(done).queryByRole('button', { name: /^Stage / })).not.toBeInTheDocument();
     expect(done.querySelector('[aria-roledescription]')).toBeNull();
   });
   it('«…and N more» opens the list with the column’s filter, keeping the shared ones', async () => {
@@ -104,7 +107,7 @@ describe('OrdersBoard', () => {
     render(<OrdersBoard filters={{ customer_id: 2, q: 'lamp' }} onOpenList={onOpenList} actions={NO_ACTIONS} />);
     const printingMore = await screen.findByRole('link', { name: 'and 1 more in the list' });
     expect(printingMore).toHaveAttribute('href', '/projects?customer=2&q=lamp&tab=active&stage=printing');
-    const doneMore = screen.getByRole('link', { name: 'and 8 more in the list' });
+    const doneMore = screen.getByRole('link', { name: '…and 8 more completed — in the list' });
     expect(doneMore).toHaveAttribute('href', '/projects?customer=2&q=lamp&tab=completed');
     expect(within(screen.getByRole('region', { name: 'Preparation' })).queryByRole('link', { name: /more in the list/ })).toBeNull();
     fireEvent.click(printingMore);
@@ -117,7 +120,9 @@ describe('OrdersBoard', () => {
     const qc = await screen.findByRole('region', { name: 'Quality check' });
     expect(await within(qc).findByText('No orders')).toBeInTheDocument();
     expect(screen.queryByText('Drop a card here')).not.toBeInTheDocument();
+    // No handle, no stage choice and — with nothing permitted — no menu (E6-B03).
     expect(within(screen.getByTestId('board-card-1')).queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.getByTestId('orders-board-hint')).toHaveTextContent('The stage is set by hand.');
   });
   it('a filter that matches nothing says so and offers the reset', async () => {
     const empty = { items: [], total: 0 };
@@ -128,11 +133,15 @@ describe('OrdersBoard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
     expect(onReset).toHaveBeenCalled();
   });
-  it('a board that could not be read says so, instead of four empty columns', async () => {
-    vi.spyOn(api, 'getOrderBoard').mockRejectedValue(new Error('boom'));
+  it('a board that could not be read says so with a retry, instead of four empty columns', async () => {
+    const get = vi.spyOn(api, 'getOrderBoard').mockRejectedValue(new Error('boom'));
     render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
-    expect(await screen.findByText('Could not load the board.')).toBeInTheDocument();
+    const alert = await screen.findByRole('alert', {}, { timeout: 4000 });
+    expect(alert).toHaveTextContent('Could not load the board.');
     expect(screen.queryByTestId('board-total-prep')).not.toBeInTheDocument();
+    get.mockResolvedValue(board());
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Lamp')).toBeInTheDocument();
   });
   it('a drop onto «done» opens the issue dialog instead of closing the order', async () => {
     vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
@@ -168,6 +177,103 @@ describe('OrdersBoard', () => {
     const handle = await screen.findByRole('button', { name: 'Move OR-0001' });
     await keyboardDrag(handle, ['ArrowRight']);
     await waitFor(() => expect(stage).toHaveBeenCalledWith(1, 'printing'));
+  });
+  describe('WS-13 E7 F', () => {
+    it('lays four columns side by side in ONE horizontally scrolling region, columns growing down', async () => {
+      vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
+      render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
+      await screen.findByText('Lamp');
+      const region = screen.getByRole('region', { name: 'Kanban' });
+      expect(region).toHaveAttribute('tabindex', '0');
+      expect(region.className).toContain('overflow-x-auto');
+      expect(region.className).toContain('grid-cols-[repeat(4,minmax(240px,1fr))]');
+      const columns = region.querySelectorAll('[data-board-column]');
+      expect(columns).toHaveLength(4);
+      columns.forEach((c) => expect(c.className).not.toMatch(/overflow-y|max-h-/));
+    });
+
+    it('draws the compact card of the mockup: rail, thumbnails · code · stage, name, customer, coverage, line, footer', async () => {
+      vi.spyOn(api, 'getOrderBoard').mockResolvedValue(
+        board({ printing: { items: [order({ id: 2, code: 'OR-0002', name: 'Lamp', stage: 'printing', color: '#5983b1', due_date: '2099-10-07T00:00:00', prints_in_progress: 1, prints_queued: 3, products: [{ product_id: 9, has_cover: false }] })], total: 1 } }),
+      );
+      render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
+      const card = await screen.findByTestId('board-card-2');
+      const parts = Array.from(card.querySelectorAll('[data-part]')).map((el) => el.getAttribute('data-part'));
+      expect(parts).toEqual(['rail', 'top', 'name', 'customer', 'coverage', 'line', 'footer']);
+      expect(card.querySelector('[data-part="rail"]')).toHaveStyle({ backgroundColor: '#5983b1' });
+      expect(within(card).getByTestId('order-2-thumbs')).toBeInTheDocument();
+      expect(within(card).getByLabelText('printing 1, queued 3')).toBeInTheDocument();
+      expect(within(card).getByTestId('order-2-menu')).toBeInTheDocument();
+    });
+
+    it('explains under the board that the stage is the operator’s, and how to move it', async () => {
+      vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
+      render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
+      await screen.findByText('Lamp');
+      const hint = screen.getByTestId('orders-board-hint');
+      expect(hint).toHaveTextContent('The stage is set by hand');
+      expect(hint).toHaveTextContent('closes by issuing');
+      expect(hint).not.toHaveTextContent(/itself|automatic/i);
+    });
+
+    it('changes the stage from the card’s stage menu with the keyboard — one write, none for the current stage', async () => {
+      vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
+      const stage = vi.spyOn(api, 'setOrderStage').mockResolvedValue({} as never);
+      render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
+      const trigger = await screen.findByRole('button', { name: 'Stage OR-0001: Preparation — change' });
+      trigger.focus();
+      fireEvent.click(trigger);
+      const current = await screen.findByRole('menuitemradio', { name: 'Preparation' });
+      expect(current).toHaveAttribute('aria-checked', 'true');
+      fireEvent.click(current);
+      expect(stage).not.toHaveBeenCalled();
+      fireEvent.click(trigger);
+      fireEvent.click(await screen.findByRole('menuitemradio', { name: 'Quality check' }));
+      await waitFor(() => expect(stage).toHaveBeenCalledWith(1, 'qc'));
+      expect(stage).toHaveBeenCalledTimes(1);
+    });
+
+    it('«Done» in the stage menu opens Stock & issue, and cancelling it closes nothing', async () => {
+      vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
+      const update = vi.spyOn(api, 'updateOrder').mockResolvedValue({} as never);
+      const stage = vi.spyOn(api, 'setOrderStage').mockResolvedValue({} as never);
+      vi.spyOn(api, 'getFulfilment').mockResolvedValue({
+        lines: [], ordered: 0, issued: 0, held: 0, fully_issued: true, closes_to_stock: false, can_complete: true,
+        can_assemble: 0, can_receive: 0, can_issue: 0,
+        recipient: { name: null, phone: null, delivery_method: null, delivery_details: null },
+      });
+      vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
+      render(<WithOrderActions>{(actions) => <OrdersBoard filters={{}} onOpenList={() => {}} actions={actions} />}</WithOrderActions>);
+      fireEvent.click(await screen.findByRole('button', { name: 'Stage OR-0002: Printing — change' }));
+      const done = await screen.findByRole('menuitem', { name: 'Done — stock and issue…' });
+      fireEvent.click(done);
+      const dialog = await screen.findByRole('dialog', { name: 'Stock & issue' });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Stock & issue' })).not.toBeInTheDocument());
+      expect(update).not.toHaveBeenCalled();
+      expect(stage).not.toHaveBeenCalled();
+    });
+
+    it('holds a card while its stage is written — dimmed, no second write — and leaves it when the write is refused', async () => {
+      vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
+      let refuse!: (e: Error) => void;
+      const stage = vi.spyOn(api, 'setOrderStage').mockImplementation(() => new Promise((_, reject) => { refuse = reject; }));
+      render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Stage OR-0001: Preparation — change' }));
+      fireEvent.click(await screen.findByRole('menuitemradio', { name: 'Printing' }));
+      const card = screen.getByTestId('board-card-1');
+      await waitFor(() => expect(card).toHaveAttribute('aria-busy', 'true'));
+      expect(card).toHaveTextContent('Moving…');
+      expect(within(card).getByRole('button', { name: 'Stage OR-0001: Preparation — change' })).toBeDisabled();
+      expect(within(card).queryByRole('button', { name: 'Move OR-0001' })).toBeNull();
+      // The other card is not held.
+      expect(screen.getByTestId('board-card-2')).not.toHaveAttribute('aria-busy', 'true');
+      await act(async () => refuse(new Error('This order is not active')));
+      await waitFor(() => expect(card).not.toHaveAttribute('aria-busy', 'true'));
+      expect(within(screen.getByRole('region', { name: 'Preparation' })).getByTestId('board-card-1')).toBeInTheDocument();
+      expect(await screen.findByText('This order is not active')).toBeInTheDocument();
+      expect(stage).toHaveBeenCalledTimes(1);
+    });
   });
 });
 

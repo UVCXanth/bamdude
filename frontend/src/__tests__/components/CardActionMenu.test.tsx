@@ -147,4 +147,27 @@ describe('CardActionMenu keyboard', () => {
     // user at the top of the page, several tab stops from where they were.
     expect(document.activeElement).toBe(trigger);
   });
+  // WS-13 E7 F07: a radio group in a menu (the board's stage choice) — its rows
+  // are in the roving ring and say which one is chosen.
+  it('keeps menuitemradio rows in the ring and marks the checked one', () => {
+    render(
+      <CardActionMenu label="Stage" testId="radio-menu">
+        {() => (
+          <>
+            <CardActionMenuItem role="menuitemradio" checked={false} onSelect={() => {}}>Prep</CardActionMenuItem>
+            <CardActionMenuItem role="menuitemradio" checked onSelect={() => {}}>Printing</CardActionMenuItem>
+            <CardActionMenuItem onSelect={() => {}}>Done…</CardActionMenuItem>
+          </>
+        )}
+      </CardActionMenu>,
+    );
+    fireEvent.click(screen.getByTestId('radio-menu'));
+    const radios = screen.getAllByRole('menuitemradio');
+    expect(radios.map((r) => r.getAttribute('aria-checked'))).toEqual(['false', 'true']);
+    radios[0].focus();
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(radios[1]);
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: 'Done…' }));
+  });
 });

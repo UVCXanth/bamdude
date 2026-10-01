@@ -5716,6 +5716,15 @@ export default {
       none: 'No orders',
       loadFailed: 'Could not load the board.',
       drag: 'Move {{code}}',
+      // WS-13 E7 §F.
+      label: 'Kanban',
+      moreDone_one: '…and {{count}} more completed — in the list',
+      moreDone_other: '…and {{count}} more completed — in the list',
+      stageMenu: 'Stage {{code}}: {{stage}} — change',
+      stageDone: 'Done — stock and issue…',
+      moving: 'Moving…',
+      hint: 'The stage is set by hand: drag a card between the first three columns — by its handle with the mouse or from the keyboard — or pick it on the card’s stage badge. «Done» opens Stock & issue: an order closes by issuing.',
+      hintReader: 'The stage is set by hand.',
       a11y: {
         instructions: 'To pick up an order, press Space or Enter. The arrow keys move it to the next or the previous column; Space or Enter drops it, Escape cancels.',
         picked: 'Picked up {{code}}.',
@@ -5812,6 +5821,9 @@ export default {
       remaining_one: '{{count}} left to cover',
       remaining_other: '{{count}} left to cover',
       live: 'printing {{printing}} print(s) · queued {{queued}} job(s)',
+      left: 'Left',
+      leftUnits_one: '{{count}} unit',
+      leftUnits_other: '{{count}} units',
     },
     // WS-13 E7 §B: the parts of an order row every list view shares.
     row: {

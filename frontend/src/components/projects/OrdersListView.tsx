@@ -12,6 +12,7 @@ import { LoadFailedNote } from '../workshop/LoadFailedNote';
 import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { listState } from './orderRow/listState';
 import { useOrdersForecast } from './orderRow/useOrdersForecast';
+import { readiness } from './orderRow/readiness';
 
 /** How many placeholder cards the first fetch draws. Enough to fill the top of
  *  a normal window without pretending to know how many orders there are. */
@@ -199,8 +200,15 @@ export function OrdersListView({
     ) : null;
 
   const renderCard = (order: OrderListItem) => (
-    <OrderCard key={order.id} order={order} actions={actions} />
+    <OrderCard
+      key={order.id}
+      order={order}
+      actions={actions}
+      readiness={readiness(order, forecast.byId[order.id], forecast.state)}
+    />
   );
+  // The mockup's grid (WS-13 E7 E01): 300 px at least, never wider than a phone.
+  const cardGrid = 'grid gap-4 grid-cols-[repeat(auto-fill,minmax(min(300px,100%),1fr))]';
 
   return (
     // The previous page stays on screen while the next one loads — dimmed
@@ -232,7 +240,7 @@ export function OrdersListView({
                 {view === 'table' ? (
                   <OrdersTable orders={group} forecast={forecast} sort={sort} onSortChange={onSortChange} actions={actions} />
                 ) : (
-                  <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">{group.map(renderCard)}</div>
+                  <div className={cardGrid}>{group.map(renderCard)}</div>
                 )}
               </section>
             ))}
@@ -253,7 +261,7 @@ export function OrdersListView({
         )
       ) : (
         <>
-          <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">{visible.map(renderCard)}</div>
+          <div className={cardGrid}>{visible.map(renderCard)}</div>
           {total > 0 && <div className="mt-4">{pageBar('bare')}</div>}
         </>
       )}

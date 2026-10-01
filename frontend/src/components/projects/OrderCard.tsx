@@ -1,159 +1,115 @@
 import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { Package } from 'lucide-react';
-import { api } from '../../api/client';
 import type { OrderListItem } from '../../api/client';
-import { isOverdue } from '../../utils/orderDates';
 import { StageBadge } from './StageBadge';
 import { PriorityBadge } from './PriorityBadge';
-import { ProgressBar } from './ProgressBar';
-import { ResponsibleName } from './ResponsibleName';
 import { OrderActionMenu } from './orderActions/OrderActionMenu';
 import { toOrderRef } from './orderActions/orderRef';
 import type { OrderActions } from './orderActions/useOrderActions';
+import { OrderCoverage } from './orderRow/OrderCoverage';
+import { OrderDue } from './orderRow/OrderDue';
+import { OrderResponsible } from './orderRow/OrderResponsible';
+import { OrderThumbs } from './orderRow/OrderThumbs';
+import { ReadyEstimate } from './orderRow/ReadyEstimate';
+import type { Readiness } from './orderRow/readiness';
 
 interface OrderCardProps {
   order: OrderListItem;
   /** The page's order action host (WS-13 E6 B01) — the card's menu runs through it. */
   actions: OrderActions;
+  /** «Ready ≈» — `readiness` over the page's forecast batch (WS-13 E7 B03 / E03). */
+  readiness: Readiness;
 }
 
 /**
- * One order in the grid. Every figure (`ordered`, `printed`, `progress`,
- * `lines_count`) is displayed exactly as the server sent it — never
- * recomputed here (design decision 8).
+ * One order in the grid — the mockup's card (WS-13 E7 E02): a 3 px colour rail;
+ * thumbnails, code and stage; the name; customer and priority; coverage; a 2×2
+ * of due / ready ≈ / print·queue / left; and a footer with the responsible person
+ * and the menu. Every figure is the server's (WS-01).
  *
- * ⚠️ **The link is an OVERLAY, not the card's wrapper.** The menu button used
- * to sit inside the `<a>` — invalid HTML — and every one of its items had to
- * cancel the navigation its own click caused. One item added without that
- * guard navigated instead of acting, and a keyboard activation navigated
- * whatever the guard said. Now the anchor covers the card from on top
- * (`absolute inset-0`, named by `aria-label` because it wraps no text) and the
- * menu is an ordinary sibling above it: there is nothing left to cancel.
+ * ⚠️ **The link is an OVERLAY, not the card's wrapper.** A menu `<button>`
+ * inside an `<a>` is invalid HTML and every item had to cancel the navigation
+ * its click caused. The anchor covers the card from on top (`absolute inset-0`,
+ * named by `aria-label`), and the menu sits above it (`relative z-10`).
+ *
+ * The card is a column whose footer is pushed to the bottom: cards of one row
+ * are as tall as the tallest, and a missing field never lifts a footer.
  */
-export function OrderCard({ order, actions }: OrderCardProps) {
+export function OrderCard({ order, actions, readiness }: OrderCardProps) {
   const { t } = useTranslation();
-  const overdue = isOverdue(order);
-  // Three at most: the strip is a hint at what is in the order, not its contents.
-  const lineProducts = (order.line_products ?? []).slice(0, 3);
 
   return (
     <div
       data-testid={`order-${order.id}-card`}
-      className="relative @container rounded-xl bg-bambu-dark-secondary border border-bambu-dark-tertiary hover:border-bambu-green/50 overflow-hidden"
+      className="relative flex h-full flex-col rounded-xl bg-bambu-dark-secondary border border-bambu-dark-tertiary hover:border-bambu-green/50 overflow-hidden"
     >
-      <div className="h-1.5" style={{ backgroundColor: order.color || '#6b7280' }} />
+      <div
+        data-part="rail"
+        className={`h-[3px] flex-shrink-0 ${order.color ? '' : 'bg-bambu-dark-tertiary'}`}
+        style={order.color ? { backgroundColor: order.color } : undefined}
+      />
 
-      <div className="p-4 flex gap-3 @max-[22rem]:flex-col">
-        {order.cover_image_filename ? (
-          <img
-            src={api.getProjectCoverImageUrl(order.id)}
-            alt=""
-            className="w-20 h-20 @max-[22rem]:w-full @max-[22rem]:h-24 flex-shrink-0 rounded-lg object-cover bg-bambu-dark"
-          />
-        ) : (
-          lineProducts.length > 0 && (
-            <div className="flex gap-1 flex-shrink-0">
-              {lineProducts.map((line, i) =>
-                line.has_cover ? (
-                  <img
-                    key={`${line.product_id}-${i}`}
-                    data-testid="product-cover"
-                    src={api.getProductCoverImageUrl(line.product_id)}
-                    alt=""
-                    className="w-9 h-9 rounded-lg object-contain bg-bambu-dark"
-                  />
-                ) : (
-                  // A line whose product has no cover still keeps its tile: the
-                  // strip's length is how many lines the order has, and dropping
-                  // the coverless ones would quietly misreport that.
-                  <div
-                    key={`${line.product_id}-${i}`}
-                    data-testid="product-cover-placeholder"
-                    className="w-9 h-9 rounded-lg bg-bambu-dark flex items-center justify-center"
-                  >
-                    <Package className="w-4 h-4 text-bambu-gray" />
-                  </div>
-                ),
-              )}
-            </div>
-          )
-        )}
-
-        <div className="flex-1 min-w-0 space-y-1.5">
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0">
-              <h3 className="font-semibold text-white truncate">{order.name}</h3>
-              <span className="block text-xs text-bambu-gray">{order.code}</span>
-            </div>
-            {/* Above the overlay link, so the trigger is clickable at all. */}
-            <div className="relative z-10 flex-shrink-0">
-              <OrderActionMenu
-                order={toOrderRef(order)}
-                context="list"
-                actions={actions}
-                extra={{ order }}
-                testId={`order-${order.id}-menu`}
-              />
-            </div>
-          </div>
-
-          {order.customer_name && <p className="text-sm text-bambu-gray truncate">{order.customer_name}</p>}
-
-          <div className="flex items-center gap-1.5 flex-wrap">
+      <div className="flex flex-1 flex-col p-4">
+        <div data-part="top" className="mb-3 flex items-center gap-2">
+          <OrderThumbs order={order} />
+          <span className="min-w-0 truncate text-xs text-bambu-gray">{order.code}</span>
+          <span className="ml-auto flex-shrink-0">
             <StageBadge stage={order.stage} status={order.status} />
-            <PriorityBadge priority={order.priority} />
+          </span>
+        </div>
+
+        <h3 data-part="name" className="text-base font-semibold text-white break-words">
+          {order.name}
+        </h3>
+        <p data-part="customer" className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-bambu-gray">
+          <span className="truncate">{order.customer_name ?? t('orders.list.noCustomer')}</span>
+          <PriorityBadge priority={order.priority} />
+        </p>
+
+        <div data-part="coverage" className="mt-3">
+          <OrderCoverage order={order} variant="card" />
+        </div>
+
+        <dl data-part="meta" className="my-3.5 grid grid-cols-2 gap-2.5 text-sm">
+          <div className="min-w-0">
+            <dt className="text-xs text-bambu-gray">{t('orders.table.due')}</dt>
+            <dd className="text-white">
+              <OrderDue order={order} variant="meta" />
+            </dd>
           </div>
+          <div className="min-w-0">
+            <dt className="text-xs text-bambu-gray">{t('orders.table.readyApprox')}</dt>
+            <dd>
+              <ReadyEstimate readiness={readiness} testId={`order-${order.id}-ready-value`} />
+            </dd>
+          </div>
+          <div className="min-w-0">
+            <dt className="text-xs text-bambu-gray">{t('orders.table.live')}</dt>
+            <dd
+              className="tabular-nums text-white"
+              aria-label={t('orders.row.live', { printing: order.prints_in_progress, queued: order.prints_queued })}
+            >
+              {order.prints_in_progress} / {order.prints_queued}
+            </dd>
+          </div>
+          <div className="min-w-0">
+            <dt className="text-xs text-bambu-gray">{t('orders.card.left')}</dt>
+            <dd className="tabular-nums text-white">{t('orders.card.leftUnits', { count: order.remaining })}</dd>
+          </div>
+        </dl>
 
-          {order.due_date && (
-            <p className={`text-xs ${overdue ? 'text-red-500' : 'text-bambu-gray'}`}>
-              {new Date(order.due_date).toLocaleDateString()}
-              {overdue && <span> · {t('orders.card.overdue')}</span>}
-            </p>
-          )}
-
-          <ProgressBar
-            value={order.covered_units}
-            max={order.ordered}
-            progress={order.progress}
-            label={t('orders.card.covered')}
-            testId={`order-${order.id}-progress`}
-          />
-
-          {/* Beside the printed count, and only when there is something to say
-              (pass 8, Decision 5). `printed` stays literal — the farm printed
-              that many — and this is the other half of "done".
-              ⚠️ `> 0`, never a bare `&&` on the number: a zero is nothing to
-              say, and `&&` would render the 0 itself. */}
-          {order.from_stock_units > 0 && (
-            <p className="text-xs text-bambu-gray" data-testid={`order-${order.id}-from-stock`}>
-              {t('orders.card.coverageSources', { printed: order.printed, stock: order.from_stock_units })}
-            </p>
-          )}
-
-          {order.status === 'active' && order.ordered > 0 && (
-            <p className="text-xs text-bambu-gray" data-testid={`order-${order.id}-issued`}>
-              {t('orders.card.issued', { issued: order.issued_units, ordered: order.ordered })}
-            </p>
-          )}
-
-          {order.remaining > 0 && (
-            <p className="text-xs text-bambu-gray" data-testid={`order-${order.id}-remaining`}>
-              {t('orders.card.remaining', { count: order.remaining })}
-            </p>
-          )}
-
-          {(order.prints_in_progress > 0 || order.prints_queued > 0) && (
-            <p className="text-xs text-bambu-gray" data-testid={`order-${order.id}-live`}>
-              {t('orders.card.live', { printing: order.prints_in_progress, queued: order.prints_queued })}
-            </p>
-          )}
-
-          <p className="text-xs text-bambu-gray">{t('orders.card.lines', { count: order.lines_count })}</p>
-
-          {order.responsible_name && (
-            <ResponsibleName name={order.responsible_name} className="text-xs text-bambu-gray" />
-          )}
+        <div data-part="footer" className="mt-auto flex items-center justify-between gap-2 border-t border-bambu-dark-tertiary pt-2.5">
+          <OrderResponsible order={order} className="min-w-0 truncate text-xs text-bambu-gray" />
+          {/* Above the overlay link, so the trigger is clickable at all. */}
+          <div className="relative z-10 flex-shrink-0">
+            <OrderActionMenu
+              order={toOrderRef(order)}
+              context="list"
+              actions={actions}
+              extra={{ order }}
+              testId={`order-${order.id}-menu`}
+            />
+          </div>
         </div>
       </div>
 

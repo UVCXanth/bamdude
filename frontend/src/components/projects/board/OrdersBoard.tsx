@@ -4,9 +4,11 @@ import { useTranslation } from 'react-i18next';
 import { DndContext, KeyboardSensor, PointerSensor, useDroppable, useSensor, useSensors } from '@dnd-kit/core';
 import type { Announcements, DragEndEvent } from '@dnd-kit/core';
 import { api } from '../../../api/client';
-import type { OrderBoardColumn, OrderViewFilters } from '../../../api/client';
+import type { OrderBoardColumn, OrderStage, OrderViewFilters } from '../../../api/client';
 import { useAuth } from '../../../contexts/AuthContext';
 import { Button } from '../../Button';
+import { LoadFailedNote } from '../../workshop/LoadFailedNote';
+import { RefreshFailedNote } from '../../workshop/RefreshFailedNote';
 import { toOrderRef } from '../orderActions/orderRef';
 import type { OrderActions } from '../orderActions/useOrderActions';
 import { BoardCard } from './BoardCard';
@@ -42,14 +44,14 @@ export function OrdersBoard({ filters, onOpenList, onReset, actions }: OrdersBoa
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const { search } = useLocation();
-  const { data, isError, isPlaceholderData } = useQuery({
+  const { data, isError, isPlaceholderData, refetch } = useQuery({
     // Under the `projects` prefix, so `invalidateOrderViews` re-reads the board too.
     queryKey: ['projects', 'board', filters],
     queryFn: () => api.getOrderBoard(filters),
     // The previous board stays while a new search or filter is asked — no flash of empty columns.
     placeholderData: keepPreviousData,
   });
-  const { drop } = useBoardActions((orderId) => {
+  const { drop, setStage, pendingIds } = useBoardActions((orderId) => {
     const order = BOARD_COLUMNS.flatMap((key) => data?.[key].items ?? []).find((o) => o.id === orderId);
     if (order) actions.run('complete', toOrderRef(order));
   });
@@ -80,7 +82,7 @@ export function OrdersBoard({ filters, onOpenList, onReset, actions }: OrdersBoa
   };
 
   // A failed read with nothing to show is said out loud: four empty columns would read as «no orders».
-  if (isError && !data) return <p className="text-sm text-red-500">{t('orders.board.loadFailed')}</p>;
+  if (isError && !data) return <LoadFailedNote message={t('orders.board.loadFailed')} onRetry={() => void refetch()} />;
 
   return (
     <>
@@ -94,14 +96,20 @@ export function OrdersBoard({ filters, onOpenList, onReset, actions }: OrdersBoa
           )}
         </div>
       )}
+      {isError && data && <RefreshFailedNote onRetry={() => void refetch()} />}
       <DndContext
         sensors={sensors}
         onDragEnd={onDragEnd}
         accessibility={{ announcements, screenReaderInstructions: { draggable: t('orders.board.a11y.instructions') } }}
       >
+        {/* WS-13 E7 F01 (R08): four columns, always, min 240 — ONE horizontal scroll for the
+            board (focusable and named, like a table's), the columns growing down. */}
         <div
+          role="region"
+          aria-label={t('orders.board.label')}
+          tabIndex={0}
           aria-busy={isPlaceholderData}
-          className={`grid gap-3 md:grid-cols-2 xl:grid-cols-4 items-start transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
+          className={`grid grid-cols-[repeat(4,minmax(240px,1fr))] gap-3 items-start overflow-x-auto pb-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green rounded-xl transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
         >
           {BOARD_COLUMNS.map((key) => (
             <BoardColumn
@@ -113,10 +121,16 @@ export function OrdersBoard({ filters, onOpenList, onReset, actions }: OrdersBoa
               canDrop={canMove}
               moreHref={listHref(search, key)}
               onOpenList={onOpenList}
+              actions={actions}
+              pendingIds={pendingIds}
+              onStage={setStage}
             />
           ))}
         </div>
       </DndContext>
+      <p data-testid="orders-board-hint" className="mt-3 text-xs text-bambu-gray">
+        {canMove ? t('orders.board.hint') : t('orders.board.hintReader')}
+      </p>
 
     </>
   );
@@ -132,9 +146,13 @@ interface BoardColumnProps {
   canDrop: boolean;
   moreHref: string;
   onOpenList: () => void;
+  actions: OrderActions;
+  /** Cards whose stage is being written (WS-13 E7 F05). */
+  pendingIds: ReadonlySet<number>;
+  onStage: (orderId: number, stage: OrderStage) => void;
 }
 
-function BoardColumn({ columnKey, title, column, canDrag, canDrop, moreHref, onOpenList }: BoardColumnProps) {
+function BoardColumn({ columnKey, title, column, canDrag, canDrop, moreHref, onOpenList, actions, pendingIds, onStage }: BoardColumnProps) {
   const { t } = useTranslation();
   const { setNodeRef, isOver } = useDroppable({ id: columnKey, disabled: !canDrop });
   const items = column?.items ?? [];
@@ -146,8 +164,8 @@ function BoardColumn({ columnKey, title, column, canDrag, canDrop, moreHref, onO
       ref={setNodeRef}
       data-board-column={columnKey}
       aria-labelledby={headingId}
-      className={`rounded-xl border bg-bambu-dark-secondary p-3 space-y-2 ${
-        isOver ? 'border-bambu-green' : 'border-bambu-dark-tertiary'
+      className={`min-h-[420px] rounded-xl border p-3 space-y-2.5 transition-colors ${
+        isOver ? 'border-bambu-green bg-bambu-green/[0.08]' : 'border-bambu-dark-tertiary bg-bambu-dark-secondary/55'
       }`}
     >
       <div className="flex items-center justify-between">
@@ -165,11 +183,19 @@ function BoardColumn({ columnKey, title, column, canDrag, canDrop, moreHref, onO
         </p>
       )}
       {items.map((order) => (
-        <BoardCard key={order.id} order={order} column={columnKey} draggable={canDrag} />
+        <BoardCard
+          key={order.id}
+          order={order}
+          column={columnKey}
+          draggable={canDrag}
+          actions={actions}
+          pending={pendingIds.has(order.id)}
+          onStage={(stage) => onStage(order.id, stage)}
+        />
       ))}
       {more > 0 && (
         <Link to={moreHref} onClick={onOpenList} className="block text-xs text-bambu-green hover:underline">
-          {t('orders.board.more', { count: more })}
+          {t(columnKey === 'done' ? 'orders.board.moreDone' : 'orders.board.more', { count: more })}
         </Link>
       )}
     </section>
