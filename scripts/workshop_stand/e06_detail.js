@@ -773,6 +773,35 @@ async (page, selftest = null) => {
     };
   });
 
+  await scenario('dup-refusal@1440', ['E6-D03', 'I4.4'], async () => {
+    const sent = [];
+    const refusal = 'Це замовлення саме зараз змінюють — спробуйте ще раз';
+    const { ctx, p, errors } = await open(1440, { writes: [recorder(sent, /\/duplicate$/, () => ({ __status: 409, json: { detail: refusal } }))] });
+    await p.goto(detail(A), { waitUntil: 'networkidle' });
+    await ready(p);
+    await openMenu(p, p.getByTestId('order-actions'));
+    await pick(p, 'Дублювати…');
+    const nameField = dialog(p).getByLabel('Назва копії');
+    await nameField.fill('Друга партія');
+    await footer(p).getByRole('button', { name: 'Дублювати' }).click();
+    await dialog(p).getByRole('alert').waitFor({ timeout: 8000 });
+    await p.waitForTimeout(300);
+    const measured = {
+      alert: ((await dialog(p).getByRole('alert').textContent()) ?? '').trim(),
+      name: await nameField.inputValue(),
+      focus: await p.evaluate(() => document.activeElement?.textContent?.trim() ?? null),
+      posts: sent.length,
+    };
+    const file = await shoot(p, 'dup-refusal@1440');
+    await ctx.close();
+    return {
+      recipe: { url: '/projects/{order:241}', fixture: ['POST …/duplicate → 409 (runner)'], actions: ['menu «Дублювати…»', 'name', '«Дублювати»'] },
+      measured: { ...measured, errors },
+      pass: measured.alert === refusal && measured.name === 'Друга партія' && measured.focus === 'Дублювати' && measured.posts === 1 && errors.length === 0,
+      screenshots: [file],
+    };
+  });
+
   // ======================= 3. the action menu and its confirmations (B01–B09) =======================
   for (const w of [1440, 390]) {
     await scenario(`menu-detail@${w}`, ['E6-B02', 'E6-B03', 'O10'], async () => {
@@ -906,6 +935,47 @@ async (page, selftest = null) => {
       measured: { rowGone, confirmStays, focus, sent: sent.length, posts: posts.length, paneMoved, noteStays, errors: [...errors, ...ctxB.errors] },
       pass: !!DOC && rowGone && confirmStays && focus.tag === 'H1' && focus.text === 'Замовлення' && sent.length === 1 && posts.length === 1 && noteStays &&
         errors.length === 0 && ctxB.errors.length === 0,
+    };
+  });
+
+  // B07 (final review I1): a dialog that swaps for another — the form after its reading shell,
+  // «Stock & issue» after its own, a confirmation after the form — hands focus back to the card's trigger.
+  await scenario('menu-focus-return@1440', ['E6-B07'], async () => {
+    const { ctx, p, errors } = await open(1440, { storage: { 'projects.view': 'cards' } });
+    await listPage(p);
+    const card = cardOf(p, A);
+    const focusedLabel = () => p.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.tagName ?? null);
+    const back = {};
+    await openMenu(p, card);
+    await pick(p, 'Склад і видача…');
+    await dialog(p).locator('table').first().waitFor({ timeout: 10000 });
+    await footer(p).getByRole('button', { name: 'Скасувати' }).click();
+    await dialogGone(p);
+    await p.waitForTimeout(300);
+    back.fulfil = await focusedLabel();
+    await openMenu(p, card);
+    await pick(p, 'Редагувати');
+    await dialog(p).getByLabel('Опис').waitFor({ timeout: 10000 });
+    await footer(p).getByRole('button', { name: 'Скасувати' }).click();
+    await dialogGone(p);
+    await p.waitForTimeout(300);
+    back.edit = await focusedLabel();
+    await openMenu(p, card);
+    await pick(p, 'Редагувати');
+    await dialog(p).getByLabel('Опис').waitFor({ timeout: 10000 });
+    await dialog(p).getByLabel('Статус').selectOption('cancelled');
+    await footer(p).getByRole('button', { name: 'Зберегти' }).click();
+    await within(p.waitForFunction(() => /Скасувати замовлення\?/.test(document.querySelector('[role="dialog"]')?.textContent ?? '')), 8000, 'no_confirm');
+    await footer(p).getByRole('button', { name: 'Не скасовувати' }).click();
+    await dialogGone(p);
+    await p.waitForTimeout(300);
+    back.chain = await focusedLabel();
+    await ctx.close();
+    const want = `Дії замовлення ${orderA.code}`;
+    return {
+      recipe: { url: '/projects (cards)', actions: ['card menu «Склад і видача…» → «Скасувати»', 'card menu «Редагувати» → «Скасувати»', 'card menu «Редагувати» → «Скасоване» → «Зберегти» → «Не скасовувати»'] },
+      measured: { back, want, errors },
+      pass: back.fulfil === want && back.edit === want && back.chain === want && errors.length === 0,
     };
   });
 
@@ -1321,6 +1391,35 @@ async (page, selftest = null) => {
       measured: { title, total, rows, expectedRows, posts: posts.length, doneToast, nothingToast, errors },
       pass: title === 'Надлишок у вільний залишок' && total > 0 && rows === expectedRows && posts.length === 2 && doneToast && nothingToast && errors.length === 0,
       screenshots: [fileDialog],
+    };
+  });
+
+  await scenario('bank-refusal@1440', ['E6-F01', 'I4.4'], async () => {
+    const sent = [];
+    const refusal = 'Запаси замовлення змінилися, поки зміну зберігали — спробуйте ще раз';
+    const { ctx, p, errors } = await open(1440, { writes: [recorder(sent, /\/bank-surplus$/, () => ({ __status: 409, json: { detail: refusal } }))] });
+    await p.goto(detail(B), { waitUntil: 'networkidle' });
+    await ready(p);
+    await p.getByTestId('order-bank-surplus').click();
+    await dialog(p).waitFor({ timeout: 8000 });
+    const total = orderB.figures?.bankable_surplus ?? 0;
+    await footer(p).getByRole('button', { name: `Перенести (${total})` }).click();
+    await dialog(p).getByRole('alert').waitFor({ timeout: 8000 });
+    await p.waitForTimeout(300);
+    const measured = {
+      alert: ((await dialog(p).getByRole('alert').textContent()) ?? '').trim(),
+      title: await titleOf(p),
+      focus: await p.evaluate(() => document.activeElement?.textContent?.trim() ?? null),
+      posts: sent.length,
+    };
+    const file = await shoot(p, 'bank-refusal@1440');
+    await ctx.close();
+    return {
+      recipe: { url: '/projects/{order:244}', fixture: ['POST …/bank-surplus → 409 (runner)'], actions: ['header bank', '«Перенести (N)»'] },
+      measured: { ...measured, total, errors },
+      pass: total > 0 && measured.alert === refusal && measured.title === 'Надлишок у вільний залишок' && measured.focus === `Перенести (${total})` &&
+        measured.posts === 1 && errors.length === 0,
+      screenshots: [file],
     };
   });
 

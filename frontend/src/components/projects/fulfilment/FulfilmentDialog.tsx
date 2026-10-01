@@ -187,13 +187,25 @@ function FulfilmentForm({
   const closing = closeAsked && completes;
   const lines = requestFrom(draft);
   const totals = batchTotals(draft);
+  // Two lines of one product read alike to a screen reader: their fields take the
+  // configuration into their names (E05 «<column> — <line>»).
+  const sharedNames = new Set(
+    state.lines
+      .filter((l) => l.mode !== 'parts')
+      .map((l) => l.product_name)
+      .filter((n, i, all) => all.indexOf(n) !== i),
+  );
   const noteMissing = totals.writeOff > 0 && writeOffNote.trim() === '';
 
-  // The first focus is the first number of the table (the mockup's `openDialog`), after
-  // the Modal's own focus of its panel.
+  const cancelId = useId();
+  const submitId = useId();
+  const rereadId = useId();
+  // The first focus is the first number of the table (the mockup's `openDialog`), else
+  // «Cancel» (E16) — after the Modal's own focus of its panel.
   useEffect(() => {
-    root.current?.querySelector<HTMLInputElement>('table input[type="number"]:not(:disabled)')?.focus();
-  }, []);
+    const first = root.current?.querySelector<HTMLInputElement>('table input[type="number"]:not(:disabled)');
+    (first ?? document.getElementById(cancelId))?.focus();
+  }, [cancelId]);
 
   const change = (lineId: number, patch: (d: LineDraft) => LineDraft) =>
     setTyped((prev) => {
@@ -204,7 +216,11 @@ function FulfilmentForm({
   const readAgain = async () => {
     setReread('reading');
     try {
-      await qc.fetchQuery({ ...fulfilmentQuery(order.id), staleTime: 0 });
+      // A read already on its way started before the refusal: fetchQuery would hand it back
+      // as «fresh». Cancel it first, so the state the dialog waits for is read after (R04).
+      const query = fulfilmentQuery(order.id);
+      await qc.cancelQueries({ queryKey: query.queryKey, exact: true });
+      await qc.fetchQuery({ ...query, staleTime: 0 });
       setReread('idle');
     } catch {
       setReread('failed');
@@ -241,6 +257,13 @@ function FulfilmentForm({
 
   const pending = fulfil.isPending;
   const canSubmit = (lines.length > 0 || closing) && !noteMissing && !pending && reread === 'idle';
+  // After a refusal focus never falls to BODY: on «Read again» when the re-read failed, back
+  // on «Execute» once the state is read afresh (C08 for this dialog).
+  useEffect(() => {
+    if (!error) return;
+    if (reread === 'failed') document.getElementById(rereadId)?.focus();
+    else if (reread === 'idle') document.getElementById(submitId)?.focus();
+  }, [error, reread, rereadId, submitId]);
   const submit = () => {
     if (!canSubmit || sent.current) return;
     sent.current = true;
@@ -280,7 +303,7 @@ function FulfilmentForm({
       {reread === 'failed' && (
         <p className="flex flex-wrap items-center gap-2 text-sm">
           {t('orders.fulfil.readFailed')}
-          <Button variant="secondary" size="sm" onClick={() => void readAgain()}>
+          <Button id={rereadId} variant="secondary" size="sm" onClick={() => void readAgain()}>
             {t('orders.fulfil.reread')}
           </Button>
         </p>
@@ -300,10 +323,10 @@ function FulfilmentForm({
       summary={<span className="text-sm text-bambu-gray-light">{summary}</span>}
       footer={
         <>
-          <Button variant="secondary" onClick={onClose} disabled={pending}>
+          <Button id={cancelId} variant="secondary" onClick={onClose} disabled={pending}>
             {t('common.cancel')}
           </Button>
-          <Button onClick={submit} disabled={!canSubmit}>
+          <Button id={submitId} onClick={submit} disabled={!canSubmit}>
             {pending ? t('orders.fulfil.submitting') : t('orders.fulfil.submit')}
           </Button>
         </>
@@ -322,14 +345,14 @@ function FulfilmentForm({
               size="sm"
               onClick={toggleWriteOff}
               aria-expanded={writeOffOpen}
-              aria-controls={writeOffId}
+              aria-controls={`${writeOffId}-table ${writeOffId}`}
             >
               {t('orders.fulfil.writeOffToggle')}
             </Button>
           </div>
 
           <WorkshopTableScroll label={t('orders.fulfil.title')}>
-            <table className="w-full text-sm">
+            <table id={`${writeOffId}-table`} className="w-full text-sm">
               <thead>
                 <tr>
                   <th className={TH}>{t('orders.fulfil.columns.line')}</th>
@@ -357,6 +380,7 @@ function FulfilmentForm({
                     <ProductLineRow
                       key={line.line_id}
                       line={line}
+                      sharedName={sharedNames.has(line.product_name)}
                       draft={draft[line.line_id]}
                       onChange={change}
                       writeOffOpen={writeOffOpen}
@@ -428,10 +452,15 @@ function FulfilmentForm({
                 disabled={!completes}
                 onChange={(e) => setCloseAsked(e.target.checked)}
                 aria-label={completeLabel}
+                aria-describedby={completes ? undefined : `${writeOffId}-after`}
               />
               <span className={completes ? 'text-white' : 'text-bambu-gray'}>
                 {completeLabel}
-                {!completes && <small className="ml-1 text-xs text-bambu-gray">{afterThis}</small>}
+                {!completes && (
+                  <small id={`${writeOffId}-after`} className="ml-1 text-xs text-bambu-gray">
+                    {afterThis}
+                  </small>
+                )}
               </span>
             </label>
           </WorkshopFormGrid>
@@ -475,12 +504,15 @@ function NumberCell({
 
 function ProductLineRow({
   line,
+  sharedName = false,
   draft,
   onChange,
   writeOffOpen,
   issuing,
 }: {
   line: FulfilmentLineState;
+  /** Another line of the dialog is of the same product — the field names add the configuration. */
+  sharedName?: boolean;
   draft: LineDraft;
   onChange: (lineId: number, patch: (d: LineDraft) => LineDraft) => void;
   writeOffOpen: boolean;
@@ -491,6 +523,7 @@ function ProductLineRow({
   const config = lineConfigLabel(line.configuration ?? undefined, line.mode, t) || t('orders.fulfil.standardConfig');
   // As the lines table: a kit that differs from the standard in the accent, the standard muted.
   const accent = isNonStandardConfiguration(line.configuration);
+  const fieldName = sharedName ? `${name} (${config})` : name;
   return (
     <tr data-testid={`fulfil-line-${line.line_id}`} className="border-t border-bambu-dark-tertiary">
       <td className={TD}>
@@ -513,7 +546,7 @@ function ProductLineRow({
         <NumberCell
           value={draft.assemble}
           max={line.can_assemble}
-          label={t('orders.fulfil.assembleLabel', { name })}
+          label={t('orders.fulfil.assembleLabel', { name: fieldName })}
           onChange={(n) => onChange(line.line_id, (d) => ({ ...d, assemble: n }))}
         />
       </td>
@@ -521,7 +554,7 @@ function ProductLineRow({
         <NumberCell
           value={draft.receive}
           max={line.can_receive}
-          label={t('orders.fulfil.receiveLabel', { name })}
+          label={t('orders.fulfil.receiveLabel', { name: fieldName })}
           onChange={(n) => onChange(line.line_id, (d) => ({ ...d, receive: n }))}
         />
       </td>
@@ -531,7 +564,7 @@ function ProductLineRow({
           <NumberCell
             value={draft.writeOff}
             max={line.held + draft.assemble + draft.receive}
-            label={t('orders.fulfil.writeOffLabel', { name })}
+            label={t('orders.fulfil.writeOffLabel', { name: fieldName })}
             onChange={(n) => onChange(line.line_id, (d) => withLineWriteOff(line, d, n))}
           />
         </td>
@@ -541,7 +574,7 @@ function ProductLineRow({
           <NumberCell
             value={draft.issue}
             max={issueCeiling(line, draft)}
-            label={t('orders.fulfil.issueLabel', { name })}
+            label={t('orders.fulfil.issueLabel', { name: fieldName })}
             onChange={(n) => onChange(line.line_id, (d) => ({ ...d, issue: n }))}
           />
         </td>
@@ -582,7 +615,9 @@ function AllPartsCell({
         onChange={(e) => onChange(line.line_id, (d) => setAllParts(line, d, column, e.target.checked))}
         aria-label={t('orders.fulfil.allPartsLabel', { column: columnName, name: line.product_name })}
       />
-      <span className="text-white">{t('orders.fulfil.allParts', { count: total })}</span>
+      <span className="text-white">
+        {total === 1 ? t('orders.fulfil.allPartsOne') : t('orders.fulfil.allParts', { count: total })}
+      </span>
     </label>
   );
 }

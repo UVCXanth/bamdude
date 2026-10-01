@@ -15,8 +15,9 @@ export interface OrderRef {
   due_date: string | null;
 }
 
-function isDetail(order: Order | OrderListItem): order is Order {
-  return 'figures' in order;
+/** The full detail rather than a list row — the one test the action model asks. */
+export function isOrderDetail(order: Order | OrderListItem | null | undefined): order is Order {
+  return order != null && 'figures' in order;
 }
 
 /**
@@ -32,6 +33,6 @@ export function toOrderRef(order: Order | OrderListItem): OrderRef {
     status: order.status,
     customer_name: order.customer_name,
     due_date: order.due_date,
-    bankable_surplus: isDetail(order) ? order.figures.bankable_surplus : (order.bankable_surplus ?? 0),
+    bankable_surplus: isOrderDetail(order) ? order.figures.bankable_surplus : (order.bankable_surplus ?? 0),
   };
 }

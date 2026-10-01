@@ -81,5 +81,14 @@ describe('BankSurplusDialog', () => {
     render(<BankSurplusDialog order={toOrderRef(ORDER)} detail={ORDER} onClose={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: 'Move (5)' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Only 2 held for this order');
+    // The refusal leaves focus on the button that sent it, never on BODY.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Move (5)' })).toHaveFocus());
+  });
+
+  it('says on its primary that the move is on its way', async () => {
+    vi.spyOn(api, 'bankOrderSurplus').mockReturnValue(new Promise(() => {}));
+    render(<BankSurplusDialog order={toOrderRef(ORDER)} detail={ORDER} onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Move (5)' }));
+    expect(await screen.findByRole('button', { name: 'Move (5)…' })).toBeDisabled();
   });
 });

@@ -5489,6 +5489,7 @@ export default {
       writeOffLabel: 'Списати — {{name}}',
       allPartsLabel: '{{column}} — усі деталі «{{name}}»',
       allParts: 'усі {{count}} дет.',
+      allPartsOne: '1 дет.',
       standardConfig: 'стандартна',
       cell: 'комірка {{location}}',
       cellUnassigned: 'не призначено',

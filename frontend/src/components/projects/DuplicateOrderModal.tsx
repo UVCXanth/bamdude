@@ -64,6 +64,12 @@ export function DuplicateOrderModal({ order, onClose }: { order: OrderRef; onClo
     },
   });
 
+  // A refusal leaves focus on the button that sent it — never on BODY (C08, for every dialog).
+  const submitId = `${formId}-submit`;
+  useEffect(() => {
+    if (duplicate.isError) document.getElementById(submitId)?.focus();
+  }, [duplicate.isError, duplicate.error, submitId]);
+
   const canSubmit = name.trim() !== '' && !duplicate.isPending;
   const pastDue = isPastDueDate(order.due_date);
 
@@ -80,7 +86,7 @@ export function DuplicateOrderModal({ order, onClose }: { order: OrderRef; onClo
           <Button type="button" variant="secondary" onClick={onClose} disabled={duplicate.isPending}>
             {t('common.cancel')}
           </Button>
-          <Button type="submit" form={formId} disabled={!canSubmit}>
+          <Button id={submitId} type="submit" form={formId} disabled={!canSubmit}>
             {duplicate.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
             {t('orders.duplicate.submit')}
           </Button>

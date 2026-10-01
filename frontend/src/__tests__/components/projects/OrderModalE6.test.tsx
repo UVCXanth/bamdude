@@ -108,6 +108,13 @@ describe('OrderModal · first focus (the mockup\'s openDialog)', () => {
   });
 });
 
+describe('OrderModal · link (G)', () => {
+  it('holds the link to the column’s 2048 characters', () => {
+    render(<OrderModal order={null} onClose={() => {}} />);
+    expect(screen.getByLabelText('Link')).toHaveAttribute('maxLength', '2048');
+  });
+});
+
 describe('OrderModal · colour (C03)', () => {
   it('is a named radio group with «No colour», the first colour chosen for a new order', () => {
     render(<OrderModal order={null} onClose={() => {}} />);

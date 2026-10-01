@@ -523,6 +523,7 @@ function OrderForm({
             <input
               id={ids.url}
               type="url"
+              maxLength={2048}
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder={t('orders.modal.urlPlaceholder')}

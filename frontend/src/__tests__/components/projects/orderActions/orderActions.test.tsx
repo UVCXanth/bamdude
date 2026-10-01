@@ -9,11 +9,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { useEffect, useRef, useState } from 'react';
 import { render } from '../../../utils';
 import { api, ApiError } from '../../../../api/client';
-import type { OrderListItem, Permission } from '../../../../api/client';
+import type { FulfilmentState, OrderListItem, Permission } from '../../../../api/client';
 import { orderMenuItems } from '../../../../components/projects/orderActions/orderMenu';
 import { toOrderRef } from '../../../../components/projects/orderActions/orderRef';
 import { useOrderActions } from '../../../../components/projects/orderActions/useOrderActions';
@@ -189,6 +189,8 @@ describe('the order action host', () => {
     fireEvent.click(yes);
     fireEvent.click(yes);
     await waitFor(() => expect(yes).toBeDisabled());
+    // While the request runs the primary says so (B05: «…»).
+    expect(yes).toHaveTextContent('Cancel order…');
     fireEvent.click(yes);
     expect(update).toHaveBeenCalledTimes(1);
   });
@@ -203,6 +205,8 @@ describe('the order action host', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reopen' }));
     expect(await screen.findByRole('alert')).toHaveTextContent("This order's stock has moved; duplicate it instead");
     expect(screen.getByRole('dialog', { name: 'Reopen order?' })).toBeInTheDocument();
+    // The refusal leaves focus on the button that sent it, never on BODY.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Reopen' })).toHaveFocus());
   });
 
   it('keeps the confirmation when its row leaves the list, and lands focus on the heading (R02)', async () => {
@@ -250,6 +254,88 @@ describe('the order action host', () => {
     expect(await screen.findByRole('dialog', { name: /Stock & issue/ })).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: 'Edit order' })).not.toBeInTheDocument();
     expect(update).not.toHaveBeenCalled();
+  });
+
+  // B07 (final review I1): a dialog that swaps for another — a reading shell for the form, the
+  // form for a confirmation — still hands focus back to the trigger that opened the first.
+  describe('returns focus to the surviving trigger', () => {
+    const later = <T,>(value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), 30));
+    const EMPTY_STATE = {
+      lines: [],
+      ordered: 0,
+      issued: 0,
+      held: 0,
+      fully_issued: false,
+      can_assemble: 0,
+      can_receive: 0,
+      can_issue: 0,
+      closes_to_stock: false,
+      can_complete: false,
+      recipient: { name: '', phone: '', delivery_method: '', delivery_details: '' },
+    } as unknown as FulfilmentState;
+    const trigger = () => screen.getByRole('button', { name: 'Order actions OR-0001' });
+
+    beforeEach(() => {
+      vi.spyOn(api, 'getCustomers').mockResolvedValue([]);
+      vi.spyOn(api, 'getOrderAssignees').mockResolvedValue([]);
+      vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
+    });
+
+    it('after «Stock & issue» read for the first time', async () => {
+      vi.spyOn(api, 'getFulfilment').mockImplementation(() => later(EMPTY_STATE));
+      render(<Page initial={[row()]} />);
+      openMenu();
+      pick('Stock & issue…');
+      // The reading shell first, then the form in its own dialog.
+      await screen.findByTestId('fulfil-performer');
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(document.activeElement).toBe(trigger()));
+    });
+
+    it('after the form read in full from a card', async () => {
+      vi.spyOn(api, 'getOrder').mockImplementation(() => later(makeOrder({ id: 1, code: 'OR-0001', name: 'Ten flasks' })));
+      render(<Page initial={[row()]} />);
+      openMenu();
+      pick('Edit');
+      await screen.findByLabelText('Description');
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(document.activeElement).toBe(trigger()));
+    });
+
+    it('after the form handed over to a confirmation (form → confirmation chain)', async () => {
+      vi.spyOn(api, 'getOrder').mockImplementation(() => later(makeOrder({ id: 1, code: 'OR-0001', name: 'Ten flasks', status: 'active' })));
+      render(<Page initial={[row()]} />);
+      openMenu();
+      pick('Edit');
+      const status = (await screen.findByLabelText('Status')) as HTMLSelectElement;
+      fireEvent.change(status, { target: { value: 'cancelled' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await screen.findByRole('dialog', { name: 'Cancel order?' });
+      fireEvent.click(screen.getByRole('button', { name: 'Keep the order' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(document.activeElement).toBe(trigger()));
+    });
+  });
+
+  it('runs no status step the saved order no longer allows (C06 against the order as saved)', async () => {
+    // Somebody else cancelled the order while the form was open: the PATCH answers «cancelled».
+    const update = vi
+      .spyOn(api, 'updateOrder')
+      .mockResolvedValue(makeOrder({ id: 1, code: 'OR-0001', name: 'Ten flasks!', status: 'cancelled' }));
+    vi.spyOn(api, 'getOrder').mockResolvedValue(makeOrder({ id: 1, code: 'OR-0001', name: 'Ten flasks', status: 'active' }));
+    vi.spyOn(api, 'getCustomers').mockResolvedValue([]);
+    vi.spyOn(api, 'getOrderAssignees').mockResolvedValue([]);
+    render(<Page initial={[row()]} />);
+    openMenu();
+    pick('Edit');
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Ten flasks!' } });
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'cancelled' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Edit order' })).not.toBeInTheDocument());
+    expect(screen.queryByRole('dialog', { name: 'Cancel order?' })).not.toBeInTheDocument();
+    expect(update).toHaveBeenCalledTimes(1);
   });
 
   it('shows a reader no menu trigger at all (R06)', () => {

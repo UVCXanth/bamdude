@@ -247,6 +247,25 @@ async def test_a_batch_without_an_issue_has_no_units(committing_client, db_sessi
     assert (r.json()["issue_id"], r.json()["issue_units"]) == (None, None)
 
 
+@pytest.mark.asyncio
+async def test_apply_still_refuses_above_the_state_and_writes_nothing(committing_client, db_session):
+    """I3: the H04 split of `state` (one context per GET) leaves `apply` as it was — a number
+    above what the state allows is a 409 sentence, nothing moves, and the state reads the same."""
+    order = await _issuable_order(db_session)
+    url = f"/api/v1/projects/{order['id']}/fulfilment"
+    before = (await committing_client.get(url)).json()
+
+    r = await committing_client.post(url, json={"lines": [{"line_id": order["line_id"], "issue": 3}]})
+    assert r.status_code == 409, r.text
+    assert (await committing_client.get(url)).json() == before
+
+    r = await committing_client.post(url, json={"lines": [{"line_id": order["line_id"], "issue": 2}]})
+    assert r.status_code == 200, r.text
+    after = (await committing_client.get(url)).json()
+    (line,) = [entry for entry in after["lines"] if entry["line_id"] == order["line_id"]]
+    assert (line["held"], line["issued"]) == (0, 2)
+
+
 # ---------- H04: a fulfilment line's configuration and stock position ----------
 
 

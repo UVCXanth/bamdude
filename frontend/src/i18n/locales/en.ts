@@ -5460,6 +5460,7 @@ export default {
       writeOffLabel: 'Write off — {{name}}',
       allPartsLabel: '{{column}} — all parts of {{name}}',
       allParts: 'all {{count}} parts',
+      allPartsOne: '1 part',
       standardConfig: 'standard',
       cell: 'cell {{location}}',
       cellUnassigned: 'not assigned',

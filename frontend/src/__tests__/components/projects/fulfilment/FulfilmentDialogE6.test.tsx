@@ -154,6 +154,13 @@ describe('FulfilmentDialog · rows (E04–E06)', () => {
     expect(accented(screen.getByTestId('fulfil-line-9'))).toEqual(['parts only — through the parts book']);
   });
 
+  it('names the fields of two lines of one product apart by their configuration (E05)', async () => {
+    render(<FulfilmentDialog order={REF} onClose={() => {}} />);
+    const white = await screen.findByTestId('fulfil-line-7');
+    expect(within(white).getByLabelText('Receive printed — Diffuser (standard)')).toBeInTheDocument();
+    expect(within(screen.getByTestId('fulfil-line-8')).getByLabelText('Assemble from kits — Diffuser (Colour: amber)')).toBeInTheDocument();
+  });
+
   it('heads the columns as the mockup does', async () => {
     render(<FulfilmentDialog order={REF} onClose={() => {}} />);
     await screen.findByTestId('fulfil-line-7');
@@ -175,6 +182,22 @@ describe('FulfilmentDialog · rows (E04–E06)', () => {
     expect((receiveAll as HTMLInputElement).indeterminate).toBe(true);
   });
 
+  it('says «1 part», not «all 1 parts», when the column holds one', async () => {
+    vi.spyOn(api, 'getFulfilment').mockResolvedValue({
+      ...STATE,
+      lines: [
+        {
+          ...product({ line_id: 9, product_name: 'Diffuser', mode: 'parts', ordered: 1, can_receive: 0, held: 0 }),
+          parts: [{ part_id: 31, name: 'shade', wanted: 1, can_receive: 1, held: 0, issued: 0, written_off: 0 }],
+        },
+      ],
+    });
+    render(<FulfilmentDialog order={REF} onClose={() => {}} />);
+    const line = await screen.findByTestId('fulfil-line-9');
+    expect(line).toHaveTextContent('1 part');
+    expect(line).not.toHaveTextContent('all 1 parts');
+  });
+
   it('offers no «all» where nothing can be done', async () => {
     vi.spyOn(api, 'getFulfilment').mockResolvedValue({
       ...STATE,
@@ -191,8 +214,10 @@ describe('FulfilmentDialog · rows (E04–E06)', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    const controlled = document.getElementById(toggle.getAttribute('aria-controls') as string);
-    expect(controlled).toContainElement(screen.getByLabelText('Write-off reason'));
+    // E03: the toggle controls the column (the table) and the reason.
+    const controlled = (toggle.getAttribute('aria-controls') ?? '').split(' ').map((id) => document.getElementById(id));
+    expect(controlled.some((el) => el?.contains(screen.getByLabelText('Write-off reason')))).toBe(true);
+    expect(controlled.some((el) => el?.tagName === 'TABLE' && el.contains(screen.getAllByLabelText(/^Write off — /)[0]))).toBe(true);
   });
 });
 
@@ -216,6 +241,8 @@ describe('FulfilmentDialog · recipient, performer, close mark (E08–E09)', () 
     render(<FulfilmentDialog order={REF} onClose={() => {}} />);
     const close = await screen.findByRole('checkbox', { name: 'Mark the order completed' });
     expect(close).toBeDisabled();
+    // The suffix is the checkbox's description, not a sentence beside it a screen reader skips.
+    expect(close).toHaveAccessibleDescription('— after this issue it will be 13 of 25');
     // Issue now: 2 held + 4 received on line 7, 2 assembled on line 8, 5 parts — 13 of 25.
     expect(screen.getByRole('dialog')).toHaveTextContent('after this issue it will be 13 of 25');
   });
@@ -294,12 +321,74 @@ describe('FulfilmentDialog · refusal and retry (E13, R04)', () => {
     expect(post).toHaveBeenCalledTimes(1);
 
     await act(async () => failRead(new Error('Gateway timeout')));
+    // A failed re-read leaves focus on its own way out, never on BODY.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Read again' })).toHaveFocus());
     fireEvent.click(await screen.findByRole('button', { name: 'Read again' }));
     await waitFor(() => expect(get).toHaveBeenCalledTimes(3));
     expect(await screen.findByText('Stock changed — the numbers are limited to the new bounds.')).toBeInTheDocument();
     expect(screen.getByLabelText('Receive printed — Diffuser')).toHaveValue(1);
     expect(submitButton()).toBeEnabled();
+    // …and a state read afresh puts it back on the button that can send again.
+    await waitFor(() => expect(submitButton()).toHaveFocus());
     expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('never takes a read that started before the refusal for the fresh state (R04)', async () => {
+    let finishStale: (s: FulfilmentState) => void = () => {};
+    const wide: FulfilmentState = { ...STATE, lines: [STATE.lines[0]] };
+    const narrow: FulfilmentState = { ...STATE, lines: [product({ line_id: 7, can_receive: 1 })] };
+    const get = vi
+      .spyOn(api, 'getFulfilment')
+      .mockResolvedValueOnce(wide)
+      // A background read already on its way when the batch is refused — it knows nothing of it.
+      .mockReturnValueOnce(new Promise((resolve) => (finishStale = resolve)))
+      .mockResolvedValue(narrow);
+    vi.spyOn(api, 'fulfilOrder').mockRejectedValue(new ApiError('«Diffuser»: only 1 can be received', 409));
+    render(
+      <>
+        <Grab />
+        <FulfilmentDialog order={REF} onClose={() => {}} />
+      </>,
+    );
+    await screen.findByTestId('fulfil-line-7');
+    act(() => {
+      void grabbed.client?.invalidateQueries({ queryKey: ['project-fulfilment', 5] });
+    });
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(submitButton());
+    expect(await screen.findByRole('alert')).toHaveTextContent('only 1 can be received');
+    await act(async () => finishStale(wide));
+    // The re-read is a request of its own, started after the refusal.
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.getByLabelText('Receive printed — Diffuser')).toHaveValue(1));
+    expect(submitButton()).toBeEnabled();
+  });
+
+  it('keeps what was typed through a refusal, and starts a line new to the state at zero (R04)', async () => {
+    const first: FulfilmentState = { ...STATE, lines: [STATE.lines[0]] };
+    // The state read after the refusal has a line it did not have before.
+    const after: FulfilmentState = { ...STATE, lines: [STATE.lines[0], product({ line_id: 11, can_receive: 3, held: 0 })] };
+    vi.spyOn(api, 'getFulfilment').mockResolvedValueOnce(first).mockResolvedValue(after);
+    vi.spyOn(api, 'fulfilOrder').mockRejectedValue(new ApiError('The order changed while this was being saved — try again', 409));
+    render(<FulfilmentDialog order={REF} onClose={() => {}} />);
+    await screen.findByTestId('fulfil-line-7');
+    fireEvent.change(screen.getByLabelText('Recipient name'), { target: { value: 'Olena' } });
+    fireEvent.change(screen.getByLabelText('Waybill no.'), { target: { value: 'NP-42' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Write off…' }));
+    fireEvent.change(screen.getByLabelText('Write-off reason'), { target: { value: 'cracked' } });
+    const close = screen.getByRole('checkbox', { name: 'Mark the order completed' });
+    expect(close).not.toBeChecked();
+
+    fireEvent.click(submitButton());
+    expect(await screen.findByRole('alert')).toHaveTextContent('try again');
+    const fresh = await screen.findByTestId('fulfil-line-11');
+    await waitFor(() => expect(submitButton()).toBeEnabled());
+    expect(screen.getByLabelText('Recipient name')).toHaveValue('Olena');
+    expect(screen.getByLabelText('Waybill no.')).toHaveValue('NP-42');
+    expect(screen.getByLabelText('Write-off reason')).toHaveValue('cracked');
+    expect(screen.getByRole('checkbox', { name: 'Mark the order completed' })).not.toBeChecked();
+    for (const field of within(fresh).getAllByRole('spinbutton')) expect(field).toHaveValue(0);
   });
 
   it('keeps a trimmed number trimmed when the bounds grow back (R04)', async () => {
@@ -331,7 +420,17 @@ describe('FulfilmentDialog · first focus and success (E14–E16)', () => {
     render(<FulfilmentDialog order={REF} onClose={() => {}} />);
     const line = await screen.findByTestId('fulfil-line-7');
     // Line 7 has nothing to assemble — its first number is «Receive printed».
-    await waitFor(() => expect(document.activeElement).toBe(within(line).getByLabelText('Receive printed — Diffuser')));
+    await waitFor(() => expect(document.activeElement).toBe(within(line).getByLabelText('Receive printed — Diffuser (standard)')));
+  });
+
+  it('puts the first focus on «Cancel» when the table has no number to type (E16)', async () => {
+    vi.spyOn(api, 'getFulfilment').mockResolvedValue({
+      ...STATE,
+      lines: [product({ line_id: 7, can_assemble: 0, can_receive: 0, held: 0 })],
+    });
+    render(<FulfilmentDialog order={REF} onClose={() => {}} />);
+    await screen.findByTestId('fulfil-line-7');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus());
   });
 
   it('turns into the dispatch-note window with its units', async () => {

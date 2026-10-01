@@ -43,6 +43,7 @@ sys.path.insert(0, str(HERE))
 import capture_serve  # noqa: E402
 import e02_evidence  # noqa: E402
 import e04_evidence  # noqa: E402
+import e05_evidence  # noqa: E402
 import stand  # noqa: E402
 
 PORT = e04_evidence.PORT
@@ -84,12 +85,14 @@ DETAIL_SCENARIOS = (
     "dup@390",
     "dup-flow@1440",
     "dup-long-past@1440",
+    "dup-refusal@1440",
     "menu-detail@1440",
     "menu-detail@390",
     "menu-states@1440",
     "menu-reader@1440",
     "menu-workspace@1440",
     "menu-lifetime@1440",
+    "menu-focus-return@1440",
     "menu-confirms@1440",
     "board-drop@1440",
     "f06-geometry@1920",
@@ -107,6 +110,7 @@ DETAIL_SCENARIOS = (
     "f26-pair@1440",
     "f26-pair@390",
     "bank-244@1440",
+    "bank-refusal@1440",
     "take-241@1440",
     "hits@390",
     "theme-light@1440",
@@ -167,13 +171,6 @@ def header(manifest: dict) -> dict:
     return {**e04_evidence.header(manifest), "stage": STAGE}
 
 
-def media_token(client) -> str:
-    """One media token for the stand's signed-in user (``POST /auth/media-token``)."""
-    answer = client.post("/api/v1/auth/media-token")
-    answer = answer if isinstance(answer, dict) else answer.json()
-    return answer["token"]
-
-
 def _frame(name: str) -> dict:
     path = Path(name)
     return {
@@ -220,7 +217,7 @@ def serve(name: str = "detail", only: str = "") -> None:
         "token": client.token,
         # The media token is minted by a POST that writes a row, which the runner never lets a
         # page send: minted here once, like the app token, and answered by the runner in its place.
-        "media_token": media_token(client),
+        "media_token": e05_evidence.media_token(client),
         "ui": f"http://127.0.0.1:{manifest['ports']['vite']}",
         "api": f"http://127.0.0.1:{manifest['ports']['backend']}",
         "out": str(out_dir / "shots").replace("\\", "/"),

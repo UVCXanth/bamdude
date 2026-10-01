@@ -1,14 +1,6 @@
 import type { TFunction } from 'i18next';
 import type { LineConfiguration, LineMode } from '../../api/client';
 
-/**
- * The caption under a line's product (spec workshop-product-variants, rule 26):
- * the options that differ from the standard and how many parts changed, from
- * the names the server sent — composed here, in the reader's language.
- *
- * A product without variants and without changes says nothing; one whose
- * choices are all standard says so.
- */
 /** The accent a configuration caption takes when it says something other than «standard»
  *  — a kit that differs, or a line of loose parts (WS-13 E4 B02; the issue dialog too, E6). */
 export const CONFIG_ACCENT_CLASS = 'text-amber-700 dark:text-amber-400';
@@ -22,6 +14,14 @@ export function isNonStandardConfiguration(configuration: LineConfiguration | nu
   );
 }
 
+/**
+ * The caption under a line's product (spec workshop-product-variants, rule 26):
+ * the options that differ from the standard and how many parts changed, from
+ * the names the server sent — composed here, in the reader's language.
+ *
+ * A product without variants and without changes says nothing; one whose
+ * choices are all standard says so.
+ */
 export function lineConfigLabel(
   configuration: LineConfiguration | undefined,
   mode: LineMode | undefined,

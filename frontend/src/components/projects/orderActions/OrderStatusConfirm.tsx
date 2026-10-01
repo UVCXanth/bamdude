@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../../api/client';
@@ -40,6 +40,7 @@ export function OrderStatusConfirm({
   // A second click in the same tick sees `isPending` still false — the ref is what
   // makes «one click, one request» hold (E6 I4.6); a refusal re-arms it.
   const sent = useRef(false);
+  const primaryId = useId();
 
   const write = useMutation({
     mutationFn: async () => {
@@ -67,6 +68,11 @@ export function OrderStatusConfirm({
     },
   });
 
+  // A refusal leaves focus on the button that sent it — never on BODY (C08, for every dialog).
+  useEffect(() => {
+    if (write.isError) document.getElementById(primaryId)?.focus();
+  }, [write.isError, write.error, primaryId]);
+
   const body =
     kind === 'cancel'
       ? t('orders.confirm.cancelBody')
@@ -90,6 +96,7 @@ export function OrderStatusConfirm({
             {t(kind === 'cancel' ? 'orders.confirm.cancelNo' : 'common.cancel')}
           </Button>
           <Button
+            id={primaryId}
             variant={kind === 'reopen' ? 'primary' : 'danger'}
             disabled={write.isPending}
             onClick={() => {
@@ -99,6 +106,8 @@ export function OrderStatusConfirm({
             }}
           >
             {t(`orders.confirm.${kind}Yes`)}
+            {/* B05: while the request runs the primary says «…». */}
+            {write.isPending && '…'}
           </Button>
         </>
       }

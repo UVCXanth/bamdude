@@ -8,7 +8,7 @@ import { OrderCoverDialog } from '../OrderCover';
 import { FulfilmentDialog } from '../fulfilment/FulfilmentDialog';
 import type { FulfilmentMode } from '../fulfilment/fulfilmentState';
 import type { OrderAction } from './orderMenu';
-import type { OrderRef } from './orderRef';
+import { isOrderDetail as isDetail, type OrderRef } from './orderRef';
 import { OrderStatusConfirm, type OrderConfirmKind } from './OrderStatusConfirm';
 
 /** What a door can add to an action: the full source it has, the issue dialog's start. */
@@ -36,10 +36,6 @@ type Active =
   | { kind: 'bank'; ref: OrderRef; order: Order | undefined }
   | { kind: 'cover'; order: Order };
 
-function isDetail(order: Order | OrderListItem | undefined): order is Order {
-  return order != null && 'lines' in order;
-}
-
 /**
  * The ONE host of an order's dialogs (WS-13 E6 B01): the form, the duplicate, the
  * issue dialog, the cover, and the lifecycle confirmations — mounted here and nowhere
@@ -51,6 +47,13 @@ function isDetail(order: Order | OrderListItem | undefined): order is Order {
  * or an emptied list changes nothing about the open dialog. When the last dialog
  * closes and the element that opened it has gone, focus lands on the page's own
  * heading (`fallbackFocusRef`, B07) — never on BODY.
+ *
+ * ⚠️ **The host remembers who opened the FIRST dialog (B07).** A Modal records its
+ * opener when it mounts; one that replaces another in the same commit — the form after
+ * its reading shell, «Stock & issue» after its own, a confirmation after the form —
+ * finds the old panel already gone and records BODY. So the element that was focused
+ * when an action started (a menu gives focus back to its trigger before it runs one) is
+ * kept here until the chain ends, and gets focus back while it is still on the page.
  */
 export function useOrderActions({
   fallbackFocusRef,
@@ -62,9 +65,20 @@ export function useOrderActions({
   const navigate = useNavigate();
   const [active, setActive] = useState<Active | null>(null);
   const opened = useRef(false);
+  // The element focused when the first dialog of a chain opened — kept until the chain ends.
+  const opener = useRef<HTMLElement | null>(null);
 
-  // The last dialog has closed: if the element it would return focus to is gone, the
-  // page's heading takes it. Late enough for the Modal's own return to have run.
+  const open = (next: Active) => {
+    if (opener.current == null) {
+      const focused = document.activeElement;
+      opener.current = focused instanceof HTMLElement && focused !== document.body ? focused : null;
+    }
+    setActive(next);
+  };
+
+  // The last dialog has closed: focus goes back to the element that opened the chain
+  // while it is still on the page, else to the page's heading — never BODY. Late enough
+  // for the Modal's own return to have run (and for the page to be live again).
   useEffect(() => {
     if (active) {
       opened.current = true;
@@ -72,9 +86,13 @@ export function useOrderActions({
     }
     if (!opened.current) return;
     opened.current = false;
+    const back = opener.current;
+    opener.current = null;
     const timer = window.setTimeout(() => {
       const now = document.activeElement;
-      if (now == null || now === document.body) fallbackFocusRef.current?.focus();
+      if (now != null && now !== document.body) return;
+      const usable = back != null && back.isConnected && !back.closest('[inert]') && !(back as HTMLButtonElement).disabled;
+      (usable ? back : fallbackFocusRef.current)?.focus();
     }, 0);
     return () => window.clearTimeout(timer);
   }, [active, fallbackFocusRef]);
@@ -85,35 +103,35 @@ export function useOrderActions({
         navigate(`/projects/${ref.id}`);
         return;
       case 'edit':
-        setActive({ kind: 'edit', ref, order: extra.order });
+        open({ kind: 'edit', ref, order: extra.order });
         return;
       case 'duplicate':
-        setActive({ kind: 'duplicate', ref });
+        open({ kind: 'duplicate', ref });
         return;
       case 'fulfil':
-        setActive({ kind: 'fulfil', ref, mode: extra.mode ?? 'all', complete: extra.complete ?? false });
+        open({ kind: 'fulfil', ref, mode: extra.mode ?? 'all', complete: extra.complete ?? false });
         return;
       case 'complete':
-        setActive({ kind: 'fulfil', ref, mode: 'all', complete: true });
+        open({ kind: 'fulfil', ref, mode: 'all', complete: true });
         return;
       case 'bank':
-        setActive({ kind: 'bank', ref, order: isDetail(extra.order) ? extra.order : undefined });
+        open({ kind: 'bank', ref, order: isDetail(extra.order) ? extra.order : undefined });
         return;
       case 'cancel':
       case 'reopen':
-        setActive({ kind: 'confirm', which: action, ref });
+        open({ kind: 'confirm', which: action, ref });
         return;
       case 'delete':
-        setActive({ kind: 'confirm', which: 'delete', ref, onDeleted: extra.onDeleted });
+        open({ kind: 'confirm', which: 'delete', ref, onDeleted: extra.onDeleted });
         return;
       case 'cover':
-        if (isDetail(extra.order)) setActive({ kind: 'cover', order: extra.order });
+        if (isDetail(extra.order)) open({ kind: 'cover', order: extra.order });
         return;
     }
   };
 
   const create: OrderActions['create'] = (defaultCustomerId = null) =>
-    setActive({ kind: 'create', defaultCustomerId: defaultCustomerId ?? null });
+    open({ kind: 'create', defaultCustomerId: defaultCustomerId ?? null });
 
   const close = () => setActive(null);
 
@@ -127,8 +145,13 @@ export function useOrderActions({
         order={isDetail(active.order) ? active.order : undefined}
         orderId={isDetail(active.order) ? undefined : active.ref.id}
         onClose={close}
-        // The form's status is a step of its own, run here with the order as saved (C06).
-        onStatusAction={(saved, next) => run(next === 'completed' ? 'complete' : next === 'cancelled' ? 'cancel' : 'reopen', saved)}
+        // The form's status is a step of its own, run here with the order as saved (C06) — and
+        // only while the order as saved still allows it: somebody may have closed it meanwhile.
+        onStatusAction={(saved, next) => {
+          const fromActive = saved.status === 'active';
+          if (next === 'active' ? fromActive : !fromActive) return;
+          run(next === 'completed' ? 'complete' : next === 'cancelled' ? 'cancel' : 'reopen', saved);
+        }}
       />
     );
   } else if (active?.kind === 'duplicate') {

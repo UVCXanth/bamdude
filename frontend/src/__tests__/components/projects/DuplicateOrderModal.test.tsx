@@ -83,6 +83,8 @@ describe('DuplicateOrderModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Duplicate' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Project not found');
     expect(screen.getByLabelText('Name of the copy')).toHaveValue('Second batch');
+    // The refusal leaves focus on the button that sent it, never on BODY.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Duplicate' })).toHaveFocus());
   });
 
   it('warns that the deadline has passed even when the original is closed (R07)', () => {

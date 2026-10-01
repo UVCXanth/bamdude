@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
@@ -30,6 +30,7 @@ export function BankSurplusDialog({ order, detail, onClose }: { order: OrderRef;
   const read = useOrderDetail(detail ? null : order.id);
   const full = detail ?? read.data;
   const sent = useRef(false);
+  const primaryId = useId();
 
   const bank = useMutation({
     mutationFn: () => api.bankOrderSurplus(order.id),
@@ -47,6 +48,11 @@ export function BankSurplusDialog({ order, detail, onClose }: { order: OrderRef;
       sent.current = false;
     },
   });
+
+  // A refusal leaves focus on the button that sent it — never on BODY (C08, for every dialog).
+  useEffect(() => {
+    if (bank.isError) document.getElementById(primaryId)?.focus();
+  }, [bank.isError, bank.error, primaryId]);
 
   const rows = (full?.lines ?? []).flatMap((line) =>
     line.parts
@@ -69,6 +75,7 @@ export function BankSurplusDialog({ order, detail, onClose }: { order: OrderRef;
             {t('common.cancel')}
           </Button>
           <Button
+            id={primaryId}
             disabled={!full || total === 0 || bank.isPending}
             onClick={() => {
               if (sent.current) return;
@@ -77,6 +84,7 @@ export function BankSurplusDialog({ order, detail, onClose }: { order: OrderRef;
             }}
           >
             {t('stock.bank.submitCount', { count: total })}
+            {bank.isPending && '…'}
           </Button>
         </>
       }
