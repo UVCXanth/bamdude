@@ -84,6 +84,19 @@ describe('Layout', () => {
       });
     });
 
+    // WS-13 E7 G02: the WINDOW scrolls the page, so <main> must not be a scroll box of its
+    // own — an `overflow` there makes it one that never scrolls, and every `sticky` inside
+    // it (the orders workspace list, the file manager's panel, the inventory's bulk bar)
+    // sticks to it instead of the screen, i.e. never.
+    it('does not make the main area a scroll box of its own', async () => {
+      render(<Layout />);
+
+      await waitFor(() => expect(document.querySelector('main')).toBeInTheDocument());
+      const main = document.querySelector('main') as HTMLElement;
+      expect(main.className).not.toMatch(/(^|\s)overflow-(auto|scroll|hidden|clip|y-auto|x-auto)(\s|$)/);
+      expect(main.className).toContain('min-w-0');
+    });
+
     it('renders navigation links', async () => {
       render(<Layout />);
 

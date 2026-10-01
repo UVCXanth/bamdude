@@ -101,6 +101,8 @@ const CASES = {
   e05_real_scenario_throws: [{ only: 'add-geometry@2560', gotoFails: true }],
   // …and through E6's runner (e06_detail.js).
   e06_real_scenario_throws: [{ only: 'form-geometry@1920', gotoFails: true }],
+  // …and through E7's runner (e07_detail.js).
+  e07_real_scenario_throws: [{ only: 'tiles@1440', gotoFails: true }],
   // E6: a GET answered by its turn — failed the first time, rewritten the second.
   gets_by_turn: [{ fires: 2 }, async ({ scenario, open }) => {
     let n = 0;

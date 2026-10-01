@@ -109,7 +109,7 @@ export function OrdersBoard({ filters, onOpenList, onReset, actions }: OrdersBoa
           aria-label={t('orders.board.label')}
           tabIndex={0}
           aria-busy={isPlaceholderData}
-          className={`grid grid-cols-[repeat(4,minmax(240px,1fr))] gap-3 items-start overflow-x-auto pb-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green rounded-xl transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
+          className={`relative grid grid-cols-[repeat(4,minmax(240px,1fr))] gap-3 items-start overflow-x-auto pb-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green rounded-xl transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
         >
           {BOARD_COLUMNS.map((key) => (
             <BoardColumn

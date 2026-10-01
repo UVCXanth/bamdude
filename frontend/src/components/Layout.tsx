@@ -1270,8 +1270,11 @@ export function Layout() {
         </div>
       </aside>
 
-      {/* Main content */}
-      <main className={`flex-1 bg-bambu-dark overflow-auto transition-all duration-300 ${
+      {/* Main content.
+          ⚠️ No `overflow` here (WS-13 E7 G02): the window scrolls the page, and an overflow on
+          <main> made it a scroll box that never scrolls — every `sticky` inside stuck to it,
+          i.e. never. `min-w-0` keeps the flex item from growing past the screen instead. */}
+      <main className={`flex-1 min-w-0 bg-bambu-dark transition-all duration-300 ${
         isSidebarCompact ? 'mt-14' : sidebarExpanded ? 'ml-64' : 'ml-16'
       }`}>
         {/* Debug logging indicator */}

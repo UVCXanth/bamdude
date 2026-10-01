@@ -92,13 +92,15 @@ export function OrdersDeadlines({ filters, week, onWeek }: OrdersDeadlinesProps)
       {isError && !data && <LoadFailedNote message={t('orders.deadlines.loadFailed')} onRetry={() => void refetch()} />}
       {isError && data && <RefreshFailedNote onRetry={() => void refetch()} />}
 
-      {/* WS-13 E7 H05: one panel, two week rows of seven, its own horizontal scroll (geometry of WS-13). */}
+      {/* WS-13 E7 H05: one panel, two week rows of seven, its own horizontal scroll (geometry of WS-13).
+          ⚠️ `relative`: a positioned scroll box, or an absolutely positioned descendant (the
+          sr-only «late» of a card) escapes its clipping and widens the whole page on a phone. */}
       <div
         role="region"
         aria-label={t('orders.deadlines.calendar')}
         tabIndex={0}
         aria-busy={isPlaceholderData}
-        className={`overflow-x-auto rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green transition-opacity ${
+        className={`relative overflow-x-auto rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green transition-opacity ${
           isPlaceholderData ? 'opacity-60' : ''
         }`}
       >

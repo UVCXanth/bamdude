@@ -1277,3 +1277,125 @@ def test_the_f26_pair_becomes_e0_manifest_rows_for_the_composites(tmp_path, monk
     assert rows[0]["frames"][0]["file"] == "temp/m.png" and rows[0]["frames"][0]["sha256"]
     # A picture that is not on disk is kept, named, with no hash.
     assert rows[1]["frames"][0]["sha256"] is None
+
+
+# ---- WS-13 E7 detail runner (e07_detail.js): E4's harness around E7's scenarios ----
+
+import e07_evidence  # noqa: E402
+
+_E07_RUNNER = Path(__file__).resolve().parents[3] / "scripts" / "workshop_stand" / "e07_detail.js"
+
+
+@pytest.mark.parametrize(
+    ("case", "code", "at"),
+    [
+        ("prep_read_throws", "read_network", "/projects/1"),
+        ("prep_read_refused", "read_http_401", "/groups/"),
+    ],
+)
+def test_e07_a_failed_preparation_read_ends_the_run_incomplete_and_names_no_secret(case, code, at):
+    run = _e04_run(case, _E07_RUNNER)
+
+    records = _e04_records(run)
+    assert [r["id"] for r in records] == ["runner"]
+    assert records[0]["error"] == {"code": code, "stage": "prepare", "name": "RunnerFailure", "at": at}
+    assert _e04_done(run)["incomplete"] is True
+
+
+def test_e07_a_real_scenario_that_throws_fails_safely_and_closes_its_context():
+    run = _e04_run("e07_real_scenario_throws", _E07_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["id"] == "tiles@1440" and rec["pass"] is False
+    assert rec["error"] == {"code": "error", "stage": "tiles@1440", "name": "Error"}
+    assert _e04_done(run)["incomplete"] is False
+    _e04_closed_in_order(run)
+
+
+@pytest.mark.parametrize("case", ["route_fails_live", "scenario_reports_the_token", "open_outside_a_scenario"])
+def test_e07_keeps_the_e04_guards(case):
+    run = _e04_run(case, _E07_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is False
+    if case != "scenario_reports_the_token":  # that one opens no context
+        _e04_closed_in_order(run)
+
+
+def test_e07_a_record_carrying_the_media_token_is_replaced_by_a_failure():
+    run = _e04_run("scenario_reports_the_media_token", _E07_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["error"] == {"code": "secret_in_record", "stage": "echo"}
+    assert "mq7-media-marker-fake" not in json.dumps(run["posts"])
+
+
+def test_e07_a_get_is_answered_by_its_turn():
+    run = _e04_run("gets_by_turn", _E07_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is True
+    answered = [e for e in run["log"] if e.startswith("fulfill.")]
+    assert answered == ['fulfill.500.{"detail":"e07 runner"}', 'fulfill.200.{"n":1,"seen":2}']
+    _e04_closed_in_order(run)
+
+
+def test_e07_the_runner_declares_exactly_the_scenarios_the_manifest_expects():
+    run = _e04_run("declared", _E07_RUNNER)
+
+    assert _e04_records(run) == []
+    assert _e04_done(run)["declared"] == list(e07_evidence.DETAIL_SCENARIOS)
+
+
+def test_e07_a_full_run_is_judged_against_the_e07_scenarios():
+    ids = list(e07_evidence.DETAIL_SCENARIOS)
+    done = {"count": len(ids), "incomplete": False, "declared": ids}
+    records = [{"id": i} for i in ids]
+
+    verdict = e04_evidence.run_completeness(
+        finished=True, done=done, records=records, only="", expected=e07_evidence.DETAIL_SCENARIOS
+    )
+    assert verdict["complete"] is True
+    assert (
+        e04_evidence.run_completeness(
+            finished=True, done=done, records=records, only="", expected=e06_evidence.DETAIL_SCENARIOS
+        )["complete"]
+        is False
+    )
+
+
+def test_the_e07_pairs_shoot_the_order_lists_at_the_spec_widths_on_a_copy_of_the_plan():
+    base = json.loads((Path(e07_evidence.HERE) / "capture_plan.json").read_text(encoding="utf-8"))
+
+    plan, only, stage = e07_evidence.pairs_plan(base, boundary=False)
+    assert stage.endswith("-pairs")
+    assert only == [*e07_evidence.E0_SURFACES, *(r["id"] for r in e07_evidence.e07_recipes())]
+    assert plan["widths"] == {"wide": [2560, 1920, 1440, 1280, 1024, 768], "narrow": [390]}
+    assert {"2560", "1280", "768"} <= set(plan["heights"])
+    # Every surface the run names exists in the copy.
+    assert set(only) <= {s["id"] for s in plan["surfaces"]}
+
+    plan, only, stage = e07_evidence.pairs_plan(base, boundary=True)
+    assert only == ["orders-table", "orders-workspace"] and stage.endswith("-pairs-boundary")
+    assert plan["widths"] == {"wide": [1101, 1100, 761, 760, 561, 560], "narrow": []}
+    assert all(plan["heights"][str(w)] == 800 for w in (1101, 1100, 761, 760, 561, 560))
+    # The E0 plan itself is untouched.
+    assert 2560 not in base["widths"]["wide"] and "1101" not in base["heights"]
+
+
+def test_every_e07_pair_is_a_plain_recipe_on_both_sides():
+    ids = []
+    for recipe in e07_evidence.e07_recipes():
+        ids.append(recipe["id"])
+        assert capture_serve.side_rewrites("mockup", recipe["mockup"], str) == []
+        assert capture_serve.side_rewrites("app", recipe["app"], str) == []
+    assert ids == ["e07-orders-row-menu", "e07-orders-board-menu"]
+
+
+def test_an_e07_job_names_the_orders_and_the_customer():
+    mapping = {f"order:{n}": {"id": int(n) - 210} for n in e07_evidence.ORDERS}
+    mapping |= {"customer:1": {"id": 4}}
+
+    entities = e07_evidence.job_entities(mapping)
+    assert entities["orders"]["241"] == 31 and entities["orders"]["251"] == 41
+    assert entities["customers"] == {"1": 4}
