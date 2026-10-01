@@ -43,6 +43,11 @@ describe('DuplicateOrderModal', () => {
     expect(dialog).toHaveTextContent('Stays with the original: prints, queue, procurement, stock reservations and movements, issues');
   });
 
+  it('puts the cursor in the name of the copy, as the mockup does', async () => {
+    render(<DuplicateOrderModal order={REF} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByLabelText('Name of the copy')).toHaveFocus());
+  });
+
   it('keeps the prefilled name within 255 characters, cutting the original’s (R05)', () => {
     render(<DuplicateOrderModal order={{ ...REF, name: 'n'.repeat(255) }} onClose={() => {}} />);
     const value = (screen.getByLabelText('Name of the copy') as HTMLInputElement).value;

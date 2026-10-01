@@ -13,7 +13,7 @@ import { WorkshopDialog } from '../../workshop/WorkshopDialog';
 import { WorkshopFormGrid } from '../../workshop/WorkshopFormGrid';
 import { WorkshopTableScroll } from '../../workshop/WorkshopPanel';
 import { RefreshFailedNote } from '../../workshop/RefreshFailedNote';
-import { lineConfigLabel } from '../lineConfigLabel';
+import { CONFIG_ACCENT_CLASS, isNonStandardConfiguration, lineConfigLabel } from '../lineConfigLabel';
 import type { OrderRef } from '../orderActions/orderRef';
 import { RecipientFields } from './RecipientFields';
 import {
@@ -489,11 +489,19 @@ function ProductLineRow({
   const { t } = useTranslation();
   const name = line.product_name;
   const config = lineConfigLabel(line.configuration ?? undefined, line.mode, t) || t('orders.fulfil.standardConfig');
+  // As the lines table: a kit that differs from the standard in the accent, the standard muted.
+  const accent = isNonStandardConfiguration(line.configuration);
   return (
     <tr data-testid={`fulfil-line-${line.line_id}`} className="border-t border-bambu-dark-tertiary">
       <td className={TD}>
         <div className="font-semibold text-white">{name}</div>
-        <small className="block text-xs text-bambu-gray">{config}</small>
+        {accent ? (
+          <small data-config-accent className={`block text-xs ${CONFIG_ACCENT_CLASS}`}>
+            {config}
+          </small>
+        ) : (
+          <small className="block text-xs text-bambu-gray">{config}</small>
+        )}
         {line.stock_position && (
           <small className="block text-xs text-bambu-gray">
             {t('orders.fulfil.cell', { location: line.stock_position.location || t('orders.fulfil.cellUnassigned') })}
@@ -605,7 +613,9 @@ function PartsLineRows({
       <tr data-testid={`fulfil-line-${line.line_id}`} className="border-t border-bambu-dark-tertiary">
         <td className={TD}>
           <div className="font-semibold text-white">{line.product_name}</div>
-          <small className="block text-xs text-bambu-gray">{t('orders.fulfil.partsLine')}</small>
+          <small data-config-accent className={`block text-xs ${CONFIG_ACCENT_CLASS}`}>
+            {t('orders.fulfil.partsLine')}
+          </small>
         </td>
         <td className={TD}>{line.ordered}</td>
         <td className={`${TD} text-bambu-gray`}>—</td>

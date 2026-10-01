@@ -96,6 +96,18 @@ describe('OrderModal · layout (C01–C02)', () => {
   });
 });
 
+describe('OrderModal · first focus (the mockup\'s openDialog)', () => {
+  it('puts the cursor in the name of a new order', async () => {
+    render(<OrderModal order={null} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveFocus());
+  });
+
+  it('puts the cursor in the name of the order being edited', async () => {
+    render(<OrderModal order={ORDER} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveFocus());
+  });
+});
+
 describe('OrderModal · colour (C03)', () => {
   it('is a named radio group with «No colour», the first colour chosen for a new order', () => {
     render(<OrderModal order={null} onClose={() => {}} />);

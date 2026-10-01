@@ -321,6 +321,17 @@ async (page, selftest = null) => {
     const b = lum(rgb(getComputedStyle(ground ?? document.body).backgroundColor));
     return Math.round(((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)) * 100) / 100;
   });
+  // Whether the field a person types into first holds the cursor (the mockup's openDialog).
+  const focused = (locator) => locator.evaluate((el) => el === document.activeElement);
+  // A text's colour against the theme's secondary text colour — the mockup's `.m-confirm`.
+  const isSecondaryText = (locator) => locator.evaluate((el) => {
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--text-secondary)';
+    document.body.appendChild(probe);
+    const want = getComputedStyle(probe).color;
+    probe.remove();
+    return getComputedStyle(el).color === want;
+  });
   const menuTrigger = (scope) => scope.getByRole('button', { name: /^Дії замовлення/ }).first();
   const openMenu = async (p, scope = p) => {
     await menuTrigger(scope).click();
@@ -377,6 +388,7 @@ async (page, selftest = null) => {
       await p.waitForTimeout(600);
       const frame = await frameOf(p);
       const want = expectedWidth(frame, 1000, 0.94);
+      const nameFocused = await focused(dialog(p).getByLabel('Назва'));
       const labels = await labelsOf(p);
       const radios = await dialog(p).getByRole('radiogroup', { name: 'Колір картки' }).getByRole('radio').evaluateAll((els) => els.map((el) => ({ name: el.getAttribute('aria-label'), checked: el.checked })));
       const overflow = await docOverflow(p);
@@ -390,8 +402,8 @@ async (page, selftest = null) => {
       return {
         recipe: { url: '/projects', actions: ['«Нове замовлення»'] },
         env: { viewport: [w, HEIGHTS[w]] },
-        measured: { frame, want: Math.round(want), labels: labels.map((l) => l.text), layout: wide ? 'pairs' : 'stacked', layoutOk, radios, overflow, title, sub, errors },
-        pass: Math.abs(frame.width - want) <= 2 && startsInOrder(labels, FORM_CREATE) && layoutOk && radios.length === 10 &&
+        measured: { frame, want: Math.round(want), nameFocused, labels: labels.map((l) => l.text), layout: wide ? 'pairs' : 'stacked', layoutOk, radios, overflow, title, sub, errors },
+        pass: Math.abs(frame.width - want) <= 2 && nameFocused && startsInOrder(labels, FORM_CREATE) && layoutOk && radios.length === 10 &&
           radios[0].name === 'Без кольору' && radios.every((r) => r.name && r.name.trim()) && new Set(radios.map((r) => r.name)).size === radios.length && radios[1].checked &&
           overflow <= 0 && title === 'Нове замовлення' && sub === 'Позиції додаються після створення' && errors.length === 0,
         screenshots: [file],
@@ -686,6 +698,7 @@ async (page, selftest = null) => {
       const measured = {
         title: await titleOf(p),
         sub: await subtitleOf(p),
+        nameFocused: await focused(dialog(p).getByLabel('Назва копії')),
         name: await dialog(p).getByLabel('Назва копії').inputValue(),
         text: (await dialog(p).textContent()) ?? '',
         frame,
@@ -697,7 +710,7 @@ async (page, selftest = null) => {
       return {
         recipe: { url: '/projects/{order:241}', actions: ['menu «Дублювати…»'] },
         measured: { ...measured, text: measured.text.slice(0, 400), errors },
-        pass: measured.title === 'Дублювати замовлення' && measured.sub === `${orderA.code} · ${orderA.name}` && measured.name === `${orderA.name} (копія)` &&
+        pass: measured.title === 'Дублювати замовлення' && measured.nameFocused && measured.sub === `${orderA.code} · ${orderA.name}` && measured.name === `${orderA.name} (копія)` &&
           /Копіюється: замовник і контакт, позиції з конфігурацією/.test(measured.text) && /Лишається в оригіналі/.test(measured.text) &&
           Math.abs(frame.width - want) <= 2 && measured.overflow <= 0 && errors.length === 0,
         screenshots: [file],
@@ -900,7 +913,13 @@ async (page, selftest = null) => {
     const { ctx, p, errors } = await open(1440);
     await p.goto(detail(A), { waitUntil: 'networkidle' });
     await ready(p);
-    const read3 = async () => ({ title: await titleOf(p), sub: await subtitleOf(p), text: ((await dialog(p).textContent()) ?? '').slice(0, 300), buttons: await footer(p).getByRole('button').allTextContents() });
+    const read3 = async () => ({
+      title: await titleOf(p),
+      sub: await subtitleOf(p),
+      text: ((await dialog(p).textContent()) ?? '').slice(0, 300),
+      buttons: await footer(p).getByRole('button').allTextContents(),
+      secondary: await isSecondaryText(dialog(p).locator('p').last()),
+    });
     await openMenu(p, p.getByTestId('order-actions'));
     await pick(p, 'Скасувати');
     const cancel = await read3();
@@ -926,7 +945,8 @@ async (page, selftest = null) => {
       pass: cancel.title === 'Скасувати замовлення?' && cancel.sub === subA && /видане лишається виданим/.test(cancel.text) &&
         JSON.stringify(cancel.buttons.map((b) => b.trim())) === JSON.stringify(['Не скасовувати', 'Скасувати замовлення']) &&
         del.title === 'Видалити замовлення?' && /видачі лишаться в замовника/.test(del.text) &&
-        reopen.title === 'Відновити замовлення?' && /Резерви складу не повертаються/.test(reopen.text) && errors.length === 0,
+        reopen.title === 'Відновити замовлення?' && /Резерви складу не повертаються/.test(reopen.text) &&
+        cancel.secondary && del.secondary && reopen.secondary && errors.length === 0,
       screenshots: [fileCancel, fileDelete],
     };
   });
@@ -969,6 +989,7 @@ async (page, selftest = null) => {
       const row = dialog(p).locator('tbody tr').first();
       const rowText = (await row.textContent()) ?? '';
       const ofN = await row.getByText(/^з \d+$/).count();
+      const accent = await row.locator('[data-config-accent]').allTextContents();
       const focus = await p.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? null);
       const scroll = await dialog(p).locator('[role="region"]').first().evaluate((el) => ({ own: el.scrollWidth > el.clientWidth, sw: el.scrollWidth, cw: el.clientWidth }));
       const sub = await subtitleOf(p);
@@ -981,9 +1002,9 @@ async (page, selftest = null) => {
       await ctx.close();
       return {
         recipe: { url: '/projects/{order:241}', actions: ['header «Склад і видача…»'] },
-        measured: { frame, want: Math.round(want), heads: heads.map((h) => h.trim()), rowText: rowText.slice(0, 200), ofN, focus, scroll, sub, overflow, errors },
+        measured: { frame, want: Math.round(want), heads: heads.map((h) => h.trim()), rowText: rowText.slice(0, 200), ofN, accent, focus, scroll, sub, overflow, errors },
         pass: Math.abs(frame.width - want) <= 2 && heads[0].trim() === 'Позиція / конфігурація' && heads.map((h) => h.trim()).includes('Видати зараз') &&
-          ofN >= 1 && /стандартна|:/.test(rowText) && !!focus && /—/.test(focus) && sub === `${orderA.code} · ${orderA.name} · ${orderA.customer_name}` &&
+          ofN >= 1 && /стандартна|:/.test(rowText) && accent.length === 1 && /:/.test(accent[0]) && !!focus && /—/.test(focus) && sub === `${orderA.code} · ${orderA.name} · ${orderA.customer_name}` &&
           overflow <= 0 && errors.length === 0,
         screenshots: files,
       };
@@ -1253,14 +1274,15 @@ async (page, selftest = null) => {
       await p.waitForTimeout(400);
       const sub = await subtitleOf(p);
       const focus = await p.evaluate(() => document.activeElement?.textContent?.trim() ?? null);
+      const secondary = await isSecondaryText(dialog(p).locator('p').last());
       const file = await shoot(p, `f26-app@${w}`);
       await p.getByRole('button', { name: 'Відкрити й друкувати' }).click();
       await within(p.waitForURL(new RegExp(`/stock/dispatch-notes/${DOC}(\\?|$)`)), 10000, 'no_note_page');
       await ctx.close();
       return {
         recipe: { mockup: '#/orders/241 + docCreated(DOC(90000))', url: '/projects/{order:241}', fixture: ['POST …/fulfilment → note {doc:90000} with the mockup note\'s units'], actions: ['«Склад і видача…»', '«Виконати»', '«Відкрити й друкувати»'] },
-        measured: { mockup: mock.info, sub, focus, posts: posts.length, errors },
-        pass: !!DOC && !!note && sub === `${note.code} · ${mock.info.units} од.` && focus === 'Відкрити й друкувати' && posts.length === 1 && errors.length === 0,
+        measured: { mockup: mock.info, sub, focus, secondary, posts: posts.length, errors },
+        pass: !!DOC && !!note && sub === `${note.code} · ${mock.info.units} од.` && focus === 'Відкрити й друкувати' && secondary && posts.length === 1 && errors.length === 0,
         screenshots: [mock.file, file],
         pair: { mockup: [mock.file], app: [file] },
       };

@@ -144,6 +144,16 @@ describe('FulfilmentDialog · rows (E04–E06)', () => {
     expect(within(white).getByText('0 / 10')).toBeInTheDocument();
   });
 
+  it('marks a configuration that differs from the standard, and a parts line, as the lines table does', async () => {
+    render(<FulfilmentDialog order={REF} onClose={() => {}} />);
+    const white = await screen.findByTestId('fulfil-line-7');
+    const accented = (row: HTMLElement) =>
+      Array.from(row.querySelectorAll('[data-config-accent]')).map((el) => el.textContent);
+    expect(accented(white)).toEqual([]);
+    expect(accented(screen.getByTestId('fulfil-line-8'))).toEqual(['Colour: amber']);
+    expect(accented(screen.getByTestId('fulfil-line-9'))).toEqual(['parts only — through the parts book']);
+  });
+
   it('heads the columns as the mockup does', async () => {
     render(<FulfilmentDialog order={REF} onClose={() => {}} />);
     await screen.findByTestId('fulfil-line-7');

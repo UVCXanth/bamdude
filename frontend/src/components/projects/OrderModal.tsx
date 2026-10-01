@@ -168,6 +168,12 @@ function OrderForm({
     url: useId(),
     status: useId(),
   };
+  // The cursor starts in the name, as the mockup's dialogs start in their first field. The
+  // Modal focuses its panel in its own (child) effect; this one runs after it.
+  const nameId = ids.name;
+  useEffect(() => {
+    document.getElementById(nameId)?.focus();
+  }, [nameId]);
 
   // `due_date` arrives as a datetime; `<input type="date">` takes only `YYYY-MM-DD` —
   // normalised once here, so the seeded value and the diff compare like with like.

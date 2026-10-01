@@ -15,14 +15,13 @@ import { LineEditDialog } from './LineEditDialog';
 import { AddToOrderDialog } from './add-to-order/AddToOrderDialog';
 import { Button } from '../Button';
 import { LineConfigDialog } from './LineConfigDialog';
-import { lineConfigLabel } from './lineConfigLabel';
+import { CONFIG_ACCENT_CLASS, isNonStandardConfiguration, lineConfigLabel } from './lineConfigLabel';
 import { configBlockedReason } from './lineGates';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 import { WorkshopTableScroll } from '../workshop/WorkshopPanel';
 
 const HEAD = 'font-normal text-xs text-bambu-gray px-3 py-2 whitespace-nowrap';
 const CELL = 'px-3 py-2.5 align-top';
-const AMBER = 'text-amber-700 dark:text-amber-400';
 const HEX = /^#?[0-9a-f]{6}([0-9a-f]{2})?$/i;
 
 /** The configuration caption of B02: what a parts line wants, a non-standard kit, or
@@ -33,9 +32,7 @@ function configCaption(line: ProjectLine, t: ReturnType<typeof useTranslation>['
     return { text: t('orders.lines.partsOnlyList', { parts }), accent: true };
   }
   const config = line.configuration;
-  const nonStandard =
-    config != null && (config.choices.some((c) => !c.is_default) || config.changed_parts.length > 0);
-  if (nonStandard) return { text: lineConfigLabel(config, line.mode, t), accent: true };
+  if (isNonStandardConfiguration(config)) return { text: lineConfigLabel(config, line.mode, t), accent: true };
   return { text: t('orders.lines.standardConfig'), accent: false };
 }
 
@@ -210,7 +207,7 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2 }: OrderLines
                             </>
                           )}
                           {caption.accent ? (
-                            <span data-config-accent className={AMBER}>
+                            <span data-config-accent className={CONFIG_ACCENT_CLASS}>
                               {caption.text}
                             </span>
                           ) : (

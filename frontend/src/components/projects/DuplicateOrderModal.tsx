@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
@@ -39,6 +39,11 @@ export function DuplicateOrderModal({ order, onClose }: { order: OrderRef; onClo
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
   const formId = useId();
   const nameId = useId();
+  // The cursor starts in the copy's name, as the mockup's dialog does; the Modal focuses its
+  // panel in its own (child) effect, and this one runs after it.
+  useEffect(() => {
+    document.getElementById(nameId)?.focus();
+  }, [nameId]);
 
   // The prefill is a value, and `maxLength` does not cut an assigned value — it is
   // made to fit here (R05).

@@ -62,7 +62,8 @@ export function DispatchNoteCreated({
         </>
       }
     >
-      <p className="text-sm text-white">
+      {/* The mockup's `docCreated` body is the secondary text colour (`.m-confirm`). */}
+      <p className="text-sm text-bambu-gray-light">
         {fromOrder ? t('stock.dispatchNote.createdBody', { code }) : t('stock.dispatchNote.createdBodyStock')}
       </p>
     </WorkshopDialog>

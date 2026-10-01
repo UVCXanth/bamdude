@@ -103,7 +103,8 @@ export function OrderStatusConfirm({
         </>
       }
     >
-      <p className="text-sm text-white">{body}</p>
+      {/* The mockup's confirmation body is the secondary text colour (`.m-confirm`). */}
+      <p className="text-sm text-bambu-gray-light">{body}</p>
     </WorkshopDialog>
   );
 }
