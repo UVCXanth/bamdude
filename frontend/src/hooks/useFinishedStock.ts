@@ -6,6 +6,7 @@ import type {
   StockItemsPage,
   StockItemsParams,
   StockItemsSummary,
+  StockJournalBook,
   StockJournalPage,
   StockJournalParams,
   StockLookup,
@@ -61,6 +62,30 @@ export function useStockLookup(productId: number | null, options: number[]) {
     queryKey: ['stock-lookup', productId, sorted.join(',')],
     queryFn: () => api.lookupStockItem(productId as number, sorted),
     enabled: productId != null,
+    placeholderData: keepPreviousData,
+    retry: false,
+  });
+}
+
+/** One product's movements, a numbered page of them (WS-13 E9 F03). */
+export interface StockJournalPageParams {
+  product_id: number;
+  book: StockJournalBook;
+  page: number;
+  per_page: number;
+  sort_by: 'date-desc';
+}
+
+/**
+ * The product page's journal: the server's numbered pages (`page` mode, WS-13 E1 ST1) as a
+ * plain query under `['stock-journal-page', params]` — never the stock page's infinite
+ * `['stock-journal', …]`, whose cached `InfiniteData` would not fit (R04). The previous
+ * page stays on screen only while the next is on its way (`listState`'s `transition`).
+ */
+export function useStockJournalPage(params: StockJournalPageParams) {
+  return useQuery<StockJournalPage>({
+    queryKey: ['stock-journal-page', params],
+    queryFn: () => api.getStockJournal(params),
     placeholderData: keepPreviousData,
     retry: false,
   });

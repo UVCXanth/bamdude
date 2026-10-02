@@ -61,11 +61,6 @@ export function StockJournal({ itemId }: { itemId?: number }) {
   const rows = data?.pages.flatMap((p) => p.items) ?? [];
   const filtered = book !== 'both' || productId != null || Boolean(kind);
 
-  const kindLabel = (row: { book: string; kind: string }) =>
-    row.book === 'finished'
-      ? t(`stock.journal.kind.${row.kind}`, { defaultValue: row.kind })
-      : t(`stock.reason.${row.kind}`, { defaultValue: row.kind });
-
   return (
     <section className="space-y-3" data-testid="stock-journal">
       <div className="flex items-end gap-3 flex-wrap">
@@ -124,41 +119,7 @@ export function StockJournal({ itemId }: { itemId?: number }) {
           {t(filtered ? 'stock.page.journalEmptyFiltered' : 'stock.page.journalEmpty')}
         </p>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-xs text-bambu-gray text-left">
-                <th className="font-normal p-2">{t('stock.date')}</th>
-                <th className="font-normal p-2">{t('stock.page.product')}</th>
-                <th className="font-normal p-2">{t('stock.journal.what')}</th>
-                <th className="font-normal p-2">{t('stock.journal.operation')}</th>
-                <th className="font-normal p-2">{t('stock.change')}</th>
-                <th className="font-normal p-2">{t('stock.journal.context')}</th>
-                <th className="font-normal p-2">{t('stock.journal.who')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr
-                  key={`${row.book}-${row.id}`}
-                  data-testid={`journal-row-${row.book}-${row.id}`}
-                  className="border-t border-bambu-dark-tertiary text-white align-top"
-                >
-                  {/* ⚠️ `formatDateOnly`, never `new Date(x).toLocaleDateString()`:
-                      the column is NAIVE UTC (no `Z`), which the platform
-                      parser reads as LOCAL time. */}
-                  <td className="p-2 text-bambu-gray whitespace-nowrap">{formatDateOnly(row.created_at, undefined, dateFormat)}</td>
-                  <td className="p-2">{row.product_name ?? '—'}</td>
-                  <td className="p-2"><JournalWhat row={row} /></td>
-                  <td className="p-2">{kindLabel(row)}</td>
-                  <td className="p-2 tabular-nums whitespace-nowrap"><JournalChange row={row} /></td>
-                  <td className="p-2"><JournalContext row={row} /></td>
-                  <td className="p-2 text-bambu-gray">{row.user?.username ?? '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <JournalTable rows={rows} dateFormat={dateFormat} />
       )}
 
       {data && rows.length > 0 && (
@@ -174,8 +135,66 @@ export function StockJournal({ itemId }: { itemId?: number }) {
   );
 }
 
+/**
+ * The rows of either ledger as one table — the stock page's journal and, scoped to one
+ * product (WS-13 E9 F03), the product page's: there the «Product» column goes, and «What»
+ * says «Finished · {configuration}» or the part, so the two units never read alike.
+ */
+export function JournalTable({
+  rows,
+  dateFormat,
+  scope = 'all',
+}: {
+  rows: StockJournalRow[];
+  dateFormat: DateFormat;
+  scope?: 'all' | 'product';
+}) {
+  const { t } = useTranslation();
+  const kindLabel = (row: { book: string; kind: string }) =>
+    row.book === 'finished'
+      ? t(`stock.journal.kind.${row.kind}`, { defaultValue: row.kind })
+      : t(`stock.reason.${row.kind}`, { defaultValue: row.kind });
+  return (
+    <div className="overflow-x-auto rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-xs text-bambu-gray text-left">
+            <th className="font-normal p-2">{t('stock.date')}</th>
+            {scope === 'all' && <th className="font-normal p-2">{t('stock.page.product')}</th>}
+            <th className="font-normal p-2">{t('stock.journal.what')}</th>
+            <th className="font-normal p-2">{t('stock.journal.operation')}</th>
+            <th className="font-normal p-2">{t('stock.change')}</th>
+            <th className="font-normal p-2">{t('stock.journal.context')}</th>
+            <th className="font-normal p-2">{t('stock.journal.who')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr
+              key={`${row.book}-${row.id}`}
+              data-testid={`journal-row-${row.book}-${row.id}`}
+              className="border-t border-bambu-dark-tertiary text-white align-top"
+            >
+              {/* ⚠️ `formatDateOnly`, never `new Date(x).toLocaleDateString()`:
+                  the column is NAIVE UTC (no `Z`), which the platform
+                  parser reads as LOCAL time. */}
+              <td className="p-2 text-bambu-gray whitespace-nowrap">{formatDateOnly(row.created_at, undefined, dateFormat)}</td>
+              {scope === 'all' && <td className="p-2">{row.product_name ?? '—'}</td>}
+              <td className="p-2"><JournalWhat row={row} scope={scope} /></td>
+              <td className="p-2">{kindLabel(row)}</td>
+              <td className="p-2 tabular-nums whitespace-nowrap"><JournalChange row={row} /></td>
+              <td className="p-2"><JournalContext row={row} /></td>
+              <td className="p-2 text-bambu-gray">{row.user?.username ?? '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /** Finished goods and their configuration, or the part (and the position it went into). */
-function JournalWhat({ row }: { row: StockJournalRow }) {
+function JournalWhat({ row, scope }: { row: StockJournalRow; scope: 'all' | 'product' }) {
   const { t } = useTranslation();
   const code = row.item ? (
     <Link to={`/stock/${row.item.id}`} className="text-bambu-green hover:underline">
@@ -184,6 +203,16 @@ function JournalWhat({ row }: { row: StockJournalRow }) {
   ) : null;
   if (row.book === 'finished') {
     const caption = row.item ? lineConfigLabel(row.item.configuration, 'product', t) : '';
+    if (scope === 'product') {
+      // One product's feed mixes finished units and parts: the unit says which it is.
+      const finished = t('products.detail.stockTab.finished');
+      return (
+        <>
+          <span>{caption ? `${finished} · ${caption}` : finished}</span>
+          {code && <span className="block text-xs">{code}</span>}
+        </>
+      );
+    }
     return (
       <>
         {code}

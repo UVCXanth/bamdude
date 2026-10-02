@@ -23,12 +23,22 @@ const FIELD_CLASS =
  * marked; the server refuses more than it can make, and the button does not
  * offer it. Purchased parts are not on a shelf and are not written off.
  */
-export function AssembleDialog({ item, onClose }: { item?: StockItem; onClose: () => void }) {
+export function AssembleDialog({
+  item,
+  productId: forProduct,
+  onClose,
+}: {
+  item?: StockItem;
+  /** Opened for one product (the product page, WS-13 E9 F02, R03): the product is named,
+   *  the configuration — and so what can be assembled — is chosen here. */
+  productId?: number;
+  onClose: () => void;
+}) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
 
-  const [productId, setProductId] = useState<number | null>(null);
+  const [productId, setProductId] = useState<number | null>(forProduct ?? null);
   const [choices, setChoices] = useState<Record<number, number>>({});
   const [qty, setQty] = useState('1');
   const [note, setNote] = useState('');
@@ -76,6 +86,7 @@ export function AssembleDialog({ item, onClose }: { item?: StockItem; onClose: (
               choices={choices}
               onChoices={setChoices}
               disabled={assemble.isPending}
+              productLocked={forProduct != null}
             />
             <StockLookupNote lookup={productId != null ? lookup : undefined} creates />
           </>

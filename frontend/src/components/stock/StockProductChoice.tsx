@@ -19,12 +19,16 @@ export function StockProductChoice({
   choices,
   onChoices,
   disabled,
+  productLocked = false,
 }: {
   productId: number | null;
   onProduct: (id: number | null) => void;
   choices: Record<number, number>;
   onChoices: (next: Record<number, number>) => void;
   disabled?: boolean;
+  /** The dialog was opened for one product (the product page, WS-13 E9 F01–F02): it is
+   *  named, not picked — only its configuration is chosen. */
+  productLocked?: boolean;
 }) {
   const { t } = useTranslation();
   const { data: product } = useProductDetail(productId);
@@ -40,7 +44,7 @@ export function StockProductChoice({
             onProduct(id);
             onChoices({});
           }}
-          disabled={disabled}
+          disabled={disabled || productLocked}
         />
       </div>
       {groups.map((group) => (

@@ -6,10 +6,10 @@ import { useSectionScrollMemory } from '../../../hooks/useSectionScrollMemory';
 import { PRODUCT_SECTIONS, type ProductSection } from '../../../pages/products/productSections';
 import { ProductAttachments } from '../ProductAttachments';
 import { ProductOrders } from '../ProductOrders';
-import { ProductStock } from '../ProductStock';
 import { WorkshopTabPanel, WorkshopTabs } from '../../workshop/WorkshopTabs';
 import { CompositionTab } from './CompositionTab';
 import { PlatesFilesTab } from './PlatesFilesTab';
+import { ProductStockTab } from './ProductStockTab';
 
 /** The server's count of each tab (C02) — «Stock» has none. */
 function countOf(product: Product, section: ProductSection): number | undefined {
@@ -68,7 +68,7 @@ export function ProductTabs({
       case 'plates':
         return <PlatesFilesTab product={product} headingRef={headingRef} onReread={onReread} />;
       case 'stock':
-        return <ProductStock productId={product.id} canEdit={canEdit} />;
+        return <ProductStockTab product={product} />;
       case 'docs':
         return <ProductAttachments product={product} canEdit={canEdit} />;
       case 'orders':

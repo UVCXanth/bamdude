@@ -592,7 +592,7 @@ describe('ProductPage', () => {
       });
       mountAt('/products/1?tab=stock');
       expect(await screen.findByTestId('product-stock')).toBeInTheDocument();
-      expect(await screen.findByTestId('stock-kits')).toHaveTextContent('3 kits');
+      expect(await screen.findByTestId('stock-kits')).toHaveTextContent('3');
       await waitFor(() => expect(api.getProductStock).toHaveBeenCalledWith(1));
     });
 

@@ -143,6 +143,8 @@ describe('invalidateOrderViews', () => {
       'stock-journal',
       // WS-13 E1 ST2: the journal's product filter.
       'stock-journal-products',
+      // WS-13 E9 F03: the product page's movements, paged.
+      'stock-journal-page',
       'stock-items',
       'stock-item',
       'stock-lookup',

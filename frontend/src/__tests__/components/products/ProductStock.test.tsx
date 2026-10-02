@@ -15,10 +15,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { render } from '../../utils';
-import { api, ApiError, STOCK_MOVEMENT_LIMIT, STOCK_NOTE_TOKENS, STOCK_REASONS } from '../../../api/client';
+import { api, ApiError, STOCK_NOTE_TOKENS, STOCK_REASONS } from '../../../api/client';
 import type { ProductStock as ProductStockWire } from '../../../api/client';
 import { ProductStock } from '../../../components/products/ProductStock';
-import { formatDateOnly } from '../../../utils/date';
 import en from '../../../i18n/locales/en';
 import uk from '../../../i18n/locales/uk';
 
@@ -119,36 +118,18 @@ describe('ProductStock', () => {
     vi.spyOn(api, 'getSettings').mockResolvedValue({ date_format: 'iso' } as never);
   });
 
-  it('shows the server kits, every counted balance and the whole ledger', async () => {
+  it('shows the server kits and every counted balance — the movements are the tab’s journal', async () => {
     vi.spyOn(api, 'getProductStock').mockResolvedValue(stock);
 
     render(<ProductStock productId={5} canEdit />);
 
     // The headline is `kits_available` as sent — NOT `min(balance/qty)` redone
     // here, which would drift the moment a part stopped counting.
-    expect(await screen.findByTestId('stock-kits')).toHaveTextContent('3 kits');
+    expect(await screen.findByTestId('stock-kits')).toHaveTextContent('3');
     expect(screen.getByTestId('stock-balance-1')).toHaveTextContent('5');
     expect(screen.getByTestId('stock-balance-2')).toHaveTextContent('6');
-
-    // Signed, and pointing at the order that produced the surplus.
-    const banked = screen.getByTestId('stock-movement-9');
-    expect(banked).toHaveTextContent('+5');
-    expect(banked).toHaveTextContent('Surplus banked');
-    expect(banked.querySelector('a')).toHaveAttribute('href', '/projects/7');
-
-    // An archive is TEXT, not a link: this app has no per-archive route.
-    const unfiled = screen.getByTestId('stock-movement-8');
-    expect(unfiled).toHaveTextContent('Print #42');
-    expect(unfiled.querySelector('a')).toBeNull();
-    // A backend note is a token, and reads as a sentence in the UI language.
-    expect(unfiled).toHaveTextContent('counted by the operator');
-
-    // A part that left `balances` is still named, from `part_name`.
-    const manual = screen.getByTestId('stock-movement-7');
-    expect(manual).toHaveTextContent('Retired knob');
-    expect(manual).toHaveTextContent('−2');
-    // The operator's own words are printed as they were typed.
-    expect(manual).toHaveTextContent('the shelf was two short');
+    // The ledger is the product page's journal now (WS-13 E9 F03), not a list here.
+    expect(screen.queryByTestId('stock-movement-9')).not.toBeInTheDocument();
   });
 
   it('the adjust dialog posts the correction and refetches the shelf, the product and the catalog', async () => {
@@ -211,29 +192,6 @@ describe('ProductStock', () => {
     expect(screen.queryByRole('button', { name: /adjust/i })).not.toBeInTheDocument();
   });
 
-  it('dates a movement from the naive-UTC column, not from the platform parser', async () => {
-    // ⚠️ `created_at` carries no `Z`, and `new Date(x)` reads a naive string as
-    // LOCAL time — so the raw parser and the truth disagree by the whole offset
-    // for the hours near midnight, which is where the operator's "did that
-    // happen yesterday?" question always lands. `formatDateOnly` appends the Z.
-    const naive = '2026-09-01T22:30:00';
-    vi.spyOn(api, 'getProductStock').mockResolvedValue({
-      ...stock,
-      movements: [{ ...stock.movements[0], created_at: naive }],
-    });
-
-    render(<ProductStock productId={5} canEdit />);
-
-    const row = await screen.findByTestId('stock-movement-9');
-    const shown = row.querySelector('td')?.textContent ?? '';
-    await waitFor(() => expect(shown).not.toBe(''));
-    // The helper's own answer for that string — zone-independent by
-    // construction — and the proof that it was read as UTC: the naive value and
-    // the same instant spelled with a Z land on the same day.
-    expect(row.querySelector('td')).toHaveTextContent(formatDateOnly(naive, undefined, 'iso'));
-    expect(formatDateOnly(naive, undefined, 'iso')).toBe(formatDateOnly(`${naive}Z`, undefined, 'iso'));
-  });
-
   it('a failed fetch says so, and never claims the shelf is empty', async () => {
     // ⚠️ "Nothing on the shelf yet" over a request that never came back tells
     // the operator their stock is gone. The section's whole job is to say what
@@ -264,14 +222,14 @@ describe('ProductStock', () => {
         <ProductStock productId={5} canEdit />
       </>,
     );
-    expect(await screen.findByTestId('stock-kits')).toHaveTextContent('3 kits');
+    expect(await screen.findByTestId('stock-kits')).toHaveTextContent('3');
 
     await act(async () => {
       await client!.invalidateQueries({ queryKey: ['product-stock', 5] });
     });
 
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
-    expect(screen.getByTestId('stock-kits')).toHaveTextContent('3 kits');
+    expect(screen.getByTestId('stock-kits')).toHaveTextContent('3');
     expect(screen.getByTestId('stock-balance-1')).toHaveTextContent('5');
     expect(screen.queryByTestId('stock-error')).not.toBeInTheDocument();
     // …and the query is the one `appQueryClient` reports on, so the silence is
@@ -289,8 +247,6 @@ describe('ProductStock', () => {
     render(<ProductStock productId={5} canEdit />);
 
     expect(await screen.findByTestId('stock-no-counted-parts')).toBeInTheDocument();
-    // A SETTLED empty success is the only state that may say this.
-    expect(screen.getByText(/nothing has moved yet/i)).toBeInTheDocument();
     expect(screen.queryByTestId('stock-kits')).not.toBeInTheDocument();
     // Nothing to correct, so nothing offering to.
     expect(screen.queryByRole('button', { name: /adjust/i })).not.toBeInTheDocument();
@@ -310,33 +266,10 @@ describe('ProductStock', () => {
 
     render(<ProductStock productId={5} canEdit />);
 
-    expect(await screen.findByTestId('stock-kits')).toHaveTextContent('0 kits');
+    expect(await screen.findByTestId('stock-kits')).toHaveTextContent('0');
     expect(screen.getByTestId('stock-balance-1')).toHaveTextContent('0');
     expect(screen.getByTestId('stock-balance-2')).toHaveTextContent('0');
     expect(screen.queryByTestId('stock-no-counted-parts')).not.toBeInTheDocument();
-  });
-
-  it('says so when the ledger it shows is only the last page of it', async () => {
-    // ⚠️ Finding M3. A full page of exactly the limit is indistinguishable from
-    // a complete history, so the operator reads the oldest row as the first
-    // movement there ever was.
-    const many = Array.from({ length: STOCK_MOVEMENT_LIMIT }, (_, i) => ({ ...stock.movements[0], id: 1000 + i }));
-    vi.spyOn(api, 'getProductStock').mockResolvedValue({ ...stock, movements: many });
-
-    render(<ProductStock productId={5} canEdit />);
-
-    expect(await screen.findByTestId('stock-movements-truncated')).toHaveTextContent(
-      `Showing the last ${STOCK_MOVEMENT_LIMIT} movements`,
-    );
-  });
-
-  it('does not claim a truncated ledger when the page is not full', async () => {
-    vi.spyOn(api, 'getProductStock').mockResolvedValue(stock);
-
-    render(<ProductStock productId={5} canEdit />);
-
-    await screen.findByTestId('stock-kits');
-    expect(screen.queryByTestId('stock-movements-truncated')).not.toBeInTheDocument();
   });
 
   it('the adjust dialog answers a keyboard like every other overlay', async () => {

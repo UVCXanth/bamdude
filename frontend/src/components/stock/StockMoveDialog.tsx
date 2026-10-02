@@ -44,17 +44,21 @@ const CREATES: ReadonlySet<StockMoveKind> = new Set(['receipt', 'stocktake']);
 export function StockMoveDialog({
   kind,
   item,
+  productId: forProduct,
   onClose,
 }: {
   kind: StockMoveKind;
   item?: StockItem;
+  /** Opened for one product (the product page's «Receipt», WS-13 E9 F01): the product is
+   *  named, its configuration is chosen here. */
+  productId?: number;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
 
-  const [productId, setProductId] = useState<number | null>(null);
+  const [productId, setProductId] = useState<number | null>(forProduct ?? null);
   const [choices, setChoices] = useState<Record<number, number>>({});
   const [qty, setQty] = useState('1');
   const [counted, setCounted] = useState('');
@@ -148,6 +152,7 @@ export function StockMoveDialog({
               choices={choices}
               onChoices={setChoices}
               disabled={move.isPending}
+              productLocked={forProduct != null}
             />
             <StockLookupNote lookup={productId != null ? lookup : undefined} creates={creates} />
           </>

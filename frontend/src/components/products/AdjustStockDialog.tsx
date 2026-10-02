@@ -6,6 +6,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
 import { Modal } from '../Modal';
 import { Select } from '../Select';
+import { invalidateStock } from '../../utils/queryInvalidation';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none';
@@ -44,12 +45,13 @@ export function AdjustStockDialog({ productId, parts, onClose, onSaved }: Adjust
   const adjust = useMutation({
     mutationFn: () => api.adjustProductStock(productId, { part_id: partId, delta: Number(delta), note: note.trim() }),
     onSuccess: () => {
-      // The shelf, the product's own `kits_available`, and the catalog card
-      // that shows it. No order view moves: a hand correction changes what is
-      // free, never what a line has already reserved.
-      queryClient.invalidateQueries({ queryKey: ['product-stock', productId] });
-      queryClient.invalidateQueries({ queryKey: ['product', productId] });
-      queryClient.invalidateQueries({ queryKey: ['products'] });
+      // The stock helper (WS-13 E9 F04), never `['products']` alone: the shelf and its
+      // journal, the product's own `kits_available` (`['product']`) and the catalog's
+      // figures (`['products']`, the drafts badge) are all its keys — the catalog's
+      // facets and categories do not move with the shelf, and a second helper would
+      // refetch the catalog list twice. No order view moves: a hand correction changes
+      // what is free, never what a line has already reserved.
+      invalidateStock(queryClient);
       onSaved?.();
       showToast(t('stock.adjust.saved'));
       onClose();

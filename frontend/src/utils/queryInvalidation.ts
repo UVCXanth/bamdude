@@ -87,6 +87,8 @@ export const ORDER_VIEW_KEYS = [
   'stock-journal',
   // WS-13 E1 ST2: the journal's product filter moves with the journal.
   'stock-journal-products',
+  // WS-13 E9 F03: the product page's movements are the same journal, paged.
+  'stock-journal-page',
   'stock-items',
   'stock-item',
   'stock-lookup',
@@ -184,6 +186,9 @@ export const STOCK_KEYS: readonly (readonly string[])[] = [
   ['stock-item'],
   ['stock-lookup'],
   ['stock-journal'],
+  // WS-13 E9 F03: one product's movements in numbered pages — a plain query beside the
+  // stock page's infinite one, so it is a key of its own.
+  ['stock-journal-page'],
   ['stock-journal-products'],
   ['stock-summary'],
   ['stock-movements'],
