@@ -140,7 +140,7 @@ function ProductView({
               )}
             </div>
           )}
-          <ProductTabs product={product} section={section} onSection={onSection} />
+          <ProductTabs product={product} section={section} onSection={onSection} headingRef={heading} />
         </WorkshopPanel>
       </div>
 

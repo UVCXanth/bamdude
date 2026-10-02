@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Plus } from 'lucide-react';
@@ -7,7 +7,7 @@ import type { ProductPartKind } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
 import { Select } from '../Select';
-import { invalidateProductFiles } from '../../utils/queryInvalidation';
+import { compositionMutationKey, invalidateComposition } from './partMutations';
 
 const FIELD_CLASS =
   'px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none';
@@ -15,17 +15,15 @@ const FIELD_CLASS =
 interface AddPartRowProps {
   productId: number;
   canEdit: boolean;
+  /** Where a refusal goes — the «Add part» dialog's error slot; `null` clears it when the
+   *  next part is sent. Without it a refusal is a toast. */
+  onError?: (message: string | null) => void;
 }
 
 /**
- * The last row of the composition: what kind of part, called what, how many.
- *
- * ⚠️ **Not a `<tr>`.** Printed and purchased parts are two tables with
- * different columns, and one add-row that switches its own fields belongs to
- * neither of them — dropping it into one would either grow phantom columns on
- * that table or line the fields up under the wrong headers. It renders as its
- * own strip under both, which is where it reads as "add a part to this
- * product" rather than "add a row to this table".
+ * The form that adds a part: what kind of part, called what, how many. It is the body of
+ * the product page's «Add part» dialog (WS-13 E9 D05): a part that lands empties the form
+ * and leaves the focus in the name for the next one; a refusal keeps what was typed.
  *
  * ⚠️ **`qty_per_unit` may legitimately be 0.** The field's floor is 0, not 1:
  * an object that is printed alongside the product but is not part of it is
@@ -36,7 +34,7 @@ interface AddPartRowProps {
  * hidden for a printed one — the server accepts them either way, but a printed
  * part with a sourcing URL is a contradiction the UI should not offer.
  */
-export function AddPartRow({ productId, canEdit }: AddPartRowProps) {
+export function AddPartRow({ productId, canEdit, onError }: AddPartRowProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
@@ -47,8 +45,11 @@ export function AddPartRow({ productId, canEdit }: AddPartRowProps) {
   const [price, setPrice] = useState('');
   const [url, setUrl] = useState('');
   const [remarks, setRemarks] = useState('');
+  const nameField = useRef<HTMLInputElement>(null);
 
   const add = useMutation({
+    mutationKey: compositionMutationKey(productId),
+    onMutate: () => onError?.(null),
     mutationFn: () => {
       const parsedPrice = Number(price.trim());
       return api.createProductPart(productId, {
@@ -63,27 +64,23 @@ export function AddPartRow({ productId, canEdit }: AddPartRowProps) {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['product', productId] });
-      invalidateProductFiles(queryClient, productId);
+      invalidateComposition(queryClient, productId);
       setName('');
       setQty(1);
       setPrice('');
       setUrl('');
       setRemarks('');
+      nameField.current?.focus();
     },
     // A name (or alias) another part already owns answers 409 — the server's
     // own sentence, with the form left holding what was typed.
-    onError: (e: Error) => showToast(e.message, 'error'),
+    onError: (e: Error) => (onError ? onError(e.message) : showToast(e.message, 'error')),
   });
 
   if (!canEdit) return null;
 
   return (
-    <div
-      data-testid="add-part-row"
-      className="space-y-2 rounded-xl border border-dashed border-bambu-dark-tertiary p-3"
-    >
-      <p className="text-xs text-bambu-gray">{t('products.composition.addPart')}</p>
+    <div data-testid="add-part-row">
       <div className="flex items-end gap-2 flex-wrap">
         <div>
           <label className="block text-xs text-bambu-gray mb-1" htmlFor="add-part-kind">
@@ -106,6 +103,7 @@ export function AddPartRow({ productId, canEdit }: AddPartRowProps) {
             {t('products.composition.name')}
           </label>
           <input
+            ref={nameField}
             id="add-part-name"
             type="text"
             value={name}

@@ -1,17 +1,16 @@
-import { useId, useRef, useState } from 'react';
+import { useId, useRef, useState, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { Product } from '../../../api/client';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useSectionScrollMemory } from '../../../hooks/useSectionScrollMemory';
 import { PRODUCT_SECTIONS, type ProductSection } from '../../../pages/products/productSections';
-import { CompositionTable } from '../CompositionTable';
 import { LinkedFiles } from '../LinkedFiles';
 import { PlatesByFile } from '../PlatesByFile';
 import { ProductAttachments } from '../ProductAttachments';
 import { ProductOrders } from '../ProductOrders';
 import { ProductStock } from '../ProductStock';
-import { ProductVariants } from '../ProductVariants';
 import { WorkshopTabPanel, WorkshopTabs } from '../../workshop/WorkshopTabs';
+import { CompositionTab } from './CompositionTab';
 
 /** The server's count of each tab (C02) — «Stock» has none. */
 function countOf(product: Product, section: ProductSection): number | undefined {
@@ -43,10 +42,13 @@ export function ProductTabs({
   product,
   section,
   onSection,
+  headingRef,
 }: {
   product: Product;
   section: ProductSection;
   onSection: (section: ProductSection) => void;
+  /** The page's h1 — where the focus goes when the row that held it leaves (B11). */
+  headingRef: RefObject<HTMLHeadingElement | null>;
 }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -60,12 +62,7 @@ export function ProductTabs({
   function body(value: ProductSection) {
     switch (value) {
       case 'composition':
-        return (
-          <div className="space-y-6">
-            <CompositionTable product={product} canEdit={canEdit} />
-            <ProductVariants product={product} canEdit={canEdit} />
-          </div>
-        );
+        return <CompositionTab product={product} headingRef={headingRef} />;
       case 'plates':
         return (
           <div className="space-y-6">

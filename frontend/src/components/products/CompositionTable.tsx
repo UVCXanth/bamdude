@@ -7,9 +7,8 @@ import type { Product, ProductPart, ProductPartUpdate } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { getCurrencySymbol } from '../../utils/currency';
 import { ConfirmModal } from '../ConfirmModal';
-import { AddPartRow } from './AddPartRow';
 import { Select } from '../Select';
-import { invalidateProductFiles } from '../../utils/queryInvalidation';
+import { compositionMutationKey, deleteProductPart, invalidateComposition } from './partMutations';
 
 const FIELD_CLASS =
   'px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none disabled:opacity-60';
@@ -47,9 +46,13 @@ interface CompositionTableProps {
  * it asks first, naming both.
  *
  * Every mutation invalidates `['product', id]` AND what the product prints from
- * (`invalidateProductFiles`: plates, sources, files tab, estimate): a part's name,
+ * (`invalidateComposition`: plates, sources, files tab, estimate): a part's name,
  * aliases or existence changes what the plate walk matches, and a bought part's
  * price moves the estimate, so all of it is stale the moment a row here is touched.
+ *
+ * It is the product page's edit mode (WS-13 E9 D05): every mutation carries
+ * `compositionMutationKey`, so «Done» waits for a field that is still saving. Adding a
+ * part is the page's «Add part» dialog, not a row here.
  */
 export function CompositionTable({ product, canEdit }: CompositionTableProps) {
   const { t } = useTranslation();
@@ -64,13 +67,12 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
   const [deleting, setDeleting] = useState<ProductPart | null>(null);
   const [merging, setMerging] = useState<{ source: ProductPart; target: ProductPart } | null>(null);
 
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['product', product.id] });
-    invalidateProductFiles(queryClient, product.id);
-  };
+  const mutationKey = compositionMutationKey(product.id);
+  const invalidate = () => invalidateComposition(queryClient, product.id);
   const fail = (e: Error) => showToast(e.message, 'error');
 
   const save = useMutation({
+    mutationKey,
     mutationFn: ({ partId, data }: { partId: number; data: ProductPartUpdate }) =>
       api.updateProductPart(product.id, partId, data),
     onSuccess: invalidate,
@@ -78,6 +80,7 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
   });
 
   const addAlias = useMutation({
+    mutationKey,
     mutationFn: ({ partId, nameKey }: { partId: number; nameKey: string }) =>
       api.addProductPartAlias(product.id, partId, nameKey),
     // The input stays OPEN and empties itself: parts routinely carry several
@@ -94,6 +97,7 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
   });
 
   const removeAlias = useMutation({
+    mutationKey,
     mutationFn: ({ partId, nameKey }: { partId: number; nameKey: string }) =>
       api.removeProductPartAlias(product.id, partId, nameKey),
     onSuccess: invalidate,
@@ -101,6 +105,7 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
   });
 
   const merge = useMutation({
+    mutationKey,
     mutationFn: ({ source, target }: { source: ProductPart; target: ProductPart }) =>
       api.mergeProductPart(product.id, target.id, source.id),
     onSuccess: () => {
@@ -111,11 +116,9 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
   });
 
   const remove = useMutation({
-    mutationFn: (partId: number) => api.deleteProductPart(product.id, partId),
-    onSuccess: () => {
-      invalidate();
-      setDeleting(null);
-    },
+    mutationKey,
+    mutationFn: (part: ProductPart) => deleteProductPart(queryClient, product.id, part),
+    onSuccess: () => setDeleting(null),
     onError: fail,
   });
 
@@ -289,8 +292,7 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
     );
 
   return (
-    <section className="space-y-4">
-      <h2 className="text-lg font-semibold text-white">{t('products.composition.title')}</h2>
+    <section className="space-y-4" aria-label={t('products.composition.title')}>
 
       {printed.length > 0 && (
         <div className="space-y-2">
@@ -504,10 +506,6 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
         </div>
       )}
 
-      {/* The row gates itself on `canEdit` — one guard, in the component that
-          owns the form, rather than two that can drift apart. */}
-      <AddPartRow productId={product.id} canEdit={canEdit} />
-
       {deleting && (
         <ConfirmModal
           title={t('products.composition.delete')}
@@ -523,7 +521,7 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
           confirmText={t('common.delete')}
           variant="danger"
           isLoading={remove.isPending}
-          onConfirm={() => remove.mutate(deleting.id)}
+          onConfirm={() => remove.mutate(deleting)}
           onCancel={() => setDeleting(null)}
         />
       )}

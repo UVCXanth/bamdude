@@ -150,6 +150,7 @@ describe('ProductPage', () => {
     vi.spyOn(api, 'getProduct').mockResolvedValue(product);
     vi.spyOn(api, 'getProductEstimate').mockResolvedValue(estimate);
     vi.spyOn(api, 'getStockItems').mockResolvedValue(positions([]));
+    vi.spyOn(api, 'getProductSources').mockResolvedValue({ parts: [] });
     vi.spyOn(api, 'getProductStock').mockResolvedValue({ kits_by_option: [], balances: [], kits_available: 0, movements: [] });
     vi.spyOn(api, 'getProductPlates').mockResolvedValue([] as never);
     vi.spyOn(api, 'getLibraryFiles').mockResolvedValue([] as never);
@@ -539,7 +540,7 @@ describe('ProductPage', () => {
     it('opens on the composition', async () => {
       mountAt();
       expect(await screen.findByRole('tab', { name: 'Composition (2)', selected: true })).toBeInTheDocument();
-      expect(await screen.findByTestId('add-part-row')).toBeInTheDocument();
+      expect(await screen.findByTestId('composition-variants')).toBeInTheDocument();
     });
 
     it('opens the tab its address names', async () => {
@@ -569,7 +570,7 @@ describe('ProductPage', () => {
 
     it('a tab nobody opened asks nothing; a visited one stays mounted and is not asked again', async () => {
       mountAt();
-      await screen.findByTestId('add-part-row');
+      await screen.findByTestId('composition-variants');
       expect(api.getProductPlates).not.toHaveBeenCalled();
       expect(api.getOrders).not.toHaveBeenCalled();
       expect(api.getProductStock).not.toHaveBeenCalled();
@@ -605,7 +606,7 @@ describe('ProductPage', () => {
       expect(screen.getByRole('heading', { level: 1, name: /^Flask/ })).toBeInTheDocument();
       expect(await screen.findByText('1h 20m · 85g')).toBeInTheDocument();
       fireEvent.click(screen.getByRole('tab', { name: 'Composition (2)' }));
-      expect(await screen.findByTestId('add-part-row')).toBeVisible();
+      expect(await screen.findByTestId('composition-variants')).toBeVisible();
     });
 
     it('another product starts from nothing — its own composition tab, nothing visited', async () => {

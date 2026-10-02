@@ -8,6 +8,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { invalidateProductVariants } from '../../utils/queryInvalidation';
 import { Button } from '../Button';
 import { ConfirmModal } from '../ConfirmModal';
+import { variantsMutationKey } from './partMutations';
 
 const FIELD_CLASS =
   'px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none disabled:opacity-60';
@@ -24,6 +25,10 @@ type Deleting = { kind: 'group'; group: VariantGroup } | { kind: 'option'; group
  * chose, one parts are bound to — is shown disabled with the reason, read off
  * the counts the product response carries. Changing the standard changes no
  * saved order: every line recorded its choice.
+ *
+ * It is the body of the product page's «Product variants» dialog (WS-13 E9 D05), whose
+ * title names it: every mutation carries `variantsMutationKey`, and the dialog does not
+ * close while one is on its way.
  */
 export function ProductVariants({ product, canEdit }: { product: Product; canEdit: boolean }) {
   const { t } = useTranslation();
@@ -49,8 +54,10 @@ export function ProductVariants({ product, canEdit }: { product: Product; canEdi
     invalidateProductVariants(queryClient, product.id);
   };
   const fail = (e: Error) => showToast(e.message, 'error');
+  const mutationKey = variantsMutationKey(product.id);
 
   const createGroup = useMutation({
+    mutationKey,
     mutationFn: (data: { name: string; options: string[] }) => api.createVariantGroup(product.id, data),
     onSuccess: () => {
       setGroupDraft({ name: '', options: '' });
@@ -59,6 +66,7 @@ export function ProductVariants({ product, canEdit }: { product: Product; canEdi
     onError: fail,
   });
   const updateGroup = useMutation({
+    mutationKey,
     mutationFn: ({ group, data }: { group: VariantGroup; data: { name?: string; default_option_id?: number } }) =>
       api.updateVariantGroup(product.id, group.id, data),
     onSuccess: async (_p, { group }) => {
@@ -71,6 +79,7 @@ export function ProductVariants({ product, canEdit }: { product: Product; canEdi
     },
   });
   const createOption = useMutation({
+    mutationKey,
     mutationFn: ({ group, name }: { group: VariantGroup; name: string }) =>
       api.createVariantOption(product.id, group.id, name),
     onSuccess: (_p, { group }) => {
@@ -80,6 +89,7 @@ export function ProductVariants({ product, canEdit }: { product: Product; canEdi
     onError: fail,
   });
   const updateOption = useMutation({
+    mutationKey,
     mutationFn: ({ group, option, name }: { group: VariantGroup; option: VariantOption; name: string }) =>
       api.updateVariantOption(product.id, group.id, option.id, { name }),
     onSuccess: async (_p, { option }) => {
@@ -92,6 +102,7 @@ export function ProductVariants({ product, canEdit }: { product: Product; canEdi
     },
   });
   const remove = useMutation({
+    mutationKey,
     mutationFn: (target: Deleting) =>
       target.kind === 'group'
         ? api.deleteVariantGroup(product.id, target.group.id)
@@ -158,10 +169,7 @@ export function ProductVariants({ product, canEdit }: { product: Product; canEdi
 
   return (
     <section className="space-y-3">
-      <div>
-        <h2 className="text-lg font-semibold text-white">{t('products.variants.title')}</h2>
-        <p className="text-xs text-bambu-gray">{t('products.variants.hint')}</p>
-      </div>
+      <p className="text-xs text-bambu-gray">{t('products.variants.hint')}</p>
       {groups.length === 0 && <p className="text-sm text-bambu-gray">{t('products.variants.empty')}</p>}
       {groups.map((group) => {
         const groupBlock = groupRefusal(group);
