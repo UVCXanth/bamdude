@@ -620,6 +620,35 @@ async (page, selftest = null) => {
     };
   });
 
+  // E8-V03 (Codex): a readiness or stock the closed sets do not know filters nothing and is never sent
+  // (C04) — but it is in the address, so Reset takes it away, alone or together, in one write that
+  // keeps the sort and the view; the address does not change before the click.
+  await scenario('filters-unknown@1440', ['E8-C04', 'E8-C05', 'E8-V03'], async () => {
+    const out = {};
+    for (const query of ['status=unexpected', 'stock=unexpected', 'status=unexpected&stock=unexpected']) {
+      const { ctx, p, errors, requests } = await open(1440, view('table'));
+      const start = `/products?${query}&sort=sku-asc`;
+      await catalog(p, `?${query}&sort=sku-asc`);
+      const opened = await urlOf(p);
+      const sent = listParams(requests).some((q) => 'status' in q || 'stock' in q);
+      const reset = p.getByRole('button', { name: 'Скинути', exact: true });
+      const offered = await reset.count();
+      const entries = await p.evaluate(() => history.length);
+      if (offered === 1) await reset.click();
+      await p.waitForTimeout(800);
+      out[query] = {
+        opened: opened === start, sent, offered, url: await urlOf(p),
+        oneWrite: (await p.evaluate(() => history.length)) === entries, table: await p.locator('table').count(), errors: errors.length,
+      };
+      await ctx.close();
+    }
+    return {
+      recipe: { url: '/products?{status=unexpected | stock=unexpected | both}&sort=sku-asc', actions: ['«Скинути»'] },
+      measured: out,
+      pass: Object.keys(out).length === 3 && Object.values(out).every((o) => o.opened && !o.sent && o.offered === 1 && o.url === '/products?sort=sku-asc' && o.oneWrite && o.table === 1 && o.errors === 0),
+    };
+  });
+
   // ======================= 3. categories (C06, C11) =======================
   const navWidth = (w) => (w <= 1100 ? 180 : Math.max(180, Math.min(240, w * 0.11)));
   for (const w of [2560, 1440, 1101, 1100, 761]) {
@@ -1107,9 +1136,12 @@ async (page, selftest = null) => {
     await catalog(p);
     await p.waitForTimeout(1000);
     const picture = (id) => p.getByTestId(`product-row-${id}`).locator('td').first().evaluate(async (td) => {
-      const img = td.querySelector('[data-testid="product-cover"]');
+      // What a person sees: a failed picture's <img> stays on the page, hidden, for the app's
+      // media-token recovery to retry into (E8-V01) — the placeholder is what shows.
+      const own = td.querySelector('[data-testid="product-cover"]');
+      const img = own && own.getClientRects().length > 0 ? own : null;
       const ph = td.querySelector('[data-testid="product-cover-placeholder"]');
-      const el = img ?? ph;
+      const el = img ?? ph ?? own;
       const r = el.getBoundingClientRect();
       let decoded = false;
       if (img) { try { await img.decode(); decoded = true; } catch { decoded = false; } }
@@ -1130,6 +1162,76 @@ async (page, selftest = null) => {
       measured: { a, b, c, tokened, errors },
       pass: a.img && a.decoded && a.naturalWidth === (job.cover_size ?? [96])[0] && a.box[0] === 40 && a.box[1] === 40 &&
         !b.img && b.placeholder && b.box[0] === 40 && b.box[1] === 40 && c.img && c.decoded && tokened >= 2 && errors.length === 0,
+      screenshots: [file],
+    };
+  });
+
+  // E8-V01 (Codex): the server dropped the media tokens (a restart). The cover fails WITH its token,
+  // the app's one recovery mints a new token and rewrites every <img> still on the page — so the
+  // thumb must not have taken its <img> away. Both tokens the page sees here are the runner's: the
+  // first is the one minted for the run, the second a fake that only this route accepts.
+  await scenario('covers-token@1440', ['E8-B07', 'E8-V01'], async () => {
+    const r1 = rowOf('1');
+    if (!r1 || !job.cover_png || !job.media_token) return { pass: null, measured: { missing: true } };
+    const FRESH = 'e08-fresh-media-token';
+    let mints = 0;
+    const asked = { first: 0, fresh: 0, bare: 0 };
+    const { ctx, p, errors } = await open(1440, {
+      ...view('table'),
+      rewrite: [[LIST, onlyRows([{ ...r1, has_cover: true }])]],
+      gets: [[new RegExp(`/api/v1/products/${r1.id}/cover-image`), (url) => {
+        const token = new URL(url).searchParams.get('token');
+        if (token === FRESH) {
+          asked.fresh += 1;
+          return { file: job.cover_png };
+        }
+        if (token) asked.first += 1;
+        else asked.bare += 1;
+        return { fail: 401 };
+      }]],
+      writes: [[/\/api\/v1\/auth\/media-token/, () => {
+        mints += 1;
+        return { token: mints === 1 ? job.media_token : FRESH, expires_in: 3600 };
+      }]],
+    });
+    await catalog(p);
+    // How long the person waits for the picture: the retry is the recovery's own, not a later render
+    // that happens to rebuild the row (on the old code nothing came back within 20 s; a render after
+    // that rebuilt the row with the fresh token, by chance).
+    const t0 = Date.now();
+    let back = null;
+    while (Date.now() - t0 < 20000) {
+      const ok = await p.evaluate(() => {
+        const img = document.querySelector('[data-testid="product-cover"]');
+        return !!img && img.getClientRects().length > 0 && img.complete && img.naturalWidth > 0;
+      });
+      if (ok) {
+        back = Date.now() - t0;
+        break;
+      }
+      await p.waitForTimeout(100);
+    }
+    const shown = await p.locator('[data-testid="product-cover"]').first().evaluate(async (img, fresh) => {
+      let decoded = false;
+      try { await img.decode(); decoded = true; } catch { decoded = false; }
+      return {
+        decoded, naturalWidth: img.naturalWidth, visible: img.getClientRects().length > 0,
+        withFresh: new URL(img.src).searchParams.get('token') === fresh,
+        placeholders: document.querySelectorAll('[data-testid="product-cover-placeholder"]').length,
+      };
+    }, FRESH);
+    // Settled: no request after the picture came back — the recovery is bounded.
+    const settledAt = { ...asked, mints };
+    await p.waitForTimeout(2500);
+    const later = { ...asked, mints };
+    const file = await shoot(p, 'covers-token@1440', { clip: { x: 0, y: 0, width: 1440, height: 600 } });
+    await ctx.close();
+    return {
+      recipe: { url: '/products', fixture: ['GET /products?page=…: product 1 alone, with has_cover (rewritten)', 'POST /auth/media-token: 1st → the run’s media token, then a fake fresh one (answered by the runner)', `GET …/products/1/cover-image: with the fresh token → a real ${(job.cover_size ?? []).join('×')} PNG, otherwise → 401`] },
+      measured: { back, shown, settledAt, later, errors },
+      pass: back != null && back <= 5000 && shown.decoded && shown.visible && shown.withFresh && shown.naturalWidth === (job.cover_size ?? [96])[0] && shown.placeholders === 0 &&
+        settledAt.first >= 1 && settledAt.fresh >= 1 && settledAt.mints >= 2 && settledAt.mints <= 3 &&
+        JSON.stringify(later) === JSON.stringify(settledAt) && errors.length === 0,
       screenshots: [file],
     };
   });
@@ -1381,6 +1483,40 @@ async (page, selftest = null) => {
       measured: { writes, url, errors },
       pass: writes.length === 2 && writes[0].method === 'PATCH' && JSON.stringify(writes[0].body) === '{"is_active":false}' && JSON.stringify(writes[1].body) === '{"is_active":true}' &&
         url === '/products?catalog=0' && errors.length === 0,
+    };
+  });
+
+  // E8-V02 (Codex): the re-read after a hide is the server's and may take longer than any limit we
+  // pick — the row leaves late, and the focus still lands on the heading, never on BODY (F09).
+  await scenario('menu-hide-slow@1440', ['E8-F05', 'E8-F09', 'E8-V02'], async () => {
+    const r1 = rowOf('1');
+    const r8 = rowOf('8');
+    if (![r1, r8].every(Boolean)) return { pass: null, measured: { missing: true } };
+    const DELAY = 6500;
+    let hidden = false;
+    const writes = [];
+    const { ctx, p, errors } = await open(1440, {
+      ...view('table'),
+      gets: [[LIST, () => (hidden ? { delay: DELAY, rewrite: onlyRows([r8]) } : { rewrite: onlyRows([r1, r8]) })]],
+      writes: [recorder(writes, /\/api\/v1\/products\/\d+$/, (e) => { hidden = true; return { ...detail1, id: Number(e.path.split('/').pop()), is_active: false }; })],
+    });
+    await catalog(p);
+    await firstMenuOf(p, r1.id).click();
+    await p.getByRole('menuitem', { name: 'Прибрати з каталогу' }).click();
+    await toastText(p, /Виріб прибрано з каталогу/);
+    const t0 = Date.now();
+    const onTrigger = await firstMenuOf(p, r1.id).evaluate((el) => document.activeElement === el);
+    const left = await p.getByTestId(`product-row-${r1.id}`).waitFor({ state: 'detached', timeout: DELAY + 10000 }).then(() => Date.now() - t0, () => null);
+    await p.waitForTimeout(300);
+    const focus = await p.evaluate(() => {
+      const a = document.activeElement;
+      return { tag: a ? a.tagName : null, text: a ? a.textContent.trim() : null };
+    });
+    await ctx.close();
+    return {
+      recipe: { url: '/products', fixture: ['GET /products?page=…: products 1 and 8; after the PATCH (answered by the runner) the re-read waits 6.5 s and answers product 8 alone'], actions: ['product 1’s menu', '«Прибрати з каталогу»'] },
+      measured: { writes: writes.length, onTrigger, left, focus, errors },
+      pass: writes.length === 1 && onTrigger && left != null && left >= 5000 && focus.tag === 'H1' && focus.text === 'Вироби' && errors.length === 0,
     };
   });
 
