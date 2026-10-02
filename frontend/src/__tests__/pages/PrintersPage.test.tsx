@@ -12,6 +12,19 @@ import { PrintersPage } from '../../pages/PrintersPage';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 
+const { pagePaint } = vi.hoisted(() => ({ pagePaint: vi.fn() }));
+vi.mock('lucide-react', async (importOriginal) => {
+  const icons = await importOriginal<typeof import('lucide-react')>();
+  return {
+    ...icons,
+    Printer: (props: React.ComponentProps<typeof icons.Printer>) => {
+      // This icon belongs to the page heading, outside status-subscribing cards.
+      if (props.className === 'w-6 h-6 text-bambu-green') pagePaint();
+      return <icons.Printer {...props} />;
+    },
+  };
+});
+
 const mockPrinters = [
   {
     id: 1,
@@ -357,6 +370,35 @@ describe('PrintersPage', () => {
   });
 
   describe('sorting', () => {
+    it('updates a live card without repainting the page when the order ignores status', async () => {
+      localStorage.setItem('printerSortBy', 'name');
+      let cache!: QueryClient;
+      function CaptureCache() {
+        const client = useQueryClient();
+        useEffect(() => { cache = client; }, [client]);
+        return null;
+      }
+      const view = render(<><CaptureCache /><PrintersPage /></>);
+      try {
+        await screen.findByText('X1 Carbon');
+        await waitFor(() => expect(cache.isFetching()).toBe(0));
+        // Let the initial query notifications and progressive mount settle.
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 100)); });
+        pagePaint.mockClear();
+        await act(async () => {
+          cache.setQueryData(['printerStatus', 1], {
+            ...mockPrinterStatus, state: 'RUNNING', progress: 42,
+            current_print: 'Live status regression', subtask_name: 'Live status regression',
+          });
+          await new Promise(resolve => setTimeout(resolve, 50));
+        });
+        await screen.findByText('Live status regression');
+        expect(pagePaint).not.toHaveBeenCalled();
+      } finally {
+        view.unmount();
+      }
+    });
+
     /** The card headings, in the order the page rendered them. */
     const renderedOrder = () =>
       screen
