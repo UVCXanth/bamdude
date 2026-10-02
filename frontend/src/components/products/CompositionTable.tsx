@@ -221,7 +221,7 @@ export function CompositionTable({ product, canEdit }: CompositionTableProps) {
           className={`${FIELD_CLASS} w-20 text-right tabular-nums`}
         />
         {part.qty_per_unit === 0 && (
-          <span className={`text-xs ${part.ignored ? 'text-amber-400' : 'text-bambu-gray'}`}>
+          <span className={`text-xs ${part.ignored ? 'text-amber-700 dark:text-amber-400' : 'text-bambu-gray'}`}>
             {t(part.ignored ? 'products.composition.notCounted' : 'products.composition.outOfKit')}
           </span>
         )}

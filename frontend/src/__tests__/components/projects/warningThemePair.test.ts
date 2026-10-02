@@ -13,7 +13,7 @@ import { join } from 'node:path';
  * `bg-amber-500/…` — so a token without the `dark:` prefix must not be one.
  */
 const SRC = join(process.cwd(), 'src');
-const DIRS = ['components/projects', 'components/workshop'];
+const DIRS = ['components/projects', 'components/workshop', 'components/products'];
 const LONE_LIGHT_AMBER = /^(text|bg|border)-(amber-(300|400|500)|red-(400|500))$/;
 
 function sources(dir: string): string[] {

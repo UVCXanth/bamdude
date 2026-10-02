@@ -27,7 +27,7 @@ import { parseOrdersView, parsePageSize, usePersistedState } from '../../hooks/u
 import type { OrdersView } from '../../hooks/usePersistedState';
 import { useSearchBox } from '../../hooks/useSearchBox';
 import { WorkshopTabPanel } from '../../components/workshop/WorkshopTabs';
-import { answeredEmpty, listState } from '../../components/projects/orderRow/listState';
+import { answeredEmpty, listState } from '../../utils/listState';
 import { TABLE_SORT_KEYS } from '../../components/projects/OrdersTable';
 import { splitSortBy } from '../../utils/listSort';
 

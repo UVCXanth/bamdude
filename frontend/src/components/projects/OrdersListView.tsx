@@ -10,7 +10,7 @@ import { ORDER_TABS } from './orderList';
 import { WorkshopTabs } from '../workshop/WorkshopTabs';
 import { LoadFailedNote } from '../workshop/LoadFailedNote';
 import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
-import { listState } from './orderRow/listState';
+import { listState } from '../../utils/listState';
 import { useOrdersForecast } from './orderRow/useOrdersForecast';
 import { readiness } from './orderRow/readiness';
 

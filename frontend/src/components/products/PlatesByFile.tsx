@@ -112,7 +112,7 @@ export function PlatesByFile({ productId }: { productId: number }) {
                     )}
                   </>
                 ) : (
-                  <span className={`${CHIP_CLASS} bg-amber-500/20 text-amber-400`}>
+                  <span className={`${CHIP_CLASS} bg-amber-500/20 text-amber-700 dark:text-amber-400`}>
                     {t('products.plates.notSliced')}
                   </span>
                 )}

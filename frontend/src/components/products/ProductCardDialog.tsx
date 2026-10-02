@@ -77,7 +77,7 @@ export function ProductCardDialog({ product, onClose }: ProductCardDialogProps) 
       <Shell title={t('products.modal.editTitle')} onClose={onClose}>
         <div className="p-8 flex justify-center">
           {error ? (
-            <p className="text-sm text-red-500">{(error as Error).message}</p>
+            <p className="text-sm text-red-600 dark:text-red-500">{(error as Error).message}</p>
           ) : (
             <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
           )}

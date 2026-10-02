@@ -77,7 +77,7 @@ export function ProductStock({ productId, canEdit }: ProductStockProps) {
           {t('stock.title')}
         </h2>
         {isError ? (
-          <p className="text-sm text-red-500" data-testid="stock-error">
+          <p className="text-sm text-red-600 dark:text-red-500" data-testid="stock-error">
             {t('stock.error')}
           </p>
         ) : (
@@ -223,7 +223,7 @@ export function ProductStock({ productId, canEdit }: ProductStockProps) {
                       {formatDateOnly(m.created_at, undefined, dateFormat)}
                     </td>
                     <td className="p-2">{m.part_name}</td>
-                    <td className={`p-2 tabular-nums ${m.delta > 0 ? 'text-bambu-green' : 'text-red-400'}`}>
+                    <td className={`p-2 tabular-nums ${m.delta > 0 ? 'text-bambu-green' : 'text-red-600 dark:text-red-400'}`}>
                       {signed(m.delta)}
                     </td>
                     {/* An unknown reason prints its own token rather than a

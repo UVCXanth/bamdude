@@ -1,6 +1,6 @@
 /**
- * The state of a paged order list (WS-13 E7 C05), read off the query of the
- * CURRENT key.
+ * The state of a paged Workshop list — orders, a customer's orders, the product
+ * catalog (WS-13 E7 C05, E8 C08) — read off the query of the CURRENT key.
  *
  * ⚠️ `keepPreviousData` keeps the previous key's rows only while the new key is in
  * flight: once the new key FAILS, TanStack answers `data = undefined` (R03, probed

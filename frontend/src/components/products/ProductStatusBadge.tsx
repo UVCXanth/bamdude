@@ -20,7 +20,7 @@ export function ProductStatusBadge({
   const { t } = useTranslation();
   if (product.status === 'draft') {
     return (
-      <span className="inline-block px-2 py-0.5 rounded-full text-xs bg-amber-500/15 text-amber-400">
+      <span className="inline-block px-2 py-0.5 rounded-full text-xs bg-amber-500/15 text-amber-700 dark:text-amber-400">
         {t('products.status.draft')}
       </span>
     );
@@ -29,7 +29,7 @@ export function ProductStatusBadge({
     return (
       <span
         title={t('products.status.incompleteHint')}
-        className="inline-block px-2 py-0.5 rounded-full text-xs bg-red-500/15 text-red-400"
+        className="inline-block px-2 py-0.5 rounded-full text-xs bg-red-500/15 text-red-600 dark:text-red-400"
       >
         {t('products.status.incomplete')}
       </span>

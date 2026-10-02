@@ -28,7 +28,7 @@ import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 import { useListUrlState } from '../../hooks/useListUrlState';
 import { parseListView, parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
 import { WorkshopTabPanel } from '../../components/workshop/WorkshopTabs';
-import { answeredEmpty, listState } from '../../components/projects/orderRow/listState';
+import { answeredEmpty, listState } from '../../utils/listState';
 
 /**
  * One customer: its figures (three tiles) and one server page of its orders —
