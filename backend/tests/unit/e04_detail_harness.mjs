@@ -103,6 +103,9 @@ const CASES = {
   e06_real_scenario_throws: [{ only: 'form-geometry@1920', gotoFails: true }],
   // …and through E7's runner (e07_detail.js).
   e07_real_scenario_throws: [{ only: 'tiles@1440', gotoFails: true }],
+  // …and through E8's runner (e08_detail.js), whose first read is product 1.
+  e08_real_scenario_throws: [{ only: 'header@1440', gotoFails: true }],
+  e08_prep_read_throws: [{ readFails: /^\/products\/1$/, readFailsWith: 'throw' }],
   // E6: a GET answered by its turn — failed the first time, rewritten the second.
   gets_by_turn: [{ fires: 2 }, async ({ scenario, open }) => {
     let n = 0;

@@ -1399,3 +1399,150 @@ def test_an_e07_job_names_the_orders_and_the_customer():
     entities = e07_evidence.job_entities(mapping)
     assert entities["orders"]["241"] == 31 and entities["orders"]["251"] == 41
     assert entities["customers"] == {"1": 4}
+
+
+# ---- WS-13 E8 detail runner (e08_detail.js): E4's harness around E8's scenarios ----
+
+import struct  # noqa: E402
+import zlib  # noqa: E402
+
+import e08_evidence  # noqa: E402
+
+_E08_RUNNER = Path(__file__).resolve().parents[3] / "scripts" / "workshop_stand" / "e08_detail.js"
+
+
+@pytest.mark.parametrize(
+    ("case", "code", "at"),
+    [
+        ("e08_prep_read_throws", "read_network", "/products/1"),
+        ("prep_read_refused", "read_http_401", "/groups/"),
+    ],
+)
+def test_e08_a_failed_preparation_read_ends_the_run_incomplete_and_names_no_secret(case, code, at):
+    run = _e04_run(case, _E08_RUNNER)
+
+    records = _e04_records(run)
+    assert [r["id"] for r in records] == ["runner"]
+    assert records[0]["error"] == {"code": code, "stage": "prepare", "name": "RunnerFailure", "at": at}
+    assert _e04_done(run)["incomplete"] is True
+
+
+def test_e08_a_real_scenario_that_throws_fails_safely_and_closes_its_context():
+    run = _e04_run("e08_real_scenario_throws", _E08_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["id"] == "header@1440" and rec["pass"] is False
+    assert rec["error"] == {"code": "error", "stage": "header@1440", "name": "Error"}
+    assert _e04_done(run)["incomplete"] is False
+    _e04_closed_in_order(run)
+
+
+@pytest.mark.parametrize("case", ["route_fails_live", "scenario_reports_the_token", "open_outside_a_scenario"])
+def test_e08_keeps_the_e04_guards(case):
+    run = _e04_run(case, _E08_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is False
+    if case != "scenario_reports_the_token":  # that one opens no context
+        _e04_closed_in_order(run)
+
+
+def test_e08_a_record_carrying_the_media_token_is_replaced_by_a_failure():
+    run = _e04_run("scenario_reports_the_media_token", _E08_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["error"] == {"code": "secret_in_record", "stage": "echo"}
+    assert "mq7-media-marker-fake" not in json.dumps(run["posts"])
+
+
+def test_e08_a_get_is_answered_by_its_turn():
+    run = _e04_run("gets_by_turn", _E08_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is True
+    answered = [e for e in run["log"] if e.startswith("fulfill.")]
+    assert answered == ['fulfill.500.{"detail":"e08 runner"}', 'fulfill.200.{"n":1,"seen":2}']
+    _e04_closed_in_order(run)
+
+
+def test_e08_the_runner_declares_exactly_the_scenarios_the_manifest_expects():
+    run = _e04_run("declared", _E08_RUNNER)
+
+    assert _e04_records(run) == []
+    assert _e04_done(run)["declared"] == list(e08_evidence.DETAIL_SCENARIOS)
+
+
+def test_e08_a_full_run_is_judged_against_the_e08_scenarios():
+    ids = list(e08_evidence.DETAIL_SCENARIOS)
+    done = {"count": len(ids), "incomplete": False, "declared": ids}
+    records = [{"id": i} for i in ids]
+
+    verdict = e04_evidence.run_completeness(
+        finished=True, done=done, records=records, only="", expected=e08_evidence.DETAIL_SCENARIOS
+    )
+    assert verdict["complete"] is True
+    assert (
+        e04_evidence.run_completeness(
+            finished=True, done=done, records=records, only="", expected=e07_evidence.DETAIL_SCENARIOS
+        )["complete"]
+        is False
+    )
+
+
+def test_the_e08_pairs_shoot_each_width_set_as_its_own_run_on_a_copy_of_the_plan():
+    base = json.loads((Path(e08_evidence.HERE) / "capture_plan.json").read_text(encoding="utf-8"))
+    surfaces = {s["id"] for s in base["surfaces"]}
+
+    plan, only, stage = e08_evidence.pairs_plan(base, run="")
+    assert only == ["products-table"] and stage == "e08-product-catalog-pairs"
+    assert plan["widths"] == {"wide": [2560, 1920, 1440, 1280, 1024, 768], "narrow": [390]}
+    # The table takes the narrow width in the copy (the E0 plan shot it wide only).
+    assert next(s for s in plan["surfaces"] if s["id"] == "products-table")["widths"] == "all"
+
+    plan, only, stage = e08_evidence.pairs_plan(base, run="cards")
+    assert only == ["products-cards"] and stage.endswith("-pairs-cards")
+    assert plan["widths"] == {"wide": [1920, 1440, 1024], "narrow": [390]}
+
+    plan, only, stage = e08_evidence.pairs_plan(base, run="menus")
+    assert only == ["e08-products-row-menu", "e08-products-card-menu"] and stage.endswith("-pairs-menus")
+    assert plan["widths"] == {"wide": [1440], "narrow": [390]}
+    assert set(only) <= {s["id"] for s in plan["surfaces"]}
+
+    plan, only, stage = e08_evidence.pairs_plan(base, run="boundary")
+    assert only == ["products-table", "products-cards"] and stage.endswith("-pairs-boundary")
+    assert plan["widths"] == {"wide": [1101, 1100, 761, 760], "narrow": []}
+    assert all(plan["heights"][str(w)] == 800 for w in (1101, 1100, 761, 760))
+    # Every height the runs need exists, and the E0 plan itself is untouched.
+    for run in e08_evidence.RUNS:
+        plan, _only, _stage = e08_evidence.pairs_plan(base, run=run)
+        assert all(str(w) in plan["heights"] for w in (*plan["widths"]["wide"], *plan["widths"]["narrow"]))
+    assert {s["id"] for s in base["surfaces"]} == surfaces and "1101" not in base["heights"]
+    assert next(s for s in base["surfaces"] if s["id"] == "products-table")["widths"] == "wide"
+
+
+def test_every_e08_pair_is_a_plain_recipe_on_both_sides():
+    ids = []
+    for recipe in e08_evidence.e08_recipes():
+        ids.append(recipe["id"])
+        assert capture_serve.side_rewrites("mockup", recipe["mockup"], str) == []
+        assert capture_serve.side_rewrites("app", recipe["app"], str) == []
+    assert ids == ["e08-products-row-menu", "e08-products-card-menu"]
+
+
+def test_an_e08_job_names_the_products():
+    mapping = {f"product:{n}": {"id": int(n) + 1000} for n in e08_evidence.PRODUCTS}
+
+    entities = e08_evidence.job_entities(mapping)
+    assert entities == {"products": {n: int(n) + 1000 for n in e08_evidence.PRODUCTS}}
+
+
+def test_the_e08_cover_fixture_is_a_real_png_of_its_size(tmp_path):
+    path = e08_evidence.fixture_png(tmp_path / "cover.png", (12, 8))
+
+    data = path.read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    width, height = struct.unpack(">II", data[16:24])
+    assert (width, height) == (12, 8)
+    # The picture decompresses to one filter byte and 12 RGB pixels per row.
+    idat = data[data.index(b"IDAT") + 4 : data.index(b"IEND") - 8]
+    assert len(zlib.decompress(idat)) == 8 * (1 + 12 * 3)
