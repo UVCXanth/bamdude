@@ -34,6 +34,22 @@ describe('AddPartRow', () => {
     expect(screen.getByLabelText('Part')).toHaveFocus();
   });
 
+  it('the focus goes back to the name once the field is enabled again — a disabled field takes no focus in a browser', async () => {
+    vi.spyOn(api, 'createProductPart').mockResolvedValue({} as never);
+    const focusCalls: boolean[] = [];
+    const original = HTMLInputElement.prototype.focus;
+    const spy = vi.spyOn(HTMLInputElement.prototype, 'focus').mockImplementation(function (this: HTMLInputElement, options?: FocusOptions) {
+      if (this.id === 'add-part-name') focusCalls.push(this.disabled);
+      return original.call(this, options);
+    });
+    render(<AddPartRow productId={7} canEdit />);
+    fireEvent.change(screen.getByLabelText('Part'), { target: { value: 'Hinge' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    await waitFor(() => expect(focusCalls.length).toBeGreaterThan(0));
+    expect(focusCalls.every((disabled) => !disabled)).toBe(true);
+    spy.mockRestore();
+  });
+
   it('without `onError` a refusal is a toast, and what was typed stays', async () => {
     vi.spyOn(api, 'createProductPart').mockRejectedValue(new ApiError('That name belongs to another part', 409));
     render(<AddPartRow productId={7} canEdit />);

@@ -209,6 +209,26 @@ describe('CompositionTab', () => {
       expect(within(cells[1]).getByText('in a file you cannot see')).toBeInTheDocument();
     });
 
+    it('sources that read alike — same model, plate and yield from several files — are one chip with the count and the files named', async () => {
+      // Measured on the stand (WS-13 E9 runner): 39 sliced files gave a part 27 identical chips.
+      const same = (plate_id: number, filename: string) => ({
+        ...sources.parts[0].sources[0],
+        plate_id,
+        library_file_id: plate_id,
+        filename,
+        recommended: plate_id === 21,
+      });
+      vi.spyOn(api, 'getProductSources').mockResolvedValue({
+        parts: [{ ...sources.parts[0], sources: [same(21, 'a.3mf'), same(22, 'b.3mf'), same(23, 'c.3mf'), sources.parts[0].sources[1]] }],
+      });
+      render(<Host />);
+      const cells = await within(row(1)).findAllByTestId('part-source');
+      expect(cells).toHaveLength(2);
+      expect(cells[0]).toHaveTextContent(/^X1Cpl\. 2 · ×2 · 3 files$/);
+      expect(cells[0]).toHaveAttribute('title', 'a.3mf, b.3mf, c.3mf');
+      expect(cells[1]).toHaveTextContent(/^P1Spl\. 1 · ×1/);
+    });
+
     it('a source not sliced says so by `sliced`, not by a missing model', async () => {
       render(<Host />);
       const [source] = await within(row(2)).findAllByTestId('part-source');

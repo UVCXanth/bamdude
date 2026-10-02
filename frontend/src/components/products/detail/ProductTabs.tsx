@@ -74,7 +74,12 @@ export function ProductTabs({
   }
 
   return (
-    <div>
+    // At least a screen tall under the header (C03, measured in the browser): a first visit
+    // mounts a skeleton, and a shorter document would clamp the page with the strip on screen —
+    // then, as the data comes, the browser would put the old offset back, strip hidden again.
+    // This tall, the strip can always come to rest under the header, and it is the top of the
+    // screen while the tab fills in below it.
+    <div data-testid="product-tabs" className="min-h-[calc(100dvh-var(--app-top,0px))]">
       <div ref={strip}>
         <WorkshopTabs
           idBase={idBase}

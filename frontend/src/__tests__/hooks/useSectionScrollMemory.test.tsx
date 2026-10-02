@@ -100,6 +100,20 @@ describe('useSectionScrollMemory', () => {
     expect(scrollTo).toHaveBeenLastCalledWith(0, 1200 - 300 - 56);
   });
 
+  it('a first visit judges the strip by where the page was BEFORE the switch — not after a shorter tab clamped it', () => {
+    // Measured in the browser (WS-13 E9 runner, 390 px): the next tab mounts as a skeleton, the
+    // document shrinks, the browser clamps scrollY and the strip lands on screen — then the data
+    // comes, the document grows, and the browser puts the old offset back, strip hidden again.
+    document.documentElement.style.setProperty('--app-top', '56px');
+    render(<Page />);
+    scrollWindow(1600);
+    // The clamp, as the browser does it: no scroll event reaches the page before the effect.
+    Object.defineProperty(window, 'scrollY', { value: 571, configurable: true });
+    setStripTop(538);
+    act(() => harness.select!('b'));
+    expect(scrollTo).toHaveBeenLastCalledWith(0, 571 + 538 - 56);
+  });
+
   it('reads a header height given in rem', () => {
     document.documentElement.style.setProperty('--app-top', '3.5rem');
     render(<Page />);

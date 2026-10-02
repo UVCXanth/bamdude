@@ -72,7 +72,7 @@ export function CardActionMenu({
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const coords = useAnchoredPosition(triggerRef, open, estimatedHeight);
+  const coords = useAnchoredPosition(triggerRef, open, estimatedHeight, panelRef);
 
   /** The items, in DOM order, as the roving keys see them. Read on every press
    *  rather than kept in state: what a card offers depends on permissions and
@@ -192,7 +192,10 @@ export function CardActionMenu({
                 position: 'fixed',
                 top: coords?.top,
                 bottom: coords?.bottom,
-                right: coords?.right ?? 0,
+                // Measured before it shows: a panel too wide to hang left of its
+                // trigger hangs from the trigger's left edge (`left`) instead.
+                right: coords ? coords.right : 0,
+                left: coords?.left,
                 maxHeight: coords?.maxHeight,
                 overflowY: 'auto',
                 width,

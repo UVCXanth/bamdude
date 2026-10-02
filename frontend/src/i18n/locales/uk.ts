@@ -6975,7 +6975,7 @@ export default {
     },
     header: {
       breadcrumb: 'Вироби',
-      addToOrder: 'Додати в замовлення',
+      addToOrder: 'До замовлення',
       edit: 'Редагувати',
     },
     // WS-13 E9: сторінка виробу — шапка, ліва панель, вкладки.
@@ -7050,6 +7050,10 @@ export default {
         plate: 'пл. {{index}} · ×{{yield}}',
         unsliced: 'не нарізано',
         hiddenSource: 'у файлі без доступу',
+        files_one: '{{count}} файл',
+        files_few: '{{count}} файли',
+        files_many: '{{count}} файлів',
+        files_other: '{{count}} файлу',
         noSource: 'немає плити — прив’яжіть або наріжте файл',
         sourcesFailed: 'Не вдалося завантажити плити деталей',
         printedEmpty: 'Друкованих деталей немає.',

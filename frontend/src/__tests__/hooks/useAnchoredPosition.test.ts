@@ -68,6 +68,36 @@ describe('useAnchoredPosition', () => {
   it('keeps the 8 px margin on the right', () => {
     expect(place(100).right).toBe(VIEWPORT.width - 1200);
   });
+
+  // WS-13 E9 (390 px): the product page's «⋮» wraps under the title, to the LEFT edge, and a
+  // panel hung by its right edge from there ran off the screen with every item cut.
+  function measured(triggerRight: number, panelWidth: number, viewport = 390) {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: viewport });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
+    const anchor = anchorAt(100, 28, triggerRight);
+    const panel = document.createElement('div');
+    Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: panelWidth });
+    const panelRef = { current: panel };
+    return renderHook(() => useAnchoredPosition(anchor, true, ESTIMATED_MENU_HEIGHT, panelRef)).result.current!;
+  }
+
+  it('a panel that would leave the screen on the left hangs from the trigger’s left edge instead', () => {
+    const coords = measured(46, 236);
+    expect(coords.right).toBeUndefined();
+    expect(coords.left).toBe(46 - 28);
+  });
+
+  it('a panel hung from the left is pulled back inside the right margin', () => {
+    // Too wide for either edge of the trigger: it still keeps the 8 px margin on the right.
+    const coords = measured(200, 300);
+    expect(coords.left).toBe(390 - 8 - 300);
+  });
+
+  it('a measured panel that fits keeps its right edge on the trigger’s', () => {
+    const coords = measured(380, 236);
+    expect(coords.left).toBeUndefined();
+    expect(coords.right).toBe(390 - 380);
+  });
 });
 
 describe('every "…" menu uses it', () => {
@@ -84,5 +114,10 @@ describe('every "…" menu uses it', () => {
     }
     // Two menus in the File Manager: the list row's and the grid card's.
     expect((fileManagerSource.match(/maxHeight: coords\?\.maxHeight/g) ?? []).length).toBe(2);
+  });
+
+  it('the card menu lets the hook measure its panel and takes either edge', () => {
+    expect(cardMenuSource).toMatch(/useAnchoredPosition\(triggerRef, open, estimatedHeight, panelRef\)/);
+    expect(cardMenuSource).toMatch(/left: coords\?\.left/);
   });
 });

@@ -113,7 +113,7 @@ export function ProductStock({ productId, canEdit, hasVariants = false }: Produc
                 {inKit.map((b) => (
                   <tr key={b.part_id} className="border-t border-bambu-dark-tertiary text-white">
                     <td className="p-2">{b.name}</td>
-                    <td className="p-2 tabular-nums">{b.qty_per_unit}</td>
+                    <td className="p-2 tabular-nums">{`× ${b.qty_per_unit}`}</td>
                     <td className="p-2 tabular-nums" data-testid={`stock-balance-${b.part_id}`}>
                       {b.balance}
                     </td>

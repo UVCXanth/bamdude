@@ -18,8 +18,12 @@ export interface AnchoredPosition {
    *  the trigger stays exact however tall the panel turns out to be. */
   bottom?: number;
   /** Distance from the RIGHT edge of the viewport, so the panel's right edge
-   *  lines up with the trigger's however wide the panel is. */
-  right: number;
+   *  lines up with the trigger's however wide the panel is. Unset when the panel
+   *  hangs from the left instead (`left`) — exactly one of the two is set. */
+  right?: number;
+  /** Viewport pixels from the left — set instead of `right` when a measured panel
+   *  would leave the screen on the left (a trigger near the left edge). */
+  left?: number;
   /** The room on the chosen side. A taller panel scrolls (`overflowY: auto`)
    *  instead of running off the screen and losing its first or last entry. */
   maxHeight: number;
@@ -46,6 +50,13 @@ export interface AnchoredPosition {
  * `maxHeight` caps it to that room. Callers pass `maxHeight` and `overflowY:
  * 'auto'` straight into the panel's style.
  *
+ * ⚠️ **Sideways too, when the panel can be measured.** A panel hangs by its right
+ * edge from the trigger's; given `panelRef`, the hook reads the panel's width and,
+ * when that would put its left edge past the margin (a trigger near the left edge
+ * — the product page's «⋮» wraps there at 390 px), hangs it from the trigger's
+ * LEFT edge instead, pulled back inside the right margin. Without `panelRef` the
+ * panel is never measured and always hangs by its right edge.
+ *
  * ⚠️ **`capture` on scroll.** A card grid or a file list scrolls in its own
  * container on some layouts, and a listener on `window` alone never hears that
  * scroll — the panel would sit where the trigger used to be.
@@ -59,6 +70,7 @@ export function useAnchoredPosition(
   anchorRef: RefObject<HTMLElement | null>,
   open: boolean,
   estimatedHeight: number = ESTIMATED_MENU_HEIGHT,
+  panelRef?: RefObject<HTMLElement | null>,
 ): AnchoredPosition | null {
   const [coords, setCoords] = useState<AnchoredPosition | null>(null);
 
@@ -71,15 +83,19 @@ export function useAnchoredPosition(
       const el = anchorRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
-      const right = Math.max(VIEWPORT_MARGIN, window.innerWidth - rect.right);
+      const width = panelRef?.current?.offsetWidth ?? 0;
+      const side =
+        width > 0 && rect.right - width < VIEWPORT_MARGIN
+          ? { left: Math.max(VIEWPORT_MARGIN, Math.min(rect.left, window.innerWidth - VIEWPORT_MARGIN - width)) }
+          : { right: Math.max(VIEWPORT_MARGIN, window.innerWidth - rect.right) };
       const roomBelow = window.innerHeight - VIEWPORT_MARGIN - (rect.bottom + TRIGGER_GAP);
       const roomAbove = rect.top - TRIGGER_GAP - VIEWPORT_MARGIN;
       if (roomBelow >= estimatedHeight || roomBelow >= roomAbove) {
-        setCoords({ top: rect.bottom + TRIGGER_GAP, right, maxHeight: Math.max(0, roomBelow) });
+        setCoords({ top: rect.bottom + TRIGGER_GAP, ...side, maxHeight: Math.max(0, roomBelow) });
       } else {
         setCoords({
           bottom: window.innerHeight - rect.top + TRIGGER_GAP,
-          right,
+          ...side,
           maxHeight: Math.max(0, roomAbove),
         });
       }
@@ -91,7 +107,7 @@ export function useAnchoredPosition(
       window.removeEventListener('resize', update);
       window.removeEventListener('scroll', update, true);
     };
-  }, [open, anchorRef, estimatedHeight]);
+  }, [open, anchorRef, estimatedHeight, panelRef]);
 
   return coords;
 }

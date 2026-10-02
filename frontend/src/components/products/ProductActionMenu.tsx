@@ -57,7 +57,9 @@ export function ProductActionMenu<P extends ProductRef>({
   const rereadAt = reread ? (firstAfter === -1 ? items.length : firstAfter) : -1;
 
   return (
-    <CardActionMenu label={t('common.actions')} testId={testId}>
+    // The page's menu carries «Re-read the card from a file…», longer than the catalog's 180 px:
+    // a fixed width clipped it and squeezed its icon away (WS-13 E9 runner, 1440).
+    <CardActionMenu label={t('common.actions')} testId={testId} width={reread ? 'max-content' : undefined}>
       {(close) => (
         <>
           {items.map((action, i) => [

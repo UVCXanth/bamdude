@@ -3,7 +3,7 @@ import { useIsMutating, useQuery, useQueryClient, type Mutation } from '@tanstac
 import { useTranslation } from 'react-i18next';
 import { ExternalLink, Pencil, Plus, Trash2 } from 'lucide-react';
 import { api } from '../../../api/client';
-import type { PartSourcesSummary, Product, ProductPart, ProductSources } from '../../../api/client';
+import type { PartSource, PartSourcesSummary, Product, ProductPart, ProductSources } from '../../../api/client';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useFocusWhenRowLeaves } from '../../../hooks/useFocusWhenRowLeaves';
 import { formatMoney } from '../../../utils/currency';
@@ -31,6 +31,24 @@ function byOrder(a: ProductPart, b: ProductPart): number {
 
 type SourcesState = { kind: 'loading' } | { kind: 'failed' } | { kind: 'data'; byPart: Map<number, PartSourcesSummary> };
 
+/**
+ * Sources that read alike — the same model (or «not sliced»), plate number and yield, the same
+ * visibility — in the server's order, each first occurrence keeping its place (the recommended
+ * one first). A product linked to a folder of near-identical exports would otherwise repeat one
+ * chip dozens of times (measured on the stand: 27 for one part); the chip says how many files
+ * give it and names them in its title.
+ */
+function groupSources(sources: PartSource[]): { source: PartSource; files: (string | null)[] }[] {
+  const groups = new Map<string, { source: PartSource; files: (string | null)[] }>();
+  for (const source of sources) {
+    const key = [source.sliced, source.printer_model, source.plate_index, source.yield, source.hidden].join('|');
+    const group = groups.get(key);
+    if (group) group.files.push(source.filename);
+    else groups.set(key, { source, files: [source.filename] });
+  }
+  return [...groups.values()];
+}
+
 /** «Plates that give it» of one printed part (D02, R10): the server's sources in its order. */
 function SourcesCell({ state, partId }: { state: SourcesState; partId: number }) {
   const { t } = useTranslation();
@@ -41,12 +59,12 @@ function SourcesCell({ state, partId }: { state: SourcesState; partId: number })
   if (sources.length === 0) return <span className={`text-xs ${AMBER}`}>{t('products.detail.composition.noSource')}</span>;
   return (
     <span className="flex flex-wrap gap-1.5">
-      {sources.map((source) => (
+      {groupSources(sources).map(({ source, files }) => (
         <span
           key={source.plate_id}
           data-testid="part-source"
           // A file the reader may not see is drawn the same, without its name (R10).
-          title={source.hidden ? t('products.detail.composition.hiddenSource') : (source.filename ?? undefined)}
+          title={source.hidden ? t('products.detail.composition.hiddenSource') : files.filter(Boolean).join(', ') || undefined}
           className="inline-flex items-center gap-1 text-xs text-bambu-gray-light"
         >
           {!source.sliced ? (
@@ -55,6 +73,7 @@ function SourcesCell({ state, partId }: { state: SourcesState; partId: number })
             source.printer_model && <ModelChip model={source.printer_model} />
           )}
           {t('products.detail.composition.plate', { index: source.plate_index, yield: source.yield })}
+          {files.length > 1 && ` · ${t('products.detail.composition.files', { count: files.length })}`}
           {source.hidden && <span className="sr-only">{t('products.detail.composition.hiddenSource')}</span>}
         </span>
       ))}
@@ -318,7 +337,7 @@ export function CompositionTab({
                     {printed.map((part) => (
                       <tr key={part.id} data-testid={`part-${part.id}-row`} className="border-b border-bambu-dark-tertiary last:border-0">
                         <td className={CELL}>
-                          <b className="font-medium text-white wrap-anywhere">{part.name}</b>
+                          <b className="font-medium text-white break-words">{part.name}</b>
                           {part.auto && (
                             <span className={`${CHIP} ml-1.5 bg-bambu-dark-tertiary text-bambu-gray`}>
                               {t('products.composition.fromFile')}
@@ -368,7 +387,7 @@ export function CompositionTab({
                   <tbody>
                     {purchased.map((part) => (
                       <tr key={part.id} data-testid={`part-${part.id}-row`} className="border-b border-bambu-dark-tertiary last:border-0">
-                        <td className={`${CELL} text-white wrap-anywhere`}>{part.name}</td>
+                        <td className={`${CELL} text-white break-words`}>{part.name}</td>
                         <td className={`${CELL} whitespace-nowrap tabular-nums`}>{perUnit(part)}</td>
                         <td className={CELL}>{variantOf(part)}</td>
                         <td className={`${CELL} whitespace-nowrap tabular-nums`} data-testid="part-price">

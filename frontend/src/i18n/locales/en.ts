@@ -6921,6 +6921,8 @@ export default {
         plate: 'pl. {{index}} · ×{{yield}}',
         unsliced: 'not sliced',
         hiddenSource: 'in a file you cannot see',
+        files_one: '{{count}} file',
+        files_other: '{{count}} files',
         noSource: 'no plate — link or slice a file',
         sourcesFailed: 'Could not load the parts’ plates',
         printedEmpty: 'No printed parts.',

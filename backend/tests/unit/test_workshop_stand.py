@@ -1546,3 +1546,129 @@ def test_the_e08_cover_fixture_is_a_real_png_of_its_size(tmp_path):
     # The picture decompresses to one filter byte and 12 RGB pixels per row.
     idat = data[data.index(b"IDAT") + 4 : data.index(b"IEND") - 8]
     assert len(zlib.decompress(idat)) == 8 * (1 + 12 * 3)
+
+
+# ---- WS-13 E9 detail runner (e09_detail.js): E4's harness around E9's scenarios ----
+
+import e09_evidence  # noqa: E402
+
+_E09_RUNNER = Path(__file__).resolve().parents[3] / "scripts" / "workshop_stand" / "e09_detail.js"
+
+
+@pytest.mark.parametrize(
+    ("case", "code", "at"),
+    [
+        ("e09_prep_read_throws", "read_network", "/products/1"),
+        ("prep_read_refused", "read_http_401", "/groups/"),
+    ],
+)
+def test_e09_a_failed_preparation_read_ends_the_run_incomplete_and_names_no_secret(case, code, at):
+    run = _e04_run(case, _E09_RUNNER)
+
+    records = _e04_records(run)
+    assert [r["id"] for r in records] == ["runner"]
+    assert records[0]["error"] == {"code": code, "stage": "prepare", "name": "RunnerFailure", "at": at}
+    assert _e04_done(run)["incomplete"] is True
+
+
+def test_e09_a_real_scenario_that_throws_fails_safely_and_closes_its_context():
+    run = _e04_run("e09_real_scenario_throws", _E09_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["id"] == "header@1440" and rec["pass"] is False
+    assert rec["error"] == {"code": "error", "stage": "header@1440", "name": "Error"}
+    assert _e04_done(run)["incomplete"] is False
+    _e04_closed_in_order(run)
+
+
+@pytest.mark.parametrize("case", ["route_fails_live", "scenario_reports_the_token", "open_outside_a_scenario"])
+def test_e09_keeps_the_e04_guards(case):
+    run = _e04_run(case, _E09_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is False
+    if case != "scenario_reports_the_token":  # that one opens no context
+        _e04_closed_in_order(run)
+
+
+def test_e09_a_record_carrying_the_media_token_is_replaced_by_a_failure():
+    run = _e04_run("scenario_reports_the_media_token", _E09_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["error"] == {"code": "secret_in_record", "stage": "echo"}
+    assert "mq7-media-marker-fake" not in json.dumps(run["posts"])
+
+
+def test_e09_a_get_is_answered_by_its_turn():
+    run = _e04_run("gets_by_turn", _E09_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is True
+    answered = [e for e in run["log"] if e.startswith("fulfill.")]
+    assert answered == ['fulfill.500.{"detail":"e09 runner"}', 'fulfill.200.{"n":1,"seen":2}']
+    _e04_closed_in_order(run)
+
+
+def test_e09_the_runner_declares_exactly_the_scenarios_the_manifest_expects():
+    run = _e04_run("declared", _E09_RUNNER)
+
+    assert _e04_records(run) == []
+    assert _e04_done(run)["declared"] == list(e09_evidence.DETAIL_SCENARIOS)
+
+
+def test_e09_a_full_run_is_judged_against_the_e09_scenarios():
+    ids = list(e09_evidence.DETAIL_SCENARIOS)
+    done = {"count": len(ids), "incomplete": False, "declared": ids}
+    records = [{"id": i} for i in ids]
+
+    verdict = e04_evidence.run_completeness(
+        finished=True, done=done, records=records, only="", expected=e09_evidence.DETAIL_SCENARIOS
+    )
+    assert verdict["complete"] is True
+    assert (
+        e04_evidence.run_completeness(
+            finished=True, done=done, records=records, only="", expected=e08_evidence.DETAIL_SCENARIOS
+        )["complete"]
+        is False
+    )
+
+
+def test_the_e09_pairs_open_each_tab_by_address_on_a_copy_of_the_plan():
+    base = json.loads((Path(e09_evidence.HERE) / "capture_plan.json").read_text(encoding="utf-8"))
+    surfaces = {s["id"]: s for s in base["surfaces"]}
+
+    plan, only, stage = e09_evidence.pairs_plan(base, run="")
+    assert stage == "e09-product-page-pairs"
+    assert only == list(e09_evidence.TABS)
+    assert plan["widths"] == {"wide": [1920, 1440, 1024], "narrow": [390]}
+    copied = {s["id"]: s for s in plan["surfaces"]}
+    for sid, tab in e09_evidence.TABS.items():
+        # The app opens the tab through the page's address; the mockup still clicks it.
+        assert "missing" not in copied[sid]["app"] and "reuse" not in copied[sid]["app"]
+        assert copied[sid]["app"]["route"] == "/products/{product:1}" + ("" if tab == "composition" else f"?tab={tab}")
+        assert copied[sid]["mockup"] == surfaces[sid]["mockup"]
+        assert copied[sid]["widths"] == "all"
+
+    plan, only, stage = e09_evidence.pairs_plan(base, run="boundary")
+    assert only == ["product-detail-composition"] and stage.endswith("-pairs-boundary")
+    assert plan["widths"] == {"wide": [1101, 1100, 761, 760], "narrow": []}
+    assert all(plan["heights"][str(w)] == 800 for w in (1101, 1100, 761, 760))
+
+    plan, only, stage = e09_evidence.pairs_plan(base, run="menus")
+    assert only == ["e09-product-menu"] and stage.endswith("-pairs-menus")
+    assert set(only) <= {s["id"] for s in plan["surfaces"]}
+
+    for run in e09_evidence.RUNS:
+        plan, _only, _stage = e09_evidence.pairs_plan(base, run=run)
+        assert all(str(w) in plan["heights"] for w in (*plan["widths"]["wide"], *plan["widths"]["narrow"]))
+    # The E0 plan itself is untouched.
+    assert all("missing" in surfaces[sid]["app"] for sid in e09_evidence.TABS)
+
+
+def test_every_e09_pair_is_a_plain_recipe_on_both_sides():
+    ids = []
+    for recipe in e09_evidence.e09_recipes():
+        ids.append(recipe["id"])
+        assert capture_serve.side_rewrites("mockup", recipe["mockup"], str) == []
+        assert capture_serve.side_rewrites("app", recipe["app"], str) == []
+    assert ids == ["e09-product-menu"]

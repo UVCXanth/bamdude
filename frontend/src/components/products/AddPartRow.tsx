@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Plus } from 'lucide-react';
@@ -46,6 +46,10 @@ export function AddPartRow({ productId, canEdit, onError }: AddPartRowProps) {
   const [url, setUrl] = useState('');
   const [remarks, setRemarks] = useState('');
   const nameField = useRef<HTMLInputElement>(null);
+  // The name takes the focus back after a part lands — once the field is enabled again: it
+  // is disabled while the request runs, and a browser does not focus a disabled field.
+  const focusName = useRef(false);
+  const [landed, setLanded] = useState(0);
 
   const add = useMutation({
     mutationKey: compositionMutationKey(productId),
@@ -70,12 +74,19 @@ export function AddPartRow({ productId, canEdit, onError }: AddPartRowProps) {
       setPrice('');
       setUrl('');
       setRemarks('');
-      nameField.current?.focus();
+      focusName.current = true;
+      setLanded((n) => n + 1);
     },
     // A name (or alias) another part already owns answers 409 — the server's
     // own sentence, with the form left holding what was typed.
     onError: (e: Error) => (onError ? onError(e.message) : showToast(e.message, 'error')),
   });
+
+  useEffect(() => {
+    if (add.isPending || !focusName.current) return;
+    focusName.current = false;
+    nameField.current?.focus();
+  }, [add.isPending, landed]);
 
   if (!canEdit) return null;
 
