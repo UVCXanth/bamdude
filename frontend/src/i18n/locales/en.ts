@@ -6778,10 +6778,11 @@ export default {
       menu: {
         edit: 'Edit',
         duplicate: 'Duplicate',
-        export: 'Export',
+        export: 'Export ZIP',
         toOrder: 'To order…',
         hide: 'Hide from catalog',
-        show: 'Show in catalog',
+        show: 'Return to catalog',
+        promote: 'Add to catalog…',
         delete: 'Delete',
       },
     },
@@ -6813,7 +6814,7 @@ export default {
     toast: {
       saved: 'Product saved',
       deleted: 'Product deleted',
-      duplicated: 'Product duplicated',
+      duplicated: 'Copy created — composition, variants and files copied, stock not',
       hidden: 'Product hidden from the catalog',
       shown: 'Product is back in the catalog',
       imported: 'Product imported',
@@ -6823,7 +6824,18 @@ export default {
     },
     confirm: {
       deleteTitle: 'Delete product?',
-      deleteBody: 'A product used by an order line cannot be deleted; hide it from the catalog instead.',
+      deleteBody:
+        'The product goes together with its composition of parts and its variants. The files in the library stay. A product an order line uses or with finished units in stock cannot be deleted — take it out of the catalog instead.',
+      promoteTitle: 'Add the product to the catalog?',
+      promoteBody: 'The one-off product becomes an ordinary catalog product. It cannot be turned back into a one-off.',
+      promoteActive: 'The catalog and the pickers will show it.',
+      promoteHidden: 'It stays hidden until you return it to the catalog.',
+      promoteYes: 'Add to catalog',
+    },
+    // WS-13 E8 F: the product's action host.
+    actions: {
+      copySuffix: '(copy)',
+      duplicating: 'Duplicate…',
     },
     page: {
       notFound: 'This product no longer exists.',

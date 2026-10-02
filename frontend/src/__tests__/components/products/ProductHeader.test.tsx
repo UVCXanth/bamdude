@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { useRef } from 'react';
 import { http, HttpResponse } from 'msw';
 import { QueryClient } from '@tanstack/react-query';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
@@ -18,6 +19,7 @@ import { server } from '../../mocks/server';
 import { api, ApiError } from '../../../api/client';
 import type { Product } from '../../../api/client';
 import { ProductHeader } from '../../../components/products/ProductHeader';
+import { useProductActions } from '../../../components/products/productActions/useProductActions';
 
 const product = {
   id: 7,
@@ -38,18 +40,20 @@ const product = {
   units_printed_total: 0,
 } as unknown as Product;
 
-const noop = () => {};
+// The header's buttons run the page's action host (WS-13 E8 F01) — mounted as the page does.
+function Header({ product: p }: { product: Product }) {
+  const heading = useRef<HTMLHeadingElement>(null);
+  const actions = useProductActions<Product>({ context: 'detail', onEdit: () => {}, fallbackFocusRef: heading });
+  return (
+    <>
+      <ProductHeader product={p} actions={actions} headingRef={heading} />
+      {actions.host}
+    </>
+  );
+}
 
 function mount(over: Partial<Product> = {}) {
-  render(
-    <ProductHeader
-      product={{ ...product, ...over }}
-      onEdit={noop}
-      onDuplicate={noop}
-      onDelete={noop}
-      onToggleActive={noop}
-    />,
-  );
+  render(<Header product={{ ...product, ...over }} />);
 }
 
 describe('ProductHeader — re-read from file', () => {

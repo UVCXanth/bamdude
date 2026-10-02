@@ -1,13 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { FileBox, Plus, Upload } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Product, ProductListItem } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
-import { useToast } from '../../contexts/ToastContext';
-import { invalidateAfterDelete, invalidateOrderViews, invalidateProductCatalog } from '../../utils/queryInvalidation';
 import { ProductCard } from '../../components/products/ProductCard';
 import { ProductsTable } from '../../components/products/ProductsTable';
 import { ListPageHeader } from '../../components/ListPageHeader';
@@ -21,16 +19,15 @@ import { useListUrlState } from '../../hooks/useListUrlState';
 import { parseListView, parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
 import { useSearchBox } from '../../hooks/useSearchBox';
 import { ProductCardDialog } from '../../components/products/ProductCardDialog';
-import { AddToOrderDialog } from '../../components/projects/add-to-order/AddToOrderDialog';
 import { FromFileDialog } from '../../components/products/FromFileDialog';
 import { ImportProductDialog } from '../../components/products/ImportProductDialog';
-import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
 import { CategoryPanel } from '../../components/products/CategoryPanel';
 import { CategoryManagerDialog } from '../../components/products/CategoryManagerDialog';
 import { CatalogFilters, type CatalogFilterValues } from '../../components/products/CatalogFilters';
 import { catalogStatus, catalogStock } from '../../components/products/catalogUrl';
 import { ProductsSkeleton } from '../../components/products/ProductsSkeleton';
+import { useProductActions } from '../../components/products/productActions/useProductActions';
 import { WorkshopPanel } from '../../components/workshop/WorkshopPanel';
 import { LoadFailedNote } from '../../components/workshop/LoadFailedNote';
 import { RefreshFailedNote } from '../../components/workshop/RefreshFailedNote';
@@ -57,8 +54,6 @@ import { answeredEmpty, listFigure, listState } from '../../utils/listState';
 export function ProductsPage() {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
-  const { showToast } = useToast();
-  const queryClient = useQueryClient();
   const navigate = useNavigate();
 
   const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
@@ -105,11 +100,13 @@ export function ProductsPage() {
   const [perPage, setPerPage] = usePersistedState<number>('bamdude-products-perPage', 24, parsePageSize);
   const { typed, setTyped, forget } = useSearchBox(q, setQ);
   const [editing, setEditing] = useState<ProductListItem | null | 'new'>(null);
+  // The action host of the whole page (WS-13 E8 F01) — the cards' and the rows' menus run
+  // through it; its dialogs outlive the rows they were opened from, and focus with nowhere
+  // to return lands on the page's heading.
+  const heading = useRef<HTMLHeadingElement>(null);
+  const actions = useProductActions<ProductListItem>({ context: 'catalog', onEdit: setEditing, fallbackFocusRef: heading });
   const [fromFile, setFromFile] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [deleting, setDeleting] = useState<ProductListItem | null>(null);
-  // «To order…» from a card or a row (WS-13 E5 G01): the dialog opens on that product.
-  const [addingToOrder, setAddingToOrder] = useState<ProductListItem | null>(null);
 
   // `active: false` would be a filter of its own ("only what is hidden"), which
   // «hidden» does not offer — on means "no filter", so the key is absent.
@@ -204,50 +201,6 @@ export function ProductsPage() {
       />
     ) : null;
 
-  const toggleActive = useMutation({
-    mutationFn: (product: ProductListItem) => api.updateProduct(product.id, { is_active: !product.is_active }),
-    onSuccess: (saved) => {
-      // ⚠️ The order views, which since Ruling 29 include the product keys: a
-      // product that leaves the catalog is still on the lines of every order
-      // that ordered it, and the cards and pickers reading those lines have to
-      // be told. Naming `['product', id]` and `['products']` again here was two
-      // refetches of each for one toggle.
-      invalidateOrderViews(queryClient);
-      showToast(saved.is_active ? t('products.toast.shown') : t('products.toast.hidden'));
-    },
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
-
-  const remove = useMutation({
-    mutationFn: (id: number) => api.deleteProduct(id),
-    // The LISTS, from the one place that decides which ones — an order card
-    // renders the deleted product's cover, so `['projects']` goes with
-    // `['products']` and neither site gets its own opinion about that. The id
-    // goes too: from a grid, the deleted product's own detail entry is a ghost
-    // nobody is watching — see `utils/queryInvalidation`.
-    onSuccess: (_res, id) => {
-      invalidateAfterDelete(queryClient, 'product', id);
-      showToast(t('products.toast.deleted'));
-      setDeleting(null);
-    },
-    // A product an order line uses answers 409 — the server's own sentence is
-    // what the toast says, and the grid is left exactly as it was.
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
-
-  const duplicate = useMutation({
-    mutationFn: (id: number) => api.duplicateProduct(id),
-    // ⚠️ No order view moves here, deliberately: the copy is a brand-new
-    // product that no order line names yet. Invalidating them would refetch
-    // every order on the way out of a page nobody is coming back to.
-    onSuccess: (saved) => {
-      invalidateProductCatalog(queryClient);
-      showToast(t('products.toast.duplicated'));
-      navigate(`/products/${saved.id}`);
-    },
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
-
   const openCreated = (created: Product) => {
     setFromFile(false);
     navigate(`/products/${created.id}`);
@@ -255,7 +208,7 @@ export function ProductsPage() {
 
   return (
     <div className="workshop p-4">
-      <ListPageHeader title={t('products.list.title')} subtitle={subtitle}>
+      <ListPageHeader title={t('products.list.title')} subtitle={subtitle} headingRef={heading}>
         <ListViewToggle value={view} options={views} onChange={setView} />
         {hasPermission('projects:create') && (
           <div className="flex items-center gap-2">
@@ -368,26 +321,14 @@ export function ProductsPage() {
                   products={products}
                   sort={sort}
                   onSortChange={setSort}
-                  onEdit={setEditing}
-                  onDuplicate={(p) => duplicate.mutate(p.id)}
-                  onToggleActive={(p) => toggleActive.mutate(p)}
-                  onDelete={setDeleting}
-                  onAddToOrder={setAddingToOrder}
+                  actions={actions}
                   footer={pageBar('card')}
                 />
               ) : (
                 <>
                   <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
                     {products.map((product) => (
-                      <ProductCard
-                        key={product.id}
-                        product={product}
-                        onEdit={setEditing}
-                        onDuplicate={(p) => duplicate.mutate(p.id)}
-                        onToggleActive={(p) => toggleActive.mutate(p)}
-                        onDelete={setDeleting}
-                        onAddToOrder={setAddingToOrder}
-                      />
+                      <ProductCard key={product.id} product={product} actions={actions} />
                     ))}
                   </div>
                   {total > 0 && <div className="mt-4">{pageBar('bare')}</div>}
@@ -415,24 +356,7 @@ export function ProductsPage() {
 
       {importing && <ImportProductDialog onClose={() => setImporting(false)} />}
 
-      {addingToOrder && (
-        <AddToOrderDialog
-          preselectProduct={{ id: addingToOrder.id, code: addingToOrder.code }}
-          onClose={() => setAddingToOrder(null)}
-        />
-      )}
-
-      {deleting && (
-        <ConfirmModal
-          title={t('products.confirm.deleteTitle')}
-          message={t('products.confirm.deleteBody')}
-          confirmText={t('common.delete')}
-          variant="danger"
-          isLoading={remove.isPending}
-          onConfirm={() => remove.mutate(deleting.id)}
-          onCancel={() => setDeleting(null)}
-        />
-      )}
+      {actions.host}
     </div>
   );
 }

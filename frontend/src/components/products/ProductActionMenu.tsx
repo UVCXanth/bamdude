@@ -1,120 +1,64 @@
 import { useTranslation } from 'react-i18next';
-import { ClipboardPlus, Copy, Download, Eye, EyeOff, Pencil, Trash2 } from 'lucide-react';
-import { api, ApiError } from '../../api/client';
-import type { ProductListItem } from '../../api/client';
-import { useAuth } from '../../contexts/AuthContext';
-import { useToast } from '../../contexts/ToastContext';
+import { BookPlus, ClipboardPlus, Copy, Download, Eye, EyeOff, Pencil, Trash2 } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { CardActionMenu, CardActionMenuItem } from '../CardActionMenu';
+import type { ProductAction, ProductActionsHost, ProductRef } from './productActions/useProductActions';
 
-export interface ProductActions {
-  onEdit: (product: ProductListItem) => void;
-  onDuplicate: (product: ProductListItem) => void;
-  onToggleActive: (product: ProductListItem) => void;
-  onDelete: (product: ProductListItem) => void;
-  /** «To order…» (WS-13 E5 G01) — only where the page can open the add-to-order dialog. */
-  onAddToOrder?: (product: ProductListItem) => void;
-}
+const ICON: Record<ProductAction, ReactNode> = {
+  edit: <Pencil className="w-4 h-4" />,
+  toOrder: <ClipboardPlus className="w-4 h-4" />,
+  duplicate: <Copy className="w-4 h-4" />,
+  export: <Download className="w-4 h-4" />,
+  hide: <EyeOff className="w-4 h-4" />,
+  show: <Eye className="w-4 h-4" />,
+  promote: <BookPlus className="w-4 h-4" />,
+  delete: <Trash2 className="w-4 h-4" />,
+};
+
+/** The actions that are one request with no dialog — while one runs, none of them is sent. */
+const REQUESTS: ReadonlySet<ProductAction> = new Set(['duplicate', 'export', 'hide', 'show']);
 
 /**
- * The one menu of a catalog product — the card and the table row both render
- * THIS, so the two views can never offer different actions for the same row.
+ * The one menu of a catalog product (WS-13 E8 F02) — the card and the table row both
+ * render THIS, and every item is the page's action host (`useProductActions`): which
+ * items a product offers to this user, what each does, and that a request still running
+ * makes its item say so and send nothing more.
  */
-export function ProductActionMenu({
+export function ProductActionMenu<P extends ProductRef>({
   product,
-  onEdit,
-  onDuplicate,
-  onToggleActive,
-  onDelete,
-  onAddToOrder,
+  actions,
   testId = 'product-menu',
-}: ProductActions & { product: ProductListItem; testId?: string }) {
+}: {
+  product: P;
+  actions: ProductActionsHost<P>;
+  testId?: string;
+}) {
   const { t } = useTranslation();
-  const { hasPermission } = useAuth();
-  const { showToast } = useToast();
-
-  // Not a mutation: nothing on this page changes, and a failed download must
-  // say so where the operator clicked rather than navigate anywhere.
-  const exportProduct = async () => {
-    try {
-      await api.downloadProductExport(product.id);
-    } catch (e) {
-      showToast(
-        e instanceof ApiError ? t('products.toast.exportFailed', { status: e.status }) : (e as Error).message,
-        'error',
-      );
-    }
+  const pending = actions.pending(product);
+  const label = (action: ProductAction) => {
+    if (action === 'duplicate' && pending === 'duplicate') return t('products.actions.duplicating');
+    return t(`products.card.menu.${action}`);
   };
 
   return (
     <CardActionMenu label={t('common.actions')} testId={testId}>
       {(close) => (
         <>
-          {hasPermission('projects:update') && (
+          {actions.available(product).map((action) => (
             <CardActionMenuItem
+              key={action}
+              danger={action === 'delete'}
+              // A request of this product's still running: the request items wait (F03, F04).
+              disabled={pending != null && REQUESTS.has(action)}
               onSelect={() => {
-                onEdit(product);
                 close();
+                actions.run(action, product);
               }}
             >
-              <Pencil className="w-4 h-4" />
-              {t('products.card.menu.edit')}
+              {ICON[action]}
+              {label(action)}
             </CardActionMenuItem>
-          )}
-          {hasPermission('projects:create') && (
-            <CardActionMenuItem
-              onSelect={() => {
-                onDuplicate(product);
-                close();
-              }}
-            >
-              <Copy className="w-4 h-4" />
-              {t('products.card.menu.duplicate')}
-            </CardActionMenuItem>
-          )}
-          {/* A catalog product that is listed: the dialog offers active products only. */}
-          {onAddToOrder && hasPermission('projects:update') && product.origin === 'catalog' && product.is_active && (
-            <CardActionMenuItem
-              onSelect={() => {
-                onAddToOrder(product);
-                close();
-              }}
-            >
-              <ClipboardPlus className="w-4 h-4" />
-              {t('products.card.menu.toOrder')}
-            </CardActionMenuItem>
-          )}
-          <CardActionMenuItem
-            onSelect={() => {
-              exportProduct();
-              close();
-            }}
-          >
-            <Download className="w-4 h-4" />
-            {t('products.card.menu.export')}
-          </CardActionMenuItem>
-          {hasPermission('projects:update') && (
-            <CardActionMenuItem
-              onSelect={() => {
-                onToggleActive(product);
-                close();
-              }}
-            >
-              {product.is_active ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              {product.is_active ? t('products.card.menu.hide') : t('products.card.menu.show')}
-            </CardActionMenuItem>
-          )}
-          {hasPermission('projects:delete') && (
-            <CardActionMenuItem
-              danger
-              onSelect={() => {
-                onDelete(product);
-                close();
-              }}
-            >
-              <Trash2 className="w-4 h-4" />
-              {t('products.card.menu.delete')}
-            </CardActionMenuItem>
-          )}
+          ))}
         </>
       )}
     </CardActionMenu>

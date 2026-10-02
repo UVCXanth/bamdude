@@ -6,12 +6,14 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { useRef } from 'react';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { render } from '../../utils';
 import { strayZeroTextNodes } from '../../domHelpers';
 import { api, ApiError } from '../../../api/client';
 import type { ProductListItem } from '../../../api/client';
 import { ProductCard } from '../../../components/products/ProductCard';
+import { useProductActions } from '../../../components/products/productActions/useProductActions';
 import { PRODUCT_ROW_DEFAULTS } from '../../wireDefaults';
 
 const base: ProductListItem = {
@@ -39,18 +41,20 @@ const base: ProductListItem = {
   models: [],
 };
 
-const noop = () => {};
+// The card's menu runs the page's action host (WS-13 E8 F01) — mounted here as a page would.
+function Card({ product }: { product: ProductListItem }) {
+  const heading = useRef<HTMLHeadingElement>(null);
+  const actions = useProductActions<ProductListItem>({ context: 'catalog', onEdit: () => {}, fallbackFocusRef: heading });
+  return (
+    <>
+      <ProductCard product={product} actions={actions} />
+      {actions.host}
+    </>
+  );
+}
 
 function mount(over: Partial<ProductListItem> = {}) {
-  render(
-    <ProductCard
-      product={{ ...base, ...over }}
-      onEdit={noop}
-      onDuplicate={noop}
-      onToggleActive={noop}
-      onDelete={noop}
-    />,
-  );
+  render(<Card product={{ ...base, ...over }} />);
 }
 
 describe('ProductCard code', () => {

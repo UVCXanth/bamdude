@@ -4,15 +4,13 @@ import { Package } from 'lucide-react';
 import { api } from '../../api/client';
 import type { ProductListItem } from '../../api/client';
 import { ProductActionMenu } from './ProductActionMenu';
+import type { ProductActionsHost } from './productActions/useProductActions';
 import { ProductStatusBadge } from './ProductStatusBadge';
 
 interface ProductCardProps {
   product: ProductListItem;
-  onEdit: (product: ProductListItem) => void;
-  onDuplicate: (product: ProductListItem) => void;
-  onToggleActive: (product: ProductListItem) => void;
-  onDelete: (product: ProductListItem) => void;
-  onAddToOrder?: (product: ProductListItem) => void;
+  /** The page's action host (WS-13 E8 F01) — the menu's items and what they do. */
+  actions: ProductActionsHost<ProductListItem>;
 }
 
 /**
@@ -38,7 +36,7 @@ interface ProductCardProps {
  * fix as `OrderCard`: the menu was a `<button>` inside an `<a>` and every item
  * had to undo the navigation its own click caused.
  */
-export function ProductCard({ product, onEdit, onDuplicate, onToggleActive, onDelete, onAddToOrder }: ProductCardProps) {
+export function ProductCard({ product, actions }: ProductCardProps) {
   const { t } = useTranslation();
 
   return (
@@ -74,14 +72,7 @@ export function ProductCard({ product, onEdit, onDuplicate, onToggleActive, onDe
             </div>
             {/* Above the overlay link, so the trigger is clickable at all. */}
             <div className="relative z-10 flex-shrink-0">
-              <ProductActionMenu
-                product={product}
-                onEdit={onEdit}
-                onDuplicate={onDuplicate}
-                onToggleActive={onToggleActive}
-                onAddToOrder={onAddToOrder}
-                onDelete={onDelete}
-              />
+              <ProductActionMenu product={product} actions={actions} />
             </div>
           </div>
 

@@ -1,11 +1,9 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
-import { api } from '../../api/client';
+import type { Product } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
-import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../../components/Button';
 import { ProductGallery } from '../../components/products/ProductGallery';
 import { ProductHeader } from '../../components/products/ProductHeader';
@@ -17,9 +15,7 @@ import { ProductAttachments } from '../../components/products/ProductAttachments
 import { LinkedFiles } from '../../components/products/LinkedFiles';
 import { ProductOrders } from '../../components/products/ProductOrders';
 import { ProductCardDialog } from '../../components/products/ProductCardDialog';
-import { ConfirmModal } from '../../components/ConfirmModal';
-import { AddToOrderDialog } from '../../components/projects/add-to-order/AddToOrderDialog';
-import { invalidateAfterDelete, invalidateOrderViews, invalidateProductCatalog } from '../../utils/queryInvalidation';
+import { useProductActions } from '../../components/products/productActions/useProductActions';
 import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 import { useProductDetail } from '../../hooks/useProductDetail';
 
@@ -31,96 +27,42 @@ import { useProductDetail } from '../../hooks/useProductDetail';
  * a slow plate walk never holds up the composition table.
  *
  * ⚠️ **A delete can be refused.** A product an order line uses answers 409, and
- * the operator is meant to take it out of the catalog instead — so the failure
- * is a toast over an untouched page, never a navigation away from a product
- * that still exists.
+ * the operator is meant to take it out of the catalog instead — so the refusal
+ * stays in the confirmation over an untouched page, never a navigation away from
+ * a product that still exists.
+ *
+ * The whole-product actions are the shared host's (WS-13 E8 F01, `context: 'detail'`):
+ * the header's buttons and the one-off banner run the catalog menu's own code.
  */
 export function ProductPage() {
   const { t } = useTranslation();
   const { id: idParam } = useParams<{ id: string }>();
   const id = Number(idParam);
   const { hasPermission } = useAuth();
-  const { showToast } = useToast();
-  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const forgetProduct = useForgetOnUnmount(['product', id]);
 
   const [editing, setEditing] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [adding, setAdding] = useState(false);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const actions = useProductActions<Product>({
+    context: 'detail',
+    onEdit: () => setEditing(true),
+    // ⚠️ The deleted product's entry goes when this page UNMOUNTS, not here: a
+    // `removeQueries` now would run while the page is still mounted (React has only
+    // scheduled the route change) and its own observer would refetch the product that
+    // was just deleted. Armed here, dropped on unmount — see `useForgetOnUnmount`.
+    // Without it a Back inside the 60 s `staleTime` renders the deleted product.
+    onDeleted: () => {
+      forgetProduct();
+      navigate('/products');
+    },
+    fallbackFocusRef: heading,
+  });
 
   // The shared hook owns this query's options — including the refresh toast.
   // A second `useQuery` on the same key anywhere (the card dialog that opens
   // over this page had one) takes them over: see `useProductDetail`.
   const { data: product, isLoading, isError, error } = useProductDetail(Number.isFinite(id) ? id : null);
-
-  // ⚠️ The order views go too. A product's NAME, its cover and whether it is
-  // in the catalog are all rendered on order cards and inside an order's
-  // lines, so a change here that stopped at `['products']` left every order
-  // view showing the old one until its own 60 s `staleTime` expired.
-  // ⚠️ ONE call: `['product', id]` and `['products']` are in `ORDER_VIEW_KEYS`
-  // since Ruling 29 (the shelf moves with an order's lines), so naming them
-  // here as well was two refetches of this very page for one save.
-  const invalidate = () => invalidateOrderViews(queryClient);
-
-  const toggleActive = useMutation({
-    // `is_active` is one of the two fields the server refuses as an explicit
-    // null (422), so the boolean is always sent.
-    mutationFn: (next: boolean) => api.updateProduct(id, { is_active: next }),
-    onSuccess: (saved) => {
-      invalidate();
-      showToast(saved.is_active ? t('products.toast.shown') : t('products.toast.hidden'));
-    },
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
-
-  const promote = useMutation({
-    mutationFn: () => api.updateProduct(id, { origin: 'catalog' }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['product', id] });
-      invalidateProductCatalog(queryClient);
-      showToast(t('products.toast.promoted'));
-    },
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
-
-  const duplicate = useMutation({
-    mutationFn: () => api.duplicateProduct(id),
-    // ⚠️ No order view moves here, deliberately — `ProductsPage`'s twin says
-    // the same: the copy is a brand-new product that no order line names yet.
-    // Invalidating them would refetch every order on the way out of a page
-    // nobody is coming back to.
-    onSuccess: (saved) => {
-      invalidateProductCatalog(queryClient);
-      showToast(t('products.toast.duplicated'));
-      navigate(`/products/${saved.id}`);
-    },
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
-
-  const remove = useMutation({
-    mutationFn: () => api.deleteProduct(id),
-    // ⚠️ The LISTS only — not `invalidate()`. Marking `['product', id]` stale
-    // asks TanStack to refetch a product that no longer exists while this page
-    // is still mounted, which lands a 404 in the query and can flash the error
-    // state over a page that is on its way out. `['projects']` goes with it:
-    // an order card renders this product's cover.
-    onSuccess: () => {
-      invalidateAfterDelete(queryClient, 'product');
-      showToast(t('products.toast.deleted'));
-      // ⚠️ The entry goes when this page UNMOUNTS, not on the next line: a
-      // `removeQueries` here would run while the page is still mounted (React
-      // has only scheduled the route change) and its own observer would refetch
-      // the product that was just deleted. Armed here, dropped on unmount — see
-      // `useForgetOnUnmount`. Without it a Back inside the 60 s `staleTime`
-      // renders the deleted product out of cache.
-      forgetProduct();
-      navigate('/products');
-    },
-    // A product an order line uses answers 409 — the server's own sentence is
-    // what the toast says, and the page is left exactly as it was.
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
 
   if (isLoading) {
     return (
@@ -178,23 +120,17 @@ export function ProductPage() {
           eye lands on is the picture above them. Outline correctness won
           because a document that opens at `<h2>` misreports the page's own
           name, which no visual ordering can repair. */}
-      <ProductHeader
-        product={product}
-        onEdit={() => setEditing(true)}
-        onDuplicate={() => duplicate.mutate()}
-        onDelete={() => setDeleting(true)}
-        onToggleActive={(next) => toggleActive.mutate(next)}
-        // A one-off product is added with its plate, from the order (spec
-        // workshop-add-to-order, rule 25) — the button is the catalog's.
-        // A listed catalog product only: the dialog offers active products (WS-13 E5 G01).
-        onAddToOrder={product.origin === 'catalog' && product.is_active && canEdit ? () => setAdding(true) : undefined}
-      />
+      {/* A one-off product is added with its plate, from the order (spec
+          workshop-add-to-order, rule 25) — «Add to order» is the catalog's, and the
+          host offers it to a listed catalog product only (WS-13 E5 G01). */}
+      <ProductHeader product={product} actions={actions} headingRef={heading} />
 
       {product.origin !== 'catalog' && (
         <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200" data-testid="product-adhoc-banner">
           <span>{t('products.page.adhocBanner')}</span>
-          {hasPermission('projects:update') && (
-            <Button size="sm" variant="secondary" onClick={() => promote.mutate()} disabled={promote.isPending}>
+          {/* R04: the same confirmation as the catalog menu's «Add to catalog…». */}
+          {actions.available(product).includes('promote') && (
+            <Button size="sm" variant="secondary" onClick={() => actions.run('promote', product)}>
               {t('products.page.promote')}
             </Button>
           )}
@@ -236,21 +172,7 @@ export function ProductPage() {
 
       {editing && <ProductCardDialog product={product} onClose={() => setEditing(false)} />}
 
-      {adding && (
-        <AddToOrderDialog preselectProduct={{ id: product.id, code: product.code }} onClose={() => setAdding(false)} />
-      )}
-
-      {deleting && (
-        <ConfirmModal
-          title={t('products.confirm.deleteTitle')}
-          message={t('products.confirm.deleteBody')}
-          confirmText={t('common.delete')}
-          variant="danger"
-          isLoading={remove.isPending}
-          onConfirm={() => remove.mutate()}
-          onCancel={() => setDeleting(false)}
-        />
-      )}
+      {actions.host}
     </div>
   );
 }

@@ -5,7 +5,8 @@ import { Package } from 'lucide-react';
 import { api } from '../../api/client';
 import type { ProductListItem } from '../../api/client';
 import { SortableHeader } from '../SortableHeader';
-import { ProductActionMenu, type ProductActions } from './ProductActionMenu';
+import { ProductActionMenu } from './ProductActionMenu';
+import type { ProductActionsHost } from './productActions/useProductActions';
 import { ProductStatusBadge } from './ProductStatusBadge';
 
 /**
@@ -21,9 +22,11 @@ export function ProductsTable({
   sort,
   onSortChange,
   footer,
-  ...actions
-}: ProductActions & {
+  actions,
+}: {
   products: ProductListItem[];
+  /** The page's action host (WS-13 E8 F01). */
+  actions: ProductActionsHost<ProductListItem>;
   /** The current `sort_by`, e.g. `name-asc`. */
   sort: string;
   onSortChange: (sortBy: string) => void;
@@ -86,7 +89,7 @@ export function ProductsTable({
                 <td className="p-2 text-right tabular-nums">{p.kits_available}</td>
                 <td className="p-2 text-bambu-gray">{p.is_active ? t('common.yes') : t('products.card.inactive')}</td>
                 <td className="p-2 text-right">
-                  <ProductActionMenu product={p} testId={`product-${p.id}-row-menu`} {...actions} />
+                  <ProductActionMenu product={p} testId={`product-${p.id}-row-menu`} actions={actions} />
                 </td>
               </tr>
             ))}

@@ -1,24 +1,24 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type Ref } from 'react';
 import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Copy, Download, ExternalLink, ListPlus, Loader2, Pencil, RefreshCw, Trash2 } from 'lucide-react';
-import { api, ApiError } from '../../api/client';
+import { api } from '../../api/client';
 import type { Product } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
 import { cardNotesText } from './cardNotes';
+import type { ProductActionsHost } from './productActions/useProductActions';
 import { invalidateOrderViews, invalidateProductFiles } from '../../utils/queryInvalidation';
 
 interface ProductHeaderProps {
   product: Product;
-  onEdit: () => void;
-  onDuplicate: () => void;
-  onDelete: () => void;
-  onToggleActive: (next: boolean) => void;
-  /** «Add to order» — passed only for a catalog product the viewer may add lines with. */
-  onAddToOrder?: () => void;
+  /** The page's action host (WS-13 E8 F01): every whole-product button runs through it —
+   *  the same rights, refusals and invalidations as the catalog's menu. */
+  actions: ProductActionsHost<Product>;
+  /** Where focus lands when a dialog's opener has gone (F09). */
+  headingRef?: Ref<HTMLHeadingElement>;
 }
 
 /** One provenance field, rendered only when the product carries it. */
@@ -50,20 +50,17 @@ function Fact({ label, value }: { label: string; value: string }) {
  * left alone, and they arrive as CODES because only this layer knows which
  * language the operator reads.
  */
-export function ProductHeader({
-  product,
-  onEdit,
-  onDuplicate,
-  onDelete,
-  onToggleActive,
-  onAddToOrder,
-}: ProductHeaderProps) {
+export function ProductHeader({ product, actions, headingRef }: ProductHeaderProps) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const canEdit = hasPermission('projects:update');
   const [rereadOpen, setRereadOpen] = useState(false);
+  const offered = actions.available(product);
+  // A request of this product's still running (duplicate, export, the catalog switch):
+  // the request buttons wait — one request at a time (F03, F04).
+  const pending = actions.pending(product);
 
   // ⚠️ Not `product.library_file_ids`, which carries only the DIRECT half:
   // `GET /library/files?product_id=` unions in the files of linked folders,
@@ -91,15 +88,6 @@ export function ProductHeader({
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [rereadOpen]);
-
-  const exportProduct = useMutation({
-    mutationFn: () => api.downloadProductExport(product.id),
-    onError: (e: Error) =>
-      showToast(
-        e instanceof ApiError ? t('products.toast.exportFailed', { status: e.status }) : e.message,
-        'error',
-      ),
-  });
 
   const reread = useMutation({
     mutationFn: (fileId: number) => api.rereadProductCard(product.id, fileId),
@@ -133,7 +121,13 @@ export function ProductHeader({
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0 space-y-2">
           <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-2xl font-semibold text-white">{product.name}</h1>
+            <h1
+              ref={headingRef}
+              tabIndex={headingRef ? -1 : undefined}
+              className="text-2xl font-semibold text-white outline-none"
+            >
+              {product.name}
+            </h1>
             {!product.is_active && (
               <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-200 dark:bg-gray-500/20 text-gray-600 dark:text-gray-400">
                 {t('products.header.hidden')}
@@ -146,8 +140,8 @@ export function ProductHeader({
             <input
               type="checkbox"
               checked={product.is_active}
-              disabled={!canEdit}
-              onChange={(e) => onToggleActive(e.target.checked)}
+              disabled={!canEdit || pending != null}
+              onChange={(e) => actions.run(e.target.checked ? 'show' : 'hide', product)}
               className="accent-bambu-green"
               aria-label={t('products.header.inCatalog')}
             />
@@ -179,34 +173,33 @@ export function ProductHeader({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {onAddToOrder && (
-            <Button onClick={onAddToOrder}>
+          {/* A listed catalog product only: the dialog offers active products (WS-13 E5 G01). */}
+          {offered.includes('toOrder') && (
+            <Button onClick={() => actions.run('toOrder', product)}>
               <ListPlus className="w-4 h-4" />
               {t('products.header.addToOrder')}
             </Button>
           )}
-          {canEdit && (
-            <Button variant="secondary" onClick={onEdit}>
+          {offered.includes('edit') && (
+            <Button variant="secondary" onClick={() => actions.run('edit', product)}>
               <Pencil className="w-4 h-4" />
               {t('products.header.edit')}
             </Button>
           )}
-          {hasPermission('projects:create') && (
-            <Button variant="secondary" onClick={onDuplicate}>
-              <Copy className="w-4 h-4" />
+          {offered.includes('duplicate') && (
+            <Button variant="secondary" onClick={() => actions.run('duplicate', product)} disabled={pending != null}>
+              {pending === 'duplicate' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Copy className="w-4 h-4" />}
               {t('products.header.duplicate')}
             </Button>
           )}
           {/* Reading a product is enough to take one away — the export carries
               nothing the page does not already show. */}
-          <Button variant="secondary" onClick={() => exportProduct.mutate()} disabled={exportProduct.isPending}>
-            {exportProduct.isPending ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Download className="w-4 h-4" />
-            )}
-            {t('products.header.export')}
-          </Button>
+          {offered.includes('export') && (
+            <Button variant="secondary" onClick={() => actions.run('export', product)} disabled={pending != null}>
+              {pending === 'export' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              {t('products.header.export')}
+            </Button>
+          )}
           {canEdit && (
             <div className="relative">
               {/* ⚠️ `haspopup` + `expanded` on the TRIGGER: the popup below
@@ -267,8 +260,8 @@ export function ProductHeader({
               )}
             </div>
           )}
-          {hasPermission('projects:delete') && (
-            <Button type="button" variant="secondary" onClick={onDelete}>
+          {offered.includes('delete') && (
+            <Button type="button" variant="secondary" onClick={() => actions.run('delete', product)}>
               <Trash2 className="w-4 h-4" />
               {t('products.header.delete')}
             </Button>

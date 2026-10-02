@@ -148,15 +148,16 @@ describe('ProductsPage', () => {
     expect(screen.getByText(/not in catalog/i)).toBeInTheDocument();
   });
 
-  it('a 409 on delete becomes a toast, not a crash', async () => {
+  it('a 409 on delete stays in the confirmation, as the server said it (WS-13 E8 F07)', async () => {
     localStorage.setItem('bamdude-products-view', 'cards'); // a test about the cards (WS-13 E2 B05)
     vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
     vi.spyOn(api, 'deleteProduct').mockRejectedValue(new Error('Product is used by an order line'));
     render(<ProductsPage />);
     fireEvent.click((await screen.findAllByTestId('product-menu'))[0]);
     fireEvent.click(await screen.findByRole('menuitem', { name: /delete/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /^delete$/i })); // ConfirmModal
-    expect(await screen.findByText(/used by an order line/i)).toBeInTheDocument();
+    const dialog = await screen.findByRole('dialog', { name: 'Delete product?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: /^delete$/i }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(/used by an order line/i);
     // The grid survives the failure.
     expect(screen.getByText('Flask')).toBeInTheDocument();
   });

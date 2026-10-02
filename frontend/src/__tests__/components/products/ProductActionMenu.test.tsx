@@ -1,12 +1,14 @@
 /**
- * The catalog menu's «To order…» (WS-13 E5 G01): a catalog, active product, for
- * somebody who may change orders — and only where the page can open the dialog.
+ * The catalog menu's «To order…» (WS-13 E5 G01, E8 F02): a catalog, active product, for
+ * somebody who may change orders — and the host opens the dialog on that product.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { useRef } from 'react';
 import { fireEvent, screen } from '@testing-library/react';
 import { render } from '../../utils';
 import type { Permission, ProductListItem } from '../../../api/client';
 import { ProductActionMenu } from '../../../components/products/ProductActionMenu';
+import { useProductActions } from '../../../components/products/productActions/useProductActions';
 import { PRODUCT_ROW_DEFAULTS } from '../../wireDefaults';
 
 const auth = vi.hoisted(() => ({ granted: new Set<string>() }));
@@ -17,6 +19,14 @@ vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
     useAuth: () => ({ ...actual.useAuth(), hasPermission: (p: Permission) => auth.granted.has(p) }),
   };
 });
+// The dialog itself is E5's; here only which product it opens on matters.
+vi.mock('../../../components/projects/add-to-order/AddToOrderDialog', () => ({
+  AddToOrderDialog: ({ preselectProduct }: { preselectProduct: { id: number; code: string } }) => (
+    <div role="dialog" aria-label="Add to order">
+      {preselectProduct.code}
+    </div>
+  ),
+}));
 
 const product: ProductListItem = {
   ...PRODUCT_ROW_DEFAULTS,
@@ -43,19 +53,19 @@ const product: ProductListItem = {
   models: [],
 };
 
-const noop = () => {};
-
-function open(over: Partial<ProductListItem> = {}, onAddToOrder: ((p: ProductListItem) => void) | null = noop) {
-  render(
-    <ProductActionMenu
-      product={{ ...product, ...over }}
-      onEdit={noop}
-      onDuplicate={noop}
-      onToggleActive={noop}
-      onDelete={noop}
-      onAddToOrder={onAddToOrder ?? undefined}
-    />,
+function Menu({ over }: { over: Partial<ProductListItem> }) {
+  const heading = useRef<HTMLHeadingElement>(null);
+  const actions = useProductActions<ProductListItem>({ context: 'catalog', onEdit: () => {}, fallbackFocusRef: heading });
+  return (
+    <>
+      <ProductActionMenu product={{ ...product, ...over }} actions={actions} />
+      {actions.host}
+    </>
   );
+}
+
+function open(over: Partial<ProductListItem> = {}) {
+  render(<Menu over={over} />);
   fireEvent.click(screen.getByRole('button', { name: 'Actions' }));
 }
 
@@ -64,14 +74,13 @@ describe('ProductActionMenu — To order…', () => {
     auth.granted = new Set(['projects:update']);
   });
 
-  it('opens the dialog for this product', () => {
-    const onAddToOrder = vi.fn();
-    open({}, onAddToOrder);
+  it('opens the dialog on this product', async () => {
+    open();
     fireEvent.click(screen.getByRole('menuitem', { name: 'To order…' }));
-    expect(onAddToOrder).toHaveBeenCalledWith(expect.objectContaining({ id: 4 }));
+    expect(await screen.findByRole('dialog', { name: 'Add to order' })).toHaveTextContent('PR-0004');
   });
 
-  it('is not offered for a hidden or one-off product', () => {
+  it('is not offered for a hidden product', () => {
     open({ is_active: false });
     expect(screen.queryByRole('menuitem', { name: 'To order…' })).not.toBeInTheDocument();
   });
@@ -84,11 +93,6 @@ describe('ProductActionMenu — To order…', () => {
   it('is not offered to somebody who may not change orders', () => {
     auth.granted = new Set();
     open();
-    expect(screen.queryByRole('menuitem', { name: 'To order…' })).not.toBeInTheDocument();
-  });
-
-  it('is not offered where the page cannot open the dialog', () => {
-    open({}, null);
     expect(screen.queryByRole('menuitem', { name: 'To order…' })).not.toBeInTheDocument();
   });
 });

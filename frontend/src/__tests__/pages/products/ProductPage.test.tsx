@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Routes, Route } from 'react-router';
 import { QueryClientProvider } from '@tanstack/react-query';
@@ -309,6 +309,10 @@ describe('ProductPage', () => {
     mountAt(9);
     expect(await screen.findByText(/one-off product/i)).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Add to catalogue' }));
+    // The banner asks first — the same confirmation as the catalog menu's (WS-13 E8 F06, R04).
+    const dialog = await screen.findByRole('dialog', { name: 'Add the product to the catalog?' });
+    expect(patched).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Add to catalog' }));
     await waitFor(() => expect(patched).toHaveBeenCalledWith({ origin: 'catalog' }));
   });
 
