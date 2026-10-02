@@ -6862,6 +6862,23 @@ export default {
       export: 'Export',
       delete: 'Delete',
     },
+    // WS-13 E9: the product page — header, side panel, tabs.
+    detail: {
+      breadcrumbLabel: 'Breadcrumbs',
+      menu: {
+        reread: 'Re-read the card from a file…',
+      },
+      reread: {
+        title: 'Re-read the card from a file',
+        body: 'Empty fields (description, designer, licence, model ID) are filled from the chosen 3MF; filled ones stay as they are. Attachments from this file are replaced; ones added by hand are not.',
+        files: 'Linked 3MF files',
+        loading: 'Loading files…',
+        loadFailed: 'Could not load the linked files.',
+        empty: 'None of the linked files is a 3MF you can see.',
+        gone: 'This file is no longer linked — pick another.',
+        submit: 'Re-read',
+      },
+    },
     composition: {
       title: 'Composition',
       printed: 'Printed parts',

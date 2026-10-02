@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { BookPlus, ClipboardPlus, Copy, Download, Eye, EyeOff, Pencil, Trash2 } from 'lucide-react';
+import { BookPlus, ClipboardPlus, Copy, Download, Eye, EyeOff, Pencil, RefreshCw, Trash2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { CardActionMenu, CardActionMenuItem } from '../CardActionMenu';
 import type { ProductAction, ProductActionsHost, ProductRef } from './productActions/useProductActions';
@@ -18,20 +18,31 @@ const ICON: Record<ProductAction, ReactNode> = {
 /** The actions that are one request with no dialog — while one runs, none of them is sent. */
 const REQUESTS: ReadonlySet<ProductAction> = new Set(['duplicate', 'export', 'hide', 'show']);
 
+/** The product page's own «Re-read…» goes before these (the mockup's order, WS-13 E9 B02). */
+const AFTER_REREAD: ReadonlySet<ProductAction> = new Set(['hide', 'show', 'promote', 'delete']);
+
 /**
  * The one menu of a catalog product (WS-13 E8 F02) — the card and the table row both
  * render THIS, and every item is the page's action host (`useProductActions`): which
  * items a product offers to this user, what each does, and that a request still running
  * makes its item say so and send nothing more.
+ *
+ * The product page (WS-13 E9 B02) shows «Edit» and «Add to order» as buttons, so its menu
+ * leaves them out (`exclude`), and adds its own «Re-read the card from a file…» (`reread`,
+ * given only to somebody who may change the product) after «Export ZIP».
  */
 export function ProductActionMenu<P extends ProductRef>({
   product,
   actions,
   testId = 'product-menu',
+  exclude = [],
+  reread,
 }: {
   product: P;
   actions: ProductActionsHost<P>;
   testId?: string;
+  exclude?: readonly ProductAction[];
+  reread?: () => void;
 }) {
   const { t } = useTranslation();
   const pending = actions.pending(product);
@@ -40,11 +51,28 @@ export function ProductActionMenu<P extends ProductRef>({
     return t(`products.card.menu.${action}`);
   };
 
+  const items = actions.available(product).filter((action) => !exclude.includes(action));
+  // Before the first of hide / show / promote / delete — or last, when none of them is offered.
+  const firstAfter = items.findIndex((action) => AFTER_REREAD.has(action));
+  const rereadAt = reread ? (firstAfter === -1 ? items.length : firstAfter) : -1;
+
   return (
     <CardActionMenu label={t('common.actions')} testId={testId}>
       {(close) => (
         <>
-          {actions.available(product).map((action) => (
+          {items.map((action, i) => [
+            i === rereadAt && reread && (
+              <CardActionMenuItem
+                key="reread"
+                onSelect={() => {
+                  close();
+                  reread();
+                }}
+              >
+                <RefreshCw className="w-4 h-4" />
+                {t('products.detail.menu.reread')}
+              </CardActionMenuItem>
+            ),
             <CardActionMenuItem
               key={action}
               danger={action === 'delete'}
@@ -57,8 +85,20 @@ export function ProductActionMenu<P extends ProductRef>({
             >
               {ICON[action]}
               {label(action)}
+            </CardActionMenuItem>,
+          ])}
+          {rereadAt === items.length && reread && (
+            <CardActionMenuItem
+              key="reread"
+              onSelect={() => {
+                close();
+                reread();
+              }}
+            >
+              <RefreshCw className="w-4 h-4" />
+              {t('products.detail.menu.reread')}
             </CardActionMenuItem>
-          ))}
+          )}
         </>
       )}
     </CardActionMenu>
