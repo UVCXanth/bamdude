@@ -25,9 +25,10 @@ export const TABLE_SORT_KEYS = ['name', 'printed_parts', 'finished'] as const;
  * Sorting is the SERVER's (`sort_by`): the rows are one page of many. Three headers
  * sort, as in the mockup — the name A→Z first, the printed parts and the finished stock
  * largest first (D02); printers and materials have no server key (PC5). `footer` (the
- * page bar) sits inside the same panel, outside the rows' horizontal scroll, which is the
- * table's own region at 760 and narrower (D04). Below 1024 the cells take 8 px instead of
- * 12: with 12 the six columns' minimum was 7 px wider than the results column at 768.
+ * page bar) sits inside the same panel, outside the rows' horizontal scroll — the table's own
+ * region, which scrolls at 760 and narrower and, when a name's words need it, at 761–1023
+ * (D04 as the owner decided at F6: below 1024 a name keeps its words whole). Below 1024 the
+ * cells take 8 px instead of 12, which keeps that scroll to a few pixels.
  */
 export function ProductsTable({
   products,
@@ -86,9 +87,10 @@ export function ProductsTable({
                   <div className="flex items-start gap-2.5">
                     <ProductThumb product={p} variant="table" />
                     <div className="min-w-0">
-                      {/* `wrap-anywhere`, not `break-words`: a table's minimum column width counts only
-                          `anywhere` break points — a file-stem name would widen the whole table. */}
-                      <Link to={`/products/${p.id}`} className="font-medium wrap-anywhere hover:underline">
+                      {/* From 1024 `wrap-anywhere`: a table's minimum column width counts only `anywhere`
+                          break points, and a file-stem name would widen the table. Below 1024 words stay
+                          whole (`break-words`, F6) and the table scrolls in its region if it must. */}
+                      <Link to={`/products/${p.id}`} className="font-medium wrap-anywhere max-[1024px]:break-words hover:underline">
                         {p.name}
                       </Link>{' '}
                       <ProductBadges product={p} />

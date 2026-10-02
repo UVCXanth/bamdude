@@ -6,7 +6,8 @@ import type { ProductListItem } from '../../../api/client';
  * the operator's SKU — both, never one standing in for the other (P11, WS-03) —
  * the version and, in the table, the category. The mockup's slot holds the SKU
  * alone (`—` without one, «no category»); the code is the app's. A long SKU breaks anywhere —
- * in a table only `anywhere` counts toward the column's minimum width.
+ * in a table only `anywhere` counts toward the column's minimum width — except in the table
+ * below 1024, where words stay whole (the owner's F6 call, as the product's name).
  */
 export function ProductIdentity({
   product,
@@ -22,7 +23,10 @@ export function ProductIdentity({
       ? [product.code, sku, product.version].filter(Boolean).join(' · ')
       : `${product.code} · ${sku}${product.version ? ` ${product.version}` : ''} · ${product.category?.name ?? t('products.row.noCategory')}`;
   return (
-    <small data-testid="product-identity" className="block font-mono text-xs text-bambu-gray wrap-anywhere">
+    <small
+      data-testid="product-identity"
+      className={`block font-mono text-xs text-bambu-gray wrap-anywhere${variant === 'table' ? ' max-[1024px]:break-words' : ''}`}
+    >
       {text}
     </small>
   );

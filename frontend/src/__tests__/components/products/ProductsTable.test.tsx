@@ -112,6 +112,14 @@ describe('ProductsTable — long names', () => {
     expect(screen.getByTestId('product-identity').className).toContain('wrap-anywhere');
   });
 
+  // The owner's F6 call (WS-13 E8 D04): below 1024 a name keeps its words whole — the table may
+  // scroll inside its own region there rather than break a word in the middle.
+  it('keeps the words of a name whole below 1024', () => {
+    render(<Table />);
+    expect(screen.getByRole('link', { name: 'Gear' }).className).toContain('max-[1024px]:break-words');
+    expect(screen.getByTestId('product-identity').className).toContain('max-[1024px]:break-words');
+  });
+
   // Final review 2 (D04): from 761 to 1023 the six columns fit with 8 px cells — 12 px left the
   // table 7 px wider than the results column at 768.
   it('D04 takes narrower cells below 1024, so the table fits from 761 up', () => {

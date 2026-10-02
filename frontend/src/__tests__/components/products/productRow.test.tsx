@@ -55,6 +55,8 @@ describe('product row parts', () => {
     render(<ProductIdentity product={product()} variant="card" />);
     expect(screen.getByTestId('product-identity')).toHaveTextContent('PR-0008 · EDU-08 · v1.0');
     expect(screen.getByTestId('product-identity')).not.toHaveTextContent('Models');
+    // Whole words below 1024 are the table's call (F6), not the card's.
+    expect(screen.getByTestId('product-identity').className).not.toContain('break-words');
   });
 
   it('B03 composition: printed and bought parts, plates, variants, active orders — only when there are any', () => {
