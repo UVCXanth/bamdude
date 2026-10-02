@@ -151,7 +151,7 @@ describe('ProductsPage', () => {
     expect(window.location.search).toBe('');
   });
 
-  it('shows the card figures and says nothing about a product no order uses', async () => {
+  it('draws the cards in the mockup grid, each with its picture or the tile (WS-13 E8 E01)', async () => {
     localStorage.setItem('bamdude-products-view', 'cards'); // a test about the cards (WS-13 E2 B05)
     vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
     render(<ProductsPage />);
@@ -159,10 +159,11 @@ describe('ProductsPage', () => {
     // `has_cover` decides per card: the effective cover for one, the neutral tile for the other.
     expect(screen.getAllByTestId('product-cover')).toHaveLength(1);
     expect(screen.getAllByTestId('product-cover-placeholder')).toHaveLength(1);
-    expect(screen.getByText(/in 3 orders/i)).toBeInTheDocument();
-    // `lines_count: 0` must not leak a bare "in 0 orders" row.
-    expect(screen.queryByText(/in 0 orders/i)).not.toBeInTheDocument();
+    // The orders are the table's to say (E03).
+    expect(screen.queryByText(/in 3 orders/i)).not.toBeInTheDocument();
     expect(screen.getByText(/not in catalog/i)).toBeInTheDocument();
+    const grid = screen.getByTestId('product-1-card').parentElement as HTMLElement;
+    expect(grid.className).toContain('grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))]');
   });
 
   it('a 409 on delete stays in the confirmation, as the server said it (WS-13 E8 F07)', async () => {

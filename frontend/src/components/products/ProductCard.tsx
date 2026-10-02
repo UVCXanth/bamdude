@@ -1,11 +1,14 @@
 import { Link } from 'react-router';
-import { useTranslation } from 'react-i18next';
-import { Package } from 'lucide-react';
-import { api } from '../../api/client';
 import type { ProductListItem } from '../../api/client';
 import { ProductActionMenu } from './ProductActionMenu';
 import type { ProductActionsHost } from './productActions/useProductActions';
-import { ProductStatusBadge } from './ProductStatusBadge';
+import { ProductBadges } from './productRow/ProductBadges';
+import { ProductComposition } from './productRow/ProductComposition';
+import { ProductIdentity } from './productRow/ProductIdentity';
+import { ProductMaterials } from './productRow/ProductMaterials';
+import { ProductModels } from './productRow/ProductModels';
+import { ProductStock } from './productRow/ProductStock';
+import { ProductThumb } from './productRow/ProductThumb';
 
 interface ProductCardProps {
   product: ProductListItem;
@@ -14,98 +17,56 @@ interface ProductCardProps {
 }
 
 /**
- * One product in the grid.
+ * One product in the grid — the mockup's vertical card (WS-13 E8 E01): the picture as
+ * a 120 px field across the card, the identity line with the menu, the name and its
+ * badges, the composition, the printer models with the colour swatches, and the stock in
+ * a footer under a rule. The card is a flex column with the footer pushed down, so the
+ * footers of one row line up. Every part is `productRow/`'s and draws the row's own
+ * fields; the active orders and the kits pill are not here — the table carries the one,
+ * the footer the other (E03).
  *
- * ⚠️ **The tile reads `has_cover`, never `cover_image_filename`.** `has_cover`
- * is the EFFECTIVE cover — the explicit column OR the first picture — and the
- * column is null for every product whose cover is that implicit default, which
- * is most of them. A card that asked the column would show the placeholder over
- * a product that plainly has a picture.
+ * ⚠️ **The tile reads `has_cover`, never `cover_image_filename`** (`ProductThumb`): the
+ * effective cover — the explicit column OR the first picture.
  *
- * A linked file's thumbnail is still NOT a stand-in: it would show one part of
- * a multi-file product as if it were the product.
- *
- * **The picture is shown whole** (`object-contain`): a plate thumbnail is square
- * (512×512), and the grid's cards are mostly narrow enough to stack, where a
- * `object-cover` strip 96 px tall cut it to a ribbon. Stacked, the picture gets
- * the 160 px the product page's own cover tile has; the placeholder takes the
- * same room so a row of cards lines up. The menu is `ProductActionMenu`, the
- * same one the table rows use.
- *
- * ⚠️ **The link is an OVERLAY, not the card's wrapper** — same trap and same
- * fix as `OrderCard`: the menu was a `<button>` inside an `<a>` and every item
- * had to undo the navigation its own click caused.
+ * ⚠️ **The link is an OVERLAY, not the card's wrapper** — same trap and same fix as
+ * `OrderCard`: the menu was a `<button>` inside an `<a>` and every item had to undo the
+ * navigation its own click caused. The menu and the swatches' tooltips sit above it
+ * (`relative z-10`).
  */
 export function ProductCard({ product, actions }: ProductCardProps) {
-  const { t } = useTranslation();
-
   return (
     <div
       data-testid={`product-${product.id}-card`}
-      className="relative @container rounded-xl bg-bambu-dark-secondary border border-bambu-dark-tertiary hover:border-bambu-green/50 overflow-hidden"
+      className="relative flex h-full flex-col rounded-xl bg-bambu-dark-secondary border border-bambu-dark-tertiary hover:border-bambu-green/50 overflow-hidden"
     >
-      <div className="p-4 flex gap-3 @max-[22rem]:flex-col">
-        {product.has_cover ? (
-          <img
-            data-testid="product-cover"
-            src={api.getProductCoverImageUrl(product.id)}
-            alt=""
-            className="w-20 h-20 @max-[22rem]:w-full @max-[22rem]:h-40 flex-shrink-0 rounded-lg object-contain bg-bambu-dark"
-          />
-        ) : (
-          <div
-            data-testid="product-cover-placeholder"
-            className="w-20 h-20 @max-[22rem]:w-full @max-[22rem]:h-40 flex-shrink-0 rounded-lg bg-bambu-dark flex items-center justify-center"
-          >
-            <Package className="w-7 h-7 text-bambu-gray" />
+      <div className="flex flex-1 flex-col p-4">
+        <div className="mb-3">
+          <ProductThumb product={product} variant="card" />
+        </div>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <ProductIdentity product={product} variant="card" />
           </div>
-        )}
-
-        <div className="flex-1 min-w-0 space-y-1.5">
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0">
-              <h3 className="font-semibold text-white truncate">{product.name}</h3>
-              <span className="block text-xs text-bambu-gray">
-                {product.code}
-                {product.sku && ` · ${product.sku}`}
-              </span>
-            </div>
-            {/* Above the overlay link, so the trigger is clickable at all. */}
-            <div className="relative z-10 flex-shrink-0">
-              <ProductActionMenu product={product} actions={actions} />
-            </div>
+          {/* Above the overlay link, so the trigger is clickable at all. */}
+          <div className="relative z-10 flex-shrink-0">
+            <ProductActionMenu product={product} actions={actions} />
           </div>
-
-          <ProductStatusBadge product={product} />
-
-          {!product.is_active && (
-            <span className="inline-block px-2 py-0.5 rounded-full text-xs bg-bambu-dark text-bambu-gray">
-              {t('products.card.inactive')}
-            </span>
-          )}
-
-          <p className="text-xs text-bambu-gray">
-            {t('products.card.parts', { count: product.parts_count })} ·{' '}
-            {t('products.card.plates', { count: product.plates_count })}
-          </p>
-
-          {/* `> 0`, never a bare `&&` on the number — `{0 && …}` renders the 0. */}
-          {product.lines_count > 0 && (
-            <p className="text-xs text-bambu-gray">{t('products.card.inOrders', { count: product.lines_count })}</p>
-          )}
-
-          {/* Free stock (pass 8). Shown ONLY when there is some: a badge reading
-              "0 kits in stock" on every product in the catalog is noise, and the
-              number comes free with the list response, so nothing is fetched to
-              decide. Same `> 0` guard and the same reason as above. */}
-          {product.kits_available > 0 && (
-            <span
-              data-testid="product-kits-badge"
-              className="inline-block px-2 py-0.5 rounded-full text-xs bg-bambu-green/15 text-bambu-green"
-            >
-              {t('stock.card.kits', { count: product.kits_available })}
-            </span>
-          )}
+        </div>
+        <h3 className="mt-1 text-base font-semibold text-white">
+          <span data-testid="product-name" className="break-words">
+            {product.name}
+          </span>{' '}
+          <ProductBadges product={product} />
+        </h3>
+        <div className="mt-1">
+          <ProductComposition product={product} variant="card" />
+        </div>
+        <div className="mt-2 mb-3 flex flex-wrap items-center gap-1.5">
+          <ProductModels product={product} />
+          <ProductMaterials product={product} variant="card" />
+        </div>
+        <div data-part="footer" className="mt-auto border-t border-bambu-dark-tertiary pt-2.5">
+          <ProductStock product={product} />
         </div>
       </div>
 

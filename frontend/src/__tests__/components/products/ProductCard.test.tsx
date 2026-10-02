@@ -7,7 +7,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { useRef } from 'react';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { strayZeroTextNodes } from '../../domHelpers';
 import { api, ApiError } from '../../../api/client';
@@ -57,51 +57,86 @@ function mount(over: Partial<ProductListItem> = {}) {
   render(<Card product={{ ...base, ...over }} />);
 }
 
-describe('ProductCard code', () => {
-  it('shows the product code under its name', () => {
-    mount();
-    expect(screen.getByText('PR-0004')).toBeInTheDocument();
-  });
-});
+// WS-13 E8 E: the mockup's vertical card — picture, identity and menu, name and badges,
+// composition, models and swatches, and the stock in a footer that lines up across a row.
+describe('ProductCard anatomy (WS-13 E8 E01–E04)', () => {
+  const full: Partial<ProductListItem> = {
+    sku: 'EDU-08',
+    version: 'v1.0',
+    status: 'draft',
+    printed_parts_count: 2,
+    plates_count: 2,
+    variant_group_names: ['Size'],
+    active_orders_count: 3,
+    lines_count: 3,
+    models: ['P1S'],
+    sliced: true,
+    colors: ['#1D1D1D'],
+    finished_available: 6,
+    kits_available: 4,
+  };
 
-describe('ProductCard cover', () => {
-  it('shows the whole picture: contain, and the stacked card gives it a 160 px band', () => {
-    // A square plate (512×512) cropped to a 96 px strip was the operator's
-    // complaint; the product page's own cover tile is 160 px and contained.
+  it('E01 stacks the parts top to bottom, in the mockup’s order', () => {
+    mount(full);
+    const card = screen.getByTestId('product-4-card');
+    const order = [
+      'product-cover-placeholder',
+      'product-identity',
+      'product-name',
+      'product-composition',
+      'product-models',
+      'product-materials',
+      'product-stock',
+    ].map((id) => within(card).getByTestId(id));
+    for (let i = 1; i < order.length; i += 1) {
+      expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    expect(within(card).getByTestId('product-identity')).toHaveTextContent('PR-0004 · EDU-08 · v1.0');
+    expect(within(card).getByTestId('product-name')).toHaveTextContent('Flask');
+    expect(within(card).getByText('Draft')).toBeInTheDocument();
+    expect(within(card).getByTestId('product-composition')).toHaveTextContent('2 parts · 2 plates · variants: Size');
+  });
+
+  it('E01 the picture is a 120 px field across the card, shown whole', () => {
     mount({ has_cover: true });
     const cover = screen.getByTestId('product-cover');
+    expect(cover.className).toContain('h-[120px]');
+    expect(cover.className).toContain('w-full');
     expect(cover.className).toContain('object-contain');
-    expect(cover.className).not.toContain('object-cover');
-    expect(cover.className).toContain('@max-[22rem]:h-40');
+    expect(cover).toHaveAttribute('src', expect.stringContaining('/products/4/cover-image'));
   });
 
-  it('the placeholder takes the same room as a cover, so the cards line up', () => {
-    mount();
-    const tile = screen.getByTestId('product-cover-placeholder');
-    expect(tile.className).toContain('w-20 h-20');
-    expect(tile.className).toContain('@max-[22rem]:h-40');
+  it('E01 the footer is the stock, under a rule, pushed to the bottom of the card', () => {
+    mount(full);
+    const card = screen.getByTestId('product-4-card');
+    expect(card.className).toContain('flex-col');
+    const footer = within(card).getByTestId('product-stock').closest('[data-part="footer"]') as HTMLElement;
+    expect(footer.className).toContain('mt-auto');
+    expect(footer.className).toContain('border-t');
+    expect(footer).toHaveTextContent('6 finished');
+    expect(footer).toHaveTextContent('4 part kits');
   });
 
-  it('renders the cover image when the product has one', () => {
-    mount({ has_cover: true });
-
-    expect(screen.getByTestId('product-cover')).toHaveAttribute(
-      'src',
-      expect.stringContaining('/products/4/cover-image'),
-    );
-    expect(screen.queryByTestId('product-cover-placeholder')).not.toBeInTheDocument();
+  it('E02 the whole card is a link named for the product; the menu and the swatches sit above it', () => {
+    mount(full);
+    const card = screen.getByTestId('product-4-card');
+    expect(within(card).getByRole('link', { name: 'Flask' })).toHaveAttribute('href', '/products/4');
+    expect(within(card).getByTestId('product-menu').closest('.z-10')).toBeTruthy();
+    expect((within(card).getByTestId('product-materials').querySelector('[data-swatch]') as HTMLElement).className).toContain('z-10');
   });
 
-  it('falls back to the neutral tile when it has none', () => {
-    mount();
-
-    expect(screen.getByTestId('product-cover-placeholder')).toBeInTheDocument();
-    expect(screen.queryByTestId('product-cover')).not.toBeInTheDocument();
+  it('E03 says nothing about orders or a kits pill — the table and the footer carry them', () => {
+    mount(full);
+    const card = screen.getByTestId('product-4-card');
+    expect(card).not.toHaveTextContent(/in 3 (active )?orders/);
+    expect(screen.queryByTestId('product-kits-badge')).not.toBeInTheDocument();
+    expect(strayZeroTextNodes(card)).toHaveLength(0);
   });
 
-  it('does not read the explicit column — an implicit cover is still a cover', () => {
-    mount({ has_cover: true, cover_image_filename: null });
-    expect(screen.getByTestId('product-cover')).toBeInTheDocument();
+  it('E04 a long name and a long SKU wrap inside the card', () => {
+    mount({ name: 'A'.repeat(120), sku: 'S'.repeat(80) });
+    expect(screen.getByTestId('product-name').className).toContain('break-words');
+    expect(screen.getByTestId('product-identity').className).toContain('break-words');
   });
 });
 
@@ -175,24 +210,5 @@ describe('ProductCard menu placement', () => {
 
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
-  });
-});
-
-describe('ProductCard free-stock badge', () => {
-  it('shows the kits the shelf can already make', () => {
-    // The number rides along on the LIST response, so nothing is fetched to
-    // decide — and the badge is the whole reading of it (pass 8, Decision 6).
-    mount({ kits_available: 3 });
-
-    expect(screen.getByTestId('product-kits-badge')).toHaveTextContent('3 kits in stock');
-  });
-
-  it('says nothing at all about an empty shelf', () => {
-    // Every product in the catalog would otherwise carry "0 kits in stock".
-    // ⚠️ `> 0`, never a bare `&&` on the number — `{0 && …}` renders the 0.
-    mount({ kits_available: 0 });
-
-    expect(screen.queryByTestId('product-kits-badge')).not.toBeInTheDocument();
-    expect(strayZeroTextNodes(screen.getByTestId('product-4-card'))).toHaveLength(0);
   });
 });

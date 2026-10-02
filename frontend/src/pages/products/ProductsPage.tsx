@@ -348,7 +348,8 @@ export function ProductsPage() {
                 />
               ) : (
                 <>
-                  <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
+                  {/* E01: never wider than the column at 390 — `min(260px, 100%)`. */}
+                  <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))]">
                     {products.map((product) => (
                       <ProductCard key={product.id} product={product} actions={actions} />
                     ))}

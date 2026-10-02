@@ -6746,13 +6746,6 @@ export default {
       adhoc: 'one-off',
     },
     card: {
-      inactive: 'not in catalog',
-      parts_one: '{{count}} part',
-      parts_other: '{{count}} parts',
-      plates_one: '{{count}} plate',
-      plates_other: '{{count}} plates',
-      inOrders_one: 'in {{count}} order',
-      inOrders_other: 'in {{count}} orders',
       reread: 'Re-read from file…',
       rereadNoFiles: 'Link a file to this product first, then re-read its card.',
       unitsPrintedTotal: 'Printed for orders',
@@ -7105,10 +7098,6 @@ export default {
       clampedFinished_one: 'Only {{count}} ready unit could be reserved — the shelf had no more.',
       clampedFinished_other: 'Only {{count}} ready units could be reserved — the shelf had no more.',
       split: 'from stock: ready {{ready}} · kits {{kits}}',
-    },
-    card: {
-      kits_one: '{{count}} kit in stock',
-      kits_other: '{{count}} kits in stock',
     },
     order: {
       fromStock: 'from stock {{n}}',
