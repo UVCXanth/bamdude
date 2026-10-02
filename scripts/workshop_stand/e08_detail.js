@@ -338,6 +338,26 @@ async (page, selftest = null) => {
       await new Promise((r) => setTimeout(r, 100));
     }
   };
+  // Words of the table's names and code lines that a line break cut in two — each word is a Range,
+  // and a word on two lines has rects on two tops (the owner's F6 call: below 1024 words stay whole).
+  const splitWords = (p) => p.evaluate(() => {
+    const split = [];
+    for (const el of document.querySelectorAll('table tbody td:first-child a, table tbody [data-testid="product-identity"]')) {
+      const node = el.firstChild && el.firstChild.nodeType === 3 ? el.firstChild : null;
+      if (!node) continue;
+      // A word is a run between spaces and hyphens: a break after a hyphen is a break, not a cut.
+      const re = /[^\s\-‐–—]+/g;
+      let m;
+      while ((m = re.exec(node.textContent))) {
+        const r = document.createRange();
+        r.setStart(node, m.index);
+        r.setEnd(node, m.index + m[0].length);
+        const tops = new Set([...r.getClientRects()].filter((q) => q.width > 0).map((q) => Math.round(q.top)));
+        if (tops.size > 1) split.push(m[0]);
+      }
+    }
+    return split;
+  });
   const box = (locator) => locator.evaluate((el) => { const r = el.getBoundingClientRect(); return { l: Math.round(r.left), t: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), b: Math.round(r.bottom), r: Math.round(r.right) }; });
   const nav = (p) => p.getByRole('navigation', { name: 'Категорії' });
   const entries = (p) => nav(p).locator('li > button').evaluateAll((bs) => bs.map((b) => ({
@@ -974,18 +994,21 @@ async (page, selftest = null) => {
       });
       const overflow = await docOverflow(p);
       const sticking = overflow > 0 ? await offenders(p) : [];
+      const split = await splitWords(p);
       const file = await shoot(p, `table@${w}`);
       await ctx.close();
-      // D04: no scroll of its own from 761 up (8 px cells below 1024 — final review 2); the 36 % share
-      // holds where the columns have room, from 1024 up; at 760 and below it scrolls in its region.
+      // D04 as the owner decided at F6 (2026-10-02): below 1024 a name keeps its words whole, so at
+      // 761–1023 the table may scroll inside its own region (8 px cells keep that to a few px); the page
+      // never widens; from 1024 up it fits with the first column's 36 %; at 760 and below it scrolls.
       const narrow = w <= 760;
       const between = w > 760 && w < 1024;
       return {
         recipe: { url: '/products', viewport: w },
         env: { viewport: [w, HEIGHTS[w]] },
-        measured: { headers, geo, overflow, sticking, errors },
+        measured: { headers, geo, overflow, sticking, split, errors },
         pass: JSON.stringify(headers) === JSON.stringify(HEADERS) && geo.region && geo.region.label === 'Каталог виробів' && geo.region.tab === 0 &&
-          (narrow ? geo.region.scroll > 0 : between ? geo.region.scroll <= 0 : geo.region.scroll <= 0 && Math.abs(geo.share - 36) <= 1.5) && overflow <= 0 && errors.length === 0,
+          (narrow ? geo.region.scroll > 0 : between ? geo.region.scroll >= 0 : geo.region.scroll <= 0 && Math.abs(geo.share - 36) <= 1.5) &&
+          split.length === 0 && overflow <= 0 && errors.length === 0,
         screenshots: [file],
       };
     });
@@ -1006,13 +1029,17 @@ async (page, selftest = null) => {
         return { scroll: region.scrollWidth - region.clientWidth };
       });
       const overflow = await docOverflow(p);
+      const split = await splitWords(p);
       const file = await shoot(p, `table-long@${w}`);
       await ctx.close();
+      // From 1024 the stem breaks inside its column and the table fits; below, words stay whole (F6),
+      // so the stem widens the table — inside its own region, never the page.
+      const wide = w >= 1024;
       return {
         recipe: { url: '/products', viewport: w, fixture: ['GET /products?page=…: product 1 named «Raspberry_Pi_4_Case_Bottom_with_Fan_Mount_and_Cable_Gland_v2_final» with a 47-letter SKU, and product 8 (rewritten)'] },
         env: { viewport: [w, HEIGHTS[w]] },
-        measured: { geo, overflow, errors },
-        pass: geo.scroll <= 0 && overflow <= 0 && errors.length === 0,
+        measured: { geo, overflow, split, errors },
+        pass: (wide ? geo.scroll <= 0 : geo.scroll >= 0 && split.length === 0) && overflow <= 0 && errors.length === 0,
         screenshots: [file],
       };
     });
