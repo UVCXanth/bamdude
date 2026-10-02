@@ -1677,8 +1677,9 @@ async (page, selftest = null) => {
         await catalog(p);
         e = await env(p);
         if (v === 'table') {
-          const unsliced = p.getByText('не нарізано').first();
-          const below = p.getByText('нижче мінімуму').first();
+          // In the cells — the filter's options «Не нарізано» / «Готових нижче мінімуму» carry the same words.
+          const unsliced = p.getByTestId('product-models').getByText('не нарізано', { exact: true }).first();
+          const below = p.getByTestId('product-stock').getByText('нижче мінімуму', { exact: true }).first();
           contrast.unsliced = (await unsliced.count()) ? await textContrast(unsliced) : null;
           contrast.below = (await below.count()) ? await textContrast(below) : null;
         }
