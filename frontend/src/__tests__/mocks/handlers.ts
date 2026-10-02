@@ -89,6 +89,9 @@ const mockPrinters = [
 ];
 
 export const handlers = [
+  http.get('/api/v1/projects/:id/part-progress', ({ params }) => HttpResponse.json({
+    order_id: Number(params.id), parts: [], unallocated: [],
+  })),
   // Scheduled drying: every printer card reads these two fleet-wide lists.
   http.get('/api/v1/scheduled-dryings', () => HttpResponse.json([])),
   http.get('/api/v1/drying-schedules', () => HttpResponse.json({ server_timezone: 'UTC', schedules: [] })),

@@ -11,6 +11,7 @@ import { OrderStageStepper } from './OrderStageStepper';
 import { CloseSuggestionBanner } from './CloseSuggestionBanner';
 import { OrderFigures } from './OrderFigures';
 import { OrderLinesTable } from './OrderLinesTable';
+import { OrderPartProgress } from './OrderPartProgress';
 import { PlanBlock } from './PlanBlock';
 import { OrderModal } from './OrderModal';
 import { OrderCover } from './OrderCover';
@@ -235,6 +236,8 @@ export function OrderView({
       />
 
       <OrderLinesTable order={order} canEdit={canEdit} />
+
+      <OrderPartProgress orderId={order.id} />
 
       <PlanBlock order={order} canEdit={canEdit} onDraftChanged={setPlanDraftChanged} />
 

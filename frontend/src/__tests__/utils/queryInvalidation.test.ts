@@ -38,6 +38,18 @@ function stale(qc: QueryClient, key: unknown[]) {
 }
 
 describe('invalidateOrderViews', () => {
+  it('refreshes part progress after stock, print or queue changes', () => {
+    const qc = new QueryClient();
+    seed(qc, [['order-part-progress', 5]]);
+    invalidateOrderViews(qc);
+    expect(stale(qc, ['order-part-progress', 5])).toBe(true);
+    qc.setQueryData(['order-part-progress', 5], {});
+    invalidateQueueViews(qc);
+    expect(stale(qc, ['order-part-progress', 5])).toBe(true);
+    qc.setQueryData(['order-part-progress', 5], {});
+    invalidateStock(qc);
+    expect(stale(qc, ['order-part-progress', 5])).toBe(true);
+  });
   it('marks every order view stale, detail keys included', () => {
     const qc = new QueryClient();
     seed(qc, [
@@ -119,6 +131,7 @@ describe('invalidateOrderViews', () => {
       'project-timeline',
       // spec workshop-order-queue: the order's queue section moves with the plan and the lines.
       'project-queue',
+      'order-part-progress',
       // spec 2026-09-06: the ETA is read off the plan, so it moves with it.
       'order-forecast',
       'orders-forecast',

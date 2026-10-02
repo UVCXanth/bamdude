@@ -57,6 +57,7 @@ export const ORDER_VIEW_KEYS = [
   // spec workshop-order-queue: the order's queue section — a plan enqueue, a
   // line change or a status change moves what the order has waiting.
   'project-queue',
+  'order-part-progress',
   'order-forecast', 'orders-forecast', // spec 2026-09-06: the ETA moves with the plan
   'order-filament', 'orders-filament', // spec 2026-09-07: the need moves with the plan
   'customers', // the customer tiles are computed from these orders
@@ -123,6 +124,7 @@ export function invalidateQueueViews(qc: QueryClient): void {
   // An order's queue section lists these very rows (spec workshop-order-queue);
   // the order's figures follow the section when its rows change (OrderQueue).
   qc.invalidateQueries({ queryKey: ['project-queue'] });
+  qc.invalidateQueries({ queryKey: ['order-part-progress'] });
 }
 
 /** A spool was written, used or synced: the shelf moved, and with it every «need vs shelf» figure. */
@@ -178,6 +180,7 @@ export function invalidateOrderCandidates(qc: QueryClient): void {
  * touched, and TanStack refetches only the mounted ones.
  */
 export const STOCK_KEYS: readonly (readonly string[])[] = [
+  ['order-part-progress'],
   ['stock-items'],
   ['stock-item'],
   ['stock-lookup'],

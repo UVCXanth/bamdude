@@ -159,6 +159,7 @@ function ProductsProbe({ onFetch }: { onFetch: () => void }) {
 describe('OrderPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.spyOn(api, 'getOrderPartProgress').mockResolvedValue({ order_id: 1, parts: [], unallocated: [] });
     auth.granted = null;
     // The page mounts `PlanBlock`, which fetches its own plan. These tests are
     // about the page's composition, not the plan — an empty one keeps the block
@@ -259,6 +260,11 @@ describe('OrderPage', () => {
 
     expect(await screen.findByTestId('plan-block')).toBeInTheDocument();
     await waitFor(() => expect(api.getOrderPlan).toHaveBeenCalledWith(1));
+    const lines = screen.getByRole('heading', { name: 'Lines' });
+    const progress = screen.getByRole('heading', { name: 'Part progress' });
+    const plan = screen.getByTestId('plan-block');
+    expect(lines.compareDocumentPosition(progress) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(progress.compareDocumentPosition(plan) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // The interim picker is gone with its button — the plan block is the only
     // way from this page into the queue.
     expect(screen.queryByTestId('line-10-print')).not.toBeInTheDocument();

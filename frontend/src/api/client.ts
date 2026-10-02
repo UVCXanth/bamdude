@@ -1769,8 +1769,12 @@ export type ProjectPriority = 'low' | 'normal' | 'high' | 'urgent';
 
 /**
  * One part of a product, counted against one order line. `need` is what the
- * line asks for, `usable` what has been printed and is not scrap, `surplus`
- * what was printed beyond the need — all server-computed, never derived here.
+ * line still needs to print after its stock allocation (not the full order BOM).
+ * `usable` is completed print output minus recorded defects; it is not a
+ * separate acceptance counter. `in_progress` counts expected PARTS, not runs.
+ * `remaining` follows the server's receipt rules and is not reduced by running
+ * prints. These figures do not expose per-part stock coverage or the allocation
+ * of individual archive/recipe contributions to this line.
  */
 export interface PartFigures {
   part_id: number;
@@ -1782,6 +1786,51 @@ export interface PartFigures {
   remaining: number;
   surplus: number;
 }
+
+export interface PartContribution {
+  source_kind: 'archive' | 'printer_queue' | 'auto_queue' | 'recipe';
+  source_id: number;
+  filename: string;
+  library_file_id: number | null;
+  recipe_id: number | null;
+  plate_index: number | null;
+  runs: number;
+  expected_qty: number | null;
+  completed_good_qty: number;
+  printing_qty: number;
+  queued_qty: number;
+  rejected_qty: number;
+}
+
+export interface OrderPartProgressRow {
+  order_line_id: number;
+  product_id: number;
+  product_name: string;
+  part_id: number;
+  part_name: string;
+  required_qty: number;
+  free_stock_qty: number;
+  allocated_stock_qty: number;
+  completed_good_qty: number;
+  printing_qty: number;
+  queued_qty: number;
+  rejected_qty: number;
+  secured_qty: number;
+  remaining_qty: number;
+  contributions: PartContribution[];
+}
+
+export interface OrderPartProgress {
+  order_id: number;
+  scope_limited?: boolean;
+  parts: OrderPartProgressRow[];
+  unallocated: (PartContribution & {
+    reason: 'ambiguous' | 'unallocated' | 'missing_part_rows' | 'missing_recipe';
+    part_name: string | null;
+    candidate_pairs: [number, number][];
+  })[];
+}
+
 
 /** `product` — kits of the product; `parts` — a set of its parts, quantity 1 for
  *  good (spec workshop-product-variants, rules 15–17). */
@@ -12161,6 +12210,7 @@ export const api = {
   getOrdersSummary: () => request<OrdersSummary>('/projects/summary'),
   getProjectsNavBadges: () => request<ProjectsNavBadges>('/projects/nav-badges'),
   getOrder: (id: number) => request<Order>(`/projects/${id}`),
+  getOrderPartProgress: (id: number) => request<OrderPartProgress>(`/projects/${id}/part-progress`),
   createOrder: (data: OrderCreate) =>
     request<Order>('/projects/', { method: 'POST', body: JSON.stringify(data) }),
   updateOrder: (id: number, data: OrderUpdate) =>

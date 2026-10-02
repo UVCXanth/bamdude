@@ -69,6 +69,7 @@ from backend.app.schemas.listing import (
     ProjectsNavBadges,
 )
 from backend.app.schemas.order_from_files import OrderFromFilesRequest
+from backend.app.schemas.order_part_progress import OrderPartProgressOut
 from backend.app.schemas.order_queue import OrderQueueOut, OrderQueuePrinting
 from backend.app.schemas.project import (
     PROJECT_PRIORITIES,
@@ -1120,6 +1121,21 @@ async def get_orders_filament(
         stock_unavailable=farm.stock_unavailable,
         assumptions=list(filament_needs.ASSUMPTIONS),
     )
+
+
+@router.get("/{project_id}/part-progress", response_model=OrderPartProgressOut)
+async def get_order_part_progress(
+    project_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    from backend.app.services.order_part_progress import order_part_progress
+
+    progress = await order_part_progress(db, project_id, key_printer_scope(request))
+    if progress is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return progress
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)

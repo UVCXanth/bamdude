@@ -10,6 +10,8 @@
 
 ### Added
 
+- **Orders show part progress between their lines and the print plan.** The collapsible view separates allocated and free stock, good completed output, expected parts printing and queued, and rejects. A stacked bar shows secured and incoming coverage against the full configured BOM; linked recipes and individual runs expand underneath each part. Ambiguous or unknown output stays separate instead of being assigned by guesswork. A read-only endpoint supplies these figures without changing planning or stock accounting.
+
 - **Home Assistant sensors can now watch printers and spool storage.** Bind numeric or binary entities to printers or storage locations, set per-binding alert rules and notifications, and inspect retained history. An optional printer rule holds queued starts while alerting; unavailable or stale HA readings release the hold. The same HA entity can serve several printers or locations independently.
 
 - **One Zigbee sensor can serve several printers, rooms and storage locations.** Each binding has its own display name, order, alert rules and notification switch. The device records one shared history, and removing one binding leaves the others in place. Existing single-target sensors are migrated automatically. Storage locations show both Zigbee and Home Assistant readings and let operators choose a primary temperature, humidity or battery reading for the compact inventory display. Optional sortable columns and spool-card readings show the conditions where a spool is stored.
