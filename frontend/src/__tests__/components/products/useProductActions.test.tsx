@@ -334,4 +334,56 @@ describe('useProductActions — focus after the row leaves', () => {
     rerender(<Harness products={[]} />);
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Products' })).toHaveFocus());
   });
+
+  // Codex E8-V02: the re-read is the server's — it may take longer than any limit we pick. The
+  // watch lasts as long as the row and the operator's focus on its trigger, not a number of seconds.
+  it('after a hide whose re-read takes longer than five seconds, the focus is on the heading', async () => {
+    vi.spyOn(api, 'updateProduct').mockResolvedValue({ ...flask, is_active: false } as never);
+    const { rerender } = render(<Harness products={[flask]} />);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1000);
+    openMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Hide from catalog' }));
+    await screen.findByText('Product hidden from the catalog');
+    expect(screen.getByTestId('menu-4')).toHaveFocus();
+    clock.mockReturnValue(60_000);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    });
+    rerender(<Harness products={[]} />);
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Products' })).toHaveFocus());
+  });
+
+  it('leaves a focus the operator moved elsewhere, and stops watching', async () => {
+    vi.spyOn(api, 'updateProduct').mockResolvedValue({ ...flask, is_active: false } as never);
+    const elsewhere = document.createElement('button');
+    elsewhere.textContent = 'Elsewhere';
+    document.body.append(elsewhere);
+    try {
+      const { rerender } = render(<Harness products={[flask]} />);
+      openMenu();
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Hide from catalog' }));
+      await screen.findByText('Product hidden from the catalog');
+      const disconnect = vi.spyOn(MutationObserver.prototype, 'disconnect');
+      act(() => elsewhere.focus());
+      expect(disconnect).toHaveBeenCalled();
+      rerender(<Harness products={[]} />);
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      expect(elsewhere).toHaveFocus();
+    } finally {
+      elsewhere.remove();
+    }
+  });
+
+  it('stops watching when the page goes', async () => {
+    vi.spyOn(api, 'updateProduct').mockResolvedValue({ ...flask, is_active: false } as never);
+    const { unmount } = render(<Harness products={[flask]} />);
+    openMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Hide from catalog' }));
+    await screen.findByText('Product hidden from the catalog');
+    const disconnect = vi.spyOn(MutationObserver.prototype, 'disconnect');
+    unmount();
+    expect(disconnect).toHaveBeenCalled();
+  });
 });

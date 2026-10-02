@@ -50,6 +50,19 @@ export function rewriteMediaSrcWithToken(
 
 const isMediaPath = (src: string) => !isCameraMediaPath(src);
 
+/**
+ * Whether the load error now being dispatched on *el* was answered by `useStreamTokenSync`
+ * with a retry into this same element (WS-13 E8-V01). Its listener runs first — in the
+ * capture phase on the document — so by the time the element's own `onError` reads `src`,
+ * that is already the retry's address, not the one that failed. A component that swaps a
+ * failed picture for a placeholder asks this first, and keeps the element on the page
+ * either way: a token refresh rewrites every `<img>` still there.
+ */
+export function mediaRetryStarted(el: HTMLImageElement | HTMLVideoElement): boolean {
+  const retried = el.dataset.mediaRetry;
+  return retried != null && retried === el.getAttribute('src');
+}
+
 // Tokens last 60 minutes; refresh a little before.
 const TOKEN_REFRESH_MS = 50 * 60 * 1000;
 
@@ -122,6 +135,8 @@ export function useStreamTokenSync() {
     const handleError = (event: Event) => {
       const el = event.target;
       if (!(el instanceof HTMLImageElement || el instanceof HTMLVideoElement)) return;
+      // The mark answers for ONE failure — this one, until it sets it again below.
+      delete el.dataset.mediaRetry;
 
       const src = el.getAttribute('src') || '';
       if (!src.includes('/api/v1/')) return;
@@ -135,6 +150,7 @@ export function useStreamTokenSync() {
         if (el.dataset.tokenStamped === token) return;
         el.dataset.tokenStamped = token;
         el.src = stampToken(src, token);
+        el.dataset.mediaRetry = el.getAttribute('src') ?? '';
         return;
       }
 

@@ -69,6 +69,9 @@ export function useProductActions<P extends ProductRef>({
   const opener = useRef<HTMLElement | null>(null);
   // A delete takes the row away: the heading gets the focus whatever the Modal gave back (F09).
   const toHeading = useRef(false);
+  // The one watch for a row an action may take away — ended by the next, and by the page going.
+  const rowWatch = useRef<(() => void) | null>(null);
+  useEffect(() => () => rowWatch.current?.(), []);
 
   const open = (next: Active<P>) => {
     if (opener.current == null) {
@@ -106,20 +109,31 @@ export function useProductActions<P extends ProductRef>({
   /**
    * After an action that can take the row off the page (a hide while hidden ones are not shown),
    * the trigger the menu gave focus back to may vanish with the re-read: once it has, and the
-   * focus fell to BODY, the heading takes it (F09). Bounded — the re-read answers or it does not.
+   * focus fell to BODY, the heading takes it (F09). The watch lasts as long as the row and the
+   * operator's focus on its trigger — never a number of seconds: the re-read is the server's and
+   * may take any time (E8-V02). It ends when the row leaves, when the operator moves the focus
+   * (theirs then), when another action starts its own, or when the page goes.
    */
   const keepFocusWhenRowLeaves = (trigger: Element | null) => {
-    if (!(trigger instanceof HTMLElement)) return;
-    const started = Date.now();
-    const timer = window.setInterval(() => {
+    rowWatch.current?.();
+    if (!(trigger instanceof HTMLElement) || !trigger.isConnected) return;
+    const stop = () => {
+      observer.disconnect();
+      document.removeEventListener('focusin', moved, true);
+      if (rowWatch.current === stop) rowWatch.current = null;
+    };
+    const moved = (e: FocusEvent) => {
+      if (e.target !== trigger) stop();
+    };
+    const observer = new MutationObserver(() => {
+      if (trigger.isConnected) return;
+      stop();
       const now = document.activeElement;
-      if (!trigger.isConnected && (now == null || now === document.body)) {
-        window.clearInterval(timer);
-        fallbackFocusRef.current?.focus();
-      } else if (Date.now() - started > 5000 || (now != null && now !== document.body && now !== trigger)) {
-        window.clearInterval(timer);
-      }
-    }, 100);
+      if (now == null || now === document.body) fallbackFocusRef.current?.focus();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    document.addEventListener('focusin', moved, true);
+    rowWatch.current = stop;
   };
 
   /** Runs one request for a product; a second one while it runs is not sent. */

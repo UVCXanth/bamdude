@@ -129,6 +129,13 @@ describe('product row parts', () => {
     expect(img.getAttribute('src')).toContain('/products/8/cover-image');
     fireEvent.error(img);
     expect(screen.getByTestId('product-cover-placeholder')).toBeInTheDocument();
+    // The <img> stays (hidden) for the shared token recovery to retry into (E8-V01); a load takes
+    // the placeholder away again.
+    expect(img).toBeInTheDocument();
+    expect(img).not.toBeVisible();
+    fireEvent.load(img);
+    expect(screen.queryByTestId('product-cover-placeholder')).not.toBeInTheDocument();
+    expect(img).toBeVisible();
     // The failure belonged to that product's picture — another product's is tried afresh.
     rerender(<ProductThumb product={product({ id: 9, has_cover: true })} variant="table" />);
     expect(screen.getByTestId('product-cover')).toBeInTheDocument();

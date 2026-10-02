@@ -25,7 +25,7 @@ import {
   setStreamToken,
   withMediaToken,
 } from '../../api/client';
-import { rewriteMediaSrcWithToken, useStreamTokenSync } from '../../hooks/useCameraStreamToken';
+import { mediaRetryStarted, rewriteMediaSrcWithToken, useStreamTokenSync } from '../../hooks/useCameraStreamToken';
 
 const auth = vi.hoisted(() => ({ canViewCamera: false }));
 
@@ -180,6 +180,31 @@ describe('useStreamTokenSync', () => {
     } finally {
       thumb.remove();
       snap.remove();
+    }
+  });
+
+  // WS-13 E8-V01: a component that swaps a failed picture for a placeholder must know whether
+  // this handler — which runs first, in the capture phase — already answered the failure with a
+  // retry into the same <img>; the src it then reads is the retry's, not the one that failed.
+  it('says which failed picture it answered with a retry, and only for that failure', async () => {
+    auth.canViewCamera = false;
+    vi.spyOn(api, 'getMediaToken').mockResolvedValue({ token: 'MEDIA' });
+    renderHook(() => useStreamTokenSync(), { wrapper });
+    await waitFor(() => expect(api.getArchiveThumbnail(5)).toContain('token=MEDIA'));
+    const img = document.createElement('img');
+    img.setAttribute('src', '/api/v1/archives/5/thumbnail');
+    document.body.append(img);
+    try {
+      expect(mediaRetryStarted(img)).toBe(false);
+      // Asked without its token: stamped — this failure is answered with a retry.
+      img.dispatchEvent(new Event('error'));
+      expect(img.getAttribute('src')).toBe('/api/v1/archives/5/thumbnail?token=MEDIA');
+      expect(mediaRetryStarted(img)).toBe(true);
+      // The retry failed too, with the current token: the token is refreshed, the picture is not retried.
+      img.dispatchEvent(new Event('error'));
+      expect(mediaRetryStarted(img)).toBe(false);
+    } finally {
+      img.remove();
     }
   });
 });

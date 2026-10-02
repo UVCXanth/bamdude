@@ -151,8 +151,10 @@ export function ProductsPage() {
   // «one-off» widen it, so an empty answer with only those is the catalog's own emptiness.
   const narrowed =
     q !== '' || [extra.category, extra.material, extra.color, extra.model, status, stock].some(Boolean);
-  // Every condition Reset clears (C05) — the widening ones too.
-  const condition = narrowed || hidden || adhoc;
+  // Every condition Reset clears (C05) — the widening ones too, and a readiness or stock the
+  // closed sets do not know: it filters nothing, but it is in the address (C04, E8-V03).
+  const unknownInUrl = (extra.status !== '' && status === '') || (extra.stock !== '' && stock === '');
+  const condition = narrowed || hidden || adhoc || unknownInUrl;
   const searchRef = useRef<HTMLInputElement>(null);
   const resetConditions = () => {
     forget();

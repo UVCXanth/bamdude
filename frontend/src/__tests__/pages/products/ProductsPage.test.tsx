@@ -449,8 +449,8 @@ describe('ProductsPage — the mockup page (WS-13 E8 C)', () => {
     const get = vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
     render(<ProductsPage />);
     await screen.findByText('Flask');
-    // An unknown readiness filters nothing, so it is no condition.
-    expect(screen.queryByRole('button', { name: 'Reset' })).not.toBeInTheDocument();
+    // An unknown readiness filters nothing, but it is in the address: Reset can take it away (E8-V03).
+    expect(screen.getByRole('button', { name: 'Reset' })).toBeInTheDocument();
     const entries = window.history.length;
     fireEvent.click(screen.getByRole('checkbox', { name: 'one-off' }));
     fireEvent.click(within(await screen.findByRole('navigation', { name: 'Categories' })).getByRole('button', { name: /^Hooks/ }));
@@ -641,4 +641,37 @@ describe('ProductsPage — an unknown sort key', () => {
     await screen.findByText('Flask');
     expect(screen.getByLabelText('Sort by')).toHaveValue('name');
   });
+});
+
+// Codex E8-V03: a readiness or stock the closed sets do not know filters nothing and is never sent
+// (C04) — but it is in the address, so Reset can take it away, alone or together, in one write.
+describe('ProductsPage — unknown readiness and stock', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    localStorage.clear();
+    vi.spyOn(api, 'getProductFacets').mockResolvedValue({ materials: [], colors: [], models: [] });
+    vi.spyOn(api, 'getProductCategories').mockResolvedValue([]);
+  });
+
+  it.each([['status=unexpected'], ['stock=unexpected'], ['status=unexpected&stock=unexpected']])(
+    '%s: Reset clears it in one write, keeping the sort and the view',
+    async (query) => {
+      window.history.pushState({}, '', `/products?${query}&sort=sku-asc`);
+      localStorage.setItem('bamdude-products-view', 'table');
+      const get = vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
+      render(<ProductsPage />);
+      await screen.findByText('Flask');
+      // Opening the link rewrites nothing, and the server is never asked with the unknown value.
+      expect(window.location.search).toBe(`?${query}&sort=sku-asc`);
+      for (const [args] of get.mock.calls) {
+        expect(args).not.toHaveProperty('status');
+        expect(args).not.toHaveProperty('stock');
+      }
+      const entries = window.history.length;
+      fireEvent.click(screen.getByRole('button', { name: /^Reset/ }));
+      await waitFor(() => expect(window.location.search).toBe('?sort=sku-asc'));
+      expect(window.history.length).toBe(entries);
+      expect(screen.getByRole('table')).toBeInTheDocument();
+    },
+  );
 });
