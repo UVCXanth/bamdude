@@ -219,7 +219,8 @@ export function ProductsPage() {
       <ListPageHeader title={t('products.list.title')} subtitle={subtitle} headingRef={heading}>
         <ListViewToggle value={view} options={views} onChange={setView} />
         {hasPermission('projects:create') && (
-          <div className="flex items-center gap-2">
+          // On a phone the three wrap rather than squeeze their labels onto two lines.
+          <div className="flex flex-wrap items-center gap-2 [&>button]:whitespace-nowrap">
             <Button variant="secondary" onClick={() => setFromFile(true)}>
               <FileBox className="w-4 h-4" />
               {t('products.list.fromFile')}

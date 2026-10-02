@@ -24,7 +24,8 @@ export interface CatalogFilterValues {
 }
 
 /**
- * The mockup's row of filters (WS-13 E8 C03): material, colour, printer model with
+ * The mockup's row of filters (WS-13 E8 C03) — full-size selects, as the mockup draws them:
+ * material, colour, printer model with
  * «not sliced», readiness, the four stock modes, «hidden», «one-off» and Reset. Every
  * one is a request parameter the page owns; the choices are what the catalog's
  * products carry (`GET /products/facets`, read by the page), so a filter never offers
@@ -58,8 +59,6 @@ export function CatalogFilters({
     tail?: ReactNode,
   ) => (
     <Select
-      tone="filter"
-      active={values[key] !== ''}
       aria-label={label}
       value={values[key]}
       onChange={(e) => onChange(key, e.target.value)}
@@ -92,9 +91,7 @@ export function CatalogFilters({
         <option value="none">{t('products.catalog.unsliced')}</option>,
       )}
       <Select
-        tone="filter"
-        active={values.status !== ''}
-        aria-label={t('products.catalog.readiness')}
+            aria-label={t('products.catalog.readiness')}
         value={values.status}
         onChange={(e) => onChange('status', catalogStatus(e.target.value))}
         className="min-w-0"
@@ -104,9 +101,7 @@ export function CatalogFilters({
         <option value="draft">{t('products.status.draft')}</option>
       </Select>
       <Select
-        tone="filter"
-        active={values.stock !== ''}
-        aria-label={t('products.catalog.stock')}
+            aria-label={t('products.catalog.stock')}
         value={values.stock}
         onChange={(e) => onChange('stock', catalogStock(e.target.value))}
         className="min-w-0"
