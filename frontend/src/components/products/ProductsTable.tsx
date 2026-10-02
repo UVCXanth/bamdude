@@ -26,7 +26,8 @@ export const TABLE_SORT_KEYS = ['name', 'printed_parts', 'finished'] as const;
  * sort, as in the mockup — the name A→Z first, the printed parts and the finished stock
  * largest first (D02); printers and materials have no server key (PC5). `footer` (the
  * page bar) sits inside the same panel, outside the rows' horizontal scroll, which is the
- * table's own region at 760 and narrower (D04).
+ * table's own region at 760 and narrower (D04). Below 1024 the cells take 8 px instead of
+ * 12: with 12 the six columns' minimum was 7 px wider than the results column at 768.
  */
 export function ProductsTable({
   products,
@@ -50,7 +51,7 @@ export function ProductsTable({
     <WorkshopPanel flush footer={footer}>
       <WorkshopTableScroll label={t('products.table.label')}>
         <table className="w-full text-sm">
-          <thead className="text-xs text-bambu-gray bg-bambu-dark-secondary [&_th]:px-3 [&_th]:py-2">
+          <thead className="text-xs text-bambu-gray bg-bambu-dark-secondary [&_th]:px-3 max-[1024px]:[&_th]:px-2 [&_th]:py-2">
             <tr>
               <SortableHeader
                 sortKey="name"
@@ -79,7 +80,7 @@ export function ProductsTable({
               <tr
                 key={p.id}
                 data-testid={`product-row-${p.id}`}
-                className="border-t border-bambu-dark-tertiary text-white align-top hover:bg-bambu-dark-tertiary/30 [&>td]:px-3 [&>td]:py-2.5"
+                className="border-t border-bambu-dark-tertiary text-white align-top hover:bg-bambu-dark-tertiary/30 [&>td]:px-3 max-[1024px]:[&>td]:px-2 [&>td]:py-2.5"
               >
                 <td>
                   <div className="flex items-start gap-2.5">

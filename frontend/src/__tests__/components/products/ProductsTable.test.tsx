@@ -111,4 +111,13 @@ describe('ProductsTable — long names', () => {
     expect(screen.getByRole('link', { name: 'Gear' }).className).toContain('wrap-anywhere');
     expect(screen.getByTestId('product-identity').className).toContain('wrap-anywhere');
   });
+
+  // Final review 2 (D04): from 761 to 1023 the six columns fit with 8 px cells — 12 px left the
+  // table 7 px wider than the results column at 768.
+  it('D04 takes narrower cells below 1024, so the table fits from 761 up', () => {
+    render(<Table />);
+    const table = screen.getByRole('table');
+    expect(table.querySelector('thead')!.className).toContain('max-[1024px]:[&_th]:px-2');
+    expect(screen.getByTestId('product-row-8').className).toContain('max-[1024px]:[&>td]:px-2');
+  });
 });
