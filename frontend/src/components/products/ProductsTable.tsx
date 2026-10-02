@@ -1,21 +1,32 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { Package } from 'lucide-react';
-import { api } from '../../api/client';
 import type { ProductListItem } from '../../api/client';
 import { SortableHeader } from '../SortableHeader';
+import { WorkshopPanel, WorkshopTableScroll } from '../workshop/WorkshopPanel';
 import { ProductActionMenu } from './ProductActionMenu';
 import type { ProductActionsHost } from './productActions/useProductActions';
-import { ProductStatusBadge } from './ProductStatusBadge';
+import { ProductBadges } from './productRow/ProductBadges';
+import { ProductComposition } from './productRow/ProductComposition';
+import { ProductIdentity } from './productRow/ProductIdentity';
+import { ProductMaterials } from './productRow/ProductMaterials';
+import { ProductModels } from './productRow/ProductModels';
+import { ProductStock } from './productRow/ProductStock';
+import { ProductThumb } from './productRow/ProductThumb';
+
+/** The keys the table's own headers sort by — every other key is named by the page's chip (D03). */
+export const TABLE_SORT_KEYS = ['name', 'printed_parts', 'finished'] as const;
 
 /**
- * The catalog as a table — the second view of the products page.
+ * The catalog as a table — the mockup's six columns (WS-13 E8 D01): product / SKU,
+ * composition, printers, material / colour, stock and the menu. Every cell is a part of
+ * `productRow/` and draws the row's own fields; nothing is counted here.
  *
- * Sorting is the SERVER's (`sort_by`): the rows are one page of many, and a
- * header that sorted only what is on screen would read as the whole catalog's
- * order while being one page's. The menu is the card's own `ProductActionMenu`.
- * `footer` (the page bar) is drawn inside the same card, under the rows.
+ * Sorting is the SERVER's (`sort_by`): the rows are one page of many. Three headers
+ * sort, as in the mockup — the name A→Z first, the printed parts and the finished stock
+ * largest first (D02); printers and materials have no server key (PC5). `footer` (the
+ * page bar) sits inside the same panel, outside the rows' horizontal scroll, which is the
+ * table's own region at 760 and narrower (D04).
  */
 export function ProductsTable({
   products,
@@ -33,70 +44,75 @@ export function ProductsTable({
   footer?: ReactNode;
 }) {
   const { t } = useTranslation();
+  const plain = (label: string) => <th className="font-normal text-left">{label}</th>;
 
   return (
-    <div className="rounded-xl border border-bambu-dark-tertiary overflow-hidden">
-      <div className="overflow-x-auto">
+    <WorkshopPanel flush footer={footer}>
+      <WorkshopTableScroll label={t('products.table.label')}>
         <table className="w-full text-sm">
-          <thead className="text-xs text-bambu-gray bg-bambu-dark-secondary">
+          <thead className="text-xs text-bambu-gray bg-bambu-dark-secondary [&_th]:px-3 [&_th]:py-2">
             <tr>
-              {/* Numbers read best largest-first; a name reads best A→Z. */}
-              <SortableHeader sortKey="name" label={t('products.table.name')} sort={sort} onSort={onSortChange} />
-              <SortableHeader sortKey="sku" label={t('products.table.sku')} sort={sort} onSort={onSortChange} />
-              <th className="font-normal p-2 text-left">{t('products.table.version')}</th>
-              <SortableHeader sortKey="category" label={t('products.table.category')} sort={sort} onSort={onSortChange} />
-              <SortableHeader sortKey="status" label={t('products.table.status')} sort={sort} onSort={onSortChange} />
-              <SortableHeader sortKey="parts" label={t('products.table.parts')} sort={sort} onSort={onSortChange} descFirst align="right" />
-              <SortableHeader sortKey="plates" label={t('products.table.plates')} sort={sort} onSort={onSortChange} descFirst align="right" />
-              <SortableHeader sortKey="orders" label={t('products.table.orders')} sort={sort} onSort={onSortChange} descFirst align="right" />
-              <SortableHeader sortKey="kits" label={t('products.table.kits')} sort={sort} onSort={onSortChange} descFirst align="right" />
-              <th className="font-normal p-2 text-left">{t('products.table.catalog')}</th>
-              <th className="p-2" aria-label={t('common.actions')} />
+              <SortableHeader
+                sortKey="name"
+                label={t('products.table.product')}
+                sort={sort}
+                onSort={onSortChange}
+                className="w-[36%]"
+              />
+              <SortableHeader
+                sortKey="printed_parts"
+                label={t('products.table.composition')}
+                sort={sort}
+                onSort={onSortChange}
+                descFirst
+              />
+              {plain(t('products.table.printers'))}
+              {plain(t('products.table.materialColour'))}
+              <SortableHeader sortKey="finished" label={t('products.table.stock')} sort={sort} onSort={onSortChange} descFirst />
+              <th className="w-[1%]" aria-label={t('common.actions')}>
+                <span className="sr-only">{t('common.actions')}</span>
+              </th>
             </tr>
           </thead>
           <tbody>
             {products.map((p) => (
-              <tr key={p.id} className="border-t border-bambu-dark-tertiary text-white">
-                <td className="p-2">
-                  <Link to={`/products/${p.id}`} className="flex items-center gap-2 hover:underline">
-                    {p.has_cover ? (
-                      <img
-                        data-testid="product-cover"
-                        src={api.getProductCoverImageUrl(p.id)}
-                        alt=""
-                        className="w-9 h-9 flex-shrink-0 rounded object-contain bg-bambu-dark"
-                      />
-                    ) : (
-                      <span className="w-9 h-9 flex-shrink-0 rounded bg-bambu-dark flex items-center justify-center">
-                        <Package className="w-4 h-4 text-bambu-gray" />
-                      </span>
-                    )}
-                    <span className="min-w-0">
-                      <span className="block truncate">{p.name}</span>
-                      <span className="block text-xs text-bambu-gray">{p.code}</span>
-                    </span>
-                  </Link>
+              <tr
+                key={p.id}
+                data-testid={`product-row-${p.id}`}
+                className="border-t border-bambu-dark-tertiary text-white align-top hover:bg-bambu-dark-tertiary/30 [&>td]:px-3 [&>td]:py-2.5"
+              >
+                <td>
+                  <div className="flex items-start gap-2.5">
+                    <ProductThumb product={p} variant="table" />
+                    <div className="min-w-0">
+                      <Link to={`/products/${p.id}`} className="font-medium break-words hover:underline">
+                        {p.name}
+                      </Link>{' '}
+                      <ProductBadges product={p} />
+                      <ProductIdentity product={p} variant="table" />
+                    </div>
+                  </div>
                 </td>
-                <td className="p-2 whitespace-nowrap">{p.sku ?? ''}</td>
-                <td className="p-2 text-bambu-gray">{p.version ?? ''}</td>
-                <td className="p-2">{p.category?.name ?? ''}</td>
-                <td className="p-2 whitespace-nowrap">
-                  <ProductStatusBadge product={p} showReady />
+                <td>
+                  <ProductComposition product={p} variant="table" />
                 </td>
-                <td className="p-2 text-right tabular-nums">{p.parts_count}</td>
-                <td className="p-2 text-right tabular-nums">{p.plates_count}</td>
-                <td className="p-2 text-right tabular-nums">{p.lines_count}</td>
-                <td className="p-2 text-right tabular-nums">{p.kits_available}</td>
-                <td className="p-2 text-bambu-gray">{p.is_active ? t('common.yes') : t('products.card.inactive')}</td>
-                <td className="p-2 text-right">
+                <td>
+                  <ProductModels product={p} />
+                </td>
+                <td>
+                  <ProductMaterials product={p} variant="table" />
+                </td>
+                <td>
+                  <ProductStock product={p} />
+                </td>
+                <td className="w-[1%]">
                   <ProductActionMenu product={p} testId={`product-${p.id}-row-menu`} actions={actions} />
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-      </div>
-      {footer}
-    </div>
+      </WorkshopTableScroll>
+    </WorkshopPanel>
   );
 }

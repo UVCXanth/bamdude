@@ -14,10 +14,27 @@ import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { ProductListItem } from '../../../api/client';
 import { ProductsPage } from '../../../pages/products/ProductsPage';
+import { PRODUCT_ROW_DEFAULTS } from '../../wireDefaults';
 
+// Every field the server sends with a row (E1) — the parts of a row read them all.
+const wire = {
+  ...PRODUCT_ROW_DEFAULTS,
+  sku: null,
+  version: null,
+  category: null,
+  status: 'ready',
+  origin: 'catalog',
+  origin_file_id: null,
+  origin_plate_index: null,
+  finished_available: 0,
+  materials: [],
+  colors: [],
+  models: [],
+  sliced: true,
+};
 const rows = [
-  { id: 1, name: 'Flask', is_active: true, cover_image_filename: null, has_cover: true, parts_count: 2, plates_count: 1, lines_count: 3, kits_available: 0 },
-  { id: 2, name: 'Old lid', is_active: false, cover_image_filename: null, has_cover: false, parts_count: 1, plates_count: 1, lines_count: 0, kits_available: 0 },
+  { ...wire, id: 1, code: 'PR-0001', name: 'Flask', is_active: true, cover_image_filename: null, has_cover: true, parts_count: 2, plates_count: 1, lines_count: 3, kits_available: 0 },
+  { ...wire, id: 2, code: 'PR-0002', name: 'Old lid', is_active: false, cover_image_filename: null, has_cover: false, parts_count: 1, plates_count: 1, lines_count: 0, kits_available: 0 },
 ];
 
 const pageOf = (items: unknown[], meta: Partial<{ total: number; current_page: number; per_page: number; last_page: number }> = {}) => ({
@@ -116,9 +133,9 @@ describe('ProductsPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Table' }));
     expect(await screen.findByRole('columnheader', { name: /Product/ })).toBeInTheDocument();
     expect(localStorage.getItem('bamdude-products-view')).toBe('table');
-    fireEvent.click(screen.getByRole('button', { name: /Parts/ }));
-    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'parts-desc', page: 1 })));
-    expect(window.location.search).toContain('sort=parts-desc');
+    fireEvent.click(screen.getByRole('button', { name: /Composition/ }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'printed_parts-desc', page: 1 })));
+    expect(window.location.search).toContain('sort=printed_parts-desc');
   });
 
   it('an empty search result offers to reset, and the reset clears it', async () => {
@@ -300,24 +317,23 @@ describe('ProductsPage — the catalog (spec workshop-product-catalog)', () => {
     expect(window.location.search).not.toContain('page=');
   });
 
-  it('shows SKU, version, category and the status in the table', async () => {
+  it('shows the code, SKU, version, category and the status in the table (WS-13 E8 D01)', async () => {
     localStorage.setItem('bamdude-products-view', 'table');
     vi.spyOn(api, 'getProductsPaged').mockResolvedValue(
       envelope([
-        { ...rows[0], sku: 'LMP-1', version: '2', category: { id: 3, name: 'Hooks' }, status: 'draft' },
-        { ...rows[1], sku: null, version: null, category: null, status: 'ready', plates_count: 0 },
+        { ...rows[0], code: 'PR-0001', sku: 'LMP-1', version: '2', category: { id: 3, name: 'Hooks' }, status: 'draft' },
+        { ...rows[1], code: 'PR-0002', sku: null, version: null, category: null, status: 'ready', plates_count: 0 },
       ]),
     );
     render(<ProductsPage />);
     const table = await screen.findByRole('table');
-    expect(within(table).getByText('LMP-1')).toBeInTheDocument();
-    expect(within(table).getByText('Hooks')).toBeInTheDocument();
+    const identities = within(table).getAllByTestId('product-identity');
+    expect(identities[0]).toHaveTextContent('PR-0001 · LMP-1 2 · Hooks');
+    expect(identities[1]).toHaveTextContent('PR-0002 · — · no category');
     expect(within(table).getByText('Draft')).toBeInTheDocument();
     // Ready, but it lost its plates since: said, not silently demoted.
     expect(within(table).getByText('Incomplete')).toBeInTheDocument();
-    for (const header of ['SKU', 'Version', 'Category', 'Status']) {
-      expect(within(table).getByRole('columnheader', { name: new RegExp(header) })).toBeInTheDocument();
-    }
+    expect(within(table).getAllByRole('columnheader')).toHaveLength(6);
   });
 
   it('the card says Draft and shows the SKU', async () => {
@@ -532,5 +548,71 @@ describe('ProductsPage — the mockup page (WS-13 E8 C)', () => {
     await screen.findByText('Flask');
     expect(await screen.findByText('Could not load the filter values')).toBeInTheDocument();
     expect(screen.getByLabelText('Material')).toBeEnabled();
+  });
+});
+
+
+// WS-13 E8 D03 (R05): every sort key stays; a key no header carries is named above the table.
+describe('ProductsPage — sorting beyond the headers (WS-13 E8 D03)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    localStorage.clear();
+    vi.spyOn(api, 'getProductFacets').mockResolvedValue({ materials: [], colors: [], models: [] });
+    vi.spyOn(api, 'getProductCategories').mockResolvedValue([]);
+  });
+
+  it.each([
+    ['parts-desc', 'Sorted by: All parts ↓'],
+    ['plates-asc', 'Sorted by: Plates ↑'],
+    ['kits-desc', 'Sorted by: Part kits ↓'],
+    ['updated-desc', 'Sorted by: Last updated ↓'],
+  ])('the table sorts by %s as asked and names it, with a way back', async (sort, chip) => {
+    window.history.pushState({}, '', `/products?sort=${sort}&page=2`);
+    localStorage.setItem('bamdude-products-view', 'table');
+    const get = vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows, { total: 30, last_page: 2, current_page: 2 }));
+    render(<ProductsPage />);
+    await screen.findByText('Flask');
+    expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: sort }));
+    expect(screen.getByTestId('products-sort-chip')).toHaveTextContent(chip);
+    fireEvent.click(screen.getByRole('button', { name: 'Back to the table’s default order' }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'name-asc', page: 1 })));
+    expect(window.location.search).toBe('');
+    expect(screen.queryByTestId('products-sort-chip')).not.toBeInTheDocument();
+  });
+
+  it('a key a header carries needs no chip', async () => {
+    window.history.pushState({}, '', '/products?sort=finished-desc');
+    localStorage.setItem('bamdude-products-view', 'table');
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
+    render(<ProductsPage />);
+    await screen.findByText('Flask');
+    expect(screen.queryByTestId('products-sort-chip')).not.toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: /Stock/ })).toHaveAttribute('aria-sort', 'descending');
+  });
+
+  it('the cards sort by every key, all parts and printed parts apart', async () => {
+    window.history.pushState({}, '', '/products?sort=parts-asc');
+    localStorage.setItem('bamdude-products-view', 'cards');
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
+    render(<ProductsPage />);
+    await screen.findByText('Flask');
+    const select = screen.getByLabelText('Sort by');
+    expect(within(select).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      'Name',
+      'Printed parts',
+      'All parts',
+      'Plates',
+      'Finished in stock',
+      'Part kits',
+      'Active orders',
+      'SKU',
+      'Category',
+      'Status',
+      'Last updated',
+      'Created',
+    ]);
+    expect(select).toHaveValue('parts');
+    // No chip in the cards: their own control names the order.
+    expect(screen.queryByTestId('products-sort-chip')).not.toBeInTheDocument();
   });
 });

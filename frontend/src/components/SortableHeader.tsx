@@ -14,6 +14,7 @@ export function SortableHeader({
   onSort,
   descFirst = false,
   align = 'left',
+  className = '',
 }: {
   sortKey: string;
   label: string;
@@ -21,12 +22,14 @@ export function SortableHeader({
   onSort: (sortBy: string) => void;
   descFirst?: boolean;
   align?: 'left' | 'right';
+  /** The column's own width or wrapping (WS-13 E8 D01: the product column is 36 %). */
+  className?: string;
 }) {
   const { key, desc } = splitSortBy(sort);
   const active = key === sortKey;
   return (
     <th
-      className={`font-normal p-2 ${align === 'right' ? 'text-right' : 'text-left'}`}
+      className={`font-normal p-2 ${align === 'right' ? 'text-right' : 'text-left'} ${className}`}
       aria-sort={active ? (desc ? 'descending' : 'ascending') : undefined}
     >
       <button type="button" onClick={() => onSort(nextSortBy(sort, sortKey, descFirst))} className="hover:text-white">

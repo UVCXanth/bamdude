@@ -2,12 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { FileBox, Plus, Upload } from 'lucide-react';
+import { FileBox, Plus, Upload, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Product, ProductListItem } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { ProductCard } from '../../components/products/ProductCard';
-import { ProductsTable } from '../../components/products/ProductsTable';
+import { ProductsTable, TABLE_SORT_KEYS } from '../../components/products/ProductsTable';
 import { ListPageHeader } from '../../components/ListPageHeader';
 import { ListSearchBox } from '../../components/ListSearchBox';
 import { ListViewToggle } from '../../components/ListViewToggle';
@@ -32,6 +32,7 @@ import { WorkshopPanel } from '../../components/workshop/WorkshopPanel';
 import { LoadFailedNote } from '../../components/workshop/LoadFailedNote';
 import { RefreshFailedNote } from '../../components/workshop/RefreshFailedNote';
 import { answeredEmpty, listFigure, listState } from '../../utils/listState';
+import { splitSortBy } from '../../utils/listSort';
 
 /**
  * The product catalog.
@@ -171,18 +172,25 @@ export function ProductsPage() {
         data?.categories.find((c) => String(c.id) === extra.category)?.name ??
         t('products.catalog.unknownCategory', { id: extra.category }));
 
+  // WS-13 E8 D03 (R05): every key the server sorts by stays — `parts` (all, bought ones
+  // included) and `printed_parts` are different keys; the cards' control offers them all.
   const sortOptions = [
-    { key: 'name', label: t('products.table.name') },
-    { key: 'sku', label: t('products.table.sku') },
-    { key: 'category', label: t('products.table.category') },
-    { key: 'status', label: t('products.table.status') },
+    { key: 'name', label: t('products.sort.name') },
+    { key: 'printed_parts', label: t('products.sort.printedParts'), descFirst: true },
+    { key: 'parts', label: t('products.sort.parts'), descFirst: true },
+    { key: 'plates', label: t('products.sort.plates'), descFirst: true },
+    { key: 'finished', label: t('products.sort.finished'), descFirst: true },
+    { key: 'kits', label: t('products.sort.kits'), descFirst: true },
+    { key: 'orders', label: t('products.sort.orders'), descFirst: true },
+    { key: 'sku', label: t('products.sort.sku') },
+    { key: 'category', label: t('products.sort.category') },
+    { key: 'status', label: t('products.sort.status') },
     { key: 'updated', label: t('list.sort.updated'), descFirst: true },
     { key: 'created', label: t('list.sort.created'), descFirst: true },
-    { key: 'parts', label: t('products.table.parts'), descFirst: true },
-    { key: 'plates', label: t('products.table.plates'), descFirst: true },
-    { key: 'orders', label: t('products.table.orders'), descFirst: true },
-    { key: 'kits', label: t('products.table.kits'), descFirst: true },
   ];
+  // A key no table header carries still sorts the table — and is named over it (D03).
+  const { key: sortKey, desc: sortDesc } = splitSortBy(sort);
+  const headerlessSort = view === 'table' && !(TABLE_SORT_KEYS as readonly string[]).includes(sortKey);
 
   const pageBar = (variant: 'card' | 'bare') =>
     data ? (
@@ -282,6 +290,20 @@ export function ProductsPage() {
             </h3>
             <div className="flex items-center gap-3">
               {emptyAnswer && <small className="text-xs text-bambu-gray">{t('products.list.noResults')}</small>}
+              {headerlessSort && (
+                <span
+                  data-testid="products-sort-chip"
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded bg-bambu-dark-tertiary text-xs text-white"
+                >
+                  {t('products.list.sortChip', {
+                    label: sortOptions.find((o) => o.key === sortKey)?.label ?? sortKey,
+                    dir: sortDesc ? '↓' : '↑',
+                  })}
+                  <button type="button" aria-label={t('products.list.sortChipRemove')} onClick={() => setSort('name-asc')}>
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )}
               {/* A table sorts from its headers; the cards need a control of their own. */}
               {view === 'cards' && <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />}
             </div>
