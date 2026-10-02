@@ -929,7 +929,7 @@ async (page, selftest = null) => {
   });
 
   // ======================= 5. the table (D01–D04) =======================
-  for (const w of [2560, 1920, 1440, 1280, 1024, 768, 390]) {
+  for (const w of [2560, 1920, 1440, 1280, 1024, 768, 761, 390]) {
     await scenario(`table@${w}`, ['E8-D01', 'E8-D04', 'P03'], async () => {
       const { ctx, p, errors } = await open(w, view('table'));
       await catalog(p);
@@ -947,8 +947,8 @@ async (page, selftest = null) => {
       const sticking = overflow > 0 ? await offenders(p) : [];
       const file = await shoot(p, `table@${w}`);
       await ctx.close();
-      // D04 (ruling, ledger T7): the six columns fit from 1024 up — the mockup's own table overflows its
-      // panel at 768 too; from 1023 down the table scrolls inside its region, never the page.
+      // D04: no scroll of its own from 761 up (8 px cells below 1024 — final review 2); the 36 % share
+      // holds where the columns have room, from 1024 up; at 760 and below it scrolls in its region.
       const narrow = w <= 760;
       const between = w > 760 && w < 1024;
       return {
@@ -956,13 +956,13 @@ async (page, selftest = null) => {
         env: { viewport: [w, HEIGHTS[w]] },
         measured: { headers, geo, overflow, sticking, errors },
         pass: JSON.stringify(headers) === JSON.stringify(HEADERS) && geo.region && geo.region.label === 'Каталог виробів' && geo.region.tab === 0 &&
-          (narrow ? geo.region.scroll > 0 : between ? geo.region.scroll >= 0 : geo.region.scroll <= 0 && Math.abs(geo.share - 36) <= 1.5) && overflow <= 0 && errors.length === 0,
+          (narrow ? geo.region.scroll > 0 : between ? geo.region.scroll <= 0 : geo.region.scroll <= 0 && Math.abs(geo.share - 36) <= 1.5) && overflow <= 0 && errors.length === 0,
         screenshots: [file],
       };
     });
   }
 
-  for (const w of [1440, 1024]) {
+  for (const w of [1440, 1024, 768]) {
     await scenario(`table-long@${w}`, ['E8-D04', 'E8-B02'], async () => {
       const r1 = rowOf('1');
       const r8 = rowOf('8');
