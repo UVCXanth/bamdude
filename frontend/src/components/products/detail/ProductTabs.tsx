@@ -3,10 +3,10 @@ import { useTranslation } from 'react-i18next';
 import type { Product } from '../../../api/client';
 import { useSectionScrollMemory } from '../../../hooks/useSectionScrollMemory';
 import { PRODUCT_SECTIONS, type ProductSection } from '../../../pages/products/productSections';
-import { ProductOrders } from '../ProductOrders';
 import { WorkshopTabPanel, WorkshopTabs } from '../../workshop/WorkshopTabs';
 import { CompositionTab } from './CompositionTab';
 import { DocumentsTab } from './DocumentsTab';
+import { ProductOrdersTab } from './ProductOrdersTab';
 import { PlatesFilesTab } from './PlatesFilesTab';
 import { ProductStockTab } from './ProductStockTab';
 
@@ -69,19 +69,7 @@ export function ProductTabs({
       case 'docs':
         return <DocumentsTab product={product} headingRef={headingRef} />;
       case 'orders':
-        return (
-          <div className="space-y-2">
-            <ProductOrders productId={product.id} />
-            {/* ⚠️ Units DELIVERED against orders — every order status, capped at each
-                line's need. Not "units ever printed": a print nobody ordered is not in it. */}
-            <p className="text-sm text-bambu-gray">
-              {t('products.card.unitsPrintedTotal')}:{' '}
-              <span className="text-white" data-testid="product-units-printed-total">
-                {product.units_printed_total}
-              </span>
-            </p>
-          </div>
-        );
+        return <ProductOrdersTab product={product} />;
     }
   }
 

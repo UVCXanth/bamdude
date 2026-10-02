@@ -6869,7 +6869,6 @@ export default {
       adhoc: 'разовий',
     },
     card: {
-      unitsPrintedTotal: 'Надруковано під замовлення',
       fields: {
         name: 'Назва',
         description: 'Опис',
@@ -7153,6 +7152,20 @@ export default {
         deleteEffect: 'Вкладення видаляється; файл бібліотеки — ні.',
         previewFailed: 'Не вдалося показати',
       },
+      ordersTab: {
+        order: 'Замовлення',
+        configuration: 'Конфігурація',
+        state: 'Статус / етап',
+        covered: 'Забезпечено',
+        empty: 'Жодне замовлення ще не потребує цього виробу',
+        failed: 'Не вдалося завантажити замовлення',
+        unitsPrinted: 'Надруковано під замовлення:',
+        unitsSuffix: 'од. (друк без замовлення сюди не входить — він іде у вільний залишок деталей).',
+        orders_one: 'замовлення',
+        orders_few: 'замовлення',
+        orders_many: 'замовлень',
+        orders_other: 'замовлення',
+      },
     },
     composition: {
       title: 'Склад',
@@ -7261,10 +7274,6 @@ export default {
         cover: 'Обкладинка',
         files: 'Файли моделі',
       },
-    },
-    orders: {
-      title: 'Замовлення',
-      empty: 'Жодне замовлення поки не потребує цього виробу.',
     },
   },
 

@@ -153,7 +153,7 @@ describe('ProductPage', () => {
     vi.spyOn(api, 'getProductSources').mockResolvedValue({ parts: [] });
     vi.spyOn(api, 'getProductStock').mockResolvedValue({ kits_by_option: [], balances: [], kits_available: 0, movements: [] });
     vi.spyOn(api, 'getProductFileGroups').mockResolvedValue({ files: [], hidden_files: 0, folders: [] });
-    vi.spyOn(api, 'getOrders').mockResolvedValue([] as never);
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue({ items: [], meta: { total: 0, current_page: 1, per_page: 24, last_page: 1 }, totals: { active: 0, completed: 0, cancelled: 0, all: 0, stages: {} } } as never);
   });
 
   describe('the page (B05, C01, C04)', () => {
@@ -544,7 +544,7 @@ describe('ProductPage', () => {
     it('opens the tab its address names', async () => {
       mountAt('/products/1?tab=orders');
       expect(await screen.findByRole('tab', { name: 'Orders (5)', selected: true })).toBeInTheDocument();
-      expect(await screen.findByText(/no order asks for this product/i)).toBeInTheDocument();
+      expect(await screen.findByText(/no order needs this product yet/i)).toBeInTheDocument();
       expect(screen.getByTestId('product-units-printed-total')).toHaveTextContent('12');
       expect(screen.getByText(/printed for orders/i)).toBeInTheDocument();
     });
@@ -570,7 +570,7 @@ describe('ProductPage', () => {
       mountAt();
       await screen.findByTestId('composition-variants');
       expect(api.getProductFileGroups).not.toHaveBeenCalled();
-      expect(api.getOrders).not.toHaveBeenCalled();
+      expect(api.getOrdersPaged).not.toHaveBeenCalled();
       expect(api.getProductStock).not.toHaveBeenCalled();
 
       fireEvent.click(screen.getByRole('tab', { name: 'Plates and files (3)' }));

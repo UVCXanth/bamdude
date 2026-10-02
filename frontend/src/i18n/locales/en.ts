@@ -6746,7 +6746,6 @@ export default {
       adhoc: 'one-off',
     },
     card: {
-      unitsPrintedTotal: 'Printed for orders',
       fields: {
         name: 'Name',
         description: 'Description',
@@ -7022,6 +7021,18 @@ export default {
         deleteEffect: 'The attachment is deleted; the library’s file stays.',
         previewFailed: 'Could not show it',
       },
+      ordersTab: {
+        order: 'Order',
+        configuration: 'Configuration',
+        state: 'Status / stage',
+        covered: 'Covered',
+        empty: 'No order needs this product yet',
+        failed: 'Could not load the orders',
+        unitsPrinted: 'Printed for orders:',
+        unitsSuffix: 'units (a print without an order is not in it — it goes to the free stock of parts).',
+        orders_one: 'order',
+        orders_other: 'orders',
+      },
     },
     composition: {
       title: 'Composition',
@@ -7120,10 +7131,6 @@ export default {
         cover: 'Cover',
         files: 'Model files',
       },
-    },
-    orders: {
-      title: 'Orders',
-      empty: 'No order asks for this product yet.',
     },
   },
 
