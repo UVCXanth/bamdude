@@ -1435,7 +1435,7 @@ async (page, selftest = null) => {
     return {
       recipe: { url: '/products', fixture: ['GET /products?page=…: product 1 alone', 'DELETE: 1st → 409 «The product has finished goods in stock», 2nd → 200 (answered by the runner)'] },
       measured: { text, refusal, focus, inDialog, writes: writes.map((w) => w.method), closed, focusAfter, errors },
-      pass: text.includes(`${r1.code} · ${r1.name}`) && /Файли в бібліотеці лишаться/.test(text) && refusal.length > 0 && !/^\{/.test(refusal) && inDialog &&
+      pass: text.includes(`${r1.code} · ${r1.name}`) && /Файли в бібліотеці лишаться/.test(text) && refusal === 'The product has finished goods in stock' && inDialog &&
         writes.length === 2 && writes.every((w) => w.method === 'DELETE') && closed === 0 && /row-menu|H1/.test(focusAfter ?? '') && errors.length === 0,
       screenshots: [file],
     };
@@ -1562,7 +1562,7 @@ async (page, selftest = null) => {
     return {
       recipe: { url: '/products/{product:1}', fixture: ['POST …/duplicate, DELETE (1st 409, then 200) answered by the runner; after it GET /products/{id} → 404'] },
       measured: out,
-      pass: out.duplicate.length === 1 && out.duplicate[0] === `${r1.name} (копія)` && out.refusal.length > 0 && out.reread === 0,
+      pass: out.duplicate.length === 1 && out.duplicate[0] === `${r1.name} (копія)` && out.refusal === 'Product is used by an order line; remove the lines first' && out.reread === 0,
       screenshots: [out.file],
     };
   });
@@ -1576,7 +1576,8 @@ async (page, selftest = null) => {
       const writes = [];
       const { ctx, p } = await open(1440, {
         rewrite: [[new RegExp(`/api/v1/products/${id}(\\?.*)?$`), (b) => (hidden ? { ...b, is_active: false } : b)]],
-        writes: [recorder(writes, /\/api\/v1\/products\/\d+$/, () => { n += 1; return n === 1 ? { __status: 409, json: { error: 'product_busy', message: 'Product is busy' } } : { ...detail1, id, origin: 'catalog', is_active: !hidden }; })],
+        // The server's own shape: HTTPException(409, detail={error, message}).
+        writes: [recorder(writes, /\/api\/v1\/products\/\d+$/, () => { n += 1; return n === 1 ? { __status: 409, json: { detail: { error: 'product_busy', message: 'Product is busy' } } } : { ...detail1, id, origin: 'catalog', is_active: !hidden }; })],
       });
       await p.goto(`${job.ui}/products/${id}`, { waitUntil: 'networkidle' });
       await p.waitForTimeout(800);
@@ -1595,7 +1596,7 @@ async (page, selftest = null) => {
     return {
       recipe: { url: '/products/{product:900}', fixture: ['PATCH: 1st → 409 product_busy, 2nd → 200 (answered by the runner)', 'hidden: GET /products/{900} with is_active false (rewritten)'] },
       measured: out,
-      pass: ['active', 'hidden'].every((k) => out[k].bodies.length === 2 && out[k].bodies.every((b) => b === '{"origin":"catalog"}') && out[k].refusal.length > 0) &&
+      pass: ['active', 'hidden'].every((k) => out[k].bodies.length === 2 && out[k].bodies.every((b) => b === '{"origin":"catalog"}') && out[k].refusal === 'Product is busy') &&
         /Його побачать каталог і пікери/.test(out.active.text) && /Він лишиться прихованим/.test(out.hidden.text),
       screenshots: [out.active.file, out.hidden.file],
     };
