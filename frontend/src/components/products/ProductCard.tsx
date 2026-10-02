@@ -30,8 +30,8 @@ interface ProductCardProps {
  *
  * ⚠️ **The link is an OVERLAY, not the card's wrapper** — same trap and same fix as
  * `OrderCard`: the menu was a `<button>` inside an `<a>` and every item had to undo the
- * navigation its own click caused. The menu and the swatches' tooltips sit above it
- * (`relative z-10`).
+ * navigation its own click caused. The menu, the badges (the «Incomplete» reason) and the
+ * swatches' tooltips sit above it (`relative z-10`).
  */
 export function ProductCard({ product, actions }: ProductCardProps) {
   return (
@@ -53,10 +53,13 @@ export function ProductCard({ product, actions }: ProductCardProps) {
           </div>
         </div>
         <h3 className="mt-1 text-base font-semibold text-white">
-          <span data-testid="product-name" className="break-words">
+          <span data-testid="product-name" className="wrap-anywhere">
             {product.name}
           </span>{' '}
-          <ProductBadges product={product} />
+          {/* Above the overlay link: «Incomplete» carries its reason in a title (E02). */}
+          <span className="relative z-10">
+            <ProductBadges product={product} />
+          </span>
         </h3>
         <div className="mt-1">
           <ProductComposition product={product} variant="card" />

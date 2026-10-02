@@ -308,7 +308,7 @@ describe('ProductPage', () => {
     });
     mountAt(9);
     expect(await screen.findByText(/one-off product/i)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Add to catalogue' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Add to catalog' }));
     // The banner asks first — the same confirmation as the catalog menu's (WS-13 E8 F06, R04).
     const dialog = await screen.findByRole('dialog', { name: 'Add the product to the catalog?' });
     expect(patched).not.toHaveBeenCalled();

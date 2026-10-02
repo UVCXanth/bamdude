@@ -211,7 +211,7 @@ describe('useProductActions — add to catalog (F06)', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(update).toHaveBeenCalledWith(4, { origin: 'catalog' });
     expect(invalidateProductCatalog).toHaveBeenCalled();
-    expect(await screen.findByText('Added to the catalogue')).toBeInTheDocument();
+    expect(await screen.findByText('Added to the catalog')).toBeInTheDocument();
   });
 
   it('says a hidden one-off stays hidden', async () => {
@@ -309,5 +309,29 @@ describe('useProductActions — delete (F07–F09)', () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     });
     await waitFor(() => expect(screen.getByTestId('menu-4')).toHaveFocus());
+  });
+});
+
+// Final review M5 (F09): a delete always takes the row away — the focus goes to the page's
+// heading, not to a trigger about to vanish; a hide whose row the re-read drops does the same.
+describe('useProductActions — focus after the row leaves', () => {
+  it('after a delete from the catalog the focus is on the heading', async () => {
+    vi.spyOn(api, 'deleteProduct').mockResolvedValue({ message: 'ok' });
+    render(<Harness products={[flask]} />);
+    openMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Products' })).toHaveFocus());
+  });
+
+  it('after a hide whose row the re-read drops, the focus is on the heading', async () => {
+    vi.spyOn(api, 'updateProduct').mockResolvedValue({ ...flask, is_active: false } as never);
+    const { rerender } = render(<Harness products={[flask]} />);
+    openMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Hide from catalog' }));
+    await screen.findByText('Product hidden from the catalog');
+    rerender(<Harness products={[]} />);
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Products' })).toHaveFocus());
   });
 });

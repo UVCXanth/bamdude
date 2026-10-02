@@ -188,8 +188,10 @@ export function ProductsPage() {
     { key: 'updated', label: t('list.sort.updated'), descFirst: true },
     { key: 'created', label: t('list.sort.created'), descFirst: true },
   ];
+  // A key the server does not know is name-asc there (`resolve_sort`) — and so here (final review M8).
+  const shownSort = sortOptions.some((o) => o.key === splitSortBy(sort).key) ? sort : 'name-asc';
   // A key no table header carries still sorts the table — and is named over it (D03).
-  const { key: sortKey, desc: sortDesc } = splitSortBy(sort);
+  const { key: sortKey, desc: sortDesc } = splitSortBy(shownSort);
   const headerlessSort = view === 'table' && !(TABLE_SORT_KEYS as readonly string[]).includes(sortKey);
 
   const pageBar = (variant: 'card' | 'bare') =>
@@ -306,7 +308,7 @@ export function ProductsPage() {
                 </span>
               )}
               {/* A table sorts from its headers; the cards need a control of their own. */}
-              {view === 'cards' && <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />}
+              {view === 'cards' && <ListSortControl sort={shownSort} options={sortOptions} onChange={setSort} />}
             </div>
           </div>
 
@@ -342,7 +344,7 @@ export function ProductsPage() {
               {view === 'table' && products.length > 0 ? (
                 <ProductsTable
                   products={products}
-                  sort={sort}
+                  sort={shownSort}
                   onSortChange={setSort}
                   actions={actions}
                   footer={pageBar('card')}

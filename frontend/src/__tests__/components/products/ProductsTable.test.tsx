@@ -102,3 +102,13 @@ describe('ProductsTable', () => {
     expect(region.querySelector('table')).toBeTruthy();
   });
 });
+
+// Final review I1: a file-stem name (underscores, no break point) or a long SKU may break
+// anywhere — `break-words` is not counted in a table's minimum column width.
+describe('ProductsTable — long names', () => {
+  it('lets the name and the identity line break anywhere', () => {
+    render(<Table />);
+    expect(screen.getByRole('link', { name: 'Gear' }).className).toContain('wrap-anywhere');
+    expect(screen.getByTestId('product-identity').className).toContain('wrap-anywhere');
+  });
+});

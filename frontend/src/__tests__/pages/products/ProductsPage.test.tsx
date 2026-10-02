@@ -617,3 +617,28 @@ describe('ProductsPage — sorting beyond the headers (WS-13 E8 D03)', () => {
     expect(screen.queryByTestId('products-sort-chip')).not.toBeInTheDocument();
   });
 });
+
+// Final review M8: an unknown key in the URL sorts by name on the server — the page says so.
+describe('ProductsPage — an unknown sort key', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    localStorage.clear();
+    vi.spyOn(api, 'getProductFacets').mockResolvedValue({ materials: [], colors: [], models: [] });
+    vi.spyOn(api, 'getProductCategories').mockResolvedValue([]);
+  });
+
+  it('names no sort the server did not apply, and the cards read it as the name', async () => {
+    window.history.pushState({}, '', '/products?sort=zzz-asc');
+    localStorage.setItem('bamdude-products-view', 'table');
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
+    const { unmount } = render(<ProductsPage />);
+    await screen.findByText('Flask');
+    expect(screen.queryByTestId('products-sort-chip')).not.toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: /Product \/ SKU/ })).toHaveAttribute('aria-sort', 'ascending');
+    unmount();
+    localStorage.setItem('bamdude-products-view', 'cards');
+    render(<ProductsPage />);
+    await screen.findByText('Flask');
+    expect(screen.getByLabelText('Sort by')).toHaveValue('name');
+  });
+});

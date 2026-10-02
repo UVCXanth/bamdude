@@ -135,8 +135,15 @@ describe('ProductCard anatomy (WS-13 E8 E01–E04)', () => {
 
   it('E04 a long name and a long SKU wrap inside the card', () => {
     mount({ name: 'A'.repeat(120), sku: 'S'.repeat(80) });
-    expect(screen.getByTestId('product-name').className).toContain('break-words');
-    expect(screen.getByTestId('product-identity').className).toContain('break-words');
+    expect(screen.getByTestId('product-name').className).toContain('wrap-anywhere');
+    expect(screen.getByTestId('product-identity').className).toContain('wrap-anywhere');
+  });
+
+  it('E02 the badges — the «Incomplete» reason in their title — sit above the overlay link', () => {
+    mount({ status: 'ready', parts_count: 0 });
+    const badge = screen.getByText('Incomplete');
+    expect(badge).toHaveAttribute('title');
+    expect(badge.closest('.z-10')).toBeTruthy();
   });
 });
 

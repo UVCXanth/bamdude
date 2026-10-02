@@ -8,7 +8,12 @@ const BOX = {
   card: 'h-[120px] w-full',
 } as const;
 
-/** The picture itself — keyed by its address, so a failure belongs to that picture alone. */
+/**
+ * The picture itself — keyed by its address, so a failure belongs to that picture alone.
+ * A request sent before the media token arrived fails for want of it, and the token's
+ * retrofit stamps it on the `<img>` that is still there — so only a picture that failed
+ * WITH its token is taken for a failed one (final review M4).
+ */
 function Cover({ src, variant }: { src: string; variant: 'table' | 'card' }) {
   const [failed, setFailed] = useState(false);
   if (failed) return <Placeholder variant={variant} />;
@@ -17,7 +22,9 @@ function Cover({ src, variant }: { src: string; variant: 'table' | 'card' }) {
       data-testid="product-cover"
       src={src}
       alt=""
-      onError={() => setFailed(true)}
+      onError={(e) => {
+        if (new URL(e.currentTarget.src, window.location.href).searchParams.has('token')) setFailed(true);
+      }}
       className={`${BOX[variant]} rounded-lg object-contain bg-bambu-dark`}
     />
   );

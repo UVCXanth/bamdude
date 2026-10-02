@@ -91,7 +91,7 @@ export function CatalogFilters({
         <option value="none">{t('products.catalog.unsliced')}</option>,
       )}
       <Select
-            aria-label={t('products.catalog.readiness')}
+        aria-label={t('products.catalog.readiness')}
         value={values.status}
         onChange={(e) => onChange('status', catalogStatus(e.target.value))}
         className="min-w-0"
@@ -101,7 +101,7 @@ export function CatalogFilters({
         <option value="draft">{t('products.status.draft')}</option>
       </Select>
       <Select
-            aria-label={t('products.catalog.stock')}
+        aria-label={t('products.catalog.stock')}
         value={values.stock}
         onChange={(e) => onChange('stock', catalogStock(e.target.value))}
         className="min-w-0"

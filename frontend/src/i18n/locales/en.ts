@@ -6825,7 +6825,7 @@ export default {
       imported: 'Product imported',
       createdFromFile: 'Product created from the file',
       exportFailed: 'The export failed (HTTP {{status}}).',
-      promoted: 'Added to the catalogue',
+      promoted: 'Added to the catalog',
     },
     confirm: {
       deleteTitle: 'Delete product?',
@@ -6846,7 +6846,7 @@ export default {
       notFound: 'This product no longer exists.',
       loadFailed: 'Could not load this product:',
       adhocBanner: 'A one-off product, created for an order — the catalogue does not list it.',
-      promote: 'Add to catalogue',
+      promote: 'Add to catalog',
     },
     header: {
       breadcrumb: 'Products',

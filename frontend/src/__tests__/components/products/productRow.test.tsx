@@ -10,6 +10,7 @@ import { ProductMaterials } from '../../../components/products/productRow/Produc
 import { ProductStock } from '../../../components/products/productRow/ProductStock';
 import { ProductThumb } from '../../../components/products/productRow/ProductThumb';
 import { __resetColorCatalogForTests, setColorCatalog } from '../../../utils/colors';
+import { setMediaToken } from '../../../api/client';
 
 const product = (over: Partial<ProductListItem> = {}): ProductListItem =>
   ({
@@ -121,6 +122,8 @@ describe('product row parts', () => {
   });
 
   it('B07 thumb: the cover when there is one, the placeholder otherwise and on a failed picture', () => {
+    // A failure counts once the picture was asked WITH its token (M4 below).
+    setMediaToken('media-fake');
     const { rerender } = render(<ProductThumb product={product({ has_cover: true })} variant="table" />);
     const img = screen.getByTestId('product-cover') as HTMLImageElement;
     expect(img.getAttribute('src')).toContain('/products/8/cover-image');
@@ -130,6 +133,28 @@ describe('product row parts', () => {
     rerender(<ProductThumb product={product({ id: 9, has_cover: true })} variant="table" />);
     expect(screen.getByTestId('product-cover')).toBeInTheDocument();
     rerender(<ProductThumb product={product({ id: 9, has_cover: false })} variant="card" />);
+    expect(screen.getByTestId('product-cover-placeholder')).toBeInTheDocument();
+  });
+});
+
+// Final review M4: the list can answer before the media token; the first request of a
+// picture then has no token and fails — the retrofit stamps the token on the <img> that is
+// still there. Only a picture that failed WITH its token is a failure.
+describe('ProductThumb — the media token', () => {
+  afterEach(() => setMediaToken(null));
+
+  it('keeps the picture when it failed before the token arrived', () => {
+    setMediaToken(null);
+    render(<ProductThumb product={product({ has_cover: true })} variant="table" />);
+    fireEvent.error(screen.getByTestId('product-cover'));
+    expect(screen.getByTestId('product-cover')).toBeInTheDocument();
+    expect(screen.queryByTestId('product-cover-placeholder')).not.toBeInTheDocument();
+  });
+
+  it('takes the placeholder when the picture failed with its token', () => {
+    setMediaToken('media-fake');
+    render(<ProductThumb product={product({ has_cover: true })} variant="table" />);
+    fireEvent.error(screen.getByTestId('product-cover'));
     expect(screen.getByTestId('product-cover-placeholder')).toBeInTheDocument();
   });
 });

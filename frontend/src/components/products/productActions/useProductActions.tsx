@@ -67,6 +67,8 @@ export function useProductActions<P extends ProductRef>({
   const runningRef = useRef(new Map<number, ProductAction>());
   const opened = useRef(false);
   const opener = useRef<HTMLElement | null>(null);
+  // A delete takes the row away: the heading gets the focus whatever the Modal gave back (F09).
+  const toHeading = useRef(false);
 
   const open = (next: Active<P>) => {
     if (opener.current == null) {
@@ -88,6 +90,11 @@ export function useProductActions<P extends ProductRef>({
     const back = opener.current;
     opener.current = null;
     const timer = window.setTimeout(() => {
+      if (toHeading.current) {
+        toHeading.current = false;
+        fallbackFocusRef.current?.focus();
+        return;
+      }
       const now = document.activeElement;
       if (now != null && now !== document.body) return;
       const usable = back != null && back.isConnected && !back.closest('[inert]') && !(back as HTMLButtonElement).disabled;
@@ -95,6 +102,25 @@ export function useProductActions<P extends ProductRef>({
     }, 0);
     return () => window.clearTimeout(timer);
   }, [active, fallbackFocusRef]);
+
+  /**
+   * After an action that can take the row off the page (a hide while hidden ones are not shown),
+   * the trigger the menu gave focus back to may vanish with the re-read: once it has, and the
+   * focus fell to BODY, the heading takes it (F09). Bounded — the re-read answers or it does not.
+   */
+  const keepFocusWhenRowLeaves = (trigger: Element | null) => {
+    if (!(trigger instanceof HTMLElement)) return;
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      const now = document.activeElement;
+      if (!trigger.isConnected && (now == null || now === document.body)) {
+        window.clearInterval(timer);
+        fallbackFocusRef.current?.focus();
+      } else if (Date.now() - started > 5000 || (now != null && now !== document.body && now !== trigger)) {
+        window.clearInterval(timer);
+      }
+    }, 100);
+  };
 
   /** Runs one request for a product; a second one while it runs is not sent. */
   const once = (p: P, action: ProductAction, request: () => Promise<unknown>) => {
@@ -164,7 +190,9 @@ export function useProductActions<P extends ProductRef>({
         );
         return;
       case 'hide':
-      case 'show':
+      case 'show': {
+        // The menu has just given focus back to its trigger.
+        const trigger = document.activeElement;
         // `is_active` is refused as an explicit null (422), so the boolean is always sent.
         once(p, action, () =>
           api.updateProduct(p.id, { is_active: action === 'show' }).then((saved) => {
@@ -172,9 +200,11 @@ export function useProductActions<P extends ProductRef>({
             // leaves the catalog is still on the lines of every order that ordered it.
             invalidateOrderViews(queryClient);
             showToast(saved.is_active ? t('products.toast.shown') : t('products.toast.hidden'));
+            keepFocusWhenRowLeaves(trigger);
           }, failed),
         );
         return;
+      }
     }
   };
 
@@ -188,6 +218,8 @@ export function useProductActions<P extends ProductRef>({
       return;
     }
     await api.deleteProduct(p.id);
+    // The row goes with the product: focus returns to the heading, not to a trigger about to vanish (F09).
+    toHeading.current = true;
     if (context === 'catalog') {
       invalidateAfterDelete(queryClient, 'product', p.id);
     } else {

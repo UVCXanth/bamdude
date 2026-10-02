@@ -85,7 +85,9 @@ export function ProductsTable({
                   <div className="flex items-start gap-2.5">
                     <ProductThumb product={p} variant="table" />
                     <div className="min-w-0">
-                      <Link to={`/products/${p.id}`} className="font-medium break-words hover:underline">
+                      {/* `wrap-anywhere`, not `break-words`: a table's minimum column width counts only
+                          `anywhere` break points — a file-stem name would widen the whole table. */}
+                      <Link to={`/products/${p.id}`} className="font-medium wrap-anywhere hover:underline">
                         {p.name}
                       </Link>{' '}
                       <ProductBadges product={p} />
