@@ -6997,6 +6997,31 @@ export default {
         movements_one: 'movement',
         movements_other: 'movements',
       },
+      docs: {
+        sections: {
+          bom_docs: 'Bill of materials',
+          assembly: 'Assembly guide',
+          other: 'Other',
+        },
+        hints: {
+          bom_docs: '.xls/.xlsx/.pdf/.csv',
+          assembly: '.pdf/.md/pictures',
+          other: 'any allowed file',
+        },
+        empty: 'Nothing here yet · {{hint}}',
+        upload: 'Upload…',
+        uploading: 'Uploading…',
+        kb: '{{n}} KB',
+        from3mf: 'from 3MF',
+        imported: 'import',
+        view: 'View «{{name}}»',
+        download: 'Download «{{name}}»',
+        delete: 'Delete «{{name}}»',
+        deleteTitle: 'Delete document',
+        deleteBody: 'Delete «{{name}}»?',
+        deleteEffect: 'The attachment is deleted; the library’s file stays.',
+        previewFailed: 'Could not show it',
+      },
     },
     composition: {
       title: 'Composition',
@@ -7082,15 +7107,6 @@ export default {
       close: 'Close',
     },
     attachments: {
-      title: 'Documents',
-      upload: 'Upload',
-      empty: 'Nothing here yet.',
-      fromFile: 'from the 3MF',
-      // The `3mf` label keeps its old key; this one is new beside it.
-      source: {
-        import: 'Imported',
-      },
-      downloadFailed: 'Could not download this file (HTTP {{status}}).',
       category: {
         pictures: 'Pictures',
         bom_docs: 'Bill of materials',

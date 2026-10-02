@@ -225,7 +225,7 @@ describe('ProductGallery', () => {
     // could star a different picture than `/cover-image` actually serves.
     //
     // The rule now lives in `byAttachmentOrder`, shared with
-    // `ProductAttachments` — the same case is pinned there, on the same data.
+    // `DocumentsTab` — the same case is pinned there, on the same data.
     render(
       <ProductGallery
         product={

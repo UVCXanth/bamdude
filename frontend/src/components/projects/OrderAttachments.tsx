@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Download, Eye, Loader2, Trash2, Upload } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Order, ProjectAttachment } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+import { useBlobPreview } from '../../hooks/useBlobPreview';
 // The app-wide byte formatter, rather than the third hand-rolled `MB / KB / B`
 // ladder — the File Manager and the library both read sizes through this one.
 import { formatFileSize } from '../../utils/file';
@@ -26,13 +27,6 @@ function extension(attachment: ProjectAttachment): string {
   const name = attachment.original_name || attachment.filename;
   const dot = name.lastIndexOf('.');
   return dot > 0 ? name.slice(dot + 1).toUpperCase() : '—';
-}
-
-/** The picture on screen: the attachment, and what its read has come to. */
-interface Preview {
-  attachment: ProjectAttachment;
-  url: string | null;
-  failed: boolean;
 }
 
 /**
@@ -61,9 +55,6 @@ export function OrderAttachments({ order, canEdit }: OrderAttachmentsProps) {
   const [deletingName, setDeletingName] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<ProjectAttachment | null>(null);
   const [progress, setProgress] = useState<{ n: number; of: number } | null>(null);
-  const [preview, setPreview] = useState<Preview | null>(null);
-  const ticket = useRef(0);
-  const shownUrl = useRef<string | null>(null);
 
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
 
@@ -118,37 +109,10 @@ export function OrderAttachments({ order, canEdit }: OrderAttachmentsProps) {
     }
   };
 
-  /** Let the picture on screen go, and forget any read still in flight. */
-  const closePreview = useCallback(() => {
-    ticket.current += 1;
-    if (shownUrl.current) window.URL.revokeObjectURL(shownUrl.current);
-    shownUrl.current = null;
-    setPreview(null);
-  }, []);
-
-  const openPreview = async (attachment: ProjectAttachment) => {
-    // A picture already on screen is replaced: its URL goes first.
-    if (shownUrl.current) window.URL.revokeObjectURL(shownUrl.current);
-    shownUrl.current = null;
-    const mine = ++ticket.current;
-    setPreview({ attachment, url: null, failed: false });
-    try {
-      const blob = await fetchBlob(attachment);
-      const url = window.URL.createObjectURL(blob);
-      if (ticket.current !== mine) {
-        // Closed or replaced while it was read: nothing reopens, nothing is kept.
-        window.URL.revokeObjectURL(url);
-        return;
-      }
-      shownUrl.current = url;
-      setPreview({ attachment, url, failed: false });
-    } catch {
-      if (ticket.current === mine) setPreview({ attachment, url: null, failed: true });
-    }
-  };
-
-  // Unmounting lets the last picture go and voids any read still in flight.
-  useEffect(() => () => closePreview(), [closePreview]);
+  // The viewer's reads and their blob URLs (R09) — `useBlobPreview`, shared with the
+  // product's documents.
+  const { preview: shown, open: openPreview, close: closePreview } = useBlobPreview(fetchBlob);
+  const preview = shown && { attachment: shown.item, url: shown.url, failed: shown.failed };
 
   return (
     // No heading of its own — the «Attachments» tab names it (WS-13 E3 F05).

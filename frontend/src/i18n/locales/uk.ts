@@ -7128,6 +7128,31 @@ export default {
         movements_many: 'рухів',
         movements_other: 'руху',
       },
+      docs: {
+        sections: {
+          bom_docs: 'Специфікація',
+          assembly: 'Інструкція зі складання',
+          other: 'Інше',
+        },
+        hints: {
+          bom_docs: '.xls/.xlsx/.pdf/.csv',
+          assembly: '.pdf/.md/зображення',
+          other: 'будь-який дозволений',
+        },
+        empty: 'Тут поки порожньо · {{hint}}',
+        upload: 'Завантажити…',
+        uploading: 'Завантаження…',
+        kb: '{{n}} КБ',
+        from3mf: 'з 3MF',
+        imported: 'імпорт',
+        view: 'Переглянути «{{name}}»',
+        download: 'Завантажити «{{name}}»',
+        delete: 'Видалити «{{name}}»',
+        deleteTitle: 'Видалити документ',
+        deleteBody: 'Видалити «{{name}}»?',
+        deleteEffect: 'Вкладення видаляється; файл бібліотеки — ні.',
+        previewFailed: 'Не вдалося показати',
+      },
     },
     composition: {
       title: 'Склад',
@@ -7223,15 +7248,6 @@ export default {
       close: 'Закрити',
     },
     attachments: {
-      title: 'Документи',
-      upload: 'Завантажити',
-      empty: 'Тут поки порожньо.',
-      fromFile: 'із 3MF',
-      // The `3mf` label keeps its old key; this one is new beside it.
-      source: {
-        import: 'Імпортовано',
-      },
-      downloadFailed: 'Не вдалося завантажити цей файл (HTTP {{status}}).',
       category: {
         pictures: 'Зображення',
         bom_docs: 'Специфікація',

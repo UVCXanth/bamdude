@@ -432,6 +432,27 @@ async function refreshAccessToken(): Promise<boolean> {
  *      ``error``, fall back to JSON as the last resort so we don't lose
  *      debug info entirely when a backend endpoint returns a bespoke shape.
  */
+/**
+ * A file the API serves behind a permission, as a blob — for a viewer or a download.
+ *
+ * Not `request<T>()` — the body is a file, not JSON — but on its terms: the token is
+ * refreshed first when it is about to expire and once more after a 401, and a refusal is
+ * the server's sentence, never «HTTP 401» (WS-13 E4 final review M10). A bare fetch with
+ * the stored token failed for good an hour into a session until something else refreshed
+ * it. Order attachments and product documents both read through it (E9 R07).
+ */
+export async function fetchAuthorizedBlob(url: string): Promise<Blob> {
+  if (authToken && isTokenNearExpiry()) await refreshAccessToken();
+  const send = () => fetch(url, { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {} });
+  let response = await send();
+  if (response.status === 401 && (await refreshAccessToken())) response = await send();
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new ApiError(formatErrorDetail(error.detail, response.status), response.status);
+  }
+  return response.blob();
+}
+
 function formatErrorDetail(detail: unknown, status: number): string {
   if (typeof detail === 'string') return detail;
   if (Array.isArray(detail)) {
@@ -12832,6 +12853,10 @@ export const api = {
    *  cannot carry the token and would 401 into a file that looks corrupt. */
   getProductAttachmentUrl: (productId: number, filename: string) =>
     `${API_BASE}/products/${productId}/attachments/${encodeURIComponent(filename)}`,
+  /** A product document's bytes, for the viewer and the download (WS-13 E9 G02, R07) — the
+   *  same authorised fetch as an order attachment, on the existing route. */
+  getProductAttachment: (productId: number, filename: string): Promise<Blob> =>
+    fetchAuthorizedBlob(`${API_BASE}/products/${productId}/attachments/${encodeURIComponent(filename)}`),
   /** ⚠️ The segment is `attachment-image`, NOT `attachments/…/image`. It is a
    *  unique path so `main.py`'s whitelist can let an `<img>` request REACH the
    *  route's own media-token gate without also opening the bearer-only
@@ -12954,26 +12979,9 @@ export const api = {
   },
   getProjectAttachmentUrl: (projectId: number, filename: string) =>
     `${API_BASE}/projects/${projectId}/attachments/${encodeURIComponent(filename)}`,
-  /**
-   * An order attachment's bytes, for the viewer and the download (WS-13 E4 G04).
-   *
-   * Not `request<T>()` — the body is a file, not JSON — but on its terms: the token is
-   * refreshed first when it is about to expire and once more after a 401, and a refusal
-   * is the server's sentence, never «HTTP 401» (final review M10). A bare fetch with the
-   * stored token failed for good an hour into a session until something else refreshed it.
-   */
-  getProjectAttachment: async (projectId: number, filename: string): Promise<Blob> => {
-    if (authToken && isTokenNearExpiry()) await refreshAccessToken();
-    const url = `${API_BASE}/projects/${projectId}/attachments/${encodeURIComponent(filename)}`;
-    const send = () => fetch(url, { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {} });
-    let response = await send();
-    if (response.status === 401 && (await refreshAccessToken())) response = await send();
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new ApiError(formatErrorDetail(error.detail, response.status), response.status);
-    }
-    return response.blob();
-  },
+  /** An order attachment's bytes, for the viewer and the download (WS-13 E4 G04) — `fetchAuthorizedBlob`. */
+  getProjectAttachment: (projectId: number, filename: string): Promise<Blob> =>
+    fetchAuthorizedBlob(`${API_BASE}/projects/${projectId}/attachments/${encodeURIComponent(filename)}`),
   deleteProjectAttachment: (projectId: number, filename: string) =>
     request<{ status: string; message: string; attachments: ProjectAttachment[] | null }>(
       `/projects/${projectId}/attachments/${encodeURIComponent(filename)}`,

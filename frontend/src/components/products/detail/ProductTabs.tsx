@@ -1,13 +1,12 @@
 import { useId, useRef, useState, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { Product } from '../../../api/client';
-import { useAuth } from '../../../contexts/AuthContext';
 import { useSectionScrollMemory } from '../../../hooks/useSectionScrollMemory';
 import { PRODUCT_SECTIONS, type ProductSection } from '../../../pages/products/productSections';
-import { ProductAttachments } from '../ProductAttachments';
 import { ProductOrders } from '../ProductOrders';
 import { WorkshopTabPanel, WorkshopTabs } from '../../workshop/WorkshopTabs';
 import { CompositionTab } from './CompositionTab';
+import { DocumentsTab } from './DocumentsTab';
 import { PlatesFilesTab } from './PlatesFilesTab';
 import { ProductStockTab } from './ProductStockTab';
 
@@ -53,8 +52,6 @@ export function ProductTabs({
   onReread: () => void;
 }) {
   const { t } = useTranslation();
-  const { hasPermission } = useAuth();
-  const canEdit = hasPermission('projects:update');
   const idBase = useId();
   const strip = useRef<HTMLDivElement>(null);
   const [visited, setVisited] = useState<ReadonlySet<ProductSection>>(() => new Set([section]));
@@ -70,7 +67,7 @@ export function ProductTabs({
       case 'stock':
         return <ProductStockTab product={product} />;
       case 'docs':
-        return <ProductAttachments product={product} canEdit={canEdit} />;
+        return <DocumentsTab product={product} headingRef={headingRef} />;
       case 'orders':
         return (
           <div className="space-y-2">

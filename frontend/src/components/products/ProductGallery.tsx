@@ -74,7 +74,7 @@ export function ProductGallery({
   // category starts at 0, and a reorder that names only some of them leaves the
   // rest sharing a rank. Without the second key the star could sit on a
   // different picture than the one `/cover-image` actually serves. The rule is
-  // `byAttachmentOrder`, shared with `ProductAttachments` — two components
+  // `byAttachmentOrder`, shared with the product page's `DocumentsTab` — two components
   // ordering the same column by different rules is the drift it removes.
   const pictures: ProductAttachment[] = (product.attachments ?? [])
     .filter((attachment) => attachment.category === 'pictures')
