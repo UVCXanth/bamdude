@@ -246,7 +246,11 @@ class FeedTelemetry:
                     nid = _integer(entry.get("id"))
                     if nid is None:
                         continue
-                    if nid < 16 and _hotend_states_empty(entry):
+                    # Only an H2C-style rack can leave a real hotend empty.
+                    # Fixed H2D hotends report ``sn=N/A`` and ``tm=0`` even
+                    # while their nozzles are installed, so the rack-specific
+                    # absence marker must not hide them from routing.
+                    if nid < 16 and is_nozzle_rack_model(model) and _hotend_states_empty(entry):
                         continue
                     # ids 0/1 are the hotends on MQTT extruders 0/1 on every H2,
                     # the H2C included; only a dock needs placing — on the
