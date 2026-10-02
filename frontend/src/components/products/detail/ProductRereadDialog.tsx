@@ -1,9 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../../api/client';
 import type { Product } from '../../../api/client';
 import { useToast } from '../../../contexts/ToastContext';
+import { useProductFileGroups } from '../../../hooks/useProductFileGroups';
 import { invalidateOrderViews, invalidateProductFiles } from '../../../utils/queryInvalidation';
 import { Button } from '../../Button';
 import { LoadFailedNote } from '../../workshop/LoadFailedNote';
@@ -53,10 +54,7 @@ export function ProductRereadDialog({
   const [gone, setGone] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
 
-  const files = useQuery({
-    queryKey: ['product-file-groups', product.id],
-    queryFn: () => api.getProductFileGroups(product.id),
-  });
+  const files = useProductFileGroups(product.id);
   const candidates = (files.data?.files ?? []).filter((f) => f.is_3mf && !f.hidden);
   const ids = candidates.map((f) => f.library_file_id).join(',');
 

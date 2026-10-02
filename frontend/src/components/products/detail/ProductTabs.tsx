@@ -4,13 +4,12 @@ import type { Product } from '../../../api/client';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useSectionScrollMemory } from '../../../hooks/useSectionScrollMemory';
 import { PRODUCT_SECTIONS, type ProductSection } from '../../../pages/products/productSections';
-import { LinkedFiles } from '../LinkedFiles';
-import { PlatesByFile } from '../PlatesByFile';
 import { ProductAttachments } from '../ProductAttachments';
 import { ProductOrders } from '../ProductOrders';
 import { ProductStock } from '../ProductStock';
 import { WorkshopTabPanel, WorkshopTabs } from '../../workshop/WorkshopTabs';
 import { CompositionTab } from './CompositionTab';
+import { PlatesFilesTab } from './PlatesFilesTab';
 
 /** The server's count of each tab (C02) — «Stock» has none. */
 function countOf(product: Product, section: ProductSection): number | undefined {
@@ -43,12 +42,15 @@ export function ProductTabs({
   section,
   onSection,
   headingRef,
+  onReread,
 }: {
   product: Product;
   section: ProductSection;
   onSection: (section: ProductSection) => void;
   /** The page's h1 — where the focus goes when the row that held it leaves (B11). */
   headingRef: RefObject<HTMLHeadingElement | null>;
+  /** Opens the page's «Re-read the card from a file…» dialog (B03 / E01). */
+  onReread: () => void;
 }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -64,12 +66,7 @@ export function ProductTabs({
       case 'composition':
         return <CompositionTab product={product} headingRef={headingRef} />;
       case 'plates':
-        return (
-          <div className="space-y-6">
-            <PlatesByFile productId={product.id} />
-            <LinkedFiles product={product} canEdit={canEdit} />
-          </div>
-        );
+        return <PlatesFilesTab product={product} headingRef={headingRef} onReread={onReread} />;
       case 'stock':
         return <ProductStock productId={product.id} canEdit={canEdit} />;
       case 'docs':

@@ -140,7 +140,13 @@ function ProductView({
               )}
             </div>
           )}
-          <ProductTabs product={product} section={section} onSection={onSection} headingRef={heading} />
+          <ProductTabs
+            product={product}
+            section={section}
+            onSection={onSection}
+            headingRef={heading}
+            onReread={() => setRereading(true)}
+          />
         </WorkshopPanel>
       </div>
 

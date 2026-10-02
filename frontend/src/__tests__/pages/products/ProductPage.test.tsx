@@ -152,9 +152,7 @@ describe('ProductPage', () => {
     vi.spyOn(api, 'getStockItems').mockResolvedValue(positions([]));
     vi.spyOn(api, 'getProductSources').mockResolvedValue({ parts: [] });
     vi.spyOn(api, 'getProductStock').mockResolvedValue({ kits_by_option: [], balances: [], kits_available: 0, movements: [] });
-    vi.spyOn(api, 'getProductPlates').mockResolvedValue([] as never);
-    vi.spyOn(api, 'getLibraryFiles').mockResolvedValue([] as never);
-    vi.spyOn(api, 'getFoldersByProduct').mockResolvedValue([] as never);
+    vi.spyOn(api, 'getProductFileGroups').mockResolvedValue({ files: [], hidden_files: 0, folders: [] });
     vi.spyOn(api, 'getOrders').mockResolvedValue([] as never);
   });
 
@@ -571,18 +569,18 @@ describe('ProductPage', () => {
     it('a tab nobody opened asks nothing; a visited one stays mounted and is not asked again', async () => {
       mountAt();
       await screen.findByTestId('composition-variants');
-      expect(api.getProductPlates).not.toHaveBeenCalled();
+      expect(api.getProductFileGroups).not.toHaveBeenCalled();
       expect(api.getOrders).not.toHaveBeenCalled();
       expect(api.getProductStock).not.toHaveBeenCalled();
 
       fireEvent.click(screen.getByRole('tab', { name: 'Plates and files (3)' }));
-      expect(await screen.findByText(/no plates yet/i)).toBeInTheDocument();
+      expect(await screen.findByText(/no files yet/i)).toBeInTheDocument();
       fireEvent.click(screen.getByRole('tab', { name: 'Composition (2)' }));
       // Hidden, still there.
-      expect(screen.getByText(/no plates yet/i)).not.toBeVisible();
+      expect(screen.getByText(/no files yet/i)).not.toBeVisible();
       fireEvent.click(screen.getByRole('tab', { name: 'Plates and files (3)' }));
-      expect(screen.getByText(/no plates yet/i)).toBeVisible();
-      expect(api.getProductPlates).toHaveBeenCalledTimes(1);
+      expect(screen.getByText(/no files yet/i)).toBeVisible();
+      expect(api.getProductFileGroups).toHaveBeenCalledTimes(1);
     });
 
     it('the stock tab shows the shelf it reads', async () => {
@@ -599,10 +597,10 @@ describe('ProductPage', () => {
     });
 
     it('a failing tab leaves the header, the side panel and the other tabs alone', async () => {
-      vi.spyOn(api, 'getProductPlates').mockRejectedValue(new Error('plates down'));
+      vi.spyOn(api, 'getProductFileGroups').mockRejectedValue(new Error('files down'));
       mountAt('/products/1?tab=plates');
       await screen.findByRole('tab', { name: 'Plates and files (3)', selected: true });
-      await waitFor(() => expect(api.getProductPlates).toHaveBeenCalled());
+      await waitFor(() => expect(api.getProductFileGroups).toHaveBeenCalled());
       expect(screen.getByRole('heading', { level: 1, name: /^Flask/ })).toBeInTheDocument();
       expect(await screen.findByText('1h 20m · 85g')).toBeInTheDocument();
       fireEvent.click(screen.getByRole('tab', { name: 'Composition (2)' }));
@@ -614,11 +612,11 @@ describe('ProductPage', () => {
         id === 2 ? { ...product, id: 2, code: 'PR-0002', name: 'Jar' } : product,
       );
       mountAt('/products/1?tab=plates');
-      expect(await screen.findByText(/no plates yet/i)).toBeInTheDocument();
+      expect(await screen.findByText(/no files yet/i)).toBeInTheDocument();
       await userEvent.click(screen.getByRole('link', { name: 'next product' }));
       expect(await screen.findByRole('heading', { level: 1, name: /^Jar/ })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: 'Composition (2)', selected: true })).toBeInTheDocument();
-      expect(screen.queryByText(/no plates yet/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/no files yet/i)).not.toBeInTheDocument();
     });
   });
 

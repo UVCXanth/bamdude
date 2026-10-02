@@ -48,8 +48,9 @@ interface LinkToProductsModalProps {
  * there is no separate red "wipe all" button to disagree with the chips.
  *
  * ⚠️ **A folder link cascades to its files server-side**, so the file list has
- * to be invalidated after a folder save as well; the product side
- * (`['product-files']`, `['product-folders']`) is what the product page reads.
+ * to be invalidated after a folder save as well; the product side is what the
+ * product page's «Plates and files» tab reads (`product-file-groups`, with the
+ * linked folders in the same answer — one of `invalidateProductFiles`' keys).
  */
 export function LinkToProductsModal({ kind, item, onClose }: LinkToProductsModalProps) {
   const { t } = useTranslation();
@@ -103,8 +104,6 @@ export function LinkToProductsModal({ kind, item, onClose }: LinkToProductsModal
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
       invalidateProductCatalog(queryClient);
-      queryClient.invalidateQueries({ queryKey: ['product-files'] });
-      queryClient.invalidateQueries({ queryKey: ['product-folders'] });
       // The products gained or lost this file's plates — all of them, by prefix.
       invalidateProductFiles(queryClient);
       // Literal keys, one per outcome: the i18n guard only sees keys spelled

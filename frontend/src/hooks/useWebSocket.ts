@@ -771,7 +771,6 @@ export function useWebSocket() {
       case 'library_file_added':
         debouncedInvalidate('library-files');
         debouncedInvalidate('library-stats');
-        debouncedInvalidate('product-files');
         // A file landing in a product's folder brings its plates (WS-13 E1 CL4).
         debouncedInvalidate(...PRODUCT_FILE_KEYS);
         break;
@@ -798,7 +797,6 @@ export function useWebSocket() {
         debouncedInvalidate('library-file-card');
         debouncedInvalidate('library-file-plates');
         debouncedInvalidate('library-file-filaments');
-        debouncedInvalidate('product-files');
         debouncedInvalidate(...PRODUCT_FILE_KEYS);
         break;
 

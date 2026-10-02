@@ -12737,7 +12737,7 @@ export const api = {
   getProductPlates: (id: number) => request<PlateRecipe[]>(`/products/${id}/plates`),
   /** Every printed part's sources — the composition tab (WS-13 E1 PS6). */
   getProductSources: (id: number) => request<ProductSources>(`/products/${id}/sources`),
-  /** Every linked file with its plates — the files tab (PS7); NOT `['product-files', id]`. */
+  /** Every linked file with its plates, and the linked folders — the files tab (PS7, WS-13 E9 A03). */
   getProductFileGroups: (id: number) => request<ProductFileGroups>(`/products/${id}/files`),
   /** One standard unit from scratch, in whole plates (ES). */
   getProductEstimate: (id: number) => request<ProductEstimate>(`/products/${id}/estimate`),
