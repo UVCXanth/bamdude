@@ -110,6 +110,8 @@ DETAIL_SCENARIOS = (
     "table@1024",
     "table@768",
     "table@390",
+    "table-long@1440",
+    "table-long@1024",
     "table-cells@1440",
     "table-sort@1440",
     "table-sort-keys@1440",

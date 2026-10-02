@@ -949,13 +949,41 @@ async (page, selftest = null) => {
       await ctx.close();
       // D04 (ruling, ledger T7): the six columns fit from 1024 up — the mockup's own table overflows its
       // panel at 768 too; from 1023 down the table scrolls inside its region, never the page.
-      const narrow = w < 1024;
+      const narrow = w <= 760;
+      const between = w > 760 && w < 1024;
       return {
         recipe: { url: '/products', viewport: w },
         env: { viewport: [w, HEIGHTS[w]] },
         measured: { headers, geo, overflow, sticking, errors },
         pass: JSON.stringify(headers) === JSON.stringify(HEADERS) && geo.region && geo.region.label === 'Каталог виробів' && geo.region.tab === 0 &&
-          (narrow ? geo.region.scroll > 0 : geo.region.scroll <= 0 && Math.abs(geo.share - 36) <= 1.5) && overflow <= 0 && errors.length === 0,
+          (narrow ? geo.region.scroll > 0 : between ? geo.region.scroll >= 0 : geo.region.scroll <= 0 && Math.abs(geo.share - 36) <= 1.5) && overflow <= 0 && errors.length === 0,
+        screenshots: [file],
+      };
+    });
+  }
+
+  for (const w of [1440, 1024]) {
+    await scenario(`table-long@${w}`, ['E8-D04', 'E8-B02'], async () => {
+      const r1 = rowOf('1');
+      const r8 = rowOf('8');
+      if (![r1, r8].every(Boolean)) return { pass: null, measured: { missing: true } };
+      // A file-stem name (a product made from a file takes the file's stem) and a SKU with no break point.
+      const long = { ...r1, name: 'Raspberry_Pi_4_Case_Bottom_with_Fan_Mount_and_Cable_Gland_v2_final', sku: 'RPI4-CASE-BOTTOM_FAN-MOUNT_GLAND_V2_FINAL_REV_C' };
+      const { ctx, p, errors } = await open(w, { ...view('table'), rewrite: [[LIST, onlyRows([long, r8])]] });
+      await catalog(p);
+      const geo = await p.evaluate(() => {
+        const table = document.querySelector('table');
+        const region = table.closest('[role="region"]');
+        return { scroll: region.scrollWidth - region.clientWidth };
+      });
+      const overflow = await docOverflow(p);
+      const file = await shoot(p, `table-long@${w}`);
+      await ctx.close();
+      return {
+        recipe: { url: '/products', viewport: w, fixture: ['GET /products?page=…: product 1 named «Raspberry_Pi_4_Case_Bottom_with_Fan_Mount_and_Cable_Gland_v2_final» with a 47-letter SKU, and product 8 (rewritten)'] },
+        env: { viewport: [w, HEIGHTS[w]] },
+        measured: { geo, overflow, errors },
+        pass: geo.scroll <= 0 && overflow <= 0 && errors.length === 0,
         screenshots: [file],
       };
     });
@@ -1129,7 +1157,9 @@ async (page, selftest = null) => {
           top('[data-testid="product-stock"]'),
         ];
         const visual = first.querySelector('[data-testid="product-cover"], [data-testid="product-cover-placeholder"]').getBoundingClientRect();
-        return { cols, cardW: Math.round(cards[0].getBoundingClientRect().width), footers, order, visual: [Math.round(visual.width), Math.round(visual.height)], inner: Math.round(first.getBoundingClientRect().width - 32) };
+        const gridW = grid.getBoundingClientRect().width;
+        const expected = Math.max(1, Math.floor((gridW + 16) / (Math.min(260, gridW) + 16)));
+        return { cols, expected, cardW: Math.round(cards[0].getBoundingClientRect().width), footers, order, visual: [Math.round(visual.width), Math.round(visual.height)], inner: Math.round(first.getBoundingClientRect().width - 32) };
       });
       const overflow = await docOverflow(p);
       const file = await shoot(p, `cards@${w}`);
@@ -1139,7 +1169,7 @@ async (page, selftest = null) => {
         recipe: { url: '/products', viewport: w },
         env: { viewport: [w, HEIGHTS[w]] },
         measured: { geo, sorted, overflow, errors },
-        pass: geo.cols >= (w <= 390 ? 1 : 2) && geo.cardW >= Math.min(260, w - 40) && sorted && new Set(geo.footers).size === 1 &&
+        pass: geo.cols === geo.expected && geo.cardW >= Math.min(260, w - 40) && sorted && new Set(geo.footers).size === 1 &&
           geo.visual[1] === 120 && Math.abs(geo.visual[0] - geo.inner) <= 1 && overflow <= 0 && errors.length === 0,
         screenshots: [file],
       };
@@ -1147,9 +1177,18 @@ async (page, selftest = null) => {
   }
 
   await scenario('cards-overlay@1440', ['E8-E02', 'E8-E03'], async () => {
-    const { ctx, p, errors } = await open(1440, view('cards'));
+    const r1 = rowOf('1');
+    // The «Incomplete» reason lives in its badge's title: a ready product without parts (rewritten).
+    const { ctx, p, errors } = await open(1440, { ...view('cards'), ...(r1 ? { rewrite: [[LIST, (b) => ({ ...b, items: [{ ...r1, status: 'ready', parts_count: 0 }, ...(b.items ?? []).filter((r) => r.id !== r1.id)] })]] } : {}) });
     await catalog(p);
     const card = p.locator('[data-testid$="-card"][data-testid^="product-"]').first();
+    const incomplete = await card.evaluate((c) => {
+      const el = [...c.querySelectorAll('span')].filter((s) => s.textContent.trim() === 'Неповний').pop();
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { title: el.getAttribute('title'), hits: hit === el || el.contains(hit) };
+    });
     const link = await card.getByRole('link').first().getAttribute('aria-label');
     await card.getByTestId('product-menu').click();
     // The menu is a portal placed after the click's render — waited for, never counted at once.
@@ -1174,9 +1213,9 @@ async (page, selftest = null) => {
     const went = await urlOf(p);
     await ctx.close();
     return {
-      recipe: { url: '/products', actions: ['the first card’s menu', 'Escape', 'hover point of a swatch', 'click the name'] },
-      measured: { link, menu, url, swatch, orders, kitsPill, name, went, errors },
-      pass: link === name && menu === 1 && url === '/products' && swatch && swatch.title && swatch.hits && !orders && kitsPill === 0 && /\/products\/\d+$/.test(went) && errors.length === 0,
+      recipe: { url: '/products', fixture: ['GET /products?page=…: product 1 first, ready but without parts (rewritten)'], actions: ['the first card’s menu', 'Escape', 'hover points of a swatch and of «Неповний»', 'click the name'] },
+      measured: { link, menu, url, swatch, incomplete, orders, kitsPill, name, went, errors },
+      pass: link === name && menu === 1 && incomplete && !!incomplete.title && incomplete.hits && url === '/products' && swatch && swatch.title && swatch.hits && !orders && kitsPill === 0 && /\/products\/\d+$/.test(went) && errors.length === 0,
     };
   });
 
