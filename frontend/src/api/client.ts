@@ -2209,6 +2209,8 @@ export interface ProductListPage {
   /** Counts under every filter but the category; a category with none is absent. */
   categories: ProductCategoryCount[];
   uncategorized: number;
+  /** WS-13 E8 G01 — every filter but the category: what «All products» shows. */
+  all_categories: number;
   /** WS-13 E1 PC6 — every catalogue product, whatever the filters. */
   catalog_total: number;
 }

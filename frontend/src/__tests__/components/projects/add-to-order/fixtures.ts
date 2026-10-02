@@ -60,6 +60,7 @@ export const pageOf = (items: ProductListItem[], total: number, page = 1): Produ
   categories: [],
   catalog_total: total,
   uncategorized: 0,
+  all_categories: total,
 });
 
 /** The Pipe's detail: one group, Tail, straight (standard) or angled. */

@@ -313,7 +313,7 @@ describe('ProductPage', () => {
   });
 
   it('adds a catalog product to an order it asks for', async () => {
-    vi.spyOn(api, 'getProductsPaged').mockResolvedValue({ items: [], meta: { total: 0, current_page: 1, per_page: 24, last_page: 1 }, categories: [], uncategorized: 0, catalog_total: 0 });
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue({ items: [], meta: { total: 0, current_page: 1, per_page: 24, last_page: 1 }, categories: [], uncategorized: 0, all_categories: 0, catalog_total: 0 });
     vi.spyOn(api, 'getProductCategories').mockResolvedValue([]);
     vi.spyOn(api, 'getProductFacets').mockResolvedValue({ materials: [], colors: [], models: [] });
     const orders = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue({

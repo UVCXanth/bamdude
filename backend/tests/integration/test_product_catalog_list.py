@@ -307,3 +307,41 @@ async def test_the_detail_is_the_catalog_row(committing_client, db_session, seed
         assert {key: detail[key] for key in row} == row
     lamp = next(i for i in items if i["id"] == seeded_catalog["lamp"])
     assert (lamp["materials"], lamp["models"], lamp["finished_available"]) == (["PETG"], ["P1S"], 2)
+
+
+@pytest.mark.asyncio
+async def test_all_categories_counts_every_filter_but_the_category(committing_client, db_session, seeded_catalog):
+    """WS-13 E8 G01: «All products» in the panel — the rows under every filter but the
+    category. It equals the total of the same query without a category, the sum of the
+    panel's groups, and it does not move with the category chosen."""
+    db_session.add_all([Product(name="Retired", is_active=False), Product(name="Once", origin="adhoc_job")])
+    await db_session.commit()
+
+    async def page(**params):
+        r = await committing_client.get("/api/v1/products", params={"page": 1, **params})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    for params in (
+        {},
+        {"q": "lamp"},
+        {"material": "pla"},
+        {"active": "true"},
+        {"include_adhoc": "true"},
+        {"stock": "kits"},
+        {"sliced": "true"},
+        {"status": "draft"},
+    ):
+        whole = await page(**params)
+        assert whole["all_categories"] == whole["meta"]["total"], params
+        assert whole["all_categories"] == whole["uncategorized"] + sum(c["count"] for c in whole["categories"]), params
+        for category in ("none", str(seeded_catalog["hooks"])):
+            narrowed = await page(category=category, **params)
+            assert narrowed["all_categories"] == whole["all_categories"], (params, category)
+
+
+@pytest.mark.asyncio
+async def test_the_flat_list_carries_no_panel_count(committing_client, seeded_catalog):
+    """G01 lives in the page envelope only; the flat answer stays a bare list."""
+    r = await committing_client.get("/api/v1/products")
+    assert r.status_code == 200 and isinstance(r.json(), list)

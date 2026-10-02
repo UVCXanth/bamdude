@@ -674,8 +674,10 @@ async def _in_stock_ids(db: AsyncSession, conditions: list) -> list[int]:
     return kept
 
 
-async def _category_counts(db: AsyncSession, conditions: list) -> tuple[list[CategoryCount], int]:
-    """The category panel: one GROUP BY under every filter but the category."""
+async def _category_counts(db: AsyncSession, conditions: list) -> tuple[list[CategoryCount], int, int]:
+    """The category panel: one GROUP BY under every filter but the category —
+    the named groups, the uncategorized, and every group together (what «All
+    products» shows, WS-13 E8 G01)."""
     rows = (
         await db.execute(
             select(Product.category_id, ProductCategory.name, func.count(Product.id))
@@ -689,7 +691,7 @@ async def _category_counts(db: AsyncSession, conditions: list) -> tuple[list[Cat
         (CategoryCount(id=cid, name=name, count=n) for cid, name, n in rows if cid is not None and name is not None),
         key=lambda c: (c.name.casefold(), c.id),
     )
-    return named, uncategorized
+    return named, uncategorized, sum(n for _cid, _name, n in rows)
 
 
 _STOCK_BOTH = "Use either stock or in_stock, not both"
@@ -795,7 +797,7 @@ async def list_products(
         if not all:
             query = query.limit(per_page).offset((page - 1) * per_page)
         products = (await db.execute(query)).scalars().all()
-    categories, uncategorized = panel if panel else ([], 0)
+    categories, uncategorized, all_categories = panel if panel else ([], 0, 0)
     catalog_total = (
         await db.scalar(select(func.count(Product.id)).where(Product.origin == ProductOrigin.CATALOG.value)) or 0
     )
@@ -804,6 +806,7 @@ async def list_products(
         meta=page_meta(total, page, per_page, all),
         categories=categories,
         uncategorized=uncategorized,
+        all_categories=all_categories,
         catalog_total=catalog_total,
     )
 

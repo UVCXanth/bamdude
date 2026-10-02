@@ -25,6 +25,7 @@ const pageOf = (items: unknown[], meta: Partial<{ total: number; current_page: n
   meta: { total: items.length, current_page: 1, per_page: 24, last_page: 1, ...meta },
   categories: [],
   uncategorized: 0,
+  all_categories: items.length,
   catalog_total: items.length,
 });
 

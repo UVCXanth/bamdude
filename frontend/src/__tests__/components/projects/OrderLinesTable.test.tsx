@@ -371,6 +371,7 @@ describe('OrderLinesTable · the table (E4 B)', () => {
       meta: { total: 0, current_page: 1, per_page: 24, last_page: 1 },
       categories: [],
       uncategorized: 0,
+      all_categories: 0,
       catalog_total: 0,
     });
     vi.spyOn(api, 'getProductCategories').mockResolvedValue([]);

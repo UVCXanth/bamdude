@@ -143,6 +143,9 @@ class ProductListPage(BaseModel):
     # counts the products without one.
     categories: list[CategoryCount] = []
     uncategorized: int = 0
+    #: WS-13 E8 G01 — the rows under every filter but the category: what the panel's
+    #: «All products» shows (the sum of the groups above, uncategorized included).
+    all_categories: int = 0
     #: WS-13 E1 PC6 — every catalogue product, whatever the filters and ``is_active``.
     catalog_total: int = 0
 
