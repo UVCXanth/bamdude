@@ -1152,6 +1152,8 @@ async (page, selftest = null) => {
     const card = p.locator('[data-testid$="-card"][data-testid^="product-"]').first();
     const link = await card.getByRole('link').first().getAttribute('aria-label');
     await card.getByTestId('product-menu').click();
+    // The menu is a portal placed after the click's render — waited for, never counted at once.
+    await p.getByRole('menu').waitFor({ timeout: 5000 }).catch(() => {});
     const menu = await p.getByRole('menu').count();
     const url = await urlOf(p);
     await p.keyboard.press('Escape');
