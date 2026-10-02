@@ -13,8 +13,10 @@ import { useSearchHotkey } from '../hooks/useSearchHotkey';
  * `layout` (WS-13 E2 B06): `list` — a list page's box, 280 px (never wider than
  * its container), the whole row at a viewport of 760 px and narrower; `picker` —
  * the «Add to order» tabs', growing into the rest of its row and taking a row of
- * its own at 760 and narrower. Clearing gives the focus back to the box, and the
- * browser's own cancel cross is hidden — one clear button, not two.
+ * its own at 760 and narrower; `wide` (WS-13 E8 C02) — the catalog's search row:
+ * the whole width, 44 px tall, 15 px text, and the `/` hotkey shown as a hint above
+ * 760. Clearing gives the focus back to the box, and the browser's own cancel cross
+ * is hidden — one clear button, not two.
  */
 export function ListSearchBox({
   value,
@@ -26,7 +28,7 @@ export function ListSearchBox({
   value: string;
   onChange: (value: string) => void;
   placeholder: string;
-  layout?: 'list' | 'picker';
+  layout?: 'list' | 'picker' | 'wide';
   /** The page's own handle on the field — «Reset» puts the focus back here (WS-13 E7 C04). */
   inputRef?: RefObject<HTMLInputElement | null>;
 }) {
@@ -35,10 +37,15 @@ export function ListSearchBox({
   const ref = inputRef ?? ownRef;
   useSearchHotkey(ref);
   // ⚠️ `max-[761px]`: Tailwind 4 writes `max-*` as `width < N`; the rule is «760 and narrower».
+  const wide = layout === 'wide';
   const width =
-    layout === 'picker' ? 'w-full min-w-0 flex-1 max-[761px]:basis-full' : 'w-[280px] max-w-full max-[761px]:w-full';
-  return (
-    <div className={`relative ${width}`}>
+    layout === 'picker'
+      ? 'w-full min-w-0 flex-1 max-[761px]:basis-full'
+      : wide
+        ? 'w-full'
+        : 'w-[280px] max-w-full max-[761px]:w-full';
+  const field = (
+    <div data-layout={wide ? undefined : layout} className={wide ? 'relative min-w-0 flex-1' : `relative ${width}`}>
       <Search className="w-4 h-4 text-bambu-gray absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
       <input
         ref={ref}
@@ -47,7 +54,9 @@ export function ListSearchBox({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         aria-label={placeholder}
-        className="w-full pl-9 pr-8 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none [&::-webkit-search-cancel-button]:hidden"
+        className={`w-full pl-9 pr-8 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none [&::-webkit-search-cancel-button]:hidden ${
+          wide ? 'h-11 text-[15px]' : 'py-2 text-sm'
+        }`}
       />
       {value && (
         <button
@@ -62,6 +71,19 @@ export function ListSearchBox({
           <X className="w-4 h-4" />
         </button>
       )}
+    </div>
+  );
+  if (!wide) return field;
+  return (
+    <div data-layout="wide" className={`flex items-center gap-2.5 ${width}`}>
+      {field}
+      {/* The hotkey's hint — a keyboard's, so not on a narrow screen. */}
+      <kbd
+        aria-hidden="true"
+        className="max-[761px]:hidden rounded border border-bambu-dark-tertiary px-2 py-0.5 text-xs text-bambu-gray"
+      >
+        /
+      </kbd>
     </div>
   );
 }

@@ -54,4 +54,24 @@ describe('ListSearchBox', () => {
     fireEvent.click(clear);
     expect(screen.getByRole('searchbox', { name: 'Search orders' })).toHaveFocus();
   });
+
+  it('wide: the whole row, 44 px tall, 15 px text, and the «/» hint shown above 760 (WS-13 E8 C02)', () => {
+    render(<ListSearchBox value="" onChange={() => {}} placeholder="Search products" layout="wide" />);
+    const box = screen.getByRole('searchbox', { name: 'Search products' });
+    expect(box.className).toContain('h-11');
+    expect(box.className).toContain('text-[15px]');
+    expect(box.closest('[data-layout="wide"]')?.className).toContain('w-full');
+    const hint = screen.getByText('/');
+    expect(hint.tagName).toBe('KBD');
+    // ⚠️ `max-[761px]` — Tailwind 4's `width < 761`, i.e. hidden at 760 and narrower.
+    expect(hint.className).toContain('max-[761px]:hidden');
+  });
+
+  it('the list and picker boxes carry no hint', () => {
+    const { unmount } = render(<ListSearchBox value="" onChange={() => {}} placeholder="Search orders" />);
+    expect(screen.queryByText('/')).not.toBeInTheDocument();
+    unmount();
+    render(<ListSearchBox value="" onChange={() => {}} placeholder="Search orders" layout="picker" />);
+    expect(screen.queryByText('/')).not.toBeInTheDocument();
+  });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { listState } from '../../utils/listState';
+import { listFigure, listState } from '../../utils/listState';
 
 const page = (total: number) => ({ meta: { total } });
 
@@ -20,5 +20,17 @@ describe('listState', () => {
   it('is empty only for an answer with no rows', () => {
     expect(listState({ data: page(0), isError: false, isPlaceholderData: false })).toBe('empty');
     expect(listState({ data: page(2), isError: false, isPlaceholderData: false })).toBe('data');
+  });
+});
+
+// WS-13 E8 C11: a figure of the answer is a number only from THIS key's answer.
+describe('listFigure', () => {
+  it('waits with «…», fails with «—», and says 0 only from an answer', () => {
+    expect(listFigure('loading', 0)).toBe('…');
+    expect(listFigure('transition', 12)).toBe('…');
+    expect(listFigure('failed', 0)).toBe('—');
+    expect(listFigure('refresh-failed', 12)).toBe('12');
+    expect(listFigure('empty', 0)).toBe('0');
+    expect(listFigure('data', 7)).toBe('7');
   });
 });

@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { ProductListItem } from '../../../api/client';
@@ -74,14 +74,20 @@ describe('ProductsPage', () => {
     expect(await screen.findByRole('button', { name: 'Cards' })).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('asks for page 1 of 24 catalog products by name, and for everything when the toggle is off', async () => {
+  it('asks for page 1 of 24 catalog products by name, and for the hidden ones too when «hidden» is on (WS-13 E8 C04)', async () => {
     const get = vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
     render(<ProductsPage />);
     await screen.findByText('Flask');
     expect(get).toHaveBeenLastCalledWith({ active: true, sort_by: 'name-asc', page: 1, per_page: 24 });
-    fireEvent.click(screen.getByLabelText(/in catalog/i));
+    const hidden = screen.getByRole('checkbox', { name: 'hidden' });
+    expect(hidden).not.toBeChecked();
+    fireEvent.click(hidden);
     await waitFor(() => expect(get).toHaveBeenLastCalledWith({ sort_by: 'name-asc', page: 1, per_page: 24 }));
-    expect(window.location.search).toContain('catalog=0');
+    // The URL keeps its old meaning — `catalog=0` is «hidden ones too», as it always was.
+    expect(window.location.search).toBe('?catalog=0');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'hidden' }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith({ active: true, sort_by: 'name-asc', page: 1, per_page: 24 }));
+    expect(window.location.search).toBe('');
   });
 
   it('searches with the typed text, puts it in the URL and goes back to page 1', async () => {
@@ -119,8 +125,11 @@ describe('ProductsPage', () => {
     window.history.pushState({}, '', '/products?q=zzz&catalog=0');
     const get = vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf([]));
     render(<ProductsPage />);
-    expect(await screen.findByText('Nothing matches your search or filters.')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    // The mockup's panel (WS-13 E8 C08) — and one Reset, its own (C05).
+    expect(await screen.findByText('Nothing found')).toBeInTheDocument();
+    expect(screen.getByText('Try a shorter query or remove filters.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reset' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Reset filters' }));
     await waitFor(() => expect(get).toHaveBeenLastCalledWith({ active: true, sort_by: 'name-asc', page: 1, per_page: 24 }));
     expect(window.location.search).toBe('');
   });
@@ -195,7 +204,9 @@ describe('ProductsPage', () => {
     vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf([]));
     render(<ProductsPage />);
     expect(await screen.findByText('No products yet')).toBeInTheDocument();
-    expect(screen.queryByText('Nothing matches your search or filters.')).toBeNull();
+    expect(screen.queryByText('Nothing found')).toBeNull();
+    // «hidden» is a condition all the same — the toolbar's Reset takes it off (C05).
+    expect(screen.getByRole('button', { name: 'Reset' })).toBeInTheDocument();
   });
   it('Back to a later page is not clamped by the previous answer still on screen', async () => {
     window.history.pushState({}, '', '/products?q=lid');
@@ -242,7 +253,7 @@ describe('ProductsPage — the catalog (spec workshop-product-catalog)', () => {
     const get = vi.spyOn(api, 'getProductsPaged').mockResolvedValue(envelope(rows));
     render(<ProductsPage />);
     const panel = await screen.findByRole('navigation', { name: 'Categories' });
-    expect(within(panel).getByRole('button', { name: 'All products' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(panel).getByRole('button', { name: /^All products/ })).toHaveAttribute('aria-pressed', 'true');
     expect(await within(panel).findByRole('button', { name: /^Uncategorized\s*1$/ })).toBeInTheDocument();
     // A category with nothing under the filters is still listed — with 0.
     expect(await within(panel).findByRole('button', { name: /^Vases\s*0$/ })).toBeInTheDocument();
@@ -273,16 +284,16 @@ describe('ProductsPage — the catalog (spec workshop-product-catalog)', () => {
     fireEvent.change(screen.getByLabelText('Material'), { target: { value: 'PETG' } });
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ material: 'PETG', page: 1 })));
     fireEvent.change(screen.getByLabelText('Printer model'), { target: { value: 'P1S' } });
-    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'draft' } });
-    fireEvent.click(screen.getByLabelText('In stock'));
+    fireEvent.change(screen.getByLabelText('Readiness'), { target: { value: 'draft' } });
+    fireEvent.change(screen.getByLabelText('Stock'), { target: { value: 'kits' } });
     await waitFor(() =>
       expect(get).toHaveBeenLastCalledWith(
-        expect.objectContaining({ material: 'PETG', model: 'P1S', status: 'draft', in_stock: true }),
+        expect.objectContaining({ material: 'PETG', model: 'P1S', status: 'draft', stock: 'kits' }),
       ),
     );
     fireEvent.change(screen.getByLabelText('Colour'), { target: { value: '#FF0000' } });
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ color: '#FF0000' })));
-    for (const part of ['material=PETG', 'model=P1S', 'status=draft', 'stock=1']) {
+    for (const part of ['material=PETG', 'model=P1S', 'status=draft', 'stock=kits']) {
       expect(window.location.search).toContain(part);
     }
     expect(window.location.search).not.toContain('page=');
@@ -317,5 +328,208 @@ describe('ProductsPage — the catalog (spec workshop-product-catalog)', () => {
     const card = await screen.findByTestId('product-1-card');
     expect(within(card).getByText('Draft')).toBeInTheDocument();
     expect(within(card).getByText(/LMP-1/)).toBeInTheDocument();
+  });
+});
+
+// WS-13 E8 C: the page of the mockup — heading, the wide search, the row of filters,
+// the categories and the results line, and every state of the read.
+describe('ProductsPage — the mockup page (WS-13 E8 C)', () => {
+  const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    localStorage.clear();
+    window.history.pushState({}, '', '/products');
+    vi.spyOn(api, 'getProductFacets').mockResolvedValue({ materials: ['PETG'], colors: ['#FF0000'], models: ['P1S'] });
+    vi.spyOn(api, 'getProductCategories').mockResolvedValue([{ id: 3, name: 'Hooks', products_count: 2 }]);
+  });
+
+  it('C01 the subtitle counts the catalog: no figure before the first answer, then the server’s', async () => {
+    let answer: (v: unknown) => void = () => {};
+    vi.spyOn(api, 'getProductsPaged').mockImplementation(
+      () =>
+        new Promise((r) => {
+          answer = r as (v: unknown) => void;
+        }),
+    );
+    render(<ProductsPage />);
+    const header = await screen.findByTestId('list-page-header');
+    expect(header).toHaveTextContent('Search by name, SKU, part, file or parameters');
+    expect(header).not.toHaveTextContent(/\d/);
+    await act(async () => answer({ ...pageOf(rows), catalog_total: 104 }));
+    expect(header).toHaveTextContent('104 products in the catalog · search by name, SKU, part, file or parameters');
+  });
+
+  it('C01 a failed first read puts «—» where the figure goes', async () => {
+    vi.spyOn(api, 'getProductsPaged').mockRejectedValue(new Error('down'));
+    render(<ProductsPage />);
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(screen.getByTestId('list-page-header')).toHaveTextContent('— products in the catalog · search by name');
+  });
+
+  it('C02 the search is its own wide row, above the filters, the categories and the results', async () => {
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
+    render(<ProductsPage />);
+    const box = await screen.findByRole('searchbox', { name: 'Name, SKU, material, colour, part or file…' });
+    expect(box.closest('[data-layout="wide"]')).toBeTruthy();
+    expect(box.compareDocumentPosition(screen.getByLabelText('Material')) & FOLLOWING).toBeTruthy();
+    expect(screen.getByLabelText('Material').compareDocumentPosition(screen.getByRole('navigation', { name: 'Categories' })) & FOLLOWING).toBeTruthy();
+  });
+
+  it.each([
+    ['/products', { active: true }, []],
+    ['/products?catalog=1', { active: true }, []],
+    ['/products?catalog=yes', { active: true }, []],
+    ['/products?catalog=0', {}, ['active']],
+    ['/products?adhoc=1', { active: true, include_adhoc: true }, []],
+    ['/products?adhoc=yes', { active: true }, ['include_adhoc']],
+    ['/products?stock=1', { active: true, stock: 'kits' }, ['in_stock']],
+    ['/products?stock=finished', { active: true, stock: 'finished' }, []],
+    ['/products?stock=low', { active: true, stock: 'below_min' }, []],
+    ['/products?stock=zzz', { active: true }, ['stock', 'in_stock']],
+    ['/products?status=archived', { active: true }, ['status']],
+    ['/products?model=none', { active: true, sliced: false }, ['model']],
+    ['/products?model=A1', { active: true, model: 'A1' }, ['sliced']],
+  ])('C04 %s is asked of the server as it reads, and opening it rewrites nothing', async (url, want, absent) => {
+    window.history.pushState({}, '', url);
+    const get = vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
+    render(<ProductsPage />);
+    await screen.findByText('Flask');
+    const sent = get.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(sent).toEqual(expect.objectContaining(want));
+    for (const key of absent) expect(sent).not.toHaveProperty(key);
+    expect(window.location.pathname + window.location.search).toBe(url);
+  });
+
+  it('C04 the fields read the URL: «hidden» from catalog=0, part kits from the old stock=1, «any» for an unknown readiness', async () => {
+    window.history.pushState({}, '', '/products?catalog=0&stock=1&status=archived&adhoc=1&model=none');
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
+    render(<ProductsPage />);
+    await screen.findByText('Flask');
+    expect(screen.getByRole('checkbox', { name: 'hidden' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'one-off' })).toBeChecked();
+    expect(screen.getByLabelText('Stock')).toHaveValue('kits');
+    expect(screen.getByLabelText('Readiness')).toHaveValue('');
+    expect(screen.getByLabelText('Printer model')).toHaveValue('none');
+  });
+
+  it('C04 «below minimum» writes low to the URL and below_min to the server; «not sliced» writes none', async () => {
+    const get = vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
+    render(<ProductsPage />);
+    await screen.findByText('Flask');
+    fireEvent.change(screen.getByLabelText('Stock'), { target: { value: 'low' } });
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ stock: 'below_min' })));
+    expect(window.location.search).toBe('?stock=low');
+    fireEvent.change(screen.getByLabelText('Printer model'), { target: { value: 'none' } });
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sliced: false })));
+    expect(get.mock.calls.at(-1)![0]).not.toHaveProperty('model');
+    expect(window.location.search).toBe('?stock=low&model=none');
+  });
+
+  it('C05 Reset only while a condition holds: one write, the sort kept, focus in the search, no history entry', async () => {
+    window.history.pushState({}, '', '/products?sort=updated-desc&status=archived');
+    const get = vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
+    render(<ProductsPage />);
+    await screen.findByText('Flask');
+    // An unknown readiness filters nothing, so it is no condition.
+    expect(screen.queryByRole('button', { name: 'Reset' })).not.toBeInTheDocument();
+    const entries = window.history.length;
+    fireEvent.click(screen.getByRole('checkbox', { name: 'one-off' }));
+    fireEvent.click(within(await screen.findByRole('navigation', { name: 'Categories' })).getByRole('button', { name: /^Hooks/ }));
+    await waitFor(() => expect(window.location.search).toContain('category=3'));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    await waitFor(() => expect(window.location.search).toBe('?sort=updated-desc'));
+    expect(get).toHaveBeenLastCalledWith({ active: true, sort_by: 'updated-desc', page: 1, per_page: 24 });
+    expect(screen.getByRole('searchbox')).toHaveFocus();
+    expect(screen.queryByRole('button', { name: 'Reset' })).not.toBeInTheDocument();
+    expect(window.history.length).toBe(entries);
+  });
+
+  it('C06 «All products» carries the server’s figure for every filter but the category', async () => {
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue({
+      ...pageOf(rows),
+      categories: [{ id: 3, name: 'Hooks', count: 2 }],
+      uncategorized: 1,
+      all_categories: 9,
+    });
+    render(<ProductsPage />);
+    const nav = await screen.findByRole('navigation', { name: 'Categories' });
+    expect(await within(nav).findByRole('button', { name: /^All products\s*9$/ })).toBeInTheDocument();
+  });
+
+  it('C07 the results line names the category and counts the server’s total', async () => {
+    window.history.pushState({}, '', '/products?category=3');
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue({
+      ...pageOf(rows, { total: 42 }),
+      categories: [{ id: 3, name: 'Hooks', count: 42 }],
+    });
+    render(<ProductsPage />);
+    const heading = await screen.findByRole('heading', { level: 3, name: /^Hooks/ });
+    await waitFor(() => expect(within(heading).getByTestId('results-count')).toHaveTextContent('42'));
+    expect(screen.queryByText('0 results')).not.toBeInTheDocument();
+  });
+
+  it('C07 «All products» and «Uncategorized» head the results; «0 results» comes only from an answer', async () => {
+    window.history.pushState({}, '', '/products?q=zzz');
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf([]));
+    render(<ProductsPage />);
+    const heading = await screen.findByRole('heading', { level: 3, name: /^All products/ });
+    expect(await screen.findByText('0 results')).toBeInTheDocument();
+    expect(within(heading).getByTestId('results-count')).toHaveTextContent('0');
+  });
+
+  it('C08 the first read draws the skeleton of the view — never «No products yet»', async () => {
+    vi.spyOn(api, 'getProductsPaged').mockImplementation(() => new Promise(() => {}));
+    render(<ProductsPage />);
+    const skeleton = await screen.findByTestId('products-skeleton');
+    expect(skeleton).toHaveAttribute('data-shape', 'table');
+    expect(screen.queryByText('No products yet')).not.toBeInTheDocument();
+    expect(within(screen.getByRole('heading', { level: 3 })).getByTestId('results-count')).toHaveTextContent('…');
+  });
+
+  it('C08 a failed key is an alert with a retry of the same key — the URL does not move', async () => {
+    window.history.pushState({}, '', '/products?q=lid');
+    const get = vi.spyOn(api, 'getProductsPaged').mockRejectedValue(new Error('down'));
+    render(<ProductsPage />);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not load the products');
+    expect(screen.queryByText('Nothing found')).not.toBeInTheDocument();
+    expect(within(screen.getByRole('heading', { level: 3 })).getByTestId('results-count')).toHaveTextContent('—');
+    get.mockResolvedValue(pageOf(rows));
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Flask')).toBeInTheDocument();
+    expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'lid', page: 1 }));
+    expect(window.location.search).toBe('?q=lid');
+  });
+
+  it('C08 a failed re-read keeps the rows and says so; of an empty answer, the explanation stays', async () => {
+    const get = vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
+    render(<ProductsPage />);
+    await screen.findByText('Flask');
+    const reread = async () => {
+      await act(async () => {
+        window.dispatchEvent(new Event('visibilitychange'));
+      });
+    };
+    get.mockRejectedValue(new Error('down'));
+    await reread();
+    expect(await screen.findByText('Could not refresh')).toBeInTheDocument();
+    expect(screen.getByText('Flask')).toBeInTheDocument();
+    get.mockResolvedValue(pageOf([]));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('No products yet')).toBeInTheDocument();
+    get.mockRejectedValue(new Error('down'));
+    await reread();
+    expect(await screen.findByText('Could not refresh')).toBeInTheDocument();
+    expect(screen.getByText('No products yet')).toBeInTheDocument();
+  });
+
+  it('C09 the facets failed: the filters stay usable and a note offers a retry', async () => {
+    vi.mocked(api.getProductFacets).mockRejectedValue(new Error('down'));
+    vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf(rows));
+    render(<ProductsPage />);
+    await screen.findByText('Flask');
+    expect(await screen.findByText('Could not load the filter values')).toBeInTheDocument();
+    expect(screen.getByLabelText('Material')).toBeEnabled();
   });
 });

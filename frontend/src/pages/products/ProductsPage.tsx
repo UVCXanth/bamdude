@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { FileBox, Plus, Upload } from 'lucide-react';
 import { api } from '../../api/client';
-import type { Product, ProductListItem, ProductStatus } from '../../api/client';
+import type { Product, ProductListItem } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { invalidateAfterDelete, invalidateOrderViews, invalidateProductCatalog } from '../../utils/queryInvalidation';
@@ -29,6 +29,12 @@ import { Button } from '../../components/Button';
 import { CategoryPanel } from '../../components/products/CategoryPanel';
 import { CategoryManagerDialog } from '../../components/products/CategoryManagerDialog';
 import { CatalogFilters, type CatalogFilterValues } from '../../components/products/CatalogFilters';
+import { catalogStatus, catalogStock } from '../../components/products/catalogUrl';
+import { ProductsSkeleton } from '../../components/products/ProductsSkeleton';
+import { WorkshopPanel } from '../../components/workshop/WorkshopPanel';
+import { LoadFailedNote } from '../../components/workshop/LoadFailedNote';
+import { RefreshFailedNote } from '../../components/workshop/RefreshFailedNote';
+import { answeredEmpty, listFigure, listState } from '../../utils/listState';
 
 /**
  * The product catalog.
@@ -42,6 +48,11 @@ import { CatalogFilters, type CatalogFilterValues } from '../../components/produ
  *
  * The category panel and the filters (spec workshop-product-catalog) are
  * request parameters too; the panel's counts come with the page.
+ *
+ * WS-13 E8 C: the mockup's page — the catalog's figure under the heading, the wide
+ * search over the row of filters, the categories beside the results, and every state
+ * of the read said (`listState`: a skeleton, a failed key as an alert with its retry,
+ * a failed re-read as a note) — never «no products» for «could not ask».
  */
 export function ProductsPage() {
   const { t } = useTranslation();
@@ -53,24 +64,39 @@ export function ProductsPage() {
   const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
     defaults: {
       sort: 'name-asc',
-      extra: { catalog: '1', category: '', material: '', color: '', model: '', status: '', stock: '' },
+      extra: { catalog: '1', adhoc: '', category: '', material: '', color: '', model: '', status: '', stock: '' },
     },
   });
-  const inCatalog = extra.catalog !== '0';
+  // WS-13 E8 C04 (R01): the URL keeps its old values. `catalog=0` was always «the hidden
+  // ones too» — now the «hidden» box; anything else is the default. A readiness or stock
+  // the closed sets do not know is no filter, and opening such a link rewrites nothing.
+  const hidden = extra.catalog === '0';
+  const adhoc = extra.adhoc === '1';
+  const status = catalogStatus(extra.status);
+  const stock = catalogStock(extra.stock);
   const filters: CatalogFilterValues = {
     material: extra.material,
     color: extra.color,
     model: extra.model,
-    status: extra.status,
-    stock: extra.stock,
+    status,
+    stock,
+    hidden,
+    adhoc,
   };
-  // A hand-edited URL naming no status is no filter, not a 422.
-  const status: ProductStatus | undefined =
-    extra.status === 'draft' || extra.status === 'ready' ? extra.status : undefined;
+  const setFilter = <K extends keyof CatalogFilterValues>(key: K, value: CatalogFilterValues[K]) => {
+    if (key === 'hidden') setExtra('catalog', value ? '0' : '');
+    else if (key === 'adhoc') setExtra('adhoc', value ? '1' : '');
+    else setExtra(key, String(value));
+  };
   const [managing, setManaging] = useState(false);
-  const { data: directory = [] } = useQuery({
+  const directoryQuery = useQuery({
     queryKey: ['product-categories'],
     queryFn: () => api.getProductCategories(),
+    staleTime: 60_000,
+  });
+  const facetsQuery = useQuery({
+    queryKey: ['product-facets'],
+    queryFn: () => api.getProductFacets(),
     staleTime: 60_000,
   });
   // Nothing chosen → the table (WS-13 E2 B05); the catalog's order does not depend on the view.
@@ -86,22 +112,24 @@ export function ProductsPage() {
   const [addingToOrder, setAddingToOrder] = useState<ProductListItem | null>(null);
 
   // `active: false` would be a filter of its own ("only what is hidden"), which
-  // this toggle does not offer — off means "no filter", so the key is absent.
+  // «hidden» does not offer — on means "no filter", so the key is absent.
   const params = {
-    ...(inCatalog ? { active: true } : {}),
+    ...(hidden ? {} : { active: true }),
+    ...(adhoc ? { include_adhoc: true } : {}),
     ...(q ? { q } : {}),
     ...(extra.category ? { category: extra.category } : {}),
     ...(extra.material ? { material: extra.material } : {}),
     ...(extra.color ? { color: extra.color } : {}),
-    ...(extra.model ? { model: extra.model } : {}),
+    // «Not sliced» is the server's `sliced=false`, never a model called «none».
+    ...(extra.model === 'none' ? { sliced: false } : extra.model ? { model: extra.model } : {}),
     ...(status ? { status } : {}),
-    ...(extra.stock === '1' ? { in_stock: true } : {}),
+    ...(stock ? { stock: stock === 'low' ? ('below_min' as const) : stock } : {}),
     sort_by: sort,
     page,
     ...(perPage === -1 ? { all: true } : { per_page: perPage }),
   };
 
-  const { data, isLoading, isPlaceholderData } = useQuery({
+  const { data, isError, isPlaceholderData, refetch } = useQuery({
     queryKey: ['products', params],
     // Arrow, never `queryFn: api.getProductsPaged` — TanStack would hand the
     // query context to a function whose only parameter is the params object.
@@ -111,16 +139,40 @@ export function ProductsPage() {
   });
   const products = data?.items ?? [];
   const total = data?.meta.total ?? 0;
+  // WS-13 E8 C08: one reading of the list's state — a failed key is an alert, never «no products».
+  const state = listState({ data, isError, isPlaceholderData });
+  // The empty explanation stays under a failed re-read of an empty answer (E7-V01).
+  const emptyAnswer = answeredEmpty(state, data);
   // A delete (ours or someone else's) can leave us past the last page. Only an
   // answer for THIS view may clamp: the previous page's, still on screen while
   // the next loads, knows nothing about how many pages the new filter has.
   useEffect(() => {
     if (data && !isPlaceholderData) clampToLastPage(data.meta.last_page);
   }, [data, isPlaceholderData, clampToLastPage]);
-  // Only the search narrows: the catalog toggle OFF is the widest view there
-  // is, so an empty answer there means the catalog is empty, not "no match".
-  const filtered =
-    q !== '' || [extra.category, extra.material, extra.color, extra.model, extra.status, extra.stock].some(Boolean);
+  // What NARROWS the list — an empty answer under it is «nothing found». «hidden» and
+  // «one-off» widen it, so an empty answer with only those is the catalog's own emptiness.
+  const narrowed =
+    q !== '' || [extra.category, extra.material, extra.color, extra.model, status, stock].some(Boolean);
+  // Every condition Reset clears (C05) — the widening ones too.
+  const condition = narrowed || hidden || adhoc;
+  const searchRef = useRef<HTMLInputElement>(null);
+  const resetConditions = () => {
+    forget();
+    resetFilters();
+    searchRef.current?.focus();
+  };
+  const subtitle = data
+    ? t('products.list.subtitle', { count: data.catalog_total })
+    : state === 'failed'
+      ? t('products.list.subtitleFailed')
+      : t('products.list.subtitleNoCount');
+  const resultsTitle = !extra.category
+    ? t('products.catalog.all')
+    : extra.category === 'none'
+      ? t('products.catalog.uncategorized')
+      : (directoryQuery.data?.find((c) => String(c.id) === extra.category)?.name ??
+        data?.categories.find((c) => String(c.id) === extra.category)?.name ??
+        t('products.catalog.unknownCategory', { id: extra.category }));
 
   const sortOptions = [
     { key: 'name', label: t('products.table.name') },
@@ -203,7 +255,7 @@ export function ProductsPage() {
 
   return (
     <div className="workshop p-4">
-      <ListPageHeader title={t('products.list.title')} subtitle={t('products.list.subtitle')}>
+      <ListPageHeader title={t('products.list.title')} subtitle={subtitle}>
         <ListViewToggle value={view} options={views} onChange={setView} />
         {hasPermission('projects:create') && (
           <div className="flex items-center gap-2">
@@ -227,96 +279,122 @@ export function ProductsPage() {
         )}
       </ListPageHeader>
 
-      <div className="grid lg:grid-cols-[14rem_minmax(0,1fr)] gap-4">
+      {/* WS-13 E8 C02 / C03: the search is a row of its own, the filters under it — both
+          above the categories and the results, as the mockup lays them. */}
+      <div className="mb-4">
+        <ListSearchBox
+          value={typed}
+          onChange={setTyped}
+          placeholder={t('products.list.search')}
+          layout="wide"
+          inputRef={searchRef}
+        />
+        <div className="mt-3">
+          <CatalogFilters
+            values={filters}
+            onChange={setFilter}
+            facets={facetsQuery.data}
+            facetsFailed={facetsQuery.isError}
+            onRetryFacets={() => facetsQuery.refetch()}
+            // Only while a condition holds; an empty answer under one carries its own (C05).
+            onReset={condition && !(emptyAnswer && narrowed) ? resetConditions : undefined}
+          />
+        </div>
+      </div>
+
+      {/* C06: clamp(180px, 11vw, 240px) beside the results, 180 at 1100 and narrower, one
+          column at 760 and narrower. ⚠️ Tailwind 4's `max-[N]` is `width < N`. */}
+      <div className="grid gap-5 grid-cols-[clamp(180px,11vw,240px)_minmax(0,1fr)] max-[1101px]:grid-cols-[180px_minmax(0,1fr)] max-[761px]:grid-cols-1">
         <CategoryPanel
-          directory={directory}
-          counts={data?.categories ?? []}
-          uncategorized={data?.uncategorized ?? 0}
+          directory={directoryQuery.data}
+          directoryFailed={directoryQuery.isError}
+          onRetryDirectory={() => directoryQuery.refetch()}
+          figures={data ? { categories: data.categories, uncategorized: data.uncategorized, all: data.all_categories } : undefined}
+          state={state}
           selected={extra.category}
           onSelect={(value) => setExtra('category', value)}
           onManage={hasPermission('projects:update') ? () => setManaging(true) : undefined}
         />
         <div className="min-w-0">
-          <div className="flex items-center gap-4 mb-4 flex-wrap">
-            <ListSearchBox value={typed} onChange={setTyped} placeholder={t('products.list.search')} />
-
-            <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
-              <input
-                type="checkbox"
-                checked={inCatalog}
-                onChange={(e) => setExtra('catalog', e.target.checked ? '1' : '0')}
-                className="accent-bambu-green"
-                aria-label={t('products.list.inCatalog')}
-              />
-              {t('products.list.inCatalog')}
-            </label>
-
-            <div className="ml-auto flex items-center gap-3">
+          {/* C07: the chosen category and the server's total under every filter. */}
+          <div className="flex items-center justify-between gap-2.5 mb-2.5 flex-wrap">
+            <h3 className="text-base font-semibold text-white">
+              {resultsTitle}
+              <span
+                data-testid="results-count"
+                className="ml-1.5 inline-block rounded-full bg-bambu-dark-tertiary px-2 py-px align-middle text-xs font-medium text-bambu-gray tabular-nums"
+              >
+                {listFigure(state, total)}
+              </span>
+            </h3>
+            <div className="flex items-center gap-3">
+              {emptyAnswer && <small className="text-xs text-bambu-gray">{t('products.list.noResults')}</small>}
               {/* A table sorts from its headers; the cards need a control of their own. */}
               {view === 'cards' && <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />}
             </div>
           </div>
-          <div className="mb-4">
-            <CatalogFilters values={filters} onChange={(key, value) => setExtra(key, value)} />
-          </div>
 
-          {!isLoading && total === 0 && (
-            filtered ? (
-              <div className="flex items-center gap-3 text-bambu-gray text-sm">
-                <span>{t('list.empty.noMatch')}</span>
-                <Button
-                  variant="secondary"
-                  onClick={() => {
-                    forget();
-                    resetFilters();
-                  }}
-                >
-                  {t('list.empty.reset')}
-                </Button>
-              </div>
+          {state === 'loading' && <ProductsSkeleton view={view} />}
+          {state === 'failed' && <LoadFailedNote message={t('products.list.loadFailed')} onRetry={() => refetch()} />}
+          {state === 'refresh-failed' && <RefreshFailedNote onRetry={() => refetch()} />}
+
+          {emptyAnswer &&
+            (narrowed ? (
+              <WorkshopPanel>
+                <div className="px-4 py-10 text-center text-sm text-bambu-gray">
+                  <p className="mb-1 text-base font-semibold text-white">{t('products.list.noMatchTitle')}</p>
+                  <p>
+                    {t('products.list.noMatchHint')}{' '}
+                    <Button variant="ghost" onClick={resetConditions}>
+                      {t('products.list.resetFilters')}
+                    </Button>
+                  </p>
+                </div>
+              </WorkshopPanel>
             ) : (
               <p className="text-bambu-gray text-sm">{t('products.list.empty')}</p>
-            )
-          )}
+            ))}
 
           {/* The previous page stays on screen while the next one loads — dimmed
               and marked busy, so it is not read as the answer to the new question. */}
-          <div
-            data-testid="list-body"
-            aria-busy={isPlaceholderData}
-            className={`transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
-          >
-            {view === 'table' && products.length > 0 ? (
-              <ProductsTable
-                products={products}
-                sort={sort}
-                onSortChange={setSort}
-                onEdit={setEditing}
-                onDuplicate={(p) => duplicate.mutate(p.id)}
-                onToggleActive={(p) => toggleActive.mutate(p)}
-                onDelete={setDeleting}
-                onAddToOrder={setAddingToOrder}
-                footer={pageBar('card')}
-              />
-            ) : (
-              <>
-                <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
-                  {products.map((product) => (
-                    <ProductCard
-                      key={product.id}
-                      product={product}
-                      onEdit={setEditing}
-                      onDuplicate={(p) => duplicate.mutate(p.id)}
-                      onToggleActive={(p) => toggleActive.mutate(p)}
-                      onDelete={setDeleting}
-                      onAddToOrder={setAddingToOrder}
-                    />
-                  ))}
-                </div>
-                {total > 0 && <div className="mt-4">{pageBar('bare')}</div>}
-              </>
-            )}
-          </div>
+          {data && !emptyAnswer && (
+            <div
+              data-testid="list-body"
+              aria-busy={isPlaceholderData}
+              className={`transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
+            >
+              {view === 'table' && products.length > 0 ? (
+                <ProductsTable
+                  products={products}
+                  sort={sort}
+                  onSortChange={setSort}
+                  onEdit={setEditing}
+                  onDuplicate={(p) => duplicate.mutate(p.id)}
+                  onToggleActive={(p) => toggleActive.mutate(p)}
+                  onDelete={setDeleting}
+                  onAddToOrder={setAddingToOrder}
+                  footer={pageBar('card')}
+                />
+              ) : (
+                <>
+                  <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
+                    {products.map((product) => (
+                      <ProductCard
+                        key={product.id}
+                        product={product}
+                        onEdit={setEditing}
+                        onDuplicate={(p) => duplicate.mutate(p.id)}
+                        onToggleActive={(p) => toggleActive.mutate(p)}
+                        onDelete={setDeleting}
+                        onAddToOrder={setAddingToOrder}
+                      />
+                    ))}
+                  </div>
+                  {total > 0 && <div className="mt-4">{pageBar('bare')}</div>}
+                </>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

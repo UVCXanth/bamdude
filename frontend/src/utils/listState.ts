@@ -18,6 +18,17 @@ export function answeredEmpty(state: ListState, data: { meta: { total: number } 
   return state === 'empty' || (state === 'refresh-failed' && data?.meta.total === 0);
 }
 
+/**
+ * What a figure of the list's answer shows in its state (WS-13 E8 C11): a number only
+ * from an answer of THIS key — «…» while one is on its way (the previous key's figures
+ * belong to another filter), «—» when it failed; a 0 is a real 0 only then.
+ */
+export function listFigure(state: ListState, value: number): string {
+  if (state === 'loading' || state === 'transition') return '…';
+  if (state === 'failed') return '—';
+  return String(value);
+}
+
 export function listState(q: {
   data: { meta: { total: number } } | undefined;
   isError: boolean;
