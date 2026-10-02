@@ -83,10 +83,26 @@ export function OrdersWorkspace({
   const [gone, setGone] = useState<{ id: number; page: OrderListPage | undefined } | null>(null);
   const skip = gone && gone.page === data ? gone.id : null;
   const items = (data?.items ?? []).filter((o) => o.id !== skip);
-  const shown = picked != null && items.some((o) => o.id === picked) ? picked : (items[0]?.id ?? null);
-  const shownSection: OrderSection = picked != null && picked === shown ? parseOrderSection(section) : 'plan';
   const total = data?.meta.total ?? 0;
   const state = listState({ data, isError, isPlaceholderData });
+  // V02 (Codex r1): while the next page is on its way (`transition` — the previous rows stand in),
+  // the order shown stays the last CONFIRMED one, on its tab, unless the pick is a row shown; a URL
+  // naming another page's order is resolved by that page's answer alone. The pane is keyed by
+  // order, so a swap to a stand-in row would also drop the shown order's local state (its drafts).
+  const live = picked != null && items.some((o) => o.id === picked) ? picked : (items[0]?.id ?? null);
+  const liveSection: OrderSection = picked != null && picked === live ? parseOrderSection(section) : 'plan';
+  const [confirmed, setConfirmed] = useState<{ id: number; section: OrderSection } | null>(null);
+  const holding =
+    state === 'transition' &&
+    confirmed != null &&
+    items.some((o) => o.id === confirmed.id) &&
+    !(picked != null && items.some((o) => o.id === picked));
+  const shown = holding && confirmed ? confirmed.id : live;
+  const shownSection: OrderSection = holding && confirmed ? confirmed.section : liveSection;
+  useEffect(() => {
+    if (state === 'transition' || shown == null) return;
+    setConfirmed((prev) => (prev?.id === shown && prev.section === shownSection ? prev : { id: shown, section: shownSection }));
+  }, [state, shown, shownSection]);
   // G05: the URL names an order this page does not hold — say so, never swap silently.
   // Not while the next page is on its way, and not after a delete (its own way out, E6-B08).
   const fallback =
@@ -104,6 +120,9 @@ export function OrdersWorkspace({
 
   if (state === 'failed') return <LoadFailedNote message={t('orders.list.loadFailed')} onRetry={onRetry} />;
   if (state === 'loading') return <WorkspaceSkeleton />;
+  // V01 (Codex r1): a failed re-read is said whatever the last answer held — an EMPTY one too
+  // (the page keeps that answer's empty explanation above it).
+  if (state === 'refresh-failed' && items.length === 0) return <RefreshFailedNote onRetry={onRetry} />;
   if (!data || items.length === 0) return null;
 
   return (

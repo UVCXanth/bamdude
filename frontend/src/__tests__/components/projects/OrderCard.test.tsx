@@ -25,7 +25,7 @@ const base: OrderListItem = {
 };
 const noop = () => {};
 const actions = { run: noop, create: noop };
-const eta: Readiness = { kind: 'eta', eta: '2026-10-06T09:00:00Z', late: false, after: null, reasons: [] };
+const eta: Readiness = { kind: 'eta', eta: '2026-10-06T09:00:00Z', late: false, after: null, reasons: [], assumptions: [] };
 const card = (order: OrderListItem = base, readiness: Readiness = eta, act = actions) =>
   render(<OrderCard order={order} actions={act} readiness={readiness} />);
 
@@ -99,6 +99,14 @@ describe('OrderCard (WS-13 E7 E)', () => {
     card({ ...base, ordered: 0, printed: 0, covered_units: 0, remaining: 0, progress: 0, lines_count: 0, products: [] }, { kind: 'closed' });
     expect(screen.queryByTestId('order-1-progress')).not.toBeInTheDocument();
     expect(strayZeroTextNodes(screen.getByTestId('order-1-card'))).toHaveLength(0);
+  });
+
+  // V04 (Codex r1): the assumptions' hint sits in the «Ready ≈» cell, above the card's overlay link.
+  it('hints the forecast’s assumptions in «Ready ≈», above the overlay link', () => {
+    card(base, { ...eta, assumptions: ['stagger'] });
+    const hint = screen.getByLabelText(/^Not counted in this estimate:/);
+    expect(hint.closest('[data-part="meta"]')).not.toBeNull();
+    expect(hint.className).toContain('z-10');
   });
 
   it('flags an overdue active order beside its deadline', () => {

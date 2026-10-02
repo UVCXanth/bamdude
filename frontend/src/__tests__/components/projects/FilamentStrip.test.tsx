@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
@@ -99,6 +100,34 @@ describe('FilamentStrip', () => {
     await waitFor(() => expect(get).toHaveBeenCalled());
     await new Promise((res) => setTimeout(res, 20));
     expect(screen.queryByTestId('filament-strip')).not.toBeInTheDocument();
+  });
+
+  // V03 (Codex r1): a cached answer whose re-read failed is not current — the panel says so with a
+  // retry (an empty answer too, which otherwise hides the panel), keeps the last figures and drops
+  // the green «everything is on the shelf».
+  it.each([
+    ['enough on the shelf', farm()],
+    ['nothing needed', farm({ rows: [], orders_count: 0 })],
+  ])('says a failed re-read with a retry over a cached answer of %s, never the green line', async (_name, cached) => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    qc.setQueryData(['orders-filament'], cached);
+    const get = vi.spyOn(api, 'getOrdersFilament').mockRejectedValue(new Error('down'));
+    render(
+      <QueryClientProvider client={qc}>
+        <FilamentStrip />
+      </QueryClientProvider>,
+    );
+    await act(async () => {
+      await qc.refetchQueries({ queryKey: ['orders-filament'] });
+    });
+    const panel = await strip();
+    expect(within(panel).getByText('Could not refresh')).toBeInTheDocument();
+    expect(within(panel).queryByText('everything is on the shelf')).not.toBeInTheDocument();
+    get.mockResolvedValue(farm());
+    await userEvent.click(within(panel).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('everything is on the shelf')).toBeInTheDocument();
+    expect(screen.queryByText('Could not refresh')).not.toBeInTheDocument();
+    qc.clear();
   });
 
   it('keeps its place while loading and offers a retry when the need could not be read', async () => {

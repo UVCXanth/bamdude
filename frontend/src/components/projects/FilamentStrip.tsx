@@ -6,6 +6,7 @@ import type { FarmNeeds } from '../../api/client';
 import { hexForColorName } from '../../utils/colors';
 import { formatWeight } from '../../utils/weight';
 import { LoadFailedNote } from '../workshop/LoadFailedNote';
+import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { ForecastHint } from './ForecastHint';
 import { needTestId } from './filamentNeedsHelpers';
 
@@ -45,7 +46,11 @@ export function FilamentStrip() {
     staleTime: 30_000,
   });
 
-  if (farm && farm.rows.length === 0 && farm.unknown_prints === 0) return null;
+  // A cached answer whose re-read failed is not current (Codex r1 V03): said with a retry, the last
+  // figures kept, and never the green «everything is on the shelf». «No needs — no panel» is the
+  // rule of a SUCCESSFUL answer only: an empty answer that could not be re-read keeps the panel.
+  const stale = isError && farm != null;
+  if (farm && !stale && farm.rows.length === 0 && farm.unknown_prints === 0) return null;
 
   const title = (
     <h2 id={headingId} className="basis-full text-xs text-bambu-gray">
@@ -74,7 +79,12 @@ export function FilamentStrip() {
   return (
     <section data-testid="filament-strip" aria-labelledby={headingId} className={panel}>
       {title}
-      {everythingOnTheShelf(farm) && <span className="text-xs text-bambu-green">{t('orders.filament.everythingOnShelf')}</span>}
+      {stale && (
+        <div className="basis-full">
+          <RefreshFailedNote onRetry={() => void refetch()} />
+        </div>
+      )}
+      {!stale && everythingOnTheShelf(farm) && <span className="text-xs text-bambu-green">{t('orders.filament.everythingOnShelf')}</span>}
       {farm.stock_unavailable && (
         <span className="basis-full text-xs text-amber-700 dark:text-amber-400">{t('orders.filament.shelfUnknown')}</span>
       )}

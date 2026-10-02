@@ -156,4 +156,11 @@ describe('OrdersTable (WS-13 E7 D)', () => {
     await userEvent.click(trigger);
     expect(await screen.findByRole('menuitem', { name: 'Edit' })).toBeInTheDocument();
   });
+
+  // V04 (Codex r1): the forecast's assumptions keep their hint beside the date (B03).
+  it('keeps the forecast’s assumptions beside the date, apart from the reasons', () => {
+    render(<OrdersTable orders={[row({ id: 1 })]} {...noSort} forecast={forecastOf({ 1: fc({ project_id: 1, now_eta: '2026-10-06T09:00:00Z', assumptions: ['stagger'] }) })} />);
+    expect(within(cell(1, 5)).getByLabelText(/^Not counted in this estimate:/)).toBeInTheDocument();
+    expect(within(cell(1, 5)).queryByRole('img', { name: /^Incomplete estimate/ })).not.toBeInTheDocument();
+  });
 });

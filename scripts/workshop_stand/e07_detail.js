@@ -182,6 +182,8 @@ async (page, selftest = null) => {
       const step = turn ? await turn[1](url) : null;
       if (step && step.delay) await new Promise((r) => setTimeout(r, step.delay));
       if (step && step.fail) return route.fulfill({ status: step.fail, json: { detail: 'e07 runner' } });
+      // A body of the runner's own (Codex r1 V05: the 201-order forecast batches) — the stand is never asked.
+      if (step && step.json) return route.fulfill({ status: 200, json: step.json });
       const failing = fail.find(([re]) => re.test(url));
       if (failing) return route.fulfill({ status: failing[1], json: { detail: 'e07 runner' } });
       const waiting = delay.find(([re]) => re.test(url));
@@ -455,6 +457,49 @@ async (page, selftest = null) => {
     };
   });
 
+  // V03 (Codex r1): a cached answer whose re-read fails is not current — a note with a retry, the
+  // last chips kept, never the green «everything is on the shelf»; an empty cached answer too.
+  const FARM = /\/api\/v1\/projects\/filament(\?|$)/;
+  const enough = (b) => {
+    const rows = (b.rows ?? []).length ? b.rows : [{ material: 'PLA', colour: null, need_g: 100, have_g: 1000, have_type_g: 1000, short_g: 0, unknown_prints: 0, orders_count: 1 }];
+    return { ...b, stock_unavailable: false, unknown_prints: 0, rows: rows.map((r) => ({ ...r, have_g: Math.max(r.need_g, 1000), have_type_g: Math.max(r.need_g, 1000), short_g: 0, unknown_prints: 0 })) };
+  };
+  const nothing = (b) => ({ ...b, rows: [], unknown_prints: 0, orders_count: 0 });
+  for (const [id, cached] of [['filament-refresh@1440', enough], ['filament-refresh-empty@1440', nothing]]) {
+    await scenario(id, ['E7-C03', 'R02', 'V03'], async () => {
+      let calls = 0;
+      const { ctx, p, errors } = await open(1440, {
+        ...view('table'),
+        gets: [[FARM, () => { calls += 1; if (calls === 1) return { rewrite: cached }; if (calls <= 3) return { fail: 500 }; return { rewrite: cached }; }]],
+      });
+      await p.clock.install();
+      await listPage(p);
+      const read = () => p.evaluate(() => {
+        const panel = document.querySelector('[data-testid="filament-strip"]');
+        return panel ? { panel: true, green: /усе є на полиці/.test(panel.textContent ?? ''), stale: /Не вдалося оновити/.test(panel.textContent ?? ''), chips: panel.querySelectorAll('[data-testid^="filament-chip-"]').length } : { panel: false };
+      });
+      const first = await read();
+      await refetchLater(p);
+      await p.waitForTimeout(1500);
+      const failed = await read();
+      const file = await shoot(p, id);
+      const retry = p.getByTestId('filament-strip').getByRole('button', { name: 'Спробувати знову' });
+      const offered = (await retry.count()) > 0;
+      if (offered) await retry.click();
+      await p.waitForTimeout(1500);
+      const retried = await read();
+      await ctx.close();
+      const isEmpty = cached === nothing;
+      return {
+        recipe: { url: '/projects', fixture: [`GET /projects/filament: 1st ${isEmpty ? 'no needs' : 'enough on the shelf'} (rewritten), 2nd+3rd → 500, 4th as the 1st`], actions: ['re-read (clock +90 s, visibilitychange)', '«Спробувати знову»'] },
+        measured: { calls, first, failed, offered, retried, errors },
+        pass: (isEmpty ? !first.panel : first.green) && failed.panel && failed.stale && !failed.green && (isEmpty || failed.chips > 0) && offered &&
+          (isEmpty ? !retried.panel : retried.green && !retried.stale) && calls >= 4 && errors.length === 0,
+        screenshots: [file],
+      };
+    });
+  }
+
   // ======================= 3. toolbar (C04) =======================
   await scenario('toolbar@1440', ['E7-C04', 'O04', 'S03', 'S04'], async () => {
     const out = {};
@@ -639,6 +684,47 @@ async (page, selftest = null) => {
     };
   });
 
+  // V05.4 (Codex r1, I1 / R07): «All» with 201 orders that need a forecast asks exactly two batches —
+  // 200 + 1 — and never for a completed, an empty or a covered order.
+  await scenario('forecast-201@1440', ['E7-B04', 'R07', 'V05'], async () => {
+    const NEED = Array.from({ length: 201 }, (_, i) => 60001 + i);
+    const SKIP = { completed: [61001, 61002, 61003], empty: [61101, 61102, 61103], covered: [61201, 61202, 61203] };
+    const synth = (b) => {
+      const tpl = { ...(b.items?.[0] ?? {}), products: [], cover_image_filename: null, prints_in_progress: 0, prints_queued: 0, due_date: null };
+      const mk = (id, over = {}) => ({ ...tpl, id, code: `OR-${id}`, name: `Synthetic ${id}`, status: 'active', stage: 'printing', ordered: 10, remaining: 5, covered_units: 5, printed: 5, progress: 0.5, ...over });
+      const items = [
+        ...NEED.map((id) => mk(id)),
+        ...SKIP.completed.map((id) => mk(id, { status: 'completed', stage: 'done', remaining: 0, covered_units: 10, progress: 1 })),
+        ...SKIP.empty.map((id) => mk(id, { ordered: 0, remaining: 0, covered_units: 0, printed: 0, progress: 0 })),
+        ...SKIP.covered.map((id) => mk(id, { remaining: 0, covered_units: 10, progress: 1 })),
+      ];
+      return { ...b, items, meta: { ...b.meta, total: items.length, current_page: 1, last_page: 1, per_page: items.length } };
+    };
+    const asks = [];
+    const forecastOf = (id) => ({ project_id: id, now_eta: null, now_seconds: null, after_eta: null, after_seconds: null, machine_seconds: null, unknown_prints: 0, unroutable_prints: 0, eta_complete: true, ahead_count: 0, assumptions: [], incomplete_reasons: [], late: false });
+    const { ctx, p, errors } = await open(1440, {
+      ...view('table', { 'projects.perPage': '-1' }),
+      rewrite: [[LIST, synth]],
+      gets: [[/\/api\/v1\/projects\/forecast\?/, (url) => {
+        const ids = (new URL(url).searchParams.get('ids') ?? '').split(',').filter(Boolean).map(Number);
+        asks.push(ids);
+        return { json: { farm: { free_at: null, free_seconds: 0, unknown_prints: 0, printers: [] }, orders: ids.map(forecastOf) } };
+      }]],
+    });
+    await listPage(p, '?tab=all');
+    await p.waitForTimeout(1500);
+    const rows = await p.locator('tbody tr[data-testid^="order-row-"]').count();
+    await ctx.close();
+    const asked = asks.flat();
+    const skipped = [...SKIP.completed, ...SKIP.empty, ...SKIP.covered];
+    return {
+      recipe: { url: '/projects?tab=all', storage: { 'projects.perPage': '-1' }, fixture: ['GET /projects/: 201 active orders needing a forecast + 3 completed + 3 with nothing ordered + 3 covered (synthetic, rewritten)', 'GET /projects/forecast: answered by the runner'] },
+      measured: { rows, requests: asks.length, sizes: asks.map((x) => x.length), skippedAsked: asked.filter((id) => skipped.includes(id)), errors },
+      pass: rows === 210 && asks.length === 2 && JSON.stringify(asks.map((x) => x.length).sort((a, b) => a - b)) === '[1,200]' &&
+        new Set(asked).size === 201 && NEED.every((id) => asked.includes(id)) && !asked.some((id) => skipped.includes(id)) && errors.length === 0,
+    };
+  });
+
   for (const w of [1440, 390]) {
     await scenario(`table-grouped@${w}`, ['E7-D04', 'S06'], async () => {
       const { ctx, p, errors } = await open(w, view('table', { 'projects.groupByCustomer': '1' }));
@@ -735,6 +821,36 @@ async (page, selftest = null) => {
       recipe: { url: '/customers/{customer:1}', fixture: ['GET /projects/?customer_id=… → 500'] },
       measured: { alert, empty, errors },
       pass: /Не вдалося завантажити замовлення/.test(alert ?? '') && empty === 0,
+    };
+  });
+
+  // V05.3 (Codex r1): from a good page 1 (last_page 1) history goes to page 4, which fails. The URL
+  // keeps page 4 — the previous answer's last page never clamps a page it is not about — and the
+  // retry asks page 4 again.
+  await scenario('list-page-fail@1440', ['E7-C05', 'R03', 'V05'], async () => {
+    const { ctx, p, errors, requests } = await open(1440, { ...view('table'), gets: [[/\/api\/v1\/projects\/\?.*\bpage=4\b/, () => ({ fail: 500 })]] });
+    await listPage(p);
+    const goodRows = await p.locator('tbody tr[data-testid^="order-row-"]').count();
+    const mark = requests.length;
+    await p.evaluate(() => { history.pushState({}, '', '/projects?page=4'); dispatchEvent(new PopStateEvent('popstate')); });
+    await p.waitForTimeout(3500);
+    const lists = () => requests.slice(mark).filter((r) => /^GET \/api\/v1\/projects\/\?/.test(r));
+    const failedAsks = lists().length;
+    const alert = (await p.getByRole('alert').count()) ? await textOf(p.getByRole('alert').first()) : null;
+    const urlAfter = new URL(p.url()).search;
+    const rowsShown = await p.locator('tbody tr[data-testid^="order-row-"]').count();
+    const file = await shoot(p, 'list-page-fail@1440');
+    const retry = p.getByRole('alert').getByRole('button', { name: 'Спробувати знову' });
+    if (await retry.count()) await retry.click();
+    await p.waitForTimeout(2500);
+    const all = lists();
+    await ctx.close();
+    return {
+      recipe: { url: '/projects → history /projects?page=4', fixture: ['GET /projects/?…page=4 → 500 (runner)'], actions: ['history.pushState + popstate', '«Спробувати знову»'] },
+      measured: { goodRows, failedAsks, alert, urlAfter, rowsShown, asks: all.length, errors },
+      pass: goodRows > 0 && /Не вдалося завантажити замовлення/.test(alert ?? '') && urlAfter === '?page=4' && rowsShown === 0 &&
+        all.length > failedAsks && all.every((r) => /\bpage=4\b/.test(r)) && errors.length === 0,
+      screenshots: [file],
     };
   });
 
@@ -864,6 +980,19 @@ async (page, selftest = null) => {
   });
 
   const stageTrigger = (p, code, stageName) => p.getByRole('button', { name: `Етап ${code}: ${stageName} — змінити` });
+  const handleOf = (p, id, code) => p.getByTestId(`board-card-${id}`).getByRole('button', { name: `Перемістити ${code}` });
+  const columnOf = (p, id) => p.getByTestId(`board-card-${id}`).evaluate((el) => el.closest('[data-board-column]')?.getAttribute('data-board-column') ?? null);
+  // A pointer drag the way a person makes one: press, pass dnd-kit's 6 px threshold, travel, drop.
+  const dragTo = async (p, handle, target) => {
+    const a = await handle.boundingBox();
+    await p.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+    await p.mouse.down();
+    await p.mouse.move(a.x + a.width / 2 + 12, a.y + a.height / 2 + 4, { steps: 3 });
+    const b = await target.boundingBox();
+    await p.mouse.move(b.x + b.width / 2, b.y + Math.min(80, b.height / 2), { steps: 12 });
+    await p.waitForTimeout(200);
+    await p.mouse.up();
+  };
   await scenario('kanban-stage@1440', ['E7-F07', 'R04'], async () => {
     const writes = [];
     const { ctx, p, errors } = await open(1440, { ...view('kanban'), writes: [recorder(writes, /\/stage$/)] });
@@ -963,6 +1092,69 @@ async (page, selftest = null) => {
     };
   });
 
+  // V05.1 (Codex r1): a pointer drop the server refuses — one write, the card back in its column,
+  // held until the answer and free after it, the handle there to try again, focus with the card.
+  await scenario('kanban-drop-409@1440', ['E7-F05', 'R04', 'V05'], async () => {
+    const writes = [];
+    const { ctx, p, errors } = await open(1440, {
+      ...view('kanban'),
+      writes: [recorder(writes, /\/stage$/, async () => { await new Promise((r) => setTimeout(r, 1500)); return { __status: 409, json: { detail: 'Це замовлення не активне' } }; })],
+    });
+    await listPage(p);
+    const handle = handleOf(p, A, codeA);
+    if (!(await handle.count())) {
+      await ctx.close();
+      return { pass: null, pending: `${codeA} has no drag handle on the stand` };
+    }
+    const from = await columnOf(p, A);
+    await dragTo(p, handle, p.locator('[data-board-column="qc"]'));
+    await p.waitForTimeout(300);
+    const held = await p.getByTestId(`board-card-${A}`).getAttribute('aria-busy');
+    const refused = await toastText(p, /Це замовлення не активне/, 8000).then(() => true, () => false);
+    await p.waitForTimeout(600);
+    const after = {
+      column: await columnOf(p, A),
+      busy: await p.getByTestId(`board-card-${A}`).getAttribute('aria-busy'),
+      inert: await handleOf(p, A, codeA).getAttribute('aria-disabled'),
+      focusInCard: await p.evaluate((a) => !!document.activeElement?.closest(`[data-testid="board-card-${a}"]`), A),
+    };
+    const file = await shoot(p, 'kanban-drop-409@1440');
+    await ctx.close();
+    return {
+      recipe: { url: '/projects', storage: { 'projects.view': 'kanban' }, fixture: ['PUT …/stage → 409 after 1.5 s (runner)'], actions: [`drag ${codeA} by its handle into «Контроль якості»`] },
+      measured: { from, writes: writes.map((x) => x.body), held, refused, after, errors },
+      pass: from === 'printing' && writes.length === 1 && writes[0].body?.stage === 'qc' && held === 'true' && refused &&
+        after.column === from && after.busy === null && after.inert !== 'true' && after.focusInCard && errors.length === 0,
+      screenshots: [file],
+    };
+  });
+
+  // V05.1: the keyboard's drag — Space, an arrow, Space — writes once and keeps the focus on the handle.
+  await scenario('kanban-keyboard@1440', ['E7-F07', 'R04', 'V05'], async () => {
+    const writes = [];
+    const { ctx, p, errors } = await open(1440, { ...view('kanban'), writes: [recorder(writes, /\/stage$/)] });
+    await listPage(p);
+    const handle = handleOf(p, A, codeA);
+    if (!(await handle.count())) {
+      await ctx.close();
+      return { pass: null, pending: `${codeA} has no drag handle on the stand` };
+    }
+    await handle.focus();
+    await p.keyboard.press('Space');
+    await p.waitForTimeout(200);
+    await p.keyboard.press('ArrowRight');
+    await p.waitForTimeout(200);
+    await p.keyboard.press('Space');
+    await p.waitForTimeout(1200);
+    const focus = await p.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.tagName ?? null);
+    await ctx.close();
+    return {
+      recipe: { url: '/projects', storage: { 'projects.view': 'kanban' }, actions: [`focus ${codeA}'s handle`, 'Space', 'ArrowRight', 'Space'] },
+      measured: { writes: writes.map((x) => x.body), focus, errors },
+      pass: writes.length === 1 && writes[0].body?.stage === 'qc' && focus === `Перемістити ${codeA}` && errors.length === 0,
+    };
+  });
+
   await scenario('kanban-done@1440', ['E7-F07', 'E6-B04'], async () => {
     const writes = [];
     const { ctx, p, errors } = await open(1440, { ...view('kanban'), writes: [recorder(writes, /\/projects\/\d+(\/stage)?$/)] });
@@ -986,6 +1178,51 @@ async (page, selftest = null) => {
       recipe: { url: '/projects', actions: ['stage badge → «Готово — склад і видача…»', '«Скасувати»'] },
       measured: { title, closed, writes, errors },
       pass: title === 'Склад і видача' && closed && writes.length === 0 && errors.length === 0,
+    };
+  });
+
+  // V05.1: a drop into «Done» on a board wider than the screen — the board scrolls itself while the
+  // card is held at its edge, the column is reached, and the drop opens Stock & issue once, writing nothing.
+  await scenario('kanban-drop-done@768', ['E7-F01', 'E7-F07', 'E6-B04', 'R08', 'V05'], async () => {
+    const writes = [];
+    const { ctx, p, errors } = await open(768, { ...view('kanban'), writes: [recorder(writes, /\/projects\/\d+(\/stage)?$/)] });
+    await listPage(p);
+    const handle = handleOf(p, A, codeA);
+    if (!(await handle.count())) {
+      await ctx.close();
+      return { pass: null, pending: `${codeA} has no drag handle on the stand` };
+    }
+    const region = p.getByRole('region', { name: 'Канбан' });
+    await handle.scrollIntoViewIfNeeded();
+    const before = await region.evaluate((el) => ({ left: el.scrollLeft, max: el.scrollWidth - el.clientWidth }));
+    const rb = await region.boundingBox();
+    const offscreen = (await p.locator('[data-board-column="done"]').boundingBox()).x > rb.x + rb.width - 1;
+    const hb = await handle.boundingBox();
+    await p.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2);
+    await p.mouse.down();
+    await p.mouse.move(hb.x + hb.width / 2 + 12, hb.y + hb.height / 2 + 4, { steps: 3 });
+    // To the board's right edge, and held there: the board scrolls itself toward «Done».
+    await p.mouse.move(rb.x + rb.width - 6, hb.y + hb.height / 2 + 4, { steps: 10 });
+    await p.waitForTimeout(2000);
+    const scrolled = await region.evaluate((el) => el.scrollLeft);
+    const db = await p.locator('[data-board-column="done"]').boundingBox();
+    await p.mouse.move(Math.min(db.x + db.width / 2, rb.x + rb.width - 20), db.y + 60, { steps: 8 });
+    await p.waitForTimeout(250);
+    await p.mouse.up();
+    const dlg = p.locator('[role="dialog"]').last();
+    const opened = await dlg.waitFor({ timeout: 10000 }).then(() => true, () => false);
+    await p.waitForTimeout(600);
+    const title = opened ? await dlg.evaluate((d) => d.querySelector('h2, h3')?.textContent?.trim() ?? null) : null;
+    const dialogs = await p.locator('[role="dialog"]').count();
+    const file = await shoot(p, 'kanban-drop-done@768');
+    if (opened) await dlg.getByRole('button', { name: 'Скасувати', exact: true }).click().catch(() => {});
+    await ctx.close();
+    return {
+      recipe: { url: '/projects', storage: { 'projects.view': 'kanban' }, actions: [`drag ${codeA} to the board's right edge, hold 2 s, drop on «Готово»`, '«Скасувати»'] },
+      env: { viewport: [768, HEIGHTS[768]] },
+      measured: { before, offscreen, scrolled, title, dialogs, writes, errors },
+      pass: before.max > 0 && offscreen && scrolled > before.left && title === 'Склад і видача' && dialogs === 1 && writes.length === 0 && errors.length === 0,
+      screenshots: [file],
     };
   });
 
@@ -1175,6 +1412,132 @@ async (page, selftest = null) => {
       recipe: { url: '/projects?tab=all', storage: { 'projects.view': 'workspace', 'projects.perPage': '50' }, actions: ['focus the row before the last', 'Tab'] },
       measured: { rows: n, geo, errors },
       pass: n > 20 && !!geo && geo.isRow && geo.rowTop >= 0 && geo.rowBottom <= geo.barTop + 1 && errors.length === 0,
+      screenshots: [file],
+    };
+  });
+
+  const paneTitle = (p) => p.evaluate(() => document.querySelector('[data-testid="workspace-list"]')?.parentElement?.children[1]?.querySelector('h2')?.textContent?.trim() ?? null);
+
+  // V05.2 (Codex r1): deleting the order the workspace shows, from the pane's own menu. The action
+  // host outlives the row; the URL forgets the order, the pane moves to an order of the page, no
+  // «not on this page» note and no error.
+  await scenario('workspace-delete@1440', ['E7-G05', 'E6-B08', 'V05'], async () => {
+    let deleted = false;
+    const sent = [];
+    const { ctx, p, errors } = await open(1440, {
+      ...view('workspace'),
+      rewrite: [[LIST, (b) => (deleted && b && Array.isArray(b.items) ? { ...b, items: b.items.filter((o) => o.id !== A), meta: { ...b.meta, total: Math.max(0, b.meta.total - 1) } } : b)]],
+      gets: [[new RegExp(`/api/v1/projects/${A}(\\?|$)`), () => (deleted ? { fail: 404 } : null)]],
+      writes: [[new RegExp(`/api/v1/projects/${A}$`), (req) => { sent.push(req.method()); deleted = true; return {}; }]],
+    });
+    await listPage(p, `?order=${A}`);
+    await p.getByTestId('order-actions').first().waitFor({ timeout: 15000 });
+    await p.waitForTimeout(600);
+    const before = await paneTitle(p);
+    await p.getByTestId('order-actions').getByRole('button', { name: /^Дії замовлення/ }).first().click();
+    await p.getByRole('menu').waitFor({ timeout: 5000 });
+    await p.getByRole('menu').getByRole('menuitem', { name: 'Видалити', exact: true }).click();
+    const dlg = p.locator('[role="dialog"]').last();
+    await dlg.waitFor({ timeout: 5000 });
+    const title = await dlg.evaluate((d) => d.querySelector('h2, h3')?.textContent?.trim() ?? null);
+    await dlg.locator('[data-workshop-dialog-footer]').getByRole('button', { name: 'Видалити', exact: true }).click();
+    await within(p.waitForFunction(() => !document.querySelector('[role="dialog"]')), 8000, 'dialog_stayed').catch(() => {});
+    await p.waitForTimeout(1800);
+    const after = {
+      search: new URL(p.url()).search,
+      pane: await paneTitle(p),
+      fallback: await p.getByTestId('workspace-fallback').count(),
+      alerts: await p.getByRole('alert').allTextContents(),
+      rowGone: (await p.getByTestId('workspace-list').getByRole('button', { name: new RegExp(codeA) }).count()) === 0,
+    };
+    const file = await shoot(p, 'workspace-delete@1440');
+    await ctx.close();
+    return {
+      recipe: { url: `/projects?order={order:241}`, storage: { 'projects.view': 'workspace' }, fixture: ['DELETE /projects/{241} answered by the runner; afterwards the list without it and its detail 404'], actions: ['pane menu «Видалити»', '«Видалити»'] },
+      measured: { before, title, sent, after, errors },
+      pass: before === orderA.name && title === 'Видалити замовлення?' && sent.length === 1 && sent[0] === 'DELETE' && !new RegExp(`order=${A}\\b`).test(after.search) &&
+        !!after.pane && after.pane !== orderA.name && after.fallback === 0 && after.alerts.length === 0 && after.rowGone && errors.length === 0,
+      screenshots: [file],
+    };
+  });
+
+  // V02 (Codex r1): history moves the workspace to a page still being read. The detail shown stays
+  // (none of the stand-in rows opens), the URL is left as history set it; the answer then decides;
+  // Back and Forward return each page with its own order.
+  await scenario('workspace-history@1440', ['E7-G04', 'E7-G05', 'R03', 'V02'], async () => {
+    let completedAsks = 0;
+    const { ctx, p, errors, requests } = await open(1440, {
+      ...view('workspace'),
+      gets: [[/\/api\/v1\/projects\/\?.*status=completed/, () => { completedAsks += 1; return completedAsks === 1 ? { delay: 3000 } : null; }]],
+    });
+    await listPage(p);
+    const rows = p.getByTestId('workspace-list').locator('li > button');
+    await rows.nth(1).click();
+    await p.waitForTimeout(1500);
+    const shownA = await paneTitle(p);
+    const searchA = new URL(p.url()).search;
+    const done = await read(`/projects/${DONE}`);
+    // Searched by its code, so the order IS on the page history goes to (a page without it is G05's case).
+    const target = `?tab=completed&q=${encodeURIComponent(done.code)}&order=${DONE}`;
+    const mark = requests.length;
+    await p.evaluate((search) => { history.pushState({}, '', `/projects${search}`); dispatchEvent(new PopStateEvent('popstate')); }, target);
+    const during = [];
+    for (let i = 0; i < 4; i += 1) {
+      await p.waitForTimeout(500);
+      during.push(await paneTitle(p));
+    }
+    const detailsAsked = requests.slice(mark).filter((r) => /^GET \/api\/v1\/projects\/\d+$/.test(r));
+    const searchDuring = new URL(p.url()).search;
+    await p.waitForTimeout(2500);
+    const shownB = await paneTitle(p);
+    await p.goBack();
+    await p.waitForTimeout(1500);
+    const back = { pane: await paneTitle(p), search: new URL(p.url()).search };
+    await p.goForward();
+    await p.waitForTimeout(1500);
+    const forward = { pane: await paneTitle(p), search: new URL(p.url()).search };
+    await ctx.close();
+    return {
+      recipe: { url: '/projects (second row picked) → history /projects?tab=completed&q={code of 245}&order={order:245}', storage: { 'projects.view': 'workspace' }, fixture: ['GET /projects/?…status=completed: the first answer held 3 s (runner)'], actions: ['click the second row', 'history.pushState + popstate', 'Back', 'Forward'] },
+      measured: { shownA, searchA, target, during, detailsAsked, searchDuring, shownB, doneName: done.name, back, forward, errors },
+      pass: !!shownA && during.every((x) => x === shownA) && detailsAsked.length === 0 && new URLSearchParams(searchDuring).get('order') === String(DONE) &&
+        shownB === done.name && back.pane === shownA && back.search === searchA && forward.pane === done.name && errors.length === 0,
+    };
+  });
+
+  // V01 (Codex r1): rows, then an empty answer, then a re-read that fails — the empty explanation
+  // stays and the failure is said with its retry; the retry's answer takes the note away.
+  await scenario('workspace-empty-refresh@1440', ['E7-C05', 'E7-G07', 'R03', 'V01'], async () => {
+    let calls = 0;
+    const emptied = (b) => ({ ...b, items: [], meta: { ...b.meta, total: 0, last_page: 1, current_page: 1 } });
+    const { ctx, p, errors } = await open(1440, {
+      ...view('workspace'),
+      gets: [[LIST, () => { calls += 1; if (calls === 1) return null; if (calls === 2) return { rewrite: emptied }; if (calls <= 4) return { fail: 500 }; return { rewrite: emptied }; }]],
+    });
+    await p.clock.install();
+    await listPage(p);
+    const state = () => p.evaluate(() => ({
+      rows: document.querySelectorAll('[data-testid="workspace-list"] li').length,
+      empty: /Немає активних замовлень/.test(document.querySelector('main')?.textContent ?? ''),
+      stale: /Не вдалося оновити/.test(document.querySelector('main')?.textContent ?? ''),
+    }));
+    const first = await state();
+    await refetchLater(p);
+    const empty = await state();
+    await refetchLater(p);
+    await p.waitForTimeout(1500);
+    const failed = await state();
+    const file = await shoot(p, 'workspace-empty-refresh@1440');
+    const retry = p.locator('main').getByRole('button', { name: 'Спробувати знову' });
+    const offered = (await retry.count()) > 0;
+    if (offered) await retry.first().click();
+    await p.waitForTimeout(1500);
+    const retried = await state();
+    await ctx.close();
+    return {
+      recipe: { url: '/projects', storage: { 'projects.view': 'workspace' }, fixture: ['GET /projects/: 1st real, 2nd empty (rewritten), 3rd+4th → 500, 5th empty'], actions: ['re-read ×2 (clock +90 s, visibilitychange)', '«Спробувати знову»'] },
+      measured: { calls, first, empty, failed, offered, retried, errors },
+      pass: first.rows > 0 && empty.empty && !empty.stale && failed.empty && failed.stale && offered && retried.empty && !retried.stale && errors.length === 0,
       screenshots: [file],
     };
   });

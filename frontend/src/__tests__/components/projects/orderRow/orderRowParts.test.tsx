@@ -25,7 +25,7 @@ const row = (over: Partial<OrderListItem> = {}): OrderListItem => ({
 
 describe('ReadyEstimate', () => {
   it('shows the admitted date, red when late, the full time in its title', () => {
-    render(<ReadyEstimate readiness={{ kind: 'eta', eta: '2026-10-06T09:00:00Z', late: true, after: null, reasons: [] }} />);
+    render(<ReadyEstimate readiness={{ kind: 'eta', eta: '2026-10-06T09:00:00Z', late: true, after: null, reasons: [], assumptions: [] }} />);
     const date = screen.getByTestId('ready-estimate');
     expect(date).toHaveTextContent(day(2026, 10, 6));
     expect(date.querySelector('[data-late="true"]')).not.toBeNull();
@@ -36,7 +36,7 @@ describe('ReadyEstimate', () => {
   it('keeps the date and warns beside it when the estimate has reasons (R01)', () => {
     render(
       <ReadyEstimate
-        readiness={{ kind: 'eta', eta: '2026-10-06T09:00:00Z', late: false, after: null, reasons: [{ code: 'no_plate', count: 6 }] }}
+        readiness={{ kind: 'eta', eta: '2026-10-06T09:00:00Z', late: false, after: null, reasons: [{ code: 'no_plate', count: 6 }], assumptions: [] }}
       />,
     );
     expect(screen.getByTestId('ready-estimate')).toHaveTextContent(day(2026, 10, 6));
@@ -46,14 +46,39 @@ describe('ReadyEstimate', () => {
   it('says «after N more urgent» under the date', () => {
     render(
       <ReadyEstimate
-        readiness={{ kind: 'eta', eta: '2026-10-06T09:00:00Z', late: false, after: { eta: '2026-10-08T09:00:00Z', ahead: 2 }, reasons: [] }}
+        readiness={{ kind: 'eta', eta: '2026-10-06T09:00:00Z', late: false, after: { eta: '2026-10-08T09:00:00Z', ahead: 2 }, reasons: [], assumptions: [] }}
       />,
     );
     expect(screen.getByTestId('ready-estimate')).toHaveTextContent(`after 2 more urgent orders: ${day(2026, 10, 8)}`);
   });
 
+  // V04 (Codex r1): the assumptions are a hint of their own beside the forecast (B03) — never mixed
+  // into the reasons, and above a card's overlay link so the mouse reaches them.
+  it('hints the assumptions beside the date, apart from the reasons', () => {
+    const { unmount } = render(
+      <ReadyEstimate readiness={{ kind: 'eta', eta: '2026-10-06T09:00:00Z', late: false, after: null, reasons: [], assumptions: ['stagger'] }} />,
+    );
+    const hint = screen.getByLabelText(/^Not counted in this estimate:/);
+    expect(hint.className).toContain('relative');
+    expect(hint.className).toContain('z-10');
+    expect(screen.queryByRole('img', { name: /^Incomplete estimate/ })).not.toBeInTheDocument();
+    unmount();
+    render(
+      <ReadyEstimate
+        readiness={{ kind: 'eta', eta: '2026-10-06T09:00:00Z', late: false, after: null, reasons: [{ code: 'no_plate', count: 1 }], assumptions: ['stagger'] }}
+      />,
+    );
+    expect(screen.getByLabelText(/^Not counted in this estimate:/)).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Incomplete estimate: Parts on no plate: 1' })).toBeInTheDocument();
+  });
+
+  it('draws no assumptions hint when the forecast assumes nothing', () => {
+    render(<ReadyEstimate readiness={{ kind: 'eta', eta: '2026-10-06T09:00:00Z', late: false, after: null, reasons: [], assumptions: [] }} />);
+    expect(screen.queryByLabelText(/^Not counted in this estimate:/)).not.toBeInTheDocument();
+  });
+
   it('names an incomplete estimate without a date, with its reasons', () => {
-    render(<ReadyEstimate readiness={{ kind: 'partial', reasons: [{ code: 'unknown_time', count: 2 }] }} />);
+    render(<ReadyEstimate readiness={{ kind: 'partial', reasons: [{ code: 'unknown_time', count: 2 }], assumptions: [] }} />);
     expect(screen.getByTestId('ready-estimate')).toHaveTextContent('incomplete estimate');
     expect(screen.getByRole('img', { name: 'Incomplete estimate: Prints without a time estimate: 2' })).toBeInTheDocument();
   });

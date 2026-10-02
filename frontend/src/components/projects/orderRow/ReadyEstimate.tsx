@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { etaFull } from '../../../utils/forecast';
+import { ForecastHint } from '../ForecastHint';
 import { EstimateWarning } from './EstimateWarning';
 import type { Readiness } from './readiness';
 import { etaLabel, useDateSettings } from './useDateSettings';
@@ -9,6 +10,9 @@ import { etaLabel, useDateSettings } from './useDateSettings';
  * card's meta cell. What to say is decided by `readiness`; this only draws it.
  * Unknown is never «no estimate» and never a zero.
  */
+/** The assumptions' hint (B03, Codex r1 V04) — above a card's overlay link, so the mouse reaches it. */
+const HINT = 'relative z-10 ml-1';
+
 export function ReadyEstimate({ readiness, testId = 'ready-estimate' }: { readiness: Readiness; testId?: string }) {
   const { t } = useTranslation();
   const { dateFormat, timeFormat } = useDateSettings();
@@ -35,6 +39,7 @@ export function ReadyEstimate({ readiness, testId = 'ready-estimate' }: { readin
         <span data-testid={testId} className="inline-flex items-center text-amber-700 dark:text-amber-400">
           {t('orders.row.incomplete')}
           <EstimateWarning reasons={readiness.reasons} />
+          <ForecastHint forecast={readiness} className={HINT} />
         </span>
       );
     case 'none':
@@ -52,6 +57,7 @@ export function ReadyEstimate({ readiness, testId = 'ready-estimate' }: { readin
               {readiness.late && <span className="sr-only"> ({t('orders.forecast.late')})</span>}
             </span>
             <EstimateWarning reasons={readiness.reasons} />
+            <ForecastHint forecast={readiness} className={HINT} />
           </span>
           {readiness.after && (
             <span className="block text-xs text-bambu-gray">

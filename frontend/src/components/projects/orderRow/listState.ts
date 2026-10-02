@@ -10,6 +10,14 @@
  */
 export type ListState = 'loading' | 'transition' | 'refresh-failed' | 'failed' | 'empty' | 'data';
 
+/**
+ * The last answer had no rows — `empty`, or that same answer kept under a re-read that failed
+ * (Codex r1 V01). The page keeps the empty explanation for both; the list says the failure.
+ */
+export function answeredEmpty(state: ListState, data: { meta: { total: number } } | undefined): boolean {
+  return state === 'empty' || (state === 'refresh-failed' && data?.meta.total === 0);
+}
+
 export function listState(q: {
   data: { meta: { total: number } } | undefined;
   isError: boolean;

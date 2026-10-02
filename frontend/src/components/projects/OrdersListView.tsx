@@ -182,6 +182,8 @@ export function OrdersListView({
   if (state === 'failed') return <LoadFailedNote message={t('orders.list.loadFailed')} onRetry={onRetry} />;
   // The page draws its own empty state (it knows whether a filter holds).
   if (state === 'empty') return null;
+  // An empty answer whose re-read failed: the failure and its retry, never an empty table (V01).
+  if (state === 'refresh-failed' && visible.length === 0) return <RefreshFailedNote onRetry={onRetry} />;
 
   const groups = groupByCustomer ? groupBy(visible, (o) => o.customer_name ?? t('orders.list.noCustomer')) : null;
 

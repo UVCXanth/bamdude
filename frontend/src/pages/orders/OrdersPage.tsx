@@ -27,7 +27,7 @@ import { parseOrdersView, parsePageSize, usePersistedState } from '../../hooks/u
 import type { OrdersView } from '../../hooks/usePersistedState';
 import { useSearchBox } from '../../hooks/useSearchBox';
 import { WorkshopTabPanel } from '../../components/workshop/WorkshopTabs';
-import { listState } from '../../components/projects/orderRow/listState';
+import { answeredEmpty, listState } from '../../components/projects/orderRow/listState';
 import { TABLE_SORT_KEYS } from '../../components/projects/OrdersTable';
 import { splitSortBy } from '../../utils/listSort';
 
@@ -143,6 +143,8 @@ export function OrdersPage() {
 
   // WS-13 E7 C05: one reading of the list's state — a failed key is an alert, never «no orders».
   const state = listState({ data, isError, isPlaceholderData });
+  // The empty explanation stays under a failed re-read of an empty answer (Codex r1 V01).
+  const emptyAnswer = answeredEmpty(state, data);
   // Every filter Reset clears — «Mine» with nothing of mine is a filter that
   // matched nothing, never «no orders yet» on a farm full of them.
   const filtered = q !== '' || customerId != null || extra.responsible !== '' || stage !== '';
@@ -279,7 +281,7 @@ export function OrdersPage() {
 
         {/* Only while a condition holds (S05); the tab, the view and the grouping stay.
             An empty answer carries its own Reset in the list's place — one button, not two. */}
-        {filtered && !(paged && state === 'empty') && (
+        {filtered && !(paged && emptyAnswer) && (
           <Button variant="secondary" onClick={resetConditions}>
             {t('list.empty.reset')}
           </Button>
@@ -289,7 +291,7 @@ export function OrdersPage() {
       {/* The tab's panel is the list and its empty state — not the filters above it (WS-13 E2 C02). */}
       {paged && (
         <WorkshopTabPanel idBase={tabsId} value={tab}>
-          {state === 'empty' && (
+          {emptyAnswer && (
             filtered ? (
               <div className="flex items-center gap-3 text-bambu-gray text-sm">
                 <span>{t('list.empty.noMatch')}</span>

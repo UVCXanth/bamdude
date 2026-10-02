@@ -1,11 +1,11 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Link, useLocation } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { DndContext, KeyboardSensor, PointerSensor, useDroppable, useSensor, useSensors } from '@dnd-kit/core';
-import type { Announcements, DragEndEvent } from '@dnd-kit/core';
+import { DndContext, DragOverlay, KeyboardSensor, PointerSensor, useDroppable, useSensor, useSensors } from '@dnd-kit/core';
+import type { Announcements, DragEndEvent, DragStartEvent } from '@dnd-kit/core';
 import { api } from '../../../api/client';
-import type { OrderBoardColumn, OrderStage, OrderViewFilters } from '../../../api/client';
+import type { OrderBoardColumn, OrderListItem, OrderStage, OrderViewFilters } from '../../../api/client';
 import { useAuth } from '../../../contexts/AuthContext';
 import { Button } from '../../Button';
 import { LoadFailedNote } from '../../workshop/LoadFailedNote';
@@ -94,7 +94,14 @@ export function OrdersBoard({ filters, onOpenList, onReset, actions }: OrdersBoa
     onDragCancel: ({ active }) => t('orders.board.a11y.cancelled', { code: codeOf(active.data.current) }),
   };
 
+  // The card in hand is a PREVIEW over the page (Codex r1 V05, browser kanban-drop-done@768): the
+  // card translated inside the board's own scroll box widened that box as it moved, and the board's
+  // auto-scroll ran away from the column aimed at — a drop into «Done» past the screen never landed.
+  const [inHand, setInHand] = useState<OrderListItem | null>(null);
+  const onDragStart = ({ active }: DragStartEvent) =>
+    setInHand(BOARD_COLUMNS.flatMap((key) => data?.[key].items ?? []).find((o) => o.id === Number(active.id)) ?? null);
   const onDragEnd = ({ active, over }: DragEndEvent) => {
+    setInHand(null);
     const from = active.data.current?.from as BoardColumnKey | undefined;
     if (over && from) {
       refocus.current = { id: Number(active.id), part: 'handle' };
@@ -120,7 +127,9 @@ export function OrdersBoard({ filters, onOpenList, onReset, actions }: OrdersBoa
       {isError && data && <RefreshFailedNote onRetry={() => void refetch()} />}
       <DndContext
         sensors={sensors}
+        onDragStart={onDragStart}
         onDragEnd={onDragEnd}
+        onDragCancel={() => setInHand(null)}
         accessibility={{ announcements, screenReaderInstructions: { draggable: t('orders.board.a11y.instructions') } }}
       >
         {/* WS-13 E7 F01 (R08): four columns, always, min 240 — ONE horizontal scroll for the
@@ -148,12 +157,26 @@ export function OrdersBoard({ filters, onOpenList, onReset, actions }: OrdersBoa
             />
           ))}
         </div>
+        <DragOverlay dropAnimation={null}>{inHand ? <BoardDragPreview order={inHand} /> : null}</DragOverlay>
       </DndContext>
       <p data-testid="orders-board-hint" className="mt-3 text-xs text-bambu-gray">
         {canMove ? t('orders.board.hint') : t('orders.board.hintReader')}
       </p>
 
     </>
+  );
+}
+
+/** The card in hand while it is dragged: its code and name, over the page. */
+function BoardDragPreview({ order }: { order: OrderListItem }) {
+  return (
+    <div
+      data-testid="board-drag-preview"
+      className="w-[240px] cursor-grabbing rounded-lg border border-bambu-green/60 bg-bambu-dark p-3 shadow-xl"
+    >
+      <span className="block text-xs text-bambu-gray">{order.code}</span>
+      <span className="block text-sm font-semibold text-white break-words">{order.name}</span>
+    </div>
   );
 }
 

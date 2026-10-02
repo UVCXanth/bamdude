@@ -1,7 +1,6 @@
 import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useDraggable } from '@dnd-kit/core';
-import { CSS } from '@dnd-kit/utilities';
 import { GripVertical } from 'lucide-react';
 import type { OrderListItem, OrderStage } from '../../../api/client';
 import { PriorityBadge } from '../PriorityBadge';
@@ -43,7 +42,7 @@ interface BoardCardProps {
 export function BoardCard({ order, column, draggable, actions, pending, onStage }: BoardCardProps) {
   const { t } = useTranslation();
   const canMove = draggable && !pending;
-  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, isDragging } = useDraggable({
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, isDragging } = useDraggable({
     id: order.id,
     data: { from: column, code: order.code },
     disabled: !canMove,
@@ -56,9 +55,10 @@ export function BoardCard({ order, column, draggable, actions, pending, onStage 
       ref={setNodeRef}
       data-testid={`board-card-${order.id}`}
       aria-busy={pending ? 'true' : undefined}
-      style={{ transform: CSS.Translate.toString(transform) }}
+      // Never translated itself: the board's preview is the card in hand (OrdersBoard), so the
+      // board's scroll box does not grow under a drag. The card stays, faded, where it was.
       className={`relative overflow-hidden rounded-lg bg-bambu-dark border border-bambu-dark-tertiary hover:border-bambu-green/50 ${
-        isDragging ? 'z-40 shadow-xl opacity-90' : ''
+        isDragging ? 'opacity-40' : ''
       } ${pending ? 'opacity-60' : ''}`}
     >
       <div

@@ -169,6 +169,24 @@ describe('OrdersBoard', () => {
     await waitFor(() => expect(state).toHaveBeenCalledWith(2));
     expect(update).not.toHaveBeenCalled();
   });
+  // V05.1 (Codex r1, browser kanban-drop-done@768): a card translated INSIDE the board's own scroll
+  // box widened that box as it moved, and the board's auto-scroll ran away from the column aimed
+  // at. The card in hand is a preview over the page; the card itself stays where it is.
+  it('drags a preview over the page and leaves the card itself in place', async () => {
+    vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
+    stubColumnGeometry();
+    render(<OrdersBoard filters={{}} onOpenList={() => {}} actions={NO_ACTIONS} />);
+    const handle = await screen.findByRole('button', { name: 'Move OR-0001' });
+    handle.focus();
+    fireEvent.keyDown(handle, { code: 'Space', key: ' ' });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    expect(await screen.findByTestId('board-drag-preview')).toHaveTextContent('OR-0001');
+    expect(screen.getByTestId('board-card-1').style.transform).toBe('');
+    fireEvent.keyDown(document, { code: 'Escape', key: 'Escape' });
+  });
+
   it('moves a card to the next column from the keyboard', async () => {
     vi.spyOn(api, 'getOrderBoard').mockResolvedValue(board());
     const stage = vi.spyOn(api, 'setOrderStage').mockResolvedValue({} as never);
@@ -302,11 +320,13 @@ describe('OrdersBoard', () => {
   });
 });
 
-/** jsdom lays nothing out: give each column a box side by side, and each card a box inside its column. */
+/** jsdom lays nothing out: give each column a box side by side, and each card a box inside its column.
+ *  The drag preview starts where the card in hand is (dnd-kit's DragOverlay does in a browser). */
 function stubColumnGeometry() {
   const columns = ['prep', 'printing', 'qc', 'done'];
   vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
-    const column = this.closest('[data-board-column]');
+    const held = this.closest('[data-testid="board-drag-preview"]') ? document.querySelector('[data-testid^="board-card-"].opacity-40') : null;
+    const column = (held ?? this).closest('[data-board-column]');
     const index = column ? columns.indexOf(column.getAttribute('data-board-column') ?? '') : -1;
     const left = index < 0 ? 0 : index * 300;
     const isColumn = this === column;

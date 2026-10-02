@@ -48,6 +48,7 @@ describe('readiness', () => {
     expect(readiness(order(), fc({ eta_complete: false, incomplete_reasons: reasons }), 'data')).toEqual({
       kind: 'partial',
       reasons,
+      assumptions: [],
     });
   });
 
@@ -57,6 +58,7 @@ describe('readiness', () => {
     expect(readiness(order(), fc({ now_eta: null, incomplete_reasons: reasons }), 'data')).toEqual({
       kind: 'partial',
       reasons,
+      assumptions: [],
     });
   });
 
@@ -68,6 +70,21 @@ describe('readiness', () => {
       late: true,
       after: null,
       reasons,
+      assumptions: [],
+    });
+  });
+
+  // V04 (Codex r1): what the simulation does not model travels with the forecast, apart from
+  // the reasons that make it incomplete (B03 keeps the hint beside the forecast).
+  it('carries the forecast’s assumptions, apart from its reasons', () => {
+    expect(readiness(order(), fc({ assumptions: ['stagger', 'drying'] }), 'data')).toMatchObject({
+      kind: 'eta',
+      reasons: [],
+      assumptions: ['stagger', 'drying'],
+    });
+    expect(readiness(order(), fc({ eta_complete: false, assumptions: ['prep'], incomplete_reasons: [{ code: 'unknown_time', count: 1 }] }), 'data')).toMatchObject({
+      kind: 'partial',
+      assumptions: ['prep'],
     });
   });
 

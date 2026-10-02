@@ -13,12 +13,12 @@ import type { OrderForecast } from '../../api/client';
  * as `title` for one accessible name, and the icon is `aria-hidden` so it
  * isn't announced a second time.
  */
-export function ForecastHint({ forecast }: { forecast: Pick<OrderForecast, 'assumptions'> }) {
+export function ForecastHint({ forecast, className = '' }: { forecast: Pick<OrderForecast, 'assumptions'>; className?: string }) {
   const { t } = useTranslation();
   if (forecast.assumptions.length === 0) return null;
   const title = `${t('farmForecast.assumptionsTitle')} ${forecast.assumptions.map((a) => t(`farmForecast.assumptions.${a}`, a)).join(', ')}`;
   return (
-    <span className="inline-flex align-text-bottom" title={title} aria-label={title}>
+    <span className={`inline-flex align-text-bottom ${className}`} title={title} aria-label={title}>
       <Info className="w-3.5 h-3.5 text-bambu-gray" aria-hidden="true" />
     </span>
   );

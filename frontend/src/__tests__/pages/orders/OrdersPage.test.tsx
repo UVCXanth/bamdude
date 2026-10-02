@@ -368,6 +368,69 @@ describe('OrdersPage', () => {
       vi.spyOn(api, 'getOrderPlan').mockResolvedValue({ lines: [], totals: { rows: 0, prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null } });
       vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([{ ...rowA, code: 'OR-0001' }, rowC]));
     });
+    // V02 (Codex r1), through the real router: history moves to a page whose answer is held. The
+    // previous rows stand in, the order shown stays on its tab, the first stand-in row is never
+    // opened, and the URL is left as history set it; the answer then decides.
+    it.each([
+      ['answers', true],
+      ['is refused', false],
+    ])('keeps the shown order while history moves to a page that %s', async (_name, answers) => {
+      let settle!: () => void;
+      const get = vi.spyOn(api, 'getOrdersPaged').mockImplementation((async (params: { page?: number }) => {
+        if ((params.page ?? 1) === 1) return pageOf([{ ...rowA, code: 'OR-0001' }, rowC]);
+        await new Promise<void>((r) => { settle = r; });
+        if (!answers) throw new Error('down');
+        return pageOf([{ ...rowA, id: 4, name: 'D', code: 'OR-0004' }], { meta: { current_page: 2, last_page: 2, total: 25 } });
+      }) as never);
+      vi.spyOn(api, 'getOrder').mockImplementation(async (id: number) => ({ ...orderDetail, id, name: ({ 1: 'A', 3: 'C', 4: 'D' } as Record<number, string>)[id] }) as never);
+      window.history.pushState({}, '', '/projects?order=3&section=notes');
+      render(<OrdersPage />);
+      await screen.findByRole('heading', { name: 'C' });
+      expect(await screen.findByRole('tab', { name: /^Notes/ })).toHaveAttribute('aria-selected', 'true');
+      act(() => {
+        window.history.pushState({}, '', '/projects?page=2&order=4');
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      });
+      await waitFor(() => expect(get).toHaveBeenCalledWith(expect.objectContaining({ page: 2 })));
+      expect(screen.getByRole('heading', { name: 'C' })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /^Notes/ })).toHaveAttribute('aria-selected', 'true');
+      expect(api.getOrder).not.toHaveBeenCalledWith(1);
+      expect(window.location.search).toBe('?page=2&order=4');
+      await act(async () => settle());
+      if (answers) {
+        expect(await screen.findByRole('heading', { name: 'D' })).toBeInTheDocument();
+      } else {
+        expect(await screen.findByRole('alert', {}, { timeout: 4000 })).toHaveTextContent('Could not load the orders');
+        expect(screen.queryByRole('heading', { name: 'A' })).not.toBeInTheDocument();
+        expect(window.location.search).toBe('?page=2&order=4');
+      }
+    });
+
+    // V01 (Codex r1): an empty answer, then a re-read that fails — the empty explanation stays and
+    // the failure is said with its retry; the retry's answer takes the note away. Also after rows.
+    it('says a failed re-read of an empty answer beside its explanation, and the retry clears it', async () => {
+      const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([{ ...rowA, code: 'OR-0001' }]) as never);
+      window.history.pushState({}, '', '/projects');
+      render(<OrdersPage />);
+      await screen.findByRole('heading', { name: 'A' });
+      const reread = async () => {
+        await act(async () => {
+          window.dispatchEvent(new Event('visibilitychange'));
+        });
+      };
+      get.mockResolvedValue(pageOf([], { totals: { active: 0, all: 0 } }) as never);
+      await reread();
+      expect(await screen.findByText('No active orders')).toBeInTheDocument();
+      get.mockRejectedValue(new Error('down'));
+      await reread();
+      expect(await screen.findByText('Could not refresh')).toBeInTheDocument();
+      expect(screen.getByText('No active orders')).toBeInTheDocument();
+      get.mockResolvedValue(pageOf([], { totals: { active: 0, all: 0 } }) as never);
+      await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      await waitFor(() => expect(screen.queryByText('Could not refresh')).not.toBeInTheDocument());
+      expect(screen.getByText('No active orders')).toBeInTheDocument();
+    });
+
     it('the order in the URL is the one shown; a click on another row moves it', async () => {
       window.history.pushState({}, '', '/projects?order=3');
       render(<OrdersPage />);

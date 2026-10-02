@@ -253,6 +253,33 @@ describe('OrdersWorkspace', () => {
       expect(panel.className).not.toContain('1143px');
     });
 
+    // V01 (Codex r1): an EMPTY answer whose re-read failed still says so and offers the retry —
+    // the note does not depend on how many rows the last answer had.
+    it('says a failed re-read of an empty answer, with its retry', () => {
+      const retry = vi.fn();
+      render(<OrdersWorkspace data={page([])} {...props} isError onRetry={retry} picked={null} onPick={() => {}} />);
+      expect(screen.getByText('Could not refresh')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      expect(retry).toHaveBeenCalled();
+      expect(api.getOrder).not.toHaveBeenCalled();
+    });
+
+    // V02 (Codex r1): history moved to another page; while its answer is on its way the previous
+    // rows stand in, and the order shown stays — its tab too — rather than the first stand-in row.
+    it('keeps the shown order and its tab while the next page is on its way', async () => {
+      const { rerender } = render(<OrdersWorkspace data={page(ROWS)} {...props} picked={2} section="notes" onPick={() => {}} />);
+      expect(await screen.findByRole('heading', { name: 'Lamp' })).toBeInTheDocument();
+      expect(await screen.findByRole('tab', { name: /^Notes/ })).toHaveAttribute('aria-selected', 'true');
+      rerender(<OrdersWorkspace data={page(ROWS)} {...props} isPlaceholderData picked={99} section="" onPick={() => {}} />);
+      expect(screen.getByRole('heading', { name: 'Lamp' })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /^Notes/ })).toHaveAttribute('aria-selected', 'true');
+      expect(api.getOrder).not.toHaveBeenCalledWith(1);
+      expect(screen.queryByTestId('workspace-fallback')).not.toBeInTheDocument();
+      // A row picked in the stand-in list is still a pick.
+      rerender(<OrdersWorkspace data={page(ROWS)} {...props} isPlaceholderData picked={1} section="" onPick={() => {}} />);
+      expect(await screen.findByRole('heading', { name: 'Ten flasks' })).toBeInTheDocument();
+    });
+
     it('says the first read is under way — a skeleton of the list, never an empty area (C05, G07)', () => {
       render(<OrdersWorkspace data={undefined} {...props} picked={null} onPick={() => {}} />);
       const busy = screen.getByRole('status');

@@ -12,6 +12,9 @@ export type ForecastState = 'idle' | 'loading' | 'error' | 'data';
  * `ready` sort and the deadlines board use, so a row never shows a date the column
  * order did not take into account. `eta_complete=false` always carries a reason
  * (`unknown_time` / `unroutable`), so it is «partial» too.
+ *
+ * What the simulation does not model (`assumptions`) travels with the forecast,
+ * apart from the reasons: B03 keeps its hint beside the forecast (Codex r1 V04).
  */
 export type Readiness =
   | { kind: 'closed' }
@@ -19,9 +22,16 @@ export type Readiness =
   | { kind: 'loading' }
   | { kind: 'error' }
   /** eta_complete = false, or no date while reasons exist — never a date. */
-  | { kind: 'partial'; reasons: EstimateReason[] }
+  | { kind: 'partial'; reasons: EstimateReason[]; assumptions: string[] }
   | { kind: 'none' }
-  | { kind: 'eta'; eta: string; late: boolean; after: { eta: string; ahead: number } | null; reasons: EstimateReason[] };
+  | {
+      kind: 'eta';
+      eta: string;
+      late: boolean;
+      after: { eta: string; ahead: number } | null;
+      reasons: EstimateReason[];
+      assumptions: string[];
+    };
 
 export function readiness(
   order: Pick<OrderListItem, 'status' | 'ordered' | 'remaining'>,
@@ -35,11 +45,12 @@ export function readiness(
   // An answered set without this row is «not read», never «loading» for ever.
   if (!forecast) return state === 'error' || state === 'data' ? { kind: 'error' } : { kind: 'loading' };
   const reasons = forecast.incomplete_reasons ?? [];
-  if (!forecast.eta_complete) return { kind: 'partial', reasons };
-  if (!forecast.now_eta) return reasons.length > 0 ? { kind: 'partial', reasons } : { kind: 'none' };
+  const assumptions = forecast.assumptions ?? [];
+  if (!forecast.eta_complete) return { kind: 'partial', reasons, assumptions };
+  if (!forecast.now_eta) return reasons.length > 0 ? { kind: 'partial', reasons, assumptions } : { kind: 'none' };
   const after =
     forecast.after_eta && forecast.after_eta !== forecast.now_eta && forecast.ahead_count > 0
       ? { eta: forecast.after_eta, ahead: forecast.ahead_count }
       : null;
-  return { kind: 'eta', eta: forecast.now_eta, late: forecast.late, after, reasons };
+  return { kind: 'eta', eta: forecast.now_eta, late: forecast.late, after, reasons, assumptions };
 }

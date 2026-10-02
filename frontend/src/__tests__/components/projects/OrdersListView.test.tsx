@@ -67,6 +67,17 @@ describe('OrdersListView states', () => {
     expect(screen.getByText('Could not refresh')).toBeInTheDocument();
   });
 
+  // V01 (Codex r1): an empty answer whose re-read failed — the note and its retry, no empty table.
+  it('says a failed re-read of an empty answer with its retry, and draws no empty table', () => {
+    const empty = { ...page, items: [], meta: { ...page.meta, total: 0 } } as OrderListPage;
+    const retry = vi.fn();
+    render(<OrdersListView {...base} data={empty} isError onRetry={retry} view="table" />);
+    expect(screen.getByText('Could not refresh')).toBeInTheDocument();
+    within(screen.getByText('Could not refresh').closest('p') as HTMLElement).getByRole('button', { name: 'Retry' }).click();
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+  });
+
   it('draws nothing for an empty answer — the page owns its empty state', () => {
     const empty = { ...page, items: [], meta: { ...page.meta, total: 0 } } as OrderListPage;
     const { container } = render(<OrdersListView {...base} data={empty} isError={false} onRetry={() => {}} view="table" />);
