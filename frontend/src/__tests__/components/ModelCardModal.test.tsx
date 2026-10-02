@@ -280,7 +280,7 @@ describe('ModelCardModal — a library file', () => {
   });
 
   it('refreshes the order cards too — a re-read can give the product its first cover', async () => {
-    // Same reason as `ProductHeader`'s twin: the 3MF's Model Pictures land as
+    // Same reason as the product page's re-read (`ProductRereadDialog`): the 3MF's Model Pictures land as
     // attachments and the first picture is the implicit cover, which an order
     // card renders off the `projects` query.
     vi.spyOn(api, 'getLibraryFileCard').mockResolvedValue(fileCard as never);

@@ -1,48 +1,57 @@
 import { useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { Loader2 } from 'lucide-react';
+import { ApiError } from '../../api/client';
 import type { Product } from '../../api/client';
-import { useAuth } from '../../contexts/AuthContext';
 import { Button } from '../../components/Button';
-import { ProductGallery } from '../../components/products/ProductGallery';
-import { ProductHeader } from '../../components/products/ProductHeader';
-import { CompositionTable } from '../../components/products/CompositionTable';
-import { ProductVariants } from '../../components/products/ProductVariants';
-import { ProductStock } from '../../components/products/ProductStock';
-import { PlatesByFile } from '../../components/products/PlatesByFile';
-import { ProductAttachments } from '../../components/products/ProductAttachments';
-import { LinkedFiles } from '../../components/products/LinkedFiles';
-import { ProductOrders } from '../../components/products/ProductOrders';
 import { ProductCardDialog } from '../../components/products/ProductCardDialog';
+import { ProductDetailHeader } from '../../components/products/detail/ProductDetailHeader';
+import { ProductPageSkeleton } from '../../components/products/detail/ProductPageSkeleton';
+import { ProductRereadDialog } from '../../components/products/detail/ProductRereadDialog';
+import { ProductSidePanel } from '../../components/products/detail/ProductSidePanel';
+import { ProductTabs } from '../../components/products/detail/ProductTabs';
 import { useProductActions } from '../../components/products/productActions/useProductActions';
+import { LoadFailedNote } from '../../components/workshop/LoadFailedNote';
+import { WorkshopPanel } from '../../components/workshop/WorkshopPanel';
 import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 import { useProductDetail } from '../../hooks/useProductDetail';
+import { parseProductSection, sectionParam, type ProductSection } from './productSections';
 
 /**
- * One product: what it is, what it is made of, what prints it, and who wants it.
- *
- * The page composes sections and owns nothing but dialog state and the three
- * whole-product actions. Everything below the header fetches its own slice, so
- * a slow plate walk never holds up the composition table.
- *
- * ⚠️ **A delete can be refused.** A product an order line uses answers 409, and
- * the operator is meant to take it out of the catalog instead — so the refusal
- * stays in the confirmation over an untouched page, never a navigation away from
- * a product that still exists.
- *
- * The whole-product actions are the shared host's (WS-13 E8 F01, `context: 'detail'`):
- * the header's buttons and the one-off banner run the catalog menu's own code.
+ * The mockup's two columns (WS-13 E9 B05): the side panel and the main one, 16 apart,
+ * aligned to the top; ≤ 1100 a narrower side; ≤ 760 one column with the side panel ABOVE
+ * the tabs (K2 — the mockup hides it there). The page is never wider than the screen.
  */
-export function ProductPage() {
+const PRODUCT_LAYOUT =
+  'grid items-start gap-4 grid-cols-[clamp(260px,17vw,360px)_minmax(0,1fr)] max-[1101px]:grid-cols-[240px_minmax(0,1fr)] max-[761px]:grid-cols-1';
+
+/**
+ * One product (WS-13 E9): the header, the side panel of what it is, and the tabs of what
+ * it is made of, prints from, holds, carries and was ordered in.
+ *
+ * Keyed by the product's id (the route), so another product starts from nothing — its
+ * tabs, their places, drafts and dialogs (C03). The whole-product actions are the shared
+ * host's (E8 F01, `context: 'detail'`).
+ *
+ * ⚠️ **A delete can be refused.** A product an order line uses answers 409, and the
+ * operator is meant to take it out of the catalog instead — so the refusal stays in the
+ * confirmation over an untouched page, never a navigation away from a product that still
+ * exists.
+ */
+function ProductView({
+  id,
+  section,
+  onSection,
+}: {
+  id: number;
+  section: ProductSection;
+  onSection: (section: ProductSection) => void;
+}) {
   const { t } = useTranslation();
-  const { id: idParam } = useParams<{ id: string }>();
-  const id = Number(idParam);
-  const { hasPermission } = useAuth();
   const navigate = useNavigate();
   const forgetProduct = useForgetOnUnmount(['product', id]);
-
   const [editing, setEditing] = useState(false);
+  const [rereading, setRereading] = useState(false);
   const heading = useRef<HTMLHeadingElement>(null);
   const actions = useProductActions<Product>({
     context: 'detail',
@@ -62,71 +71,48 @@ export function ProductPage() {
   // The shared hook owns this query's options — including the refresh toast.
   // A second `useQuery` on the same key anywhere (the card dialog that opens
   // over this page had one) takes them over: see `useProductDetail`.
-  const { data: product, isLoading, isError, error } = useProductDetail(Number.isFinite(id) ? id : null);
+  const detail = useProductDetail(Number.isFinite(id) ? id : null);
+  const product = detail.data;
 
-  if (isLoading) {
-    return (
-      <div className="p-4 flex items-center gap-2 text-bambu-gray">
-        <Loader2 className="w-4 h-4 animate-spin" />
-        {t('common.loading')}
-      </div>
-    );
-  }
-  // ⚠️ **Data presence is asked FIRST, and that order is load-bearing.**
-  // TanStack v5 flips `status` to "error" on ANY failed fetch — a background
-  // REFETCH of a query that still holds good data included — and it keeps
-  // `data` while it does. This page invalidates `['product', id]` on every
-  // mutation it and its sections make (the catalog toggle, part create / edit /
-  // delete / merge, both alias calls, both unlinks), so a refetch is in flight
-  // routinely; one that fails would, on an `isError`-first check, throw the
-  // whole rendered page away and show a load error over a product still sitting
-  // in the cache.
+  // ⚠️ **Data presence is asked FIRST, and that order is load-bearing.** TanStack v5
+  // flips `status` to "error" on ANY failed fetch — a background REFETCH of a query that
+  // still holds good data included — and keeps `data` while it does. This page
+  // invalidates `['product', id]` on every mutation it and its tabs make, so a refetch is
+  // in flight routinely; one that fails keeps the page (and the refresh toast says so).
   //
-  // With no data, the two cases still read apart: a fetch that FAILED is not a
-  // product that is gone. "This product no longer exists" over an expired
-  // session, a proxy hiccup or a 500 sends the operator hunting for a deletion
-  // nobody performed, so the server's own sentence is shown instead.
+  // With no data, the cases still read apart: a fetch that FAILED is not a product that
+  // is gone. Only the server's 404 is «not found»; an expired session, a proxy hiccup or
+  // a 500 shows its own sentence and a retry.
   if (!product) {
-    return isError ? (
-      <div className="p-4 text-sm text-red-500">
-        {t('products.page.loadFailed')} {(error as Error)?.message}
-      </div>
-    ) : (
-      <div className="p-4 text-bambu-gray text-sm">{t('products.page.notFound')}</div>
+    if (detail.isLoading) return <ProductPageSkeleton layoutClass={PRODUCT_LAYOUT} />;
+    const missing = !detail.isError || (detail.error instanceof ApiError && detail.error.status === 404);
+    if (missing) {
+      return (
+        <div data-testid="product-not-found" className="space-y-2 py-8 text-center">
+          <p className="text-white">{t('products.page.notFound')}</p>
+          <Link to="/products" className="text-sm text-bambu-green hover:underline">
+            {t('products.page.toCatalog')}
+          </Link>
+        </div>
+      );
+    }
+    return (
+      <LoadFailedNote
+        message={`${t('products.page.loadFailed')} ${(detail.error as Error).message}`}
+        onRetry={() => detail.refetch()}
+      />
     );
   }
 
-  const canEdit = hasPermission('projects:update');
-
-  // ⚠️ **A flex column with `gap`, not `space-y`** — because the gallery below
-  // is moved by `order`, and `space-y-*` hangs its margins on DOM siblings,
-  // which after a reorder are not the visual ones.
   return (
-    <div className="p-4 flex flex-col gap-4">
-      {/* Top-down, per the parent spec: what the thing LOOKS like, then what it
-          is, then what it is made of, then what prints it, then its papers,
-          then its files, then who wants it.
-          ⚠️ **The header comes FIRST in the document and the gallery is put
-          above it with `order-first`.** The visual order is the spec's; the
-          document order is the heading outline's, and the gallery's `<h2>`
-          standing before the product's `<h1>` opened that outline at level 2.
-          The alternative — a visually-hidden `<h1>` at the top with the visible
-          title demoted — gives a screen reader two names for the same thing and
-          leaves the one people can see outranked by one they cannot.
-          ⚠️ **This is a trade, not a free win.** CSS `order` moves the PICTURE
-          only: the DOM — and with it the tab order and the reading order of a
-          screen reader — goes header, then gallery, so the first thing a
-          keyboard reaches is the title and its buttons while the first thing an
-          eye lands on is the picture above them. Outline correctness won
-          because a document that opens at `<h2>` misreports the page's own
-          name, which no visual ordering can repair. */}
-      {/* A one-off product is added with its plate, from the order (spec
-          workshop-add-to-order, rule 25) — «Add to order» is the catalog's, and the
-          host offers it to a listed catalog product only (WS-13 E5 G01). */}
-      <ProductHeader product={product} actions={actions} headingRef={heading} />
+    <div className="space-y-4">
+      <ProductDetailHeader product={product} actions={actions} headingRef={heading} onReread={() => setRereading(true)} />
 
       {product.origin !== 'catalog' && (
-        <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200" data-testid="product-adhoc-banner">
+        <div
+          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-200"
+          data-testid="product-adhoc-banner"
+        >
           <span>{t('products.page.adhocBanner')}</span>
           {/* R04: the same confirmation as the catalog menu's «Add to catalog…». */}
           {actions.available(product).includes('promote') && (
@@ -137,42 +123,62 @@ export function ProductPage() {
         </div>
       )}
 
-      <div className="order-first">
-        <ProductGallery product={product} canEdit={canEdit} />
-      </div>
-
-      <CompositionTable product={product} canEdit={canEdit} />
-      <ProductVariants product={product} canEdit={canEdit} />
-
-      {/* Directly under the composition, because it is the same list of parts
-          seen from the shelf rather than from the design. Reading the shelf is
-          `projects:read` and correcting it is `projects:update` (Decision 7) —
-          no new permission: whoever may change an order's lines may change the
-          stock those lines draw on. */}
-      {hasPermission('projects:read') && <ProductStock productId={product.id} canEdit={canEdit} />}
-
-      <PlatesByFile productId={product.id} />
-
-      <ProductAttachments product={product} canEdit={canEdit} />
-
-      <LinkedFiles product={product} canEdit={canEdit} />
-
-      <div className="space-y-2">
-        <ProductOrders productId={product.id} />
-        {/* ⚠️ Units DELIVERED against orders — every order status, capped at
-            each line's need. Not "units ever printed": a print nobody ordered
-            is not in it, and neither is the eleventh of ten. */}
-        <p className="text-sm text-bambu-gray">
-          {t('products.card.unitsPrintedTotal')}:{' '}
-          <span className="text-white" data-testid="product-units-printed-total">
-            {product.units_printed_total}
-          </span>
-        </p>
+      <div data-testid="product-layout" className={PRODUCT_LAYOUT}>
+        <ProductSidePanel product={product} actions={actions} />
+        <WorkshopPanel data-testid="product-main" className="min-w-0">
+          {(product.description || product.notes) && (
+            <div className="mb-4 space-y-2">
+              {product.description && (
+                <p data-testid="product-description" className="whitespace-pre-wrap text-sm leading-5 text-bambu-gray-light">
+                  {product.description}
+                </p>
+              )}
+              {product.notes && (
+                <p data-testid="product-notes" className="whitespace-pre-wrap text-sm leading-5 text-bambu-gray">
+                  {product.notes}
+                </p>
+              )}
+            </div>
+          )}
+          <ProductTabs product={product} section={section} onSection={onSection} />
+        </WorkshopPanel>
       </div>
 
       {editing && <ProductCardDialog product={product} onClose={() => setEditing(false)} />}
-
+      {rereading && <ProductRereadDialog product={product} onClose={() => setRereading(false)} />}
       {actions.host}
+    </div>
+  );
+}
+
+/**
+ * The route `/products/:id`. The open tab lives in `?tab=` (C03): a change replaces the
+ * entry (Back leaves the product, Forward comes back to the same tab), the composition is
+ * never written, and an unknown value reads as the composition without being rewritten.
+ * Another product without `tab` opens on the composition.
+ */
+export function ProductPage() {
+  const { id: idParam } = useParams<{ id: string }>();
+  const [params, setParams] = useSearchParams();
+  // `workshop` — the section's text scope (WS-13 E2 B02), as the order page.
+  return (
+    <div className="workshop p-4">
+      <ProductView
+        key={idParam}
+        id={Number(idParam)}
+        section={parseProductSection(params.get('tab'))}
+        onSection={(next) =>
+          setParams(
+            (prev) => {
+              const out = new URLSearchParams(prev);
+              if (sectionParam(next)) out.set('tab', next);
+              else out.delete('tab');
+              return out;
+            },
+            { replace: true },
+          )
+        }
+      />
     </div>
   );
 }

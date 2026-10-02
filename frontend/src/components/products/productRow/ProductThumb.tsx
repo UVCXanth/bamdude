@@ -5,9 +5,13 @@ import type { ProductListItem } from '../../../api/client';
 import { mediaRetryStarted } from '../../../hooks/useCameraStreamToken';
 
 const BOX = {
-  table: 'h-10 w-10 flex-shrink-0',
-  card: 'h-[120px] w-full',
+  table: 'h-10 w-10 flex-shrink-0 rounded-lg',
+  card: 'h-[120px] w-full rounded-lg',
+  // The product page's visual field (WS-13 E9 B06): the top of its panel, edge to edge.
+  visual: 'h-[200px] w-full',
 } as const;
+
+type Variant = keyof typeof BOX;
 
 /**
  * The picture itself — keyed by its address, so a failure belongs to that picture alone.
@@ -19,7 +23,7 @@ const BOX = {
  * is counted that a retry already answers (`mediaRetryStarted`), nor one asked before the
  * token existed: the token's arrival retries it.
  */
-function Cover({ src, variant }: { src: string; variant: 'table' | 'card' }) {
+function Cover({ src, variant, caption }: { src: string; variant: Variant; caption?: string }) {
   const [failed, setFailed] = useState(false);
   return (
     <>
@@ -35,18 +39,29 @@ function Cover({ src, variant }: { src: string; variant: 'table' | 'card' }) {
           if (!new URL(el.getAttribute('src') ?? '', window.location.href).searchParams.has('token')) return;
           setFailed(true);
         }}
-        className={`${BOX[variant]} rounded-lg object-contain bg-bambu-dark`}
+        className={`${BOX[variant]} object-contain bg-bambu-dark`}
       />
-      {failed && <Placeholder variant={variant} />}
+      {failed && <Placeholder variant={variant} caption={caption} />}
     </>
   );
 }
 
-function Placeholder({ variant }: { variant: 'table' | 'card' }) {
+function Placeholder({ variant, caption }: { variant: Variant; caption?: string }) {
+  if (variant === 'visual') {
+    return (
+      <div
+        data-testid="product-cover-placeholder"
+        className={`${BOX.visual} bg-bambu-dark-tertiary/60 flex flex-col items-center justify-center gap-4 text-bambu-gray`}
+      >
+        <Package className="h-16 w-16" aria-hidden="true" />
+        {caption && <span className="text-xs">{caption}</span>}
+      </div>
+    );
+  }
   return (
     <div
       data-testid="product-cover-placeholder"
-      className={`${BOX[variant]} rounded-lg bg-bambu-dark-tertiary/60 flex items-center justify-center`}
+      className={`${BOX[variant]} bg-bambu-dark-tertiary/60 flex items-center justify-center`}
     >
       <Package className={variant === 'card' ? 'h-8 w-8 text-bambu-gray' : 'h-[18px] w-[18px] text-bambu-gray'} aria-hidden="true" />
     </div>
@@ -63,11 +78,14 @@ function Placeholder({ variant }: { variant: 'table' | 'card' }) {
 export function ProductThumb({
   product,
   variant,
+  caption,
 }: {
   product: Pick<ProductListItem, 'id' | 'has_cover'>;
-  variant: 'table' | 'card';
+  variant: Variant;
+  /** Under the placeholder's icon — the visual field's «{code} · {version}» only. */
+  caption?: string;
 }) {
-  if (!product.has_cover) return <Placeholder variant={variant} />;
+  if (!product.has_cover) return <Placeholder variant={variant} caption={caption} />;
   const src = api.getProductCoverImageUrl(product.id);
-  return <Cover key={src} src={src} variant={variant} />;
+  return <Cover key={src} src={src} variant={variant} caption={caption} />;
 }

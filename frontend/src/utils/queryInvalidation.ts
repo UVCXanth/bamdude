@@ -246,7 +246,7 @@ export function invalidateProductCatalog(qc: QueryClient): void {
  * plates and the files behind them.
  *
  * ⚠️ `product-file-groups` is the files tab's DTO and is NOT `product-files`: that key
- * already holds the product's `LibraryFile[]` (`LinkedFiles`, `ProductHeader`), a
+ * already holds the product's `LibraryFile[]` (`LinkedFiles`), a
  * different shape that a shared key would overwrite.
  */
 export const PRODUCT_FILE_KEYS = ['product-plates', 'product-part-sources', 'product-file-groups', 'product-estimate'] as const;

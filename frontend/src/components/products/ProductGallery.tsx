@@ -23,6 +23,9 @@ interface ProductGalleryProps {
    *  than the tests: while the card dialog is open two galleries are live, and
    *  "Pictures" names both of them. */
   headingKey?: string;
+  /** Inside a dialog that already names it (the product page's «Pictures», WS-13 E9 B06):
+   *  no heading of its own, the dialog's title is the name. */
+  bare?: boolean;
 }
 
 const TILE_CLASS = 'w-40 h-40 rounded-xl object-contain bg-bambu-dark border border-bambu-dark-tertiary';
@@ -53,6 +56,7 @@ export function ProductGallery({
   canEdit,
   testIdSuffix = '',
   headingKey = 'products.gallery.title',
+  bare = false,
 }: ProductGalleryProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -168,15 +172,17 @@ export function ProductGallery({
   return (
     <section
       className="space-y-3"
-      aria-labelledby={headingId}
+      aria-labelledby={bare ? undefined : headingId}
       data-testid={testId('product-gallery')}
     >
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h2 id={headingId} className="text-lg font-semibold text-white flex items-center gap-2">
-            <Image className="w-5 h-5" />
-            {t(headingKey)}
-          </h2>
+          {!bare && (
+            <h2 id={headingId} className="text-lg font-semibold text-white flex items-center gap-2">
+              <Image className="w-5 h-5" />
+              {t(headingKey)}
+            </h2>
+          )}
           <p className="text-xs text-bambu-gray">{t('products.gallery.coverHint')}</p>
         </div>
 

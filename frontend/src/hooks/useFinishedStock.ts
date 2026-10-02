@@ -26,6 +26,15 @@ export function useStockItems(params: StockItemsParams) {
   });
 }
 
+/**
+ * Every position of ONE product, unpaged (WS-13 E9 B09 / F01): the side panel's breakdown
+ * and the «Stock» tab's table ask the same question, and one params object keeps them on
+ * one key — one request, one cache entry, one refresh.
+ */
+export function productPositionsParams(productId: number): StockItemsParams {
+  return { product_id: productId, mode: 'all', all: true };
+}
+
 /** The finished-goods tiles — the whole farm, never the list's filters. */
 export function useStockItemsSummary() {
   return useQuery<StockItemsSummary>({

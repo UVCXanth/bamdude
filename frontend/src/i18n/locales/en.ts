@@ -6746,8 +6746,6 @@ export default {
       adhoc: 'one-off',
     },
     card: {
-      reread: 'Re-read from file…',
-      rereadNoFiles: 'Link a file to this product first, then re-read its card.',
       unitsPrintedTotal: 'Printed for orders',
       fields: {
         name: 'Name',
@@ -6843,7 +6841,8 @@ export default {
       duplicating: 'Duplicate…',
     },
     page: {
-      notFound: 'This product no longer exists.',
+      notFound: 'Product not found',
+      toCatalog: 'To the catalog',
       loadFailed: 'Could not load this product:',
       adhocBanner: 'A one-off product, created for an order — the catalogue does not list it.',
       promote: 'Add to catalog',
@@ -6851,16 +6850,7 @@ export default {
     header: {
       breadcrumb: 'Products',
       addToOrder: 'Add to order',
-      inCatalog: 'In catalog',
-      hidden: 'Not in the catalog',
-      designer: 'Designer',
-      license: 'Licence',
-      source: 'Source page',
-      designId: 'Design ID',
       edit: 'Edit',
-      duplicate: 'Duplicate',
-      export: 'Export',
-      delete: 'Delete',
     },
     // WS-13 E9: the product page — header, side panel, tabs.
     detail: {
@@ -6877,6 +6867,41 @@ export default {
         empty: 'None of the linked files is a 3MF you can see.',
         gone: 'This file is no longer linked — pick another.',
         submit: 'Re-read',
+      },
+      facts: {
+        label: 'About the product',
+        readiness: 'Readiness',
+        slicedFor: 'Sliced for',
+        materials: 'Material / colour (from plates)',
+        estimate: 'Estimate per unit (standard configuration)',
+        stock: 'Stock',
+        designer: 'Model designer · license',
+        designId: 'Model ID',
+        source: 'Source',
+        inCatalog: 'In the catalog',
+        adhocHint: 'The catalog does not list a one-off product; to list it, use «Add to catalog…»',
+      },
+      estimate: {
+        atLeast: 'at least {{value}}',
+        noPrint: 'no printing',
+        loadFailed: 'Could not load the estimate',
+      },
+      stock: {
+        kits_one: '{{count}} kit',
+        kits_other: '{{count}} kits',
+        breakdownFailed: 'Could not load the breakdown by position',
+      },
+      tabs: {
+        label: 'Product sections',
+        composition: 'Composition',
+        plates: 'Plates and files',
+        stock: 'Stock',
+        docs: 'Documents',
+        orders: 'Orders',
+      },
+      visual: {
+        open: 'Pictures…',
+        openCover: 'Open the product’s pictures',
       },
     },
     composition: {
