@@ -88,6 +88,7 @@ from backend.app.schemas.product import (
     ProductEstimateOut,
     ProductFileOut,
     ProductFilesOut,
+    ProductFolderOut,
     ProductImportResponse,
     ProductKitsOut,
     ProductListItem,
@@ -468,6 +469,11 @@ async def _response(db: AsyncSession, product: Product, *, reload_links: bool = 
         library_file_ids=sorted(f.id for f in product.library_files),
         library_folder_ids=sorted(f.id for f in product.library_folders),
         units_printed_total=await units_printed_total(db, product.id),
+        documents_count=sum(1 for a in sorted_attachments(product) if a.get("category") != "pictures"),
+        orders_count=await db.scalar(
+            select(func.count(distinct(ProjectLine.project_id))).where(ProjectLine.product_id == product.id)
+        )
+        or 0,
         origin=product.origin,
         origin_file_id=product.origin_file_id,
         origin_plate_index=product.origin_plate_index,
@@ -2173,6 +2179,24 @@ async def get_product_files(
         await recipes_for_product(db, product), key=lambda row: (row[0].library_file_id, row[0].plate_index)
     ):
         plates.setdefault(row[1].id, []).append(row)
+    # WS-13 E9 A03 — the linked folders, in one statement. Their names follow the
+    # library's folder routes: any library reader sees them (``read_own`` too), nobody else.
+    linked_folders = (
+        await db.execute(
+            select(LibraryFolder.id, LibraryFolder.name)
+            .join(product_folders, product_folders.c.library_folder_id == LibraryFolder.id)
+            .where(product_folders.c.product_id == product_id)
+        )
+    ).all()
+    linked_folder_ids = {folder_id for folder_id, _name in linked_folders}
+    folders_named = scope != "none"
+    folders = sorted(
+        (
+            ProductFolderOut(folder_id=folder_id, name=name if folders_named else None, hidden=not folders_named)
+            for folder_id, name in linked_folders
+        ),
+        key=lambda f: (f.hidden, (f.name or "").casefold(), f.folder_id),
+    )
     named: list[ProductFileOut] = []
     hidden: list[ProductFileOut] = []
     for file, folder_name in linked:
@@ -2190,11 +2214,13 @@ async def get_product_files(
             printer_model=normalize_model_name(raw_model) if isinstance(raw_model, str) else None,
             sliced_any=any(p.sliced for p in file_plates),
             plates=file_plates,
+            is_3mf=file.filename.lower().endswith(".3mf"),
+            in_linked_folder=file.folder_id is not None and file.folder_id in linked_folder_ids,
         )
         (named if shown else hidden).append(entry)
     # Named files by name; the hidden ones after them, by id — their order says nothing.
     named.sort(key=lambda f: ((f.filename or "").casefold(), f.library_file_id))
-    return ProductFilesOut(files=named + hidden, hidden_files=len(hidden))
+    return ProductFilesOut(files=named + hidden, hidden_files=len(hidden), folders=folders)
 
 
 # ---------- links ----------

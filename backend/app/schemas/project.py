@@ -542,6 +542,9 @@ class ProjectListResponse(BaseModel):
     #: WS-13 E1 OR3 — the distinct products, in line order, the whole list (the card
     #: draws the first three and «+N» off its length). ``line_products`` stays per line.
     products: list["LineProductOut"] = []
+    #: WS-13 E9 A02 — the order's lines of the product the list is filtered by
+    #: (``product_id``), in line order; ``None`` when the list is not filtered by one.
+    product_lines: list["ProductLineRef"] | None = None
 
 
 class TimelineEvent(BaseModel):
@@ -784,6 +787,16 @@ class BankSurplusResponse(BaseModel):
 
     moved: list[StockMovedOut] = []
     nothing_to_bank: bool = False
+
+
+class ProductLineRef(BaseModel):
+    """WS-13 E9 A02 — one line of the filtering product in an order of the list: how
+    many, and in which configuration (names, composed by the frontend)."""
+
+    line_id: int
+    mode: Literal["product", "parts"]
+    quantity: int
+    configuration: LineConfigurationOut
 
 
 class LineProductOut(BaseModel):

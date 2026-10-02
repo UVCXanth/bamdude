@@ -113,6 +113,7 @@ from backend.app.schemas.project import (
     PlanTotalsOut,
     ProcurementOut,
     ProcurementUpdate,
+    ProductLineRef,
     ProjectCountsOut,
     ProjectCreate,
     ProjectDuplicate,
@@ -158,7 +159,7 @@ from backend.app.services.configuration_views import configuration_out, groups_b
 from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.filament_intake import require_source_requirements
 from backend.app.services.filament_requirements import PrintRequirementsCache
-from backend.app.services.line_composition import LineConfig
+from backend.app.services.line_composition import LineConfig, default_options, load_line_configs
 from backend.app.services.list_paging import (
     SortSpec,
     apply_sql_sort,
@@ -637,7 +638,7 @@ async def list_projects(
     projects = (await db.execute(query)).scalars().all()
     out = await _list_rows(db, projects)
     if not paged:
-        return out
+        return await _with_product_lines(db, projects, out, product_id)
     if computed:
         if key in _ORDER_FORECAST:
             # The cost is honest: one full walk of the simulation over the active
@@ -656,7 +657,44 @@ async def list_projects(
         out = sort_computed(out, key_fn, direction, id_fn=lambda r: r.id)
         total = len(out)
         out = slice_page(out, page, per_page, all)
+    out = await _with_product_lines(db, projects, out, product_id)
     return OrderListPage(items=out, meta=page_meta(total, page, per_page, all), totals=totals)
+
+
+async def _with_product_lines(
+    db: AsyncSession, projects: Sequence[Project], rows: list[ProjectListResponse], product_id: int | None
+) -> list[ProjectListResponse]:
+    """WS-13 E9 A02 — each row's lines of ``product_id``, in line order, for the rows
+    given (the page, after any computed cut). One batched pass: the product's groups,
+    parts and standard, and the lines' configurations — never a read per row. Without
+    ``product_id`` nothing is read and the rows keep ``None``."""
+    if product_id is None or not rows:
+        return rows
+    wanted = {row.id for row in rows}
+    lines_by_order = {
+        project.id: sorted(
+            (line for line in project.lines if line.product_id == product_id),
+            key=lambda line: (line.sort_order, line.id),
+        )
+        for project in projects
+        if project.id in wanted
+    }
+    line_ids = [line.id for lines in lines_by_order.values() for line in lines]
+    configs = await load_line_configs(db, line_ids) if line_ids else {}
+    groups = (await groups_by_product(db, [product_id])).get(product_id, [])
+    parts = list((await db.execute(select(ProductPart).where(ProductPart.product_id == product_id))).scalars())
+    defaults = (await default_options(db, [product_id])).get(product_id, {})
+    for row in rows:
+        row.product_lines = [
+            ProductLineRef(
+                line_id=line.id,
+                mode=line.mode,
+                quantity=line.quantity,
+                configuration=configuration_out(groups, parts, configs.get(line.id, LineConfig()), defaults, line.mode),
+            )
+            for line in lines_by_order.get(row.id, [])
+        ]
+    return rows
 
 
 def _row_query():

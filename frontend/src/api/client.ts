@@ -2097,6 +2097,9 @@ export interface OrderListItem {
   /** WS-13 E1 OR3 — the distinct products, in line order, the whole list (a card
    *  draws the first three and «+N» off its length). */
   products: LineProduct[];
+  /** WS-13 E9 A02 — the order's lines of the product the list is filtered by
+   *  (`product_id`), in line order; `null` when the list is not filtered by one. */
+  product_lines?: ProductLineRef[] | null;
   prints_in_progress: number;
   prints_queued: number;
   /** WS-13 E6 H02 — the order's bankable surplus; the list menu offers «surplus to stock» only above 0. */
@@ -2872,12 +2875,33 @@ export interface ProductFileGroup {
   printer_model: string | null;
   sliced_any: boolean;
   plates: PlateRecipe[];
+  /** WS-13 E9 A03 — a 3MF container (`.3mf`, case aside): what a card is re-read from. */
+  is_3mf: boolean;
+  /** WS-13 E9 A03 — the file sits in a folder linked to the product NOW; it is unlinked
+   *  through that folder (the server keeps no history of how a file joined). */
+  in_linked_folder: boolean;
 }
 
-/** `GET /products/{id}/files` — every linked file outside the trash (PS7). */
+/** WS-13 E9 A03 — one folder linked to the product; named for any library reader. */
+export interface ProductFolderRef {
+  folder_id: number;
+  name: string | null;
+  hidden: boolean;
+}
+
+/** `GET /products/{id}/files` — every linked file outside the trash (PS7), and the linked folders (A03). */
 export interface ProductFileGroups {
   files: ProductFileGroup[];
   hidden_files: number;
+  folders: ProductFolderRef[];
+}
+
+/** WS-13 E9 A02 — one line of the filtering product in an order of the list. */
+export interface ProductLineRef {
+  line_id: number;
+  mode: LineMode;
+  quantity: number;
+  configuration: LineConfiguration;
 }
 
 /** `GET /products/{id}/estimate` — one standard unit from scratch, in whole plates (ES). */
@@ -3019,6 +3043,10 @@ export interface Product extends ProductListItem {
    *  `order_metrics.units_delivered`). Still not "units ever printed": a print
    *  nobody ordered is not in it. */
   units_printed_total: number;
+  /** WS-13 E9 A01 — attachments outside the gallery (not `pictures`). */
+  documents_count: number;
+  /** WS-13 E9 A01 — DISTINCT orders with a line of this product, any status. */
+  orders_count: number;
   created_at: string;
   updated_at: string;
 }

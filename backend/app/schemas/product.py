@@ -322,11 +322,28 @@ class ProductFileOut(BaseModel):
     printer_model: str | None = None
     sliced_any: bool = False
     plates: list[PlateRecipeResponse] = []
+    #: WS-13 E9 A03 — a 3MF container (``.3mf``, case aside — the library's rule), the
+    #: files a card can be re-read from; known for a file without access too.
+    is_3mf: bool = False
+    #: WS-13 E9 A03 — the file sits in a folder linked to this product NOW. The server keeps
+    #: no history of how a file joined; the page unlinks such a file through its folder.
+    in_linked_folder: bool = False
+
+
+class ProductFolderOut(BaseModel):
+    """WS-13 E9 A03 — one folder linked to the product. Named for any library reader
+    (the library's folder routes' rule); for nobody else."""
+
+    folder_id: int
+    name: str | None = None
+    hidden: bool = False
 
 
 class ProductFilesOut(BaseModel):
     files: list[ProductFileOut] = []
     hidden_files: int = 0
+    #: WS-13 E9 A03 — the linked folders, named first by name, hidden after by id.
+    folders: list[ProductFolderOut] = []
 
 
 class EstimateSurplusOut(BaseModel):
@@ -635,6 +652,10 @@ class ProductResponse(ProductListItem):
     # 7). Computed per request from the order figures, never stored — the number
     # on the product page and the one on the order must not be able to disagree.
     units_printed_total: int = 0
+    #: WS-13 E9 A01 — the tab counts: attachments outside the gallery (not ``pictures``)
+    #: and DISTINCT orders with a line of this product, whatever their status.
+    documents_count: int = 0
+    orders_count: int = 0
     created_at: datetime
     updated_at: datetime
 
