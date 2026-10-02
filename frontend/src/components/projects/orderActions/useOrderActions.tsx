@@ -45,8 +45,8 @@ type Active =
  * ⚠️ **It outlives its doors (R02).** An action holds a snapshot of the order it was
  * opened for; a refetch that drops the row, a workspace that moves to another order
  * or an emptied list changes nothing about the open dialog. When the last dialog
- * closes and the element that opened it has gone, focus lands on the page's own
- * heading (`fallbackFocusRef`, B07) — never on BODY.
+ * closes and the element that opened it has gone — or is about to, after a delete —
+ * focus lands on the page's own heading (`fallbackFocusRef`, B07) — never on BODY.
  *
  * ⚠️ **The host remembers who opened the FIRST dialog (B07).** A Modal records its
  * opener when it mounts; one that replaces another in the same commit — the form after
@@ -67,6 +67,8 @@ export function useOrderActions({
   const opened = useRef(false);
   // The element focused when the first dialog of a chain opened — kept until the chain ends.
   const opener = useRef<HTMLElement | null>(null);
+  // A delete takes the order's row away: the heading gets the focus whatever the Modal gave back.
+  const toHeading = useRef(false);
 
   const open = (next: Active) => {
     if (opener.current == null) {
@@ -89,6 +91,11 @@ export function useOrderActions({
     const back = opener.current;
     opener.current = null;
     const timer = window.setTimeout(() => {
+      if (toHeading.current) {
+        toHeading.current = false;
+        fallbackFocusRef.current?.focus();
+        return;
+      }
       const now = document.activeElement;
       if (now != null && now !== document.body) return;
       const usable = back != null && back.isConnected && !back.closest('[inert]') && !(back as HTMLButtonElement).disabled;
@@ -165,7 +172,11 @@ export function useOrderActions({
         order={active.ref}
         onClose={close}
         onDeleted={active.onDeleted}
-        onPageDeleted={onDeleted}
+        onPageDeleted={(id) => {
+          // The trigger the Modal gives focus back to is about to leave with the row (B07).
+          toHeading.current = true;
+          onDeleted?.(id);
+        }}
       />
     );
   } else if (active?.kind === 'bank') {

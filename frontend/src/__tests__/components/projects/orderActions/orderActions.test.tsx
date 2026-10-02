@@ -238,6 +238,18 @@ describe('the order action host', () => {
     expect(remove).toHaveBeenCalledTimes(1);
   });
 
+  it('after a delete lands focus on the heading, not on a trigger about to leave (B07)', async () => {
+    vi.spyOn(api, 'deleteOrder').mockResolvedValue({ message: 'Project deleted' } as never);
+    render(<Page initial={[row()]} />);
+    openMenu();
+    pick('Delete');
+    await screen.findByRole('dialog', { name: 'Delete order?' });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    // The refetch has not dropped the row yet: the Modal gave focus back to its trigger.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Orders' })));
+  });
+
   it('routes «Completed» chosen in the form to «Stock & issue», writing no status (B04 end to end)', async () => {
     const update = vi.spyOn(api, 'updateOrder');
     vi.spyOn(api, 'getOrder').mockResolvedValue(makeOrder({ id: 1, code: 'OR-0001', name: 'Ten flasks', status: 'active' }));
