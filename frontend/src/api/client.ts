@@ -31,6 +31,13 @@ export class ApiError extends Error {
    * server-side anyway.
    */
   code?: string;
+  /**
+   * The elements a refusal is about, when it names them (WS-13 E10 R03): the variants
+   * batch answers `{error, message, group, option}`, each an id or the draft's temp id.
+   * A dialog points at the field — or brings back a row it no longer has — by these,
+   * never by the translated sentence.
+   */
+  refs?: { group?: number | string; option?: number | string };
   constructor(message: string, status: number, code?: string, retryAfterMs?: number) {
     super(message);
     this.name = 'ApiError';
@@ -543,7 +550,24 @@ async function handleErrorResponse(response: Response, __isRetry: boolean, signa
   const retryAfterMs = Number.isFinite(seconds) && seconds >= 0
     ? seconds * 1000
     : retryAfter ? Math.max(0, Date.parse(retryAfter) - Date.now()) : undefined;
-  throw new ApiError(message, response.status, code, Number.isFinite(retryAfterMs) ? retryAfterMs : undefined);
+  const refusal = new ApiError(message, response.status, code, Number.isFinite(retryAfterMs) ? retryAfterMs : undefined);
+  const refs = refusalRefs(error.detail);
+  if (refs) refusal.refs = refs;
+  throw refusal;
+}
+
+/** The `group` / `option` a refusal names — an id or a temp id; `undefined` when it names none. */
+function refusalRefs(detail: unknown): ApiError['refs'] {
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return undefined;
+  const d = detail as Record<string, unknown>;
+  const ref = (value: unknown) =>
+    (typeof value === 'number' && Number.isFinite(value)) || (typeof value === 'string' && value !== '')
+      ? (value as number | string)
+      : undefined;
+  const group = ref(d.group);
+  const option = ref(d.option);
+  if (group === undefined && option === undefined) return undefined;
+  return { ...(group !== undefined ? { group } : {}), ...(option !== undefined ? { option } : {}) };
 }
 
 /**

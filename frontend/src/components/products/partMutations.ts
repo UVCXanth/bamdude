@@ -11,7 +11,7 @@ export function compositionMutationKey(productId: number) {
   return ['product-composition', productId] as const;
 }
 
-/** The same for the variant groups and options (`ProductVariants`) — its dialog waits on it. */
+/** The same for the variant groups and options — the manager's one `PUT` carries it. */
 export function variantsMutationKey(productId: number) {
   return ['product-variants', productId] as const;
 }

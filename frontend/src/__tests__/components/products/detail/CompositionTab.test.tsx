@@ -400,20 +400,18 @@ describe('CompositionTab', () => {
       await waitFor(() => expect(screen.getByRole('heading', { level: 1, name: 'Flask' })).toHaveFocus());
     });
 
-    it('«Manage variants…» opens the existing editor; nothing closes it while a change is on its way', async () => {
-      let land: () => void = () => {};
-      vi.spyOn(api, 'updateVariantGroup').mockReturnValue(new Promise((resolve) => (land = () => resolve({} as never))));
+    it('«Manage variants…» opens the manager; «Cancel» sends nothing and gives the focus back', async () => {
+      const apply = vi.spyOn(api, 'applyProductVariants');
       render(<Host />);
-      fireEvent.click(screen.getByRole('button', { name: 'Manage variants…' }));
+      const manage = screen.getByRole('button', { name: 'Manage variants…' });
+      manage.focus();
+      fireEvent.click(manage);
       const dialog = await screen.findByRole('dialog', { name: 'Product variants' });
-      fireEvent.click(within(dialog).getByTestId('variant-option-11-standard'));
-      await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Done' })).toBeDisabled());
-      fireEvent.keyDown(window, { key: 'Escape' });
-      expect(screen.getByRole('dialog', { name: 'Product variants' })).toBeInTheDocument();
-      await act(async () => land());
-      await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Done' })).toBeEnabled());
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
+      fireEvent.change(within(dialog).getAllByLabelText('Group')[0], { target: { value: 'Cap type' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(manage).toHaveFocus();
+      expect(apply).not.toHaveBeenCalled();
     });
   });
 });

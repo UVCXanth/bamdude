@@ -1,5 +1,5 @@
 import { useState, type RefObject } from 'react';
-import { useIsMutating, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ExternalLink, GitMerge, Pencil, Plus, Trash2 } from 'lucide-react';
 import { api } from '../../../api/client';
@@ -13,11 +13,10 @@ import { CardActionMenu, CardActionMenuItem } from '../../CardActionMenu';
 import { ActionConfirm } from '../../workshop/ActionConfirm';
 import { LoadFailedNote } from '../../workshop/LoadFailedNote';
 import { RefreshFailedNote } from '../../workshop/RefreshFailedNote';
-import { WorkshopDialog } from '../../workshop/WorkshopDialog';
 import { MergePartDialog } from '../MergePartDialog';
 import { ProductPartDialog } from '../ProductPartDialog';
-import { ProductVariants } from '../ProductVariants';
-import { deleteProductPart, variantsMutationKey } from '../partMutations';
+import { ProductVariantsDialog } from '../ProductVariantsDialog';
+import { deleteProductPart } from '../partMutations';
 import { ModelChip } from './ModelChip';
 
 const HEAD = 'px-3 py-2 text-left text-xs font-normal text-bambu-gray';
@@ -95,8 +94,8 @@ function SourcesCell({ state, partId }: { state: SourcesState; partId: number })
  * - «Delete» asks with what the server really does (C09): the part goes with the history
  *   of its movements (a purchased one with its purchases), and the number on the shelf is
  *   said — no write-off movement is recorded;
- * - «Manage variants…» is the existing variants editor in a dialog that nothing closes
- *   while one of its writes is on its way (`variantsMutationKey`).
+ * - «Manage variants…» opens `ProductVariantsDialog` — the whole set as one draft, one
+ *   request; the card above stays a read summary.
  */
 export function CompositionTab({
   product,
@@ -110,7 +109,6 @@ export function CompositionTab({
   const canEdit = hasPermission('projects:update');
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const variantsSaving = useIsMutating({ mutationKey: variantsMutationKey(product.id) });
 
   // The part dialog: `part: null` is a new part.
   const [partDialog, setPartDialog] = useState<{ part: ProductPart | null } | null>(null);
@@ -414,21 +412,7 @@ export function CompositionTab({
         />
       )}
 
-      {variantsOpen && (
-        <WorkshopDialog
-          size="lg"
-          title={t('products.detail.composition.variantsDialog')}
-          onClose={() => setVariantsOpen(false)}
-          pending={variantsSaving > 0}
-          footer={
-            <Button variant="secondary" onClick={() => setVariantsOpen(false)} disabled={variantsSaving > 0}>
-              {t('products.detail.composition.done')}
-            </Button>
-          }
-        >
-          <ProductVariants product={product} canEdit />
-        </WorkshopDialog>
-      )}
+      {variantsOpen && <ProductVariantsDialog product={product} onClose={() => setVariantsOpen(false)} />}
     </div>
   );
 }
