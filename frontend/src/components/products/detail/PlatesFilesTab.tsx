@@ -298,10 +298,10 @@ export function PlatesFilesTab({
           primaryLabel={t('products.detail.files.unlink')}
           danger
           send={async () => {
-            await api.unlinkProductFile(product.id, unlinking.file.library_file_id);
-            invalidate();
             // The card — and the button the focus goes back to — leaves with the re-read.
             keepFocusWhenRowLeaves(unlinking.row);
+            await api.unlinkProductFile(product.id, unlinking.file.library_file_id);
+            invalidate();
           }}
           onClose={() => setUnlinking(null)}
         />
@@ -323,9 +323,9 @@ export function PlatesFilesTab({
           danger
           size="md"
           send={async () => {
+            keepFocusWhenRowLeaves(unlinking.row);
             await api.unlinkProductFolder(product.id, unlinking.folder.folder_id);
             invalidate();
-            keepFocusWhenRowLeaves(unlinking.row);
           }}
           onClose={() => setUnlinking(null)}
         />

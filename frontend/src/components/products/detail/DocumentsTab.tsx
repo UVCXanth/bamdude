@@ -74,7 +74,8 @@ export function DocumentsTab({
   const canEdit = hasPermission('projects:update');
   const { showToast } = useToast();
   const queryClient = useQueryClient();
-  const [uploading, setUploading] = useState<AttachmentCategory | null>(null);
+  // Per section: two sections may upload at once, and each waits for its own (E9 final review).
+  const [uploading, setUploading] = useState<ReadonlySet<AttachmentCategory>>(() => new Set());
   const [refusals, setRefusals] = useState<Partial<Record<AttachmentCategory, string>>>({});
   const [downloading, setDownloading] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<{ attachment: ProductAttachment; row: Element | null } | null>(null);
@@ -89,12 +90,17 @@ export function DocumentsTab({
     mutationFn: ({ file, category }: { file: File; category: AttachmentCategory }) =>
       api.uploadProductAttachment(productId, file, category),
     onMutate: ({ category }) => {
-      setUploading(category);
+      setUploading((prev) => new Set(prev).add(category));
       setRefusals((prev) => ({ ...prev, [category]: undefined }));
     },
     onSuccess: refresh,
     onError: (e: Error, { category }) => setRefusals((prev) => ({ ...prev, [category]: e.message })),
-    onSettled: () => setUploading(null),
+    onSettled: (_data, _error, { category }) =>
+      setUploading((prev) => {
+        const next = new Set(prev);
+        next.delete(category);
+        return next;
+      }),
   });
 
   const download = async (attachment: ProductAttachment) => {
@@ -123,7 +129,7 @@ export function DocumentsTab({
           category={category}
           entries={attachments.filter((a) => a.category === category).sort(byAttachmentOrder)}
           canEdit={canEdit}
-          uploading={uploading === category}
+          uploading={uploading.has(category)}
           refusal={refusals[category]}
           downloading={downloading}
           onUpload={(file) => upload.mutate({ file, category })}
@@ -145,10 +151,11 @@ export function DocumentsTab({
           primaryLabel={t('common.delete')}
           danger
           send={async () => {
+            // The row — and the button the focus goes back to — leaves with the re-read,
+            // which this awaits: the row is gone before the confirmation closes.
+            keepFocusWhenRowLeaves(deleting.row);
             await api.deleteProductAttachment(productId, deleting.attachment.filename);
             await refresh();
-            // The row — and the button the focus goes back to — leaves with the re-read.
-            keepFocusWhenRowLeaves(deleting.row);
           }}
           onClose={() => setDeleting(null)}
         />

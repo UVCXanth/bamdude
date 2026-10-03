@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { useRef } from 'react';
+import { useRef, type ReactElement } from 'react';
 import { render } from '../../../utils';
 import { api, ApiError } from '../../../../api/client';
 import type { Permission, Product, ProductPart, ProductSources } from '../../../../api/client';
@@ -327,7 +327,7 @@ describe('CompositionTab', () => {
 
     it('«Delete» in a row’s menu asks with the existing words, deletes, and gives the focus to the heading', async () => {
       const remove = vi.spyOn(api, 'deleteProductPart').mockResolvedValue(undefined as never);
-      render(<Host />);
+      const { rerender } = render(<Host />);
       fireEvent.click(within(row(4)).getByRole('button', { name: 'Actions' }));
       fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
       const dialog = await screen.findByRole('dialog');
@@ -339,6 +339,25 @@ describe('CompositionTab', () => {
       await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
       expect(remove).toHaveBeenCalledWith(7, 4);
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      // The focus went back to the row's menu; the re-read takes the row away.
+      expect(within(row(4)).getByRole('button', { name: 'Actions' })).toHaveFocus();
+      rerender(<Host product={{ ...product, parts: parts.filter((p) => p.id !== 4) }} />);
+      await waitFor(() => expect(screen.getByRole('heading', { level: 1, name: 'Flask' })).toHaveFocus());
+    });
+
+    it('a row the re-read takes while the confirmation is still open: the heading still gets the focus', async () => {
+      let rerender: (ui: ReactElement) => void = () => {};
+      vi.spyOn(api, 'deleteProductPart').mockImplementation(async () => {
+        rerender(<Host product={{ ...product, parts: parts.filter((p) => p.id !== 4) }} />);
+        return undefined as never;
+      });
+      ({ rerender } = render(<Host />));
+      fireEvent.click(within(row(4)).getByRole('button', { name: 'Actions' }));
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
+      const dialog = await screen.findByRole('dialog');
+      act(() => within(dialog).getByRole('button', { name: 'Delete' }).click());
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole('heading', { level: 1, name: 'Flask' })).toHaveFocus());
     });
 
     it('«Add part» opens the existing form in a dialog; it stays open and empty after a part lands', async () => {

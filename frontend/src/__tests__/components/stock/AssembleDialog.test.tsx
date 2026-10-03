@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import { AssembleDialog } from '../../../components/stock/AssembleDialog';
-import { pipeDetail, pipeItem } from './stockFixtures';
+import { pipeDetail, pipeItem, pipeProduct } from './stockFixtures';
 
 describe('AssembleDialog', () => {
   beforeEach(() => {
@@ -22,6 +22,15 @@ describe('AssembleDialog', () => {
     fireEvent.change(screen.getByLabelText('How many'), { target: { value: '1' } });
     fireEvent.click(screen.getByTestId('assemble-submit'));
     await waitFor(() => expect(assemble).toHaveBeenCalledWith({ item_id: 5, qty: 1 }));
+  });
+
+  it('opened for one product: names it and reads no catalog', async () => {
+    vi.spyOn(api, 'getProducts').mockResolvedValue([pipeProduct] as never);
+    vi.spyOn(api, 'getProduct').mockResolvedValue(pipeProduct as never);
+    vi.spyOn(api, 'lookupStockItem').mockResolvedValue({ item: null, configuration: pipeItem.configuration, can_assemble: 0, parts: [] });
+    render(<AssembleDialog productId={1} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId('stock-locked-product')).toHaveTextContent('PR-0001 · Pipe'));
+    expect(api.getProducts).not.toHaveBeenCalled();
   });
 
   it('cannot assemble what the shelf does not hold', async () => {

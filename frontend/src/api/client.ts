@@ -418,21 +418,6 @@ async function refreshAccessToken(): Promise<boolean> {
 }
 
 /**
- * Turn a FastAPI error body's ``detail`` field into a human-readable string.
- *
- * Accepts the three shapes the backend emits:
- *   1. ``"Some message"`` — plain HTTPException detail. Returned verbatim.
- *   2. ``[{loc, msg, ...}, ...]`` — Pydantic 422 validation errors. Each
- *      entry's ``msg`` is surfaced (with the "Value error, " prefix
- *      stripped since it's noise from pydantic v2), multi-entry results
- *      are joined with newlines so toast / inline displays both render
- *      sensibly. Previous behaviour stringified the whole array as JSON,
- *      which leaked raw ``{"type":"value_error",...}`` to the user.
- *   3. ``{error, message, ...}`` / anything else — pull ``message`` then
- *      ``error``, fall back to JSON as the last resort so we don't lose
- *      debug info entirely when a backend endpoint returns a bespoke shape.
- */
-/**
  * A file the API serves behind a permission, as a blob — for a viewer or a download.
  *
  * Not `request<T>()` — the body is a file, not JSON — but on its terms: the token is
@@ -453,6 +438,21 @@ export async function fetchAuthorizedBlob(url: string): Promise<Blob> {
   return response.blob();
 }
 
+/**
+ * Turn a FastAPI error body's ``detail`` field into a human-readable string.
+ *
+ * Accepts the three shapes the backend emits:
+ *   1. ``"Some message"`` — plain HTTPException detail. Returned verbatim.
+ *   2. ``[{loc, msg, ...}, ...]`` — Pydantic 422 validation errors. Each
+ *      entry's ``msg`` is surfaced (with the "Value error, " prefix
+ *      stripped since it's noise from pydantic v2), multi-entry results
+ *      are joined with newlines so toast / inline displays both render
+ *      sensibly. Previous behaviour stringified the whole array as JSON,
+ *      which leaked raw ``{"type":"value_error",...}`` to the user.
+ *   3. ``{error, message, ...}`` / anything else — pull ``message`` then
+ *      ``error``, fall back to JSON as the last resort so we don't lose
+ *      debug info entirely when a backend endpoint returns a bespoke shape.
+ */
 function formatErrorDetail(detail: unknown, status: number): string {
   if (typeof detail === 'string') return detail;
   if (Array.isArray(detail)) {

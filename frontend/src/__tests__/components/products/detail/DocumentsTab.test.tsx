@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { useRef } from 'react';
+import { useRef, type ReactElement } from 'react';
 import { render } from '../../../utils';
 import { api, ApiError } from '../../../../api/client';
 import type { Permission, Product, ProductAttachment } from '../../../../api/client';
@@ -177,6 +177,38 @@ describe('DocumentsTab', () => {
       expect(remove).toHaveBeenCalledWith(7, 'guide.pdf');
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     });
+
+    const without = (filename: string) =>
+      ({ ...product, attachments: product.attachments!.filter((a) => a.filename !== filename) }) as Product;
+
+    it('the deleted row leaves with the re-read and the heading takes the focus', async () => {
+      vi.spyOn(api, 'deleteProductAttachment').mockResolvedValue([] as never);
+      const { rerender } = render(<Host />);
+      const opener = within(row('assembly.pdf')).getByRole('button', { name: 'Delete «assembly.pdf»' });
+      opener.focus();
+      fireEvent.click(opener);
+      const dialog = await screen.findByRole('dialog');
+      act(() => within(dialog).getByRole('button', { name: 'Delete' }).click());
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      rerender(<Host product={without('guide.pdf')} />);
+      await waitFor(() => expect(screen.getByRole('heading', { level: 1, name: 'Flask' })).toHaveFocus());
+    });
+
+    it('a row the re-read takes before the confirmation closes: the heading still gets the focus', async () => {
+      let rerender: (ui: ReactElement) => void = () => {};
+      vi.spyOn(api, 'deleteProductAttachment').mockImplementation(async () => {
+        rerender(<Host product={without('guide.pdf')} />);
+        return [] as never;
+      });
+      ({ rerender } = render(<Host />));
+      const opener = within(row('assembly.pdf')).getByRole('button', { name: 'Delete «assembly.pdf»' });
+      opener.focus();
+      fireEvent.click(opener);
+      const dialog = await screen.findByRole('dialog');
+      act(() => within(dialog).getByRole('button', { name: 'Delete' }).click());
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole('heading', { level: 1, name: 'Flask' })).toHaveFocus());
+    });
   });
 
   describe('G01 / G03 uploading', () => {
@@ -191,6 +223,25 @@ describe('DocumentsTab', () => {
       expect(within(section('other')).getByRole('button', { name: 'Upload…' })).toBeEnabled();
       await act(async () => settle({}));
       await waitFor(() => expect(within(section('bom_docs')).getByRole('button', { name: 'Upload…' })).toBeEnabled());
+    });
+
+    it('two sections uploading at once: each waits for its own upload', async () => {
+      const settle: Record<string, (v: unknown) => void> = {};
+      vi.spyOn(api, 'uploadProductAttachment').mockImplementation(
+        (_id, _file, category) => new Promise((resolve) => (settle[category as string] = resolve)) as never,
+      );
+      render(<Host />);
+      fireEvent.change(screen.getByTestId('attachment-input-bom_docs'), { target: { files: [new File(['x'], 'bom.csv')] } });
+      await waitFor(() => expect(settle.bom_docs).toBeDefined());
+      fireEvent.change(screen.getByTestId('attachment-input-other'), { target: { files: [new File(['x'], 'notes.txt')] } });
+      await waitFor(() => expect(settle.other).toBeDefined());
+      expect(within(section('bom_docs')).getByRole('button', { name: 'Uploading…' })).toBeDisabled();
+      expect(within(section('other')).getByRole('button', { name: 'Uploading…' })).toBeDisabled();
+      await act(async () => settle.bom_docs({}));
+      await waitFor(() => expect(within(section('bom_docs')).getByRole('button', { name: 'Upload…' })).toBeEnabled());
+      expect(within(section('other')).getByRole('button', { name: 'Uploading…' })).toBeDisabled();
+      await act(async () => settle.other({}));
+      await waitFor(() => expect(within(section('other')).getByRole('button', { name: 'Upload…' })).toBeEnabled());
     });
 
     it('a refused upload stands in its section in the server’s words', async () => {

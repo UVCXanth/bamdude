@@ -132,6 +132,25 @@ describe('ProductRereadDialog', () => {
     expect(screen.getByRole('button', { name: 'Re-read' })).toBeDisabled();
   });
 
+  it('the only file, chosen by itself, leaves and another is the only one: nothing is chosen behind the hint', async () => {
+    const spy = vi.spyOn(api, 'getProductFileGroups').mockResolvedValue(groups([file({ library_file_id: 1 })]));
+    render(
+      <>
+        <Probe />
+        <ProductRereadDialog product={product} onClose={() => {}} />
+      </>,
+    );
+    await waitFor(() => expect(screen.getByRole('radio')).toBeChecked());
+    spy.mockResolvedValue(groups([file({ library_file_id: 8, filename: 'other.3mf' })]));
+    await act(async () => {
+      await probe.client!.invalidateQueries({ queryKey: ['product-file-groups', 7] });
+    });
+    await waitFor(() => expect(screen.getByText('This file is no longer linked — pick another.')).toBeInTheDocument());
+    // The operator saw one file; the dialog does not switch to another behind the hint.
+    expect(screen.getByRole('radio', { name: /other\.3mf/ })).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Re-read' })).toBeDisabled();
+  });
+
   it('sends one request on «Re-read», closes and reports the notes', async () => {
     vi.spyOn(api, 'getProductFileGroups').mockResolvedValue(MANY);
     const reread = vi.spyOn(api, 'rereadProductCard').mockResolvedValue({

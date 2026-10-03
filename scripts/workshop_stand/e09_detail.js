@@ -325,6 +325,12 @@ async (page, selftest = null) => {
     }
     return split;
   });
+  // Where the focus is after a row left with a re-read (B11-4): «H1», or the tag and its name.
+  const focusAt = (p) => p.evaluate(() => {
+    const a = document.activeElement;
+    if (!a) return '';
+    return a.tagName === 'H1' ? 'H1' : `${a.tagName}:${(a.getAttribute('aria-label') || a.textContent || '').trim().slice(0, 30)}`;
+  });
   // Menu items whose text the menu cuts (a fixed width, a scrolling panel).
   const clippedItems = (p) => p.getByRole('menuitem').evaluateAll((ms) => ms.filter((m) => m.scrollWidth > m.clientWidth + 1).map((m) => m.textContent.trim()));
   const textContrast = (locator) => locator.evaluate((el) => {
@@ -906,7 +912,9 @@ async (page, selftest = null) => {
   await scenario('composition-dialogs@1440', ['E9-D05', 'E9-B11', 'R08'], async () => {
     const posts = [];
     const deletes = [];
+    const bought = (detail1.parts ?? []).find((x) => x.kind === 'purchased');
     const { ctx, p, errors } = await open(1440, {
+      rewrite: [[DETAIL(P1), (b) => (deletes.length ? { ...b, parts: (b.parts ?? []).filter((x) => x.id !== bought.id) } : b)]],
       writes: [
         recorder(posts, /\/products\/\d+\/parts$/, (_e, n) => (n === 1 ? { id: 99901, name: 'e09' } : { __status: 409, json: { detail: 'Назва вже належить іншій деталі' } })),
         recorder(deletes, /\/parts\/\d+$/, () => ({ message: 'ok' })),
@@ -929,19 +937,19 @@ async (page, selftest = null) => {
     const variants = await p.getByRole('dialog', { name: 'Варіанти виробу' }).getByRole('textbox').count();
     const fileVariants = await shoot(p, 'composition-variants@1440');
     await p.getByRole('dialog', { name: 'Варіанти виробу' }).getByRole('button', { name: 'Готово' }).click();
-    const bought = (detail1.parts ?? []).find((x) => x.kind === 'purchased');
     await p.getByTestId(`part-${bought.id}-row`).getByRole('button', { name: 'Дії' }).click();
     await p.getByRole('menuitem', { name: 'Видалити' }).click();
     const confirm = p.getByRole('dialog', { name: 'Видалити деталь' });
     const words = await textOf(confirm);
     await confirm.getByRole('button', { name: 'Видалити' }).dblclick();
     await p.waitForTimeout(800);
+    const afterDelete = { rowGone: (await p.getByTestId(`part-${bought.id}-row`).count()) === 0, focus: await focusAt(p) };
     await ctx.close();
     return {
-      recipe: { url: '/products/{product:1}', fixture: ['POST …/parts: 200, then 409 (answered here)', 'DELETE …/parts/{id}: answered here'] },
-      measured: { posts: posts.length, afterFirst, refused, variants, words, deletes: deletes.length, errors },
+      recipe: { url: '/products/{product:1}', fixture: ['POST …/parts: 200, then 409 (answered here)', 'DELETE …/parts/{id}: answered here', 'GET /products/{1} after the DELETE: without the part (rewritten)'] },
+      measured: { posts: posts.length, afterFirst, refused, variants, words, deletes: deletes.length, afterDelete, errors },
       pass: posts.length === 2 && afterFirst.open === 1 && afterFirst.value === '' && afterFirst.focus === 'add-part-name' && /Назва вже належить/.test(refused.alert) &&
-        refused.value === 'Кришка' && variants > 0 && /придбане/.test(words) && deletes.length === 1 && errors.length === 0,
+        refused.value === 'Кришка' && variants > 0 && /придбане/.test(words) && deletes.length === 1 && afterDelete.rowGone && afterDelete.focus === 'H1' && errors.length === 0,
       screenshots: [fileAdd, fileVariants],
     };
   });
@@ -976,7 +984,13 @@ async (page, selftest = null) => {
       ],
       folders: [{ folder_id: 16, name: 'Колба', hidden: false }, { folder_id: 77, name: null, hidden: true }],
     };
-    const { ctx, p, errors } = await open(1440, { gets: [[FILES(P1), () => ({ json: answer })]], writes: [recorder(deletes, /\/(files|folders)\/\d+$/, () => detail1)] });
+    const unlinked = (kind, id) => deletes.some((d) => d.path.endsWith(`/${kind}/${id}`));
+    const now = () => ({
+      ...answer,
+      files: answer.files.filter((f) => !unlinked('files', f.library_file_id)),
+      folders: answer.folders.filter((f) => !unlinked('folders', f.folder_id)),
+    });
+    const { ctx, p, errors } = await open(1440, { gets: [[FILES(P1), () => ({ json: now() })]], writes: [recorder(deletes, /\/(files|folders)\/\d+$/, () => detail1)] });
     await goto(p, P1, '?tab=plates');
     const has = async (id) => p.getByTestId(`product-file-${id}`).getByRole('button', { name: 'Відв’язати файл' }).count();
     const seen = { direct: await has(9101), other: await has(9102), folder: await has(9103), hidden: await has(9104),
@@ -987,18 +1001,21 @@ async (page, selftest = null) => {
     const beforeConfirm = deletes.length;
     await dialog.getByRole('button', { name: 'Відв’язати' }).click();
     await p.waitForTimeout(800);
+    const afterFile = { cardGone: (await p.getByTestId('product-file-9104').count()) === 0, focus: await focusAt(p) };
     await p.getByTestId('product-folders').getByRole('button', { name: 'Відв’язати теку «Колба»' }).click();
     const folderWords = await textOf(p.getByRole('dialog'));
     const fileFolder = await shoot(p, 'plates-unlink-folder@1440');
     await p.getByRole('dialog').getByRole('button', { name: 'Відв’язати' }).click();
     await p.waitForTimeout(800);
+    const afterFolder = { chipGone: (await p.getByRole('button', { name: 'Відв’язати теку «Колба»' }).count()) === 0, focus: await focusAt(p) };
     const hiddenFolder = await p.getByTestId('product-folders').getByText('Тека без доступу').count();
     await ctx.close();
     return {
-      recipe: { url: '/products/{product:1}?tab=plates', fixture: ['GET …/files: a direct file, a file in an unlinked folder, a file in the linked folder, a hidden file; a named and a hidden folder (answered here)', 'DELETE …/files|folders: answered here'] },
-      measured: { seen, hiddenWords, beforeConfirm, folderWords: folderWords.slice(0, 200), deletes: deletes.map((d) => d.path), hiddenFolder, errors },
+      recipe: { url: '/products/{product:1}?tab=plates', fixture: ['GET …/files: a direct file, a file in an unlinked folder, a file in the linked folder, a hidden file; a named and a hidden folder — without what was unlinked since (answered here)', 'DELETE …/files|folders: answered here'] },
+      measured: { seen, hiddenWords, beforeConfirm, folderWords: folderWords.slice(0, 200), deletes: deletes.map((d) => d.path), afterFile, afterFolder, hiddenFolder, errors },
       pass: seen.direct === 1 && seen.other === 1 && seen.folder === 0 && seen.hidden === 1 && seen.via === 1 && /без доступу №9104/.test(hiddenWords) && beforeConfirm === 0 &&
-        /не розрізняє/.test(folderWords) && deletes.length === 2 && /\/files\/9104$/.test(deletes[0].path) && /\/folders\/16$/.test(deletes[1].path) && hiddenFolder === 1 && errors.length === 0,
+        /не розрізняє/.test(folderWords) && deletes.length === 2 && /\/files\/9104$/.test(deletes[0].path) && /\/folders\/16$/.test(deletes[1].path) && hiddenFolder === 1 &&
+        afterFile.cardGone && afterFile.focus === 'H1' && afterFolder.chipGone && afterFolder.focus === 'H1' && errors.length === 0,
       screenshots: [fileFolder],
     };
   });
@@ -1118,7 +1135,7 @@ async (page, selftest = null) => {
       { category: 'other', filename: 'e09-import.pdf', original_name: 'e09-import.pdf', size: 4096, sort_order: 0, source: 'import', source_file_id: null, uploaded_at: null },
     ];
     const { ctx, p, errors } = await open(1440, {
-      rewrite: [[DETAIL(P1), (b) => ({ ...b, attachments: [...(b.attachments ?? []), ...extra] })]],
+      rewrite: [[DETAIL(P1), (b) => ({ ...b, attachments: [...(b.attachments ?? []), ...extra].filter((a) => !deletes.some((d) => d.path.endsWith(`/attachments/${a.filename}`))) })]],
       writes: [
         recorder(posts, /\/products\/\d+\/attachments$/, () => ({ __status: 400, json: { detail: 'Розділ приймає .xls, .xlsx, .pdf або .csv' } })),
         recorder(deletes, /\/attachments\/[^/]+$/, () => []),
@@ -1134,13 +1151,14 @@ async (page, selftest = null) => {
     const words = await textOf(p.getByRole('dialog'));
     await p.getByRole('dialog').getByRole('button', { name: 'Видалити' }).click();
     await p.waitForTimeout(800);
+    const afterDelete = { rowGone: (await p.getByRole('button', { name: 'Видалити «e09-import.pdf»' }).count()) === 0, focus: await focusAt(p) };
     const file = await shoot(p, 'docs@1440', { fullPage: true });
     await ctx.close();
     return {
-      recipe: { url: '/products/{product:1}?tab=docs', fixture: ['GET /products/{1}: a 3MF document and an imported one (rewritten)', 'POST …/attachments: 400 (answered here)', 'DELETE …/attachments/{name}: answered here'] },
-      measured: { sections, labels, posts: posts.length, refused, words, deletes: deletes.length, errors },
+      recipe: { url: '/products/{product:1}?tab=docs', fixture: ['GET /products/{1}: a 3MF document and an imported one, without what was deleted since (rewritten)', 'POST …/attachments: 400 (answered here)', 'DELETE …/attachments/{name}: answered here'] },
+      measured: { sections, labels, posts: posts.length, refused, words, deletes: deletes.length, afterDelete, errors },
       pass: JSON.stringify(sections) === JSON.stringify(['Специфікація', 'Інструкція зі складання', 'Інше']) && labels.threemf >= 1 && labels.imported >= 1 &&
-        posts.length === 1 && /Розділ приймає/.test(refused) && /файл бібліотеки — ні/.test(words) && deletes.length === 1 && errors.length === 0,
+        posts.length === 1 && /Розділ приймає/.test(refused) && /файл бібліотеки — ні/.test(words) && deletes.length === 1 && afterDelete.rowGone && afterDelete.focus === 'H1' && errors.length === 0,
       screenshots: [file],
     };
   });

@@ -51,10 +51,14 @@ export function ProductActionMenu<P extends ProductRef>({
     return t(`products.card.menu.${action}`);
   };
 
-  const items = actions.available(product).filter((action) => !exclude.includes(action));
-  // Before the first of hide / show / promote / delete — or last, when none of them is offered.
-  const firstAfter = items.findIndex((action) => AFTER_REREAD.has(action));
-  const rereadAt = reread ? (firstAfter === -1 ? items.length : firstAfter) : -1;
+  const offered = actions.available(product).filter((action) => !exclude.includes(action));
+  // One ordered list: «Re-read…» before the first of hide / show / promote / delete — or
+  // last, when none of them is offered.
+  const items: (ProductAction | 'reread')[] = [...offered];
+  if (reread) {
+    const firstAfter = offered.findIndex((action) => AFTER_REREAD.has(action));
+    items.splice(firstAfter === -1 ? offered.length : firstAfter, 0, 'reread');
+  }
 
   return (
     // The page's menu carries «Re-read the card from a file…», longer than the catalog's 180 px:
@@ -62,44 +66,33 @@ export function ProductActionMenu<P extends ProductRef>({
     <CardActionMenu label={t('common.actions')} testId={testId} width={reread ? 'max-content' : undefined}>
       {(close) => (
         <>
-          {items.map((action, i) => [
-            i === rereadAt && reread && (
+          {items.map((action) =>
+            action === 'reread' ? (
               <CardActionMenuItem
                 key="reread"
                 onSelect={() => {
                   close();
-                  reread();
+                  reread?.();
                 }}
               >
                 <RefreshCw className="w-4 h-4" />
                 {t('products.detail.menu.reread')}
               </CardActionMenuItem>
+            ) : (
+              <CardActionMenuItem
+                key={action}
+                danger={action === 'delete'}
+                // A request of this product's still running: the request items wait (F03, F04).
+                disabled={pending != null && REQUESTS.has(action)}
+                onSelect={() => {
+                  close();
+                  actions.run(action, product);
+                }}
+              >
+                {ICON[action]}
+                {label(action)}
+              </CardActionMenuItem>
             ),
-            <CardActionMenuItem
-              key={action}
-              danger={action === 'delete'}
-              // A request of this product's still running: the request items wait (F03, F04).
-              disabled={pending != null && REQUESTS.has(action)}
-              onSelect={() => {
-                close();
-                actions.run(action, product);
-              }}
-            >
-              {ICON[action]}
-              {label(action)}
-            </CardActionMenuItem>,
-          ])}
-          {rereadAt === items.length && reread && (
-            <CardActionMenuItem
-              key="reread"
-              onSelect={() => {
-                close();
-                reread();
-              }}
-            >
-              <RefreshCw className="w-4 h-4" />
-              {t('products.detail.menu.reread')}
-            </CardActionMenuItem>
           )}
         </>
       )}

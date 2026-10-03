@@ -217,6 +217,26 @@ describe('PlatesFilesTab', () => {
       await waitFor(() => expect(api.getProductFileGroups).toHaveBeenCalledTimes(2));
     });
 
+    it('the unlinked card leaves with the re-read and the heading takes the focus', async () => {
+      vi.spyOn(api, 'unlinkProductFile').mockResolvedValue({} as never);
+      // The re-read answers after the confirmation has closed and given the focus back.
+      let reread: (v: ProductFileGroups) => void = () => {};
+      vi.spyOn(api, 'getProductFileGroups')
+        .mockResolvedValueOnce(groups)
+        .mockReturnValueOnce(new Promise<ProductFileGroups>((resolve) => (reread = resolve)));
+      render(<Host />);
+      const opener = within(await screen.findByTestId('product-file-31')).getByRole('button', { name: 'Unlink file' });
+      opener.focus();
+      fireEvent.click(opener);
+      const dialog = await screen.findByRole('dialog');
+      act(() => within(dialog).getByRole('button', { name: 'Unlink' }).click());
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(opener).toHaveFocus();
+      await act(async () => reread({ ...groups, files: groups.files.filter((f) => f.library_file_id !== 31) }));
+      await waitFor(() => expect(screen.queryByTestId('product-file-31')).not.toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole('heading', { level: 1, name: 'Flask' })).toHaveFocus());
+    });
+
     it('a file you cannot open is named neutrally', async () => {
       render(<Host />);
       fireEvent.click(within(await screen.findByTestId('product-file-40')).getByRole('button', { name: 'Unlink file' }));

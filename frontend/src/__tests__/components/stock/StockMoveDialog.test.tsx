@@ -47,6 +47,23 @@ describe('StockMoveDialog', () => {
     );
   });
 
+  // WS-13 E9 final review: from the product page the product is NAMED, not picked out of
+  // a greyed-out catalog list it may be scrolled away in.
+  it('opened for one product: names it, reads no catalog, and only its configuration is picked', async () => {
+    const lookup = vi.spyOn(api, 'lookupStockItem').mockResolvedValue({
+      item: null,
+      configuration: pipeItem.configuration,
+      can_assemble: 0,
+      parts: [],
+    });
+    render(<StockMoveDialog kind="receipt" productId={1} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId('stock-locked-product')).toHaveTextContent('PR-0001 · Pipe'));
+    expect(screen.queryByRole('button', { name: 'PR-0001 · Pipe' })).not.toBeInTheDocument();
+    expect(api.getProducts).not.toHaveBeenCalled();
+    fireEvent.change(await screen.findByLabelText('Tail'), { target: { value: '101' } });
+    await waitFor(() => expect(lookup).toHaveBeenLastCalledWith(1, [101]));
+  });
+
   it('a stocktake sends the counted quantity, not a change', async () => {
     render(<StockMoveDialog kind="stocktake" item={pipeItem} onClose={() => {}} />);
     fireEvent.change(screen.getByLabelText('Counted on the shelf'), { target: { value: '7' } });

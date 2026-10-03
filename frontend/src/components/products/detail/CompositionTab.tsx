@@ -434,10 +434,10 @@ export function CompositionTab({
           primaryLabel={t('common.delete')}
           danger
           send={async () => {
-            const row = document.querySelector(`[data-testid="part-${deleting.id}-row"]`);
+            // The row — and its menu, where the focus goes back — leaves with the re-read;
+            // watched before the request, which may land while this is still open.
+            keepFocusWhenRowLeaves(document.querySelector(`[data-testid="part-${deleting.id}-row"]`));
             await deleteProductPart(queryClient, product.id, deleting);
-            // The row — and its menu, where the focus goes back — leaves with the re-read.
-            keepFocusWhenRowLeaves(row);
           }}
           onClose={() => setDeleting(null)}
         />

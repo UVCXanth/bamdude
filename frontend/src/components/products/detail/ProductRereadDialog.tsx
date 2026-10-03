@@ -62,8 +62,11 @@ export function ProductRereadDialog({
     if (!files.data) return;
     const listed = ids === '' ? [] : ids.split(',').map(Number);
     if (chosen != null && !listed.includes(chosen)) {
+      // The operator now picks: a file chosen by itself and gone is not silently replaced
+      // by the next lone one, under a hint that asks them to pick (E9 final review).
       setChosen(null);
       setGone(true);
+      setTouched(true);
       return;
     }
     if (chosen == null && !touched && listed.length === 1) setChosen(listed[0]);

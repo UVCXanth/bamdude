@@ -27,7 +27,9 @@ export function StockProductChoice({
   onChoices: (next: Record<number, number>) => void;
   disabled?: boolean;
   /** The dialog was opened for one product (the product page, WS-13 E9 F01–F02): it is
-   *  named, not picked — only its configuration is chosen. */
+   *  named, not picked — only its configuration is chosen. Named as text: a locked
+   *  picker still read the whole catalog and showed it greyed out, the product perhaps
+   *  scrolled out of its box (E9 final review). */
   productLocked?: boolean;
 }) {
   const { t } = useTranslation();
@@ -38,14 +40,20 @@ export function StockProductChoice({
     <div className="space-y-2">
       <div>
         <p className="block text-sm text-bambu-gray mb-1">{t('stock.move.product')}</p>
-        <ProductPicker
-          value={productId}
-          onChange={(id) => {
-            onProduct(id);
-            onChoices({});
-          }}
-          disabled={disabled || productLocked}
-        />
+        {productLocked ? (
+          <p data-testid="stock-locked-product" className="text-sm text-white">
+            {product ? `${product.code} · ${product.name}` : '…'}
+          </p>
+        ) : (
+          <ProductPicker
+            value={productId}
+            onChange={(id) => {
+              onProduct(id);
+              onChoices({});
+            }}
+            disabled={disabled}
+          />
+        )}
       </div>
       {groups.map((group) => (
         <label key={group.id} className="flex items-center gap-2 text-sm text-bambu-gray">

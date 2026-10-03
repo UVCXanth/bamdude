@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { useEffect, useRef, useState } from 'react';
 import { useFocusWhenRowLeaves } from '../../hooks/useFocusWhenRowLeaves';
+import { _resetForTests, register, unregister } from '../../components/modalStack';
 
 const harness = vi.hoisted(() => ({
   watch: null as ((trigger: Element | null) => void) | null,
@@ -28,7 +29,11 @@ function Page() {
       <h1 ref={heading} tabIndex={-1}>
         Products
       </h1>
-      {row && <button type="button">Row menu</button>}
+      {row && (
+        <div data-testid="row">
+          <button type="button">Row menu</button>
+        </div>
+      )}
       <button type="button">Elsewhere</button>
     </>
   );
@@ -81,6 +86,55 @@ describe('useFocusWhenRowLeaves', () => {
     act(() => harness.watch!(trigger));
     expect(disconnect).toHaveBeenCalledTimes(1);
     disconnect.mockRestore();
+  });
+
+  // WS-13 E9 final review: the tabs watch the ROW (its trigger may be a menu's or a dialog's
+  // opener inside it); the confirmation gives the focus back to that button, inside the row.
+  it('watching a row: the focus given back to a button inside it is still the watch’s', async () => {
+    render(<Page />);
+    act(() => harness.watch!(screen.getByTestId('row')));
+    act(() => screen.getByRole('button', { name: 'Row menu' }).focus());
+    act(() => harness.setRow!(false));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Products' })).toHaveFocus());
+  });
+
+  it('a row that leaves while a confirmation is still open: the heading takes the focus once it closes', async () => {
+    _resetForTests();
+    render(<Page />);
+    // The confirmation is open and holds the focus when the watch starts (its `send`).
+    const confirm = document.createElement('button');
+    document.body.appendChild(confirm);
+    act(() => confirm.focus());
+    register('confirm', [], { current: { onClose: () => {} } } as never, { current: null });
+    act(() => harness.watch!(screen.getByTestId('row')));
+    // The re-read lands first: the row leaves under the open confirmation.
+    act(() => harness.setRow!(false));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByRole('heading', { name: 'Products' })).not.toHaveFocus();
+    // Then the confirmation closes: its node goes, then it leaves the stack.
+    act(() => confirm.remove());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    act(() => unregister('confirm'));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Products' })).toHaveFocus());
+  });
+
+  it('a focus moved inside an open confirmation is not the operator leaving', async () => {
+    _resetForTests();
+    render(<Page />);
+    const first = document.createElement('button');
+    const second = document.createElement('button');
+    document.body.append(first, second);
+    act(() => first.focus());
+    register('confirm', [], { current: { onClose: () => {} } } as never, { current: null });
+    act(() => harness.watch!(screen.getByTestId('row')));
+    act(() => second.focus());
+    act(() => harness.setRow!(false));
+    act(() => {
+      first.remove();
+      second.remove();
+    });
+    act(() => unregister('confirm'));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Products' })).toHaveFocus());
   });
 
   it('watches nothing for a trigger that is not on the page', () => {

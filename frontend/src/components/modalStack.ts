@@ -150,6 +150,16 @@ function subscribe(fn: () => void): () => void {
   };
 }
 
+/**
+ * Calls `fn` whenever a modal opens or closes — for code outside React that must know
+ * when a confirmation is gone (`useFocusWhenRowLeaves`). A modal leaves the stack BEFORE
+ * `useDialogFocus` gives its focus back (`Modal.tsx` declares the stack entry first, and
+ * cleanups run in declaration order), so a listener sees the stack shrink first.
+ */
+export function onModalStackChange(fn: () => void): () => void {
+  return subscribe(fn);
+}
+
 /** Re-renders when the first modal opens or the last one closes. */
 export function useIsAnyModalOpen(): boolean {
   return useSyncExternalStore(subscribe, isAnyModalOpen, () => false);
