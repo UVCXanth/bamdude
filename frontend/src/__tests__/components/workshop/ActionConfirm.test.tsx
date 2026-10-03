@@ -62,6 +62,31 @@ describe('ActionConfirm', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 
+  it('nothing closes it in the frame that sent it — Escape, Cancel and the X before the next render (J; Codex V01)', async () => {
+    const pending = deferred();
+    const send = vi.fn(() => pending.promise);
+    const onClose = mount(send);
+    const primary = screen.getByRole('button', { name: 'Unlink' });
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    const x = screen.getByRole('button', { name: 'Close' });
+    act(() => {
+      primary.click();
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      cancel.click();
+      x.click();
+    });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(onClose).not.toHaveBeenCalled();
+    // A refusal leaves it open with the sentence, and it may be sent again.
+    await act(async () => pending.reject(new Error('That file is not linked to this product')));
+    expect(await screen.findByRole('alert')).toHaveTextContent('That file is not linked to this product');
+    expect(onClose).not.toHaveBeenCalled();
+    send.mockReturnValueOnce(Promise.resolve() as never);
+    fireEvent.click(screen.getByRole('button', { name: 'Unlink' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps a refusal in the dialog with the focus on the button that sent it, and lets it be sent again', async () => {
     const send = vi.fn().mockRejectedValueOnce(new Error('That file is not linked to this product')).mockResolvedValue({});
     const onClose = mount(send);

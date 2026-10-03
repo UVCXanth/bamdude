@@ -52,6 +52,13 @@ export function ActionConfirm({
     },
   });
   const busy = sending || write.isPending;
+  // Escape, the X and «Cancel» ask the ref the click set: `busy` reaches them only with the
+  // next render, and an Escape in the same frame would close a dialog whose request is on
+  // its way (J; Codex E10-V01). The success closes through `onClose` itself.
+  const close = () => {
+    if (sent.current) return;
+    onClose();
+  };
 
   useEffect(() => {
     if (write.isError) document.getElementById(primaryId)?.focus();
@@ -60,14 +67,14 @@ export function ActionConfirm({
   return (
     <WorkshopDialog
       size={size}
-      onClose={onClose}
+      onClose={close}
       title={title}
       subtitle={subtitle}
       pending={busy}
       error={write.isError ? (write.error as Error).message : undefined}
       footer={
         <>
-          <Button variant="secondary" onClick={onClose} disabled={busy}>
+          <Button variant="secondary" onClick={close} disabled={busy}>
             {t('common.cancel')}
           </Button>
           <Button

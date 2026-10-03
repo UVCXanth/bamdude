@@ -10,7 +10,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEffect } from 'react';
-import { QueryClient, useQueryClient } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../../../utils';
 import { api, ApiError } from '../../../../api/client';
@@ -72,6 +72,18 @@ function Probe() {
 function mount(onClose = vi.fn()) {
   render(<ProductRereadDialog product={product} onClose={onClose} />);
   return onClose;
+}
+
+/** The dialog over a page that already read the files once (`['product-file-groups', 7]`). */
+function mountOverCache(cached: ProductFileGroups) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  client.setQueryData(['product-file-groups', 7], cached);
+  render(
+    <QueryClientProvider client={client}>
+      <ProductRereadDialog product={product} onClose={() => {}} />
+    </QueryClientProvider>,
+  );
+  return client;
 }
 
 describe('ProductRereadDialog', () => {
@@ -249,6 +261,77 @@ describe('ProductRereadDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Re-read' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('That file is not linked to this product');
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('nothing closes it in the frame that sent it — Escape, Cancel and the X before the next render (J; Codex V01)', async () => {
+    vi.spyOn(api, 'getProductFileGroups').mockResolvedValue(MANY);
+    let refuse: (e: Error) => void = () => {};
+    const reread = vi
+      .spyOn(api, 'rereadProductCard')
+      .mockReturnValueOnce(new Promise((_resolve, reject) => (refuse = reject)) as never);
+    const onClose = mount();
+    fireEvent.click((await screen.findAllByRole('radio'))[0]);
+    const primary = screen.getByRole('button', { name: 'Re-read' });
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    const x = screen.getByRole('button', { name: 'Close' });
+    act(() => {
+      primary.click();
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      cancel.click();
+      x.click();
+    });
+    await waitFor(() => expect(reread).toHaveBeenCalledTimes(1));
+    expect(onClose).not.toHaveBeenCalled();
+    // A refusal leaves it open with the sentence, and it may be sent again.
+    await act(async () => refuse(new ApiError('That file is not linked to this product', 404)));
+    expect(await screen.findByRole('alert')).toHaveTextContent('That file is not linked to this product');
+    expect(onClose).not.toHaveBeenCalled();
+    reread.mockResolvedValueOnce({ product, notes: [{ code: 'nothing_to_fill', params: {} }] } as never);
+    fireEvent.click(screen.getByRole('button', { name: 'Re-read' }));
+    expect(await screen.findByRole('dialog', { name: 'Card re-read' })).toBeInTheDocument();
+    expect(reread).toHaveBeenCalledTimes(2);
+  });
+
+  describe('a refresh that fails over a list it already had (J; Codex V03)', () => {
+    it('an empty list says it could not be refreshed, with a retry that reads again', async () => {
+      const read = vi
+        .spyOn(api, 'getProductFileGroups')
+        .mockRejectedValueOnce(new ApiError('boom', 500))
+        .mockResolvedValueOnce(MANY);
+      mountOverCache(groups([]));
+      const note = await screen.findByText('Could not refresh');
+      // The empty answer read before the failure is still shown — it is not a current one.
+      expect(screen.getByText('None of the linked files is a 3MF you can see.')).toBeInTheDocument();
+      fireEvent.click(within(note.closest('p') as HTMLElement).getByRole('button', { name: 'Retry' }));
+      expect(await screen.findAllByRole('radio')).toHaveLength(2);
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(screen.queryByText('Could not refresh')).not.toBeInTheDocument();
+    });
+
+    it('a list with files keeps them and the file chosen by hand until an answer shows it gone', async () => {
+      const read = vi
+        .spyOn(api, 'getProductFileGroups')
+        .mockRejectedValueOnce(new ApiError('boom', 500))
+        .mockResolvedValueOnce(MANY)
+        .mockResolvedValueOnce(groups([file({ library_file_id: 1 })]));
+      const client = mountOverCache(MANY);
+      fireEvent.click(screen.getAllByRole('radio')[1]);
+      const note = await screen.findByText('Could not refresh');
+      expect(screen.getAllByRole('radio')[1]).toBeChecked();
+      expect(screen.getByRole('button', { name: 'Re-read' })).toBeEnabled();
+      fireEvent.click(within(note.closest('p') as HTMLElement).getByRole('button', { name: 'Retry' }));
+      await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+      await waitFor(() =>
+        expect(screen.queryByText('Could not refresh')).not.toBeInTheDocument(),
+      );
+      expect(screen.getAllByRole('radio')[1]).toBeChecked();
+      // Only a successful answer that lacks it takes the choice away.
+      await act(async () => {
+        await client.invalidateQueries({ queryKey: ['product-file-groups', 7] });
+      });
+      expect(await screen.findByText('This file is no longer linked — pick another.')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Re-read' })).toBeDisabled();
+    });
   });
 
   it('cannot be closed while the request runs', async () => {

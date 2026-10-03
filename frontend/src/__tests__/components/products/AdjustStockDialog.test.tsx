@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { QueryClient } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api, ApiError } from '../../../api/client';
 import type { ProductStock } from '../../../api/client';
@@ -27,6 +27,29 @@ const shelf = (lid: number, flask = 6): ProductStock =>
 
 const noop = () => {};
 const save = () => screen.getByRole('button', { name: /^(save|saving…)$/i });
+
+/** The dialog over a page whose shelf is already in the cache (`['product-stock', 5]`). */
+function mountOverCache(cached: ProductStock, initialPartId?: number) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  client.setQueryData(['product-stock', 5], cached);
+  render(
+    <QueryClientProvider client={client}>
+      <AdjustStockDialog productId={5} productName="Flask kit" initialPartId={initialPartId} onClose={noop} />
+    </QueryClientProvider>,
+  );
+  return client;
+}
+
+/** A read held until the test answers it. */
+function held() {
+  let answer: (s: ProductStock) => void = noop;
+  let refuse: (e: Error) => void = noop;
+  const promise = new Promise<ProductStock>((resolve, reject) => {
+    answer = resolve;
+    refuse = reject;
+  });
+  return { promise, answer: (s: ProductStock) => answer(s), refuse: (e: Error) => refuse(e) };
+}
 
 describe('AdjustStockDialog', () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -78,6 +101,81 @@ describe('AdjustStockDialog', () => {
     fireEvent.click(within(failed.closest('[role="alert"]') as HTMLElement).getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('Now 5 → will be 6')).toBeInTheDocument();
+  });
+
+  describe('a shelf the page had already read is not the current one (I02; Codex V02)', () => {
+    it('cache 0, the opening read says 5: «…» and no old number while it is read, then only the new one', async () => {
+      const read = held();
+      vi.spyOn(api, 'getProductStock').mockReturnValue(read.promise as never);
+      mountOverCache(shelf(0), 1);
+      fireEvent.change(screen.getByLabelText(/^Change/), { target: { value: '-1' } });
+      fireEvent.change(screen.getByLabelText('Why'), { target: { value: 'counted' } });
+      expect(screen.getByTestId('stock-adjust-projection')).toHaveTextContent('…');
+      expect(screen.getByTestId('stock-adjust-projection')).not.toHaveTextContent(/Now|below zero/);
+      expect(within(screen.getByLabelText('Part')).queryByRole('option', { name: /on the shelf/ })).toBeNull();
+      // Not judged below zero by a number that is not current: the server is the guard meanwhile.
+      expect(save()).toBeEnabled();
+      await act(async () => read.answer(shelf(5)));
+      expect(await screen.findByText('Now 5 → will be 4')).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'Lid (on the shelf 5)' })).toBeInTheDocument();
+      expect(screen.getByLabelText(/^Change/)).toHaveValue(-1);
+      expect(screen.getByLabelText('Why')).toHaveValue('counted');
+      expect(screen.getByLabelText('Part')).toHaveValue('1');
+    });
+
+    it('cache 10, the opening read says 4: «…» while it is read, then below zero by the new number', async () => {
+      const read = held();
+      vi.spyOn(api, 'getProductStock').mockReturnValue(read.promise as never);
+      mountOverCache(shelf(10), 1);
+      fireEvent.change(screen.getByLabelText(/^Change/), { target: { value: '-8' } });
+      fireEvent.change(screen.getByLabelText('Why'), { target: { value: 'counted' } });
+      expect(screen.getByTestId('stock-adjust-projection')).toHaveTextContent('…');
+      expect(screen.queryByText(/Now 10/)).not.toBeInTheDocument();
+      await act(async () => read.answer(shelf(4)));
+      expect(
+        await screen.findByText('Now 4 → will be -4 — below zero — the stock cannot be negative'),
+      ).toBeInTheDocument();
+      expect(save()).toBeDisabled();
+    });
+
+    it('a failed opening read over the cache: the failure and its retry, no projection, the server guards', async () => {
+      const read = held();
+      vi.spyOn(api, 'getProductStock').mockReturnValueOnce(read.promise as never).mockResolvedValueOnce(shelf(2));
+      mountOverCache(shelf(0), 1);
+      fireEvent.change(screen.getByLabelText(/^Change/), { target: { value: '-1' } });
+      fireEvent.change(screen.getByLabelText('Why'), { target: { value: 'counted' } });
+      await act(async () => read.refuse(new Error('HTTP 500')));
+      const failed = await screen.findByText('Could not read the stock');
+      expect(screen.queryByText(/will be/)).not.toBeInTheDocument();
+      expect(save()).toBeEnabled();
+      fireEvent.click(within(failed.closest('[role="alert"]') as HTMLElement).getByRole('button', { name: 'Retry' }));
+      expect(await screen.findByText('Now 2 → will be 1')).toBeInTheDocument();
+    });
+
+    it('a part the cache lacks is not «gone» until a current read says so', async () => {
+      const read = held();
+      vi.spyOn(api, 'getProductStock').mockReturnValue(read.promise as never);
+      mountOverCache({ ...shelf(0), balances: [shelf(0).balances[1]] } as ProductStock, 1);
+      expect(screen.queryByText('This part no longer holds stock')).not.toBeInTheDocument();
+      await act(async () => read.answer(shelf(3)));
+      expect(await screen.findByRole('option', { name: 'Lid (on the shelf 3)' })).toBeInTheDocument();
+      expect(screen.getByLabelText('Part')).toHaveValue('1');
+      expect(screen.queryByText('This part no longer holds stock')).not.toBeInTheDocument();
+    });
+
+    it('a background refresh while it is open is «…» again until it answers', async () => {
+      const second = held();
+      vi.spyOn(api, 'getProductStock').mockResolvedValueOnce(shelf(5)).mockReturnValueOnce(second.promise as never);
+      const client = mountOverCache(shelf(5), 1);
+      fireEvent.change(screen.getByLabelText('Why'), { target: { value: 'counted' } });
+      expect(await screen.findByText('Now 5 → will be 6')).toBeInTheDocument();
+      act(() => {
+        void client.invalidateQueries({ queryKey: ['product-stock', 5] });
+      });
+      await waitFor(() => expect(screen.getByTestId('stock-adjust-projection')).toHaveTextContent('…'));
+      await act(async () => second.answer(shelf(7)));
+      expect(await screen.findByText('Now 7 → will be 8')).toBeInTheDocument();
+    });
   });
 
   it('a zero change and an empty reason hold «Save», each with its hint', async () => {

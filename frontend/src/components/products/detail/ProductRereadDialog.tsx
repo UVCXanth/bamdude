@@ -7,6 +7,7 @@ import { useProductFileGroups } from '../../../hooks/useProductFileGroups';
 import { invalidateOrderViews, invalidateProductFiles } from '../../../utils/queryInvalidation';
 import { Button } from '../../Button';
 import { LoadFailedNote } from '../../workshop/LoadFailedNote';
+import { RefreshFailedNote } from '../../workshop/RefreshFailedNote';
 import { WorkshopDialog } from '../../workshop/WorkshopDialog';
 import { cardNoteText, cardNotesText } from '../cardNotes';
 import { ModelChip } from './ModelChip';
@@ -28,7 +29,9 @@ const COUNTED = new Set(['filled_field', 'replaced_files', 'imported_files']);
  * `sliced_any` or `plan_eligible`.
  *
  * The only file there is starts chosen; of several, none — «Re-read» waits for a choice.
- * A re-read of the list that drops the chosen file clears the choice and says so.
+ * A re-read of the list that drops the chosen file clears the choice and says so; a re-read
+ * that FAILS keeps the list it had — empty too — and says it is not current, with a retry
+ * (J; Codex E10-V03): only a successful answer can show a chosen file gone.
  *
  * Before the request it says which EMPTY fields the file may fill — a filled one is not
  * named — and that the file's attachments are replaced, hand-added ones not (WS-13 E10
@@ -39,8 +42,9 @@ const COUNTED = new Set(['filled_field', 'replaced_files', 'imported_files']);
  * CODES) — closed by «Done»; what a re-read moves is refreshed at once: the product and
  * the order cards (it can bring the first cover), and the files' plates.
  *
- * The dialog rules are B11's: one click, one request; nothing closes it while it runs; a
- * refusal stays with the server's sentence and the focus on «Re-read».
+ * The dialog rules are B11's: one click, one request; nothing closes it while it runs —
+ * Escape, the X and «Cancel» ask the same ref the click set, not the next render (J; Codex
+ * E10-V01); a refusal stays with the server's sentence and the focus on «Re-read».
  */
 export function ProductRereadDialog({
   product,
@@ -101,6 +105,10 @@ export function ProductRereadDialog({
   });
   const busy = sending || write.isPending;
   const error = write.isError ? (write.error as Error).message : readError;
+  const close = () => {
+    if (sent.current) return;
+    onClose();
+  };
 
   useEffect(() => {
     if (error) document.getElementById(primaryId)?.focus();
@@ -206,14 +214,14 @@ export function ProductRereadDialog({
   return (
     <WorkshopDialog
       size="md"
-      onClose={onClose}
+      onClose={close}
       title={t('products.detail.reread.title')}
       subtitle={`${product.code} · ${product.name}`}
       pending={busy}
       error={error ?? undefined}
       footer={
         <>
-          <Button variant="secondary" onClick={onClose} disabled={busy}>
+          <Button variant="secondary" onClick={close} disabled={busy}>
             {t('common.cancel')}
           </Button>
           <Button
@@ -242,6 +250,7 @@ export function ProductRereadDialog({
             : t('products.detail.reread.nothingEmpty')}{' '}
           {t('products.detail.reread.attachments')}
         </p>
+        {files.data && files.isError && <RefreshFailedNote onRetry={() => void files.refetch()} />}
         {list}
         {gone && <p className="text-sm text-amber-700 dark:text-amber-400">{t('products.detail.reread.gone')}</p>}
       </div>

@@ -34,6 +34,11 @@ interface AdjustStockDialogProps {
  * sum of rows: while the shelf is read it is «…», after a failed read it is not shown at
  * all (the server is the guard), and below zero it says so and «Save» waits.
  *
+ * ⚠️ «Current» is a read that answered AFTER the dialog opened and is not being re-read: a
+ * shelf the page cached earlier is not one (Codex E10-V02). While the opening read, a
+ * background refresh or the re-read after a refusal runs, nothing is projected, no count
+ * stands beside a part, nothing is judged below zero and no part is called gone.
+ *
  * A refusal (409 below zero, 422 a part that holds no stock) stays in the dialog, and the
  * shelf is read again — the part, the change and the reason stay as typed, nothing is
  * sent again by itself. A part the new read no longer holds is said so; it is never
@@ -61,17 +66,19 @@ export function AdjustStockDialog({ productId, productName, initialPartId, onClo
     }
   }
   const balance = chosen ? balances.find((b) => b.part_id === chosen.id) : undefined;
-  const partGone = stock.data != null && chosen != null && balance == null;
 
   const [delta, setDelta] = useState('1');
   const [note, setNote] = useState('');
   // After a refusal the shelf is read again; until it answers nothing is projected.
   const [rereading, setRereading] = useState(false);
+  // `isFetchedAfterMount`: this dialog's own read answered — the cache from before does not
+  // count; `isSuccess` is false once a later read failed, `isFetching` while one runs.
+  const fresh = stock.isSuccess && stock.isFetchedAfterMount && !stock.isFetching && !rereading;
+  const partGone = fresh && chosen != null && balance == null;
 
   const parsed = Number(delta);
   const deltaValid = delta.trim() !== '' && Number.isInteger(parsed) && parsed !== 0;
   const noteValid = note.trim() !== '';
-  const fresh = stock.data != null && !stock.isError && !rereading;
   const next = balance && deltaValid ? balance.balance + parsed : null;
   const below = fresh && next != null && next < 0;
 
@@ -187,7 +194,7 @@ export function AdjustStockDialog({ productId, productName, initialPartId, onClo
               {chosen != null && balance == null && <option value={chosen.id}>{chosen.name}</option>}
               {balances.map((b) => (
                 <option key={b.part_id} value={b.part_id}>
-                  {t('stock.adjust.partOption', { name: b.name, count: b.balance })}
+                  {fresh ? t('stock.adjust.partOption', { name: b.name, count: b.balance }) : b.name}
                 </option>
               ))}
             </Select>
