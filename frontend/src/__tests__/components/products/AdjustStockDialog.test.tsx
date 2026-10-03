@@ -29,8 +29,8 @@ const noop = () => {};
 const save = () => screen.getByRole('button', { name: /^(save|saving…)$/i });
 
 /** The dialog over a page whose shelf is already in the cache (`['product-stock', 5]`). */
-function mountOverCache(cached: ProductStock, initialPartId?: number) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+function mountOverCache(cached: ProductStock, initialPartId?: number, staleTime = 0) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity, staleTime } } });
   client.setQueryData(['product-stock', 5], cached);
   render(
     <QueryClientProvider client={client}>
@@ -121,6 +121,16 @@ describe('AdjustStockDialog', () => {
       expect(screen.getByLabelText(/^Change/)).toHaveValue(-1);
       expect(screen.getByLabelText('Why')).toHaveValue('counted');
       expect(screen.getByLabelText('Part')).toHaveValue('1');
+    });
+
+    it('a shelf the page read a moment ago — fresh by the app’s minute of staleTime — is still read on opening', async () => {
+      // utils/appQueryClient keeps every query fresh for a minute: mounting alone would not read it.
+      const read = vi.spyOn(api, 'getProductStock').mockResolvedValue(shelf(5));
+      mountOverCache(shelf(0), 1, 60_000);
+      fireEvent.change(screen.getByLabelText('Why'), { target: { value: 'counted' } });
+      expect(screen.getByTestId('stock-adjust-projection')).toHaveTextContent('…');
+      expect(await screen.findByText('Now 5 → will be 6')).toBeInTheDocument();
+      expect(read).toHaveBeenCalledTimes(1);
     });
 
     it('cache 10, the opening read says 4: «…» while it is read, then below zero by the new number', async () => {

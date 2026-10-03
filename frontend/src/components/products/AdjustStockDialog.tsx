@@ -82,9 +82,13 @@ export function AdjustStockDialog({ productId, productName, initialPartId, onClo
   const next = balance && deltaValid ? balance.balance + parsed : null;
   const below = fresh && next != null && next < 0;
 
-  // The cursor starts in the first field (J).
+  // The cursor starts in the first field (J). And the dialog asks the shelf itself: the app
+  // keeps a query fresh for a minute (utils/appQueryClient), so mounting would not re-read a
+  // shelf the page read a moment ago, and `fresh` would wait for ever. `cancelRefetch: false`
+  // joins a read already on its way instead of sending a second one.
   useEffect(() => {
     document.getElementById(ids.part)?.focus();
+    void stock.refetch({ cancelRefetch: false });
     // Once, at the opening.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
