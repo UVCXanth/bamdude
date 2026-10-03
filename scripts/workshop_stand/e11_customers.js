@@ -310,6 +310,11 @@ async (page, selftest = null) => {
   const multiList = [LIST, (b) => ({ ...b, items: b.items.map(withContacts) })];
   const multiDetail = [DETAIL(C1), (b) => withContacts(b)];
   const rowOf = (p, id) => p.getByTestId(`customer-${id}-row`);
+  // The tops of the second row's labels of a contact — one line, whatever is under the method.
+  const contactLabelTops = (d) => d.getByTestId('contact-row').first().evaluate((row) => ['Email', 'Місто', 'Спосіб доставки']
+    .map((name) => [...row.querySelectorAll('label')].find((l) => l.textContent.trim() === name))
+    .map((l) => (l ? Math.round(l.getBoundingClientRect().top) : null)));
+  const sameLine = (tops) => tops.every((t) => t !== null && t === tops[0]);
   const menuOf = (p, name) => p.getByRole('button', { name: `Дії: ${name}`, exact: true });
   const methodsFor = (id) => methods.find((m) => m.id === id);
 
@@ -419,6 +424,7 @@ async (page, selftest = null) => {
     const mini = await headers(all);
     const mainBadges = await all.getByText('основний', { exact: true }).count();
     const note = await all.getByText(/дзвонити/).evaluate((el) => getComputedStyle(el).whiteSpace);
+    await all.evaluate((el) => el.scrollIntoView({ block: 'end' }));
     const file = await shoot(p, 'table-open');
     await chevron.click();
     const closed = await all.count();
@@ -645,6 +651,7 @@ async (page, selftest = null) => {
     await d.waitFor();
     await p.waitForTimeout(300);
     const opened = await focusAt(p);
+    const labelTops = await contactLabelTops(d);
     const labels = await d.locator('label').evaluateAll((ls) => ls.map((l) => l.textContent.trim()));
     await d.getByRole('button', { name: 'Зберегти замовника' }).click();
     const empty = await textOf(d.getByRole('alert'));
@@ -677,8 +684,8 @@ async (page, selftest = null) => {
     return {
       env: { viewport: [1440, 900] },
       recipe: { url: '/customers → «Новий замовник»; /customers/{customer:1} → «Редагувати»', fixture: ['POST /customers: 409 name_taken, then accepted', 'PATCH answered here'] },
-      measured: { opened, labels, empty, emptyFocus, noteFocus, addFocus, warning, primary, refused, agreed, patch, editSubtitle, errors },
-      pass: opened === 'Назва' && labels.slice(0, 2).join('|') === 'Назва|Тип' && labels.includes('Нотатка для команди') &&
+      measured: { opened, labelTops, labels, empty, emptyFocus, noteFocus, addFocus, warning, primary, refused, agreed, patch, editSubtitle, errors },
+      pass: opened === 'Назва' && sameLine(labelTops) && labels.slice(0, 2).join('|') === 'Назва|Тип' && labels.includes('Нотатка для команди') &&
         empty === 'Вкажіть назву замовника.' && emptyFocus === 'Назва' && noteFocus === 'Нотатка' && addFocus === 'Ім’я контакта' &&
         warning.includes(NAMESAKE.message) && /з такою назвою\?/.test(warning) && primary === 1 &&
         refused?.method === 'POST' && refused.body?.allow_duplicate_name === undefined &&
@@ -708,6 +715,7 @@ async (page, selftest = null) => {
       await p.waitForTimeout(500);
       out.gone = await d.getByLabel('Спосіб доставки').first().evaluate((s) => s.selectedOptions[0]?.textContent);
       out.hint = await d.getByText('Оберіть інший спосіб або приберіть його').count();
+      out.labelTops = await contactLabelTops(d);
       await d.getByLabel('Місто').first().fill('Львів');
       out.heldWithContacts = await d.getByRole('button', { name: 'Зберегти замовника' }).isDisabled();
       files.push(await shoot(p, 'form-method-gone'));
@@ -744,7 +752,7 @@ async (page, selftest = null) => {
       env: { viewport: [1440, 900] },
       recipe: { url: '/customers/{customer:1} → «Редагувати»', fixture: ['GET /delivery-methods without the chosen one', 'GET /delivery-methods 500', '/auth/me without projects:update'] },
       measured: out,
-      pass: out.gone === `${methodName} (більше немає)` && out.hint === 1 && out.heldWithContacts === true &&
+      pass: out.gone === `${methodName} (більше немає)` && out.hint === 1 && sameLine(out.labelTops) && out.heldWithContacts === true &&
         JSON.stringify(out.nameOnly) === JSON.stringify({ name: `${NAME1} 2` }) &&
         out.failedLabel === methodName && out.failedGone === 0 && out.manageWithoutUpdate === 0,
       screenshots: files,
@@ -973,6 +981,10 @@ async (page, selftest = null) => {
     });
     await goto(p, '/customers');
     await rowOf(p, C1).getByRole('button', { name: '+ 2 контакти' }).click();
+    const orders = await p.getByTestId(`customer-${C1}-orders`).evaluate((td) => {
+      const badge = td.querySelector('span.rounded');
+      return { badgeLines: badge ? badge.getClientRects().length : null, doneHeight: Math.round(td.lastElementChild.getBoundingClientRect().height) };
+    });
     const overflow = await docOverflow(p);
     const region = await p.getByRole('region', { name: 'Замовники' }).evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
     const file = await shoot(p, 'table-long');
@@ -980,8 +992,8 @@ async (page, selftest = null) => {
     return {
       env: { viewport: [1440, 900] },
       recipe: { url: '/customers', fixture: ['customer 1: a long name, a long delivery, three contacts, opened'] },
-      measured: { overflow, region, errors },
-      pass: overflow <= 0 && errors.length === 0,
+      measured: { orders, overflow, region, errors },
+      pass: orders.badgeLines === 1 && orders.doneHeight <= 20 && overflow <= 0 && errors.length === 0,
       screenshots: [file],
     };
   });
