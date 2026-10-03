@@ -469,6 +469,24 @@ describe('StockMoveDialog', () => {
       expect(onClose).not.toHaveBeenCalled();
     });
 
+    // E12 pilot (browser): the primary waits while the position is read again, a disabled
+    // button cannot keep the focus, and it fell to the page. Once the re-read has answered the
+    // focus goes to the primary when it can act — else to the field that says why.
+    it('a refusal whose re-read leaves the draft over the new limit puts the cursor in the quantity', async () => {
+      getItem.mockResolvedValueOnce(r03).mockResolvedValue({ ...r03, reserved: 10, available: 2 });
+      move.mockRejectedValue(new ApiError('Only 2 available', 409));
+      render(<StockMoveDialog kind="reserve" item={pipeItem} onClose={() => {}} />);
+      await waitFor(() => expect(limit()).toHaveTextContent('You can reserve 6 (available)'));
+      fireEvent.change(qty(), { target: { value: '5' } });
+      // A real press puts the focus on the button first.
+      submit().focus();
+      fireEvent.click(submit());
+      expect(await screen.findByRole('alert')).toHaveTextContent('Only 2 available');
+      await waitFor(() => expect(limit()).toHaveTextContent('No more than 2'));
+      await waitFor(() => expect(qty()).toHaveFocus());
+      expect(submit()).toBeDisabled();
+    });
+
     it('from the header a refusal reads the configuration again', async () => {
       const lookup = vi.spyOn(api, 'lookupStockItem').mockResolvedValue(found());
       move.mockRejectedValue(new ApiError('Only 3 available', 409));

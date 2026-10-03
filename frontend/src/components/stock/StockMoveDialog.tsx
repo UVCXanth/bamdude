@@ -33,10 +33,11 @@ function recipientOf(contact: CustomerContact | undefined): FulfilmentRecipient 
   };
 }
 
-/** A reason the primary waits, and the element that says it. */
+/** A reason the primary waits, the element that says it and the field that answers it. */
 interface Why {
   text: string;
   id: string;
+  focus?: string;
 }
 
 /**
@@ -55,9 +56,11 @@ interface Why {
  * The limit is named where it applies (R03): a reservation and a plain issue — the
  * available count; a release and an issue «from the manual reservation» — the manual
  * reservation alone (an order's reservation never counts, and the two modes never add up).
- * A refusal stays in the dialog's slot in the system's language, the focus goes to the
- * primary, the draft stays whole, and the position or the lookup is read again — a re-read
- * changes numbers and limits, never what was typed.
+ * A refusal stays in the dialog's slot in the system's language, the draft stays whole, and
+ * the position or the lookup is read again — a re-read changes numbers and limits, never what
+ * was typed. Once it has answered, the focus goes to the primary when it can act, else to the
+ * field that says why (a disabled button cannot hold the focus: it fell to the page — E12
+ * pilot).
  */
 export function StockMoveDialog({
   kind,
@@ -86,6 +89,7 @@ export function StockMoveDialog({
     waybill: `${uid}-waybill`,
     why: `${uid}-why`,
     noPosition: `${uid}-no-position`,
+    fromReserve: `${uid}-from-reserve`,
   };
 
   const [productId, setProductId] = useState<number | null>(forProduct ?? null);
@@ -102,7 +106,7 @@ export function StockMoveDialog({
 
   // ---- which position: fixed, or the server's answer for a configuration (G02, G08)
   const options = Object.values(choices);
-  const { groupsReady, lookup, lookupCurrent, lookupOwn, positionId, detail, detailCurrent, figures, shownFigures, reread } =
+  const { groupsReady, lookup, lookupCurrent, lookupOwn, positionId, detail, detailCurrent, figures, shownFigures, reread, rereading } =
     useStockTarget({ item, productId, options });
   const manual = figures
     ? figures.reservations.filter((r) => r.project_id == null).reduce((sum, r) => sum + r.qty, 0)
@@ -160,15 +164,17 @@ export function StockMoveDialog({
   // The first reason the primary waits, named where it is said.
   let why: Why | null = null;
   if (noPosition && !createsHere && kind !== 'stocktake') why = { text: t('stock.move.noPosition'), id: ids.noPosition };
-  else if (kind === 'issue' && customerId == null) why = { text: t('stock.move.customerRequired'), id: ids.why };
-  else if (kind === 'issue' && fromReserve && manual === 0) why = { text: t('stock.move.fromReserveEmpty'), id: ids.why };
-  else if (kind !== 'stocktake' && !qtyValid) why = { text: t('stock.move.qtyInvalid'), id: `${ids.qty}-hint` };
-  else if (over) why = { text: t('stock.move.overLimit', { n: limitValue }), id: `${ids.qty}-hint` };
-  else if (kind === 'stocktake' && belowReserve) why = { text: t('stock.move.belowReserve', { n: figures?.reserved }), id: ids.why };
-  else if (kind === 'stocktake' && noteMissing) why = { text: t('stock.move.noteRequired'), id: `${ids.note}-hint` };
+  else if (kind === 'issue' && customerId == null) why = { text: t('stock.move.customerRequired'), id: ids.why, focus: ids.customer };
+  else if (kind === 'issue' && fromReserve && manual === 0) why = { text: t('stock.move.fromReserveEmpty'), id: ids.why, focus: ids.fromReserve };
+  else if (kind !== 'stocktake' && !qtyValid) why = { text: t('stock.move.qtyInvalid'), id: `${ids.qty}-hint`, focus: ids.qty };
+  else if (over) why = { text: t('stock.move.overLimit', { n: limitValue }), id: `${ids.qty}-hint`, focus: ids.qty };
+  else if (kind === 'stocktake' && belowReserve) why = { text: t('stock.move.belowReserve', { n: figures?.reserved }), id: ids.why, focus: ids.counted };
+  else if (kind === 'stocktake' && noteMissing) why = { text: t('stock.move.noteRequired'), id: `${ids.note}-hint`, focus: ids.note };
 
   // ⚠️ Synchronous: one press, one request; nothing closes the dialog under it.
   const sent = useRef(false);
+  // A refusal hands the focus back once the re-read has answered (below).
+  const refocus = useRef(false);
   // An issue made a dispatch note: say so, with a way to open it (spec workshop-dispatch-notes, rule 24).
   const [created, setCreated] = useState<{ id: number; code: string; units: number | null } | null>(null);
   const move = useMutation({
@@ -188,15 +194,13 @@ export function StockMoveDialog({
     // (G07) — the draft is not touched.
     onError: () => {
       sent.current = false;
+      refocus.current = true;
       invalidateStock(queryClient);
       reread();
     },
   });
   const pending = move.isPending;
   const submitId = `${ids.form}-submit`;
-  useEffect(() => {
-    if (move.isError) document.getElementById(submitId)?.focus();
-  }, [move.isError, move.error, submitId]);
 
   // The cursor starts in the first field (G07): the product from the header, else the amount.
   useEffect(() => {
@@ -213,6 +217,15 @@ export function StockMoveDialog({
 
   const target = item != null || (lookupCurrent && (lookupOwn?.item != null || createsHere));
   const canSubmit = !pending && target && amountValid && readsReady && why == null;
+
+  // After a refusal: once the re-read has answered, the primary when it can act, else the field
+  // that says why — the amount when nothing names one.
+  useEffect(() => {
+    if (!refocus.current || rereading || pending) return;
+    refocus.current = false;
+    const to = canSubmit ? submitId : (why?.focus ?? (kind === 'stocktake' ? ids.counted : ids.qty));
+    document.getElementById(to)?.focus();
+  });
 
   const submit = () => {
     if (sent.current || !canSubmit) return;
@@ -428,6 +441,7 @@ export function StockMoveDialog({
               {showFromReserve && (
                 <label className="col-span-full flex items-center gap-2 text-sm text-bambu-gray-light">
                   <input
+                    id={ids.fromReserve}
                     type="checkbox"
                     checked={fromReserve}
                     onChange={(e) => setFromReserve(e.target.checked)}

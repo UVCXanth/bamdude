@@ -199,6 +199,22 @@ describe('AssembleDialog', () => {
     ).toBeInTheDocument();
   });
 
+  it('a refusal whose re-read can no longer make the count puts the cursor in it', async () => {
+    vi.spyOn(api, 'getStockItem')
+      .mockResolvedValueOnce({ ...pipeDetail, can_assemble: 3 })
+      .mockResolvedValue({ ...pipeDetail, can_assemble: 1 });
+    assemble.mockRejectedValue(new ApiError('Only 1 can be assembled from the free parts', 409));
+    render(<AssembleDialog item={pipeItem} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText('up to 3')).toBeInTheDocument());
+    fireEvent.change(howMany(), { target: { value: '2' } });
+    // A real press puts the focus on the button first.
+    submit().focus();
+    fireEvent.click(submit());
+    expect(await screen.findByRole('alert')).toHaveTextContent('Only 1 can be assembled from the free parts');
+    await waitFor(() => expect(screen.getByTestId('assemble-limit')).toHaveTextContent('No more than 1'));
+    await waitFor(() => expect(howMany()).toHaveFocus());
+  });
+
   it('a refusal stays in the slot: the focus on the primary, the draft whole, the position read again', async () => {
     vi.spyOn(api, 'getStockItem').mockResolvedValue({ ...pipeDetail, can_assemble: 3 });
     assemble.mockRejectedValue(new ApiError('Only 1 can be assembled from the free parts', 409));

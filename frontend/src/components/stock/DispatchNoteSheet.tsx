@@ -60,7 +60,7 @@ export function DispatchNoteSheet({ note }: { note: DispatchNote }) {
     <article
       data-testid="dispatch-note-sheet"
       data-print-sheet
-      className="mx-auto max-w-[920px] rounded-xl bg-white p-8 text-sm text-gray-900 shadow-lg print:max-w-none print:rounded-none print:p-0 print:shadow-none"
+      className="mx-auto min-w-[720px] max-w-[920px] rounded-xl bg-white p-8 text-sm text-gray-900 shadow-lg print:min-w-0 print:max-w-none print:rounded-none print:p-0 print:shadow-none"
     >
       <header data-print-keep className="flex items-start justify-between gap-4 border-b-2 border-gray-900 pb-4 mb-4">
         <div>

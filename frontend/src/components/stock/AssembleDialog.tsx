@@ -58,7 +58,7 @@ export function AssembleDialog({
   const [note, setNote] = useState('');
 
   const options = Object.values(choices);
-  const { product, groupsReady, lookup, lookupCurrent, lookupOwn, detail, figures, reread } = useStockTarget({
+  const { product, groupsReady, lookup, lookupCurrent, lookupOwn, detail, figures, reread, rereading } = useStockTarget({
     item,
     productId,
     options,
@@ -92,6 +92,8 @@ export function AssembleDialog({
 
   // ⚠️ Synchronous: one press, one assembly; nothing closes the dialog under it.
   const sent = useRef(false);
+  // A refusal hands the focus back once the re-read has answered (below).
+  const refocus = useRef(false);
   const assemble = useMutation({
     mutationFn: (body: StockAssembleBody) => api.assembleStock(body),
     onSuccess: () => {
@@ -102,15 +104,13 @@ export function AssembleDialog({
     // The refusal says what the server saw; the shelf is read again (G07) — the draft stays.
     onError: () => {
       sent.current = false;
+      refocus.current = true;
       invalidateStock(queryClient);
       reread();
     },
   });
   const pending = assemble.isPending;
   const submitId = `${ids.form}-submit`;
-  useEffect(() => {
-    if (assemble.isError) document.getElementById(submitId)?.focus();
-  }, [assemble.isError, assemble.error, submitId]);
 
   // The cursor starts in the first field (G07): the product from the header, else the count.
   useEffect(() => {
@@ -125,6 +125,14 @@ export function AssembleDialog({
   };
 
   const canSubmit = !pending && canAssemble != null && why == null;
+
+  // After a refusal: once the shelf has been read again, the primary when it can act, else the
+  // count — a disabled button cannot hold the focus (E12 pilot).
+  useEffect(() => {
+    if (!refocus.current || rereading || pending) return;
+    refocus.current = false;
+    document.getElementById(canSubmit ? submitId : ids.qty)?.focus();
+  });
   const submit = () => {
     if (sent.current || !canSubmit) return;
     sent.current = true;

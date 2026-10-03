@@ -334,7 +334,8 @@ async (page, selftest = null) => {
     .filter((th) => th.getAttribute('aria-hidden') !== 'true')
     .map((th) => (th.textContent.replace(/[▲▼]/g, '').replace(/\s+/g, ' ').trim() || th.getAttribute('aria-label') || '')));
   const perRow = (ts) => ts.filter((t) => t === ts[0]).length;
-  const menuItems = (panel) => panel.getByRole('menuitem').evaluateAll((ms) => ms.map((m) => ({ text: m.textContent.trim(), disabled: m.disabled, title: m.getAttribute('title') })));
+  // The panel is drawn hidden until it is measured: its items are read once the first one shows.
+  const menuItems = async (panel) => (await panel.getByRole('menuitem').first().waitFor({ timeout: 5000 }), panel.getByRole('menuitem')).evaluateAll((ms) => ms.map((m) => ({ text: m.textContent.trim(), disabled: m.disabled, title: m.getAttribute('title') })));
   const refetchLater = async (p) => {
     await p.clock.fastForward('01:30');
     await p.evaluate(() => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })));
@@ -573,7 +574,7 @@ async (page, selftest = null) => {
       await goto(p, '/stock?tab=parts');
       const firstRow = p.locator('[data-testid^="stock-row-"]').first();
       const btn = firstRow.getByRole('button', { name: 'Зібрати' });
-      out.oneOff = { disabled: await btn.isDisabled(), reason: await described(btn), mark: await firstRow.getByText('разовий').count() };
+      out.oneOff = { disabled: await btn.isDisabled(), reason: await described(btn), mark: await firstRow.getByText('разовий', { exact: true }).count() };
       files.push(await shoot(p, 'parts-one-off'));
       await ctx.close();
     }
@@ -1187,7 +1188,8 @@ async (page, selftest = null) => {
       env: { viewport: [1440, 900] },
       recipe: { url: '/stock/{fin:1} → «Резервувати»', fixture: ['POST /stock/moves 409 «Доступно лише 1»', 'the re-read: 1 available; then 500; then 1 available'] },
       measured: { slot, focus, after, failedReread, writes: writes.length, errors },
-      pass: slot.includes('Доступно лише 1') && focus === 'Зарезервувати' && after.limit === 'Не більше 1' &&
+      // The re-read left the draft (2) over the new limit (1): the primary waits, the cursor is in the quantity.
+      pass: slot.includes('Доступно лише 1') && focus === 'Кількість, шт.' && after.limit === 'Не більше 1' &&
         after.qty === String(item1.available) && after.note === 'hold' && failedReread && writes.length === 2 && errors.length === 0,
       screenshots: [file],
     };
@@ -1501,6 +1503,9 @@ async (page, selftest = null) => {
     const bytes = await p.pdf({ path: job.pdf, format: 'A4', printBackground: true });
     const text = bytes.toString('latin1');
     const pages = (text.match(/\/Type\s*\/Page[^s]/g) || []).length;
+    // The app's own errors end here: on the viewer's page the harness's init script has no
+    // sessionStorage to read, and that is the harness, not the app.
+    const appErrors = errors.slice();
     // The PDF in the browser's own viewer, page by page — served here, never by the stand.
     await route(/^http:\/\/e12-pdf\.local\//, (r) => r.fulfill({ status: 200, path: job.pdf, contentType: 'application/pdf' }));
     const shots = [];
@@ -1513,8 +1518,8 @@ async (page, selftest = null) => {
     return {
       env: { viewport: [1440, 900] },
       recipe: { url: '/stock/dispatch-notes/{doc:90000} → page.pdf A4', fixture: ['GET /stock-issues/{id}: 40 lines'], artifact: 'note-40-lines.pdf' },
-      measured: { pages, size: bytes.length, errors },
-      pass: pages >= 2 && errors.length === 0,
+      measured: { pages, size: bytes.length, errors: appErrors, viewer_errors: errors.length - appErrors.length },
+      pass: pages >= 2 && appErrors.length === 0,
       screenshots: shots,
     };
   });

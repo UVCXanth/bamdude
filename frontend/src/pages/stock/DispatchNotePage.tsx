@@ -12,7 +12,7 @@ import type { DateFormat, TimeFormat } from '../../utils/date';
 import { DispatchNoteSheet } from '../../components/stock/DispatchNoteSheet';
 import { WaybillEditor } from '../../components/stock/WaybillEditor';
 import { LoadFailedNote } from '../../components/workshop/LoadFailedNote';
-import { WorkshopPanel } from '../../components/workshop/WorkshopPanel';
+import { WorkshopPanel, WorkshopTableScroll } from '../../components/workshop/WorkshopPanel';
 import { useDispatchNote } from '../../hooks/useDispatchNotes';
 
 /**
@@ -126,7 +126,11 @@ export function DispatchNotePage() {
           </Button>
         </div>
       </div>
-      <DispatchNoteSheet note={note} />
+      {/* A narrow screen scrolls the sheet in a region of its own, never the page (E12 pilot at
+          390 px); on paper every container around the sheet gives its scrolling up (index.css). */}
+      <WorkshopTableScroll label={t('stock.dispatchNote.title', { code: note.code })}>
+        <DispatchNoteSheet note={note} />
+      </WorkshopTableScroll>
     </div>
   );
 }

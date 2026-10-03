@@ -199,6 +199,17 @@ describe('DispatchNotePage', () => {
       expect(within(sheet).queryByText(/part changed/)).toBeNull();
     });
 
+    // E12 pilot (390 px): the sheet widened the whole page. It scrolls in a region of its own.
+    it('a narrow screen scrolls the sheet, never the page', async () => {
+      vi.spyOn(api, 'getDispatchNote').mockResolvedValue(note);
+      renderAt();
+      const sheet = await screen.findByTestId('dispatch-note-sheet');
+      const region = screen.getByRole('region', { name: 'Dispatch note DN-0042' });
+      expect(region).toContainElement(sheet);
+      expect(region.className).toContain('overflow-x-auto');
+      expect(sheet.className).toContain('print:min-w-0');
+    });
+
     it('the parties, the header and the signatures are kept whole on paper', async () => {
       vi.spyOn(api, 'getDispatchNote').mockResolvedValue(note);
       renderAt();

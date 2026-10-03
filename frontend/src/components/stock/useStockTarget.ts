@@ -80,5 +80,7 @@ export function useStockTarget({
     figures,
     shownFigures,
     reread,
+    /** Reading again after a refusal — nothing is judged until it answers. */
+    rereading,
   };
 }
