@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
@@ -25,6 +26,19 @@ const customers = [
 
 describe('CustomerPicker', () => {
   beforeEach(() => vi.restoreAllMocks());
+
+  it('a created customer is chosen and shown at once — even when the list cannot be read again', async () => {
+    vi.spyOn(api, 'getCustomers').mockResolvedValueOnce(customers as never).mockRejectedValue(new Error('HTTP 500'));
+    vi.spyOn(api, 'createCustomer').mockResolvedValue({ ...customers[0], id: 9, code: 'CU-0009', name: 'Gamma' } as never);
+    function Host() {
+      const [value, setValue] = useState<number | null>(null);
+      return <CustomerPicker value={value} onChange={setValue} allowCreate />;
+    }
+    render(<Host />);
+    await openCreate('Gamma');
+    await waitFor(() => expect(screen.getByRole('combobox')).toHaveValue('9'));
+    expect(screen.getByRole('option', { name: 'CU-0009 · Gamma' })).toBeInTheDocument();
+  });
 
   describe('a namesake (WS-13 E11 F12, R01)', () => {
     const beta = { ...customers[0], id: 3, code: 'CU-0003', name: 'Beta' };
@@ -56,6 +70,72 @@ describe('CustomerPicker', () => {
       await waitFor(() => expect(onChange).toHaveBeenCalledWith(3));
       expect(read).toHaveBeenCalledTimes(2);
       expect(await screen.findByRole('option', { name: 'CU-0003 · Beta' })).toBeInTheDocument();
+    });
+
+    it('a choice given up while its list is read is not made when the answer lands (R01)', async () => {
+      let answer!: (v: unknown) => void;
+      vi.spyOn(api, 'getCustomers')
+        .mockResolvedValueOnce(customers as never)
+        .mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }) as never);
+      vi.spyOn(api, 'createCustomer').mockRejectedValue(taken());
+      const onChange = vi.fn();
+      render(
+        <QueryClientProvider client={createAppQueryClient()}>
+          <CustomerPicker value={null} onChange={onChange} allowCreate />
+        </QueryClientProvider>,
+      );
+      await openCreate('Beta');
+      fireEvent.click(await screen.findByRole('button', { name: 'Choose it' }));
+      // While it is read, «Create another» does not race it.
+      expect(screen.getByRole('button', { name: 'Create another' })).toHaveAttribute('aria-disabled', 'true');
+      fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+      await act(async () => answer([...customers, beta]));
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('typing another name while the list is read drops that read', async () => {
+      let answer!: (v: unknown) => void;
+      vi.spyOn(api, 'getCustomers')
+        .mockResolvedValueOnce(customers as never)
+        .mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }) as never);
+      vi.spyOn(api, 'createCustomer').mockRejectedValue(taken());
+      const onChange = vi.fn();
+      render(
+        <QueryClientProvider client={createAppQueryClient()}>
+          <CustomerPicker value={null} onChange={onChange} allowCreate />
+        </QueryClientProvider>,
+      );
+      await openCreate('Beta');
+      fireEvent.click(await screen.findByRole('button', { name: 'Choose it' }));
+      fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Gamma' } });
+      await act(async () => answer([...customers, beta]));
+      expect(onChange).not.toHaveBeenCalled();
+      expect(screen.getByRole('textbox')).toHaveValue('Gamma');
+    });
+
+    it('under its request the pressed button keeps the focus, and Escape there closes nothing around the picker', async () => {
+      vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+      vi.spyOn(api, 'createCustomer').mockReturnValue(new Promise(() => {}) as never);
+      const around = vi.fn();
+      window.addEventListener('keydown', around);
+      try {
+        render(<CustomerPicker value={null} onChange={() => {}} allowCreate />);
+        const select = await screen.findByRole('combobox');
+        fireEvent.change(select, { target: { value: screen.getByRole('option', { name: /new customer/i }).getAttribute('value') } });
+        fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Beta' } });
+        const create = screen.getByRole('button', { name: /^create$/i });
+        create.focus();
+        fireEvent.click(create);
+        await waitFor(() => expect(create).toHaveAttribute('aria-disabled', 'true'));
+        // A disabled button would drop the focus to <body>, where Escape closes the order form.
+        expect(create).not.toBeDisabled();
+        expect(screen.getByRole('textbox')).not.toBeDisabled();
+        fireEvent.keyDown(create, { key: 'Escape' });
+        expect(around).not.toHaveBeenCalled();
+        expect(screen.getByRole('textbox')).toHaveValue('Beta');
+      } finally {
+        window.removeEventListener('keydown', around);
+      }
     });
 
     it('a namesake deleted meanwhile says so — and «Create another» stays', async () => {

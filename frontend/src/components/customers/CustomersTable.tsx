@@ -1,4 +1,4 @@
-import { Fragment, useState } from 'react';
+import { Fragment, useId, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
@@ -44,6 +44,7 @@ export function CustomersTable({ customers, actions, sort, onSortChange, footer 
   const { hasPermission } = useAuth();
   const hasActions =
     hasPermission('projects:update') || hasPermission('projects:create') || hasPermission('projects:delete');
+  const uid = useId();
   const [open, setOpen] = useState<Set<number>>(() => new Set());
   const toggle = (id: number) =>
     setOpen((current) => {
@@ -120,6 +121,7 @@ export function CustomersTable({ customers, actions, sort, onSortChange, footer 
                         <CustomerAvatar name={customer.name} />
                         <div className="min-w-0">
                           <Link
+                            id={`${uid}-name-${customer.id}`}
                             to={`/customers/${customer.id}`}
                             className="text-white hover:text-bambu-green font-medium break-words"
                           >
@@ -142,6 +144,8 @@ export function CustomersTable({ customers, actions, sort, onSortChange, footer 
                               type="button"
                               onClick={() => toggle(customer.id)}
                               aria-expanded={isOpen}
+                              // The same «+ N» stands in many rows: the customer tells them apart.
+                              aria-describedby={`${uid}-name-${customer.id}`}
                               className="text-xs text-bambu-green underline"
                             >
                               {t('customers.table.moreContacts', { count: extra })}

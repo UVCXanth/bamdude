@@ -106,6 +106,12 @@ describe('CustomersTable', () => {
     expect(screen.queryByTestId('customer-1-contacts')).not.toBeInTheDocument();
   });
 
+  it('«+ N» is described by its customer — the same words stand in every row', async () => {
+    mount();
+    const row = await screen.findByTestId('customer-1-row');
+    expect(within(row).getByRole('button', { name: '+ 1 contact' })).toHaveAccessibleDescription('Світло Про');
+  });
+
   it('city, then the delivery method and its details', async () => {
     mount();
     const cell = within(await screen.findByTestId('customer-1-row')).getByTestId('customer-1-delivery');

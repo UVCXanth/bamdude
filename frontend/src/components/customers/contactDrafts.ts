@@ -4,6 +4,8 @@ import type { CustomerContact, CustomerContactInput, DeliveryMethod } from '../.
 export interface ContactDraft {
   key: string;
   id?: number;
+  /** `CT-0007` of a saved contact — shown beside «Contact N», never sent. */
+  code?: string;
   ordersCount: number;
   name: string;
   role: string;
@@ -41,6 +43,7 @@ export function draftFromContact(c: CustomerContact): ContactDraft {
   return {
     key: nextKey(),
     id: c.id,
+    code: c.code,
     ordersCount: c.orders_count,
     name: c.name ?? '',
     role: c.role ?? '',

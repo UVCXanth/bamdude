@@ -8,6 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { Route, Routes } from 'react-router';
 import { render } from '../../utils';
@@ -110,6 +111,39 @@ describe('CustomerModal', () => {
       await waitFor(() => expect(within(rows[2]).getByLabelText('Contact name')).toHaveFocus());
     });
 
+    it('an existing contact names its code beside «Contact N»; a new row has none (K.1)', () => {
+      render(<CustomerModal customer={acme} onClose={() => {}} />);
+      const rows = screen.getAllByTestId('contact-row');
+      expect(within(rows[0]).getByText('CT-0010')).toBeInTheDocument();
+      expect(within(rows[1]).getByText('CT-0011')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Add contact' }));
+      expect(within(screen.getAllByTestId('contact-row')[2]).queryByText(/^CT-/)).toBeNull();
+    });
+
+    it('«Make main» is offered on a filled row below the main one — never on the main row or a blank one (F04)', () => {
+      render(<CustomerModal onClose={() => {}} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Add contact' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Add contact' }));
+      const rows = screen.getAllByTestId('contact-row');
+      fireEvent.change(within(rows[1]).getByLabelText('Contact name'), { target: { value: 'Ira' } });
+      fireEvent.change(within(rows[2]).getByLabelText('Contact name'), { target: { value: 'Oleh' } });
+      expect(within(rows[0]).queryByRole('button', { name: 'Make main' })).toBeNull();
+      expect(within(rows[1]).getByText('main')).toBeInTheDocument();
+      expect(within(rows[1]).queryByRole('button', { name: 'Make main' })).toBeNull();
+      expect(within(rows[2]).getByRole('button', { name: 'Make main' })).toBeInTheDocument();
+    });
+
+    it('a row is walked in the order it is drawn: the name first, «Remove contact» after the phone', () => {
+      render(<CustomerModal customer={acme} onClose={() => {}} />);
+      const row = screen.getAllByTestId('contact-row')[0];
+      const order = [...row.querySelectorAll('input, select, textarea, button')].map(
+        (el) => el.getAttribute('aria-label') ?? row.querySelector(`label[for="${el.id}"]`)?.textContent ?? el.textContent,
+      );
+      expect(order.indexOf('Contact name')).toBe(0);
+      expect(order.indexOf('Remove contact')).toBe(order.indexOf('Phone') + 1);
+      expect(order.indexOf('Remove contact')).toBeLessThan(order.indexOf('Email'));
+    });
+
     it('«main» stands on the first row that will be sent, never on an empty one above it (F05)', () => {
       render(<CustomerModal onClose={() => {}} />);
       fireEvent.click(screen.getByRole('button', { name: 'Add contact' }));
@@ -205,6 +239,15 @@ describe('CustomerModal', () => {
       expect(update).not.toHaveBeenCalled();
     });
 
+    it('a stored note with spaces around it is not sent by an untouched save', async () => {
+      const update = vi.spyOn(api, 'updateCustomer').mockResolvedValue(acme);
+      const onClose = vi.fn();
+      render(<CustomerModal customer={{ ...acme, notes: '  call first\n' }} onClose={onClose} />);
+      fireEvent.click(save());
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+      expect(update).not.toHaveBeenCalled();
+    });
+
     it('under a request nothing closes it and nothing sends twice — decided in the same frame (F10)', async () => {
       const update = vi.spyOn(api, 'updateCustomer').mockReturnValue(new Promise(() => {}) as never);
       const onClose = vi.fn();
@@ -243,6 +286,33 @@ describe('CustomerModal', () => {
       expect(second.name).toBe('Beta');
       expect(second.allow_duplicate_name).toBe(true);
       expect(second.contacts?.[0].city).toBe('Lviv');
+    });
+
+    it('after «Save anyway» a refusal of another kind is said alone — no namesake question under it', async () => {
+      vi.spyOn(api, 'updateCustomer')
+        .mockRejectedValueOnce(nameTaken())
+        .mockRejectedValueOnce(new ApiError('Delivery method 7 not found', 422));
+      render(<CustomerModal customer={acme} onClose={() => {}} />);
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Beta' } });
+      fireEvent.click(save());
+      await screen.findByRole('alert');
+      fireEvent.click(save());
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Delivery method 7 not found'));
+      expect(screen.getByRole('alert')).not.toHaveTextContent('Save another customer with this name?');
+    });
+
+    it('a refusal that lands for a name no longer in the field agrees to nothing (R01)', async () => {
+      let refuse!: (e: Error) => void;
+      vi.spyOn(api, 'updateCustomer').mockReturnValueOnce(new Promise((_, reject) => { refuse = reject; }) as never);
+      render(<CustomerModal customer={acme} onClose={() => {}} />);
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Beta' } });
+      fireEvent.click(save());
+      await waitFor(() => expect(save()).toHaveTextContent('Saving…'));
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Gamma' } });
+      await act(async () => refuse(nameTaken()));
+      await waitFor(() => expect(save()).not.toHaveTextContent('Saving…'));
+      expect(save()).toHaveTextContent('Save customer');
+      expect(screen.queryByText('Save another customer with this name?')).toBeNull();
     });
 
     it('changing the name takes the agreement back: the next save is an ordinary one', async () => {
@@ -316,6 +386,26 @@ describe('CustomerModal', () => {
       await waitFor(() => expect(update).toHaveBeenCalledWith(1, { name: 'ACME Ltd' }));
     });
 
+    it('a failed re-read keeps the methods it had in the select — no «could not read» in every row', async () => {
+      vi.spyOn(api, 'getDeliveryMethods')
+        .mockResolvedValueOnce([{ id: 7, name: 'Nova Poshta', position: 0, contacts_count: 1 }])
+        .mockRejectedValue(new Error('HTTP 500'));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <QueryClientProvider client={client}>
+          <CustomerModal customer={withMethod} onClose={() => {}} />
+        </QueryClientProvider>,
+      );
+      const row = screen.getAllByTestId('contact-row')[0];
+      await within(row).findByRole('option', { name: 'Nova Poshta' });
+      await act(async () => {
+        await client.refetchQueries({ queryKey: ['delivery-methods'] });
+      });
+      await waitFor(() => expect(client.getQueryState(['delivery-methods'])?.status).toBe('error'));
+      expect(within(row).queryByText('Could not read the delivery methods')).toBeNull();
+      expect(within(row).getByRole('option', { name: 'Nova Poshta' })).toBeInTheDocument();
+    });
+
     it('somebody who may create but not update customers chooses a method and is not offered to manage them', async () => {
       asCreator();
       render(<CustomerModal onClose={() => {}} />);
@@ -338,6 +428,7 @@ describe('CustomerModal', () => {
       fireEvent.change(within(reference).getByLabelText('New delivery method'), { target: { value: 'Meest' } });
       fireEvent.click(within(reference).getByRole('button', { name: 'Add' }));
       await waitFor(() => expect(methods.mock.calls.length).toBeGreaterThan(1));
+      expect(within(row).getByRole('option', { name: 'Meest' })).toBeInTheDocument();
       expect(within(row).getByLabelText('City')).toHaveValue('Lviv');
       expect(screen.getByRole('dialog', { name: 'Edit customer' })).toBeInTheDocument();
     });

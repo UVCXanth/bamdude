@@ -132,7 +132,8 @@ export function CustomerModal({ customer, onClose }: CustomerModalProps) {
     const data: CustomerUpdate = {};
     if (trimmed !== base.name) data.name = trimmed;
     if (kind !== base.kind) data.kind = kind;
-    if (cleanNotes(notes) !== (base.notes ?? null)) data.notes = cleanNotes(notes);
+    // Untouched is unchanged — a stored note with spaces around it is not a change.
+    if (notes !== (base.notes ?? '') && cleanNotes(notes) !== (base.notes ?? null)) data.notes = cleanNotes(notes);
     if (contactsChanged) data.contacts = draftsToInput(drafts);
     return data;
   };
@@ -171,9 +172,12 @@ export function CustomerModal({ customer, onClose }: CustomerModalProps) {
   };
 
   const serverError = mutation.isError ? (mutation.error as Error).message : undefined;
+  // The namesake question goes only under the namesake refusal — never under another one
+  // that an agreed save ran into.
+  const namesakeRefusal = mutation.error instanceof ApiError && mutation.error.code === 'name_taken';
   const error =
     localError ??
-    (serverError !== undefined && agreeing ? (
+    (serverError !== undefined && agreeing && namesakeRefusal ? (
       <>
         {serverError}
         <br />

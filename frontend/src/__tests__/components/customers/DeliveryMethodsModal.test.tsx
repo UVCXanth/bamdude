@@ -123,6 +123,22 @@ describe('DeliveryMethodsModal', () => {
     await waitFor(() => expect(reorder).toHaveBeenCalledWith([2, 1]));
   });
 
+  it('a move holds every move until the list has the new order — and «Done» does not close under it (G06)', async () => {
+    vi.spyOn(api, 'getDeliveryMethods').mockResolvedValueOnce(methods).mockReturnValue(new Promise(() => {}) as never);
+    const reorder = vi.spyOn(api, 'reorderDeliveryMethods').mockResolvedValue(undefined as never);
+    const onClose = vi.fn();
+    render(<DeliveryMethodsModal onClose={onClose} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Move Nova Poshta up' }));
+    await waitFor(() => expect(reorder).toHaveBeenCalledTimes(1));
+    // The move answered; the list it is computed from has not yet.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.getByRole('button', { name: 'Move Pickup down' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('a refused move says so in the reference — never silently', async () => {
     vi.spyOn(api, 'reorderDeliveryMethods').mockRejectedValue(
       new ApiError('The order must name every delivery method exactly once', 422),
@@ -165,6 +181,17 @@ describe('DeliveryMethodsModal', () => {
       await waitFor(() => expect(del).toHaveBeenCalledTimes(2));
       expect(del).toHaveBeenLastCalledWith(1);
     });
+  });
+
+  it('after a delete the cursor is in «New delivery method» — not lost with the row', async () => {
+    vi.spyOn(api, 'getDeliveryMethods').mockResolvedValueOnce(methods).mockResolvedValue([methods[1]]);
+    vi.spyOn(api, 'deleteDeliveryMethod').mockResolvedValue(undefined as never);
+    render(<DeliveryMethodsModal onClose={() => {}} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Pickup' }));
+    const confirm = await screen.findByRole('dialog', { name: 'Delete the method «Pickup»?' });
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete the method «Pickup»?' })).toBeNull());
+    await waitFor(() => expect(screen.getByLabelText('New delivery method')).toHaveFocus());
   });
 
   it('an add: its refusal stays under its field with the cursor back in it (G04)', async () => {

@@ -103,12 +103,13 @@ function ContactRow({
     >
       <div className="flex flex-wrap items-center gap-2 text-xs text-bambu-gray">
         <span id={`${base}-title`}>{t('customers.contacts.row', { n: index + 1 })}</span>
+        {draft.code && <span className="text-bambu-gray/80">{draft.code}</span>}
         {main && (
           <span className="px-1.5 py-0.5 rounded text-[10px] bg-bambu-green/15 text-bambu-green">
             {t('customers.contacts.main')}
           </span>
         )}
-        {index > 0 && !confirming && (
+        {!main && !isBlankDraft(draft) && !confirming && (
           <button
             type="button"
             onClick={onMakeMain}
@@ -123,6 +124,11 @@ function ContactRow({
       {/* Top-aligned: a row's labels stay on one line however tall the method's cell grows
           under its select; the × and «+ Note» sit at their row's foot, beside the fields. */}
       <div className="grid gap-2 items-start grid-cols-[repeat(3,minmax(0,1fr))_auto] max-[761px]:grid-cols-[minmax(0,1fr)_auto]">
+        {text('name', 'customers.contacts.name')}
+        {text('role', 'customers.contacts.role')}
+        {text('phone', 'customers.contacts.phone', 'tel')}
+        {/* After the phone in the DOM, so Tab reaches it where it is drawn — the end of the
+            first line (its grid place is explicit). */}
         <button
           type="button"
           onClick={onRemove}
@@ -133,9 +139,6 @@ function ContactRow({
         >
           <X className="w-4 h-4" />
         </button>
-        {text('name', 'customers.contacts.name')}
-        {text('role', 'customers.contacts.role')}
-        {text('phone', 'customers.contacts.phone', 'tel')}
         {text('email', 'customers.contacts.email', 'email')}
         {text('city', 'customers.contacts.city')}
         <div className={FIELD_CELL}>
@@ -175,7 +178,7 @@ function ContactRow({
               {t('customers.delivery.goneHint')}
             </p>
           )}
-          {methods.isError && (
+          {methods.isError && !methods.data && (
             <LoadFailedNote
               role="status"
               className="mt-1 text-xs"

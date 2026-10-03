@@ -53,6 +53,8 @@ export function DeliveryMethodsModal({ onClose }: { onClose: () => void }) {
   const editRow = useRef<HTMLFormElement>(null);
   // Where the focus goes when a row stops being edited: back to its «Rename».
   const returnTo = useRef<number | null>(null);
+  // A delete takes its row — and the confirmation's opener — away: the focus goes to the add field.
+  const deleted = useRef(false);
 
   // Contacts read a method's name through the join: the lists AND an open customer page
   // (`['customer', id]`) show it.
@@ -83,10 +85,14 @@ export function DeliveryMethodsModal({ onClose }: { onClose: () => void }) {
   });
   const create = useMutation({
     mutationFn: (name: string) => api.createDeliveryMethod(name),
-    onSuccess: () => {
+    onSuccess: (created) => {
       adding.current = false;
       setDraft('');
       setAddError(null);
+      // Offered at once in every select (F07) — whatever the re-read below answers.
+      queryClient.setQueryData<DeliveryMethod[]>(['delivery-methods'], (old) =>
+        old && !old.some((m) => m.id === created.id) ? [...old, created] : old,
+      );
       void refresh();
     },
     onError: (e: Error) => {
@@ -96,7 +102,9 @@ export function DeliveryMethodsModal({ onClose }: { onClose: () => void }) {
   });
   const reorder = useMutation({
     mutationFn: (ids: number[]) => api.reorderDeliveryMethods(ids),
-    onSuccess: () => void refresh(),
+    // Pending until the list has the new order: the next move is computed from that list,
+    // and one computed from the old order would undo this one.
+    onSuccess: () => refresh(),
   });
   const pending = rename.isPending || create.isPending || reorder.isPending;
 
@@ -156,9 +164,15 @@ export function DeliveryMethodsModal({ onClose }: { onClose: () => void }) {
     reorder.mutate(ids);
   };
   const close = () => {
-    if (renaming.current || adding.current) return;
+    if (renaming.current || adding.current || reorder.isPending) return;
     onClose();
   };
+  useEffect(() => {
+    if (deleting === null && deleted.current) {
+      deleted.current = false;
+      document.getElementById(addFieldId)?.focus();
+    }
+  }, [deleting, addFieldId]);
 
   const methods = list.data ?? [];
   let rows;
@@ -292,9 +306,9 @@ export function DeliveryMethodsModal({ onClose }: { onClose: () => void }) {
         onClose={close}
         title={t('customers.delivery.manageTitle')}
         subtitle={t('customers.delivery.subtitle')}
-        pending={rename.isPending || create.isPending}
+        pending={rename.isPending || create.isPending || reorder.isPending}
         footer={
-          <Button type="button" onClick={close} disabled={rename.isPending || create.isPending}>
+          <Button type="button" onClick={close} disabled={rename.isPending || create.isPending || reorder.isPending}>
             {t('customers.delivery.done')}
           </Button>
         }
@@ -360,6 +374,7 @@ export function DeliveryMethodsModal({ onClose }: { onClose: () => void }) {
           send={async () => {
             await api.deleteDeliveryMethod(deleting.id);
             await refresh();
+            deleted.current = true;
           }}
           onClose={() => setDeleting(null)}
         />
