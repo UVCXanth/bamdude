@@ -5,7 +5,7 @@ import { formatMoney } from '../../utils/currency';
 import { CustomerActionMenu } from './CustomerActionMenu';
 import { CustomerAvatar } from './CustomerAvatar';
 import type { CustomerActionsHost } from './useCustomerActions';
-import { contactTitle } from './contactFormat';
+import { contactTitle, mailtoHref, telHref } from './contactFormat';
 
 /**
  * One customer as a card — the second view of the customers page (WS-13 E11 D, the
@@ -71,11 +71,11 @@ export function CustomerCard({
       >
         <span className="relative z-10 min-w-0 text-xs text-bambu-gray break-words">
           {main?.phone ? (
-            <a href={`tel:${main.phone.replace(/[^\d+]/g, '')}`} className="hover:text-white">
+            <a href={telHref(main.phone)} className="hover:text-white">
               {main.phone}
             </a>
           ) : main?.email ? (
-            <a href={`mailto:${main.email}`} className="hover:text-white">
+            <a href={mailtoHref(main.email)} className="hover:text-white">
               {main.email}
             </a>
           ) : null}

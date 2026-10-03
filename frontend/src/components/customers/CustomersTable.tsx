@@ -14,7 +14,7 @@ import { CustomerActionMenu } from './CustomerActionMenu';
 import { CustomerAvatar } from './CustomerAvatar';
 import type { CustomerActionsHost } from './useCustomerActions';
 import { ContactReach } from './ContactReach';
-import { contactTitle, deliveryLine, methodLine } from './contactFormat';
+import { contactTitle, deliveryLine, mailtoHref, methodLine, telHref } from './contactFormat';
 
 interface CustomersTableProps {
   customers: Customer[];
@@ -232,7 +232,7 @@ function ContactsTable({ customerId, contacts }: { customerId: number; contacts:
             <td>{c.role || '—'}</td>
             <td>
               {c.email ? (
-                <a href={`mailto:${c.email}`} className="hover:text-white">
+                <a href={mailtoHref(c.email)} className="hover:text-white">
                   {c.email}
                 </a>
               ) : (
@@ -241,7 +241,7 @@ function ContactsTable({ customerId, contacts }: { customerId: number; contacts:
             </td>
             <td>
               {c.phone ? (
-                <a href={`tel:${c.phone.replace(/[^\d+]/g, '')}`} className="hover:text-white">
+                <a href={telHref(c.phone)} className="hover:text-white">
                   {c.phone}
                 </a>
               ) : (

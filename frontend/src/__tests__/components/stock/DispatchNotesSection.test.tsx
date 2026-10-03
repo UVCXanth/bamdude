@@ -33,6 +33,15 @@ const page = (items: StockIssueRow[], total = items.length, last = 1) => ({
   items,
   meta: { total, current_page: 1, per_page: 24, last_page: last },
 });
+const held = () => {
+  let answer: (v: unknown) => void = () => {};
+  let refuse: (e: Error) => void = () => {};
+  const promise = new Promise((resolve, reject) => {
+    answer = resolve;
+    refuse = reject;
+  });
+  return { promise, answer, refuse };
+};
 
 describe('DispatchNotesSection', () => {
   beforeEach(() => {
@@ -82,6 +91,96 @@ describe('DispatchNotesSection', () => {
       screen.getByText('Goods are issued through «Stock & issue»: each batch gets its own dispatch note.'),
     ).toBeInTheDocument();
     expect(screen.queryByRole('heading')).toBeNull();
+  });
+
+  describe("the customer page's states, by the key on screen (WS-13 E11 E08 / E09, R02)", () => {
+    it('the first read says it is reading — never nothing', async () => {
+      vi.spyOn(api, 'getDispatchNotes').mockReturnValue(new Promise(() => {}) as never);
+      render(<DispatchNotesSection customerId={2} canEdit={false} />);
+      expect(await screen.findByText('Loading...')).toBeInTheDocument();
+    });
+
+    it('the page names the section and its caption', async () => {
+      vi.spyOn(api, 'getDispatchNotes').mockResolvedValue(page([row({})]));
+      render(<DispatchNotesSection customerId={2} canEdit={false} title="Issues from stock" caption="every note" />);
+      expect(await screen.findByRole('heading', { level: 2, name: 'Issues from stock' })).toBeInTheDocument();
+      expect(screen.getByText('every note')).toBeInTheDocument();
+    });
+
+    it('a page of A is never shown under B, and B starts on its first page', async () => {
+      const b = held();
+      const get = vi.spyOn(api, 'getDispatchNotes').mockImplementation(((params: { customer_id?: number }) =>
+        params.customer_id === 2 ? Promise.resolve(page([row({ id: 7, code: 'DN-0007' })], 30, 2)) : b.promise) as never);
+      const { rerender } = render(<DispatchNotesSection key={2} customerId={2} canEdit={false} />);
+      await screen.findByTestId('note-7');
+      fireEvent.click(screen.getByRole('button', { name: /next/i }));
+      await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ customer_id: 2, page: 2 })));
+      rerender(<DispatchNotesSection key={9} customerId={9} canEdit={false} />);
+      await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ customer_id: 9, page: 1 })));
+      expect(screen.queryByTestId('note-7')).toBeNull();
+      expect(screen.getByText('Loading...')).toBeInTheDocument();
+      await act(async () => b.answer(page([row({ id: 8, code: 'DN-0008' })])));
+      expect(await screen.findByTestId('note-8')).toBeInTheDocument();
+    });
+
+    it('a page on its way keeps the previous one dimmed; a refused page is an alert without rows or pages, and its retry asks for it again', async () => {
+      const second = held();
+      const get = vi.spyOn(api, 'getDispatchNotes').mockImplementation(((params: { page: number }) =>
+        params.page === 1 ? Promise.resolve(page([row({ id: 7, code: 'DN-0007' })], 30, 2)) : second.promise) as never);
+      render(<DispatchNotesSection customerId={2} canEdit={false} />);
+      await screen.findByTestId('note-7');
+      fireEvent.click(screen.getByRole('button', { name: /next/i }));
+      await waitFor(() => expect(screen.getByTestId('dispatch-notes-body')).toHaveAttribute('aria-busy', 'true'));
+      expect(screen.getByTestId('note-7')).toBeInTheDocument();
+      await act(async () => second.refuse(new Error('HTTP 500')));
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent('Could not load the dispatch notes.');
+      expect(screen.queryByTestId('note-7')).toBeNull();
+      expect(screen.queryByRole('button', { name: /next/i })).toBeNull();
+      get.mockResolvedValue(page([row({ id: 9, code: 'DN-0009' })], 30, 2) as never);
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+      await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 })));
+      expect(await screen.findByTestId('note-9')).toBeInTheDocument();
+    });
+
+    it('a failed refresh over an empty answer keeps «No issues yet.» and says the refresh failed', async () => {
+      const get = vi.spyOn(api, 'getDispatchNotes').mockResolvedValue(page([]));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+      render(
+        <QueryClientProvider client={client}>
+          <DispatchNotesSection customerId={2} canEdit={false} />
+        </QueryClientProvider>,
+      );
+      expect(await screen.findByText('No issues yet.')).toBeInTheDocument();
+      get.mockRejectedValue(new Error('boom'));
+      await act(() => client.refetchQueries());
+      expect(await screen.findByText(/Could not refresh/)).toBeInTheDocument();
+      expect(screen.getByText('No issues yet.')).toBeInTheDocument();
+    });
+
+    it('an answer with fewer pages brings the page back to the last one — only by its own key', async () => {
+      const get = vi.spyOn(api, 'getDispatchNotes').mockImplementation(((params: { page: number }) =>
+        Promise.resolve(
+          params.page === 1
+            ? page([row({ id: 7, code: 'DN-0007' })], 30, 2)
+            : { items: [], meta: { total: 10, current_page: 2, per_page: 24, last_page: 1 } },
+        )) as never);
+      render(<DispatchNotesSection customerId={2} canEdit={false} />);
+      await screen.findByTestId('note-7');
+      fireEvent.click(screen.getByRole('button', { name: /next/i }));
+      await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 })));
+      await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1 })));
+    });
+  });
+
+  it("in the order's tab the previous answer is kept only for the same order (R02)", async () => {
+    vi.spyOn(api, 'getDispatchNotes').mockImplementation(((params: { project_id?: number }) =>
+      params.project_id === 5 ? Promise.resolve(page([row({ id: 7, code: 'DN-0007' })])) : new Promise(() => {})) as never);
+    const { rerender } = render(<DispatchNotesSection projectId={5} canEdit={false} inTab />);
+    await screen.findByTestId('note-7');
+    rerender(<DispatchNotesSection projectId={6} canEdit={false} inTab />);
+    await waitFor(() => expect(screen.queryByTestId('note-7')).toBeNull());
+    expect(screen.getByText('Loading...')).toBeInTheDocument();
   });
 
   it("lists a customer's notes the server pages, with codes as links", async () => {
