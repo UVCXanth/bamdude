@@ -237,6 +237,18 @@ describe('ProductPartDialog', () => {
       expect(screen.getByRole('dialog')).toBeInTheDocument();
     });
 
+    it('a pasted comma list becomes a token per name', () => {
+      render(<ProductPartDialog product={product} part={body} onClose={noop} />);
+      const input = screen.getByLabelText('Also known as');
+      fireEvent.change(input, { target: { value: 'Lid.STL, cap_v2 ,, lid.stl' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      const items = within(screen.getByTestId('part-alias-tokens')).getAllByRole('listitem').map((li) => li.textContent);
+      expect(items.some((t) => t?.includes(','))).toBe(false);
+      expect(within(screen.getByTestId('part-alias-tokens')).getByText('lid.stl')).toBeInTheDocument();
+      expect(within(screen.getByTestId('part-alias-tokens')).getByText('cap_v2')).toBeInTheDocument();
+      expect(input).toHaveValue('');
+    });
+
     it('a blank or a name already in the list is not added, and says so', () => {
       render(<ProductPartDialog product={product} part={body} onClose={noop} />);
       const input = screen.getByLabelText('Also known as');
@@ -367,6 +379,9 @@ describe('ProductPartDialog', () => {
       expect(await screen.findByRole('alert')).toHaveTextContent('Enter the part’s name.');
       expect(screen.getByLabelText('Name')).toHaveFocus();
       expect(create).not.toHaveBeenCalled();
+      // Typing what was asked for takes the sentence away (final review M5).
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Hinge' } });
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     });
 
     it('nothing changed: closes without a request; «Cancel» sends nothing', () => {
@@ -383,6 +398,7 @@ describe('ProductPartDialog', () => {
       vi.spyOn(api, 'updateProductPart').mockResolvedValue(body as never);
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       client.setQueryData(['product', 7], { seeded: true });
+      client.setQueryData(['projects', {}], { seeded: true });
       const onClose = vi.fn();
       render(
         <QueryClientProvider client={client}>
@@ -393,6 +409,8 @@ describe('ProductPartDialog', () => {
       fireEvent.click(save());
       await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
       expect(client.getQueryState(['product', 7])?.isInvalidated).toBe(true);
+      // A part's count, binding or existence moves the kits of saved order lines (K22).
+      expect(client.getQueryState(['projects', {}])?.isInvalidated).toBe(true);
       expect(await screen.findByText('Part saved')).toBeInTheDocument();
     });
 

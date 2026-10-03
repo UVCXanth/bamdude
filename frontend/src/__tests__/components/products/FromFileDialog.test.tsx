@@ -94,6 +94,19 @@ describe('FromFileDialog', () => {
       expect(list).toHaveBeenCalledTimes(2);
     });
 
+    it('a page shorter than the library says how much is shown and asks to narrow it', async () => {
+      vi.spyOn(api, 'getLibraryFilesPaged').mockResolvedValue({ ...page, meta: { ...page.meta, total: 226 } } as never);
+      render(<FromFileDialog onClose={noop} onCreated={noop} />);
+      expect(await screen.findByText('Showing the first 3 of 226 — type to narrow')).toBeInTheDocument();
+    });
+
+    it('a page that holds the whole answer says nothing more', async () => {
+      vi.spyOn(api, 'getLibraryFilesPaged').mockResolvedValue(page as never);
+      render(<FromFileDialog onClose={noop} onCreated={noop} />);
+      await screen.findByText('flask.gcode.3mf');
+      expect(screen.queryByText(/Showing the first/)).not.toBeInTheDocument();
+    });
+
     it('a truly empty answer says so', async () => {
       vi.spyOn(api, 'getLibraryFilesPaged').mockResolvedValue({ items: [], meta: { ...page.meta, total: 0 } } as never);
       render(<FromFileDialog onClose={noop} onCreated={noop} />);
@@ -172,7 +185,10 @@ describe('FromFileDialog', () => {
       expect(await screen.findByRole('alert')).toHaveTextContent('Library file not found');
       expect(screen.getAllByText('Library file not found')).toHaveLength(1);
       expect(onCreated).not.toHaveBeenCalled();
-      expect(within(rowOf('flask.gcode.3mf')).getByRole('button', { name: 'Create product' })).toBeEnabled();
+      const pressed = within(rowOf('flask.gcode.3mf')).getByRole('button', { name: 'Create product' });
+      expect(pressed).toBeEnabled();
+      // The button that sent it, live again — never BODY (J; final review I2).
+      await waitFor(() => expect(pressed).toHaveFocus());
     });
   });
 });

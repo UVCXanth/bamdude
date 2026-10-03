@@ -235,6 +235,8 @@ describe('ImportProductDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('This archive is too large to import.');
+    // The button that sent it, live again — never BODY (J; final review I2).
+    await waitFor(() => expect(importButton()).toHaveFocus());
   });
 
   it('cannot be submitted before an archive is chosen', async () => {

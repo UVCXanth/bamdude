@@ -42,6 +42,7 @@ export function CategoryManagerDialog({
   const uid = useId();
   const renameButtonId = (id: number) => `${uid}-rename-${id}`;
   const fieldId = `${uid}-field`;
+  const addFieldId = `${uid}-add`;
   const rowErrorId = `${uid}-row-error`;
   const addErrorId = `${uid}-add-error`;
 
@@ -92,6 +93,14 @@ export function CategoryManagerDialog({
     },
   });
   const pending = rename.isPending || create.isPending;
+  // After a refusal the field is live again and takes the focus back to fix the name: it was
+  // disabled under the request, which left the focus nowhere.
+  useEffect(() => {
+    if (rename.isError) document.getElementById(fieldId)?.focus();
+  }, [rename.isError, rename.error, fieldId]);
+  useEffect(() => {
+    if (create.isError) document.getElementById(addFieldId)?.focus();
+  }, [create.isError, create.error, addFieldId]);
 
   const startEdit = (category: ProductCategory) => {
     setRowError(null);
@@ -248,6 +257,7 @@ export function CategoryManagerDialog({
           >
             <div className="flex items-center gap-2">
               <input
+                id={addFieldId}
                 type="text"
                 value={draft}
                 maxLength={NAME_MAX}

@@ -121,12 +121,13 @@ export function MergePartDialog({ product, source, onClose, beforeSend }: MergeP
           </Select>
         </WorkshopField>
       </WorkshopFormGrid>
+      {/* Only what applies to THIS source: no stock to move, no binding to lose — no line. */}
       <ul className="list-disc space-y-1 pl-5 text-sm text-bambu-gray-light">
         <li>{t('products.mergeDialog.names', { name: source.name })}</li>
-        <li>{t('products.mergeDialog.stock', { count: source.stock_balance })}</li>
+        {source.stock_balance > 0 && <li>{t('products.mergeDialog.stock', { count: source.stock_balance })}</li>}
         <li>{t('products.mergeDialog.orders')}</li>
         <li>{t('products.mergeDialog.procurement')}</li>
-        <li>{t('products.mergeDialog.variant')}</li>
+        {source.variant_option_id != null && <li>{t('products.mergeDialog.variant')}</li>}
       </ul>
     </WorkshopDialog>
   );

@@ -137,8 +137,12 @@ describe('ProductVariantsDialog', () => {
       render(<ProductVariantsDialog product={product} onClose={noop} />);
       const lid = group('g1');
       expect(within(lid).getByRole('button', { name: 'Delete option “Glass”' })).toBeDisabled();
-      expect(within(lid).getByRole('button', { name: 'Delete option “Cork”' })).toBeDisabled();
-      expect(within(lid).getByText('1 part')).toBeInTheDocument();
+      const cork = within(lid).getByRole('button', { name: 'Delete option “Cork”' });
+      expect(cork).toBeDisabled();
+      // The reason is on screen beside the option, not only a mouse-over title (final review M8).
+      const corkRow = within(lid).getByRole('textbox', { name: 'Option 2 of “Lid type”' }).closest('li') as HTMLElement;
+      expect(within(corkRow).getByText('1 part is bound to it')).toBeInTheDocument();
+      expect(cork).toHaveAccessibleDescription('1 part is bound to it');
       expect(within(lid).getByRole('button', { name: 'Delete option “Wood”' })).toBeEnabled();
     });
 

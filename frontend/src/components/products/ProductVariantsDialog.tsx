@@ -339,12 +339,12 @@ export function ProductVariantsDialog({ product, onClose }: { product: Product; 
                         optionErrors.length > 0 ||
                         (refusal?.kind === 'field' && refusal.option === option.key);
                       const reason = optionRefusal(group, option);
-                      const stored = storedOption(option.id);
-                      const usage = [
-                        stored && stored.lines_count > 0 ? t('products.variants.inLines', { count: stored.lines_count }) : null,
-                        stored && stored.parts_count > 0 ? t('products.variants.boundParts', { count: stored.parts_count }) : null,
-                      ].filter(Boolean);
+                      // Why «×» is shut, on screen and naming the button — a title on a disabled
+                      // button reaches neither a keyboard nor a finger. The standard needs no
+                      // line: its select says which option it is.
+                      const usageReason = reason !== null && option.key !== group.standard ? reason : null;
                       const optionErrorId = idOf(option.key, 'error');
+                      const reasonId = idOf(option.key, 'reason');
                       return (
                         <li key={option.key} className="space-y-1">
                           <div className="flex items-center gap-2">
@@ -360,8 +360,10 @@ export function ProductVariantsDialog({ product, onClose }: { product: Product; 
                               className={`${FIELD_CLASS} min-w-0 flex-1`}
                               disabled={pending}
                             />
-                            {usage.length > 0 && (
-                              <small className="shrink-0 text-xs text-bambu-gray tabular-nums">{usage.join(' · ')}</small>
+                            {usageReason && (
+                              <small id={reasonId} className="shrink-0 text-xs text-bambu-gray">
+                                {usageReason}
+                              </small>
                             )}
                             <button
                               type="button"
@@ -374,6 +376,7 @@ export function ProductVariantsDialog({ product, onClose }: { product: Product; 
                               }
                               disabled={pending || reason !== null}
                               title={reason ?? undefined}
+                              aria-describedby={usageReason ? reasonId : undefined}
                               aria-label={t('products.variants.deleteOption', { name: option.name })}
                               className="shrink-0 rounded-lg p-1.5 text-bambu-gray transition-colors hover:bg-bambu-dark hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-bambu-gray"
                             >

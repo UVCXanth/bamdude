@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Search } from 'lucide-react';
@@ -101,6 +101,10 @@ export function FromFileDialog({ onClose, onCreated }: FromFileDialogProps) {
   // ⚠️ Synchronous: one press, one creation; nothing closes the dialog under it.
   const sent = useRef(false);
   const [creating, setCreating] = useState<number | null>(null);
+  // The row whose button sent the last request: its button takes the focus back after a refusal.
+  const pressed = useRef<number | null>(null);
+  const uid = useId();
+  const buttonId = (fileId: number) => `${uid}-create-${fileId}`;
   const create = useMutation({
     mutationFn: (fileId: number) => api.createProductFromFile(fileId),
     onSuccess: ({ product, notes }) => {
@@ -116,6 +120,13 @@ export function FromFileDialog({ onClose, onCreated }: FromFileDialogProps) {
     },
   });
   const busy = creating !== null || create.isPending;
+  // After a refusal the buttons are live again: the focus goes back to the one that sent it
+  // (it was disabled under the request, which left the focus nowhere).
+  useEffect(() => {
+    if (create.isError && pressed.current != null) document.getElementById(buttonId(pressed.current))?.focus();
+    // `buttonId` is derived from `uid`, which never changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [create.isError, create.error]);
 
   const close = () => {
     if (sent.current) return;
@@ -125,6 +136,7 @@ export function FromFileDialog({ onClose, onCreated }: FromFileDialogProps) {
   const createFrom = (file: LibraryFileListItem) => {
     if (sent.current) return;
     sent.current = true;
+    pressed.current = file.id;
     setCreating(file.id);
     create.mutate(file.id);
   };
@@ -176,7 +188,7 @@ export function FromFileDialog({ onClose, onCreated }: FromFileDialogProps) {
                   )}
                 </small>
               </span>
-              <Button size="sm" onClick={() => createFrom(file)} disabled={busy}>
+              <Button id={buttonId(file.id)} size="sm" onClick={() => createFrom(file)} disabled={busy}>
                 {t('products.fromFile.create')}
                 {pressed && '…'}
               </Button>
@@ -216,6 +228,13 @@ export function FromFileDialog({ onClose, onCreated }: FromFileDialogProps) {
         </div>
         {files.data && files.isError && <RefreshFailedNote onRetry={() => void files.refetch()} />}
         {list}
+        {/* One screenful of the whole library: say so when there is more, so a file not shown
+            is not taken for a file not there (final review M7). */}
+        {files.data && files.data.meta.total > items.length && (
+          <p className="text-xs text-bambu-gray">
+            {t('products.fromFile.partial', { shown: items.length, total: files.data.meta.total })}
+          </p>
+        )}
       </div>
     </WorkshopDialog>
   );

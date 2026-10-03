@@ -6833,6 +6833,7 @@ export default {
       empty: 'No files found',
       loadFailed: 'Could not read the library files.',
       notSliced: 'not sliced',
+      partial: 'Showing the first {{shown}} of {{total}} — type to narrow',
     },
     toast: {
       created: 'Product created — link a file or add parts',
@@ -7145,10 +7146,6 @@ export default {
     variants: {
       deleteGroup: 'Delete group “{{name}}”',
       deleteOption: 'Delete option “{{name}}”',
-      inLines_one: 'in {{count}} order line',
-      inLines_other: 'in {{count}} order lines',
-      boundParts_one: '{{count}} part',
-      boundParts_other: '{{count}} parts',
       chosenInLines_one: 'Chosen in {{count}} order line',
       chosenInLines_other: 'Chosen in {{count}} order lines',
       hasParts_one: '{{count}} part is bound to it',

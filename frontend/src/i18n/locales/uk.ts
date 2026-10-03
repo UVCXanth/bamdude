@@ -6962,6 +6962,7 @@ export default {
       empty: 'Файлів не знайдено',
       loadFailed: 'Не вдалося прочитати файли бібліотеки.',
       notSliced: 'не нарізано',
+      partial: 'Показано перші {{shown}} з {{total}} — уточніть пошук',
     },
     toast: {
       created: 'Виріб створено — прив’яжіть файл або додайте деталі',
@@ -7282,14 +7283,6 @@ export default {
     variants: {
       deleteGroup: 'Видалити групу «{{name}}»',
       deleteOption: 'Видалити опцію «{{name}}»',
-      inLines_one: 'у {{count}} позиції',
-      inLines_few: 'у {{count}} позиціях',
-      inLines_many: 'у {{count}} позиціях',
-      inLines_other: 'у {{count}} позиціях',
-      boundParts_one: '{{count}} деталь',
-      boundParts_few: '{{count}} деталі',
-      boundParts_many: '{{count}} деталей',
-      boundParts_other: '{{count}} деталі',
       chosenInLines_one: 'Обрано в {{count}} позиції',
       chosenInLines_few: 'Обрано в {{count}} позиціях',
       chosenInLines_many: 'Обрано в {{count}} позиціях',

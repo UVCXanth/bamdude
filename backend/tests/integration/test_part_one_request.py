@@ -156,6 +156,25 @@ async def test_a_purchased_part_takes_no_alias_list_and_an_alias_is_bounded(comm
     assert r.status_code == 422, r.text
 
 
+@pytest.mark.asyncio
+async def test_a_refused_alias_rolls_back_a_binding_change_sent_with_it(committing_client, db_session, lamp):
+    """The binding is written first (`freeze_binding` moves saved configurations), the alias
+    refusal comes after it — the whole request rolls back: no binding, no frozen counts."""
+    cap = ProductPart(product_id=lamp["product"], kind="printed", name="cap", name_key="cap.stl", aliases=["cap.stl"])
+    db_session.add(cap)
+    await db_session.commit()
+    before = await _per(db_session, lamp, lamp["shade"])
+    r = await committing_client.patch(
+        _url(lamp, f"/parts/{lamp['shade']}"),
+        json={"variant_option_id": lamp["options"]["A"], "aliases": ["cap.stl"]},
+    )
+    assert r.status_code == 409, r.text
+    shade = await db_session.get(ProductPart, lamp["shade"], populate_existing=True)
+    assert shade.variant_option_id is None
+    assert shade.aliases == ["shade.stl", "shade_v2"]
+    assert await _per(db_session, lamp, lamp["shade"]) == before
+
+
 # ------------------------------------------------------------------ binding on create
 
 

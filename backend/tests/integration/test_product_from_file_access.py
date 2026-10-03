@@ -47,7 +47,7 @@ async def _user(db, username: str, permissions: list[str]) -> User:
     return user
 
 
-async def _key(db, owner: User | None, *, projects: bool = True) -> str:
+async def _key(db, owner: User | None, *, projects: bool = True, library: bool = True) -> str:
     raw, key_hash, key_prefix = generate_api_key()
     db.add(
         APIKey(
@@ -56,7 +56,8 @@ async def _key(db, owner: User | None, *, projects: bool = True) -> str:
             key_prefix=key_prefix,
             enabled=True,
             user_id=owner.id if owner else None,
-            can_read_status=True,
+            # The scope column behind `library:read_*` for a key.
+            can_read_status=library,
             can_manage_projects=projects,
         )
     )
@@ -97,6 +98,8 @@ async def library(db_session):
         "jwt": {name: create_access_token(data={"sub": name}) for name in ("ff_all", "ff_own", "ff_none")},
         "key_with_library": await _key(db_session, reader_all),
         "key_without_library": await _key(db_session, owner_without),
+        # The owner reads the whole library; the key's own scope does not let it.
+        "key_scope_without_library": await _key(db_session, reader_all, library=False),
     }
 
 
@@ -122,6 +125,8 @@ async def _products(db) -> int:
         ("key_with_library", {"own", "foreign", "ownerless"}),
         ("x_key_with_library", {"own", "foreign", "ownerless"}),
         ("key_without_library", set()),
+        ("key_scope_without_library", set()),
+        ("x_key_scope_without_library", set()),
     ],
 )
 async def test_a_product_comes_only_from_a_file_the_library_shows_the_caller(

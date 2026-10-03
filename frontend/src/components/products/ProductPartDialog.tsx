@@ -118,18 +118,16 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
   const ignoredNow = canIgnore && ignored;
   const variantGone = variant !== '' && !optionLabel.has(Number(variant));
 
-  /** The alias field's text as a token; `false` (with the note) when it may not be one. */
+  /** The alias field's text as tokens — a pasted comma list is a token per name (a comma is
+   *  the field's separator); `false` (with the note) when one of them is already in the list. */
   function takeDraft(raw: string): string[] | false {
-    const key = normaliseAlias(raw);
-    if (key === '') {
-      setAliasDraft('');
-      return aliases;
-    }
-    if (key === ownKey || aliases.includes(key)) {
+    const keys = raw.split(',').map(normaliseAlias).filter((key) => key !== '');
+    const fresh = keys.filter((key, index) => keys.indexOf(key) === index);
+    if (fresh.some((key) => key === ownKey || aliases.includes(key))) {
       setAliasNote(t('products.partDialog.aliasDuplicate'));
       return false;
     }
-    const next = [...aliases, key];
+    const next = [...aliases, ...fresh];
     setAliases(next);
     setAliasDraft('');
     setAliasNote(null);
@@ -310,7 +308,10 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
               id={ids.name}
               type="text"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setName(e.target.value);
+                setLocalError(null);
+              }}
               maxLength={NAME_MAX[kind]}
               className={FIELD_CLASS}
               disabled={pending}
@@ -328,7 +329,10 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
               min={0}
               step={1}
               value={qty}
-              onChange={(e) => setQty(e.target.value)}
+              onChange={(e) => {
+                setQty(e.target.value);
+                setLocalError(null);
+              }}
               aria-describedby={`${ids.qty}-hint`}
               className={`${FIELD_CLASS} tabular-nums`}
               disabled={pending}
@@ -460,7 +464,10 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
                   min={0}
                   step="0.01"
                   value={price}
-                  onChange={(e) => setPrice(e.target.value)}
+                  onChange={(e) => {
+                    setPrice(e.target.value);
+                    setLocalError(null);
+                  }}
                   className={`${FIELD_CLASS} tabular-nums`}
                   disabled={pending}
                 />

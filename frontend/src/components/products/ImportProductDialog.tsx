@@ -43,6 +43,7 @@ export function ImportProductDialog({ onClose }: ImportProductDialogProps) {
   const input = useRef<HTMLInputElement>(null);
   const chooseId = useId();
   const openId = useId();
+  const importId = useId();
   const [file, setFile] = useState<File | null>(null);
   const [folderId, setFolderId] = useState<number | null>(null);
   const [result, setResult] = useState<ProductImportResponse | null>(null);
@@ -70,6 +71,11 @@ export function ImportProductDialog({ onClose }: ImportProductDialogProps) {
   useEffect(() => {
     document.getElementById(result ? openId : chooseId)?.focus();
   }, [result, chooseId, openId]);
+  // After a refusal «Import» is live again and takes the focus back: it was disabled under
+  // the request, which left the focus nowhere.
+  useEffect(() => {
+    if (run.isError) document.getElementById(importId)?.focus();
+  }, [run.isError, run.error, importId]);
 
   const close = () => {
     if (sent.current) return;
@@ -138,6 +144,7 @@ export function ImportProductDialog({ onClose }: ImportProductDialogProps) {
             {t('common.cancel')}
           </Button>
           <Button
+            id={importId}
             type="button"
             onClick={() => {
               if (sent.current || !file) return;

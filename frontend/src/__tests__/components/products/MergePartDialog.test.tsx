@@ -64,13 +64,26 @@ describe('MergePartDialog', () => {
   });
 
   it('says what the merge does, the free stock by its number', () => {
-    render(<MergePartDialog product={product} source={body} onClose={noop} />);
+    render(<MergePartDialog product={product} source={{ ...body, variant_option_id: 11 }} onClose={noop} />);
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByText('The names and aliases of “Body” become the target’s aliases.')).toBeInTheDocument();
     expect(within(dialog).getByText('Its free stock — 3 pcs — moves to the target.')).toBeInTheDocument();
     expect(within(dialog).getByText('Saved order configurations count it into the target.')).toBeInTheDocument();
     expect(within(dialog).getByText('Its purchase records are deleted.')).toBeInTheDocument();
     expect(within(dialog).getByText('Its variant binding goes.')).toBeInTheDocument();
+  });
+
+  it('a source with no free stock and no binding is not told those move or go', () => {
+    render(<MergePartDialog product={product} source={lid} onClose={noop} />);
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).queryByText(/free stock/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('Its variant binding goes.')).not.toBeInTheDocument();
+    expect(within(dialog).getByText('The names and aliases of “Lid” become the target’s aliases.')).toBeInTheDocument();
+  });
+
+  it('a bound source is told its binding goes', () => {
+    render(<MergePartDialog product={product} source={{ ...lid, variant_option_id: 11 }} onClose={noop} />);
+    expect(within(screen.getByRole('dialog')).getByText('Its variant binding goes.')).toBeInTheDocument();
   });
 
   it('«Merge» waits for a target, then sends this part as the source', async () => {

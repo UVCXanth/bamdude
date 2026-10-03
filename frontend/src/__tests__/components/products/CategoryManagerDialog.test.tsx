@@ -98,9 +98,14 @@ describe('CategoryManagerDialog', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Rename Hooks' }));
       const field = within(rowOf('Hooks')).getByLabelText('Category name');
       fireEvent.change(field, { target: { value: 'Vases' } });
-      fireEvent.click(within(rowOf('Hooks')).getByRole('button', { name: 'Save' }));
+      // A real click takes the focus to «Save», which the request then disables.
+      const saveButton = within(rowOf('Hooks')).getByRole('button', { name: 'Save' });
+      saveButton.focus();
+      fireEvent.click(saveButton);
       expect(await within(rowOf('Hooks')).findByText('A category with this name already exists')).toBeInTheDocument();
       expect(within(rowOf('Hooks')).getByLabelText('Category name')).toHaveValue('Vases');
+      // Back in the field, live again, to fix the name (final review I2).
+      await waitFor(() => expect(within(rowOf('Hooks')).getByLabelText('Category name')).toHaveFocus());
     });
 
     it('a rename on its way: one request, the row waits', async () => {
@@ -151,6 +156,7 @@ describe('CategoryManagerDialog', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Add' }));
       expect(await screen.findByText('A category with this name already exists')).toBeInTheDocument();
       expect(screen.getAllByText('A category with this name already exists')).toHaveLength(1);
+      await waitFor(() => expect(field).toHaveFocus());
       fireEvent.change(field, { target: { value: 'Lamps' } });
       fireEvent.click(screen.getByRole('button', { name: 'Add' }));
       await waitFor(() => expect(create).toHaveBeenLastCalledWith('Lamps'));
