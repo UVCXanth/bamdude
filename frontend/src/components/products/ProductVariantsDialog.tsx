@@ -360,11 +360,6 @@ export function ProductVariantsDialog({ product, onClose }: { product: Product; 
                               className={`${FIELD_CLASS} min-w-0 flex-1`}
                               disabled={pending}
                             />
-                            {usageReason && (
-                              <small id={reasonId} className="shrink-0 text-xs text-bambu-gray">
-                                {usageReason}
-                              </small>
-                            )}
                             <button
                               type="button"
                               onClick={() =>
@@ -383,6 +378,13 @@ export function ProductVariantsDialog({ product, onClose }: { product: Product; 
                               <X className="h-4 w-4" />
                             </button>
                           </div>
+                          {/* Under the row, as the group's reason is under its name: beside the
+                              field it squeezed the option's name on a phone. */}
+                          {usageReason && (
+                            <small id={reasonId} className="block text-xs text-bambu-gray">
+                              {usageReason}
+                            </small>
+                          )}
                           {optionErrors.length > 0 && (
                             <p id={optionErrorId} className="text-xs text-red-600 dark:text-red-400">
                               {optionErrors.map((e) => t(`products.variantsDialog.errors.${e.code}`)).join(' ')}
