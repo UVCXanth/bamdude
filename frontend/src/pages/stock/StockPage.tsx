@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
-import { ArrowDownToLine, Loader2, Warehouse, Wrench } from 'lucide-react';
+import { ArrowDownToLine, Loader2, Warehouse, Wrench, X } from 'lucide-react';
 import type { StockItem, StockItemsMode, StockItemsParams, StockListItem, StockListParams } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { Button } from '../../components/Button';
@@ -19,6 +19,11 @@ import { DispatchNotesTable } from '../../components/stock/DispatchNotesTable';
 import { useDispatchNotes, useDispatchNotesCount } from '../../hooks/useDispatchNotes';
 import { StockProductsTable } from '../../components/stock/StockProductsTable';
 import { StockTiles } from '../../components/stock/StockTiles';
+import { StockTableSkeleton } from '../../components/stock/StockTableSkeleton';
+import { LoadFailedNote } from '../../components/workshop/LoadFailedNote';
+import { RefreshFailedNote } from '../../components/workshop/RefreshFailedNote';
+import { WorkshopPanel } from '../../components/workshop/WorkshopPanel';
+import { answeredEmpty, listState } from '../../utils/listState';
 import { useListUrlState } from '../../hooks/useListUrlState';
 import { parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
 import { useSearchBox } from '../../hooks/useSearchBox';
@@ -196,12 +201,20 @@ function NotesTab() {
   );
 }
 
-/** Finished goods: positions on record, under the minimum, reserved, or all (rule 24). */
+/**
+ * Finished goods: positions on record, under the minimum, reserved, or all (rule 24; WS-13
+ * E12 C). The filter is an underline strip over its panel, an unknown `?mode=` reads as «On
+ * record» and the address is left as it is. What the read said is `listState`: a skeleton, a
+ * failed read as an alert with its retry, a failed re-read beside its rows (said once — the
+ * hook's toast is off here) — never «nothing on record» for a list that could not be read.
+ */
 function FinishedTab({ onDialog }: { onDialog: (dialog: StockDialogState) => void }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { hasPermission } = useAuth();
   const canEdit = hasPermission('projects:update');
+  const modesId = useId();
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
     defaults: { sort: 'product-asc', extra: { mode: 'tracked' } },
@@ -217,7 +230,10 @@ function FinishedTab({ onDialog }: { onDialog: (dialog: StockDialogState) => voi
     page,
     ...(perPage === -1 ? { all: true } : { per_page: perPage }),
   };
-  const { data, isError, isPlaceholderData } = useStockItems(params);
+  const { data, isError, isPlaceholderData, refetch } = useStockItems(params, { refreshToast: false });
+  const state = listState({ data, isError, isPlaceholderData });
+  // The empty explanation stays under a failed re-read of an empty answer (E7-V01).
+  const emptyAnswer = answeredEmpty(state, data);
   useEffect(() => {
     if (data && !isPlaceholderData) clampToLastPage(data.meta.last_page);
   }, [data, isPlaceholderData, clampToLastPage]);
@@ -229,81 +245,94 @@ function FinishedTab({ onDialog }: { onDialog: (dialog: StockDialogState) => voi
 
   const total = data?.meta.total ?? 0;
   const filtered = q !== '' || mode !== 'tracked';
+  const resetConditions = () => {
+    forget();
+    resetFilters();
+    searchRef.current?.focus();
+  };
+  // The one key the table has no header for (C04): still the server's sort, named above the
+  // table with a way to take it off (as E8-D03 / E11-B06). An unknown key is the server's default.
+  const [sortKey, sortDir] = sort.split('-');
+  const headerless = sortKey === 'code';
 
   return (
     <>
-      <div className="flex items-center gap-3 flex-wrap mb-4">
-        <div className="flex rounded-lg border border-bambu-dark-tertiary overflow-hidden" role="group" aria-label={t('stock.finished.modeLabel')}>
-          {MODES.map((key) => (
-            <button
-              key={key}
-              type="button"
-              aria-pressed={mode === key}
-              onClick={() => setExtra('mode', key)}
-              className={`px-3 py-1.5 text-sm transition-colors ${
-                mode === key ? 'bg-bambu-dark-tertiary text-white' : 'text-bambu-gray hover:text-white'
-              }`}
-            >
-              {t(`stock.finished.mode.${key}`)}
+      <div className="flex items-center gap-4 flex-wrap mb-4">
+        <WorkshopTabs
+          idBase={modesId}
+          ariaLabel={t('stock.finished.modeLabel')}
+          value={mode}
+          items={MODES.map((key) => ({ value: key, label: t(`stock.finished.mode.${key}`) }))}
+          onChange={(key) => setExtra('mode', key)}
+        />
+        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('stock.finished.search')} inputRef={searchRef} />
+        {headerless && (
+          <span
+            data-testid="finished-sort-chip"
+            className="ml-auto inline-flex items-center gap-1 px-2 py-1 rounded bg-bambu-dark-tertiary text-xs text-white"
+          >
+            {t('stock.page.sortChip', { label: t('stock.finished.code'), dir: sortDir === 'desc' ? '↓' : '↑' })}
+            <button type="button" aria-label={t('stock.page.sortChipRemove')} onClick={() => setSort('product-asc')}>
+              <X className="w-3 h-3" />
             </button>
-          ))}
-        </div>
-        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('stock.finished.search')} />
+          </span>
+        )}
       </div>
 
-      {!data ? (
-        isError ? (
-          <p className="text-sm text-red-500" data-testid="finished-error">{t('stock.page.error')}</p>
-        ) : (
-          <p className="flex items-center gap-2 text-sm text-bambu-gray"><Loader2 className="w-4 h-4 animate-spin" />{t('common.loading')}</p>
-        )
-      ) : total === 0 ? (
-        filtered ? (
-          <div className="flex items-center gap-3 text-sm text-bambu-gray" data-testid="finished-empty">
-            <span>{t('stock.finished.emptyFiltered')}</span>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                forget();
-                resetFilters();
-              }}
-            >
-              {t('list.empty.reset')}
-            </Button>
+      <WorkshopTabPanel idBase={modesId} value={mode}>
+        {state === 'loading' && <StockTableSkeleton tab="finished" />}
+        {state === 'failed' && <LoadFailedNote message={t('stock.finished.loadFailed')} onRetry={() => refetch()} />}
+        {state === 'refresh-failed' && <RefreshFailedNote onRetry={() => refetch()} />}
+
+        {emptyAnswer &&
+          (filtered ? (
+            <WorkshopPanel>
+              <div className="px-4 py-10 text-center text-sm text-bambu-gray" data-testid="finished-empty">
+                <p className="mb-2 text-base font-semibold text-white">{t('stock.finished.emptyFiltered')}</p>
+                <Button variant="ghost" onClick={resetConditions}>
+                  {t('stock.page.resetFilters')}
+                </Button>
+              </div>
+            </WorkshopPanel>
+          ) : (
+            <p className="text-sm text-bambu-gray" data-testid="finished-empty">
+              {t('stock.finished.empty')}
+            </p>
+          ))}
+
+        {/* The previous page stays on screen while the next one loads — dimmed and marked
+            busy, so it is not read as the answer to the new question. */}
+        {data && !emptyAnswer && (
+          <div
+            data-testid="list-body"
+            aria-busy={isPlaceholderData}
+            className={`transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
+          >
+            <FinishedGoodsTable
+              items={data.items}
+              sort={sort}
+              onSortChange={setSort}
+              canEdit={canEdit}
+              onAction={onAction}
+              footer={
+                <PaginationBar
+                  page={data.meta.current_page}
+                  totalPages={data.meta.last_page}
+                  perPage={perPage}
+                  total={total}
+                  onPageChange={setPage}
+                  onPerPageChange={(n) => {
+                    setPerPage(n);
+                    setPage(1);
+                  }}
+                  items={t('stock.finished.items', { count: total })}
+                  variant="card"
+                />
+              }
+            />
           </div>
-        ) : (
-          <p className="text-sm text-bambu-gray" data-testid="finished-empty">{t('stock.finished.empty')}</p>
-        )
-      ) : (
-        <div
-          data-testid="list-body"
-          aria-busy={isPlaceholderData}
-          className={`transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
-        >
-          <FinishedGoodsTable
-            items={data.items}
-            sort={sort}
-            onSortChange={setSort}
-            canEdit={canEdit}
-            onAction={onAction}
-            footer={
-              <PaginationBar
-                page={data.meta.current_page}
-                totalPages={data.meta.last_page}
-                perPage={perPage}
-                total={total}
-                onPageChange={setPage}
-                onPerPageChange={(n) => {
-                  setPerPage(n);
-                  setPage(1);
-                }}
-                items={t('stock.finished.items', { count: total })}
-                variant="card"
-              />
-            }
-          />
-        </div>
-      )}
+        )}
+      </WorkshopTabPanel>
     </>
   );
 }

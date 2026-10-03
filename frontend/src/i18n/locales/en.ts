@@ -7426,6 +7426,9 @@ export default {
       journalEmpty: 'Nothing has moved yet.',
       journalEmptyFiltered: 'No movement matches these filters.',
       error: 'Could not load the stock.',
+      resetFilters: 'Reset filters',
+      sortChip: 'Sorted by: {{label}} {{dir}}',
+      sortChipRemove: 'Remove the sorting',
     },
     move: {
       product: 'Product',
@@ -7566,14 +7569,15 @@ export default {
       open: 'Open',
     },
     finished: {
-      product: 'Product',
+      product: 'Product / configuration',
       code: 'Code',
       location: 'Location',
       onHand: 'On hand',
       reserved: 'Reserved',
       available: 'Available',
       minimum: 'Minimum',
-      fromParts: 'From parts',
+      fromParts: 'Can assemble',
+      fromPartsValue: '{{n}} from parts',
       noLocation: 'not assigned',
       shortBy: 'short by {{n}}',
       assembleOpen: 'Assemble from parts…',
@@ -7585,9 +7589,10 @@ export default {
         reserved: 'Reserved',
         all: 'All positions',
       },
-      search: 'Search products, codes, locations…',
+      search: 'Product, SKU, code, configuration, location…',
       empty: 'No finished goods on record yet.',
-      emptyFiltered: 'No position matches.',
+      emptyFiltered: 'No positions found',
+      loadFailed: 'Could not load the finished goods',
       items_one: 'position',
       items_other: 'positions',
       action: {
@@ -7599,6 +7604,12 @@ export default {
         issue: 'Issue',
         params: 'Location and minimum',
         open: 'Open position',
+      },
+      // Why a row's move is greyed (WS-13 E12 C05) — the item's hover text.
+      disabled: {
+        reserve: 'Nothing is available to reserve',
+        release: 'Nothing is reserved',
+        issue: 'Nothing is on hand',
       },
       tiles: {
         onHand: 'Finished in stock',

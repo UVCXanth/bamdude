@@ -5,7 +5,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
@@ -135,9 +136,99 @@ describe('StockPage', () => {
     window.history.pushState({}, '', '/stock');
     render(<StockPage />);
     await screen.findByTestId('finished-row-3');
-    fireEvent.click(screen.getByRole('button', { name: 'Below minimum' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Below minimum' }));
     await waitFor(() => expect(getItems).toHaveBeenLastCalledWith(expect.objectContaining({ mode: 'low' })));
     expect(window.location.search).toContain('mode=low');
+  });
+
+  describe('the finished goods (WS-13 E12 C)', () => {
+    beforeEach(() => window.history.pushState({}, '', '/stock'));
+
+    it('the filter is an underline strip of four tabs over its panel; the search names what it searches', async () => {
+      render(<StockPage />);
+      await screen.findByTestId('finished-row-3');
+      const strip = screen.getByRole('tablist', { name: 'Which positions' });
+      expect(within(strip).getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+        'On record',
+        'Below minimum',
+        'Reserved',
+        'All positions',
+      ]);
+      expect(within(strip).getByRole('tab', { name: 'On record' })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByPlaceholderText('Product, SKU, code, configuration, location…')).toBeInTheDocument();
+    });
+
+    it('an unknown mode reads as «On record», and the address is left as it is', async () => {
+      window.history.pushState({}, '', '/stock?mode=bogus');
+      render(<StockPage />);
+      await screen.findByTestId('finished-row-3');
+      expect(screen.getByRole('tab', { name: 'On record' })).toHaveAttribute('aria-selected', 'true');
+      expect(getItems).toHaveBeenLastCalledWith(expect.objectContaining({ mode: 'tracked' }));
+      expect(window.location.search).toContain('mode=bogus');
+    });
+
+    it('a sort the table has no header for is named above it, with a way to take it off', async () => {
+      window.history.pushState({}, '', '/stock?sort=code-desc');
+      render(<StockPage />);
+      await screen.findByTestId('finished-row-3');
+      expect(getItems).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'code-desc' }));
+      const chip = screen.getByTestId('finished-sort-chip');
+      expect(chip).toHaveTextContent('Sorted by: Code ↓');
+      fireEvent.click(within(chip).getByRole('button', { name: 'Remove the sorting' }));
+      await waitFor(() => expect(getItems).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'product-asc', page: 1 })));
+      expect(window.location.search).not.toContain('sort=');
+    });
+
+    it('the first read is a skeleton of the table', async () => {
+      getItems.mockReturnValue(new Promise(() => {}) as never);
+      render(<StockPage />);
+      expect(await screen.findByTestId('stock-skeleton')).toHaveAttribute('data-tab', 'finished');
+    });
+
+    it('a read that failed is said with a retry — never «nothing on record»', async () => {
+      getItems.mockRejectedValueOnce(new Error('HTTP 500')).mockResolvedValue(itemsOf([position]));
+      render(<StockPage />);
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent('Could not load the finished goods');
+      expect(screen.queryByText('No finished goods on record yet.')).toBeNull();
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+      expect(await screen.findByTestId('finished-row-3')).toBeInTheDocument();
+    });
+
+    it('a failed re-read keeps the rows and says so, once — no toast beside it', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      getItems.mockResolvedValueOnce(itemsOf([position])).mockRejectedValue(new Error('HTTP 500'));
+      render(
+        <QueryClientProvider client={client}>
+          <StockPage />
+        </QueryClientProvider>,
+      );
+      await screen.findByTestId('finished-row-3');
+      await act(async () => {
+        await client.refetchQueries({ queryKey: ['stock-items'] });
+      });
+      expect(await screen.findByText('Could not refresh')).toBeInTheDocument();
+      expect(screen.getByTestId('finished-row-3')).toBeInTheDocument();
+      const meta = client
+        .getQueryCache()
+        .findAll({ queryKey: ['stock-items'] })
+        .filter((q) => q.queryKey[1] !== 'summary')
+        .map((q) => q.meta?.refreshToast);
+      expect(meta.every((value) => !value)).toBe(true);
+    });
+
+    it('nothing under a search says «No positions found» with its reset; nothing at all says so plainly', async () => {
+      getItems.mockResolvedValue(itemsOf([]));
+      window.history.pushState({}, '', '/stock?q=zzz');
+      const { unmount } = render(<StockPage />);
+      expect(await screen.findByText('No positions found')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Reset filters' }));
+      await waitFor(() => expect(window.location.search).not.toContain('q='));
+      unmount();
+      window.history.pushState({}, '', '/stock');
+      render(<StockPage />);
+      expect(await screen.findByText('No finished goods on record yet.')).toBeInTheDocument();
+    });
   });
 
   it('shows the free parts and the journal on their own tabs', async () => {
@@ -168,7 +259,8 @@ describe('StockPage', () => {
     await screen.findByTestId('finished-row-3');
     const list = screen.getByRole('tablist', { name: 'Stock sections' });
     const finished = within(list).getByRole('tab', { name: 'Finished goods' });
-    const panel = screen.getByRole('tabpanel');
+    // The section's panel, by its tab's name: the finished tab nests its filter's own (E12 C01).
+    const panel = screen.getByRole('tabpanel', { name: 'Finished goods' });
     expect(panel).toHaveAttribute('aria-labelledby', finished.id);
     expect(within(panel).getByTestId('finished-row-3')).toBeInTheDocument();
     finished.focus();

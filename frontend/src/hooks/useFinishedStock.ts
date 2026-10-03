@@ -17,13 +17,19 @@ import type {
  * each declared ONCE — see `useStock.ts` for why a key is never spelled twice.
  * `invalidateStock` in `utils/queryInvalidation.ts` holds their prefixes.
  */
-export function useStockItems(params: StockItemsParams) {
+/**
+ * A page of finished-goods positions. `refreshToast: false` is for a list that says a failed
+ * re-read itself, beside its rows (the stock page's `RefreshFailedNote`, WS-13 E12 B04) — a
+ * toast as well would say it twice. Keys differ per caller's params, so the two never share
+ * one query's `meta`.
+ */
+export function useStockItems(params: StockItemsParams, { refreshToast = true }: { refreshToast?: boolean } = {}) {
   return useQuery<StockItemsPage>({
     queryKey: ['stock-items', params],
     queryFn: () => api.getStockItems(params),
     placeholderData: keepPreviousData,
     retry: false,
-    meta: { refreshToast: true },
+    ...(refreshToast ? { meta: { refreshToast: true } } : {}),
   });
 }
 
