@@ -1,22 +1,27 @@
 import type { ReactNode } from 'react';
-import { useState } from 'react';
 import { Link } from 'react-router';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Check, Pencil, X } from 'lucide-react';
-import { api, WAYBILL_MAX } from '../../api/client';
+import { FileText } from 'lucide-react';
+import { api } from '../../api/client';
 import type { StockIssueRow } from '../../api/client';
-import { useToast } from '../../contexts/ToastContext';
 import { SortableHeader } from '../SortableHeader';
+import { CONFIG_ACCENT_CLASS, isNonStandardConfiguration, lineConfigLabel } from '../projects/lineConfigLabel';
 import { formatDateTime } from '../../utils/date';
 import type { DateFormat, TimeFormat } from '../../utils/date';
-
-const ICON_BTN = 'p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark transition-colors';
+import { WorkshopPanel, WorkshopTableScroll } from '../workshop/WorkshopPanel';
+import { WaybillEditor } from './WaybillEditor';
 
 /**
- * Dispatch notes — one table for the stock tab, an order's «Видачі» and a customer's
- * issues (spec workshop-dispatch-notes, rules 20–22). Rows are the server's page and
- * the headers ask the SERVER to sort; the waybill is written in the row afterwards.
+ * Dispatch notes — one table for the stock tab, an order's «Issues» and a customer's
+ * (spec workshop-dispatch-notes, rules 20–22; WS-13 E12 J01): the mockup's eight columns —
+ * the note with its waybill under it, the date and time, the recipient (the customer and,
+ * small, the person), the order, what was issued, the quantity, who issued it and «Open».
+ *
+ * Rows are the server's page and the headers ask the SERVER to sort. What was issued is the
+ * snapshot's summary (at most three lines): a product with its configuration beside it in
+ * the order lines' accent — the standard is not written — or a part «for» its product;
+ * «+N more» counts the note's lines, not the summary's.
  */
 export function DispatchNotesTable({
   items,
@@ -26,6 +31,7 @@ export function DispatchNotesTable({
   hideCustomer = false,
   hideOrder = false,
   footer,
+  onWaybillSaved,
 }: {
   items: StockIssueRow[];
   sort: string;
@@ -33,166 +39,126 @@ export function DispatchNotesTable({
   canEdit: boolean;
   hideCustomer?: boolean;
   hideOrder?: boolean;
+  /** The page bar, inside the panel under the rows (outside the scroll). */
   footer?: ReactNode;
+  /** A waybill was saved — the list watches whether its row leaves (J03). */
+  onWaybillSaved?: (pencil: HTMLButtonElement | null) => void;
 }) {
   const { t } = useTranslation();
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-left text-bambu-gray">
-            <SortableHeader sortKey="code" label={t('stock.notes.code')} sort={sort} onSort={onSortChange} descFirst />
-            <SortableHeader sortKey="created" label={t('stock.notes.date')} sort={sort} onSort={onSortChange} descFirst />
-            {!hideCustomer && (
-              <SortableHeader sortKey="customer" label={t('stock.notes.customer')} sort={sort} onSort={onSortChange} />
-            )}
-            {!hideOrder && <th className="font-normal p-2">{t('stock.notes.order')}</th>}
-            <th className="font-normal p-2">{t('stock.notes.what')}</th>
-            <SortableHeader
-              sortKey="units"
-              label={t('stock.notes.units')}
-              sort={sort}
-              onSort={onSortChange}
-              descFirst
-              align="right"
-            />
-            <th className="font-normal p-2">{t('stock.notes.waybill')}</th>
-            <th className="font-normal p-2">{t('stock.notes.by')}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((note) => (
-            <NoteRow key={note.id} note={note} canEdit={canEdit} hideCustomer={hideCustomer} hideOrder={hideOrder} />
-          ))}
-        </tbody>
-      </table>
-      {footer}
-    </div>
-  );
-}
-
-function NoteRow({
-  note,
-  canEdit,
-  hideCustomer,
-  hideOrder,
-}: {
-  note: StockIssueRow;
-  canEdit: boolean;
-  hideCustomer: boolean;
-  hideOrder: boolean;
-}) {
-  const { t } = useTranslation();
-  const qc = useQueryClient();
-  const { showToast } = useToast();
-  const [editing, setEditing] = useState<string | null>(null);
   // The server sends naive UTC; the app's formatter reads it as such and follows the settings.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
   const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;
   const dateFormat = (settings?.date_format ?? 'system') as DateFormat;
-
-  const save = useMutation({
-    mutationFn: (waybill: string) => api.updateStockIssue(note.id, { waybill: waybill.trim() || null }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['dispatch-notes'] });
-      qc.invalidateQueries({ queryKey: ['dispatch-note', note.id] });
-      setEditing(null);
-    },
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
-
-  const shown = note.summary.map((line) =>
-    line.part_name
-      ? `${t('stock.notes.partOf', { part: line.part_name, product: line.product_name })} × ${line.quantity}`
-      : `${line.product_name} × ${line.quantity}`,
-  );
-  const more = note.lines_count - note.summary.length;
+  const plain = (label: string) => <th className="font-normal p-2 text-left">{label}</th>;
 
   return (
-    <tr className="border-t border-bambu-dark-tertiary text-white" data-testid={`note-${note.id}`}>
-      <td className="p-2 whitespace-nowrap">
-        <Link to={`/stock/dispatch-notes/${note.id}`} className="text-bambu-green hover:underline">
-          {note.code}
-        </Link>
-      </td>
-      <td className="p-2 whitespace-nowrap text-bambu-gray">{formatDateTime(note.created_at, timeFormat, dateFormat)}</td>
-      {!hideCustomer && (
-        <td className="p-2">
-          {note.customer_id != null ? (
-            <Link to={`/customers/${note.customer_id}`} className="hover:underline">
-              {note.customer_name}
-            </Link>
-          ) : (
-            note.customer_name
-          )}
-        </td>
-      )}
-      {!hideOrder && (
-        <td className="p-2 whitespace-nowrap">
-          {note.project_id != null && note.order_code ? (
-            <Link to={`/projects/${note.project_id}`} className="hover:underline">
-              {note.order_code}
-            </Link>
-          ) : (
-            <span className="text-bambu-gray">{note.order_code ?? t('stock.notes.noOrder')}</span>
-          )}
-        </td>
-      )}
-      <td className="p-2">
-        {shown.map((text, i) => (
-          <div key={`${i}-${text}`}>{text}</div>
-        ))}
-        {more > 0 && <div className="text-bambu-gray">{t('stock.notes.more', { count: more })}</div>}
-      </td>
-      <td className="p-2 text-right tabular-nums">{note.units}</td>
-      <td className="p-2">
-        {editing != null ? (
-          <span className="flex items-center gap-1">
-            <input
-              value={editing}
-              maxLength={WAYBILL_MAX}
-              onChange={(e) => setEditing(e.target.value)}
-              aria-label={t('stock.notes.waybill')}
-              className="w-44 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white"
-            />
-            <button
-              type="button"
-              onClick={() => save.mutate(editing)}
-              disabled={save.isPending}
-              aria-label={t('common.save')}
-              title={t('common.save')}
-              className={ICON_BTN}
-            >
-              <Check className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setEditing(null)}
-              aria-label={t('common.cancel')}
-              title={t('common.cancel')}
-              className={ICON_BTN}
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </span>
-        ) : (
-          <span className="flex items-center gap-1">
-            <span className="tabular-nums">{note.waybill ?? ''}</span>
-            {canEdit && (
-              <button
-                type="button"
-                onClick={() => setEditing(note.waybill ?? '')}
-                aria-label={t('stock.notes.editWaybill')}
-                title={t('stock.notes.editWaybill')}
-                className={ICON_BTN}
-              >
-                <Pencil className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </span>
-        )}
-      </td>
-      <td className="p-2 text-bambu-gray">{note.created_by_name ?? ''}</td>
-    </tr>
+    <WorkshopPanel flush footer={footer}>
+      <WorkshopTableScroll label={t('stock.tabs.notes')}>
+        <table className="w-full text-sm">
+          <thead className="text-xs text-bambu-gray bg-bambu-dark-secondary">
+            <tr>
+              <SortableHeader sortKey="code" label={t('stock.notes.code')} sort={sort} onSort={onSortChange} descFirst />
+              <SortableHeader sortKey="created" label={t('stock.notes.date')} sort={sort} onSort={onSortChange} descFirst />
+              {!hideCustomer && (
+                <SortableHeader sortKey="customer" label={t('stock.notes.recipient')} sort={sort} onSort={onSortChange} />
+              )}
+              {!hideOrder && plain(t('stock.notes.order'))}
+              {plain(t('stock.notes.what'))}
+              <SortableHeader
+                sortKey="units"
+                label={t('stock.notes.units')}
+                sort={sort}
+                onSort={onSortChange}
+                descFirst
+                align="right"
+              />
+              {plain(t('stock.notes.by'))}
+              <th className="p-2" aria-label={t('common.actions')} />
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((note) => {
+              const more = note.lines_count - note.summary.length;
+              return (
+                <tr key={note.id} className="border-t border-bambu-dark-tertiary text-white align-top" data-testid={`note-${note.id}`}>
+                  <td className="p-2 whitespace-nowrap">
+                    <Link to={`/stock/dispatch-notes/${note.id}`} className="text-bambu-green hover:underline">
+                      {note.code}
+                    </Link>
+                    <WaybillEditor noteId={note.id} waybill={note.waybill} canEdit={canEdit} onSaved={onWaybillSaved} />
+                  </td>
+                  <td className="p-2 whitespace-nowrap text-bambu-gray">
+                    <small className="text-xs">{formatDateTime(note.created_at, timeFormat, dateFormat)}</small>
+                  </td>
+                  {!hideCustomer && (
+                    <td className="p-2">
+                      {note.customer_id != null ? (
+                        <Link to={`/customers/${note.customer_id}`} className="hover:underline">
+                          {note.customer_name}
+                        </Link>
+                      ) : (
+                        note.customer_name
+                      )}
+                      {note.recipient_name && <small className="block text-xs text-bambu-gray">{note.recipient_name}</small>}
+                    </td>
+                  )}
+                  {!hideOrder && (
+                    <td className="p-2 whitespace-nowrap">
+                      {note.project_id != null && note.order_code ? (
+                        <Link to={`/projects/${note.project_id}`} className="hover:underline">
+                          {note.order_code}
+                        </Link>
+                      ) : (
+                        <small className="text-xs text-bambu-gray">{note.order_code ?? t('stock.notes.noOrder')}</small>
+                      )}
+                    </td>
+                  )}
+                  <td className="p-2" data-testid={`note-${note.id}-lines`}>
+                    {note.summary.map((line, i) => {
+                      if (line.part_name) {
+                        return (
+                          <span key={i} data-line className="block">
+                            {`${t('stock.notes.partOf', { part: line.part_name, product: line.product_name })} × ${line.quantity}`}
+                          </span>
+                        );
+                      }
+                      const caption = isNonStandardConfiguration(line.configuration)
+                        ? lineConfigLabel(line.configuration ?? undefined, 'product', t)
+                        : '';
+                      return (
+                        <span key={i} data-line className="block">
+                          {line.product_name}
+                          {caption && (
+                            <>
+                              {' '}
+                              <span data-config-accent className={CONFIG_ACCENT_CLASS}>
+                                {caption}
+                              </span>
+                            </>
+                          )}
+                          {` × ${line.quantity}`}
+                        </span>
+                      );
+                    })}
+                    {more > 0 && <span className="block text-xs text-bambu-gray">{t('stock.notes.more', { count: more })}</span>}
+                  </td>
+                  <td className="p-2 text-right tabular-nums">{note.units}</td>
+                  <td className="p-2 text-bambu-gray">{note.created_by_name ?? ''}</td>
+                  <td className="p-2 text-right">
+                    <Link
+                      to={`/stock/dispatch-notes/${note.id}`}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded text-sm text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary"
+                    >
+                      <FileText className="w-4 h-4" aria-hidden />
+                      {t('stock.notes.open')}
+                    </Link>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </WorkshopTableScroll>
+    </WorkshopPanel>
   );
 }

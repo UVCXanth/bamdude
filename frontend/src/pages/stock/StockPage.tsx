@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
-import { ArrowDownToLine, Loader2, Warehouse, Wrench, X } from 'lucide-react';
+import { ArrowDownToLine, Warehouse, Wrench, X } from 'lucide-react';
 import type { StockItem, StockItemsMode, StockItemsParams, StockListItem, StockListParams } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { Button } from '../../components/Button';
@@ -15,8 +16,8 @@ import { FinishedTiles } from '../../components/stock/FinishedTiles';
 import { StockDialogs } from '../../components/stock/StockDialogs';
 import type { StockDialogState } from '../../components/stock/StockDialogs';
 import { StockJournal } from '../../components/stock/StockJournal';
-import { DispatchNotesTable } from '../../components/stock/DispatchNotesTable';
-import { useDispatchNotes, useDispatchNotesCount } from '../../hooks/useDispatchNotes';
+import { DispatchNotesList } from '../../components/stock/DispatchNotesList';
+import { useDispatchNotesCount } from '../../hooks/useDispatchNotes';
 import { StockProductsTable } from '../../components/stock/StockProductsTable';
 import { StockTiles } from '../../components/stock/StockTiles';
 import { StockTableSkeleton } from '../../components/stock/StockTableSkeleton';
@@ -112,7 +113,7 @@ export function StockPage() {
         {tab === 'finished' && <FinishedTab onDialog={setDialog} />}
         {tab === 'parts' && <PartsTab onDialog={setDialog} />}
         {tab === 'journal' && <StockJournal />}
-        {tab === 'notes' && <NotesTab />}
+        {tab === 'notes' && <NotesTab headingRef={heading} />}
       </WorkshopTabPanel>
 
       <StockDialogs dialog={dialog} onClose={() => setDialog(null)} />
@@ -120,83 +121,71 @@ export function StockPage() {
   );
 }
 
-/** Dispatch notes of the whole farm — searched, sorted and paged on the server (spec workshop-dispatch-notes, rule 20). */
-function NotesTab() {
+/**
+ * Dispatch notes of the whole farm (spec workshop-dispatch-notes, rule 20; WS-13 E12 J02) —
+ * searched, sorted and paged on the server, the place in the URL (`q`, `sort`, `page`), the
+ * page size a preference. The list is the one of the three places (`DispatchNotesList`);
+ * the tab says what it searches, where notes come from, and what nothing means. The page's
+ * heading takes the focus when a saved waybill's row leaves the search.
+ */
+function NotesTab({ headingRef }: { headingRef: RefObject<HTMLHeadingElement | null> }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
-  const { page, q, sort, setPage, setQ, setSort, resetFilters, clampToLastPage } = useListUrlState({
+  const searchRef = useRef<HTMLInputElement>(null);
+  const { page, q, sort, setPage, setQ, setSort, resetFilters } = useListUrlState({
     defaults: { sort: 'created-desc' },
   });
   const { typed, setTyped, forget } = useSearchBox(q, setQ);
   const [perPage, setPerPage] = usePersistedState<number>('bamdude-dispatch-notes-perPage', 24, parsePageSize);
-  const { data, isError, isPlaceholderData } = useDispatchNotes({
-    ...(q ? { q } : {}),
-    sort_by: sort,
-    page,
-    ...(perPage === -1 ? { all: true } : { per_page: perPage }),
-  });
-  useEffect(() => {
-    if (data && !isPlaceholderData) clampToLastPage(data.meta.last_page);
-  }, [data, isPlaceholderData, clampToLastPage]);
-  const total = data?.meta.total ?? 0;
 
   return (
     <>
-      <div className="flex items-center gap-3 flex-wrap mb-4">
-        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('stock.notes.search')} />
+      <div className="flex items-center gap-x-4 gap-y-2 flex-wrap mb-4">
+        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('stock.notes.search')} inputRef={searchRef} />
+        <p className="text-xs text-bambu-gray basis-full lg:basis-auto lg:flex-1">{t('stock.notes.hint')}</p>
       </div>
-      {!data ? (
-        isError ? (
-          <p className="text-sm text-red-500" data-testid="notes-error">{t('stock.notes.error')}</p>
-        ) : (
-          <p className="flex items-center gap-2 text-sm text-bambu-gray"><Loader2 className="w-4 h-4 animate-spin" />{t('common.loading')}</p>
-        )
-      ) : total === 0 ? (
-        q ? (
-          <div className="flex items-center gap-3 text-sm text-bambu-gray" data-testid="notes-empty">
-            <span>{t('stock.notes.emptyFiltered')}</span>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                forget();
-                resetFilters();
-              }}
-            >
-              {t('list.empty.reset')}
-            </Button>
-          </div>
-        ) : (
-          <p className="text-sm text-bambu-gray" data-testid="notes-empty">{t('stock.notes.emptyTab')}</p>
-        )
-      ) : (
-        <div
-          data-testid="list-body"
-          aria-busy={isPlaceholderData}
-          className={`transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
-        >
-          <DispatchNotesTable
-            items={data.items}
-            sort={sort}
-            onSortChange={setSort}
-            canEdit={hasPermission('projects:update')}
-            footer={
-              <PaginationBar
-                page={data.meta.current_page}
-                totalPages={data.meta.last_page}
-                perPage={perPage}
-                total={total}
-                onPageChange={setPage}
-                onPerPageChange={(n) => {
-                  setPerPage(n);
-                  setPage(1);
-                }}
-                items={t('stock.notes.items')}
-                variant="card"
-              />
-            }
-          />
-        </div>
-      )}
+      <DispatchNotesList
+        params={{
+          ...(q ? { q } : {}),
+          sort_by: sort,
+          page,
+          ...(perPage === -1 ? { all: true } : { per_page: perPage }),
+        }}
+        sort={sort}
+        onSortChange={setSort}
+        perPage={perPage}
+        onPageChange={setPage}
+        onPerPageChange={(n) => {
+          setPerPage(n);
+          setPage(1);
+        }}
+        canEdit={hasPermission('projects:update')}
+        fallbackRef={headingRef}
+        empty={
+          q ? (
+            <WorkshopPanel>
+              <div className="px-4 py-10 text-center text-sm text-bambu-gray" data-testid="notes-empty">
+                <p className="mb-2 text-base font-semibold text-white">{t('stock.notes.emptyFiltered')}</p>
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    forget();
+                    resetFilters();
+                    searchRef.current?.focus();
+                  }}
+                >
+                  {t('stock.page.resetFilters')}
+                </Button>
+              </div>
+            </WorkshopPanel>
+          ) : (
+            <div className="py-8 text-center" data-testid="notes-empty">
+              <p className="text-sm font-medium text-white">{t('stock.notes.emptyTabTitle')}</p>
+              <p className="mt-1 text-sm text-bambu-gray">{t('stock.notes.emptyTabText')}</p>
+            </div>
+          )
+        }
+      />
     </>
   );
 }

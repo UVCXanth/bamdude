@@ -440,6 +440,41 @@ describe('StockPage', () => {
     await waitFor(() => expect(getNotes).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'acme', page: 1 })));
   });
 
+  describe('the dispatch notes tab (WS-13 E12 J02)', () => {
+    const empty = { items: [], meta: { total: 0, current_page: 1, per_page: 24, last_page: 1 } };
+    beforeEach(() => {
+      window.history.pushState({}, '', '/stock?tab=notes');
+    });
+
+    it('the toolbar names what it searches and says where notes come from', async () => {
+      vi.spyOn(api, 'getDispatchNotes').mockResolvedValue(empty);
+      render(<StockPage />);
+      expect(await screen.findByPlaceholderText('Note, order, customer, product, SKU, waybill…')).toBeInTheDocument();
+      expect(screen.getByText('Every issue — with an order or without — gets its own dispatch note.')).toBeInTheDocument();
+    });
+
+    it('nothing at all says where notes come from; nothing under a search offers the reset', async () => {
+      vi.spyOn(api, 'getDispatchNotes').mockResolvedValue(empty);
+      const { unmount } = render(<StockPage />);
+      expect(await screen.findByText('No dispatch notes yet')).toBeInTheDocument();
+      expect(screen.getByText('They appear with every issue.')).toBeInTheDocument();
+      unmount();
+      window.history.pushState({}, '', '/stock?tab=notes&q=zzz');
+      render(<StockPage />);
+      expect(await screen.findByText('Nothing found')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Reset filters' }));
+      await waitFor(() => expect(window.location.search).toBe('?tab=notes'));
+    });
+
+    it('a read that failed is said with a retry', async () => {
+      vi.spyOn(api, 'getDispatchNotes').mockRejectedValue(new Error('HTTP 500'));
+      render(<StockPage />);
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent('Could not load the dispatch notes.');
+      expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    });
+  });
+
   it('the journal tab reads both ledgers through the one endpoint, a numbered page at a time', async () => {
     const moved = vi.spyOn(api, 'getStockJournalProducts').mockResolvedValue([]);
     window.history.pushState({}, '', '/stock?tab=journal');
