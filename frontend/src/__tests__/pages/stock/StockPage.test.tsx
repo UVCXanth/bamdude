@@ -13,6 +13,7 @@ import { api } from '../../../api/client';
 import type { StockFigures, StockItem, StockItemsPage, StockListPage } from '../../../api/client';
 import { StockPage } from '../../../pages/stock/StockPage';
 import { PRODUCT_ROW_DEFAULTS, STOCK_ROW_DEFAULTS } from '../../wireDefaults';
+import { pipeProduct } from '../../components/stock/stockFixtures';
 
 const lamp = {
   ...STOCK_ROW_DEFAULTS,
@@ -315,7 +316,8 @@ describe('StockPage', () => {
     getPage.mockResolvedValue(pageOf([]));
     window.history.pushState({}, '', '/stock?tab=parts&q=zzz');
     render(<StockPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Reset' }));
+    expect(await screen.findByText('No product matches.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Reset filters' }));
     await waitFor(() => expect(window.location.search).not.toContain('q='));
   });
 
@@ -326,15 +328,86 @@ describe('StockPage', () => {
     await waitFor(() => expect(window.location.search).not.toContain('page=5'));
   });
 
-  it('expands a row into its parts and the orders holding its kits', async () => {
+  it('expands a row into its parts; the orders holding its kits stand in their column', async () => {
     render(<StockPage />);
     const row = await screen.findByTestId('stock-row-1');
     fireEvent.click(within(row).getByRole('button', { name: /show parts/i }));
     const details = await screen.findByTestId('stock-details-1');
     expect(within(details).getByTestId('stock-balance-11')).toHaveTextContent('5');
-    const link = within(details).getByRole('link', { name: 'Order for Ivan' });
+    const link = within(row).getByRole('link', { name: 'OR-0042' });
     expect(link).toHaveAttribute('href', '/projects/42');
-    expect(within(details).getByText('2 kits')).toBeInTheDocument();
+  });
+
+  describe('the free parts (WS-13 E12 D)', () => {
+    it("the toolbar searches by product and SKU, keeps «Only with stock», and says what the shelf holds", async () => {
+      render(<StockPage />);
+      await screen.findByTestId('stock-row-1');
+      expect(screen.getByPlaceholderText('Product, SKU…')).toBeInTheDocument();
+      expect(screen.getByRole('checkbox', { name: 'Only with stock' })).toBeChecked();
+      expect(
+        screen.getByText(
+          'Order surplus (by the button) and prints without an order (automatically). A kit is as many whole products of a configuration as can be assembled.',
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it("a row's «Assemble» opens the assembly for that product, its configuration still to choose", async () => {
+      vi.spyOn(api, 'getProduct').mockResolvedValue({ ...pipeProduct, name: 'Lamp', variant_groups: [] } as never);
+      const lookup = vi
+        .spyOn(api, 'lookupStockItem')
+        .mockResolvedValue({ item: null, configuration: { choices: [], changed_parts: [] }, can_assemble: 3, parts: [] });
+      render(<StockPage />);
+      const row = await screen.findByTestId('stock-row-1');
+      fireEvent.click(within(row).getByRole('button', { name: 'Assemble' }));
+      expect(await screen.findByRole('dialog', { name: 'Assemble from parts' })).toBeInTheDocument();
+      await waitFor(() => expect(lookup).toHaveBeenCalledWith(1, []));
+    });
+
+    it('the first read is a skeleton of the table', async () => {
+      getPage.mockReturnValue(new Promise(() => {}) as never);
+      render(<StockPage />);
+      expect(await screen.findByTestId('stock-skeleton')).toHaveAttribute('data-tab', 'parts');
+    });
+
+    it('a read that failed is said with a retry — never «no free parts»', async () => {
+      getPage.mockRejectedValueOnce(new Error('HTTP 500')).mockResolvedValue(pageOf([lamp, vase]));
+      render(<StockPage />);
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent('Could not load the free parts');
+      expect(screen.queryByText('No free parts.')).toBeNull();
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+      expect(await screen.findByTestId('stock-row-1')).toBeInTheDocument();
+    });
+
+    it('a failed re-read keeps the rows and says so, once — no toast beside it', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      getPage.mockResolvedValueOnce(pageOf([lamp, vase])).mockRejectedValue(new Error('HTTP 500'));
+      render(
+        <QueryClientProvider client={client}>
+          <StockPage />
+        </QueryClientProvider>,
+      );
+      await screen.findByTestId('stock-row-1');
+      await act(async () => {
+        await client.refetchQueries({ queryKey: ['stock-summary'] });
+      });
+      expect(await screen.findByText('Could not refresh')).toBeInTheDocument();
+      expect(screen.getByTestId('stock-row-1')).toBeInTheDocument();
+      const meta = client
+        .getQueryCache()
+        .findAll({ queryKey: ['stock-summary'] })
+        .filter((q) => q.queryKey[1] !== 'figures')
+        .map((q) => q.meta?.refreshToast);
+      expect(meta.length).toBeGreaterThan(0);
+      expect(meta.every((value) => !value)).toBe(true);
+    });
+
+    it('nothing at all says «No free parts.» — never «finished»', async () => {
+      getPage.mockResolvedValue(pageOf([]));
+      render(<StockPage />);
+      expect(await screen.findByText('No free parts.')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Reset filters' })).toBeNull();
+    });
   });
 
   it('opens the adjust dialog from a row', async () => {

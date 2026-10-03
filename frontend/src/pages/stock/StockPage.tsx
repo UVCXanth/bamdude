@@ -110,7 +110,7 @@ export function StockPage() {
 
       <WorkshopTabPanel idBase={tabsId} value={tab}>
         {tab === 'finished' && <FinishedTab onDialog={setDialog} />}
-        {tab === 'parts' && <PartsTab />}
+        {tab === 'parts' && <PartsTab onDialog={setDialog} />}
         {tab === 'journal' && <StockJournal />}
         {tab === 'notes' && <NotesTab />}
       </WorkshopTabPanel>
@@ -338,15 +338,17 @@ function FinishedTab({ onDialog }: { onDialog: (dialog: StockDialogState) => voi
 }
 
 /**
- * The free-parts shelf — the tab as it was before finished goods, unchanged:
- * search, «only with stock», sort and page in the URL; the page size is the
- * viewer's preference. Data before status: with a page on screen a failed
- * refetch leaves it there and the hook's `refreshToast` reports it once.
+ * The free-parts shelf (WS-13 E12 D): search, «only with stock», sort and page in the URL;
+ * the page size is the viewer's preference. The shelf's own tiles stand under the tabs,
+ * after the farm's. What the read said is `listState`, as on the finished goods: a skeleton,
+ * a failed read with its retry, a failed re-read beside its rows — never «no free parts» for
+ * a shelf that could not be read. A row's «Assemble» opens the assembly for its product.
  */
-function PartsTab() {
+function PartsTab({ onDialog }: { onDialog: (dialog: StockDialogState) => void }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const canEdit = hasPermission('projects:update');
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
     defaults: { sort: 'kits-desc', extra: { stock: '1' } },
@@ -366,7 +368,10 @@ function PartsTab() {
     page,
     ...(perPage === -1 ? { all: true } : { per_page: perPage }),
   };
-  const { data, isError, isPlaceholderData } = useStockPage(params);
+  const { data, isError, isPlaceholderData, refetch } = useStockPage(params);
+  const state = listState({ data, isError, isPlaceholderData });
+  // The empty explanation stays under a failed re-read of an empty answer (E7-V01).
+  const emptyAnswer = answeredEmpty(state, data);
   // A shelf that shrank (or a stale bookmark) can leave us past the last page.
   // Only an answer for THIS view may clamp — see the orders page.
   useEffect(() => {
@@ -375,13 +380,18 @@ function PartsTab() {
 
   const total = data?.meta.total ?? 0;
   const filtered = q !== '' || !onlyWithStock;
+  const resetConditions = () => {
+    forget();
+    resetFilters();
+    searchRef.current?.focus();
+  };
 
   return (
     <>
       <StockTiles />
 
-      <div className="flex items-center gap-3 flex-wrap mb-4">
-        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('stock.page.search')} />
+      <div className="flex items-center gap-x-4 gap-y-2 flex-wrap mb-4">
+        <ListSearchBox value={typed} onChange={setTyped} placeholder={t('stock.page.search')} inputRef={searchRef} />
         <label className="flex items-center gap-2 text-sm text-bambu-gray">
           <input
             type="checkbox"
@@ -390,34 +400,32 @@ function PartsTab() {
           />
           {t('stock.page.onlyWithStock')}
         </label>
+        <p className="text-xs text-bambu-gray basis-full lg:basis-auto lg:flex-1">{t('stock.page.partsHint')}</p>
       </div>
 
-      {!data ? (
-        isError ? (
-          <p className="text-sm text-red-500" data-testid="stock-error">{t('stock.page.error')}</p>
+      {state === 'loading' && <StockTableSkeleton tab="parts" />}
+      {state === 'failed' && <LoadFailedNote message={t('stock.page.loadFailed')} onRetry={() => refetch()} />}
+      {state === 'refresh-failed' && <RefreshFailedNote onRetry={() => refetch()} />}
+
+      {emptyAnswer &&
+        (filtered ? (
+          <WorkshopPanel>
+            <div className="px-4 py-10 text-center text-sm text-bambu-gray" data-testid="stock-empty">
+              <p className="mb-2 text-base font-semibold text-white">{t('stock.page.emptyFiltered')}</p>
+              <Button variant="ghost" onClick={resetConditions}>
+                {t('stock.page.resetFilters')}
+              </Button>
+            </div>
+          </WorkshopPanel>
         ) : (
-          <p className="flex items-center gap-2 text-sm text-bambu-gray"><Loader2 className="w-4 h-4 animate-spin" />{t('common.loading')}</p>
-        )
-      ) : total === 0 ? (
-        filtered ? (
-          <div className="flex items-center gap-3 text-sm text-bambu-gray" data-testid="stock-empty">
-            <span>{t('stock.page.emptyFiltered')}</span>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                forget();
-                resetFilters();
-              }}
-            >
-              {t('list.empty.reset')}
-            </Button>
-          </div>
-        ) : (
-          <p className="text-sm text-bambu-gray" data-testid="stock-empty">{t('stock.page.empty')}</p>
-        )
-      ) : (
-        // The previous page stays on screen while the next one loads — dimmed
-        // and marked busy, so it is not read as the answer to the new question.
+          <p className="text-sm text-bambu-gray" data-testid="stock-empty">
+            {t('stock.page.empty')}
+          </p>
+        ))}
+
+      {/* The previous page stays on screen while the next one loads — dimmed
+          and marked busy, so it is not read as the answer to the new question. */}
+      {data && !emptyAnswer && (
         <div
           data-testid="list-body"
           aria-busy={isPlaceholderData}
@@ -427,6 +435,7 @@ function PartsTab() {
             products={data.items}
             canEdit={canEdit}
             onAdjust={setAdjusting}
+            onAssemble={(product) => onDialog({ kind: 'assemble', productId: product.id })}
             sort={sort}
             onSortChange={setSort}
             footer={

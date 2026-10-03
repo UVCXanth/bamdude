@@ -12,9 +12,9 @@ import type { StockFigures, StockListPage, StockListParams } from '../api/client
  * rather than spelling the keys themselves.
  *
  * `retry: false` — each degrades to "could not load" and can act on nothing
- * else. `meta: { refreshToast: true }` — with data on screen a failed
- * background refetch keeps it and says so once, the rule the detail pages
- * follow.
+ * else. No `refreshToast`: the tab keeps its rows when a background refetch
+ * fails and says so beside them (`RefreshFailedNote`, WS-13 E12 B04) — a toast
+ * as well would say it twice.
  */
 export function useStockPage(params: StockListParams) {
   return useQuery<StockListPage>({
@@ -23,7 +23,6 @@ export function useStockPage(params: StockListParams) {
     // The old page stays on screen while the next one loads — no spinner flash.
     placeholderData: keepPreviousData,
     retry: false,
-    meta: { refreshToast: true },
   });
 }
 
