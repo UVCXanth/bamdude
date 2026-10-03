@@ -8,8 +8,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { http, HttpResponse } from 'msw';
 import { render } from '../../utils';
+import { server } from '../../mocks/server';
 import { api } from '../../../api/client';
 import { CustomersPage } from '../../../pages/customers/CustomersPage';
 
@@ -59,6 +62,28 @@ afterEach(() => {
   window.history.pushState({}, '', '/');
 });
 
+function asReader() {
+  server.use(
+    http.get('/api/v1/auth/me', () =>
+      HttpResponse.json({
+        id: 2,
+        username: 'viewer',
+        role: 'user',
+        is_active: true,
+        is_admin: false,
+        groups: [{ id: 2, name: 'Viewers' }],
+        permissions: ['projects:read'],
+        created_at: '2024-01-01T00:00:00Z',
+      }),
+    ),
+  );
+}
+
+async function openMenu(name = 'ACME') {
+  fireEvent.click(await screen.findByRole('button', { name: `Actions for ${name}` }));
+  return within(await screen.findByRole('menu'));
+}
+
 describe('CustomersPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -87,10 +112,14 @@ describe('CustomersPage', () => {
     const get = vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf([]));
     window.history.pushState({}, '', '/customers');
     render(<CustomersPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'With active orders' }));
+    // Underline tabs (S04), not a segmented group (WS-13 E11 B03).
+    const tabs = await screen.findByRole('tablist', { name: 'Show' });
+    expect(within(tabs).getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(within(tabs).getByRole('tab', { name: 'With active orders' }));
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ with_active: true, page: 1 })));
     expect(window.location.search).toContain('show=active');
-    fireEvent.click(screen.getByRole('button', { name: 'All' }));
+    expect(screen.getByRole('tabpanel')).toBeInTheDocument();
+    fireEvent.click(within(tabs).getByRole('tab', { name: 'All' }));
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.not.objectContaining({ with_active: true })));
     expect(window.location.search).not.toContain('show=');
   });
@@ -99,20 +128,177 @@ describe('CustomersPage', () => {
     const get = vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf([]));
     window.history.pushState({}, '', '/customers');
     render(<CustomersPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Regular' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Regular' }));
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'regular', page: 1 })));
     expect(window.location.search).toContain('show=regular');
-    fireEvent.click(screen.getByRole('button', { name: 'With active orders' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'With active orders' }));
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ with_active: true })));
     expect(get).toHaveBeenLastCalledWith(expect.not.objectContaining({ kind: 'regular' }));
     expect(window.location.search).toContain('show=active');
   });
 
-  it('the customers tile says how many are regular', async () => {
+  it('the customers tile says how many are regular, in the mockup\'s words', async () => {
     vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf([]));
     window.history.pushState({}, '', '/customers');
     render(<CustomersPage />);
-    expect(await screen.findByTestId('customers-tile-customers')).toHaveTextContent('regular: 2');
+    const tile = await screen.findByTestId('customers-tile-customers');
+    expect(tile).toHaveTextContent('Total customers');
+    expect(tile).toHaveTextContent('2 regular');
+  });
+
+  it('an unknown ?show= is «All», and the URL is left as it is', async () => {
+    const get = vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf([]));
+    window.history.pushState({}, '', '/customers?show=zzz');
+    render(<CustomersPage />);
+    expect(await screen.findByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith({ sort_by: 'name-asc', page: 1, per_page: 24 }));
+    expect(window.location.search).toBe('?show=zzz');
+  });
+
+  describe('the list\'s states (WS-13 E11 B05)', () => {
+    it('the first read is a skeleton of the view, never an empty table', async () => {
+      vi.spyOn(api, 'getCustomersPaged').mockReturnValue(new Promise(() => {}) as never);
+      window.history.pushState({}, '', '/customers');
+      render(<CustomersPage />);
+      const skeleton = await screen.findByTestId('customers-skeleton');
+      expect(skeleton).toHaveAttribute('data-shape', 'table');
+      expect(screen.queryByRole('table')).not.toBeInTheDocument();
+      expect(screen.queryByText('No customers yet')).not.toBeInTheDocument();
+    });
+
+    it('a failed read is an alert with a retry — never «No customers yet»', async () => {
+      const get = vi
+        .spyOn(api, 'getCustomersPaged')
+        .mockRejectedValueOnce(new Error('HTTP 500'))
+        .mockResolvedValueOnce(pageOf(customers));
+      window.history.pushState({}, '', '/customers');
+      render(<CustomersPage />);
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent('Could not load the customers');
+      expect(screen.queryByText('No customers yet')).not.toBeInTheDocument();
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+      expect(await screen.findByText('ACME')).toBeInTheDocument();
+      expect(get).toHaveBeenCalledTimes(2);
+    });
+
+    it('a failed background re-read keeps the rows and says so', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+      vi.spyOn(api, 'getCustomersPaged').mockResolvedValueOnce(pageOf(customers)).mockRejectedValueOnce(new Error('HTTP 500'));
+      window.history.pushState({}, '', '/customers');
+      render(
+        <QueryClientProvider client={client}>
+          <CustomersPage />
+        </QueryClientProvider>,
+      );
+      await screen.findByText('ACME');
+      await act(async () => {
+        await client.invalidateQueries({ queryKey: ['customers'] });
+      });
+      expect(await screen.findByText('Could not refresh')).toBeInTheDocument();
+      expect(screen.getByText('ACME')).toBeInTheDocument();
+    });
+
+    it('nothing under a search says «No customers found» with its reset; an empty farm says so plainly', async () => {
+      const get = vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf([]));
+      window.history.pushState({}, '', '/customers?q=zzz');
+      render(<CustomersPage />);
+      expect(await screen.findByText('No customers found')).toBeInTheDocument();
+      expect(screen.queryByText('No customers yet')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Reset filters' }));
+      await waitFor(() => expect(get).toHaveBeenLastCalledWith({ sort_by: 'name-asc', page: 1, per_page: 24 }));
+      expect(await screen.findByText('No customers yet')).toBeInTheDocument();
+    });
+  });
+
+  it('a sort key with no column in the table is named above it and can be taken off (B06)', async () => {
+    const get = vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf(customers));
+    window.history.pushState({}, '', '/customers?sort=created-desc');
+    render(<CustomersPage />);
+    const chip = await screen.findByTestId('customers-sort-chip');
+    expect(chip).toHaveTextContent('Sorted by: Created ↓');
+    fireEvent.click(within(chip).getByRole('button', { name: 'Remove the sorting' }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'name-asc', page: 1 })));
+    expect(screen.queryByTestId('customers-sort-chip')).not.toBeInTheDocument();
+  });
+
+  it('the heading takes the focus a vanished trigger gives up (B01)', async () => {
+    vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf(customers));
+    window.history.pushState({}, '', '/customers');
+    render(<CustomersPage />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Customers' })).toHaveAttribute('tabindex', '-1');
+  });
+
+  describe('a customer\'s actions (WS-13 E11 H)', () => {
+    it('one menu on the row: Edit · New order · Delete', async () => {
+      vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf(customers));
+      window.history.pushState({}, '', '/customers');
+      render(<CustomersPage />);
+      const menu = await openMenu();
+      expect(menu.getAllByRole('menuitem').map((i) => i.textContent?.trim())).toEqual(['Edit', 'New order', 'Delete']);
+      expect(screen.getByRole('menu').querySelector('[role="separator"]')).not.toBeNull();
+    });
+
+    it('a reader has no menu', async () => {
+      asReader();
+      vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf(customers));
+      window.history.pushState({}, '', '/customers');
+      render(<CustomersPage />);
+      await screen.findByText('ACME');
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Actions for ACME' })).not.toBeInTheDocument());
+      expect(screen.queryByRole('button', { name: /new customer/i })).not.toBeInTheDocument();
+    });
+
+    it('Delete names the orders it unlinks and what happens to the active ones', async () => {
+      vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf(customers));
+      const del = vi.spyOn(api, 'deleteCustomer');
+      window.history.pushState({}, '', '/customers');
+      render(<CustomersPage />);
+      (await openMenu()).getByRole('menuitem', { name: 'Delete' }).click();
+      const dialog = await screen.findByRole('dialog', { name: 'Delete customer?' });
+      expect(dialog).toHaveAccessibleDescription('CU-0001 · ACME');
+      expect(dialog).toHaveTextContent('Its orders (3) stay, without a customer.');
+      expect(dialog).toHaveTextContent('The active ones (1) will then close to stock instead of being issued.');
+      expect(dialog).toHaveTextContent('Issued dispatch notes keep the recipient’s name. The customer’s contacts will be deleted.');
+      expect(del).not.toHaveBeenCalled();
+    });
+
+    it('a customer with no orders is told only what happens to its notes and contacts (R08)', async () => {
+      vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(
+        pageOf([{ ...customers[0], figures: { projects: 0, active: 0, completed: 0, cancelled: 0, total_price: 0 } }]),
+      );
+      window.history.pushState({}, '', '/customers');
+      render(<CustomersPage />);
+      (await openMenu()).getByRole('menuitem', { name: 'Delete' }).click();
+      const dialog = await screen.findByRole('dialog', { name: 'Delete customer?' });
+      expect(dialog).not.toHaveTextContent('stay, without a customer');
+      expect(dialog).not.toHaveTextContent('close to stock');
+      expect(dialog).toHaveTextContent('Issued dispatch notes keep the recipient’s name.');
+    });
+
+    it('a delete sends once, says so, and the focus goes to the heading when the row is gone', async () => {
+      const get = vi.spyOn(api, 'getCustomersPaged').mockResolvedValueOnce(pageOf(customers)).mockResolvedValue(pageOf([]));
+      const del = vi.spyOn(api, 'deleteCustomer').mockResolvedValue({ message: 'Customer deleted' } as never);
+      window.history.pushState({}, '', '/customers');
+      render(<CustomersPage />);
+      (await openMenu()).getByRole('menuitem', { name: 'Delete' }).click();
+      const dialog = await screen.findByRole('dialog', { name: 'Delete customer?' });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+      await waitFor(() => expect(del).toHaveBeenCalledWith(1));
+      expect(await screen.findByText('Customer deleted')).toBeInTheDocument();
+      await waitFor(() => expect(get.mock.calls.length).toBeGreaterThan(1));
+      await waitFor(() => expect(screen.getByRole('heading', { level: 1, name: 'Customers' })).toHaveFocus());
+      expect(del).toHaveBeenCalledTimes(1);
+    });
+
+    it('«New order» opens the order form with this customer chosen', async () => {
+      vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf(customers));
+      vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+      window.history.pushState({}, '', '/customers');
+      render(<CustomersPage />);
+      (await openMenu()).getByRole('menuitem', { name: 'New order' }).click();
+      const dialog = await screen.findByRole('dialog', { name: 'New order' });
+      await waitFor(() => expect(within(dialog).getByLabelText('Customer')).toHaveValue('1'));
+    });
   });
 
   it('the table shows code, kind, the main contact and a row that opens to every contact', async () => {
@@ -224,15 +410,6 @@ describe('CustomersPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Total price/ }));
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'total_price-desc' })));
     expect(window.location.search).toContain('sort=total_price-desc');
-  });
-
-  it('an empty search offers to reset it', async () => {
-    const get = vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf([]));
-    window.history.pushState({}, '', '/customers?q=zzz');
-    render(<CustomersPage />);
-    expect(await screen.findByText('Nothing matches your search or filters.')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
-    await waitFor(() => expect(get).toHaveBeenLastCalledWith({ sort_by: 'name-asc', page: 1, per_page: 24 }));
   });
 
   it('creates a customer through the modal', async () => {

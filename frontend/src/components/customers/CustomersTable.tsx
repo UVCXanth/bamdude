@@ -9,14 +9,14 @@ import type { Customer } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatMoney } from '../../utils/currency';
 import { SortableHeader } from '../SortableHeader';
-import { CustomerActions } from './CustomerActions';
+import { CustomerActionMenu } from './CustomerActionMenu';
+import type { CustomerActionsHost } from './useCustomerActions';
 import { ContactReach } from './ContactReach';
 import { contactTitle, deliveryLine } from './contactFormat';
 
 interface CustomersTableProps {
   customers: Customer[];
-  onEdit: (customer: Customer) => void;
-  onDelete: (customer: Customer) => void;
+  actions: CustomerActionsHost;
   /** The list's `sort_by`; the headers ask the SERVER to sort. */
   sort: string;
   onSortChange: (sortBy: string) => void;
@@ -42,10 +42,11 @@ const HEAD = 'font-normal p-2 text-left';
  * ordered them; a row with more than one opens to all of them — locally, per
  * row, since the contacts already came with the page (spec workshop-customers, rule 21).
  */
-export function CustomersTable({ customers, onEdit, onDelete, sort, onSortChange, footer }: CustomersTableProps) {
+export function CustomersTable({ customers, actions, sort, onSortChange, footer }: CustomersTableProps) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
-  const hasActions = hasPermission('projects:update') || hasPermission('projects:delete');
+  const hasActions =
+    hasPermission('projects:update') || hasPermission('projects:create') || hasPermission('projects:delete');
   const [open, setOpen] = useState<Set<number>>(() => new Set());
   const toggle = (id: number) =>
     setOpen((current) => {
@@ -130,7 +131,7 @@ export function CustomersTable({ customers, onEdit, onDelete, sort, onSortChange
                     </td>
                     {hasActions && (
                       <td className={`${CELL} text-right`}>
-                        <CustomerActions customer={customer} onEdit={onEdit} onDelete={onDelete} />
+                        <CustomerActionMenu customer={customer} actions={actions} />
                       </td>
                     )}
                   </tr>

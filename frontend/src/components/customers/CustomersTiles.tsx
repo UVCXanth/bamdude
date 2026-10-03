@@ -5,8 +5,8 @@ import { formatMoney } from '../../utils/currency';
 import { StatTile, StatTiles } from '../StatTile';
 
 /**
- * The customers page's four tiles (spec workshop-lists, rule 16): the whole farm
- * from `GET /customers/summary`, never the list's search. Keyed under
+ * The customers page's four tiles (spec workshop-lists, rule 16; the mockup's words,
+ * WS-13 E11 B02): the whole farm from `GET /customers/summary`, never the list's search. Keyed under
  * `['customers']`, so every order mutation that refreshes the list refreshes
  * the tiles too.
  */

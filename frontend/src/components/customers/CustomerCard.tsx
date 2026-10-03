@@ -2,7 +2,8 @@ import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import type { Customer } from '../../api/client';
 import { formatMoney } from '../../utils/currency';
-import { CustomerActions } from './CustomerActions';
+import { CustomerActionMenu } from './CustomerActionMenu';
+import type { CustomerActionsHost } from './useCustomerActions';
 import { contactTitle } from './contactFormat';
 
 /**
@@ -13,13 +14,11 @@ import { contactTitle } from './contactFormat';
 export function CustomerCard({
   customer,
   currency,
-  onEdit,
-  onDelete,
+  actions,
 }: {
   customer: Customer;
   currency?: string;
-  onEdit: (customer: Customer) => void;
-  onDelete: (customer: Customer) => void;
+  actions: CustomerActionsHost;
 }) {
   const { t } = useTranslation();
   const { figures } = customer;
@@ -35,7 +34,7 @@ export function CustomerCard({
         <Link to={`/customers/${customer.id}`} className="font-semibold text-white hover:text-bambu-green truncate">
           {customer.name}
         </Link>
-        <CustomerActions customer={customer} onEdit={onEdit} onDelete={onDelete} />
+        <CustomerActionMenu customer={customer} actions={actions} />
       </div>
       <div className="flex items-center gap-2 text-xs">
         <span className="text-bambu-gray">{customer.code}</span>
