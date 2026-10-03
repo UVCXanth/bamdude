@@ -6820,9 +6820,12 @@ export default {
     },
     fromFile: {
       title: 'New product from a file',
+      subtitle: 'Library files',
       search: 'Search library files…',
       create: 'Create product',
-      empty: 'No files match',
+      empty: 'No files found',
+      loadFailed: 'Could not read the library files.',
+      notSliced: 'not sliced',
     },
     toast: {
       created: 'Product created — link a file or add parts',
@@ -6832,7 +6835,7 @@ export default {
       hidden: 'Product hidden from the catalog',
       shown: 'Product is back in the catalog',
       imported: 'Product imported',
-      createdFromFile: 'Product created from the file',
+      createdFromFile: 'Product created from the file — parts seeded from its plates',
       exportFailed: 'The export failed (HTTP {{status}}).',
       promoted: 'Added to the catalog',
     },
@@ -6871,7 +6874,24 @@ export default {
       },
       reread: {
         title: 'Re-read the card from a file',
-        body: 'Empty fields (description, designer, licence, model ID) are filled from the chosen 3MF; filled ones stay as they are. Attachments from this file are replaced; ones added by hand are not.',
+        // WS-13 E10 F01: only the fields that are empty now are named.
+        fill: 'Filled from the file if it has them: {{fields}}.',
+        nothingEmpty: 'Every field is filled — they stay as they are.',
+        attachments: 'Attachments from this file are replaced; ones added by hand are not.',
+        fields: {
+          description: 'description',
+          designer: 'designer',
+          license: 'licence',
+          design_id: 'model ID',
+        },
+        // WS-13 E10 F02: the result, in the dialog.
+        resultTitle: 'Card re-read',
+        filled: 'Filled in: {{fields}}',
+        replaced: 'Attachments replaced: {{count}}',
+        added: 'Added: {{list}}',
+        addedItem: '{{count}} to {{category}}',
+        unchanged: 'The card is as it was.',
+        done: 'Done',
         files: 'Linked 3MF files',
         loading: 'Loading files…',
         loadFailed: 'Could not load the linked files.',

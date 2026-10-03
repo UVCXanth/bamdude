@@ -2,20 +2,30 @@
  * Re-reading a product's card from one of its files (WS-13 E9 B03, R02, R08). The list
  * is the linked 3MF containers the reader may see — sliced or not — off the same
  * `/files` the «Plates and files» tab reads; STL, STEP, raw G-code and files without
- * access are not offered. The request goes only on «Re-read»; a note that nothing could
- * be read keeps the dialog with the note as its error; a success closes it with the notes
- * in a toast. The notes are CODES — their English lives here.
+ * access are not offered. Before the request the dialog says which EMPTY fields the file
+ * may fill (WS-13 E10 F01); the request goes only on «Re-read»; a note that nothing could
+ * be read keeps the dialog with the note as its error; a success turns the dialog into its
+ * result — what was filled, replaced, added, skipped (F02). The notes are CODES — their
+ * English lives here.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEffect } from 'react';
 import { QueryClient, useQueryClient } from '@tanstack/react-query';
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../../../utils';
 import { api, ApiError } from '../../../../api/client';
 import type { ProductFileGroup, ProductFileGroups } from '../../../../api/client';
 import { ProductRereadDialog } from '../../../../components/products/detail/ProductRereadDialog';
 
-const product = { id: 7, code: 'PR-0007', name: 'Flask' };
+const product = {
+  id: 7,
+  code: 'PR-0007',
+  name: 'Flask',
+  description: 'A flask',
+  designer: null,
+  license: null,
+  design_id: 'MW-1',
+};
 
 function file(over: Partial<ProductFileGroup>): ProductFileGroup {
   return {
@@ -151,11 +161,33 @@ describe('ProductRereadDialog', () => {
     expect(screen.getByRole('button', { name: 'Re-read' })).toBeDisabled();
   });
 
-  it('sends one request on «Re-read», closes and reports the notes', async () => {
+  it('says before the request which empty fields the file may fill — a filled one is not named', async () => {
+    vi.spyOn(api, 'getProductFileGroups').mockResolvedValue(MANY);
+    mount();
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveTextContent('Filled from the file if it has them: designer, licence.');
+    expect(dialog).toHaveTextContent('Attachments from this file are replaced; ones added by hand are not.');
+  });
+
+  it('with every field filled, says they stay as they are', async () => {
+    vi.spyOn(api, 'getProductFileGroups').mockResolvedValue(MANY);
+    render(
+      <ProductRereadDialog product={{ ...product, designer: 'Ada', license: 'CC-BY' }} onClose={() => {}} />,
+    );
+    expect(screen.getByRole('dialog')).toHaveTextContent('Every field is filled — they stay as they are.');
+  });
+
+  it('sends one request on «Re-read» and shows its result in the dialog; «Done» closes', async () => {
     vi.spyOn(api, 'getProductFileGroups').mockResolvedValue(MANY);
     const reread = vi.spyOn(api, 'rereadProductCard').mockResolvedValue({
       product,
-      notes: [{ code: 'filled_field', params: { field: 'designer' } }],
+      notes: [
+        { code: 'filled_field', params: { field: 'designer' } },
+        { code: 'filled_field', params: { field: 'license' } },
+        { code: 'replaced_files', params: { count: 2 } },
+        { code: 'imported_files', params: { category: 'bom_docs', count: 1 } },
+        { code: 'skipped_unreadable', params: { name: 'notes.pdf' } },
+      ],
     } as never);
     const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
     const onClose = mount();
@@ -166,12 +198,33 @@ describe('ProductRereadDialog', () => {
       primary.click();
       primary.click();
     });
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    const result = await screen.findByRole('dialog', { name: 'Card re-read' });
     expect(reread).toHaveBeenCalledTimes(1);
     expect(reread).toHaveBeenCalledWith(7, 1);
-    expect(await screen.findByText(/filled in designer/i)).toBeInTheDocument();
+    expect(within(result).getByText('Filled in: Designer, Licence')).toBeInTheDocument();
+    expect(within(result).getByText('Attachments replaced: 2')).toBeInTheDocument();
+    expect(within(result).getByText(/^Added: 1 to /)).toBeInTheDocument();
+    expect(within(result).getByText('Skipped notes.pdf — it could not be read.')).toBeInTheDocument();
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['product'] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['projects'] });
+    expect(onClose).not.toHaveBeenCalled();
+    const done = within(result).getByRole('button', { name: 'Done' });
+    await waitFor(() => expect(done).toHaveFocus());
+    fireEvent.click(done);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('a file with nothing to fill says so in the result', async () => {
+    vi.spyOn(api, 'getProductFileGroups').mockResolvedValue(MANY);
+    vi.spyOn(api, 'rereadProductCard').mockResolvedValue({
+      product,
+      notes: [{ code: 'nothing_to_fill', params: {} }],
+    } as never);
+    mount();
+    fireEvent.click((await screen.findAllByRole('radio'))[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Re-read' }));
+    const result = await screen.findByRole('dialog', { name: 'Card re-read' });
+    expect(within(result).getByText('Nothing to fill — every field already has a value.')).toBeInTheDocument();
   });
 
   it('a note that nothing could be read keeps the dialog, with the note as its error', async () => {

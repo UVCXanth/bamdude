@@ -608,9 +608,11 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
 
   const create = useMutation({
     mutationFn: () => api.createProductFromFile(fileId),
-    onSuccess: ({ product }) => {
+    onSuccess: ({ product, notes }) => {
       invalidateProductCatalog(queryClient);
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
+      // What the file gave (WS-13 E10 E03) — the same words as the catalog's «From file».
+      showToast(notes.length > 0 ? cardNotesText(t, notes) : t('products.toast.createdFromFile'));
       onClose();
       navigate(`/products/${product.id}`);
     },

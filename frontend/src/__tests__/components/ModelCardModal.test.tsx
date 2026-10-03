@@ -254,6 +254,19 @@ describe('ModelCardModal — a library file', () => {
 
     await waitFor(() => expect(create).toHaveBeenCalledWith(3));
     await waitFor(() => expect(navigate).toHaveBeenCalledWith('/products/55'));
+    // WS-13 E10 E03: what the file gave — or, with no notes, the mockup's sentence.
+    expect(await screen.findByText('Product created from the file — parts seeded from its plates')).toBeInTheDocument();
+  });
+
+  it('makes a product and tells the notes of what its file gave', async () => {
+    vi.spyOn(api, 'getLibraryFileCard').mockResolvedValue(fileCard as never);
+    vi.spyOn(api, 'createProductFromFile').mockResolvedValue({
+      product: { id: 55 },
+      notes: [{ code: 'filled_field', params: { field: 'license' } }],
+    } as never);
+    render(<ModelCardModal source={{ kind: 'file', id: 3 }} onClose={() => {}} />);
+    fireEvent.click(await screen.findByRole('button', { name: /create product/i }));
+    expect(await screen.findByText('Filled in Licence.')).toBeInTheDocument();
   });
 
   it('re-reads into a product the file is linked to and reports what it did', async () => {
