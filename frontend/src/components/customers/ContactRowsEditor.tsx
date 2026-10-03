@@ -1,15 +1,20 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowUpToLine, Plus, X } from 'lucide-react';
 import { useDeliveryMethods } from '../../hooks/useDeliveryMethods';
 import { Button } from '../Button';
 import { Select } from '../Select';
+import { LoadFailedNote } from '../workshop/LoadFailedNote';
 import { DeliveryMethodsModal } from './DeliveryMethodsModal';
-import { emptyDraft, isBlankLinked, type ContactDraft } from './contactDrafts';
+import { emptyDraft, isBlankDraft, isBlankLinked, methodIsGone, type ContactDraft } from './contactDrafts';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none';
 const LABEL_CLASS = 'block text-xs text-bambu-gray mb-1';
+// The contact columns are 255 characters (models/customer.py, CustomerContactIn).
+const FIELD_MAX = 255;
+// ≤ 760 every field takes the one column; the remove button stays right of the first.
+const FIELD_CELL = 'min-w-0 max-[761px]:col-start-1 max-[761px]:col-span-1';
 
 type TextField = 'name' | 'role' | 'phone' | 'email' | 'city' | 'deliveryDetails' | 'note';
 type InputField = Exclude<TextField, 'note'>;
@@ -17,29 +22,69 @@ type InputField = Exclude<TextField, 'note'>;
 interface RowProps {
   draft: ContactDraft;
   index: number;
+  main: boolean;
   disabled?: boolean;
   confirming: boolean;
+  focusOnMount: boolean;
+  canManageMethods: boolean;
   onField: (field: TextField, value: string) => void;
-  onMethod: (id: number | null) => void;
+  onMethod: (id: number | null, name: string | null) => void;
   onMakeMain: () => void;
   onRemove: () => void;
   onKeep: () => void;
   onManage: () => void;
 }
 
-function ContactRow({ draft, index, disabled, confirming, onField, onMethod, onMakeMain, onRemove, onKeep, onManage }: RowProps) {
+function ContactRow({
+  draft,
+  index,
+  main,
+  disabled,
+  confirming,
+  focusOnMount,
+  canManageMethods,
+  onField,
+  onMethod,
+  onMakeMain,
+  onRemove,
+  onKeep,
+  onManage,
+}: RowProps) {
   const { t } = useTranslation();
   const base = useId();
-  const { data: methods = [] } = useDeliveryMethods();
+  const methods = useDeliveryMethods();
+  const list = methods.data ?? [];
+  const gone = methodIsGone(draft, methods);
+  const known = draft.deliveryMethodId != null && list.some((m) => m.id === draft.deliveryMethodId);
+  // The note is a field of its own only when there is one, or it is asked for (F20).
+  const [noteOpen, setNoteOpen] = useState(draft.note !== '');
+  const noteRef = useRef<HTMLTextAreaElement>(null);
+  // «+ Note» opens the field and puts the cursor in it, once it is there.
+  const focusNote = useRef(false);
+  useEffect(() => {
+    if (noteOpen && focusNote.current) {
+      focusNote.current = false;
+      noteRef.current?.focus();
+    }
+  }, [noteOpen]);
+  const nameRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (focusOnMount) nameRef.current?.focus();
+    // Once, when the row is added (F03).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const text = (field: InputField, labelKey: string, type = 'text', span = '') => (
-    <div className={span}>
+    <div className={`${FIELD_CELL} ${span}`}>
       <label className={LABEL_CLASS} htmlFor={`${base}-${field}`}>
         {t(labelKey)}
       </label>
       <input
         id={`${base}-${field}`}
+        ref={field === 'name' ? nameRef : undefined}
         type={type}
         value={draft[field]}
+        maxLength={FIELD_MAX}
         onChange={(e) => onField(field, e.target.value)}
         className={FIELD_CLASS}
         disabled={disabled}
@@ -54,23 +99,44 @@ function ContactRow({ draft, index, disabled, confirming, onField, onMethod, onM
       role="group"
       aria-labelledby={`${base}-title`}
       data-testid="contact-row"
-      className="rounded-lg border border-bambu-dark-tertiary p-3 space-y-2"
+      className="pb-2 border-b border-bambu-dark-tertiary space-y-2"
     >
-      <div className="flex items-center gap-2 text-xs text-bambu-gray">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-bambu-gray">
         <span id={`${base}-title`}>{t('customers.contacts.row', { n: index + 1 })}</span>
-        {index === 0 && (
+        {main && (
           <span className="px-1.5 py-0.5 rounded text-[10px] bg-bambu-green/15 text-bambu-green">
             {t('customers.contacts.main')}
           </span>
         )}
+        {index > 0 && !confirming && (
+          <button
+            type="button"
+            onClick={onMakeMain}
+            disabled={disabled}
+            className="inline-flex items-center gap-1 text-bambu-green hover:underline disabled:opacity-50"
+          >
+            <ArrowUpToLine className="w-3.5 h-3.5" aria-hidden />
+            {t('customers.contacts.makeMain')}
+          </button>
+        )}
       </div>
-      <div className="grid gap-2 sm:grid-cols-3">
+      <div className="grid gap-2 items-end grid-cols-[repeat(3,minmax(0,1fr))_auto] max-[761px]:grid-cols-[minmax(0,1fr)_auto]">
+        <button
+          type="button"
+          onClick={onRemove}
+          disabled={disabled || confirming}
+          aria-label={t('customers.contacts.remove')}
+          title={t('customers.contacts.remove')}
+          className="col-start-4 row-start-1 max-[761px]:col-start-2 p-2 rounded-lg text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary disabled:opacity-50"
+        >
+          <X className="w-4 h-4" />
+        </button>
         {text('name', 'customers.contacts.name')}
         {text('role', 'customers.contacts.role')}
         {text('phone', 'customers.contacts.phone', 'tel')}
         {text('email', 'customers.contacts.email', 'email')}
         {text('city', 'customers.contacts.city')}
-        <div>
+        <div className={FIELD_CELL}>
           <label className={LABEL_CLASS} htmlFor={`${base}-method`}>
             {t('customers.delivery.method')}
           </label>
@@ -78,43 +144,88 @@ function ContactRow({ draft, index, disabled, confirming, onField, onMethod, onM
             id={`${base}-method`}
             className="w-full"
             value={draft.deliveryMethodId ?? ''}
-            onChange={(e) => onMethod(e.target.value ? Number(e.target.value) : null)}
+            onChange={(e) => {
+              const id = e.target.value ? Number(e.target.value) : null;
+              onMethod(id, list.find((m) => m.id === id)?.name ?? null);
+            }}
+            aria-describedby={gone ? `${base}-method-hint` : undefined}
+            aria-invalid={gone || undefined}
             disabled={disabled}
           >
             <option value="">{t('customers.delivery.none')}</option>
-            {methods.map((m) => (
+            {/* The chosen method while the reference is read, failed, or no longer has it:
+                never swapped for the first option, never shown as «none» (F13). */}
+            {draft.deliveryMethodId != null && !known && (
+              <option value={draft.deliveryMethodId}>
+                {`${draft.deliveryMethodName ?? t('customers.delivery.unknownMethod', { id: draft.deliveryMethodId })}${
+                  gone ? ` ${t('customers.delivery.gone')}` : ''
+                }`}
+              </option>
+            )}
+            {list.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.name}
               </option>
             ))}
           </Select>
-          <button type="button" onClick={onManage} className="mt-1 text-xs text-bambu-green hover:underline" disabled={disabled}>
-            {t('customers.delivery.manage')}
-          </button>
+          {gone && (
+            <p id={`${base}-method-hint`} className="mt-1 text-xs text-status-warning">
+              {t('customers.delivery.goneHint')}
+            </p>
+          )}
+          {methods.isError && (
+            <LoadFailedNote
+              role="status"
+              className="mt-1 text-xs"
+              message={t('customers.delivery.loadFailed')}
+              onRetry={() => methods.refetch()}
+            />
+          )}
+          {canManageMethods && (
+            <button type="button" onClick={onManage} className="mt-1 text-xs text-bambu-green hover:underline" disabled={disabled}>
+              {t('customers.delivery.manage')}
+            </button>
+          )}
         </div>
-        {text('deliveryDetails', 'customers.delivery.details', 'text', 'sm:col-span-3')}
-        {/* Several lines: the old free-text contact moves here whole when it could not be split. */}
-        <div className="sm:col-span-3">
-          <label className={LABEL_CLASS} htmlFor={`${base}-note`}>
-            {t('customers.contacts.note')}
-          </label>
-          <textarea
-            id={`${base}-note`}
-            rows={2}
-            value={draft.note}
-            onChange={(e) => onField('note', e.target.value)}
-            className={`${FIELD_CLASS} resize-y`}
-            disabled={disabled}
-          />
-        </div>
+        {text('deliveryDetails', 'customers.delivery.details', 'text', 'col-span-2')}
+        {!noteOpen && (
+          <div className={FIELD_CELL}>
+            <button
+              type="button"
+              onClick={() => {
+                focusNote.current = true;
+                setNoteOpen(true);
+              }}
+              disabled={disabled}
+              className="py-2 text-xs text-bambu-green hover:underline disabled:opacity-50"
+            >
+              {t('customers.contacts.addNote')}
+            </button>
+          </div>
+        )}
+        {noteOpen && (
+          // Several lines: the old free-text contact moves here whole when it could not be split.
+          <div className={`${FIELD_CELL} col-span-3`}>
+            <label className={LABEL_CLASS} htmlFor={`${base}-note`}>
+              {t('customers.contacts.note')}
+            </label>
+            <textarea
+              id={`${base}-note`}
+              ref={noteRef}
+              rows={2}
+              value={draft.note}
+              onChange={(e) => onField('note', e.target.value)}
+              className={`${FIELD_CLASS} resize-y`}
+              disabled={disabled}
+            />
+          </div>
+        )}
       </div>
       {isBlankLinked(draft) && !confirming && (
-        <p className="text-xs text-status-warning">
-          {t('customers.contacts.blankLinked', { count: draft.ordersCount })}
-        </p>
+        <p className="text-xs text-status-warning">{t('customers.contacts.blankLinked', { count: draft.ordersCount })}</p>
       )}
-      {confirming ? (
-        <div className="flex items-center justify-between gap-2 text-xs">
+      {confirming && (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
           <span className="text-status-warning">{t('customers.contacts.linkedWarning', { count: draft.ordersCount })}</span>
           <div className="flex gap-2">
             <Button type="button" variant="secondary" onClick={onKeep}>
@@ -125,76 +236,82 @@ function ContactRow({ draft, index, disabled, confirming, onField, onMethod, onM
             </Button>
           </div>
         </div>
-      ) : (
-        <div className="flex justify-end gap-2">
-          {index > 0 && (
-            <Button type="button" variant="secondary" onClick={onMakeMain} disabled={disabled}>
-              <ArrowUpToLine className="w-4 h-4" />
-              {t('customers.contacts.makeMain')}
-            </Button>
-          )}
-          <Button type="button" variant="secondary" onClick={onRemove} disabled={disabled}>
-            <X className="w-4 h-4" />
-            {t('customers.contacts.remove')}
-          </Button>
-        </div>
       )}
     </div>
   );
 }
 
 /**
- * The customer form's contacts (spec workshop-customers, rule 19). The first row
- * is the main contact; «Make main» moves a row to the top. A contact orders name
- * is removed only after a second click that says what happens to them — the
- * server clears their contact, the warning just says so first. Emptying such a
- * row field by field would drop it all the same, so it holds the save (in
- * `CustomerModal`) until it is filled in again or removed through that warning.
+ * The customer form's contacts (WS-13 E11 F03–F07; spec workshop-customers, rule 19), in the
+ * mockup's `.m-contactrow` grid: three columns and the remove button in a fourth, one column
+ * at 760 and narrower. The first row that will be SENT is the main contact (F05) — an empty
+ * row above it is not; «Make main» moves a row to the top. A contact orders name is removed
+ * only after a second click that says what happens to them; emptying such a row field by
+ * field would drop it all the same, so it holds the save (in `CustomerModal`). The delivery
+ * reference opens over the form only for somebody who may change it (`projects:update`, R03).
  */
 export function ContactRowsEditor({
   drafts,
   onChange,
   disabled,
+  canManageMethods,
 }: {
   drafts: ContactDraft[];
   onChange: (next: ContactDraft[]) => void;
   disabled?: boolean;
+  canManageMethods: boolean;
 }) {
   const { t } = useTranslation();
   const [confirming, setConfirming] = useState<string | null>(null);
   const [managing, setManaging] = useState(false);
+  const [added, setAdded] = useState<string | null>(null);
   const patch = (key: string, change: Partial<ContactDraft>) =>
     onChange(drafts.map((d) => (d.key === key ? { ...d, ...change } : d)));
   const remove = (key: string) => {
     setConfirming(null);
     onChange(drafts.filter((d) => d.key !== key));
   };
+  const mainKey = drafts.find((d) => !isBlankDraft(d))?.key;
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-white">{t('customers.contacts.title')}</span>
-        <Button type="button" variant="secondary" onClick={() => onChange([...drafts, emptyDraft()])} disabled={disabled}>
+      <div className="flex items-center justify-between gap-2">
+        <b className="text-sm font-semibold text-white">{t('customers.contacts.title')}</b>
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={() => {
+            const next = emptyDraft();
+            setAdded(next.key);
+            onChange([...drafts, next]);
+          }}
+          disabled={disabled}
+        >
           <Plus className="w-4 h-4" />
           {t('customers.contacts.add')}
         </Button>
       </div>
       <p className="text-xs text-bambu-gray">{t('customers.contacts.mainHint')}</p>
-      {drafts.map((d, index) => (
-        <ContactRow
-          key={d.key}
-          draft={d}
-          index={index}
-          disabled={disabled}
-          confirming={confirming === d.key}
-          onField={(field, value) => patch(d.key, { [field]: value })}
-          onMethod={(id) => patch(d.key, { deliveryMethodId: id })}
-          onMakeMain={() => onChange([d, ...drafts.filter((x) => x.key !== d.key)])}
-          onRemove={() => (d.ordersCount > 0 && confirming !== d.key ? setConfirming(d.key) : remove(d.key))}
-          onKeep={() => setConfirming(null)}
-          onManage={() => setManaging(true)}
-        />
-      ))}
+      <div className="grid gap-2">
+        {drafts.map((d, index) => (
+          <ContactRow
+            key={d.key}
+            draft={d}
+            index={index}
+            main={d.key === mainKey}
+            disabled={disabled}
+            confirming={confirming === d.key}
+            focusOnMount={d.key === added}
+            canManageMethods={canManageMethods}
+            onField={(field, value) => patch(d.key, { [field]: value })}
+            onMethod={(id, name) => patch(d.key, { deliveryMethodId: id, deliveryMethodName: name })}
+            onMakeMain={() => onChange([d, ...drafts.filter((x) => x.key !== d.key)])}
+            onRemove={() => (d.ordersCount > 0 && confirming !== d.key ? setConfirming(d.key) : remove(d.key))}
+            onKeep={() => setConfirming(null)}
+            onManage={() => setManaging(true)}
+          />
+        ))}
+      </div>
       {managing && <DeliveryMethodsModal onClose={() => setManaging(false)} />}
     </div>
   );

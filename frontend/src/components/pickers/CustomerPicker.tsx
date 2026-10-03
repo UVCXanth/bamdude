@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
-import { api } from '../../api/client';
+import { api, ApiError } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Select } from '../Select';
+import { LoadFailedNote } from '../workshop/LoadFailedNote';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
@@ -20,74 +21,179 @@ interface CustomerPickerProps {
   id?: string;
 }
 
+type Choosing = 'idle' | 'reading' | 'gone' | 'failed';
+
 /** `<select>` over customers, with a "new customer…" option that swaps to an
- *  inline name field + create button rather than opening a separate modal. */
+ *  inline name field + create button rather than opening a separate modal.
+ *
+ *  A name another customer already has is a warning (WS-13 E11 F12, A01, R01): the
+ *  server's sentence and two answers — «Choose it» (the namesake, once a FRESH read of the
+ *  list shows it, past the app's minute of staleTime) or «Create another» (the same name,
+ *  knowingly). The warning belongs to the name it answered: changing the name takes it
+ *  away. While its request runs the field, Create, × and Escape do nothing, decided in the
+ *  same frame (`sent`), so a late answer never changes a choice that was given up. */
 export function CustomerPicker({ value, onChange, disabled, allowCreate, id }: CustomerPickerProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
+  const [warned, setWarned] = useState<{ name: string; message: string; namesake: number | null } | null>(null);
+  const [choosing, setChoosing] = useState<Choosing>('idle');
+  const sent = useRef(false);
+  const nameNow = useRef(name);
+  nameNow.current = name;
 
   const { data: customers } = useQuery({ queryKey: ['customers'], queryFn: api.getCustomers });
 
-  const createMutation = useMutation({
-    mutationFn: (customerName: string) => api.createCustomer({ name: customerName }),
-    onSuccess: (created) => {
-      queryClient.invalidateQueries({ queryKey: ['customers'] });
-      onChange(created.id);
-      setCreating(false);
-      setName('');
-    },
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
-
-  const cancelCreate = () => {
+  const leave = () => {
     setCreating(false);
     setName('');
+    setWarned(null);
+    setChoosing('idle');
+  };
+
+  const createMutation = useMutation({
+    mutationFn: ({ customerName, knowingly }: { customerName: string; knowingly: boolean }) =>
+      api.createCustomer(knowingly ? { name: customerName, allow_duplicate_name: true } : { name: customerName }),
+    onSuccess: (created) => {
+      sent.current = false;
+      queryClient.invalidateQueries({ queryKey: ['customers'] });
+      onChange(created.id);
+      leave();
+    },
+    onError: (e: Error, { customerName }) => {
+      sent.current = false;
+      if (e instanceof ApiError && e.code === 'name_taken') {
+        // Only for the name still in the field; a stale answer is not shown.
+        if (customerName === nameNow.current.trim()) {
+          setWarned({ name: customerName, message: e.message, namesake: e.refs?.customer ?? null });
+          setChoosing('idle');
+        }
+        return;
+      }
+      showToast(e.message, 'error');
+    },
+  });
+  const pending = createMutation.isPending;
+
+  const send = (knowingly: boolean) => {
+    const customerName = name.trim();
+    if (sent.current || !customerName) return;
+    sent.current = true;
+    createMutation.mutate({ customerName, knowingly });
+  };
+
+  const cancelCreate = () => {
+    if (sent.current) return;
+    leave();
+  };
+
+  /** The namesake, once a fresh read of the list shows it — never a hidden id in a select. */
+  const chooseIt = async () => {
+    const namesake = warned?.namesake;
+    if (namesake == null || choosing === 'reading') return;
+    setChoosing('reading');
+    try {
+      const list = await queryClient.fetchQuery({
+        queryKey: ['customers'],
+        queryFn: api.getCustomers,
+        // ⚠️ The app keeps every query fresh for a minute: a default fetch would answer
+        // from the cache that does not know the namesake (Codex E11 r2 note 1).
+        staleTime: 0,
+        retry: false,
+      });
+      if (list.some((c) => c.id === namesake)) {
+        onChange(namesake);
+        leave();
+      } else {
+        setChoosing('gone');
+      }
+    } catch {
+      setChoosing('failed');
+    }
   };
 
   if (creating) {
     return (
-      <div className="flex gap-2">
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          // ⚠️ `stopPropagation` is the point: the modals this picker lives in
-          // close themselves on a `window` keydown, so an unguarded Escape
-          // here would throw away the whole order the user was editing
-          // instead of stepping back out of the create field.
-          onKeyDown={(e) => {
-            if (e.key !== 'Escape') return;
-            e.stopPropagation();
-            cancelCreate();
-          }}
-          placeholder={t('pickers.newCustomerName')}
-          className={FIELD_CLASS}
-          disabled={disabled}
-          autoFocus
-        />
-        <button
-          type="button"
-          onClick={() => name.trim() && createMutation.mutate(name.trim())}
-          disabled={disabled || !name.trim() || createMutation.isPending}
-          className="px-3 py-2 rounded-lg text-sm bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 transition-colors whitespace-nowrap"
-        >
-          {t('pickers.create')}
-        </button>
-        {/* Picking "new customer…" by accident used to be a one-way door: the
-            select was gone and only creating a customer brought it back. */}
-        <button
-          type="button"
-          onClick={cancelCreate}
-          disabled={createMutation.isPending}
-          aria-label={t('pickers.cancelCreate')}
-          title={t('pickers.cancelCreate')}
-          className="px-2 py-2 rounded-lg text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
-        >
-          <X className="w-4 h-4" />
-        </button>
+      <div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => {
+              if (sent.current) return;
+              setName(e.target.value);
+              // A changed name is a new question: the warning was about another one.
+              if (warned && e.target.value.trim() !== warned.name) {
+                setWarned(null);
+                setChoosing('idle');
+              }
+            }}
+            // ⚠️ `stopPropagation` is the point: the modals this picker lives in
+            // close themselves on a `window` keydown, so an unguarded Escape
+            // here would throw away the whole order the user was editing
+            // instead of stepping back out of the create field.
+            onKeyDown={(e) => {
+              if (e.key !== 'Escape') return;
+              e.stopPropagation();
+              cancelCreate();
+            }}
+            placeholder={t('pickers.newCustomerName')}
+            className={FIELD_CLASS}
+            disabled={disabled || pending}
+            autoFocus
+          />
+          <button
+            type="button"
+            onClick={() => send(false)}
+            disabled={disabled || !name.trim() || pending}
+            className="px-3 py-2 rounded-lg text-sm bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 transition-colors whitespace-nowrap"
+          >
+            {t('pickers.create')}
+          </button>
+          {/* Picking "new customer…" by accident used to be a one-way door: the
+              select was gone and only creating a customer brought it back. */}
+          <button
+            type="button"
+            onClick={cancelCreate}
+            disabled={pending}
+            aria-label={t('pickers.cancelCreate')}
+            title={t('pickers.cancelCreate')}
+            className="px-2 py-2 rounded-lg text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        {warned && (
+          <div className="mt-1.5 space-y-1.5 text-xs">
+            <p className="text-status-warning">{warned.message}</p>
+            {choosing === 'gone' && <p className="text-bambu-gray">{t('pickers.namesakeGone')}</p>}
+            {choosing === 'failed' && (
+              <LoadFailedNote message={t('pickers.namesakeReadFailed')} onRetry={() => void chooseIt()} />
+            )}
+            <div className="flex flex-wrap gap-2">
+              {choosing !== 'gone' && warned.namesake != null && (
+                <button
+                  type="button"
+                  onClick={() => void chooseIt()}
+                  disabled={disabled || pending || choosing === 'reading'}
+                  className="px-2.5 py-1 rounded-lg bg-bambu-dark-tertiary text-white hover:bg-bambu-dark disabled:opacity-50"
+                >
+                  {t('pickers.namesakeChoose')}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => send(true)}
+                disabled={disabled || pending}
+                className="px-2.5 py-1 rounded-lg bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 disabled:opacity-50"
+              >
+                {t('pickers.namesakeCreate')}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     );
   }

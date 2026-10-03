@@ -5414,6 +5414,10 @@ export default {
     newCustomerName: 'Customer name',
     create: 'Create',
     cancelCreate: 'Cancel creating customer',
+    namesakeChoose: 'Choose it',
+    namesakeCreate: 'Create another',
+    namesakeGone: 'This customer is gone',
+    namesakeReadFailed: 'Could not read the customers',
     notInCatalog: 'not in catalog',
   },
 
@@ -6504,6 +6508,7 @@ export default {
       blankLinked_other: 'Linked to {{count}} orders — fill it in or remove it',
       removeAnyway: 'Remove anyway',
       keep: 'Keep',
+      addNote: '+ Note',
     },
     delivery: {
       manageTitle: 'Delivery methods',
@@ -6519,6 +6524,10 @@ export default {
       method: 'Delivery method',
       details: 'Delivery details',
       none: '— none —',
+      gone: '(no longer there)',
+      goneHint: 'Choose another method or clear it',
+      unknownMethod: 'Method #{{id}}',
+      loadFailed: 'Could not read the delivery methods',
     },
     tiles: {
       customers: 'Total customers',
@@ -6565,9 +6574,12 @@ export default {
       editTitle: 'Edit customer',
       name: 'Name',
       kind: 'Type',
-      notes: 'Notes',
-      create: 'Create',
-      save: 'Save',
+      notes: 'Team note',
+      save: 'Save customer',
+      saving: 'Saving…',
+      saveAnyway: 'Save anyway',
+      namesakeQuestion: 'Save another customer with this name?',
+      nameRequired: 'Enter the customer’s name.',
     },
     page: {
       orders: 'Orders',
@@ -6597,6 +6609,7 @@ export default {
     },
     toast: {
       saved: 'Customer saved',
+      created: 'Customer created',
       deleted: 'Customer deleted',
     },
   },

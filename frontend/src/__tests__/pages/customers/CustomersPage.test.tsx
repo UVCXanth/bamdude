@@ -423,7 +423,7 @@ describe('CustomersPage', () => {
     render(<CustomersPage />);
     fireEvent.click(await screen.findByRole('button', { name: /new customer/i }));
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Bob' } });
-    fireEvent.click(screen.getByRole('button', { name: /^create$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save customer' }));
     await waitFor(() => expect(create).toHaveBeenCalledWith({ name: 'Bob', kind: 'company', notes: null, contacts: [] }));
   });
   it('in cards, sorts from the toolbar — the key and both directions', async () => {

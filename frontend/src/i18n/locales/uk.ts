@@ -5443,6 +5443,10 @@ export default {
     newCustomerName: "Ім'я замовника",
     create: 'Створити',
     cancelCreate: 'Скасувати створення замовника',
+    namesakeChoose: 'Обрати його',
+    namesakeCreate: 'Створити ще одного',
+    namesakeGone: 'Цього замовника вже немає',
+    namesakeReadFailed: 'Не вдалося прочитати замовників',
     notInCatalog: 'не в каталозі',
   },
 
@@ -6601,6 +6605,7 @@ export default {
       blankLinked_other: 'Прив’язаний до {{count}} замовлення — заповніть або приберіть',
       removeAnyway: 'Прибрати все одно',
       keep: 'Лишити',
+      addNote: '+ Нотатка',
     },
     delivery: {
       manageTitle: 'Способи доставки',
@@ -6618,6 +6623,10 @@ export default {
       method: 'Спосіб доставки',
       details: 'Деталі доставки',
       none: '— не вказано —',
+      gone: '(більше немає)',
+      goneHint: 'Оберіть інший спосіб або приберіть його',
+      unknownMethod: 'Спосіб #{{id}}',
+      loadFailed: 'Не вдалося прочитати способи доставки',
     },
     tiles: {
       customers: 'Усього замовників',
@@ -6667,12 +6676,15 @@ export default {
     },
     modal: {
       createTitle: 'Новий замовник',
-      editTitle: 'Редагування замовника',
-      name: 'Ім’я',
+      editTitle: 'Редагувати замовника',
+      name: 'Назва',
       kind: 'Тип',
-      notes: 'Нотатки',
-      create: 'Створити',
-      save: 'Зберегти',
+      notes: 'Нотатка для команди',
+      save: 'Зберегти замовника',
+      saving: 'Збереження…',
+      saveAnyway: 'Все одно зберегти',
+      namesakeQuestion: 'Зберегти ще одного замовника з такою назвою?',
+      nameRequired: 'Вкажіть назву замовника.',
     },
     page: {
       orders: 'Замовлення',
@@ -6702,6 +6714,7 @@ export default {
     },
     toast: {
       saved: 'Замовника збережено',
+      created: 'Замовника створено',
       deleted: 'Замовника видалено',
     },
   },
