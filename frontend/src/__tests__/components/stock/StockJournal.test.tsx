@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api, STOCK_ITEM_KINDS, STOCK_REASONS } from '../../../api/client';
 import en from '../../../i18n/locales/en';
@@ -188,6 +188,21 @@ describe('StockJournal', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
       await waitFor(() => expect(screen.queryByText('Could not load the products')).toBeNull());
       expect(window.location.search).toContain('product=1');
+    });
+
+    it("A → B → A quickly: B's late answer never writes the address (R05)", async () => {
+      window.history.pushState({}, '', '/stock?tab=journal&product=1');
+      const parts = deferred<StockJournalProduct[]>();
+      products.mockImplementation(async (book: string) => (book === 'parts' ? parts.promise : [pipe]));
+      render(<StockJournal />);
+      await waitFor(() => expect(productSelect().value).toBe('1'));
+      fireEvent.change(screen.getByLabelText('Ledger'), { target: { value: 'parts' } });
+      await waitFor(() => expect(products).toHaveBeenCalledWith('parts'));
+      fireEvent.change(screen.getByLabelText('Ledger'), { target: { value: 'both' } });
+      await waitFor(() => expect(window.location.search).not.toContain('book='));
+      await act(async () => parts.resolve([]));
+      expect(window.location.search).toContain('product=1');
+      expect(productSelect().value).toBe('1');
     });
 
     it('a product nobody has named yet reads «product #id» until the list answers', async () => {
