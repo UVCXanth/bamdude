@@ -16,14 +16,13 @@ import { WorkshopPanel } from '../../components/workshop/WorkshopPanel';
 import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 import { useProductDetail } from '../../hooks/useProductDetail';
 import { parseProductSection, sectionParam, type ProductSection } from './productSections';
+import { DETAIL_COLUMNS } from '../../components/workshop/detailLayout';
 
 /**
- * The mockup's two columns (WS-13 E9 B05): the side panel and the main one, 16 apart,
- * aligned to the top; ≤ 1100 a narrower side; ≤ 760 one column with the side panel ABOVE
- * the tabs (K2 — the mockup hides it there). The page is never wider than the screen.
+ * The mockup's two columns (WS-13 E9 B05) — shared with the customer's page (E11 E02):
+ * ≤ 760 one column with the side panel ABOVE the tabs (K2 — the mockup hides it there).
  */
-const PRODUCT_LAYOUT =
-  'grid items-start gap-4 grid-cols-[clamp(260px,17vw,360px)_minmax(0,1fr)] max-[1101px]:grid-cols-[240px_minmax(0,1fr)] max-[761px]:grid-cols-1';
+const PRODUCT_LAYOUT = DETAIL_COLUMNS;
 
 /**
  * One product (WS-13 E9): the header, the side panel of what it is, and the tabs of what

@@ -1,54 +1,54 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ChevronRight, Loader2, Pencil, Plus } from 'lucide-react';
 import { api } from '../../api/client';
 import type { ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
-import { useToast } from '../../contexts/ToastContext';
 import { ProgressBar } from '../../components/projects/ProgressBar';
 import { OrderStatusTabs, OrdersListView } from '../../components/projects/OrdersListView';
 import { ORDER_TABS, ORDERS_DEFAULT_SORT } from '../../components/projects/orderList';
 import { useOrderSortOptions } from '../../hooks/useOrderSortOptions';
 import { DispatchNotesSection } from '../../components/stock/DispatchNotesSection';
 import { useOrderActions } from '../../components/projects/orderActions/useOrderActions';
-import { CustomerModal } from '../../components/customers/CustomerModal';
-import { ConfirmModal } from '../../components/ConfirmModal';
+import { CustomerActionMenu } from '../../components/customers/CustomerActionMenu';
+import { CustomerAvatar } from '../../components/customers/CustomerAvatar';
+import { useCustomerActions } from '../../components/customers/useCustomerActions';
 import { Button } from '../../components/Button';
 import { ListSortControl } from '../../components/ListSortControl';
 import { ListViewToggle } from '../../components/ListViewToggle';
 import type { ListView } from '../../components/ListViewToggle';
 import { StatTile, StatTiles } from '../../components/StatTile';
 import { formatMoney } from '../../utils/currency';
-import { invalidateAfterDelete } from '../../utils/queryInvalidation';
 import { CustomerContactsSection } from '../../components/customers/CustomerContactsSection';
 import { useCardsTableViews } from '../../hooks/useCardsTableViews';
 import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 import { useListUrlState } from '../../hooks/useListUrlState';
 import { parseListView, parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
+import { DETAIL_COLUMNS } from '../../components/workshop/detailLayout';
+import { WorkshopPanel } from '../../components/workshop/WorkshopPanel';
 import { WorkshopTabPanel } from '../../components/workshop/WorkshopTabs';
 import { answeredEmpty, listState } from '../../utils/listState';
 
 /**
- * One customer: its figures (three tiles) and one server page of its orders —
- * tab counts are the server's `totals`, never the rows on screen (spec
- * workshop-lists, rules 16–17).
+ * One customer, as the mockup draws it (WS-13 E11 E): the header — «code · type», Edit, the
+ * primary New order, a menu with Delete — and two columns, the product page's grid: on the
+ * left the avatar, the contacts and the team note; on the right three tiles, one server page
+ * of its orders under status tabs, and its issues from stock.
  *
- * The detail endpoint's `figures` is a superset of the list one — only it
- * carries `ordered`/`printed`/`covered_units`/`total_cost`. The
- * `'ordered' in figures` guard is what keeps a list row (which has none of
- * them) from silently rendering an empty progress bar if this component is
- * ever handed one. The orders block is the orders page's own `OrdersListView`
- * with the customer fixed; its tab, sort and page live in the URL.
+ * The detail endpoint's `figures` is a superset of the list one — only it carries
+ * `ordered`/`printed`/`covered_units`/`total_cost`. The `'ordered' in figures` guard is what
+ * keeps a list row (which has none of them) from silently rendering an empty bar if this
+ * component is ever handed one. The orders block is the orders page's own `OrdersListView`
+ * with the customer fixed; its tab, sort and page live in the URL; tab counts are the
+ * server's `totals`, never the rows on screen (spec workshop-lists, rules 16–17).
  */
 export function CustomerPage() {
   const { t } = useTranslation();
   const { id: idParam } = useParams<{ id: string }>();
   const id = Number(idParam);
   const { hasPermission } = useAuth();
-  const { showToast } = useToast();
-  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const forgetCustomer = useForgetOnUnmount(['customer', id]);
 
@@ -69,13 +69,23 @@ export function CustomerPage() {
   const tab: ProjectStatus | 'all' = (ORDER_TABS as readonly string[]).includes(extra.tab)
     ? (extra.tab as ProjectStatus | 'all')
     : 'active';
-  const [editingCustomer, setEditingCustomer] = useState(false);
-  const [deletingCustomer, setDeletingCustomer] = useState(false);
-  // The page's order action host (WS-13 E6 B01), declared before the early returns —
-  // its dialogs outlive the cards they were opened from; focus with nowhere to return
-  // lands on the customer's heading.
+  // The page's order action host (WS-13 E6 B01) and its customer action host (E11 H),
+  // declared before the early returns — their dialogs outlive the doors they were opened
+  // from; focus with nowhere to return lands on the customer's heading.
   const heading = useRef<HTMLHeadingElement>(null);
   const { run, create, dialogs } = useOrderActions({ fallbackFocusRef: heading });
+  const customerActions = useCustomerActions({
+    context: 'detail',
+    fallbackFocusRef: heading,
+    // ⚠️ The entry goes when this page UNMOUNTS, not now: a `removeQueries` while the page
+    // is still mounted would make its own observer refetch the customer just deleted.
+    // Armed here, dropped on unmount — see `useForgetOnUnmount`. Without it a Back inside
+    // the 60 s `staleTime` renders the deleted customer out of cache.
+    onDeleted: () => {
+      forgetCustomer();
+      navigate('/customers');
+    },
+  });
 
   const {
     data: customer,
@@ -114,26 +124,6 @@ export function CustomerPage() {
   // The app-wide currency, fetched the way every other money-showing screen
   // fetches it; `formatMoney` covers the unresolved first paint.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
-
-  const removeCustomer = useMutation({
-    mutationFn: () => api.deleteCustomer(id),
-    // ⚠️ The LISTS only. The orders survive without a customer, so their
-    // rows are stale — but `['customer', id]` is the row that just went, and
-    // refetching it while this page is still mounted lands a 404 on the way out.
-    onSuccess: () => {
-      invalidateAfterDelete(queryClient, 'customer');
-      showToast(t('customers.toast.deleted'));
-      // ⚠️ The entry goes when this page UNMOUNTS, not on the next line: a
-      // `removeQueries` here would run while the page is still mounted (React
-      // has only scheduled the route change) and its own observer would refetch
-      // the customer that was just deleted. Armed here, dropped on unmount —
-      // see `useForgetOnUnmount`. Without it a Back inside the 60 s
-      // `staleTime` renders the deleted customer out of cache.
-      forgetCustomer();
-      navigate('/customers');
-    },
-    onError: (e: Error) => showToast(e.message, 'error'),
-  });
 
   if (isLoading) {
     return (
@@ -174,139 +164,151 @@ export function CustomerPage() {
           {t('projects.tabs.customers')}
         </Link>
         <ChevronRight className="w-4 h-4" />
-        <span className="text-white">{customer.name}</span>
+        <span className="text-white break-words">{customer.name}</span>
       </nav>
 
-      <header className="flex items-start justify-between gap-4 flex-wrap">
+      <header data-testid="customer-header" className="flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0 space-y-1">
-          <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold text-white outline-none">
+          <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold text-white outline-none break-words">
             {customer.name}
           </h1>
           <p className="text-sm text-bambu-gray">{`${customer.code} · ${t(`customers.kind.${customer.kind}`)}`}</p>
-          {customer.notes && <p className="text-sm text-bambu-gray whitespace-pre-line">{customer.notes}</p>}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {hasPermission('projects:update') && (
-            <Button variant="secondary" onClick={() => setEditingCustomer(true)}>
+            <Button variant="secondary" onClick={() => customerActions.run('edit', customer)}>
               <Pencil className="w-4 h-4" />
               {t('common.edit')}
             </Button>
           )}
-          {hasPermission('projects:delete') && (
-            <Button variant="secondary" onClick={() => setDeletingCustomer(true)}>
-              <Trash2 className="w-4 h-4" />
-              {t('common.delete')}
+          {hasPermission('projects:create') && (
+            <Button onClick={() => create(id)}>
+              <Plus className="w-4 h-4" />
+              {t('customers.page.newOrder')}
             </Button>
           )}
+          <CustomerActionMenu customer={customer} actions={customerActions} exclude={['edit', 'newOrder']} />
         </div>
       </header>
 
-      <CustomerContactsSection contacts={customer.contacts} />
-
-      <StatTiles columns={3}>
-        <StatTile
-          testId="customer-tile-orders"
-          label={t('customers.page.tiles.orders')}
-          value={figures.projects}
-          sub={t('customers.page.tiles.ordersSub', {
-            active: figures.active,
-            completed: figures.completed,
-            cancelled: figures.cancelled,
-          })}
-        />
-        <StatTile
-          testId="customer-tile-money"
-          label={t('customers.page.tiles.money')}
-          value={formatMoney(figures.total_price, settings?.currency)}
-          sub={
-            detailed
-              ? t('customers.page.tiles.moneySub', { cost: formatMoney(detailed.total_cost, settings?.currency) })
-              : undefined
-          }
-        />
-        <StatTile
-          testId="customer-tile-covered"
-          label={t('customers.page.tiles.covered')}
-          sub={
-            detailed
-              ? detailed.ordered > 0
-                ? t('customers.page.tiles.coveredSub', { printed: detailed.printed })
-                : t('customers.page.tiles.nothingOrdered')
-              : undefined
-          }
-        >
-          {detailed && <ProgressBar value={detailed.covered_units} max={detailed.ordered} testId="customer-covered" />}
-        </StatTile>
-      </StatTiles>
-
-      <section className="space-y-4">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <h2 className="text-lg font-medium text-white">{t('customers.page.orders')}</h2>
-          <div className="flex items-center gap-2 flex-wrap">
-            <ListViewToggle value={view} options={views} onChange={setView} />
-            {hasPermission('projects:create') && (
-              <Button onClick={() => create(id)}>
-                <Plus className="w-4 h-4" />
-                {t('customers.page.newOrder')}
-              </Button>
+      <div data-testid="customer-layout" className={DETAIL_COLUMNS}>
+        <aside data-testid="customer-side" className="min-w-0">
+          <WorkshopPanel>
+            <div className="mb-3">
+              <CustomerAvatar name={customer.name} size="lg" />
+            </div>
+            <CustomerContactsSection contacts={customer.contacts} />
+            <h3 className="text-sm font-semibold text-white mb-1.5">{t('customers.page.teamNote')}</h3>
+            {customer.notes ? (
+              <p className="text-sm text-bambu-gray-light whitespace-pre-wrap break-words">{customer.notes}</p>
+            ) : (
+              <p className="text-sm text-bambu-gray">{t('customers.page.noNotes')}</p>
             )}
-          </div>
-        </div>
+          </WorkshopPanel>
+        </aside>
 
-        <div className="flex items-center gap-4 flex-wrap">
-          <OrderStatusTabs
-            idBase={tabsId}
-            tab={tab}
-            totals={ordersQuery.data?.totals}
-            busy={ordersQuery.isPlaceholderData}
-            onChange={(key) => setExtra('tab', key)}
-          />
-          {/* A table sorts from its headers; the cards need a control of their own. */}
-          {view === 'cards' && <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />}
-        </div>
-
-        {/* The tab's panel is the orders list or its empty state (WS-13 E2 C02). */}
-        <WorkshopTabPanel idBase={tabsId} value={tab}>
-          {/* The empty explanation stays under a failed re-read of an empty answer (Codex r1 V01). */}
-          {answeredEmpty(ordersState, ordersQuery.data) && <p className="text-bambu-gray text-sm">{t(`orders.list.empty.${tab}`)}</p>}
-          {ordersState !== 'empty' && (
-            <OrdersListView
-              data={ordersQuery.data}
-              isError={ordersQuery.isError}
-              onRetry={() => ordersQuery.refetch()}
-              isPlaceholderData={ordersQuery.isPlaceholderData}
-              view={view}
-              sort={sort}
-              onSortChange={setSort}
-              perPage={perPage}
-              onPageChange={setPage}
-              onPerPageChange={(n) => {
-                setPerPage(n);
-                setPage(1);
-              }}
-              actions={{ run, create }}
+        <div data-testid="customer-main" className="min-w-0 space-y-4">
+          <StatTiles columns={3}>
+            <StatTile
+              testId="customer-tile-orders"
+              label={t('customers.page.tiles.orders')}
+              value={figures.projects}
+              sub={t('customers.page.tiles.ordersSub', {
+                active: figures.active,
+                completed: figures.completed,
+                cancelled: figures.cancelled,
+              })}
             />
-          )}
-        </WorkshopTabPanel>
-      </section>
+            <StatTile
+              testId="customer-tile-money"
+              label={t('customers.page.tiles.money')}
+              value={formatMoney(figures.total_price, settings?.currency)}
+              sub={
+                detailed
+                  ? t('customers.page.tiles.moneySub', { cost: formatMoney(detailed.total_cost, settings?.currency) })
+                  : undefined
+              }
+            />
+            <StatTile
+              testId="customer-tile-covered"
+              label={t('customers.page.tiles.covered')}
+              value={detailed && detailed.ordered > 0 ? detailed.covered_units : undefined}
+              suffix={detailed && detailed.ordered > 0 ? detailed.ordered : undefined}
+              sub={
+                detailed
+                  ? detailed.ordered > 0
+                    ? t('customers.page.tiles.coveredSub', { printed: detailed.printed })
+                    : t('customers.page.tiles.nothingOrdered')
+                  : undefined
+              }
+            >
+              {detailed && detailed.ordered > 0 && (
+                <ProgressBar value={detailed.covered_units} max={detailed.ordered} caption="none" testId="customer-covered" />
+              )}
+            </StatTile>
+          </StatTiles>
 
-      {editingCustomer && <CustomerModal customer={customer} onClose={() => setEditingCustomer(false)} />}
+          <section className="space-y-3">
+            <div data-testid="customer-orders-head" className="flex items-center justify-between gap-3 flex-wrap">
+              <h2 className="text-lg font-medium text-white">{t('customers.page.orders')}</h2>
+              <div className="flex items-center gap-3 flex-wrap min-w-0">
+                <OrderStatusTabs
+                  idBase={tabsId}
+                  tab={tab}
+                  totals={ordersQuery.data?.totals}
+                  busy={ordersQuery.isPlaceholderData}
+                  onChange={(key) => setExtra('tab', key)}
+                />
+                <ListViewToggle value={view} options={views} onChange={setView} />
+              </div>
+            </div>
+            {/* A table sorts from its headers; the cards need a control of their own. */}
+            {view === 'cards' && (
+              <div className="flex justify-end">
+                <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />
+              </div>
+            )}
 
-      <DispatchNotesSection customerId={customer.id} canEdit={hasPermission('projects:update')} />
+            {/* The tab's panel is the orders list or its empty state (WS-13 E2 C02). */}
+            <WorkshopTabPanel idBase={tabsId} value={tab}>
+              {/* The empty explanation stays under a failed re-read of an empty answer (Codex r1 V01). */}
+              {answeredEmpty(ordersState, ordersQuery.data) && (
+                <p className="text-bambu-gray text-sm">{t(`orders.list.empty.${tab}`)}</p>
+              )}
+              {ordersState !== 'empty' && (
+                <OrdersListView
+                  data={ordersQuery.data}
+                  isError={ordersQuery.isError}
+                  onRetry={() => ordersQuery.refetch()}
+                  isPlaceholderData={ordersQuery.isPlaceholderData}
+                  view={view}
+                  sort={sort}
+                  onSortChange={setSort}
+                  perPage={perPage}
+                  onPageChange={setPage}
+                  onPerPageChange={(n) => {
+                    setPerPage(n);
+                    setPage(1);
+                  }}
+                  actions={{ run, create }}
+                />
+              )}
+            </WorkshopTabPanel>
+          </section>
+
+          {/* Keyed by its owner: another customer starts on its first page (E09). */}
+          <DispatchNotesSection
+            key={customer.id}
+            customerId={customer.id}
+            canEdit={hasPermission('projects:update')}
+            title={t('customers.page.issues')}
+            caption={t('customers.page.issuesCaption')}
+          />
+        </div>
+      </div>
 
       {dialogs}
-
-      {deletingCustomer && (
-        <ConfirmModal
-          title={t('customers.confirm.deleteTitle')}
-          message={t('customers.confirm.deleteBody')}
-          variant="danger"
-          isLoading={removeCustomer.isPending}
-          onConfirm={() => removeCustomer.mutate()}
-          onCancel={() => setDeletingCustomer(false)}
-        />
-      )}
-
+      {customerActions.host}
     </div>
   );
 }

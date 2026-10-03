@@ -6571,10 +6571,14 @@ export default {
     },
     page: {
       orders: 'Orders',
-      newOrder: 'New order for this customer',
+      newOrder: 'New order',
+      teamNote: 'Team note',
+      noNotes: 'No notes.',
+      issues: 'Issues from stock',
+      issuesCaption: 'every dispatch note — with an order or without',
       tiles: {
         orders: 'Orders',
-        ordersSub: 'active: {{active}} · completed: {{completed}} · cancelled: {{cancelled}}',
+        ordersSub: '{{active}} active · {{completed}} completed · {{cancelled}} cancelled',
         money: 'Total / cost',
         moneySub: 'print cost {{cost}}',
         covered: 'Covered of ordered',
@@ -6586,7 +6590,6 @@ export default {
     },
     confirm: {
       deleteTitle: 'Delete customer?',
-      deleteBody: 'Their orders stay, without a customer.',
       orders: 'Its orders ({{count}}) stay, without a customer.',
       active: 'The active ones ({{count}}) will then close to stock instead of being issued.',
       always: 'Issued dispatch notes keep the recipient’s name. The customer’s contacts will be deleted.',

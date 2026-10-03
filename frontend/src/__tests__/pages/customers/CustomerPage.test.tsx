@@ -8,7 +8,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { Link, Routes, Route } from 'react-router';
 import { QueryClientProvider } from '@tanstack/react-query';
+import { http, HttpResponse } from 'msw';
 import { render } from '../../utils';
+import { server } from '../../mocks/server';
 import { api } from '../../../api/client';
 import { CustomerPage } from '../../../pages/customers/CustomerPage';
 import { createAppQueryClient } from '../../../utils/appQueryClient';
@@ -119,6 +121,23 @@ afterEach(() => {
   window.history.pushState({}, '', '/');
 });
 
+function asReader() {
+  server.use(
+    http.get('/api/v1/auth/me', () =>
+      HttpResponse.json({
+        id: 2,
+        username: 'viewer',
+        role: 'user',
+        is_active: true,
+        is_admin: false,
+        groups: [{ id: 2, name: 'Viewers' }],
+        permissions: ['projects:read'],
+        created_at: '2024-01-01T00:00:00Z',
+      }),
+    ),
+  );
+}
+
 describe('CustomerPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -141,9 +160,11 @@ describe('CustomerPage', () => {
     // Tab counts are the server's totals, not the rows on this page.
     expect(screen.getByRole('tab', { name: /completed/i }).textContent).toContain('3');
     expect(screen.getByTestId('customer-tile-orders')).toHaveTextContent('2');
-    // covered / ordered from the detail figures — drawn by ProgressBar, never recomputed.
-    expect(screen.getByText('9 / 12')).toBeInTheDocument();
-    expect(screen.getByTestId('customer-tile-covered')).toHaveTextContent('printed: 7');
+    // covered / ordered from the detail figures — the tile's own figure and a bar, never recomputed.
+    const covered = screen.getByTestId('customer-tile-covered');
+    expect(covered).toHaveTextContent('9 / 12');
+    expect(covered).toHaveTextContent('printed: 7');
+    expect(within(covered).getByTestId('customer-covered-fill')).toHaveStyle({ width: '75%' });
     expect(screen.getByText('VIP')).toBeInTheDocument();
   });
 
@@ -200,6 +221,82 @@ describe('CustomerPage', () => {
     expect(within(section).getByRole('link', { name: 'o@acme.ua' })).toHaveAttribute('href', 'mailto:o@acme.ua');
     expect(within(section).getByText('Kyiv · Nova Poshta · branch 12')).toBeInTheDocument();
     expect(within(section).getByText('call first')).toBeInTheDocument();
+  });
+
+  describe('the page as the mockup draws it (WS-13 E11 E)', () => {
+    it('the header: «code · type», Edit, the primary New order, and a menu with Delete only — no note there', async () => {
+      vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
+      vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
+      vi.spyOn(api, 'getCustomers').mockResolvedValue([customer] as never);
+      mountAt();
+      const header = await screen.findByTestId('customer-header');
+      expect(within(header).getByRole('heading', { level: 1, name: 'ACME' })).toHaveAttribute('tabindex', '-1');
+      expect(within(header).getByText('CU-0001 · Company')).toBeInTheDocument();
+      expect(within(header).queryByText('VIP')).toBeNull();
+      expect(within(header).getByRole('button', { name: 'Edit' })).toBeInTheDocument();
+      fireEvent.click(within(header).getByRole('button', { name: 'Actions for ACME' }));
+      expect(within(await screen.findByRole('menu')).getAllByRole('menuitem').map((i) => i.textContent?.trim())).toEqual([
+        'Delete',
+      ]);
+      fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+      fireEvent.click(within(header).getByRole('button', { name: 'New order' }));
+      const form = await screen.findByRole('dialog', { name: 'New order' });
+      await waitFor(() => expect(within(form).getByLabelText('Customer')).toHaveValue('1'));
+      // The orders section has no «new order» button of its own any more.
+      expect(screen.queryByRole('button', { name: /New order for this customer/ })).toBeNull();
+    });
+
+    it('a reader sees the customer, with no Edit, no New order and no menu', async () => {
+      asReader();
+      vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
+      vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
+      mountAt();
+      const header = await screen.findByTestId('customer-header');
+      await waitFor(() => expect(within(header).queryByRole('button')).toBeNull());
+    });
+
+    it('two columns — the product page\'s grid; the left panel: avatar, contacts, team note', async () => {
+      vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
+      vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
+      mountAt();
+      const layout = await screen.findByTestId('customer-layout');
+      expect(layout.className).toContain('grid-cols-[clamp(260px,17vw,360px)_minmax(0,1fr)]');
+      expect(layout.className).toContain('max-[1101px]:grid-cols-[240px_minmax(0,1fr)]');
+      expect(layout.className).toContain('max-[761px]:grid-cols-1');
+      const left = within(layout).getByTestId('customer-side');
+      expect(within(left).getByText('A')).toHaveAttribute('aria-hidden', 'true');
+      expect(within(left).getByRole('heading', { level: 3, name: 'Contacts' })).toBeInTheDocument();
+      expect(within(left).getByRole('heading', { level: 3, name: 'Team note' })).toBeInTheDocument();
+      expect(within(left).getByText('VIP')).toHaveClass('whitespace-pre-wrap');
+      const right = within(layout).getByTestId('customer-main');
+      expect(within(right).getByTestId('customer-tile-orders')).toHaveTextContent('1 active · 1 completed · 0 cancelled');
+      expect(within(right).getByRole('heading', { level: 2, name: 'Orders' })).toBeInTheDocument();
+    });
+
+    it('no note says so', async () => {
+      vi.spyOn(api, 'getCustomer').mockResolvedValue({ ...customer, notes: null } as never);
+      vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
+      mountAt();
+      expect(await screen.findByText('No notes.')).toBeInTheDocument();
+    });
+
+    it('the orders row: the heading, the status tabs and the view switch together', async () => {
+      vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
+      vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
+      mountAt();
+      const head = await screen.findByTestId('customer-orders-head');
+      expect(within(head).getByRole('heading', { level: 2, name: 'Orders' })).toBeInTheDocument();
+      expect(within(head).getByRole('tablist')).toBeInTheDocument();
+      expect(within(head).getByRole('group', { name: 'View' })).toBeInTheDocument();
+    });
+
+    it('«Issues from stock» with its caption, the customer\'s notes keyed by the customer', async () => {
+      vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
+      vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
+      mountAt();
+      expect(await screen.findByRole('heading', { level: 2, name: 'Issues from stock' })).toBeInTheDocument();
+      expect(screen.getByText('every dispatch note — with an order or without')).toBeInTheDocument();
+    });
   });
 
   it('says so when there are no contacts', async () => {
@@ -277,7 +374,8 @@ describe('CustomerPage', () => {
     expect(await screen.findByRole('heading', { name: 'ACME' })).toBeInTheDocument();
 
     // Cancelling the order invalidates ['customer', id]; that refetch fails.
-    fireEvent.click(await screen.findByRole('button', { name: /actions/i }));
+    // The order's own menu — the customer's «Actions for …» is in the header (WS-13 E11 E01).
+    fireEvent.click(await within(await screen.findByTestId('customer-main')).findByRole('button', { name: /actions/i }));
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Cancel' }));
     // Cancelling asks first (WS-13 E6 B05).
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel order' }));
@@ -309,7 +407,8 @@ describe('CustomerPage', () => {
     );
 
     expect(await screen.findByRole('heading', { name: 'ACME' })).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole('button', { name: /actions/i }));
+    // The order's own menu — the customer's «Actions for …» is in the header (WS-13 E11 E01).
+    fireEvent.click(await within(await screen.findByTestId('customer-main')).findByRole('button', { name: /actions/i }));
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Cancel' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel order' }));
 
@@ -339,7 +438,8 @@ describe('CustomerPage', () => {
     });
     mountAt();
     expect(await screen.findByRole('heading', { name: 'ACME' })).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole('button', { name: /actions/i }));
+    // The order's own menu — the customer's «Actions for …» is in the header (WS-13 E11 E01).
+    fireEvent.click(await within(await screen.findByTestId('customer-main')).findByRole('button', { name: /actions/i }));
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Mark completed' }));
     expect(await screen.findByRole('dialog', { name: 'Stock & issue' })).toBeInTheDocument();
     expect(update).not.toHaveBeenCalled();
@@ -362,8 +462,12 @@ describe('CustomerPage', () => {
     );
 
     expect(await screen.findByRole('heading', { name: 'ACME' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /^confirm$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for ACME' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
+    const confirm = await screen.findByRole('dialog', { name: 'Delete customer?' });
+    expect(confirm).toHaveTextContent('Its orders (2) stay, without a customer.');
+    expect(confirm).toHaveTextContent('The active ones (1) will then close to stock instead of being issued.');
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Delete' }));
 
     expect(await screen.findByText('customer list')).toBeInTheDocument();
     await waitFor(() => expect(client.getQueryData(['customer', 1])).toBeUndefined());

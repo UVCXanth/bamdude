@@ -6,8 +6,9 @@ interface ProgressBarProps {
   label?: string;
   /** The caption on the right: `value / max` (the default) or the percentage — of the
    *  server's `progress` when given, rounded DOWN, so 99.99 % never reads «100%».
-   *  `both` (WS-13 E7 B02): `label value / max` on the left, the percentage on the right. */
-  caption?: 'ratio' | 'percent' | 'both';
+   *  `both` (WS-13 E7 B02): `label value / max` on the left, the percentage on the right.
+   *  `none` (WS-13 E11 E04): the bar alone, under a figure that already says the numbers. */
+  caption?: 'ratio' | 'percent' | 'both' | 'none';
   testId?: string;
 }
 
@@ -34,6 +35,7 @@ export function ProgressBar({ value, max, progress, label, caption = 'ratio', te
     : Math.min(100, Math.max(0, progress * 100));
   return (
     <div data-testid={testId} className="space-y-1">
+      {caption !== 'none' && (
       <div className="flex items-center justify-between gap-2 text-xs text-bambu-gray">
         {caption === 'both' ? (
           <span className="tabular-nums">{label ? `${label} ${value} / ${max}` : `${value} / ${max}`}</span>
@@ -49,6 +51,7 @@ export function ProgressBar({ value, max, progress, label, caption = 'ratio', te
               `${value < max ? Math.min(99, percentDown(progress ?? value / max)) : percentDown(progress ?? value / max)}%`}
         </span>
       </div>
+      )}
       <div className="h-2 rounded-full bg-bambu-dark-tertiary overflow-hidden">
         <div
           data-testid={`${testId}-fill`}
