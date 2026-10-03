@@ -6512,6 +6512,12 @@ export default {
     },
     delivery: {
       manageTitle: 'Delivery methods',
+      subtitle: 'Used by customers’ contacts and dispatch notes',
+      done: 'Done',
+      rename: 'Rename {{name}}',
+      deleteTitle: 'Delete the method «{{name}}»?',
+      deleteBody: 'The method leaves the reference. No contact uses it; issued dispatch notes keep its name.',
+      empty: 'No methods yet',
       manage: 'Manage methods…',
       name: 'Delivery method name',
       new: 'New delivery method',
