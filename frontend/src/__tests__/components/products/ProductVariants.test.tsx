@@ -10,7 +10,6 @@ import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { Product } from '../../../api/client';
 import { ProductVariants } from '../../../components/products/ProductVariants';
-import { CompositionTable } from '../../../components/products/CompositionTable';
 
 const product = {
   id: 7,
@@ -117,23 +116,5 @@ describe('ProductVariants', () => {
   it('shows nothing to a viewer of a product without variants', () => {
     const { container } = render(<ProductVariants product={{ ...product, variant_groups: [] }} canEdit={false} />);
     expect(container).toBeEmptyDOMElement();
-  });
-});
-
-describe('CompositionTable — variant column', () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('binds a part to an option', async () => {
-    const save = vi.spyOn(api, 'updateProductPart').mockResolvedValue(product.parts[0]);
-    render(<CompositionTable product={product} canEdit />);
-    fireEvent.change(screen.getByLabelText('Variant'), { target: { value: '12' } });
-    await waitFor(() => expect(save).toHaveBeenCalledWith(7, 5, { variant_option_id: 12 }));
-  });
-
-  it('has no variant column when the product has no groups', () => {
-    render(<CompositionTable product={{ ...product, variant_groups: [] }} canEdit />);
-    expect(screen.queryByLabelText('Variant')).not.toBeInTheDocument();
   });
 });

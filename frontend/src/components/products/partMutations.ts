@@ -4,9 +4,8 @@ import type { ProductPart } from '../../api/client';
 import { invalidateProductFiles } from '../../utils/queryInvalidation';
 
 /**
- * Every write of a product's composition — a field of `CompositionTable`, an alias, a merge,
- * the add form, a delete — carries this key, so a door can wait for all of them
- * (`useIsMutating`): the page's «Done» does (WS-13 E9 D05).
+ * Every write of a product's composition — the part dialog, a merge, a delete — carries this
+ * key, so a door can wait for all of them (`useIsMutating`).
  */
 export function compositionMutationKey(productId: number) {
   return ['product-composition', productId] as const;

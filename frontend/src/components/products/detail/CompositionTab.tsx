@@ -1,10 +1,11 @@
-import { useEffect, useId, useRef, useState, type RefObject } from 'react';
-import { useIsMutating, useQuery, useQueryClient, type Mutation } from '@tanstack/react-query';
+import { useState, type RefObject } from 'react';
+import { useIsMutating, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ExternalLink, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ExternalLink, GitMerge, Pencil, Plus, Trash2 } from 'lucide-react';
 import { api } from '../../../api/client';
 import type { PartSource, PartSourcesSummary, Product, ProductPart, ProductSources } from '../../../api/client';
 import { useAuth } from '../../../contexts/AuthContext';
+import { useToast } from '../../../contexts/ToastContext';
 import { useFocusWhenRowLeaves } from '../../../hooks/useFocusWhenRowLeaves';
 import { formatMoney } from '../../../utils/currency';
 import { Button } from '../../Button';
@@ -13,10 +14,10 @@ import { ActionConfirm } from '../../workshop/ActionConfirm';
 import { LoadFailedNote } from '../../workshop/LoadFailedNote';
 import { RefreshFailedNote } from '../../workshop/RefreshFailedNote';
 import { WorkshopDialog } from '../../workshop/WorkshopDialog';
-import { AddPartRow } from '../AddPartRow';
-import { CompositionTable } from '../CompositionTable';
+import { MergePartDialog } from '../MergePartDialog';
+import { ProductPartDialog } from '../ProductPartDialog';
 import { ProductVariants } from '../ProductVariants';
-import { compositionMutationKey, deleteProductPart, variantsMutationKey } from '../partMutations';
+import { deleteProductPart, variantsMutationKey } from '../partMutations';
 import { ModelChip } from './ModelChip';
 
 const HEAD = 'px-3 py-2 text-left text-xs font-normal text-bambu-gray';
@@ -24,7 +25,7 @@ const CELL = 'px-3 py-2 align-top';
 const CHIP = 'inline-flex items-center rounded px-1.5 text-[11px] leading-5';
 const AMBER = 'text-amber-700 dark:text-amber-400';
 
-/** `sort_order` is the authority; `id` only breaks its ties (as `CompositionTable`). */
+/** `sort_order` is the authority; `id` only breaks its ties. */
 function byOrder(a: ProductPart, b: ProductPart): number {
   return a.sort_order - b.sort_order || a.id - b.id;
 }
@@ -82,22 +83,18 @@ function SourcesCell({ state, partId }: { state: SourcesState; partId: number })
 }
 
 /**
- * The «Composition» tab of the product page (WS-13 E9 D01–D05).
+ * The «Composition» tab of the product page (WS-13 E9 D01–D04, E10 C10).
  *
- * Reading is the default and has no fields: the variants card, the printed parts with
- * the plates that give them (`GET /products/{id}/sources`, the key `LineConfigDialog`
- * shares), the purchased parts. The doors into the existing editors (K1, R08) are this
- * tab's; their writers, refusals and invalidations do not change until E10:
+ * It has no fields: the variants card, the printed parts with the plates that give them
+ * (`GET /products/{id}/sources`, the key `LineConfigDialog` shares), the purchased parts.
+ * Every edit is a dialog, and the tab holds its doors:
  *
- * - «Edit composition» shows `CompositionTable` with every field. «Done» first takes the
- *   focus off a field (its blur commits, as ever), waits for every write of the
- *   composition (`compositionMutationKey`) — «Saving…» meanwhile — then reads again with
- *   the focus on «Edit composition». A refused write keeps the editor (and its toast).
- *   The mode survives a change of tab: the panel stays mounted.
- * - A row's «Edit» opens the editor on that row, the focus in its name; «Delete» asks with
- *   the existing words and deletes through `deleteProductPart`, the editor's own path.
- * - «Add part» is the existing form in a dialog: it stays open for the next part, a
- *   refusal stands in its error slot.
+ * - «Add part» and a row's «Edit» open `ProductPartDialog` — one part, one request;
+ * - a printed row's «Merge into…» (with another printed part to go into) opens
+ *   `MergePartDialog`; the merged row leaves and the page's heading takes the focus;
+ * - «Delete» asks with what the server really does (C09): the part goes with the history
+ *   of its movements (a purchased one with its purchases), and the number on the shelf is
+ *   said — no write-off movement is recorded;
  * - «Manage variants…» is the existing variants editor in a dialog that nothing closes
  *   while one of its writes is on its way (`variantsMutationKey`).
  */
@@ -112,28 +109,16 @@ export function CompositionTab({
   const { hasPermission } = useAuth();
   const canEdit = hasPermission('projects:update');
   const queryClient = useQueryClient();
-  const compositionKey = compositionMutationKey(product.id);
-  const saving = useIsMutating({ mutationKey: compositionKey });
+  const { showToast } = useToast();
   const variantsSaving = useIsMutating({ mutationKey: variantsMutationKey(product.id) });
 
-  const [editing, setEditing] = useState(false);
-  // The writes «Done» waits for; `null` when nobody pressed it.
-  const [closing, setClosing] = useState<Mutation<unknown, Error, unknown, unknown>[] | null>(null);
-  const [focusPart, setFocusPart] = useState<number | null>(null);
+  // The part dialog: `part: null` is a new part.
+  const [partDialog, setPartDialog] = useState<{ part: ProductPart | null } | null>(null);
+  const [merging, setMerging] = useState<ProductPart | null>(null);
   const [deleting, setDeleting] = useState<ProductPart | null>(null);
-  const [adding, setAdding] = useState(false);
-  // «Done», the X and Escape ask the mutation cache itself: `saving` above is a render
-  // late, and «Add» then «Done» at once closed the dialog under a request still running —
-  // its refusal and the draft went with it (WS-13 E9 Codex review V02).
-  const closeAdding = () => {
-    if (queryClient.isMutating({ mutationKey: compositionKey }) > 0) return;
-    setAdding(false);
-  };
-  const [addError, setAddError] = useState<string | null>(null);
   const [variantsOpen, setVariantsOpen] = useState(false);
-  const editId = useId();
-  const backToEdit = useRef(false);
   const keepFocusWhenRowLeaves = useFocusWhenRowLeaves(headingRef);
+  const rowOf = (part: ProductPart) => document.querySelector(`[data-testid="part-${part.id}-row"]`);
 
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
   const sources = useQuery<ProductSources>({
@@ -146,41 +131,6 @@ export function CompositionTab({
     : sources.isError
       ? { kind: 'failed' }
       : { kind: 'loading' };
-
-  // «Done»: once every write it saw has settled — and none was refused — the tab reads.
-  useEffect(() => {
-    if (!closing) return;
-    if (queryClient.isMutating({ mutationKey: compositionKey }) > 0) return;
-    setClosing(null);
-    if (closing.some((m) => m.state.status === 'error')) return;
-    backToEdit.current = true;
-    setEditing(false);
-    // `compositionKey` is a fresh array each render; `saving` is what moves.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [closing, saving, queryClient]);
-
-  useEffect(() => {
-    if (!editing && backToEdit.current) {
-      backToEdit.current = false;
-      document.getElementById(editId)?.focus();
-    }
-  }, [editing, editId]);
-
-  // A row's «Edit»: the editor is on screen now — bring the row in and put the focus in its name.
-  useEffect(() => {
-    if (!editing || focusPart == null) return;
-    const row = document.querySelector<HTMLElement>(`[data-testid="part-${focusPart}-row"]`);
-    row?.scrollIntoView?.({ block: 'center' });
-    row?.querySelector<HTMLInputElement>('input[type="text"]')?.focus();
-    setFocusPart(null);
-  }, [editing, focusPart]);
-
-  const finish = () => {
-    const active = document.activeElement;
-    // The blur commits a field still being typed in, exactly as leaving it does.
-    if (active instanceof HTMLElement) active.blur();
-    setClosing(queryClient.getMutationCache().findAll({ mutationKey: compositionKey, status: 'pending' }));
-  };
 
   const groups = product.variant_groups ?? [];
   const optionLabel = new Map(groups.flatMap((g) => g.options.map((o) => [o.id, `${g.name}: ${o.name}`] as const)));
@@ -211,13 +161,23 @@ export function CompositionTab({
             <CardActionMenuItem
               onSelect={() => {
                 close();
-                setFocusPart(part.id);
-                setEditing(true);
+                setPartDialog({ part });
               }}
             >
               <Pencil className="h-4 w-4" />
               {t('common.edit')}
             </CardActionMenuItem>
+            {part.kind === 'printed' && printed.length > 1 && (
+              <CardActionMenuItem
+                onSelect={() => {
+                  close();
+                  setMerging(part);
+                }}
+              >
+                <GitMerge className="h-4 w-4" />
+                {t('products.composition.mergeInto')}
+              </CardActionMenuItem>
+            )}
             <CardActionMenuItem
               danger
               onSelect={() => {
@@ -232,8 +192,6 @@ export function CompositionTab({
         )}
       </CardActionMenu>
     );
-
-  const editLabel = saving > 0 ? t('products.detail.composition.saving') : t('products.detail.composition.done');
 
   return (
     <div className="space-y-5">
@@ -286,185 +244,174 @@ export function CompositionTab({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-base font-semibold text-white">{t('products.composition.printed')}</h3>
           {canEdit && (
-            <div className="flex flex-wrap items-center gap-2">
-              {editing ? (
-                <Button size="sm" variant="secondary" onClick={finish} disabled={saving > 0 || closing !== null}>
-                  {editLabel}
-                </Button>
-              ) : (
-                <Button id={editId} size="sm" variant="ghost" onClick={() => setEditing(true)}>
-                  {t('products.detail.composition.edit')}
-                </Button>
-              )}
-              <Button
-                size="sm"
-                onClick={() => {
-                  setAddError(null);
-                  setAdding(true);
-                }}
-              >
-                <Plus className="h-4 w-4" />
-                {t('products.detail.composition.addPart')}
-              </Button>
-            </div>
+            <Button size="sm" onClick={() => setPartDialog({ part: null })}>
+              <Plus className="h-4 w-4" />
+              {t('products.detail.composition.addPart')}
+            </Button>
           )}
         </div>
 
-        {editing ? (
-          <CompositionTable product={product} canEdit />
-        ) : (
-          <>
-            {sources.isError && (
-              sources.data ? (
-                <RefreshFailedNote onRetry={() => sources.refetch()} />
-              ) : (
-                <LoadFailedNote
-                  role="status"
-                  message={t('products.detail.composition.sourcesFailed')}
-                  onRetry={() => sources.refetch()}
-                />
-              )
-            )}
-            {printed.length === 0 ? (
-              <small className="block text-xs text-bambu-gray">{t('products.detail.composition.printedEmpty')}</small>
-            ) : (
-              <div className="overflow-x-auto rounded-xl border border-bambu-dark-tertiary">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-bambu-dark-tertiary">
-                      <th className={HEAD}>{t('products.composition.name')}</th>
-                      <th className={HEAD}>{t('products.composition.perUnit')}</th>
-                      <th className={HEAD}>{t('products.composition.variant')}</th>
-                      <th className={HEAD}>{t('products.composition.aliases')}</th>
-                      <th className={HEAD}>{t('products.detail.composition.sources')}</th>
-                      {canEdit && <th className={HEAD} aria-label={t('common.actions')} />}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {printed.map((part) => (
-                      <tr key={part.id} data-testid={`part-${part.id}-row`} className="border-b border-bambu-dark-tertiary last:border-0">
-                        <td className={CELL}>
-                          <b className="font-medium text-white break-words">{part.name}</b>
-                          {part.auto && (
-                            <span className={`${CHIP} ml-1.5 bg-bambu-dark-tertiary text-bambu-gray`}>
-                              {t('products.composition.fromFile')}
-                            </span>
-                          )}
-                        </td>
-                        <td className={`${CELL} whitespace-nowrap tabular-nums`}>{perUnit(part)}</td>
-                        <td className={CELL}>{variantOf(part)}</td>
-                        <td className={CELL}>
-                          <span className="flex flex-wrap gap-1">
-                            {part.aliases.map((alias) => (
-                              <span key={alias} className={`${CHIP} bg-bambu-dark-tertiary font-mono text-bambu-gray-light`}>
-                                {alias}
-                              </span>
-                            ))}
-                          </span>
-                        </td>
-                        <td className={CELL} data-testid="part-sources">
-                          <SourcesCell state={sourcesState} partId={part.id} />
-                        </td>
-                        {canEdit && <td className={`${CELL} text-right`}>{rowMenu(part)}</td>}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {/* D03 — the purchased parts. */}
-            <h3 className="pt-3 text-base font-semibold text-white">{t('products.composition.purchased')}</h3>
-            {purchased.length === 0 ? (
-              <small className="block text-xs text-bambu-gray">{t('products.detail.composition.purchasedEmpty')}</small>
-            ) : (
-              <div className="overflow-x-auto rounded-xl border border-bambu-dark-tertiary">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-bambu-dark-tertiary">
-                      <th className={HEAD}>{t('products.composition.name')}</th>
-                      <th className={HEAD}>{t('products.composition.perUnit')}</th>
-                      <th className={HEAD}>{t('products.composition.variant')}</th>
-                      <th className={HEAD}>{t('products.detail.composition.price')}</th>
-                      <th className={HEAD}>{t('products.composition.sourcingUrl')}</th>
-                      <th className={HEAD}>{t('products.composition.remarks')}</th>
-                      {canEdit && <th className={HEAD} aria-label={t('common.actions')} />}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {purchased.map((part) => (
-                      <tr key={part.id} data-testid={`part-${part.id}-row`} className="border-b border-bambu-dark-tertiary last:border-0">
-                        <td className={`${CELL} text-white break-words`}>{part.name}</td>
-                        <td className={`${CELL} whitespace-nowrap tabular-nums`}>{perUnit(part)}</td>
-                        <td className={CELL}>{variantOf(part)}</td>
-                        <td className={`${CELL} whitespace-nowrap tabular-nums`} data-testid="part-price">
-                          {part.unit_price != null ? formatMoney(part.unit_price, settings?.currency) : '—'}
-                        </td>
-                        <td className={CELL} data-testid="part-url">
-                          {part.sourcing_url ? (
-                            <a
-                              href={part.sourcing_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              title={part.sourcing_url}
-                              className="inline-flex items-center gap-1 text-bambu-gray-light hover:text-white"
-                            >
-                              {t('products.detail.composition.link')}
-                              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                            </a>
-                          ) : (
-                            '—'
-                          )}
-                        </td>
-                        <td className={CELL}>
-                          <small className="text-xs text-bambu-gray-light wrap-anywhere">{part.remarks ?? ''}</small>
-                        </td>
-                        {canEdit && <td className={`${CELL} text-right`}>{rowMenu(part)}</td>}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            <p className="text-xs text-bambu-gray">{t('products.detail.composition.footnote')}</p>
-          </>
+        {sources.isError && (
+          sources.data ? (
+            <RefreshFailedNote onRetry={() => sources.refetch()} />
+          ) : (
+            <LoadFailedNote
+              role="status"
+              message={t('products.detail.composition.sourcesFailed')}
+              onRetry={() => sources.refetch()}
+            />
+          )
         )}
+        {printed.length === 0 ? (
+          <small className="block text-xs text-bambu-gray">{t('products.detail.composition.printedEmpty')}</small>
+        ) : (
+          <div className="overflow-x-auto rounded-xl border border-bambu-dark-tertiary">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-bambu-dark-tertiary">
+                  <th className={HEAD}>{t('products.composition.name')}</th>
+                  <th className={HEAD}>{t('products.composition.perUnit')}</th>
+                  <th className={HEAD}>{t('products.composition.variant')}</th>
+                  <th className={HEAD}>{t('products.composition.aliases')}</th>
+                  <th className={HEAD}>{t('products.detail.composition.sources')}</th>
+                  {canEdit && <th className={HEAD} aria-label={t('common.actions')} />}
+                </tr>
+              </thead>
+              <tbody>
+                {printed.map((part) => (
+                  <tr key={part.id} data-testid={`part-${part.id}-row`} className="border-b border-bambu-dark-tertiary last:border-0">
+                    <td className={CELL}>
+                      <b className="font-medium text-white break-words">{part.name}</b>
+                      {part.auto && (
+                        <span className={`${CHIP} ml-1.5 bg-bambu-dark-tertiary text-bambu-gray`}>
+                          {t('products.composition.fromFile')}
+                        </span>
+                      )}
+                    </td>
+                    <td className={`${CELL} whitespace-nowrap tabular-nums`}>{perUnit(part)}</td>
+                    <td className={CELL}>{variantOf(part)}</td>
+                    <td className={CELL}>
+                      <span className="flex flex-wrap gap-1">
+                        {part.aliases.map((alias) => (
+                          <span key={alias} className={`${CHIP} bg-bambu-dark-tertiary font-mono text-bambu-gray-light`}>
+                            {alias}
+                          </span>
+                        ))}
+                      </span>
+                    </td>
+                    <td className={CELL} data-testid="part-sources">
+                      <SourcesCell state={sourcesState} partId={part.id} />
+                    </td>
+                    {canEdit && <td className={`${CELL} text-right`}>{rowMenu(part)}</td>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* D03 — the purchased parts. */}
+        <h3 className="pt-3 text-base font-semibold text-white">{t('products.composition.purchased')}</h3>
+        {purchased.length === 0 ? (
+          <small className="block text-xs text-bambu-gray">{t('products.detail.composition.purchasedEmpty')}</small>
+        ) : (
+          <div className="overflow-x-auto rounded-xl border border-bambu-dark-tertiary">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-bambu-dark-tertiary">
+                  <th className={HEAD}>{t('products.composition.name')}</th>
+                  <th className={HEAD}>{t('products.composition.perUnit')}</th>
+                  <th className={HEAD}>{t('products.composition.variant')}</th>
+                  <th className={HEAD}>{t('products.detail.composition.price')}</th>
+                  <th className={HEAD}>{t('products.composition.sourcingUrl')}</th>
+                  <th className={HEAD}>{t('products.composition.remarks')}</th>
+                  {canEdit && <th className={HEAD} aria-label={t('common.actions')} />}
+                </tr>
+              </thead>
+              <tbody>
+                {purchased.map((part) => (
+                  <tr key={part.id} data-testid={`part-${part.id}-row`} className="border-b border-bambu-dark-tertiary last:border-0">
+                    <td className={`${CELL} text-white break-words`}>{part.name}</td>
+                    <td className={`${CELL} whitespace-nowrap tabular-nums`}>{perUnit(part)}</td>
+                    <td className={CELL}>{variantOf(part)}</td>
+                    <td className={`${CELL} whitespace-nowrap tabular-nums`} data-testid="part-price">
+                      {part.unit_price != null ? formatMoney(part.unit_price, settings?.currency) : '—'}
+                    </td>
+                    <td className={CELL} data-testid="part-url">
+                      {part.sourcing_url ? (
+                        <a
+                          href={part.sourcing_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={part.sourcing_url}
+                          className="inline-flex items-center gap-1 text-bambu-gray-light hover:text-white"
+                        >
+                          {t('products.detail.composition.link')}
+                          <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                        </a>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td className={CELL}>
+                      <small className="text-xs text-bambu-gray-light wrap-anywhere">{part.remarks ?? ''}</small>
+                    </td>
+                    {canEdit && <td className={`${CELL} text-right`}>{rowMenu(part)}</td>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="text-xs text-bambu-gray">{t('products.detail.composition.footnote')}</p>
       </div>
+
+      {partDialog && (
+        <ProductPartDialog
+          key={partDialog.part?.id ?? 'new'}
+          product={product}
+          part={partDialog.part}
+          onClose={() => setPartDialog(null)}
+        />
+      )}
+
+      {merging && (
+        <MergePartDialog
+          product={product}
+          source={merging}
+          // The merged row — and its menu, where the focus goes back — leaves with the re-read.
+          beforeSend={() => keepFocusWhenRowLeaves(rowOf(merging))}
+          onClose={() => setMerging(null)}
+        />
+      )}
 
       {deleting && (
         <ActionConfirm
-          title={t('products.composition.delete')}
-          body={t(
-            deleting.kind === 'purchased' ? 'products.composition.confirmDeletePurchased' : 'products.composition.confirmDelete',
-            { name: deleting.name },
-          )}
+          title={t('products.partDelete.title')}
+          body={
+            <div className="space-y-2 text-sm">
+              {/* C09: what the server really does — the history goes; no write-off is recorded. */}
+              <p>
+                {t(deleting.kind === 'purchased' ? 'products.partDelete.bodyPurchased' : 'products.partDelete.body', {
+                  name: deleting.name,
+                })}
+              </p>
+              {deleting.kind === 'printed' && deleting.stock_balance > 0 && (
+                <p>{t('products.partDelete.onShelf', { count: deleting.stock_balance })}</p>
+              )}
+            </div>
+          }
           primaryLabel={t('common.delete')}
           danger
           send={async () => {
             // The row — and its menu, where the focus goes back — leaves with the re-read;
             // watched before the request, which may land while this is still open.
-            keepFocusWhenRowLeaves(document.querySelector(`[data-testid="part-${deleting.id}-row"]`));
+            keepFocusWhenRowLeaves(rowOf(deleting));
             await deleteProductPart(queryClient, product.id, deleting);
+            showToast(t('products.partDelete.deleted'));
           }}
           onClose={() => setDeleting(null)}
         />
-      )}
-
-      {adding && (
-        <WorkshopDialog
-          size="md"
-          title={t('products.detail.composition.addPart')}
-          onClose={closeAdding}
-          pending={saving > 0}
-          error={addError ?? undefined}
-          footer={
-            <Button variant="secondary" onClick={closeAdding} disabled={saving > 0}>
-              {t('products.detail.composition.done')}
-            </Button>
-          }
-        >
-          <AddPartRow productId={product.id} canEdit onError={setAddError} />
-        </WorkshopDialog>
       )}
 
       {variantsOpen && (

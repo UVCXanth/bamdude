@@ -1,15 +1,15 @@
 /**
  * The «Composition» tab of the product page (WS-13 E9 D01–D05): the variants card, the
  * read tables of printed and purchased parts with the sources their plates give, and the
- * doors into the existing editors — the edit mode (the existing `CompositionTable`), the
- * row menu, the «Add part» dialog and the «Product variants» dialog. Reading is the
- * default and has no fields.
+ * doors into the editors (WS-13 E10 C10) — «Add part» and a row's «Edit» open the part
+ * dialog, «Merge into…» the merge, «Delete» the confirmation; «Manage variants…» the
+ * variants dialog. The tab has no fields of its own.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { useRef, type ReactElement } from 'react';
 import { render } from '../../../utils';
-import { api, ApiError } from '../../../../api/client';
+import { api } from '../../../../api/client';
 import type { Permission, Product, ProductPart, ProductSources } from '../../../../api/client';
 import { CompositionTab } from '../../../../components/products/detail/CompositionTab';
 
@@ -276,62 +276,101 @@ describe('CompositionTab', () => {
     });
   });
 
-  describe('D04–D05 the doors into the editors', () => {
+  describe('C09–C10 the doors into the editors', () => {
     it('a reader sees no door at all', () => {
       auth.granted = new Set(['projects:read']);
       render(<Host />);
-      expect(screen.queryByRole('button', { name: 'Edit composition' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Add part' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Manage variants…' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /actions/i })).not.toBeInTheDocument();
     });
 
-    it('«Edit composition» shows the existing editor; «Done» waits for a save, then reads again', async () => {
-      let land: () => void = () => {};
-      const update = vi
-        .spyOn(api, 'updateProductPart')
-        .mockReturnValue(new Promise((resolve) => (land = () => resolve(parts[0] as never))));
+    it('no inline editing any more: no «Edit composition», no fields', () => {
       render(<Host />);
-      fireEvent.click(screen.getByRole('button', { name: 'Edit composition' }));
-      const name = within(row(1)).getByRole('textbox', { name: 'Part' });
-      fireEvent.change(name, { target: { value: 'Body 2' } });
-      name.focus();
-      fireEvent.click(screen.getByRole('button', { name: 'Done' }));
-      await waitFor(() => expect(update).toHaveBeenCalledWith(7, 1, { name: 'Body 2' }));
-      const saving = screen.getByRole('button', { name: 'Saving…' });
-      expect(saving).toBeDisabled();
-      await act(async () => land());
-      await waitFor(() => expect(screen.getByRole('button', { name: 'Edit composition' })).toHaveFocus());
-      expect(within(row(1)).queryByRole('textbox')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Edit composition' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     });
 
-    it('a refused save keeps the editor open', async () => {
-      vi.spyOn(api, 'updateProductPart').mockRejectedValue(new ApiError('Name taken', 409));
+    it('«Add part» opens the part dialog; «Cancel» sends nothing and gives the focus back', async () => {
+      const create = vi.spyOn(api, 'createProductPart');
       render(<Host />);
-      fireEvent.click(screen.getByRole('button', { name: 'Edit composition' }));
-      const name = within(row(1)).getByRole('textbox', { name: 'Part' });
-      fireEvent.change(name, { target: { value: 'Lid' } });
-      name.focus();
-      fireEvent.click(screen.getByRole('button', { name: 'Done' }));
-      expect(await screen.findByText('Name taken')).toBeInTheDocument();
-      expect(await screen.findByRole('button', { name: 'Done' })).toBeEnabled();
-      expect(within(row(1)).getByRole('textbox', { name: 'Part' })).toBeInTheDocument();
+      const add = screen.getByRole('button', { name: 'Add part' });
+      add.focus();
+      fireEvent.click(add);
+      const dialog = await screen.findByRole('dialog', { name: 'New part' });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(add).toHaveFocus();
+      expect(create).not.toHaveBeenCalled();
     });
 
-    it('«Edit» in a row’s menu opens the editor on that row, the focus in its name', async () => {
+    it('a printed row: «Edit» · «Merge into…» · «Delete»; a purchased one: «Edit» · «Delete»', async () => {
+      render(<Host />);
+      fireEvent.click(within(row(1)).getByRole('button', { name: 'Actions' }));
+      expect((await screen.findAllByRole('menuitem')).map((m) => m.textContent)).toEqual(['Edit', 'Merge into…', 'Delete']);
+      fireEvent.keyDown(document, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('menuitem')).not.toBeInTheDocument());
+      fireEvent.click(within(row(4)).getByRole('button', { name: 'Actions' }));
+      expect((await screen.findAllByRole('menuitem')).map((m) => m.textContent)).toEqual(['Edit', 'Delete']);
+    });
+
+    it('one printed part has nothing to merge into', async () => {
+      render(<Host product={{ ...product, parts: parts.filter((p) => p.id === 1 || p.kind === 'purchased') }} />);
+      fireEvent.click(within(row(1)).getByRole('button', { name: 'Actions' }));
+      expect((await screen.findAllByRole('menuitem')).map((m) => m.textContent)).toEqual(['Edit', 'Delete']);
+    });
+
+    it('«Edit» opens the part dialog on that part', async () => {
       render(<Host />);
       fireEvent.click(within(row(4)).getByRole('button', { name: 'Actions' }));
       fireEvent.click(await screen.findByRole('menuitem', { name: 'Edit' }));
-      await waitFor(() => expect(within(row(4)).getByRole('textbox', { name: 'Part' })).toHaveFocus());
+      const dialog = await screen.findByRole('dialog', { name: 'Edit part' });
+      expect(within(dialog).getByLabelText('Name')).toHaveValue('Magnet');
     });
 
-    it('«Delete» in a row’s menu asks with the existing words, deletes, and gives the focus to the heading', async () => {
+    it('«Merge into…» opens the merge on that part; the merged row leaves and the heading takes the focus', async () => {
+      const merge = vi.spyOn(api, 'mergeProductPart').mockResolvedValue(parts[0] as never);
+      const { rerender } = render(<Host />);
+      fireEvent.click(within(row(2)).getByRole('button', { name: 'Actions' }));
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Merge into…' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Merge part “Lid” into…' });
+      fireEvent.change(within(dialog).getByLabelText('Target part'), { target: { value: '1' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Merge' }));
+      await waitFor(() => expect(merge).toHaveBeenCalledWith(7, 1, 2));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      rerender(<Host product={{ ...product, parts: parts.filter((p) => p.id !== 2) }} />);
+      await waitFor(() => expect(screen.getByRole('heading', { level: 1, name: 'Flask' })).toHaveFocus());
+    });
+
+    it('«Delete» of a printed part with stock: its history goes, and the number on the shelf is said', async () => {
+      render(<Host product={{ ...product, parts: parts.map((p) => (p.id === 1 ? { ...p, stock_balance: 3 } : p)) }} />);
+      fireEvent.click(within(row(1)).getByRole('button', { name: 'Actions' }));
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Delete the part?' });
+      expect(dialog).toHaveTextContent(
+        '“Body” leaves the product’s composition with the history of its movements on the shelf; saved order and stock lines will no longer contain this part. The next file sync creates it again if the object is on a plate.',
+      );
+      expect(dialog).toHaveTextContent('On the shelf now: 3 pcs — they go with the history; no write-off movement is recorded.');
+    });
+
+    it('«Delete» of a printed part with nothing on the shelf still says its history goes', async () => {
+      render(<Host />);
+      fireEvent.click(within(row(2)).getByRole('button', { name: 'Actions' }));
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Delete the part?' });
+      expect(dialog).toHaveTextContent('with the history of its movements on the shelf');
+      expect(dialog).not.toHaveTextContent('On the shelf now');
+    });
+
+    it('«Delete» of a purchased part says its purchases go, deletes once, and gives the focus to the heading', async () => {
       const remove = vi.spyOn(api, 'deleteProductPart').mockResolvedValue(undefined as never);
       const { rerender } = render(<Host />);
       fireEvent.click(within(row(4)).getByRole('button', { name: 'Actions' }));
       fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }));
       const dialog = await screen.findByRole('dialog');
-      expect(within(dialog).getByText(/recorded as acquired against it/i)).toBeInTheDocument();
+      expect(dialog).toHaveTextContent(
+        '“Magnet” leaves the product’s composition with the history of its purchases in orders; saved order and stock lines will no longer contain this part.',
+      );
       act(() => {
         within(dialog).getByRole('button', { name: 'Delete' }).click();
         within(dialog).getByRole('button', { name: 'Delete' }).click();
@@ -339,6 +378,7 @@ describe('CompositionTab', () => {
       await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
       expect(remove).toHaveBeenCalledWith(7, 4);
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(await screen.findByText('Part deleted')).toBeInTheDocument();
       // The focus went back to the row's menu; the re-read takes the row away.
       expect(within(row(4)).getByRole('button', { name: 'Actions' })).toHaveFocus();
       rerender(<Host product={{ ...product, parts: parts.filter((p) => p.id !== 4) }} />);
@@ -358,81 +398,6 @@ describe('CompositionTab', () => {
       act(() => within(dialog).getByRole('button', { name: 'Delete' }).click());
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
       await waitFor(() => expect(screen.getByRole('heading', { level: 1, name: 'Flask' })).toHaveFocus());
-    });
-
-    it('«Add part» opens the existing form in a dialog; it stays open and empty after a part lands', async () => {
-      const create = vi.spyOn(api, 'createProductPart').mockResolvedValue(parts[0] as never);
-      render(<Host />);
-      fireEvent.click(screen.getByRole('button', { name: 'Add part' }));
-      const dialog = await screen.findByRole('dialog', { name: 'Add part' });
-      const name = within(dialog).getByLabelText('Part');
-      fireEvent.change(name, { target: { value: 'Hinge' } });
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
-      await waitFor(() => expect(create).toHaveBeenCalledWith(7, expect.objectContaining({ name: 'Hinge', kind: 'printed' })));
-      await waitFor(() => expect(within(dialog).getByLabelText('Part')).toHaveValue(''));
-      expect(screen.getByRole('dialog', { name: 'Add part' })).toBeInTheDocument();
-      await waitFor(() => expect(within(dialog).getByLabelText('Part')).toHaveFocus());
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    });
-
-    // WS-13 E9 Codex review V02: «Add» then «Done» at once — each its own act, nothing
-    // batched — closed the dialog before the request answered; the refusal and the draft
-    // were lost with it.
-    it('«Add» then «Done» at once: the dialog waits, and a refusal keeps the draft and its sentence', async () => {
-      let refuse!: (e: Error) => void;
-      const create = vi.spyOn(api, 'createProductPart').mockReturnValue(new Promise((_resolve, reject) => (refuse = reject)) as never);
-      render(<Host />);
-      fireEvent.click(screen.getByRole('button', { name: 'Add part' }));
-      const dialog = await screen.findByRole('dialog', { name: 'Add part' });
-      fireEvent.change(within(dialog).getByLabelText('Part'), { target: { value: 'Hinge' } });
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
-      fireEvent.keyDown(window, { key: 'Escape' });
-      await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-      await act(async () => refuse(new ApiError('Name already exists', 409)));
-      expect(screen.getByRole('dialog', { name: 'Add part' })).toBeInTheDocument();
-      expect(screen.getByText('Name already exists')).toBeInTheDocument();
-      expect(screen.getByLabelText('Part')).toHaveValue('Hinge');
-    });
-
-    it('a second «Add» before the first answers sends nothing more', async () => {
-      const create = vi.spyOn(api, 'createProductPart').mockReturnValue(new Promise(() => {}) as never);
-      render(<Host />);
-      fireEvent.click(screen.getByRole('button', { name: 'Add part' }));
-      const dialog = await screen.findByRole('dialog', { name: 'Add part' });
-      fireEvent.change(within(dialog).getByLabelText('Part'), { target: { value: 'Hinge' } });
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
-      await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(create).toHaveBeenCalledTimes(1);
-    });
-
-    it('the add dialog does not close while a part is on its way', async () => {
-      let land: () => void = () => {};
-      vi.spyOn(api, 'createProductPart').mockReturnValue(new Promise((resolve) => (land = () => resolve(parts[0] as never))));
-      render(<Host />);
-      fireEvent.click(screen.getByRole('button', { name: 'Add part' }));
-      const dialog = await screen.findByRole('dialog', { name: 'Add part' });
-      fireEvent.change(within(dialog).getByLabelText('Part'), { target: { value: 'Hinge' } });
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
-      await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Done' })).toBeDisabled());
-      fireEvent.keyDown(window, { key: 'Escape' });
-      expect(screen.getByRole('dialog', { name: 'Add part' })).toBeInTheDocument();
-      await act(async () => land());
-      await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Done' })).toBeEnabled());
-    });
-
-    it('a refusal to add stands in the dialog, what was typed stays', async () => {
-      vi.spyOn(api, 'createProductPart').mockRejectedValue(new ApiError('That name belongs to another part', 409));
-      render(<Host />);
-      fireEvent.click(screen.getByRole('button', { name: 'Add part' }));
-      const dialog = await screen.findByRole('dialog', { name: 'Add part' });
-      fireEvent.change(within(dialog).getByLabelText('Part'), { target: { value: 'Lid' } });
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
-      expect(await within(dialog).findByRole('alert')).toHaveTextContent('That name belongs to another part');
-      expect(within(dialog).getByLabelText('Part')).toHaveValue('Lid');
     });
 
     it('«Manage variants…» opens the existing editor; nothing closes it while a change is on its way', async () => {
