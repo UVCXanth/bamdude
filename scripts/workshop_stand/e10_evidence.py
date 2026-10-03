@@ -11,6 +11,8 @@ verdict and its job server — and the universal E0 runner (``capture_serve.py``
            COPY of the E0 plan (the plan file itself is never edited) with the ten dialog
            recipes of ``e10_pairs.json`` added, at 1440 and 390 (``e10-product-editors-pairs``):
            a ``lg`` dialog is min(1000px, 94vw), so a wider frame changes nothing in it.
+           ``pairs fixes`` — only the dialogs the final review's fixes changed on screen, as a
+           stage of their own (``…-pairs-fixes``): the full set's manifest stays as it was.
 ``serve``  the job for ``e10_editors.js`` on 127.0.0.1:8197: the stand's app token, a media
            token, the dev-server and backend bases and the mapped ids of the products the
            scenarios name. It collects one record per scenario and writes
@@ -48,6 +50,13 @@ RUNS = {
     "": {
         "stage": "pairs",
         "widths": {"wide": [1440], "narrow": [390]},
+    },
+    # The final review's fixes changed two dialogs on screen: «from a file» (how much of the
+    # library is shown) and the variants (why an option cannot go). Proportional evidence.
+    "fixes": {
+        "stage": "pairs-fixes",
+        "widths": {"wide": [1440], "narrow": [390]},
+        "only": ["e10-from-file", "e10-variants"],
     },
 }
 # Every scenario of the editors runner (e10_editors.js), in its order. A full run is complete only
@@ -95,7 +104,8 @@ def pairs_plan(plan: dict, *, run: str = "") -> tuple[dict, list[str], str]:
     spec = RUNS[run]
     recipes = e10_recipes()
     copy = {**plan, "widths": spec["widths"], "surfaces": [*plan["surfaces"], *recipes]}
-    return copy, [r["id"] for r in recipes], f"{STAGE}-{spec['stage']}"
+    only = spec.get("only") or [r["id"] for r in recipes]
+    return copy, list(only), f"{STAGE}-{spec['stage']}"
 
 
 def pairs(mode: str = "") -> None:

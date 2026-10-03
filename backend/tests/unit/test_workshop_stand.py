@@ -1768,6 +1768,12 @@ def test_the_e10_pairs_add_the_ten_dialogs_at_1440_and_390_on_a_copy_of_the_plan
     assert only == [r["id"] for r in e10_evidence.e10_recipes()]
     assert set(only) <= {s["id"] for s in plan["surfaces"]}
     assert all(str(w) in plan["heights"] for w in (1440, 390))
+
+    # The final review's fixes: only the two dialogs they changed on screen, a stage of their own.
+    plan, only, stage = e10_evidence.pairs_plan(base, run="fixes")
+    assert stage == "e10-product-editors-pairs-fixes"
+    assert only == ["e10-from-file", "e10-variants"]
+    assert set(only) <= {s["id"] for s in plan["surfaces"]}
     # The E0 plan itself is untouched.
     assert json.dumps(base, sort_keys=True) == before
 
