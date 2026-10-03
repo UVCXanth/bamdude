@@ -112,6 +112,9 @@ const CASES = {
   // …and through E10's runner (e10_editors.js), whose first read is product 1 as well.
   e10_real_scenario_throws: [{ only: 'form@1440', gotoFails: true }],
   e10_prep_read_throws: [{ readFails: /^\/products\/1$/, readFailsWith: 'throw' }],
+  // …and through E11's runner (e11_customers.js), whose first read is customer 1.
+  e11_real_scenario_throws: [{ only: 'list@1440', gotoFails: true }],
+  e11_prep_read_throws: [{ readFails: /^\/customers\/1$/, readFailsWith: 'throw' }],
   // E6: a GET answered by its turn — failed the first time, rewritten the second.
   gets_by_turn: [{ fires: 2 }, async ({ scenario, open }) => {
     let n = 0;
