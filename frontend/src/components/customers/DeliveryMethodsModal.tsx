@@ -32,7 +32,15 @@ const NAME_MAX = 255;
  * Refusals stay where they happened; nothing is a toast. Every writer here takes
  * `projects:update` (G07) — without it the reference is read only.
  */
-export function DeliveryMethodsModal({ onClose }: { onClose: () => void }) {
+export function DeliveryMethodsModal({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  /** A method this reference created — for a form whose list of methods may not have been
+   *  read at all (Codex E11-V03): it is offered there without the list being called complete. */
+  onCreated?: (method: DeliveryMethod) => void;
+}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { hasPermission } = useAuth();
@@ -68,6 +76,9 @@ export function DeliveryMethodsModal({ onClose }: { onClose: () => void }) {
   // ⚠️ Synchronous: one press, one request; nothing closes the reference under one.
   const renaming = useRef(false);
   const adding = useRef(false);
+  // A move — its write and the re-read of the list — is ONE write: taken in the frame of the
+  // press, so a second press or an Escape in that frame finds it (Codex E11-V01).
+  const moving = useRef(false);
   const rename = useMutation({
     mutationFn: ({ id, name }: { id: number; name: string }) => api.renameDeliveryMethod(id, name),
     onSuccess: async (_saved, { id }) => {
@@ -89,6 +100,7 @@ export function DeliveryMethodsModal({ onClose }: { onClose: () => void }) {
       adding.current = false;
       setDraft('');
       setAddError(null);
+      onCreated?.(created);
       // Offered at once in every select (F07) — whatever the re-read below answers.
       queryClient.setQueryData<DeliveryMethod[]>(['delivery-methods'], (old) =>
         old && !old.some((m) => m.id === created.id) ? [...old, created] : old,
@@ -102,9 +114,16 @@ export function DeliveryMethodsModal({ onClose }: { onClose: () => void }) {
   });
   const reorder = useMutation({
     mutationFn: (ids: number[]) => api.reorderDeliveryMethods(ids),
-    // Pending until the list has the new order: the next move is computed from that list,
-    // and one computed from the old order would undo this one.
-    onSuccess: () => refresh(),
+    // The PUT answers the order it accepted: the list takes it at once, so the next move is
+    // computed from it even when the re-read below fails (Codex E11-V02) — one computed from
+    // the old order would undo this one. Pending until the re-read is done.
+    onSuccess: (accepted) => {
+      if (Array.isArray(accepted)) queryClient.setQueryData<DeliveryMethod[]>(['delivery-methods'], accepted);
+      return refresh();
+    },
+    onSettled: () => {
+      moving.current = false;
+    },
   });
   const pending = rename.isPending || create.isPending || reorder.isPending;
 
@@ -158,13 +177,15 @@ export function DeliveryMethodsModal({ onClose }: { onClose: () => void }) {
     create.mutate(name);
   };
   const move = (methods: DeliveryMethod[], index: number, by: -1 | 1) => {
+    if (moving.current || renaming.current || adding.current) return;
+    moving.current = true;
     const ids = methods.map((m) => m.id);
     const target = index + by;
     [ids[index], ids[target]] = [ids[target], ids[index]];
     reorder.mutate(ids);
   };
   const close = () => {
-    if (renaming.current || adding.current || reorder.isPending) return;
+    if (renaming.current || adding.current || moving.current) return;
     onClose();
   };
   useEffect(() => {

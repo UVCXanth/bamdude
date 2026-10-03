@@ -40,6 +40,28 @@ describe('CustomerPicker', () => {
     expect(screen.getByRole('option', { name: 'CU-0009 · Gamma' })).toBeInTheDocument();
   });
 
+  it('a created customer is a visible option even when the list was never read (Codex E11-V03)', async () => {
+    vi.spyOn(api, 'getCustomers').mockRejectedValue(new Error('offline'));
+    vi.spyOn(api, 'createCustomer').mockResolvedValue({ ...customers[0], id: 9, code: 'CU-0009', name: 'Beta' } as never);
+    function Host() {
+      const [value, setValue] = useState<number | null>(null);
+      return <CustomerPicker value={value} onChange={setValue} allowCreate />;
+    }
+    render(<Host />);
+    // A list that could not be read is said, with a retry — never an empty choice.
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not read the customers');
+    fireEvent.change(screen.getByRole('combobox'), {
+      target: { value: screen.getByRole('option', { name: /new customer/i }).getAttribute('value') },
+    });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Beta' } });
+    fireEvent.click(screen.getByRole('button', { name: /^create$/i }));
+    await waitFor(() => expect(screen.getByRole('combobox')).toHaveValue('9'));
+    expect(screen.getByRole('option', { name: 'CU-0009 · Beta' })).toBeInTheDocument();
+    // The list is still unread: its failure and retry stay.
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not read the customers');
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
   describe('a namesake (WS-13 E11 F12, R01)', () => {
     const beta = { ...customers[0], id: 3, code: 'CU-0003', name: 'Beta' };
 

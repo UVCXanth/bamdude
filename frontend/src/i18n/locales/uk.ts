@@ -5447,6 +5447,7 @@ export default {
     namesakeCreate: 'Створити ще одного',
     namesakeGone: 'Цього замовника вже немає',
     namesakeReadFailed: 'Не вдалося прочитати замовників',
+    customersReadFailed: 'Не вдалося прочитати замовників',
     notInCatalog: 'не в каталозі',
   },
 

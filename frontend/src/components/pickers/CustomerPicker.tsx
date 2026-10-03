@@ -47,13 +47,22 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate, id }: C
   const [name, setName] = useState('');
   const [warned, setWarned] = useState<{ name: string; message: string; namesake: number | null } | null>(null);
   const [choosing, setChoosing] = useState<Choosing>('idle');
+  // Customers this picker created — offered even when the list was never read (Codex E11-V03).
+  const [created, setCreated] = useState<Customer[]>([]);
   const sent = useRef(false);
   const reading = useRef(false);
   const generation = useRef(0);
   const nameNow = useRef(name);
   nameNow.current = name;
 
-  const { data: customers } = useQuery({ queryKey: ['customers'], queryFn: api.getCustomers });
+  const customersQuery = useQuery({ queryKey: ['customers'], queryFn: api.getCustomers });
+  const read = customersQuery.data;
+  // A current answer is the whole list; otherwise what is known — the last answer plus what
+  // this picker created — and the failed read says so with its retry.
+  const current = customersQuery.status === 'success' && !customersQuery.isFetching;
+  const customers = current
+    ? (read ?? [])
+    : [...(read ?? []), ...created.filter((c) => !read?.some((r) => r.id === c.id))];
 
   const leave = () => {
     generation.current += 1;
@@ -67,15 +76,16 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate, id }: C
   const createMutation = useMutation({
     mutationFn: ({ customerName, knowingly }: { customerName: string; knowingly: boolean }) =>
       api.createCustomer(knowingly ? { name: customerName, allow_duplicate_name: true } : { name: customerName }),
-    onSuccess: (created) => {
+    onSuccess: (made) => {
       sent.current = false;
       // The select shows the new customer at once — not «no customer» until (or unless)
-      // the list is read again.
+      // the list is read again — and without calling a list of one the whole list.
+      setCreated((known) => (known.some((c) => c.id === made.id) ? known : [...known, made]));
       queryClient.setQueryData<Customer[]>(['customers'], (old) =>
-        old && !old.some((c) => c.id === created.id) ? [...old, created] : old,
+        old && !old.some((c) => c.id === made.id) ? [...old, made] : old,
       );
       queryClient.invalidateQueries({ queryKey: ['customers'] });
-      onChange(created.id);
+      onChange(made.id);
       leave();
     },
     onError: (e: Error, { customerName }) => {
@@ -230,26 +240,36 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate, id }: C
   }
 
   return (
-    <Select
-      id={id}
-      className="w-full"
-      value={value ?? ''}
-      onChange={(e) => {
-        if (e.target.value === NEW_CUSTOMER) {
-          setCreating(true);
-          return;
-        }
-        onChange(e.target.value ? Number(e.target.value) : null);
-      }}
-      disabled={disabled}
-    >
-      <option value="">{t('pickers.noCustomer')}</option>
-      {customers?.map((c) => (
-        <option key={c.id} value={c.id}>
-          {`${c.code} · ${c.name}`}
-        </option>
-      ))}
-      {allowCreate && <option value={NEW_CUSTOMER}>{t('pickers.newCustomer')}</option>}
-    </Select>
+    <div>
+      <Select
+        id={id}
+        className="w-full"
+        value={value ?? ''}
+        onChange={(e) => {
+          if (e.target.value === NEW_CUSTOMER) {
+            setCreating(true);
+            return;
+          }
+          onChange(e.target.value ? Number(e.target.value) : null);
+        }}
+        disabled={disabled}
+      >
+        <option value="">{t('pickers.noCustomer')}</option>
+        {customers.map((c) => (
+          <option key={c.id} value={c.id}>
+            {`${c.code} · ${c.name}`}
+          </option>
+        ))}
+        {allowCreate && <option value={NEW_CUSTOMER}>{t('pickers.newCustomer')}</option>}
+      </Select>
+      {/* A list that could not be read is not an empty one. */}
+      {customersQuery.isError && !read && (
+        <LoadFailedNote
+          className="mt-1.5 text-xs"
+          message={t('pickers.customersReadFailed')}
+          onRetry={() => void customersQuery.refetch()}
+        />
+      )}
+    </div>
   );
 }

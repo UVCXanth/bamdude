@@ -139,13 +139,72 @@ describe('DeliveryMethodsModal', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('a refused move says so in the reference — never silently', async () => {
-    vi.spyOn(api, 'reorderDeliveryMethods').mockRejectedValue(
-      new ApiError('The order must name every delivery method exactly once', 422),
-    );
-    render(<DeliveryMethodsModal onClose={() => {}} />);
+  it('a refused move says so in the reference — never silently — and the move can be tried again', async () => {
+    const reorder = vi
+      .spyOn(api, 'reorderDeliveryMethods')
+      .mockRejectedValue(new ApiError('The order must name every delivery method exactly once', 422));
+    const onClose = vi.fn();
+    render(<DeliveryMethodsModal onClose={onClose} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Move Pickup down' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('The order must name every delivery method exactly once');
+    // The refusal lets the write go: the move is offered again and «Done» closes.
+    fireEvent.click(screen.getByRole('button', { name: 'Move Pickup down' }));
+    await waitFor(() => expect(reorder).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Done' })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  describe('a move is one write, decided in the same frame (Codex E11-V01, V02)', () => {
+    const abc = [
+      { id: 1, name: 'A', position: 0, contacts_count: 0 },
+      { id: 2, name: 'B', position: 1, contacts_count: 0 },
+      { id: 3, name: 'C', position: 2, contacts_count: 0 },
+    ];
+
+    it('Escape in the frame of the press does not close the reference under the write', async () => {
+      vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue(abc);
+      vi.spyOn(api, 'reorderDeliveryMethods').mockReturnValue(new Promise(() => {}) as never);
+      const onClose = vi.fn();
+      render(<DeliveryMethodsModal onClose={onClose} />);
+      const up = await screen.findByRole('button', { name: 'Move B up' });
+      act(() => {
+        up.click();
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      });
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it('two presses before React renders the request send one move', async () => {
+      vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue(abc);
+      const reorder = vi.spyOn(api, 'reorderDeliveryMethods').mockReturnValue(new Promise(() => {}) as never);
+      render(<DeliveryMethodsModal onClose={() => {}} />);
+      const up = await screen.findByRole('button', { name: 'Move B up' });
+      act(() => {
+        up.click();
+        up.click();
+      });
+      await waitFor(() => expect(reorder).toHaveBeenCalled());
+      expect(reorder).toHaveBeenCalledTimes(1);
+    });
+
+    it('a failed re-read after an accepted move never lets the next move undo it', async () => {
+      vi.spyOn(api, 'getDeliveryMethods').mockResolvedValueOnce(abc).mockRejectedValue(new Error('offline'));
+      const reorder = vi.spyOn(api, 'reorderDeliveryMethods').mockResolvedValue([abc[1], abc[0], abc[2]]);
+      render(<DeliveryMethodsModal onClose={() => {}} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Move B up' }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Done' })).not.toBeDisabled());
+      // The re-read failed: the list is the order the server accepted, and it says it could not refresh.
+      expect(await screen.findByText(/could not refresh/i)).toBeInTheDocument();
+      expect(screen.getAllByTestId(/^method-row-/).map((row) => row.dataset.testid)).toEqual([
+        'method-row-B',
+        'method-row-A',
+        'method-row-C',
+      ]);
+      fireEvent.click(screen.getByRole('button', { name: 'Move C up' }));
+      await waitFor(() => expect(reorder).toHaveBeenCalledTimes(2));
+      expect(reorder.mock.calls[1][0]).toEqual([2, 3, 1]);
+    });
   });
 
   describe('the delete (G03)', () => {

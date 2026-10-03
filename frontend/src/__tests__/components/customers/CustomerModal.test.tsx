@@ -386,6 +386,77 @@ describe('CustomerModal', () => {
       await waitFor(() => expect(update).toHaveBeenCalledWith(1, { name: 'ACME Ltd' }));
     });
 
+    it('a failed re-read of the methods is said ONCE, beside the contacts, with a retry (Codex E11-V04)', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } });
+      client.setQueryData(['delivery-methods'], [{ id: 7, name: 'Nova Poshta', position: 0, contacts_count: 1 }]);
+      const read = vi.spyOn(api, 'getDeliveryMethods').mockRejectedValue(new Error('offline'));
+      render(
+        <QueryClientProvider client={client}>
+          <CustomerModal customer={acme} onClose={() => {}} />
+        </QueryClientProvider>,
+      );
+      await act(async () => {
+        await client.refetchQueries({ queryKey: ['delivery-methods'] });
+      });
+      await waitFor(() => expect(client.getQueryState(['delivery-methods'])?.status).toBe('error'));
+      const retries = await screen.findAllByRole('button', { name: 'Retry' });
+      expect(retries).toHaveLength(1);
+      for (const row of screen.getAllByTestId('contact-row')) expect(within(row).queryByRole('button', { name: 'Retry' })).toBeNull();
+      // The options stay; nothing is said to be gone.
+      expect(within(screen.getAllByTestId('contact-row')[0]).getByRole('option', { name: 'Nova Poshta' })).toBeInTheDocument();
+      const before = read.mock.calls.length;
+      fireEvent.click(retries[0]);
+      await waitFor(() => expect(read.mock.calls.length).toBe(before + 1));
+    });
+
+    it('…an empty reference that could not be refreshed says so too', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } });
+      client.setQueryData(['delivery-methods'], []);
+      vi.spyOn(api, 'getDeliveryMethods').mockRejectedValue(new Error('offline'));
+      render(
+        <QueryClientProvider client={client}>
+          <CustomerModal onClose={() => {}} />
+        </QueryClientProvider>,
+      );
+      await act(async () => {
+        await client.refetchQueries({ queryKey: ['delivery-methods'] });
+      });
+      await waitFor(() => expect(client.getQueryState(['delivery-methods'])?.status).toBe('error'));
+      expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    });
+
+    it('a method made in the reference is offered even when the reference was never read (Codex E11-V03)', async () => {
+      vi.spyOn(api, 'getDeliveryMethods').mockRejectedValue(new Error('offline'));
+      vi.spyOn(api, 'createDeliveryMethod').mockResolvedValue({ id: 9, name: 'New method', position: 9, contacts_count: 0 });
+      render(<CustomerModal onClose={() => {}} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Manage methods…' }));
+      const field = await screen.findByRole('textbox', { name: 'New delivery method' });
+      fireEvent.change(field, { target: { value: 'New method' } });
+      fireEvent.click(screen.getByRole('button', { name: /^add$/i }));
+      await waitFor(() => expect(field).toHaveValue(''));
+      fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+      await waitFor(() => expect(screen.getByRole('option', { name: 'New method' })).toBeInTheDocument());
+    });
+
+    it('…and the method a contact already has is not called gone by that partial list; the failure and its retry stay', async () => {
+      vi.spyOn(api, 'getDeliveryMethods').mockRejectedValue(new Error('offline'));
+      vi.spyOn(api, 'createDeliveryMethod').mockResolvedValue({ id: 9, name: 'New method', position: 9, contacts_count: 0 });
+      render(<CustomerModal customer={withMethod} onClose={() => {}} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Manage methods…' }));
+      const field = await screen.findByRole('textbox', { name: 'New delivery method' });
+      fireEvent.change(field, { target: { value: 'New method' } });
+      fireEvent.click(screen.getByRole('button', { name: /^add$/i }));
+      await waitFor(() => expect(field).toHaveValue(''));
+      fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+      const row = screen.getAllByTestId('contact-row')[0];
+      await within(row).findByRole('option', { name: 'New method' });
+      const select = within(row).getByLabelText('Delivery method') as HTMLSelectElement;
+      expect(select.value).toBe('7');
+      expect(select.selectedOptions[0].textContent).toBe('Nova Poshta');
+      expect(within(row).queryByText(/no longer there/)).toBeNull();
+      expect(within(row).getByText('Could not read the delivery methods')).toBeInTheDocument();
+    });
+
     it('a failed re-read keeps the methods it had in the select — no «could not read» in every row', async () => {
       vi.spyOn(api, 'getDeliveryMethods')
         .mockResolvedValueOnce([{ id: 7, name: 'Nova Poshta', position: 0, contacts_count: 1 }])

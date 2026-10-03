@@ -1,10 +1,12 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowUpToLine, Plus, X } from 'lucide-react';
+import type { DeliveryMethod } from '../../api/client';
 import { useDeliveryMethods } from '../../hooks/useDeliveryMethods';
 import { Button } from '../Button';
 import { Select } from '../Select';
 import { LoadFailedNote } from '../workshop/LoadFailedNote';
+import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { DeliveryMethodsModal } from './DeliveryMethodsModal';
 import { emptyDraft, isBlankDraft, isBlankLinked, methodIsGone, type ContactDraft } from './contactDrafts';
 
@@ -27,6 +29,8 @@ interface RowProps {
   confirming: boolean;
   focusOnMount: boolean;
   canManageMethods: boolean;
+  /** Methods made in the reference during this form — offered beside the list (V03). */
+  created: DeliveryMethod[];
   onField: (field: TextField, value: string) => void;
   onMethod: (id: number | null, name: string | null) => void;
   onMakeMain: () => void;
@@ -43,6 +47,7 @@ function ContactRow({
   confirming,
   focusOnMount,
   canManageMethods,
+  created,
   onField,
   onMethod,
   onMakeMain,
@@ -53,7 +58,13 @@ function ContactRow({
   const { t } = useTranslation();
   const base = useId();
   const methods = useDeliveryMethods();
-  const list = methods.data ?? [];
+  // A current answer of the reference is the whole list. Anything else — still read, failed,
+  // never read — is what is known: the last answer plus the methods this form made (Codex
+  // E11-V03). It is never taken for the whole reference: only `methodIsGone`, which asks a
+  // current answer alone, may call a contact's method gone.
+  const current = methods.status === 'success' && !methods.isFetching;
+  const read = methods.data ?? [];
+  const list = current ? read : [...read, ...created.filter((m) => !read.some((r) => r.id === m.id))];
   const gone = methodIsGone(draft, methods);
   const known = draft.deliveryMethodId != null && list.some((m) => m.id === draft.deliveryMethodId);
   // The note is a field of its own only when there is one, or it is asked for (F20).
@@ -270,6 +281,8 @@ export function ContactRowsEditor({
   const [confirming, setConfirming] = useState<string | null>(null);
   const [managing, setManaging] = useState(false);
   const [added, setAdded] = useState<string | null>(null);
+  const [created, setCreated] = useState<DeliveryMethod[]>([]);
+  const methods = useDeliveryMethods();
   const patch = (key: string, change: Partial<ContactDraft>) =>
     onChange(drafts.map((d) => (d.key === key ? { ...d, ...change } : d)));
   const remove = (key: string) => {
@@ -297,6 +310,9 @@ export function ContactRowsEditor({
         </Button>
       </div>
       <p className="text-xs text-bambu-gray">{t('customers.contacts.mainHint')}</p>
+      {/* A failed RE-read keeps the options it had — said once for every row, with a retry
+          (Codex E11-V04); a reference never read says so in each row's select instead. */}
+      {methods.isError && methods.data && <RefreshFailedNote onRetry={() => void methods.refetch()} />}
       <div className="grid gap-2">
         {drafts.map((d, index) => (
           <ContactRow
@@ -308,6 +324,7 @@ export function ContactRowsEditor({
             confirming={confirming === d.key}
             focusOnMount={d.key === added}
             canManageMethods={canManageMethods}
+            created={created}
             onField={(field, value) => patch(d.key, { [field]: value })}
             onMethod={(id, name) => patch(d.key, { deliveryMethodId: id, deliveryMethodName: name })}
             onMakeMain={() => onChange([d, ...drafts.filter((x) => x.key !== d.key)])}
@@ -317,7 +334,12 @@ export function ContactRowsEditor({
           />
         ))}
       </div>
-      {managing && <DeliveryMethodsModal onClose={() => setManaging(false)} />}
+      {managing && (
+        <DeliveryMethodsModal
+          onClose={() => setManaging(false)}
+          onCreated={(method) => setCreated((known) => (known.some((m) => m.id === method.id) ? known : [...known, method]))}
+        />
+      )}
     </div>
   );
 }

@@ -5418,6 +5418,7 @@ export default {
     namesakeCreate: 'Create another',
     namesakeGone: 'This customer is gone',
     namesakeReadFailed: 'Could not read the customers',
+    customersReadFailed: 'Could not read the customers',
     notInCatalog: 'not in catalog',
   },
 
