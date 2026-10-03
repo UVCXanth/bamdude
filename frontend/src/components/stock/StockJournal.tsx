@@ -165,9 +165,9 @@ function TabJournal() {
   );
 }
 
-/** A position's feed: the ledger and the operation, the sort and the page — in memory. */
+/** A position's feed: the ledger and the operation, the sort and the page — in memory.
+ *  The page names it («Movement journal», E12 F05). */
 function PositionJournal({ itemId }: { itemId: number }) {
-  const { t } = useTranslation();
   const [book, setBook] = useState<StockJournalBook>('both');
   const [kind, setKind] = useState('');
   const [sort, setSort] = useState<JournalSort>('date-desc');
@@ -190,7 +190,6 @@ function PositionJournal({ itemId }: { itemId: number }) {
 
   return (
     <JournalView
-      title={t('stock.journal.positionTitle')}
       journal={journal}
       book={book}
       kind={kind}
@@ -225,7 +224,6 @@ function PositionJournal({ itemId }: { itemId: number }) {
 }
 
 interface JournalViewProps {
-  title?: string;
   journal: ReturnType<typeof useStockJournalPage>;
   book: StockJournalBook;
   kind: string;
@@ -244,7 +242,6 @@ interface JournalViewProps {
 
 /** The toolbar, the states and the table — one shape for the tab and a position. */
 function JournalView({
-  title,
   journal,
   book,
   kind,
@@ -272,7 +269,6 @@ function JournalView({
 
   return (
     <section className="space-y-3" data-testid="stock-journal">
-      {title && <h2 className="text-lg font-medium text-white">{title}</h2>}
       <div className="flex items-center gap-3 flex-wrap">
         <Select aria-label={t('stock.journal.book')} value={book} onChange={(e) => onBook(e.target.value as StockJournalBook)}>
           {BOOKS.map((b) => (

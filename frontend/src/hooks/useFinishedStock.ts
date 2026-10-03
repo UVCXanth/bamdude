@@ -50,13 +50,18 @@ export function useStockItemsSummary() {
   });
 }
 
+/**
+ * One position — its page and the dialogs that move it read the same key. No `refreshToast`:
+ * the position page keeps its data under a `RefreshFailedNote` when a re-read fails (WS-13
+ * E12 F06), and a toast as well would say it twice; every observer goes through this one
+ * declaration, so no caller's `meta` can wipe another's.
+ */
 export function useStockItem(id: number) {
   return useQuery<StockItemDetail>({
     queryKey: ['stock-item', id],
     queryFn: () => api.getStockItem(id),
     enabled: Number.isFinite(id) && id > 0,
     retry: false,
-    meta: { refreshToast: true },
   });
 }
 
