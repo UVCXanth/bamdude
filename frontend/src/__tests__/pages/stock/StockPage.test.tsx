@@ -440,13 +440,17 @@ describe('StockPage', () => {
     await waitFor(() => expect(getNotes).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'acme', page: 1 })));
   });
 
-  it('the journal tab reads both ledgers through the one endpoint', async () => {
+  it('the journal tab reads both ledgers through the one endpoint, a numbered page at a time', async () => {
+    const moved = vi.spyOn(api, 'getStockJournalProducts').mockResolvedValue([]);
     window.history.pushState({}, '', '/stock?tab=journal');
     render(<StockPage />);
     expect(await screen.findByTestId('stock-journal')).toBeInTheDocument();
-    await waitFor(() => expect(getJournal).toHaveBeenLastCalledWith({ book: 'both', cursor: null, limit: 50 }));
-    // The product filter comes from the catalog, one-offs included.
-    expect(getProducts).toHaveBeenCalledWith({ include_adhoc: true });
+    await waitFor(() =>
+      expect(getJournal).toHaveBeenLastCalledWith({ book: 'both', page: 1, per_page: 24, sort_by: 'date-desc' }),
+    );
+    // The product filter is what the books moved (ST2), not the catalog (E12 E02).
+    await waitFor(() => expect(moved).toHaveBeenCalledWith('both'));
+    expect(getProducts).not.toHaveBeenCalled();
   });
 
   it('the header opens a receipt and the assembly; a row menu opens its movement', async () => {

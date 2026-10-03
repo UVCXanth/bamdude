@@ -44,7 +44,8 @@ const OWNER: Record<string, string> = {
   'stock-items': 'hooks/useFinishedStock.ts',
   'stock-item': 'hooks/useFinishedStock.ts',
   'stock-lookup': 'hooks/useFinishedStock.ts',
-  'stock-journal': 'hooks/useFinishedStock.ts',
+  'stock-journal-page': 'hooks/useFinishedStock.ts',
+  'stock-journal-products': 'hooks/useFinishedStock.ts',
   // Issuing an order (spec workshop-order-issue): the issue dialog, the order page's
   // header and banner, and the order form all read one order's state.
   'project-fulfilment': 'hooks/useFulfilment.ts',

@@ -81,13 +81,12 @@ export const ORDER_VIEW_KEYS = [
   // bank, an order deleted — and with the print completions the socket
   // reports. Prefixes: the page keys its queries by its filters.
   'stock-summary',
-  // finished goods (WS-09): the journal of both ledgers shows the parts rows
-  // these mutations write, and «can assemble» on the positions, their page and
-  // a dialog's lookup reads the same free shelf.
-  'stock-journal',
   // WS-13 E1 ST2: the journal's product filter moves with the journal.
   'stock-journal-products',
-  // WS-13 E9 F03: the product page's movements are the same journal, paged.
+  // finished goods (WS-09): the journal of both ledgers shows the parts rows
+  // these mutations write — every journal reads it in numbered pages now (WS-13
+  // E12 E01) — and «can assemble» on the positions, their page and a dialog's
+  // lookup reads the same free shelf.
   'stock-journal-page',
   'stock-items',
   'stock-item',
@@ -185,9 +184,7 @@ export const STOCK_KEYS: readonly (readonly string[])[] = [
   ['stock-items'],
   ['stock-item'],
   ['stock-lookup'],
-  ['stock-journal'],
-  // WS-13 E9 F03: one product's movements in numbered pages — a plain query beside the
-  // stock page's infinite one, so it is a key of its own.
+  // Every journal — the tab, a position's, a product's — in numbered pages (WS-13 E12 E01).
   ['stock-journal-page'],
   ['stock-journal-products'],
   ['stock-summary'],

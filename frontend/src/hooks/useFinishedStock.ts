@@ -1,6 +1,5 @@
-import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query';
-import type { InfiniteData } from '@tanstack/react-query';
-import { api, STOCK_JOURNAL_PAGE } from '../api/client';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { api } from '../api/client';
 import type {
   StockItemDetail,
   StockItemsPage,
@@ -8,7 +7,7 @@ import type {
   StockItemsSummary,
   StockJournalBook,
   StockJournalPage,
-  StockJournalParams,
+  StockJournalProduct,
   StockLookup,
 } from '../api/client';
 
@@ -73,47 +72,47 @@ export function useStockLookup(productId: number | null, options: number[]) {
   });
 }
 
-/** One product's movements, a numbered page of them (WS-13 E9 F03). */
+/** A numbered page of the journal (WS-13 E1 ST1): the stock page's tab, a position's feed
+ *  (`item_id`) and one product's (`product_id`, WS-13 E9 F03). */
 export interface StockJournalPageParams {
-  product_id: number;
   book: StockJournalBook;
+  product_id?: number;
+  item_id?: number;
+  kind?: string;
   page: number;
   per_page: number;
-  sort_by: 'date-desc';
+  sort_by: 'date-desc' | 'date-asc';
 }
 
 /**
- * The product page's journal: the server's numbered pages (`page` mode, WS-13 E1 ST1) as a
- * plain query under `['stock-journal-page', params]` — never the stock page's infinite
- * `['stock-journal', …]`, whose cached `InfiniteData` would not fit (R04). The previous
- * page stays on screen only while the next is on its way (`listState`'s `transition`).
+ * Every journal of the app — the stock page's tab, a position's, a product's — reads the
+ * server's numbered pages (`page` mode) as a plain query under `['stock-journal-page',
+ * params]`; the cursor mode stays in the API for other readers (WS-13 E12 E01).
+ *
+ * The previous page stays on screen only while the next is on its way (`listState`'s
+ * `transition`) — and only for the SAME position: another position's rows are never this
+ * one's, so a new `item_id` starts with nothing (E06).
  */
 export function useStockJournalPage(params: StockJournalPageParams) {
   return useQuery<StockJournalPage>({
     queryKey: ['stock-journal-page', params],
     queryFn: () => api.getStockJournal(params),
-    placeholderData: keepPreviousData,
+    placeholderData: (previous, previousQuery) =>
+      (previousQuery?.queryKey[1] as StockJournalPageParams | undefined)?.item_id === params.item_id ? previous : undefined,
     retry: false,
   });
 }
 
-/** The journal's filters are everything but the cursor and the page size. */
-export type StockJournalQuery = Omit<StockJournalParams, 'cursor' | 'limit'>;
-
-export function useStockJournal(filters: StockJournalQuery) {
-  return useInfiniteQuery<
-    StockJournalPage,
-    Error,
-    InfiniteData<StockJournalPage, string | null>,
-    unknown[],
-    string | null
-  >({
-    queryKey: ['stock-journal', filters],
-    queryFn: ({ pageParam }) => api.getStockJournal({ ...filters, cursor: pageParam, limit: STOCK_JOURNAL_PAGE }),
-    initialPageParam: null,
-    // A short page IS the end: the server sets `next_cursor` only on a full one.
-    getNextPageParam: (last) => last.next_cursor ?? undefined,
+/**
+ * The journal's product filter: the products the chosen books moved (`GET
+ * /stock/journal/products`, ST2). The previous book's list stays as a placeholder — a NAME
+ * for a chosen product while the new list is read, never a verdict on it (R05).
+ */
+export function useStockJournalProducts(book: StockJournalBook) {
+  return useQuery<StockJournalProduct[]>({
+    queryKey: ['stock-journal-products', book],
+    queryFn: () => api.getStockJournalProducts(book),
+    placeholderData: keepPreviousData,
     retry: false,
-    meta: { refreshToast: true },
   });
 }

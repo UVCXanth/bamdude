@@ -138,12 +138,10 @@ describe('invalidateOrderViews', () => {
       'product-kits',
       // stock tab (2026-09-10)
       'stock-summary',
-      // finished goods (WS-09): the journal shows the parts rows an order moves,
-      // and «can assemble» reads the same free shelf.
-      'stock-journal',
       // WS-13 E1 ST2: the journal's product filter.
       'stock-journal-products',
-      // WS-13 E9 F03: the product page's movements, paged.
+      // finished goods (WS-09): the journal shows the parts rows an order moves,
+      // and «can assemble» reads the same free shelf — every journal paged (E12 E01).
       'stock-journal-page',
       'stock-items',
       'stock-item',
@@ -160,7 +158,7 @@ describe('invalidateOrderViews', () => {
     const spy = vi.spyOn(qc, 'invalidateQueries');
     invalidateStock(qc);
     const keys = spy.mock.calls.map(([filters]) => JSON.stringify(filters?.queryKey));
-    expect(keys).toEqual(expect.arrayContaining(['["products"]', '["projects","nav-badges"]', '["stock-journal"]']));
+    expect(keys).toEqual(expect.arrayContaining(['["products"]', '["projects","nav-badges"]', '["stock-journal-page"]']));
   });
 
   it('a manual issue refreshes the dispatch notes it made (final review I1)', () => {

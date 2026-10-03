@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../../../api/client';
 import type { StockJournalBook } from '../../../api/client';
 import { useStockJournalPage } from '../../../hooks/useFinishedStock';
-import type { DateFormat } from '../../../utils/date';
+import type { DateFormat, TimeFormat } from '../../../utils/date';
 import { answeredEmpty, listState } from '../../../utils/listState';
 import { PaginationBar } from '../../PaginationBar';
 import { JournalTable } from '../../stock/StockJournal';
@@ -34,6 +34,7 @@ export function ProductJournal({ productId }: { productId: number }) {
   const journal = useStockJournalPage({ product_id: productId, book, page, per_page: PER_PAGE, sort_by: 'date-desc' });
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
   const dateFormat = (settings?.date_format || 'system') as DateFormat;
+  const timeFormat = (settings?.time_format || 'system') as TimeFormat;
 
   const answer = journal.data?.meta ? { meta: journal.data.meta } : undefined;
   const state = listState({ data: answer, isError: journal.isError, isPlaceholderData: journal.isPlaceholderData });
@@ -68,7 +69,13 @@ export function ProductJournal({ productId }: { productId: number }) {
           </p>
         ) : (
           <div className="space-y-0">
-            <JournalTable rows={rows} dateFormat={dateFormat} scope="product" />
+            <JournalTable
+              rows={rows}
+              dateFormat={dateFormat}
+              timeFormat={timeFormat}
+              scope="product"
+              label={t('products.detail.stockTab.journal')}
+            />
             {meta && (
               <PaginationBar
                 page={meta.current_page}

@@ -68,7 +68,9 @@ describe('StockItemPage', () => {
   it('shows the journal of this position only', async () => {
     renderPage();
     await screen.findByTestId('item-reservations');
-    await waitFor(() => expect(journal).toHaveBeenLastCalledWith({ book: 'both', item_id: 5, cursor: null, limit: 50 }));
+    await waitFor(() =>
+      expect(journal).toHaveBeenLastCalledWith({ book: 'both', item_id: 5, page: 1, per_page: 24, sort_by: 'date-desc' }),
+    );
   });
 
   it('opens a movement dialog from its actions', async () => {
