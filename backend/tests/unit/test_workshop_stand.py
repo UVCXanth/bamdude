@@ -1927,3 +1927,140 @@ def test_an_e11_job_names_the_customers_and_the_product():
     }
 
     assert e11_evidence.job_entities(mapping) == {"customers": {"1": 21, "2": 22}, "products": {"1": 11}}
+
+
+# ---- WS-13 E12 stock runner (e12_stock.js): E4's harness around E12's scenarios ----
+
+import e12_evidence  # noqa: E402
+
+_E12_RUNNER = Path(__file__).resolve().parents[3] / "scripts" / "workshop_stand" / "e12_stock.js"
+
+
+def test_e12_a_failed_preparation_read_ends_the_run_incomplete_and_names_no_secret():
+    run = _e04_run("e12_prep_read_throws", _E12_RUNNER)
+
+    records = _e04_records(run)
+    assert [r["id"] for r in records] == ["runner"]
+    assert records[0]["error"] == {
+        "code": "read_network",
+        "stage": "prepare",
+        "name": "RunnerFailure",
+        "at": "/stock/items/1",
+    }
+    assert _e04_done(run)["incomplete"] is True
+
+
+def test_e12_a_real_scenario_that_throws_fails_safely_and_closes_its_context():
+    run = _e04_run("e12_real_scenario_throws", _E12_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["id"] == "page@1440" and rec["pass"] is False
+    assert rec["error"] == {"code": "error", "stage": "page@1440", "name": "Error"}
+    assert _e04_done(run)["incomplete"] is False
+    _e04_closed_in_order(run)
+
+
+@pytest.mark.parametrize("case", ["route_fails_live", "scenario_reports_the_token", "open_outside_a_scenario"])
+def test_e12_keeps_the_e04_guards(case):
+    run = _e04_run(case, _E12_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is False
+    if case != "scenario_reports_the_token":  # that one opens no context
+        _e04_closed_in_order(run)
+
+
+def test_e12_a_record_carrying_the_media_token_is_replaced_by_a_failure():
+    run = _e04_run("scenario_reports_the_media_token", _E12_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["error"] == {"code": "secret_in_record", "stage": "echo"}
+    assert "mq7-media-marker-fake" not in json.dumps(run["posts"])
+
+
+def test_e12_a_get_is_answered_by_its_turn():
+    run = _e04_run("gets_by_turn", _E12_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is True
+    answered = [e for e in run["log"] if e.startswith("fulfill.")]
+    assert answered == ['fulfill.500.{"detail":"e12 runner"}', 'fulfill.200.{"n":1,"seen":2}']
+    _e04_closed_in_order(run)
+
+
+def test_e12_the_runner_declares_exactly_the_scenarios_the_manifest_expects():
+    run = _e04_run("declared", _E12_RUNNER)
+
+    assert _e04_records(run) == []
+    assert _e04_done(run)["declared"] == list(e12_evidence.DETAIL_SCENARIOS)
+
+
+def test_e12_a_full_run_is_judged_against_the_e12_scenarios():
+    ids = list(e12_evidence.DETAIL_SCENARIOS)
+    done = {"count": len(ids), "incomplete": False, "declared": ids}
+    records = [{"id": i} for i in ids]
+
+    verdict = e04_evidence.run_completeness(
+        finished=True, done=done, records=records, only="", expected=e12_evidence.DETAIL_SCENARIOS
+    )
+    assert verdict["complete"] is True
+    assert (
+        e04_evidence.run_completeness(
+            finished=True, done=done, records=records, only="", expected=e11_evidence.DETAIL_SCENARIOS
+        )["complete"]
+        is False
+    )
+
+
+def test_the_e12_pairs_add_the_stock_surfaces_on_a_copy_of_the_plan():
+    base = json.loads((Path(e12_evidence.HERE) / "capture_plan.json").read_text(encoding="utf-8"))
+    before = json.dumps(base, sort_keys=True)
+
+    plan, only, stage = e12_evidence.pairs_plan(base, run="")
+    assert stage == "e12-stock-pairs"
+    assert plan["widths"] == {"wide": [1440, 1024], "narrow": [390]}
+    assert only == [r["id"] for r in e12_evidence.e12_recipes()]
+    assert set(only) <= {s["id"] for s in plan["surfaces"]}
+    assert all(str(w) in plan["heights"] for w in (1440, 1024, 390))
+    # The E0 plan itself is untouched.
+    assert json.dumps(base, sort_keys=True) == before
+
+
+def test_every_e12_pair_is_a_plain_recipe_on_both_sides():
+    shapes = {}
+    for recipe in e12_evidence.e12_recipes():
+        shapes[recipe["id"]] = (recipe["measure"], recipe["widths"])
+        assert capture_serve.side_rewrites("mockup", recipe["mockup"], str) == []
+        assert capture_serve.side_rewrites("app", recipe["app"], str) == []
+    assert shapes == {
+        "e12-stock-finished": ("list", "all"),
+        "e12-stock-parts": ("list", "wide"),
+        "e12-stock-journal": ("list", "wide"),
+        "e12-stock-notes": ("list", "wide"),
+        "e12-stock-position": ("detail", "all"),
+        "e12-dispatch-note": ("detail", "all"),
+        "e12-move-receipt": ("dialog", "all"),
+        "e12-move-issue": ("dialog", "all"),
+        "e12-move-reserve": ("dialog", "all"),
+        "e12-stock-params": ("dialog", "all"),
+        "e12-assemble": ("dialog", "all"),
+    }
+
+
+def test_an_e12_job_names_the_positions_products_notes_and_customer():
+    mapping = {
+        "fin:1": {"id": 5},
+        "fin:2": {"id": 6},
+        "fin:9": {"id": 9},
+        "product:1": {"id": 1},
+        "product:16": {"id": 16},
+        "doc:90000": {"id": 1},
+        "customer:1": {"id": 21},
+    }
+
+    assert e12_evidence.job_entities(mapping) == {
+        "positions": {"1": 5, "2": 6},
+        "products": {"1": 1, "16": 16},
+        "notes": {"90000": 1},
+        "customers": {"1": 21},
+    }
