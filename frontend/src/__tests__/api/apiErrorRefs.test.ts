@@ -48,6 +48,25 @@ describe('ApiError.refs', () => {
     expect(e.refs).toEqual({ group: 't3' });
   });
 
+  it('a namesake refusal names the customer it means (WS-13 E11 A01)', async () => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      refusal(409, { error: 'name_taken', message: 'A customer with this name already exists: CU-0003', customer: 3 }),
+    );
+    const e = await refusalOf(api.createCustomer({ name: 'Acme' }));
+    expect(e.code).toBe('name_taken');
+    expect(e.message).toBe('A customer with this name already exists: CU-0003');
+    expect(e.refs).toEqual({ customer: 3 });
+  });
+
+  it('the flag of a knowingly made namesake goes with the request', async () => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ id: 9 }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+    );
+    await api.updateCustomer(9, { name: 'Acme', allow_duplicate_name: true });
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toEqual({ name: 'Acme', allow_duplicate_name: true });
+  });
+
   it('a refusal without references has none', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
       refusal(409, { error: 'variants_changed', message: 'The variants changed', group: null, option: null }),

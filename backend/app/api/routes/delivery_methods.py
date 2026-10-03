@@ -37,7 +37,15 @@ async def _listing(db: AsyncSession) -> list[DeliveryMethodOut]:
     ]
 
 
+# The ``name_key`` column's width: ``casefold()`` can grow a name (ß → ss), so a name the
+# schema accepts may still fold past it (WS-13 E11 A03).
+_KEY_MAX = DeliveryMethod.__table__.c.name_key.type.length
+
+
 async def _refuse_duplicate(db: AsyncSession, name: str, own_id: int | None = None) -> None:
+    # Before the write: on PostgreSQL an overlong key is a DataError — a 500, not a refusal.
+    if len(delivery_method_key(name)) > _KEY_MAX:
+        raise HTTPException(status_code=422, detail="The name is too long")
     clash = await db.scalar(select(DeliveryMethod.id).where(DeliveryMethod.name_key == delivery_method_key(name)))
     if clash is not None and clash != own_id:
         raise HTTPException(status_code=409, detail="A delivery method with this name already exists")

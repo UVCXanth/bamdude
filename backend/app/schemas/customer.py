@@ -61,6 +61,8 @@ class CustomerCreate(BaseModel):
     kind: CustomerKind = "company"
     notes: str | None = None
     contacts: list[CustomerContactIn] = Field(default_factory=list)
+    # A namesake is a warning, not a ban (WS-13 E11 A01): true = made knowingly.
+    allow_duplicate_name: bool = False
 
     @field_validator("name", mode="before")
     @classmethod
@@ -74,6 +76,8 @@ class CustomerUpdate(BaseModel):
     notes: str | None = None
     # Sent whole: a contact missing from the list is removed. Absent = leave them alone.
     contacts: list[CustomerContactIn] | None = None
+    # Renaming onto a namesake knowingly (WS-13 E11 A01); asked only when the name changes.
+    allow_duplicate_name: bool = False
 
     @field_validator("kind", "contacts", mode="before")
     @classmethod

@@ -28,6 +28,7 @@ from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.list_paging import (
     SortSpec,
     apply_sql_sort,
+    like_contains,
     page_meta,
     resolve_sort,
     slice_page,
@@ -238,25 +239,26 @@ async def list_customers(
     total = 0
     if paged:
         if q:
-            needle = f"%{q.strip()}%"
+            # ``%``, ``_`` and ``\`` of the query are taken literally (WS-13 E11 A02).
+            needle = like_contains(q.strip())
             contact_matches = exists(
                 select(CustomerContact.id).where(
                     CustomerContact.customer_id == Customer.id,
                     or_(
-                        CustomerContact.name.ilike(needle),
-                        CustomerContact.role.ilike(needle),
-                        CustomerContact.phone.ilike(needle),
-                        CustomerContact.email.ilike(needle),
-                        CustomerContact.city.ilike(needle),
-                        CustomerContact.delivery_details.ilike(needle),
-                        CustomerContact.note.ilike(needle),
+                        CustomerContact.name.ilike(needle, escape="\\"),
+                        CustomerContact.role.ilike(needle, escape="\\"),
+                        CustomerContact.phone.ilike(needle, escape="\\"),
+                        CustomerContact.email.ilike(needle, escape="\\"),
+                        CustomerContact.city.ilike(needle, escape="\\"),
+                        CustomerContact.delivery_details.ilike(needle, escape="\\"),
+                        CustomerContact.note.ilike(needle, escape="\\"),
                         CustomerContact.delivery_method_id.in_(
-                            select(DeliveryMethod.id).where(DeliveryMethod.name.ilike(needle))
+                            select(DeliveryMethod.id).where(DeliveryMethod.name.ilike(needle, escape="\\"))
                         ),
                     ),
                 )
             )
-            conditions = [Customer.name.ilike(needle), contact_matches]
+            conditions = [Customer.name.ilike(needle, escape="\\"), contact_matches]
             if (customer_id := id_from_query("customer", q)) is not None:
                 conditions.append(Customer.id == customer_id)
             # A contact's code needs its prefix: a bare number is the customer's (spec rule 3).
@@ -294,6 +296,27 @@ async def list_customers(
     return CustomerListPage(items=items, meta=page_meta(total, page, per_page, all))
 
 
+async def _warn_of_namesake(db: AsyncSession, name: str, own_id: int | None = None) -> None:
+    """A customer whose name another one already has is a warning, not a ban (WS-13 E11
+    A01; the owner, 2026-10-03): names stay non-unique (WS-03), so the caller may repeat
+    the request with ``allow_duplicate_name``. The oldest namesake is named; the fold is
+    the database's Unicode-aware ``lower`` (inv-unicode-case-folding). Asked before any
+    write, so a refused request leaves nothing behind."""
+    query = select(Customer.id).where(func.lower(Customer.name) == func.lower(name))
+    if own_id is not None:
+        query = query.where(Customer.id != own_id)
+    namesake = await db.scalar(query.order_by(Customer.id).limit(1))
+    if namesake is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "name_taken",
+                "message": f"A customer with this name already exists: {code_for('customer', namesake)}",
+                "customer": namesake,
+            },
+        )
+
+
 @router.post("", response_model=CustomerResponse)
 @router.post("/", response_model=CustomerResponse)
 async def create_customer(
@@ -301,6 +324,8 @@ async def create_customer(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_CREATE),
 ):
+    if not data.allow_duplicate_name:
+        await _warn_of_namesake(db, data.name)
     customer = Customer(name=data.name, kind=data.kind, notes=data.notes)
     db.add(customer)
     await db.flush()
@@ -341,6 +366,11 @@ async def update_customer(
     _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
     customer = await _get_or_404(db, customer_id)
+    # Only a request that CHANGES the name is asked — the same name again, or its case
+    # alone, is not a new namesake (WS-13 E11 A01).
+    renamed = "name" in data.model_fields_set and data.name.lower() != customer.name.lower()
+    if renamed and not data.allow_duplicate_name:
+        await _warn_of_namesake(db, data.name, own_id=customer.id)
     for field_name in ("name", "kind", "notes"):
         if field_name in data.model_fields_set:  # explicit null clears; absent leaves alone
             setattr(customer, field_name, getattr(data, field_name))

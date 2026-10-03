@@ -35,9 +35,10 @@ export class ApiError extends Error {
    * The elements a refusal is about, when it names them (WS-13 E10 R03): the variants
    * batch answers `{error, message, group, option}`, each an id or the draft's temp id.
    * A dialog points at the field — or brings back a row it no longer has — by these,
-   * never by the translated sentence.
+   * never by the translated sentence. `customer` — the namesake a `name_taken` warning
+   * means (WS-13 E11 A01).
    */
-  refs?: { group?: number | string; option?: number | string };
+  refs?: { group?: number | string; option?: number | string; customer?: number };
   constructor(message: string, status: number, code?: string, retryAfterMs?: number) {
     super(message);
     this.name = 'ApiError';
@@ -556,7 +557,8 @@ async function handleErrorResponse(response: Response, __isRetry: boolean, signa
   throw refusal;
 }
 
-/** The `group` / `option` a refusal names — an id or a temp id; `undefined` when it names none. */
+/** The `group` / `option` (an id or a temp id) and the `customer` (an id) a refusal names;
+ *  `undefined` when it names none. */
 function refusalRefs(detail: unknown): ApiError['refs'] {
   if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return undefined;
   const d = detail as Record<string, unknown>;
@@ -566,8 +568,13 @@ function refusalRefs(detail: unknown): ApiError['refs'] {
       : undefined;
   const group = ref(d.group);
   const option = ref(d.option);
-  if (group === undefined && option === undefined) return undefined;
-  return { ...(group !== undefined ? { group } : {}), ...(option !== undefined ? { option } : {}) };
+  const customer = typeof d.customer === 'number' && Number.isInteger(d.customer) ? d.customer : undefined;
+  if (group === undefined && option === undefined && customer === undefined) return undefined;
+  return {
+    ...(group !== undefined ? { group } : {}),
+    ...(option !== undefined ? { option } : {}),
+    ...(customer !== undefined ? { customer } : {}),
+  };
 }
 
 /**
@@ -2681,6 +2688,8 @@ export interface CustomerCreate {
   kind?: CustomerKind;
   notes?: string | null;
   contacts?: CustomerContactInput[];
+  /** A namesake made knowingly — after the server's `name_taken` warning (WS-13 E11 A01). */
+  allow_duplicate_name?: boolean;
 }
 
 export interface CustomerUpdate {
@@ -2689,6 +2698,8 @@ export interface CustomerUpdate {
   notes?: string | null;
   /** Sent whole; a contact missing from the list is removed. */
   contacts?: CustomerContactInput[];
+  /** Renaming onto a namesake knowingly — after the server's `name_taken` warning. */
+  allow_duplicate_name?: boolean;
 }
 
 // ---- products ----
