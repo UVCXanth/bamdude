@@ -6633,10 +6633,9 @@ export default {
       totalPriceSub: 'без скасованих',
     },
     card: {
-      orders_one: '{{count}} замовлення',
-      orders_few: '{{count}} замовлення',
-      orders_many: '{{count}} замовлень',
-      orders_other: '{{count}} замовлення',
+      orders: 'Замовлень',
+      ordersValue: '{{total}} · активних {{active}}',
+      total: 'Сума',
     },
     table: {
       name: 'Замовник',

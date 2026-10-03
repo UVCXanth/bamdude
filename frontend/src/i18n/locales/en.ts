@@ -6532,8 +6532,9 @@ export default {
       totalPriceSub: 'cancelled orders excluded',
     },
     card: {
-      orders_one: '{{count}} order',
-      orders_other: '{{count}} orders',
+      orders: 'Orders',
+      ordersValue: '{{total}} · {{active}} active',
+      total: 'Total',
     },
     table: {
       name: 'Customer',

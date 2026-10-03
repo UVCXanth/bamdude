@@ -399,7 +399,7 @@ describe('CustomersPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Cards' }));
     const card = await screen.findByTestId('customer-1-card');
     expect(card).toHaveTextContent('Olena +1 · Kyiv');
-    expect(card).toHaveTextContent('3 orders');
+    expect(card).toHaveTextContent('3 · 1 active');
     expect(card).toHaveTextContent('$450.00');
     expect(localStorage.getItem('bamdude-customers-view')).toBe('cards');
   });
