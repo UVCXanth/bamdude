@@ -7648,6 +7648,7 @@ export default {
       receivedBy: 'Received by',
       print: 'Print',
       notFound: 'Dispatch note not found.',
+      backToNotes: 'Back to the notes',
       createdTitle: 'Dispatch note issued',
       createdUnits: '{{code}} · {{count}} pcs',
       openPrint: 'Open and print',

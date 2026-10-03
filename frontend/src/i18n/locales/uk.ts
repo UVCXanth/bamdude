@@ -7802,6 +7802,7 @@ export default {
       receivedBy: 'Отримав',
       print: 'Друкувати',
       notFound: 'Накладну не знайдено.',
+      backToNotes: 'До накладних',
       createdTitle: 'Накладну оформлено',
       createdUnits: '{{code}} · {{count}} од.',
       openPrint: 'Відкрити й друкувати',

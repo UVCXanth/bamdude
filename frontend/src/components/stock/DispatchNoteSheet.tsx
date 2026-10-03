@@ -24,7 +24,9 @@ function configurationText(line: DispatchNoteLine, t: TFunction): string {
  * The dispatch note as paper (spec workshop-dispatch-notes, rule 19). ⚠️ The ONE place in
  * the app with colours of its own: a white sheet in any theme, on screen and in print — the
  * owner's decision (WS-12, decision 3). Drawn only from the snapshot. `data-print-sheet`
- * is what the print stylesheet (`index.css`) keeps when everything else is hidden.
+ * is what the print stylesheet (`index.css`) keeps when everything else is hidden; on paper
+ * the table's header repeats on every page, a row never splits, and what carries
+ * `data-print-keep` — the header, the three parties, the signatures — stays whole (E12 J06).
  */
 export function DispatchNoteSheet({ note }: { note: DispatchNote }) {
   const { t, i18n } = useTranslation();
@@ -60,7 +62,7 @@ export function DispatchNoteSheet({ note }: { note: DispatchNote }) {
       data-print-sheet
       className="mx-auto max-w-[920px] rounded-xl bg-white p-8 text-sm text-gray-900 shadow-lg print:max-w-none print:rounded-none print:p-0 print:shadow-none"
     >
-      <header className="flex items-start justify-between gap-4 border-b-2 border-gray-900 pb-4 mb-4">
+      <header data-print-keep className="flex items-start justify-between gap-4 border-b-2 border-gray-900 pb-4 mb-4">
         <div>
           <div className="text-xl font-semibold">{t('stock.dispatchNote.heading', { code: note.code })}</div>
           <div className="text-gray-600">{t('stock.dispatchNote.dated', { date: dated })}</div>
@@ -68,7 +70,7 @@ export function DispatchNoteSheet({ note }: { note: DispatchNote }) {
         <div className="text-right font-semibold">{s.name || '—'}</div>
       </header>
 
-      <div className="grid grid-cols-3 gap-4 mb-4">
+      <div data-print-keep className="grid grid-cols-3 gap-4 mb-4">
         <div data-testid="dispatch-note-supplier">
           <div className="text-xs text-gray-600">{t('stock.dispatchNote.supplier')}</div>
           <div className="font-semibold">{s.name || '—'}</div>
@@ -145,7 +147,7 @@ export function DispatchNoteSheet({ note }: { note: DispatchNote }) {
 
       {note.note && <p className="mt-4 text-gray-600">{note.note}</p>}
 
-      <div className="grid grid-cols-2 gap-8 mt-10">
+      <div data-print-keep className="grid grid-cols-2 gap-8 mt-10">
         {(
           [
             ['issuedBy', note.created_by_name ?? ''],

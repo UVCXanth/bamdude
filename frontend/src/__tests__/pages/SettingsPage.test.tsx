@@ -167,6 +167,17 @@ describe('SettingsPage', () => {
       await screen.findByText('Date Format');
     });
 
+    it('the details for documents live on General, not Printing (WS-13 E12 J07)', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+      expect(await screen.findByRole('heading', { name: 'Details for documents' })).toBeInTheDocument();
+      expect(screen.getByText('Copied into every new dispatch note; notes already made do not change.')).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Printing' }));
+      await waitFor(() => expect(screen.queryByRole('heading', { name: 'Details for documents' })).toBeNull());
+      await user.click(screen.getByRole('button', { name: 'General' }));
+      await screen.findByText('Date Format');
+    });
+
     it('shows saved slice settings on Slicing, not Printing', async () => {
       server.use(
         http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, use_slicer_api: true })),

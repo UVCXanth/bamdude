@@ -37,6 +37,15 @@ describe('the print sheet rule', () => {
     );
   });
 
+  it("repeats the sheet's table header on every page and keeps a row whole (WS-13 E12 J06)", () => {
+    expect(block).toMatch(/\[data-print-sheet\] thead\s*\{\s*display:\s*table-header-group/);
+    expect(block).toMatch(/\[data-print-sheet\] tr\s*\{\s*break-inside:\s*avoid/);
+  });
+
+  it('keeps the parties, the header and the signatures whole (J06)', () => {
+    expect(block).toMatch(/\[data-print-sheet\] \[data-print-keep\]\s*\{\s*break-inside:\s*avoid/);
+  });
+
   it('lets the containers around the sheet give up their offsets and scrolling', () => {
     expect(block).toMatch(/:has\(\[data-print-sheet\]\)\s*\{[^}]*margin:\s*0[^}]*overflow:\s*visible/);
   });

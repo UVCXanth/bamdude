@@ -802,6 +802,17 @@ body {
     max-height: none;
     background: none;
   }
+  /* A long note across pages (WS-13 E12 J06): the table's header on every page, a row
+     never split, and the header, the parties and the signatures kept whole. */
+  body:has([data-print-sheet]) [data-print-sheet] thead {
+    display: table-header-group;
+  }
+  body:has([data-print-sheet]) [data-print-sheet] tr {
+    break-inside: avoid;
+  }
+  body:has([data-print-sheet]) [data-print-sheet] [data-print-keep] {
+    break-inside: avoid;
+  }
 }
 
 /* Per-slot filament colour swatch in the slice dialog (upstream 4f10d155).

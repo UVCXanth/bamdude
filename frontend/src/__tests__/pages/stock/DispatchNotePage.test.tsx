@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { Route, Routes } from 'react-router';
 import { render } from '../../utils';
 import { ApiError, api } from '../../../api/client';
@@ -121,17 +121,90 @@ describe('DispatchNotePage', () => {
     expect(within(sheet).getByTestId('dispatch-note-supplier')).toHaveTextContent('—');
   });
 
-  it('says so when the note does not exist', async () => {
+  it('says so when the note does not exist, with the way back to the notes', async () => {
     vi.spyOn(api, 'getDispatchNote').mockRejectedValue(new ApiError('Dispatch note not found', 404));
     renderAt();
     expect(await screen.findByText('Dispatch note not found.')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Back to the notes' })).toHaveAttribute('href', '/stock?tab=notes');
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('a failure that is not «not found» says it could not load (final review M4)', async () => {
-    vi.spyOn(api, 'getDispatchNote').mockRejectedValue(new ApiError('Internal Server Error', 500));
+  it('a failure that is not «not found» is an alert with its retry (final review M4, E12 J04)', async () => {
+    const get = vi.spyOn(api, 'getDispatchNote').mockRejectedValueOnce(new ApiError('Internal Server Error', 500));
     renderAt();
-    expect(await screen.findByText('Could not load the dispatch note.')).toBeInTheDocument();
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not load the dispatch note.');
     expect(screen.queryByText('Dispatch note not found.')).not.toBeInTheDocument();
+    get.mockResolvedValue(note);
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByTestId('dispatch-note-sheet')).toBeInTheDocument();
+  });
+
+  describe('the page around the sheet (WS-13 E12 J04)', () => {
+    it('the first read is a skeleton', async () => {
+      vi.spyOn(api, 'getDispatchNote').mockReturnValue(new Promise(() => {}) as never);
+      renderAt();
+      expect(await screen.findByTestId('dispatch-note-skeleton')).toHaveAttribute('role', 'status');
+    });
+
+    it('is a Workshop page: the heading, the date · order · name · customer — linked only where they exist', async () => {
+      vi.spyOn(api, 'getSettings').mockResolvedValue({} as never);
+      vi.spyOn(api, 'getDispatchNote').mockResolvedValue(note);
+      renderAt();
+      const controls = await screen.findByTestId('dispatch-note-controls');
+      expect(controls.closest('.workshop')).not.toBeNull();
+      expect(within(controls).getByRole('heading', { level: 1, name: 'Dispatch note DN-0042' })).toBeInTheDocument();
+      const sub = within(controls).getByTestId('dispatch-note-subtitle');
+      expect(sub).toHaveTextContent(`${formatDateTime('2026-09-28T09:30:00')} · OR-0005 · Hall lights · ACME`);
+      expect(within(sub).getByRole('link', { name: 'OR-0005' })).toHaveAttribute('href', '/projects/5');
+      expect(within(sub).getByRole('link', { name: 'ACME' })).toHaveAttribute('href', '/customers/2');
+    });
+
+    it('a deleted order and customer are named, not linked', async () => {
+      vi.spyOn(api, 'getDispatchNote').mockResolvedValue({ ...note, project_id: null, customer_id: null });
+      renderAt();
+      const sub = await screen.findByTestId('dispatch-note-subtitle');
+      expect(sub).toHaveTextContent('OR-0005');
+      expect(within(sub).queryAllByRole('link')).toHaveLength(0);
+    });
+
+    it('the waybill row carries its editor above the sheet', async () => {
+      vi.spyOn(api, 'getDispatchNote').mockResolvedValue(note);
+      const update = vi.spyOn(api, 'updateStockIssue').mockResolvedValue({ ...note, waybill: '3000' } as never);
+      renderAt();
+      const controls = await screen.findByTestId('dispatch-note-controls');
+      expect(within(controls).getByText('Waybill 2045')).toBeInTheDocument();
+      fireEvent.click(within(controls).getByRole('button', { name: 'Edit the waybill' }));
+      fireEvent.change(within(controls).getByLabelText('Waybill no.'), { target: { value: '3000' } });
+      fireEvent.click(within(controls).getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(update).toHaveBeenCalledWith(42, { waybill: '3000' }));
+    });
+
+    it('the sheet names the configuration in full — every changed part by name and count (R07)', async () => {
+      vi.spyOn(api, 'getDispatchNote').mockResolvedValue({
+        ...note,
+        lines: [
+          {
+            ...note.lines[0],
+            configuration: {
+              choices: [{ group_id: 1, group_name: 'Colour', option_id: 2, option_name: 'Black', is_default: false }],
+              changed_parts: [{ part_id: 9, name: 'Lid', qty: 2, standard_qty: 1 }],
+            },
+          },
+        ],
+      });
+      renderAt();
+      const sheet = await screen.findByTestId('dispatch-note-sheet');
+      expect(within(sheet).getByText('Colour: Black · Lid × 2')).toBeInTheDocument();
+      expect(within(sheet).queryByText(/part changed/)).toBeNull();
+    });
+
+    it('the parties, the header and the signatures are kept whole on paper', async () => {
+      vi.spyOn(api, 'getDispatchNote').mockResolvedValue(note);
+      renderAt();
+      const sheet = await screen.findByTestId('dispatch-note-sheet');
+      expect(sheet.querySelectorAll('[data-print-keep]').length).toBeGreaterThanOrEqual(3);
+    });
   });
 
   it('heads the page with the date and time and the way back to the stock (final review M3)', async () => {

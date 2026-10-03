@@ -2937,6 +2937,19 @@ export function SettingsPage() {
               </div>
             </CardContent>
           </Card>
+
+          {/* Details for documents — copied into each new dispatch note (spec workshop-dispatch-notes,
+              rule 11); on General since WS-13 E12 J07 (the owner's call, 2026-10-03). */}
+          <DocumentSupplierCard
+            values={{
+              name: localSettings.document_supplier_name ?? '',
+              address: localSettings.document_supplier_address ?? '',
+              phone: localSettings.document_supplier_phone ?? '',
+              code: localSettings.document_supplier_code ?? '',
+              iban: localSettings.document_supplier_iban ?? '',
+            }}
+            onChange={(key, value) => updateSetting(key, value)}
+          />
         </div>
         {/* ── /Right Column ── */}
       </div>
@@ -3448,18 +3461,6 @@ export function SettingsPage() {
               </CardContent>
             </Card>
           )}
-
-          {/* Details for documents — copied into each new dispatch note (spec workshop-dispatch-notes, rule 11) */}
-          <DocumentSupplierCard
-            values={{
-              name: localSettings.document_supplier_name ?? '',
-              address: localSettings.document_supplier_address ?? '',
-              phone: localSettings.document_supplier_phone ?? '',
-              code: localSettings.document_supplier_code ?? '',
-              iban: localSettings.document_supplier_iban ?? '',
-            }}
-            onChange={(key, value) => updateSetting(key, value)}
-          />
 
           {/* Cost Tracking */}
           <Card>
