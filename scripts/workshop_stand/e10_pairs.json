@@ -3,36 +3,89 @@
     "id": "e10-product-new",
     "widths": "all",
     "measure": "dialog",
-    "mockup": {"route": "#/products", "actions": [{"eval": "A['product-new']()"}]},
-    "app": {"route": "/products", "actions": [{"click_button": "^Новий виріб$"}]}
+    "mockup": {
+      "route": "#/products",
+      "actions": [
+        {
+          "eval": "A['product-new']()"
+        }
+      ]
+    },
+    "app": {
+      "route": "/products",
+      "actions": [
+        {
+          "click_button": "^Новий виріб$"
+        }
+      ]
+    }
   },
   {
     "id": "e10-product-edit",
     "widths": "all",
     "measure": "dialog",
     "pair": "product:1",
-    "mockup": {"route": "#/products/1", "actions": [{"eval": "A['product-edit']({dataset: {id: '1'}})"}]},
-    "app": {"route": "/products/{product:1}", "actions": [{"click_button": "^Редагувати$"}]}
+    "mockup": {
+      "route": "#/products/1",
+      "actions": [
+        {
+          "eval": "A['product-edit']({dataset: {id: '1'}})"
+        }
+      ]
+    },
+    "app": {
+      "route": "/products/{product:1}",
+      "actions": [
+        {
+          "click_button": "^Редагувати$"
+        }
+      ]
+    }
   },
   {
     "id": "e10-part-new",
     "widths": "all",
     "measure": "dialog",
     "pair": "product:1",
-    "mockup": {"route": "#/products/1", "actions": [{"eval": "A['part-new']({dataset: {id: '1'}})"}]},
-    "app": {"route": "/products/{product:1}", "actions": [{"click_button": "^Додати деталь$"}]}
+    "mockup": {
+      "route": "#/products/1",
+      "actions": [
+        {
+          "eval": "A['part-new']({dataset: {id: '1'}})"
+        }
+      ]
+    },
+    "app": {
+      "route": "/products/{product:1}",
+      "actions": [
+        {
+          "click_button": "^Додати деталь$"
+        }
+      ]
+    }
   },
   {
     "id": "e10-part-edit-printed",
     "widths": "all",
     "measure": "dialog",
     "pair": "product:1",
-    "mockup": {"route": "#/products/1", "actions": [{"eval": "A['part-edit']({dataset: {id: '1', part: '101'}})"}]},
+    "mockup": {
+      "route": "#/products/1",
+      "actions": [
+        {
+          "eval": "A['part-edit']({dataset: {id: '1', part: '101'}})"
+        }
+      ]
+    },
     "app": {
       "route": "/products/{product:1}",
       "actions": [
-        {"eval": "[...document.querySelectorAll('[data-testid^=\"part-\"][data-testid$=\"-row\"]')].find((r) => r.querySelector('td')?.textContent.trim().startsWith('Колба')).querySelector('button[aria-label=\"Дії\"]').click()"},
-        {"click": "[role=menuitem]:has-text(\"Редагувати\")"}
+        {
+          "eval": "(() => { const b = [...document.querySelectorAll('[data-testid^=\"part-\"][data-testid$=\"-row\"]')].find((r) => r.querySelector('td')?.textContent.trim().startsWith('Колба')).querySelector('button[aria-label=\"Дії\"]'); b.scrollIntoView({block: 'center', inline: 'center'}); b.click(); })()"
+        },
+        {
+          "click": "[role=menuitem]:has-text(\"Редагувати\")"
+        }
       ]
     }
   },
@@ -41,12 +94,23 @@
     "widths": "all",
     "measure": "dialog",
     "pair": "product:1",
-    "mockup": {"route": "#/products/1", "actions": [{"eval": "A['part-edit']({dataset: {id: '1', part: '105'}})"}]},
+    "mockup": {
+      "route": "#/products/1",
+      "actions": [
+        {
+          "eval": "A['part-edit']({dataset: {id: '1', part: '105'}})"
+        }
+      ]
+    },
     "app": {
       "route": "/products/{product:1}",
       "actions": [
-        {"eval": "[...document.querySelectorAll('[data-testid^=\"part-\"][data-testid$=\"-row\"]')].find((r) => r.querySelector('td')?.textContent.trim().startsWith('Гвинт')).querySelector('button[aria-label=\"Дії\"]').click()"},
-        {"click": "[role=menuitem]:has-text(\"Редагувати\")"}
+        {
+          "eval": "(() => { const b = [...document.querySelectorAll('[data-testid^=\"part-\"][data-testid$=\"-row\"]')].find((r) => r.querySelector('td')?.textContent.trim().startsWith('Гвинт')).querySelector('button[aria-label=\"Дії\"]'); b.scrollIntoView({block: 'center', inline: 'center'}); b.click(); })()"
+        },
+        {
+          "click": "[role=menuitem]:has-text(\"Редагувати\")"
+        }
       ]
     }
   },
@@ -55,32 +119,88 @@
     "widths": "all",
     "measure": "dialog",
     "pair": "product:1",
-    "mockup": {"route": "#/products/1", "actions": [{"eval": "A['variants-edit']({dataset: {id: '1'}})"}]},
-    "app": {"route": "/products/{product:1}", "actions": [{"click_button": "^Керувати варіантами"}]}
+    "mockup": {
+      "route": "#/products/1",
+      "actions": [
+        {
+          "eval": "A['variants-edit']({dataset: {id: '1'}})"
+        }
+      ]
+    },
+    "app": {
+      "route": "/products/{product:1}",
+      "actions": [
+        {
+          "click_button": "^Керувати варіантами"
+        }
+      ]
+    }
   },
   {
     "id": "e10-from-file",
     "widths": "all",
     "measure": "dialog",
-    "mockup": {"route": "#/products", "actions": [{"eval": "A['product-from-file']()"}]},
-    "app": {"route": "/products", "actions": [{"click_button": "^З файлу"}]}
+    "mockup": {
+      "route": "#/products",
+      "actions": [
+        {
+          "eval": "A['product-from-file']()"
+        }
+      ]
+    },
+    "app": {
+      "route": "/products",
+      "actions": [
+        {
+          "click_button": "^З файлу"
+        }
+      ]
+    }
   },
   {
     "id": "e10-import",
     "widths": "all",
     "measure": "dialog",
-    "mockup": {"route": "#/products", "actions": [{"eval": "A['product-import']()"}]},
-    "app": {"route": "/products", "actions": [{"click_button": "^Імпорт"}]}
+    "mockup": {
+      "route": "#/products",
+      "actions": [
+        {
+          "eval": "A['product-import']()"
+        }
+      ]
+    },
+    "app": {
+      "route": "/products",
+      "actions": [
+        {
+          "click_button": "^Імпорт"
+        }
+      ]
+    }
   },
   {
     "id": "e10-reread",
     "widths": "all",
     "measure": "dialog",
     "pair": "product:1",
-    "mockup": {"route": "#/products/1", "actions": [{"eval": "A['product-reread']({dataset: {id: '1'}})"}]},
+    "mockup": {
+      "route": "#/products/1",
+      "actions": [
+        {
+          "eval": "A['product-reread']({dataset: {id: '1'}})"
+        }
+      ]
+    },
     "app": {
       "route": "/products/{product:1}",
-      "actions": [{"click_testid": "product-page-menu"}, {"click": "[role=menuitem]:has-text(\"Перечитати картку\")"}]
+      "actions": [
+        {
+          "click_testid": "product-page-menu"
+        },
+        {
+          "click": "[role=menuitem]:has-text(\"Перечитати картку\")"
+        }
+      ]
     }
   },
   {
@@ -88,7 +208,21 @@
     "widths": "all",
     "measure": "dialog",
     "pair": "product:1",
-    "mockup": {"route": "#/products/1", "actions": [{"eval": "A['shelf-adjust']({dataset: {id: '1'}})"}]},
-    "app": {"route": "/products/{product:1}?tab=stock", "actions": [{"click_button": "^Коригувати$"}]}
+    "mockup": {
+      "route": "#/products/1",
+      "actions": [
+        {
+          "eval": "A['shelf-adjust']({dataset: {id: '1'}})"
+        }
+      ]
+    },
+    "app": {
+      "route": "/products/{product:1}?tab=stock",
+      "actions": [
+        {
+          "click_button": "^Коригувати$"
+        }
+      ]
+    }
   }
 ]
