@@ -23,7 +23,7 @@ describe('the print sheet rule', () => {
   it('applies only to a page that carries a sheet', () => {
     const selectors = block.match(/^[^{}@\n][^{}]*\{/gm) ?? [];
     expect(selectors.length).toBeGreaterThan(0);
-    for (const selector of selectors) expect(selector).toContain('body:has([data-print-sheet])');
+    for (const selector of selectors) expect(selector).toMatch(/(?:body|:root):has\(\[data-print-sheet\]\)/);
   });
 
   it('keeps the sheet in flow, so a long note breaks onto more pages', () => {
@@ -44,6 +44,14 @@ describe('the print sheet rule', () => {
 
   it('keeps the parties, the header and the signatures whole (J06)', () => {
     expect(block).toMatch(/\[data-print-sheet\] \[data-print-keep\]\s*\{\s*break-inside:\s*avoid/);
+  });
+
+  // E12 PDF evidence: under the dark theme, with background graphics on, the rest of the last
+  // page printed dark beneath the signatures. Measured in Chromium: the dark colour scheme paints
+  // the canvas itself, and the body's ground reaches it too — the page needs both undone.
+  it("prints the page under the sheet on white paper, never the app's ground", () => {
+    expect(block).toMatch(/:root:has\(\[data-print-sheet\]\)\s*\{[^}]*color-scheme:\s*light/);
+    expect(block).toMatch(/body:has\(\[data-print-sheet\]\)\s*\{[^}]*background:\s*none/);
   });
 
   it('lets the containers around the sheet give up their offsets and scrolling', () => {

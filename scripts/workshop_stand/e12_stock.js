@@ -1543,6 +1543,9 @@ async (page, selftest = null) => {
         thead: getComputedStyle(sheet.querySelector('thead')).display,
         row: getComputedStyle(sheet.querySelector('tbody tr')).breakInside,
         keep: [...sheet.querySelectorAll('[data-print-keep]')].map((k) => getComputedStyle(k).breakInside),
+        // White paper under the sheet in the dark theme: a light scheme on the root, no ground on the body.
+        scheme: getComputedStyle(document.documentElement).colorScheme,
+        ground: getComputedStyle(document.body).backgroundColor,
       };
     });
     const file = await shoot(p, 'print-emulation', { fullPage: true });
@@ -1552,7 +1555,8 @@ async (page, selftest = null) => {
       recipe: { url: '/stock/dispatch-notes/{doc:90000}', fixture: ['40 lines'], media: 'print' },
       measured: { printed, errors },
       pass: printed.sheet && !printed.controls && printed.others === 0 && printed.thead === 'table-header-group' &&
-        printed.row === 'avoid' && printed.keep.length >= 3 && printed.keep.every((k) => k === 'avoid') && errors.length === 0,
+        printed.row === 'avoid' && printed.keep.length >= 3 && printed.keep.every((k) => k === 'avoid') &&
+        printed.scheme === 'light' && printed.ground === 'rgba(0, 0, 0, 0)' && errors.length === 0,
       screenshots: [file],
     };
   });

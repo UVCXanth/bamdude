@@ -793,6 +793,15 @@ body {
   body:has([data-print-sheet]) *:not([data-print-sheet]):not([data-print-sheet] *):not(:has([data-print-sheet])) {
     display: none;
   }
+  /* White paper under the sheet: with background graphics on, the rest of the last page
+     printed dark (WS-13 E12 PDF evidence). Measured in Chromium, it takes both — the dark
+     colour scheme paints the canvas itself, and the body's ground reaches the canvas too. */
+  :root:has([data-print-sheet]) {
+    color-scheme: light;
+  }
+  body:has([data-print-sheet]) {
+    background: none;
+  }
   body:has([data-print-sheet]) *:has([data-print-sheet]) {
     margin: 0;
     padding: 0;
