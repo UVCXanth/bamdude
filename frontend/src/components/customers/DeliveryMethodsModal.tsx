@@ -301,6 +301,13 @@ export function DeliveryMethodsModal({ onClose }: { onClose: () => void }) {
       >
         <div className="space-y-3">
           {list.data && list.isError && <RefreshFailedNote onRetry={() => void list.refetch()} />}
+          {/* A refused move is said where it was asked for — never silently (the list shows
+              the server's order on its next read). */}
+          {reorder.isError && (
+            <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+              {(reorder.error as Error).message}
+            </p>
+          )}
           {rows}
           {canEdit && (
             <form

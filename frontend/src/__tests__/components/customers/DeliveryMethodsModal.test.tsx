@@ -123,6 +123,15 @@ describe('DeliveryMethodsModal', () => {
     await waitFor(() => expect(reorder).toHaveBeenCalledWith([2, 1]));
   });
 
+  it('a refused move says so in the reference — never silently', async () => {
+    vi.spyOn(api, 'reorderDeliveryMethods').mockRejectedValue(
+      new ApiError('The order must name every delivery method exactly once', 422),
+    );
+    render(<DeliveryMethodsModal onClose={() => {}} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Move Pickup down' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('The order must name every delivery method exactly once');
+  });
+
   describe('the delete (G03)', () => {
     it('a method contacts use cannot go — the reason is on screen and describes the button', async () => {
       render(<DeliveryMethodsModal onClose={() => {}} />);
