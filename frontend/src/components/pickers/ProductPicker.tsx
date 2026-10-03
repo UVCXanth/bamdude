@@ -15,12 +15,14 @@ interface ProductPickerProps {
   onChange: (id: number | null) => void;
   disabled?: boolean;
   allowCreate?: boolean;
+  /** The search field's id — a label names it and a dialog puts the cursor there. */
+  inputId?: string;
 }
 
 /** Searchable list over the product catalog, with an inline "create product
  *  from this name" affordance when nothing matches (used for adding an order
  *  line or linking a file to a not-yet-catalogued product). */
-export function ProductPicker({ value, onChange, disabled, allowCreate }: ProductPickerProps) {
+export function ProductPicker({ value, onChange, disabled, allowCreate, inputId }: ProductPickerProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
@@ -57,6 +59,7 @@ export function ProductPicker({ value, onChange, disabled, allowCreate }: Produc
   return (
     <div>
       <input
+        id={inputId}
         type="text"
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
