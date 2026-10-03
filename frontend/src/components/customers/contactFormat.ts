@@ -5,6 +5,11 @@ export function deliveryLine(contact: CustomerContact): string {
   return [contact.city, contact.delivery_method_name, contact.delivery_details].filter(Boolean).join(' · ');
 }
 
+/** «Nova Poshta · branch 12» — the method and its details, under the city (WS-13 E11 C05). */
+export function methodLine(contact: CustomerContact): string {
+  return [contact.delivery_method_name, contact.delivery_details].filter(Boolean).join(' · ');
+}
+
 /**
  * What names a contact on screen: its name, else its role, else its code.
  * Structural, so an order's contact (`OrderContact`) is named the same way.

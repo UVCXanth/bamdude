@@ -310,7 +310,9 @@ describe('CustomersPage', () => {
     expect(within(row).getByText('Olena')).toBeInTheDocument();
     expect(within(row).getByRole('link', { name: '+380 67 1' })).toHaveAttribute('href', 'tel:+380671');
     expect(within(row).getByRole('link', { name: 'olena@acme.ua' })).toHaveAttribute('href', 'mailto:olena@acme.ua');
-    expect(within(row).getByText('Kyiv · Nova Poshta · branch 12')).toBeInTheDocument();
+    // City, then the method and its details under it (WS-13 E11 C05).
+    expect(within(row).getByText('Kyiv')).toBeInTheDocument();
+    expect(within(row).getByText('Nova Poshta · branch 12')).toBeInTheDocument();
     // Named by the customer: every row has one, and a screen reader must tell them apart.
     const toggle = within(row).getByRole('button', { name: 'All contacts of ACME' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');

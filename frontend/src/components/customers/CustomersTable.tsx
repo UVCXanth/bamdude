@@ -5,14 +5,16 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { api } from '../../api/client';
-import type { Customer } from '../../api/client';
+import type { Customer, CustomerContact } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatMoney } from '../../utils/currency';
 import { SortableHeader } from '../SortableHeader';
+import { WorkshopPanel, WorkshopTableScroll } from '../workshop/WorkshopPanel';
 import { CustomerActionMenu } from './CustomerActionMenu';
+import { CustomerAvatar } from './CustomerAvatar';
 import type { CustomerActionsHost } from './useCustomerActions';
 import { ContactReach } from './ContactReach';
-import { contactTitle, deliveryLine } from './contactFormat';
+import { contactTitle, deliveryLine, methodLine } from './contactFormat';
 
 interface CustomersTableProps {
   customers: Customer[];
@@ -20,27 +22,22 @@ interface CustomersTableProps {
   /** The list's `sort_by`; the headers ask the SERVER to sort. */
   sort: string;
   onSortChange: (sortBy: string) => void;
-  /** The page bar, drawn inside the same card under the rows. */
+  /** The page bar, drawn inside the same panel under the rows. */
   footer?: ReactNode;
 }
 
-// The same header and cell look as the orders and products tables of this section.
-const CELL = 'p-2';
-const NUM_CELL = `${CELL} text-right tabular-nums`;
-const HEAD = 'font-normal p-2 text-left';
+const MAIN_BADGE = 'ml-1.5 px-1.5 py-0.5 rounded text-[10px] bg-bambu-green/15 text-bambu-green';
 
 /**
- * The customer list, as the server counted it.
+ * The customer list, as the server counted it (WS-13 E11 C) — the mockup's seven columns:
+ * the expander, the customer, the main contact, city and delivery, ONE grouped orders cell,
+ * the sum and the menu.
  *
- * Every column comes straight out of `figures` — the list endpoint's own
- * grouped query — and none of it is added up here (design decision 8). The
- * list figures deliberately carry no `printed`/`ordered`: those are the detail
- * endpoint's, and the customer page is where they are shown.
- *
- * The rows are one page of many, so a header sorts on the server (`sort_by`),
- * never just what is on screen. The main contact is `contacts[0]` as the server
- * ordered them; a row with more than one opens to all of them — locally, per
- * row, since the contacts already came with the page (spec workshop-customers, rule 21).
+ * Every figure comes straight out of `figures` — the list endpoint's own grouped query —
+ * and none of it is added up here (inv-workshop-lists-and-figures-on-the-server). The rows
+ * are one page of many, so a header sorts on the server (`sort_by`). The main contact is
+ * `contacts[0]` as the server ordered them; a row with more than one opens to all of them —
+ * by its chevron or by «+ N», one state per row, locally, since the contacts came with the page.
  */
 export function CustomersTable({ customers, actions, sort, onSortChange, footer }: CustomersTableProps) {
   const { t } = useTranslation();
@@ -58,111 +55,144 @@ export function CustomersTable({ customers, actions, sort, onSortChange, footer 
   // The app-wide currency, fetched the way every other money-showing screen
   // fetches it; `formatMoney` covers the unresolved first paint.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
-  // Numbers read best largest-first; a name reads best A→Z.
-  const numeric = (key: string, label: string) => (
-    <SortableHeader sortKey={key} label={label} sort={sort} onSort={onSortChange} descFirst align="right" />
-  );
+  const plain = (label: string) => <th className="font-normal text-left">{label}</th>;
+  const columns = hasActions ? 7 : 6;
 
   return (
-    <div className="rounded-xl border border-bambu-dark-tertiary overflow-hidden">
-      <div className="overflow-x-auto">
+    <WorkshopPanel flush footer={footer}>
+      <WorkshopTableScroll label={t('customers.list.title')}>
         <table className="w-full text-sm">
-          <thead className="text-xs text-bambu-gray bg-bambu-dark-secondary">
+          <thead className="text-xs text-bambu-gray bg-bambu-dark-secondary [&_th]:px-3 max-[1024px]:[&_th]:px-2 [&_th]:py-2">
             <tr>
-              <th className="w-8 p-2" aria-hidden />
+              <th className="w-8" aria-hidden />
               <SortableHeader sortKey="name" label={t('customers.table.name')} sort={sort} onSort={onSortChange} />
-              <th className={HEAD}>{t('customers.table.contact')}</th>
-              <th className={HEAD}>{t('customers.table.delivery')}</th>
-              {numeric('orders', t('customers.table.orders'))}
-              {numeric('active', t('customers.table.active'))}
-              {numeric('completed', t('customers.table.completed'))}
-              {numeric('cancelled', t('customers.table.cancelled'))}
-              {numeric('total_price', t('customers.table.totalPrice'))}
-              {hasActions && <th className="p-2" aria-label={t('common.actions')} />}
+              {plain(t('customers.table.contact'))}
+              {plain(t('customers.table.delivery'))}
+              <SortableHeader
+                sortKey="orders"
+                label={t('customers.table.orders')}
+                sort={sort}
+                onSort={onSortChange}
+                descFirst
+              />
+              <SortableHeader
+                sortKey="total_price"
+                label={t('customers.table.totalPrice')}
+                sort={sort}
+                onSort={onSortChange}
+                descFirst
+                align="right"
+              />
+              {hasActions && (
+                <th className="w-[1%]">
+                  <span className="sr-only">{t('common.actions')}</span>
+                </th>
+              )}
             </tr>
           </thead>
-          <tbody>
+          <tbody className="[&_td]:px-3 max-[1024px]:[&_td]:px-2 [&_td]:py-2.5 [&_td]:align-top">
             {customers.map((customer) => {
               const main = customer.contacts[0];
-              const many = customer.contacts.length > 1;
-              const isOpen = many && open.has(customer.id);
+              const extra = customer.contacts.length - 1;
+              const isOpen = extra > 0 && open.has(customer.id);
+              const method = main ? methodLine(main) : '';
               return (
                 <Fragment key={customer.id}>
                   <tr
                     data-testid={`customer-${customer.id}-row`}
                     className="border-t border-bambu-dark-tertiary hover:bg-bambu-dark/40"
                   >
-                    <td className="p-2 align-top">
-                      {many && (
+                    <td className="w-8 !pr-0">
+                      {extra > 0 && (
                         <button
                           type="button"
                           onClick={() => toggle(customer.id)}
                           aria-expanded={isOpen}
                           aria-label={t('customers.contacts.allOf', { name: customer.name })}
-                          className="text-bambu-gray hover:text-white"
+                          className="p-1 rounded text-bambu-gray hover:text-white"
                         >
                           {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                         </button>
                       )}
                     </td>
-                    <td className={CELL}>
-                      <Link to={`/customers/${customer.id}`} className="text-white hover:text-bambu-green font-medium">
-                        {customer.name}
-                      </Link>
-                      <div className="text-xs text-bambu-gray">{`${t(`customers.kind.${customer.kind}`)} · ${customer.code}`}</div>
+                    <td>
+                      <div className="flex items-start gap-3">
+                        <CustomerAvatar name={customer.name} />
+                        <div className="min-w-0">
+                          <Link
+                            to={`/customers/${customer.id}`}
+                            className="text-white hover:text-bambu-green font-medium break-words"
+                          >
+                            {customer.name}
+                          </Link>
+                          <div className="text-xs text-bambu-gray">{`${t(`customers.kind.${customer.kind}`)} · ${customer.code}`}</div>
+                        </div>
+                      </div>
                     </td>
-                    <td className={`${CELL} text-bambu-gray`}>
+                    <td className="text-bambu-gray">
                       {main ? (
                         <>
-                          <div className="text-white">{contactTitle(main)}</div>
-                          <ContactReach contact={main} className="text-xs" />
+                          <div className="text-white">
+                            {contactTitle(main)}
+                            {main.name && main.role && <span className="text-bambu-gray"> · {main.role}</span>}
+                          </div>
+                          <ContactReach contact={main} className="block text-xs" />
+                          {extra > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => toggle(customer.id)}
+                              aria-expanded={isOpen}
+                              className="text-xs text-bambu-green underline"
+                            >
+                              {t('customers.table.moreContacts', { count: extra })}
+                            </button>
+                          )}
                         </>
                       ) : (
                         '—'
                       )}
                     </td>
-                    <td className={`${CELL} text-bambu-gray`}>{(main && deliveryLine(main)) || '—'}</td>
-                    <td className={`${NUM_CELL} text-white`}>{customer.figures.projects}</td>
-                    <td className={`${NUM_CELL} text-bambu-gray`}>{customer.figures.active}</td>
-                    <td className={`${NUM_CELL} text-bambu-gray`}>{customer.figures.completed}</td>
-                    <td className={`${NUM_CELL} text-bambu-gray`}>{customer.figures.cancelled}</td>
-                    <td className={`${NUM_CELL} text-white`}>
+                    <td data-testid={`customer-${customer.id}-delivery`} className="text-bambu-gray">
+                      {main?.city || method ? (
+                        <>
+                          <div className="text-white">{main?.city || '—'}</div>
+                          {method && <div className="text-xs">{method}</div>}
+                        </>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td data-testid={`customer-${customer.id}-orders`} className="text-bambu-gray">
+                      <div>
+                        <span className="text-white tabular-nums">{customer.figures.projects}</span>{' '}
+                        {t('customers.table.total')}
+                        {customer.figures.active > 0 && (
+                          <span className="ml-1.5 px-1.5 py-0.5 rounded text-[11px] bg-bambu-green/15 text-bambu-green">
+                            {t('customers.table.activeBadge', { count: customer.figures.active })}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs">
+                        {t('customers.table.doneLine', {
+                          completed: customer.figures.completed,
+                          cancelled: customer.figures.cancelled,
+                        })}
+                      </div>
+                    </td>
+                    <td className="text-right tabular-nums text-white">
                       {formatMoney(customer.figures.total_price, settings?.currency)}
                     </td>
                     {hasActions && (
-                      <td className={`${CELL} text-right`}>
+                      <td className="text-right">
                         <CustomerActionMenu customer={customer} actions={actions} />
                       </td>
                     )}
                   </tr>
                   {isOpen && (
-                    <tr className="bg-bambu-dark/30">
+                    <tr className="bg-bambu-dark-tertiary/30">
                       <td />
-                      {/* Every column but the chevron: name, contact, delivery, five numbers, and the actions. */}
-                      <td colSpan={hasActions ? 9 : 8} className="p-2">
-                        <table data-testid={`customer-${customer.id}-contacts`} className="w-full text-xs">
-                          <tbody>
-                            {customer.contacts.map((c, index) => (
-                              <tr key={c.id} className="border-t border-bambu-dark-tertiary/50">
-                                <td className="p-1.5 text-bambu-gray">{c.code}</td>
-                                <td className="p-1.5 text-white">
-                                  {contactTitle(c)}
-                                  {index === 0 && (
-                                    <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] bg-bambu-green/15 text-bambu-green">
-                                      {t('customers.contacts.main')}
-                                    </span>
-                                  )}
-                                  {c.note && <div className="text-bambu-gray whitespace-pre-line">{c.note}</div>}
-                                </td>
-                                <td className="p-1.5 text-bambu-gray">{c.role ?? '—'}</td>
-                                <td className="p-1.5 text-bambu-gray">
-                                  <ContactReach contact={c} />
-                                </td>
-                                <td className="p-1.5 text-bambu-gray">{deliveryLine(c) || '—'}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                      <td colSpan={columns - 1}>
+                        <ContactsTable customerId={customer.id} contacts={customer.contacts} />
                       </td>
                     </tr>
                   )}
@@ -171,8 +201,58 @@ export function CustomersTable({ customers, actions, sort, onSortChange, footer 
             })}
           </tbody>
         </table>
-      </div>
-      {footer}
-    </div>
+      </WorkshopTableScroll>
+    </WorkshopPanel>
+  );
+}
+
+/** Every contact of one customer — the open row (C08): the mockup's columns, the code and the note. */
+function ContactsTable({ customerId, contacts }: { customerId: number; contacts: CustomerContact[] }) {
+  const { t } = useTranslation();
+  return (
+    <table data-testid={`customer-${customerId}-contacts`} className="w-full text-[13px] my-1.5">
+      <thead className="text-xs text-bambu-gray [&_th]:px-2.5 [&_th]:py-1.5 [&_th]:font-normal [&_th]:text-left">
+        <tr>
+          <th>{t('customers.table.mini.contact')}</th>
+          <th>{t('customers.table.mini.role')}</th>
+          <th>{t('customers.table.mini.email')}</th>
+          <th>{t('customers.table.mini.phone')}</th>
+          <th>{t('customers.table.mini.delivery')}</th>
+          <th>{t('customers.table.mini.note')}</th>
+        </tr>
+      </thead>
+      <tbody className="[&_td]:!px-2.5 [&_td]:!py-1.5 text-bambu-gray">
+        {contacts.map((c, index) => (
+          <tr key={c.id} className="border-t border-bambu-dark-tertiary/50">
+            <td className="text-white">
+              {contactTitle(c)}
+              {index === 0 && <span className={MAIN_BADGE}>{t('customers.contacts.main')}</span>}
+              <div className="text-xs text-bambu-gray">{c.code}</div>
+            </td>
+            <td>{c.role || '—'}</td>
+            <td>
+              {c.email ? (
+                <a href={`mailto:${c.email}`} className="hover:text-white">
+                  {c.email}
+                </a>
+              ) : (
+                '—'
+              )}
+            </td>
+            <td>
+              {c.phone ? (
+                <a href={`tel:${c.phone.replace(/[^\d+]/g, '')}`} className="hover:text-white">
+                  {c.phone}
+                </a>
+              ) : (
+                '—'
+              )}
+            </td>
+            <td>{deliveryLine(c) || '—'}</td>
+            <td>{c.note ? <span className="whitespace-pre-line">{c.note}</span> : '—'}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
