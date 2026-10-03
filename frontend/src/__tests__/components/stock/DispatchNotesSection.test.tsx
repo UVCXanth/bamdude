@@ -19,7 +19,7 @@ const row = (over: Partial<StockIssueRow>): StockIssueRow => ({
   customer_name: 'ACME',
   units: 4,
   lines_count: 1,
-  summary: [{ product_name: 'Lamp', part_name: null, quantity: 4 }],
+  summary: [{ product_name: 'Lamp', part_name: null, quantity: 4, configuration: { choices: [], changed_parts: [] } }],
   recipient_name: 'Ivan',
   recipient_phone: '+380',
   delivery_method: 'Nova Poshta',
@@ -214,7 +214,7 @@ describe('DispatchNotesSection', () => {
 
   it('names a part «for» its product and says «+N more» past the summary', async () => {
     vi.spyOn(api, 'getDispatchNotes').mockResolvedValue(
-      page([row({ id: 5, lines_count: 5, summary: [{ product_name: 'Pipe', part_name: 'flask', quantity: 2 }] })]),
+      page([row({ id: 5, lines_count: 5, summary: [{ product_name: 'Pipe', part_name: 'flask', quantity: 2, configuration: null }] })]),
     );
     render(<DispatchNotesSection customerId={2} canEdit={false} />);
     expect(await screen.findByText('flask — for Pipe × 2')).toBeInTheDocument();

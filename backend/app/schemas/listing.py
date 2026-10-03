@@ -229,6 +229,9 @@ class StockIssueSummaryLine(BaseModel):
     #: A parts line's part; None for a product's row.
     part_name: str | None = None
     quantity: int
+    #: The product row's configuration from the line's snapshot — the same the document
+    #: names (WS-13 E12 A01); None for a part's row, which has no configuration of its own.
+    configuration: LineConfigurationOut | None = None
 
 
 class StockIssueRow(BaseModel):

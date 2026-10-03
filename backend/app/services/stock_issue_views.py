@@ -70,7 +70,12 @@ async def issue_rows(db: AsyncSession, issues: Sequence[StockIssue]) -> list[Sto
         )
     ).scalars():
         summary[line.issue_id].append(
-            StockIssueSummaryLine(product_name=line.product_name, part_name=line.part_name, quantity=line.quantity)
+            StockIssueSummaryLine(
+                product_name=line.product_name,
+                part_name=line.part_name,
+                quantity=line.quantity,
+                configuration=None if line.part_name else LineConfigurationOut(**(line.configuration or {})),
+            )
         )
     return [_row(issue, counts.get(issue.id, 0), summary[issue.id]) for issue in issues]
 

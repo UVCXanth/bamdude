@@ -211,7 +211,7 @@ describe('StockPage', () => {
       items: [{
         id: 7, code: 'DN-0007', created_at: '2026-09-28T10:00:00', project_id: 1, order_code: 'OR-0001',
         order_name: 'Flasks', customer_id: 2, customer_name: 'ACME', units: 2, lines_count: 1,
-        summary: [{ product_name: 'Flask', part_name: null, quantity: 2 }], recipient_name: null,
+        summary: [{ product_name: 'Flask', part_name: null, quantity: 2, configuration: { choices: [], changed_parts: [] } }], recipient_name: null,
         recipient_phone: null, delivery_method: null, delivery_details: null, waybill: null, note: null,
         created_by_name: 'olena',
       }],

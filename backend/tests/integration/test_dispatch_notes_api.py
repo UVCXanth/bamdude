@@ -84,7 +84,14 @@ async def test_one_list_filters_by_customer_and_order(committing_client, db_sess
         1,
         1,
     )
-    assert row["summary"] == [{"product_name": "Lamp", "part_name": None, "quantity": 1}]
+    assert row["summary"] == [
+        {
+            "product_name": "Lamp",
+            "part_name": None,
+            "quantity": 1,
+            "configuration": {"choices": [], "changed_parts": []},
+        }
+    ]
     assert (row["recipient_name"], row["delivery_method"], row["created_by_name"]) == (
         "Ivan",
         "Nova Poshta",

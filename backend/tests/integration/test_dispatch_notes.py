@@ -1,7 +1,7 @@
 """The dispatch note's snapshot — written once, in the issuing transaction (spec workshop-dispatch-notes, rules 1–9)."""
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from backend.app.models.customer import Customer
 from backend.app.models.product import Product, ProductPart
@@ -13,6 +13,7 @@ from backend.app.models.stock_issue import StockIssue, StockIssueLine
 from backend.app.models.user import User
 from backend.app.services import finished_stock, line_config, order_fulfilment, part_stock, product_delete, stock_issues
 from backend.app.services.order_fulfilment import LineRequest
+from backend.app.services.stock_issue_views import issue_rows, note_out
 from backend.app.services.stock_issues import Recipient
 
 pytestmark = pytest.mark.integration
@@ -223,3 +224,126 @@ async def test_a_stored_null_is_no_supplier_detail(db_session, shop):
         await db_session.execute(select(Settings).where(Settings.key == "document_supplier_iban"))
     ).scalar_one().value = "None"
     assert (await stock_issues.supplier_snapshot(db_session))["iban"] == ""
+
+
+# ---- WS-13 E12 A01: the list's summary names each line's configuration, from the same snapshot ----
+
+
+async def _graphite_pipe(db, shop):
+    """Pipe in Black (White is the standard) with cap ×2 instead of ×1 — one ready, issued by hand."""
+    pipe = shop["pipe"]
+    group = ProductVariantGroup(product_id=pipe.id, name="Colour", position=0)
+    db.add(group)
+    await db.flush()
+    white = ProductVariantOption(group_id=group.id, name="White", position=0)
+    black = ProductVariantOption(group_id=group.id, name="Black", position=1)
+    db.add_all([white, black])
+    await db.flush()
+    group.default_option_id = white.id
+    position = await finished_stock.item_for(db, pipe.id, {group.id: black.id}, {shop["cap"].id: 2}, create=True)
+    await finished_stock.receive(db, position, 1)
+    issue = await _manual_issue(db, shop, position, 1)
+    await stock_issues.seal(db, issue, actor=None)
+    return issue, black
+
+
+@pytest.mark.asyncio
+async def test_the_summary_names_the_configuration_the_document_names(committing_client, db_session, shop):
+    issue, _ = await _graphite_pipe(db_session, shop)
+    [row] = await issue_rows(db_session, [issue])
+    document = await note_out(db_session, issue)
+    summary = row.summary[0].model_dump()["configuration"]
+    assert summary == document.lines[0].configuration.model_dump()
+    assert [(c["group_name"], c["option_name"]) for c in summary["choices"]] == [("Colour", "Black")]
+    assert [(p["name"], p["qty"]) for p in summary["changed_parts"]] == [("cap", 2)]
+    [stored] = (await db_session.execute(select(StockIssueLine).where(StockIssueLine.issue_id == issue.id))).scalars()
+    assert summary == stored.configuration
+    # On the wire, through the list itself.
+    await db_session.commit()
+    r = await committing_client.get("/api/v1/stock-issues/", params={"q": f"DN-{issue.id:04d}"})
+    assert r.status_code == 200, r.text
+    [item] = r.json()["items"]
+    assert item["summary"][0]["configuration"] == summary
+
+
+@pytest.mark.asyncio
+async def test_a_part_line_has_no_configuration_in_the_summary(db_session, shop):
+    lamp_line = await _line(db_session, shop, shop["lamp"], quantity=1)
+    assert await finished_stock.reserve_for_line(db_session, lamp_line, 1) == 1
+    flask = shop["flask"]
+    parts_line = await _line(db_session, shop, shop["pipe"], quantity=1, mode="parts", counts={flask.id: 1})
+    await part_stock.receive_parts_for_line(db_session, parts_line, {flask.id: 1}, created_by=None)
+    issue = await _apply(
+        db_session, shop, [LineRequest(lamp_line.id, issue=1), LineRequest(parts_line.id, parts={flask.id: (0, 1)})]
+    )
+    [row] = await issue_rows(db_session, [issue])
+    assert [(s.product_name, s.part_name, s.configuration) for s in row.summary][1] == ("Pipe", "flask", None)
+    assert row.summary[0].configuration.model_dump() == {"choices": [], "changed_parts": []}
+
+
+@pytest.mark.asyncio
+async def test_the_summary_outlives_a_rename_a_new_part_and_the_product(db_session, shop):
+    issue, black = await _graphite_pipe(db_session, shop)
+    [before] = await issue_rows(db_session, [issue])
+    black.name = "Graphite"
+    db_session.add(
+        ProductPart(product_id=shop["pipe"].id, kind="printed", name="ring", name_key="ring", qty_per_unit=1)
+    )
+    await db_session.commit()
+    [after_edit] = await issue_rows(db_session, [issue])
+    assert after_edit.summary == before.summary
+    pipe = shop["pipe"]
+    await db_session.refresh(pipe, ["library_files", "library_folders"])
+    await product_delete.delete_product(db_session, pipe)
+    [after_delete] = await issue_rows(db_session, [issue])
+    assert after_delete.summary == before.summary
+
+
+@pytest.mark.asyncio
+async def test_the_summary_costs_the_same_statements_for_one_note_or_many(db_session, shop):
+    async def notes(count, lines):
+        made = []
+        for _ in range(count):
+            issue = await stock_issues.create(
+                db_session,
+                customer_id=shop["acme"].id,
+                project_id=None,
+                recipient=Recipient(),
+                waybill=None,
+                note=None,
+                actor=None,
+            )
+            for position in range(1, lines + 1):
+                db_session.add(
+                    StockIssueLine(
+                        issue_id=issue.id,
+                        position=position,
+                        product_id=shop["lamp"].id,
+                        product_name="Lamp",
+                        sku="LMP-1",
+                        configuration={"choices": [], "changed_parts": []},
+                        part_name=None,
+                        quantity=1,
+                    )
+                )
+            made.append(issue)
+        await db_session.flush()
+        return made
+
+    async def statements(issues):
+        seen = []
+
+        def count(*_args):
+            seen.append(1)
+
+        engine = db_session.bind.sync_engine
+        event.listen(engine, "before_cursor_execute", count)
+        try:
+            await issue_rows(db_session, issues)
+        finally:
+            event.remove(engine, "before_cursor_execute", count)
+        return len(seen)
+
+    one = await statements(await notes(1, 1))
+    many = await statements(await notes(10, 5))
+    assert one == many

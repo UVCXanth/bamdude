@@ -3546,6 +3546,9 @@ export interface StockIssueSummaryLine {
   product_name: string;
   part_name: string | null;
   quantity: number;
+  /** The product row's configuration from the line's snapshot — the same the document names
+   *  (WS-13 E12 A01); null for a part's row. */
+  configuration: LineConfiguration | null;
 }
 
 /** One issue = one dispatch note (spec workshop-dispatch-notes, rule 12) — its snapshot. */
