@@ -359,7 +359,7 @@ describe('StockPage', () => {
       render(<StockPage />);
       const row = await screen.findByTestId('stock-row-1');
       fireEvent.click(within(row).getByRole('button', { name: 'Assemble' }));
-      expect(await screen.findByRole('dialog', { name: 'Assemble from parts' })).toBeInTheDocument();
+      expect(await screen.findByRole('dialog', { name: 'Assemble finished goods from parts' })).toBeInTheDocument();
       await waitFor(() => expect(lookup).toHaveBeenCalledWith(1, []));
     });
 
@@ -462,7 +462,7 @@ describe('StockPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Assemble from parts…' }));
-    expect(await screen.findByRole('dialog', { name: 'Assemble from parts' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'Assemble finished goods from parts' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     fireEvent.click(screen.getByTestId('finished-3-menu'));

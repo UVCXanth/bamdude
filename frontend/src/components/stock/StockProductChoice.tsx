@@ -178,21 +178,18 @@ interface PositionFigures {
 /**
  * The fixed position a dialog was opened from — the product, the configuration and the
  * code are the row's own; the figures are a current read's only (G08): `null` while there
- * is none («…»). Without `figures` the row's are shown (callers that read nothing more).
+ * is none («…»), never the row's own numbers.
  */
 export function StockPositionHeader({
   item,
   figures,
 }: {
-  item: { code: string; product: { name: string }; configuration: LineConfiguration } & Partial<PositionFigures>;
-  figures?: PositionFigures | null;
+  item: { code: string; product: { name: string }; configuration: LineConfiguration };
+  figures: PositionFigures | null;
 }) {
   const { t } = useTranslation();
   const caption = lineConfigLabel(item.configuration, 'product', t);
-  const shown: PositionFigures | null =
-    figures === undefined
-      ? { on_hand: item.on_hand ?? 0, reserved: item.reserved ?? 0, available: item.available ?? 0 }
-      : figures;
+  const shown = figures;
   return (
     <div data-testid="stock-position-header" className="rounded-lg bg-bambu-dark px-3 py-2 text-sm">
       <p className="text-white">

@@ -1,13 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { UseQueryResult } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
 import { api, STOCK_MAX_QTY as MAX_QTY, WAYBILL_MAX } from '../../api/client';
 import type { CustomerContact, FulfilmentRecipient, StockItem, StockMoveBody, StockMoveKind } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
-import { useStockItem, useStockLookup } from '../../hooks/useFinishedStock';
-import { useProductDetail } from '../../hooks/useProductDetail';
 import { invalidateStock } from '../../utils/queryInvalidation';
 import { Button } from '../Button';
 import { CustomerPicker } from '../pickers/CustomerPicker';
@@ -20,6 +17,7 @@ import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { WorkshopField, WorkshopFormGrid } from '../workshop/WorkshopFormGrid';
 import { DispatchNoteCreated } from './DispatchNoteCreated';
 import { StockLookupNote, StockPositionHeader, StockProductChoice } from './StockProductChoice';
+import { useStockTarget } from './useStockTarget';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none';
@@ -33,15 +31,6 @@ function recipientOf(contact: CustomerContact | undefined): FulfilmentRecipient 
     delivery_method: contact?.delivery_method_name ?? null,
     delivery_details: contact?.delivery_details ?? null,
   };
-}
-
-/**
- * The CURRENT answer of a query (G08): a success of THIS key that arrived after the dialog
- * opened, with no read on its way. A cached answer from before, a placeholder of another
- * key or an answer being read again is not one.
- */
-function isCurrent(q: UseQueryResult<unknown>): boolean {
-  return q.isSuccess && q.isFetchedAfterMount && !q.isFetching && !q.isPlaceholderData;
 }
 
 /** A reason the primary waits, and the element that says it. */
@@ -110,36 +99,11 @@ export function StockMoveDialog({
   // The recipient starts as the customer's main contact; an edit belongs to the customer it
   // was made for, so picking another customer starts from THAT one's contact again.
   const [recipientEdit, setRecipientEdit] = useState<{ customerId: number; value: FulfilmentRecipient } | null>(null);
-  // After a refusal the position (or the lookup) is read again; until it answers nothing is judged.
-  const [rereading, setRereading] = useState(false);
 
-  // ---- which position: fixed, or the server's answer for a configuration (G02)
-  const product = useProductDetail(item ? null : productId);
-  // The groups must be read before a configuration means anything (G08).
-  const groupsReady = item == null && productId != null && product.data != null;
+  // ---- which position: fixed, or the server's answer for a configuration (G02, G08)
   const options = Object.values(choices);
-  const lookup = useStockLookup(groupsReady ? productId : null, options);
-  const lookupKey = `${groupsReady ? productId : ''}:${[...options].sort((a, b) => a - b).join(',')}`;
-  useEffect(() => {
-    // Every new key is read now — a cached answer of the same key is not this dialog's.
-    if (groupsReady) void lookup.refetch({ cancelRefetch: false });
-    // The key is the trigger.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lookupKey]);
-  const lookupCurrent = groupsReady && isCurrent(lookup) && !rereading;
-  const lookupOwn = lookup.data && !lookup.isPlaceholderData ? lookup.data : undefined;
-
-  const positionId = item?.id ?? lookupOwn?.item?.id;
-  const detail = useStockItem(positionId ?? 0);
-  useEffect(() => {
-    if (positionId != null) void detail.refetch({ cancelRefetch: false });
-    // The position is the trigger.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [positionId]);
-  const detailCurrent = positionId != null && isCurrent(detail) && !rereading;
-  const figures = detailCurrent ? detail.data : undefined;
-  // A failed re-read keeps the old numbers on screen beside its note — never as a limit.
-  const shownFigures = figures ?? (detail.isError && !detail.isFetching ? detail.data : undefined);
+  const { groupsReady, lookup, lookupCurrent, lookupOwn, positionId, detail, detailCurrent, figures, shownFigures, reread } =
+    useStockTarget({ item, productId, options });
   const manual = figures
     ? figures.reservations.filter((r) => r.project_id == null).reduce((sum, r) => sum + r.qty, 0)
     : undefined;
@@ -225,11 +189,7 @@ export function StockMoveDialog({
     onError: () => {
       sent.current = false;
       invalidateStock(queryClient);
-      setRereading(true);
-      const reads: Promise<unknown>[] = [];
-      if (positionId != null) reads.push(detail.refetch({ cancelRefetch: false }));
-      if (item == null && groupsReady) reads.push(lookup.refetch({ cancelRefetch: false }));
-      void Promise.allSettled(reads).finally(() => setRereading(false));
+      reread();
     },
   });
   const pending = move.isPending;

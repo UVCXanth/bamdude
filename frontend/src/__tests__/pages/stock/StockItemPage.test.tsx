@@ -195,7 +195,7 @@ describe('StockItemPage', () => {
       renderPage();
       const panel = await screen.findByTestId('item-actions');
       fireEvent.click(within(panel).getByRole('button', { name: 'Assemble from parts' }));
-      expect(await screen.findByRole('dialog', { name: 'Assemble from parts' })).toBeInTheDocument();
+      expect(await screen.findByRole('dialog', { name: 'Assemble finished goods from parts' })).toBeInTheDocument();
     });
   });
 

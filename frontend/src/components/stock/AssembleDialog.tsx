@@ -1,27 +1,39 @@
-import { useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { Loader2 } from 'lucide-react';
 import { api } from '../../api/client';
-import type { StockAssembleBody, StockItem } from '../../api/client';
+import type { LineConfiguration, StockAssembleBody, StockItem } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
-import { useStockItem, useStockLookup } from '../../hooks/useFinishedStock';
 import { invalidateStock } from '../../utils/queryInvalidation';
 import { Button } from '../Button';
-import { Modal } from '../Modal';
-import { StockLookupNote, StockPositionHeader, StockProductChoice } from './StockProductChoice';
+import { lineConfigLabel } from '../projects/lineConfigLabel';
+import { LoadFailedNote } from '../workshop/LoadFailedNote';
+import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
+import { WorkshopDialog } from '../workshop/WorkshopDialog';
+import { WorkshopField, WorkshopFormGrid } from '../workshop/WorkshopFormGrid';
+import { StockProductChoice } from './StockProductChoice';
+import { useStockTarget } from './useStockTarget';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none';
+const NOTE_MAX = 500;
 
 /**
- * «Зібрати з деталей» (spec workshop-finished-goods, rules 10, 26): the kit's
- * printed parts leave the free shelf and the position grows.
+ * Assembling finished goods from free parts (spec workshop-finished-goods; WS-13 E12 H02–H04)
+ * — one server operation over both ledgers: the kit's printed parts leave the free shelf
+ * and the position of THAT configuration grows.
  *
- * The kit, the shelf and «can assemble» are the server's — from the position
- * page's detail when opened from a position, from `lookup` when a product and
- * its options were picked. A part whose shelf is short of `per × how many` is
- * marked; the server refuses more than it can make, and the button does not
- * offer it. Purchased parts are not on a shelf and are not written off.
+ * Three doors (R01): a position — its configuration is fixed; a product (a free-parts row,
+ * the product page) — the product is fixed and its groups are chosen, starting at their
+ * standards («No choice» for a group without one, R11); the stock page's header — the
+ * product is chosen too. «Assemble» is never blocked by a zero on the way in: the answer
+ * of the chosen configuration decides.
+ *
+ * The kit, the shelf, K and the position come from a CURRENT read only (G08, through
+ * `useStockTarget`); a configuration that makes nothing says so and waits while another
+ * one stays a choice away. A one-off product is refused by the server — the primary says
+ * why first. Purchased parts are not on a shelf and are not written off.
  */
 export function AssembleDialog({
   item,
@@ -29,14 +41,16 @@ export function AssembleDialog({
   onClose,
 }: {
   item?: StockItem;
-  /** Opened for one product (the product page, WS-13 E9 F02, R03): the product is named,
-   *  the configuration — and so what can be assembled — is chosen here. */
+  /** Opened for one product (a free-parts row, the product page — R01): the product is
+   *  named, the configuration — and so what can be assembled — is chosen here. */
   productId?: number;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
+  const uid = useId();
+  const ids = { form: `${uid}-form`, product: `${uid}-product`, qty: `${uid}-qty`, note: `${uid}-note`, why: `${uid}-why` };
 
   const [productId, setProductId] = useState<number | null>(forProduct ?? null);
   const [choices, setChoices] = useState<Record<number, number>>({});
@@ -44,12 +58,40 @@ export function AssembleDialog({
   const [note, setNote] = useState('');
 
   const options = Object.values(choices);
-  const { data: detail } = useStockItem(item?.id ?? 0);
-  const { data: lookup } = useStockLookup(item ? null : productId, options);
-  const source = item ? detail : productId != null ? lookup : undefined;
+  const { product, groupsReady, lookup, lookupCurrent, lookupOwn, detail, figures, reread } = useStockTarget({
+    item,
+    productId,
+    options,
+  });
+  // What the shelf answers for the chosen configuration — a current read only.
+  const source = item ? figures : lookupCurrent ? lookupOwn : undefined;
   const parts = source?.parts ?? [];
-  const canAssemble = source?.can_assemble ?? 0;
+  const canAssemble = source?.can_assemble;
+  const oneOff = item == null && product.data != null && product.data.origin !== 'catalog';
 
+  const count = Number(qty);
+  const countValid = qty.trim() !== '' && Number.isInteger(count) && count >= 1;
+  const over = canAssemble != null && countValid && count > canAssemble;
+
+  // The position this assembly grows: the fixed one, or the lookup's (none yet — a new one).
+  const target: { code: string; configuration: LineConfiguration; onHand: number } | null | undefined = item
+    ? figures
+      ? { code: item.code, configuration: item.configuration, onHand: figures.on_hand }
+      : undefined
+    : lookupCurrent && lookupOwn
+      ? lookupOwn.item
+        ? { code: lookupOwn.item.code, configuration: lookupOwn.configuration, onHand: lookupOwn.item.on_hand }
+        : null
+      : undefined;
+
+  let why: { text: string; id: string } | null = null;
+  if (oneOff) why = { text: t('stock.page.oneOffAssemble'), id: ids.why };
+  else if (canAssemble === 0) why = { text: t('stock.item.noKits'), id: ids.why };
+  else if (!countValid) why = { text: t('stock.move.qtyInvalid'), id: `${ids.qty}-hint` };
+  else if (over) why = { text: t('stock.move.overLimit', { n: canAssemble }), id: `${ids.qty}-hint` };
+
+  // ⚠️ Synchronous: one press, one assembly; nothing closes the dialog under it.
+  const sent = useRef(false);
   const assemble = useMutation({
     mutationFn: (body: StockAssembleBody) => api.assembleStock(body),
     onSuccess: () => {
@@ -57,124 +99,200 @@ export function AssembleDialog({
       showToast(t('stock.assemble.done'));
       onClose();
     },
-    onError: (e: Error) => {
-      showToast(e.message, 'error');
+    // The refusal says what the server saw; the shelf is read again (G07) — the draft stays.
+    onError: () => {
+      sent.current = false;
       invalidateStock(queryClient);
+      reread();
     },
   });
+  const pending = assemble.isPending;
+  const submitId = `${ids.form}-submit`;
+  useEffect(() => {
+    if (assemble.isError) document.getElementById(submitId)?.focus();
+  }, [assemble.isError, assemble.error, submitId]);
 
-  const count = Number(qty);
-  const valid = Number.isInteger(count) && count >= 1 && count <= canAssemble;
+  // The cursor starts in the first field (G07): the product from the header, else the count.
+  useEffect(() => {
+    document.getElementById(item == null && forProduct == null ? ids.product : ids.qty)?.focus();
+    // Once, at the opening.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const submit = () =>
+  const close = () => {
+    if (sent.current) return;
+    onClose();
+  };
+
+  const canSubmit = !pending && canAssemble != null && why == null;
+  const submit = () => {
+    if (sent.current || !canSubmit) return;
+    sent.current = true;
     assemble.mutate({
       ...(item ? { item_id: item.id } : { product_id: productId as number, options }),
       qty: count,
       ...(note.trim() ? { note: note.trim() } : {}),
     });
+  };
+
+  let limitText: string;
+  if (!countValid) limitText = t('stock.move.qtyInvalid');
+  else if (canAssemble == null) limitText = t('stock.move.reading');
+  else if (over) limitText = t('stock.move.overLimit', { n: canAssemble });
+  else limitText = t('stock.assemble.upTo', { n: canAssemble });
+
+  // A read that failed: an alert with its retry; one that failed again over an answer: a note.
+  const readQuery = item ? detail : groupsReady ? lookup : undefined;
+  const readNote =
+    readQuery && readQuery.isError && !readQuery.isFetching ? (
+      readQuery.data ? (
+        <RefreshFailedNote onRetry={() => readQuery.refetch()} />
+      ) : (
+        <LoadFailedNote
+          message={t(item ? 'stock.move.positionFailed' : 'stock.move.lookupFailed')}
+          onRetry={() => readQuery.refetch()}
+        />
+      )
+    ) : null;
+
+  const targetLabel = (code: string, configuration: LineConfiguration) =>
+    [code, lineConfigLabel(configuration, 'product', t)].filter(Boolean).join(' · ');
 
   return (
-    <Modal onClose={onClose} title={t('stock.assemble.title')} size="md">
-      <div className="p-4 space-y-3">
-        {item ? (
-          <StockPositionHeader item={item} />
-        ) : (
-          <>
+    <WorkshopDialog
+      size="md"
+      onClose={close}
+      title={t('stock.assemble.title')}
+      subtitle={t('stock.assemble.subtitle')}
+      pending={pending}
+      error={assemble.isError ? (assemble.error as Error).message : undefined}
+      footer={
+        <>
+          <Button type="button" variant="secondary" onClick={close} disabled={pending}>
+            {t('common.cancel')}
+          </Button>
+          <Button
+            id={submitId}
+            type="submit"
+            form={ids.form}
+            disabled={!canSubmit}
+            aria-describedby={why ? why.id : undefined}
+            data-testid="assemble-submit"
+          >
+            {pending && <Loader2 className="w-4 h-4 animate-spin" />}
+            {t('stock.assemble.submit')}
+          </Button>
+        </>
+      }
+    >
+      <form
+        id={ids.form}
+        noValidate
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit();
+        }}
+      >
+        <WorkshopFormGrid>
+          {item == null && (
             <StockProductChoice
               productId={productId}
               onProduct={setProductId}
               choices={choices}
               onChoices={setChoices}
-              disabled={assemble.isPending}
+              disabled={pending}
               productLocked={forProduct != null}
+              productInputId={ids.product}
             />
-            <StockLookupNote lookup={productId != null ? lookup : undefined} creates />
-          </>
-        )}
-
-        {source && (
-          <>
-            {parts.length === 0 ? (
-              <p className="text-sm text-bambu-gray">{t('stock.assemble.noParts')}</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-xs text-bambu-gray text-left">
-                    <th className="font-normal p-1">{t('stock.part')}</th>
-                    <th className="font-normal p-1 text-right">{t('stock.perUnit')}</th>
-                    <th className="font-normal p-1 text-right">{t('stock.balance')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {parts.map((p) => {
-                    const short = Number.isInteger(count) && count > 0 && p.on_shelf < p.per * count;
-                    return (
-                      <tr key={p.part_id} className="text-white" data-testid={`assemble-part-${p.part_id}`}>
-                        <td className="p-1">{p.name}</td>
-                        <td className="p-1 text-right tabular-nums">{p.per}</td>
-                        <td
-                          className={`p-1 text-right tabular-nums ${short ? 'text-status-warning' : ''}`}
-                          data-testid={`assemble-shelf-${p.part_id}`}
-                        >
-                          {p.on_shelf}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-            <p className="text-xs text-bambu-gray">{t('stock.assemble.boughtHint')}</p>
-          </>
-        )}
-
-        <div>
-          <label htmlFor="stock-assemble-qty" className="block text-sm text-bambu-gray mb-1">
-            {t('stock.assemble.qty')}
-          </label>
-          <div className="flex items-center gap-3">
+          )}
+          <WorkshopField
+            label={t('stock.assemble.qty')}
+            htmlFor={ids.qty}
+            hint={
+              <span data-testid="assemble-limit" className={over || !countValid ? 'text-status-warning' : undefined}>
+                {limitText}
+              </span>
+            }
+          >
             <input
-              id="stock-assemble-qty"
+              id={ids.qty}
               type="number"
               min={1}
               max={canAssemble || undefined}
               value={qty}
               onChange={(e) => setQty(e.target.value)}
+              aria-describedby={`${ids.qty}-hint`}
+              aria-invalid={over || !countValid || undefined}
+              className={`${FIELD_CLASS} tabular-nums`}
+            />
+          </WorkshopField>
+          <WorkshopField label={t('stock.assemble.note')} htmlFor={ids.note} full>
+            <input
+              id={ids.note}
+              type="text"
+              maxLength={NOTE_MAX}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
               className={FIELD_CLASS}
             />
-            <span className="text-sm text-bambu-gray whitespace-nowrap">{t('stock.assemble.upTo', { n: canAssemble })}</span>
-          </div>
-        </div>
+          </WorkshopField>
+          <p data-testid="assemble-position" className="col-span-full rounded-lg bg-bambu-dark px-3 py-2 text-sm text-bambu-gray-light">
+            {target === undefined
+              ? t('stock.move.reading')
+              : target === null
+                ? t('stock.assemble.newPosition')
+                : t('stock.assemble.position', { label: targetLabel(target.code, target.configuration), n: target.onHand })}
+          </p>
+          {readNote && <div className="col-span-full">{readNote}</div>}
+        </WorkshopFormGrid>
 
-        <div>
-          <label htmlFor="stock-assemble-note" className="block text-sm text-bambu-gray mb-1">
-            {t('stock.move.note')}
-          </label>
-          <input
-            id="stock-assemble-note"
-            type="text"
-            maxLength={500}
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            className={FIELD_CLASS}
-          />
-        </div>
-      </div>
+        {source &&
+          (parts.length === 0 ? (
+            <p className="mb-2 text-sm text-bambu-gray">{t('stock.assemble.noParts')}</p>
+          ) : (
+            <table className="mb-2 w-full text-sm">
+              <thead>
+                <tr className="text-xs text-bambu-gray text-left">
+                  <th className="font-normal p-1">{t('stock.part')}</th>
+                  <th className="font-normal p-1 text-right">{t('stock.perUnit')}</th>
+                  <th className="font-normal p-1 text-right">{t('stock.balance')}</th>
+                  <th className="font-normal p-1 text-right">{t('stock.assemble.writeOff')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {parts.map((p) => {
+                  const need = countValid ? p.per * count : 0;
+                  const short = need > p.on_shelf ? need - p.on_shelf : 0;
+                  return (
+                    <tr key={p.part_id} className="text-white align-top" data-testid={`assemble-part-${p.part_id}`}>
+                      <td className="p-1">{p.name}</td>
+                      <td className="p-1 text-right tabular-nums">{`× ${p.per}`}</td>
+                      <td
+                        className={`p-1 text-right tabular-nums ${short > 0 ? 'text-status-warning' : ''}`}
+                        data-testid={`assemble-shelf-${p.part_id}`}
+                      >
+                        {p.on_shelf}
+                      </td>
+                      <td className="p-1 text-right tabular-nums" data-testid={`assemble-writeoff-${p.part_id}`}>
+                        {need}
+                        {short > 0 && (
+                          <small className="block text-xs text-status-warning">{t('stock.assemble.short', { n: short })}</small>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ))}
 
-      <div className="p-4 border-t border-bambu-dark-tertiary flex gap-3">
-        <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
-          {t('common.cancel')}
-        </Button>
-        <Button
-          type="button"
-          onClick={submit}
-          disabled={!valid || assemble.isPending}
-          className="flex-1"
-          data-testid="assemble-submit"
-        >
-          {t('stock.assemble.submit')}
-        </Button>
-      </div>
-    </Modal>
+        {why && why.id === ids.why && (
+          <p id={ids.why} className="mb-2 text-sm text-status-warning">
+            {why.text}
+          </p>
+        )}
+        <p className="text-xs text-bambu-gray">{t('stock.assemble.boughtHint')}</p>
+      </form>
+    </WorkshopDialog>
   );
 }
