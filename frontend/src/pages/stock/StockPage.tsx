@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 import { ArrowDownToLine, Loader2, Warehouse, Wrench } from 'lucide-react';
@@ -16,7 +16,7 @@ import { StockDialogs } from '../../components/stock/StockDialogs';
 import type { StockDialogState } from '../../components/stock/StockDialogs';
 import { StockJournal } from '../../components/stock/StockJournal';
 import { DispatchNotesTable } from '../../components/stock/DispatchNotesTable';
-import { useDispatchNotes } from '../../hooks/useDispatchNotes';
+import { useDispatchNotes, useDispatchNotesCount } from '../../hooks/useDispatchNotes';
 import { StockProductsTable } from '../../components/stock/StockProductsTable';
 import { StockTiles } from '../../components/stock/StockTiles';
 import { useListUrlState } from '../../hooks/useListUrlState';
@@ -47,6 +47,8 @@ export function StockPage() {
   const canEdit = hasPermission('projects:update');
   const [dialog, setDialog] = useState<StockDialogState>(null);
   const tabsId = useId();
+  const heading = useRef<HTMLHeadingElement>(null);
+  const notesCount = useDispatchNotesCount();
   const [params, setParams] = useSearchParams();
   const raw = params.get('tab');
   const tab: StockTab = (TABS as readonly string[]).includes(raw ?? '') ? (raw as StockTab) : 'finished';
@@ -70,6 +72,7 @@ export function StockPage() {
         title={t('stock.page.title')}
         subtitle={t('stock.page.intro')}
         icon={<Warehouse className="w-6 h-6 text-bambu-green" />}
+        headingRef={heading}
       >
         {canEdit && (
           <>
@@ -85,12 +88,17 @@ export function StockPage() {
         )}
       </ListPageHeader>
 
+      {/* The farm's tiles stand over every tab (WS-13 E12 B02); a tab's own figures sit under it. */}
+      <FinishedTiles />
+
       <div className="mb-4">
         <WorkshopTabs
           idBase={tabsId}
           ariaLabel={t('stock.tabs.label')}
           value={tab}
-          items={TABS.map((key) => ({ value: key, label: label[key] }))}
+          size="detail"
+          // Only the notes carry a figure, and only one the server returned (B03).
+          items={TABS.map((key) => ({ value: key, label: label[key], ...(key === 'notes' && notesCount !== undefined ? { count: notesCount } : {}) }))}
           onChange={switchTab}
         />
       </div>
@@ -224,8 +232,6 @@ function FinishedTab({ onDialog }: { onDialog: (dialog: StockDialogState) => voi
 
   return (
     <>
-      <FinishedTiles />
-
       <div className="flex items-center gap-3 flex-wrap mb-4">
         <div className="flex rounded-lg border border-bambu-dark-tertiary overflow-hidden" role="group" aria-label={t('stock.finished.modeLabel')}>
           {MODES.map((key) => (

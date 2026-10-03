@@ -27,6 +27,14 @@ export function useDispatchNotes(params: DispatchNotesParams, enabled = true) {
   });
 }
 
+/** The farm's count of dispatch notes — the stock page's «Dispatch notes (N)» (WS-13 E12 B03):
+ *  one light read under the notes' key, so an issue refreshes it. Unknown — while it is read or
+ *  after a failure — is `undefined`, never a zero. */
+export function useDispatchNotesCount(): number | undefined {
+  const { data, isPlaceholderData } = useDispatchNotes({ page: 1, per_page: 1 });
+  return data && !isPlaceholderData ? data.meta.total : undefined;
+}
+
 /** One dispatch note — the document page (rule 19). */
 export function useDispatchNote(id: number) {
   return useQuery({

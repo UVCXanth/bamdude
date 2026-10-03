@@ -63,6 +63,54 @@ describe('StockPage', () => {
     ]);
   });
 
+  describe('the page (WS-13 E12 B)', () => {
+    const notesPage = (total: number) => ({ items: [], meta: { total, current_page: 1, per_page: 1, last_page: Math.max(1, total) } });
+
+    it("the farm's four tiles stand over every tab, in the mockup's words; the parts tab adds its own under them", async () => {
+      render(<StockPage />);
+      const onHand = await screen.findByTestId('finished-tile-on-hand');
+      expect(onHand).toHaveTextContent('Finished in stock');
+      expect(onHand).toHaveTextContent('in 1 position (product × configuration)');
+      expect(screen.getByTestId('finished-tile-reserved')).toHaveTextContent('held for orders and issues');
+      expect(screen.getByTestId('finished-tile-available')).toHaveTextContent('on hand minus reserved');
+      expect(screen.getByTestId('finished-tile-below-min')).toHaveTextContent('positions need replenishing');
+      // The parts tab keeps its shelf tiles — under the tabs, not instead of the farm's.
+      const shelf = await screen.findByTestId('stock-tile-kits');
+      const tablist = screen.getByRole('tablist', { name: 'Stock sections' });
+      expect(onHand.compareDocumentPosition(tablist) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(tablist.compareDocumentPosition(shelf) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      fireEvent.click(screen.getByRole('tab', { name: 'Movements' }));
+      expect(await screen.findByTestId('finished-tile-on-hand')).toBeInTheDocument();
+    });
+
+    it("the notes tab names the farm's count from the server", async () => {
+      const read = vi.spyOn(api, 'getDispatchNotes').mockResolvedValue(notesPage(32) as never);
+      render(<StockPage />);
+      expect(await screen.findByRole('tab', { name: 'Dispatch notes (32)' })).toBeInTheDocument();
+      expect(read).toHaveBeenCalledWith({ page: 1, per_page: 1 });
+    });
+
+    it('a count that could not be read is no count at all — never «(0)»', async () => {
+      vi.spyOn(api, 'getDispatchNotes').mockRejectedValue(new Error('HTTP 500'));
+      render(<StockPage />);
+      await screen.findByTestId('stock-row-1');
+      await waitFor(() => expect(api.getDispatchNotes).toHaveBeenCalled());
+      expect(screen.getByRole('tab', { name: 'Dispatch notes' })).toBeInTheDocument();
+      expect(screen.queryByRole('tab', { name: /\(/ })).toBeNull();
+    });
+
+    it("the heading is the page's focus target and says what the mockup says", async () => {
+      render(<StockPage />);
+      const heading = await screen.findByRole('heading', { level: 1, name: 'Stock' });
+      expect(heading).toHaveAttribute('tabindex', '-1');
+      expect(
+        screen.getByText(
+          'Finished goods — a position for every configuration; free printed parts; the two ledgers are linked by assembly and by making for an order',
+        ),
+      ).toBeInTheDocument();
+    });
+  });
+
   it('lists products with their kits and reservations and marks one that is out of the catalog', async () => {
     render(<StockPage />);
     const row = await screen.findByTestId('stock-row-1');
@@ -220,8 +268,9 @@ describe('StockPage', () => {
     window.history.pushState({}, '', '/stock?tab=notes');
     render(<StockPage />);
     expect(await screen.findByRole('link', { name: 'DN-0007' })).toHaveAttribute('href', '/stock/dispatch-notes/7');
-    expect(screen.getByRole('tab', { name: 'Dispatch notes' })).toHaveAttribute('aria-selected', 'true');
-    expect(getNotes).toHaveBeenLastCalledWith({ sort_by: 'created-desc', page: 1, per_page: 24 });
+    // The tab carries the farm's count (WS-13 E12 B03) — the same mock answers that light read.
+    expect(screen.getByRole('tab', { name: 'Dispatch notes (1)' })).toHaveAttribute('aria-selected', 'true');
+    expect(getNotes).toHaveBeenCalledWith({ sort_by: 'created-desc', page: 1, per_page: 24 });
     fireEvent.change(screen.getByPlaceholderText(/Note, order, customer/), { target: { value: 'acme' } });
     await waitFor(() => expect(getNotes).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'acme', page: 1 })));
   });

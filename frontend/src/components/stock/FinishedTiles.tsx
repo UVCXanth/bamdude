@@ -5,7 +5,8 @@ import { StatTile, StatTiles } from '../StatTile';
 /**
  * The finished-goods tiles (spec workshop-finished-goods, rule 17) — the whole
  * farm, never the list's filters. Five server figures on four tiles: the
- * count of positions on record rides under the stock on hand.
+ * count of positions on record rides under the stock on hand. They stand over
+ * every tab of the stock page, in the mockup's words (WS-13 E12 B02).
  */
 export function FinishedTiles() {
   const { t } = useTranslation();
@@ -25,12 +26,14 @@ export function FinishedTiles() {
         label={t('stock.finished.tiles.reserved')}
         value={data?.reserved}
         failed={failed}
+        sub={t('stock.finished.tiles.reservedSub')}
       />
       <StatTile
         testId="finished-tile-available"
         label={t('stock.finished.tiles.available')}
         value={data?.available}
         failed={failed}
+        sub={t('stock.finished.tiles.availableSub')}
       />
       <StatTile
         testId="finished-tile-below-min"
