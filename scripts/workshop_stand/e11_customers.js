@@ -848,6 +848,118 @@ async (page, selftest = null) => {
     };
   });
 
+  // ---------------------------------------------------------------- Codex E11-V02, V03 (browser)
+  const FLAT = /\/api\/v1\/customers\/?$/;
+  await scenario('reference-reread-fail@1440', ['E11-G05', 'E11-V02'], async () => {
+    // The first read is the stand's; every re-read after an accepted move fails.
+    let reads = 0;
+    const order = methods.map((m) => m.id);
+    const accepted = [methods[1], methods[0], ...methods.slice(2)];
+    const puts = [];
+    const { ctx, p, errors } = await open(1440, {
+      gets: [[METHODS, () => (++reads === 1 ? null : { fail: 500 })]],
+      writes: [recorder(puts, /\/api\/v1\/delivery-methods\/order$/, () => accepted)],
+    });
+    await goto(p, `/customers/${C1}`);
+    await p.getByTestId('customer-header').getByRole('button', { name: 'Редагувати' }).click();
+    const form = dialogOf(p, 'Редагувати замовника');
+    await form.waitFor();
+    await form.getByRole('button', { name: 'Керувати способами…' }).first().click();
+    const ref = dialogOf(p, 'Способи доставки');
+    await ref.waitFor();
+    await ref.getByRole('button', { name: `«${methods[1].name}» вгору` }).click();
+    await ref.getByText('Не вдалося оновити').first().waitFor({ timeout: 8000 });
+    await within(p.waitForFunction(() => {
+      const done = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Готово');
+      return done && !done.disabled;
+    }), 6000, 'done_never_enabled');
+    const shown = await ref.locator('[data-testid^="method-row-"]').evaluateAll((rows) => rows.map((r) => r.dataset.testid.slice('method-row-'.length)));
+    const file = await shoot(p, 'reference-reread-fail');
+    await ref.getByRole('button', { name: `«${methods[2].name}» вгору` }).click();
+    // The second PUT is recorded in this process: wait for it here, with a deadline.
+    for (const until = Date.now() + 6000; puts.length < 2 && Date.now() < until;) await p.waitForTimeout(100);
+    await ctx.close();
+    const second = puts[1]?.body?.ids ?? null;
+    const expected = [accepted[0].id, accepted[2].id, accepted[1].id, ...accepted.slice(3).map((m) => m.id)];
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: { url: '/customers/{customer:1} → «Редагувати» → «Керувати способами…»', fixture: ['GET /delivery-methods: the stand once, then 500', 'PUT /delivery-methods/order answered with the accepted order'], actions: [`«${methods[1].name}» вгору`, `«${methods[2].name}» вгору`] },
+      measured: { order, shown, first: puts[0]?.body?.ids ?? null, second, expected, errors },
+      pass: methods.length >= 3 && puts.length === 2 &&
+        JSON.stringify(shown) === JSON.stringify(accepted.map((m) => m.name)) &&
+        JSON.stringify(second) === JSON.stringify(expected) && errors.length === 0,
+      screenshots: [file],
+    };
+  });
+
+  await scenario('form-method-unread@1440', ['E11-F07', 'E11-F13', 'E11-V03'], async () => {
+    const posts = [];
+    const methodName = detail1.contacts[0]?.delivery_method_name;
+    const { ctx, p, errors } = await open(1440, {
+      fail: [[METHODS, 500]],
+      writes: [recorder(posts, /\/api\/v1\/delivery-methods\/?$/, () => ({ id: 9901, name: 'Meest', position: 99, contacts_count: 0 }))],
+    });
+    await goto(p, `/customers/${C1}`);
+    await p.getByTestId('customer-header').getByRole('button', { name: 'Редагувати' }).click();
+    const form = dialogOf(p, 'Редагувати замовника');
+    await form.waitFor();
+    const row = form.getByTestId('contact-row').first();
+    await row.getByText('Не вдалося прочитати способи доставки').waitFor({ timeout: 8000 });
+    await form.getByRole('button', { name: 'Керувати способами…' }).first().click();
+    const ref = dialogOf(p, 'Способи доставки');
+    await ref.waitFor();
+    await ref.getByLabel('Новий спосіб доставки').fill('Meest');
+    await ref.getByRole('button', { name: 'Додати' }).click();
+    await within(p.waitForFunction(() => document.querySelector('input[aria-label="Новий спосіб доставки"]')?.value === ''), 6000, 'add_never_done');
+    await ref.getByRole('button', { name: 'Готово' }).click();
+    await ref.waitFor({ state: 'detached' });
+    const select = row.getByLabel('Спосіб доставки');
+    const offered = await select.locator('option').evaluateAll((os) => os.map((o) => o.textContent.trim()));
+    const chosen = await select.evaluate((s) => s.selectedOptions[0]?.textContent.trim());
+    const failure = await row.getByText('Не вдалося прочитати способи доставки').count();
+    const gone = await row.getByText('(більше немає)').count();
+    const file = await shoot(p, 'form-method-unread');
+    await ctx.close();
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: { url: '/customers/{customer:1} → «Редагувати» → «Керувати способами…» → «Додати» → «Готово»', fixture: ['GET /delivery-methods 500', 'POST /delivery-methods answered with «Meest»'] },
+      measured: { offered, chosen, failure, gone, posts: posts.length, errors },
+      pass: posts.length === 1 && offered.includes('Meest') && chosen === methodName && failure === 1 && gone === 0 && errors.length === 0,
+      screenshots: [file],
+    };
+  });
+
+  await scenario('picker-read-fail@1440', ['E11-F12', 'E11-V03'], async () => {
+    const posts = [];
+    const { ctx, p, errors } = await open(1440, {
+      gets: [[FLAT, () => ({ fail: 500 })]],
+      writes: [recorder(posts, /\/api\/v1\/customers\/?$/, () => ({ ...detail1, id: 991, code: 'CU-0991', name: 'Нова майстерня', contacts: [] }))],
+    });
+    await goto(p, '/projects');
+    await p.getByRole('button', { name: /^Нове замовлення$/ }).first().click();
+    const d = dialogOf(p, 'Нове замовлення');
+    await d.waitFor();
+    await d.getByText('Не вдалося прочитати замовників').waitFor({ timeout: 8000 });
+    await d.getByLabel('Замовник', { exact: true }).selectOption({ label: 'Новий замовник…' });
+    const field = d.getByPlaceholder("Ім'я замовника");
+    await field.fill('Нова майстерня');
+    await field.locator('xpath=..').getByRole('button', { name: 'Створити', exact: true }).click();
+    await within(p.waitForFunction(() => [...document.querySelectorAll('select')].some((s) => s.value === '991')), 6000, 'never_chosen');
+    const picker = d.getByLabel('Замовник', { exact: true });
+    const chosen = await picker.evaluate((s) => s.selectedOptions[0]?.textContent.trim());
+    const failure = await d.getByText('Не вдалося прочитати замовників').count();
+    const retry = await d.getByRole('button', { name: 'Спробувати знову' }).count();
+    const file = await shoot(p, 'picker-read-fail');
+    await ctx.close();
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: { url: '/projects → «Нове замовлення» → «Новий замовник…»', fixture: ['GET /customers/ 500', 'POST /customers/ answered with CU-0991'] },
+      measured: { chosen, failure, retry, posts: posts.length, errors },
+      pass: posts.length === 1 && chosen === 'CU-0991 · Нова майстерня' && failure === 1 && retry >= 1 && errors.length === 0,
+      screenshots: [file],
+    };
+  });
+
   // ---------------------------------------------------------------- keyboard, short windows, themes
   await scenario('keyboard@1440', ['E11-C02', 'E11-G02'], async () => {
     const { ctx, p, errors } = await open(1440, { rewrite: [multiList] });
