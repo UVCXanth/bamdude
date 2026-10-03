@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import type { Product, ProductPart, ProductPartCreate, ProductPartKind, ProductPartUpdate } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+import { useInnerEscape } from '../../hooks/useInnerEscape';
 import { getCurrencySymbol } from '../../utils/currency';
 import { Button } from '../Button';
 import { Select } from '../Select';
@@ -101,6 +102,13 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
   const [aliasDraft, setAliasDraft] = useState('');
   const [aliasNote, setAliasNote] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  // Escape in the alias field empties it and stops there; on an empty field it is the
+  // dialog's again — the next Escape closes it (C06).
+  const aliasField = useRef<HTMLInputElement>(null);
+  useInnerEscape(aliasField, aliasDraft !== '' || aliasNote !== null, () => {
+    setAliasDraft('');
+    setAliasNote(null);
+  });
 
   const printed = kind === 'printed';
   const qtyNumber = qty.trim() === '' ? Number.NaN : Number(qty);
@@ -395,6 +403,7 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
                   ))}
                 </ul>
                 <input
+                  ref={aliasField}
                   id={ids.aliases}
                   type="text"
                   value={aliasDraft}
@@ -409,15 +418,6 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
                       // A token, never the form's submit (C06).
                       e.preventDefault();
                       takeDraft(aliasDraft);
-                      return;
-                    }
-                    // Escape empties the field and stops there; on an empty field it is the
-                    // dialog's again — the next Escape closes it.
-                    if (e.key === 'Escape' && (aliasDraft !== '' || aliasNote !== null)) {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setAliasDraft('');
-                      setAliasNote(null);
                     }
                   }}
                   aria-describedby={`${ids.aliases}-hint${aliasNote ? ` ${ids.aliasNote}` : ''}`}

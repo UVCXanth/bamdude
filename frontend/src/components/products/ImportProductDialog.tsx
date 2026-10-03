@@ -1,22 +1,22 @@
-import { useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { FileArchive, Loader2, Upload } from 'lucide-react';
 import { api, ApiError } from '../../api/client';
+import type { ProductImportResponse } from '../../api/client';
 import { invalidateProductCatalog } from '../../utils/queryInvalidation';
-import { useToast } from '../../contexts/ToastContext';
 import { FolderTreePicker } from '../FolderTreePicker';
 import { Button } from '../Button';
-import { Modal } from '../Modal';
-import { cardNotesText } from './cardNotes';
+import { WorkshopDialog } from '../workshop/WorkshopDialog';
+import { cardNoteText } from './cardNotes';
 
 interface ImportProductDialogProps {
   onClose: () => void;
 }
 
 /**
- * Rebuild a product from an export ZIP.
+ * Rebuild a product from an export ZIP (WS-13 E10 G01–G03, F19).
  *
  * ⚠️ **The folder is a DESTINATION, not a link.** It is where files nobody
  * already has land; the server never joins it to the product, because "every
@@ -27,73 +27,134 @@ interface ImportProductDialogProps {
  * chosen the server reuses, or makes, a root folder named after the product.
  *
  * ⚠️ **The warnings are the point, not decoration.** An import is somebody
- * else's export and half of what it has to say is what it could NOT take — a
- * file the library refused, a plate the 3MF no longer carries, an attachment
- * the manifest names and the archive lacks. They arrive as `CardNote` codes and
- * go through the same `cardNoteText` as every other card answer.
+ * else's export and half of what it has to say is what it could NOT take. They
+ * arrive as `CardNote` codes, go through `cardNoteText`, and stay in the dialog's
+ * result step (G03) — the product opens only by «Open the product», so they are
+ * read before anything moves.
  *
- * ⚠️ **A refusal stays on screen.** 400 (not an export) and 413 (over the
- * ceiling) are shown IN the dialog rather than as a toast, because both are
- * answered by picking a different file — which the operator can only do while
- * the file input is still in front of them.
+ * ⚠️ **A refusal stays in the dialog's slot.** 400 (not an export) and 413 (over
+ * the ceiling) are answered by picking a different file, which the operator can
+ * only do while the file input is in front of them.
  */
 export function ImportProductDialog({ onClose }: ImportProductDialogProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { showToast } = useToast();
   const queryClient = useQueryClient();
   const input = useRef<HTMLInputElement>(null);
-  const titleId = useId();
+  const chooseId = useId();
+  const openId = useId();
   const [file, setFile] = useState<File | null>(null);
   const [folderId, setFolderId] = useState<number | null>(null);
-  const [refusal, setRefusal] = useState<string | null>(null);
+  const [result, setResult] = useState<ProductImportResponse | null>(null);
 
   const { data: folders } = useQuery({ queryKey: ['library-folders'], queryFn: api.getLibraryFolders });
 
+  // ⚠️ Synchronous: one press, one import; nothing closes the dialog under it.
+  const sent = useRef(false);
   const run = useMutation({
     mutationFn: (chosen: File) => api.importProduct(chosen, folderId),
-    onSuccess: (result) => {
+    onSuccess: (answer) => {
       invalidateProductCatalog(queryClient);
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
-      // One toast, every warning in it: they are one answer to one question,
-      // and five stacked toasts would push the first off screen before it is
-      // read. The product page opens behind it either way — a product with a
-      // refused file and a warning on screen is worth more than no product.
-      showToast(
-        result.warnings.length
-          ? `${t('products.toast.imported')} · ${cardNotesText(t, result.warnings)}`
-          : t('products.toast.imported'),
-        result.warnings.length ? 'warning' : 'success',
-      );
-      navigate(`/products/${result.product.id}`);
+      sent.current = false;
+      setResult(answer);
     },
-    onError: (e: Error) => {
-      const status = e instanceof ApiError ? e.status : 0;
-      // 413 is the one refusal whose server sentence names a byte count nobody
-      // reads; everything else is repeated verbatim, because the server knows
-      // what was wrong with the archive and this dialog does not.
-      setRefusal(status === 413 ? t('products.import.tooLarge') : t('products.import.failed', { detail: e.message }));
+    onError: () => {
+      sent.current = false;
     },
   });
+  const pending = run.isPending;
+
+  // The cursor starts in the first field — the archive chooser; the result's on «Open the product».
+  useEffect(() => {
+    document.getElementById(result ? openId : chooseId)?.focus();
+  }, [result, chooseId, openId]);
+
+  const close = () => {
+    if (sent.current) return;
+    onClose();
+  };
+
+  if (result) {
+    return (
+      <WorkshopDialog
+        size="md"
+        onClose={onClose}
+        title={t('products.import.title')}
+        subtitle={t('products.import.subtitle')}
+        footer={
+          <>
+            <Button variant="secondary" onClick={onClose}>
+              {t('common.close')}
+            </Button>
+            <Button
+              id={openId}
+              onClick={() => {
+                onClose();
+                navigate(`/products/${result.product.id}`);
+              }}
+            >
+              {t('products.import.open')}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-2 text-sm">
+          <p className="font-medium text-white">{t('products.import.done', { name: result.product.name })}</p>
+          {result.warnings.length > 0 ? (
+            <ul className="list-disc space-y-1 pl-5 text-amber-700 dark:text-amber-400">
+              {result.warnings.map((warning, index) => (
+                <li key={index}>{cardNoteText(t, warning)}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-bambu-gray">{t('products.import.noWarnings')}</p>
+          )}
+        </div>
+      </WorkshopDialog>
+    );
+  }
+
+  const refusal = run.isError
+    ? run.error instanceof ApiError && run.error.status === 413
+      ? // 413's server sentence names a byte count nobody reads; everything else is the
+        // server's own words, because it knows what was wrong with the archive.
+        t('products.import.tooLarge')
+      : (run.error as Error).message
+    : undefined;
 
   return (
-    <Modal
-      onClose={onClose}
-      labelledBy={titleId}
-      size="lg"
-      bodyClassName="flex flex-col"
-      header={
-        <h2 id={titleId} className="text-lg font-semibold text-white truncate">
-          {t('products.import.title')}
-        </h2>
+    <WorkshopDialog
+      size="md"
+      onClose={close}
+      title={t('products.import.title')}
+      subtitle={t('products.import.subtitle')}
+      pending={pending}
+      error={refusal}
+      footer={
+        <>
+          <Button type="button" variant="secondary" onClick={close} disabled={pending}>
+            {t('common.cancel')}
+          </Button>
+          <Button
+            type="button"
+            onClick={() => {
+              if (sent.current || !file) return;
+              sent.current = true;
+              run.mutate(file);
+            }}
+            disabled={!file || pending}
+          >
+            {pending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+            {pending ? t('products.import.importing') : t('products.import.submit')}
+          </Button>
+        </>
       }
     >
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        <p className="text-sm text-bambu-gray">{t('products.import.hint')}</p>
-
-        <div className="space-y-2">
-          <label className="block text-sm font-medium text-white">{t('products.import.file')}</label>
+      <div className="space-y-4">
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="text-sm text-bambu-gray-light">{t('products.import.file')}</span>
           <input
             ref={input}
             data-testid="import-file-input"
@@ -101,22 +162,27 @@ export function ImportProductDialog({ onClose }: ImportProductDialogProps) {
             accept=".zip,application/zip"
             className="hidden"
             onChange={(e) => {
-              setRefusal(null);
+              run.reset();
               setFile(e.target.files?.[0] ?? null);
             }}
           />
-          <div className="flex items-center gap-3">
-            <Button type="button" variant="secondary" onClick={() => input.current?.click()} disabled={run.isPending}>
+          <div className="flex min-w-0 items-center gap-3">
+            <Button
+              id={chooseId}
+              type="button"
+              variant="secondary"
+              onClick={() => input.current?.click()}
+              disabled={pending}
+            >
               <FileArchive className="w-4 h-4" />
               {t('products.import.choose')}
             </Button>
-            {file && <span className="text-sm text-white truncate">{file.name}</span>}
+            {file && <span className="min-w-0 truncate text-sm text-white">{file.name}</span>}
           </div>
         </div>
 
-        <div className="space-y-2">
-          <label className="block text-sm font-medium text-white">{t('products.import.folder')}</label>
-          <p className="text-xs text-bambu-gray">{t('products.import.folderHint')}</p>
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="text-sm text-bambu-gray-light">{t('products.import.folder')}</span>
           <FolderTreePicker
             folders={folders}
             value={folderId}
@@ -126,22 +192,8 @@ export function ImportProductDialog({ onClose }: ImportProductDialogProps) {
           />
         </div>
 
-        {refusal && (
-          <p role="alert" className="text-sm text-status-error">
-            {refusal}
-          </p>
-        )}
+        <p className="text-xs text-bambu-gray">{t('products.import.hint')}</p>
       </div>
-
-      <div className="flex items-center justify-end gap-2 p-4 border-t border-bambu-dark shrink-0">
-        <Button type="button" variant="secondary" onClick={onClose} disabled={run.isPending}>
-          {t('common.cancel')}
-        </Button>
-        <Button type="button" onClick={() => file && run.mutate(file)} disabled={!file || run.isPending}>
-          {run.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-          {t('products.import.submit')}
-        </Button>
-      </div>
-    </Modal>
+    </WorkshopDialog>
   );
 }

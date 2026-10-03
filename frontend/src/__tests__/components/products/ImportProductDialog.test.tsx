@@ -10,11 +10,14 @@
  * "everything in here belongs to this product" is not what an operator said by
  * importing into their Downloads folder. So the field is omitted entirely when
  * nothing was picked, and the server makes a folder named after the product.
+ *
+ * The result stays in the dialog (WS-13 E10 G03): «Product “X” imported» with its
+ * warnings, and the product opens only by «Open the product».
  */
 
 import { useState } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api, ApiError } from '../../../api/client';
 import { ImportProductDialog } from '../../../components/products/ImportProductDialog';
@@ -27,9 +30,12 @@ vi.mock('react-router', async () => {
 
 const zip = () => new File(['PK'], 'desk-lamp.zip', { type: 'application/zip' });
 
-function mount() {
-  render(<ImportProductDialog onClose={() => {}} />);
+function mount(onClose = vi.fn()) {
+  render(<ImportProductDialog onClose={onClose} />);
+  return onClose;
 }
+
+const importButton = () => screen.getByRole('button', { name: /^(import|importing…)$/i });
 
 /** The dialog the way a page opens it — a control that mounts it and takes it
  *  away again, which is the only shape in which "the focus comes back" can be
@@ -67,7 +73,51 @@ describe('ImportProductDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
 
     await waitFor(() => expect(send).toHaveBeenCalledWith(file, null));
-    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/products/21'));
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText('Product “Desk lamp” imported')).toBeInTheDocument();
+    expect(within(dialog).getByText('No warnings')).toBeInTheDocument();
+    // The product opens only by the button (G03).
+    expect(navigate).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Open the product' }));
+    expect(navigate).toHaveBeenCalledWith('/products/21');
+  });
+
+  it('the result’s «Close» closes without opening the product', async () => {
+    vi.spyOn(api, 'importProduct').mockResolvedValue({ product: { id: 21, name: 'Desk lamp' }, warnings: [] } as never);
+    const onClose = mount();
+    fireEvent.change(await screen.findByTestId('import-file-input'), { target: { files: [zip()] } });
+    fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
+    await screen.findByText('Product “Desk lamp” imported');
+    const closes = screen.getAllByRole('button', { name: 'Close' });
+    fireEvent.click(closes[closes.length - 1]);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('is the mockup’s frame: «Import a product», «A ZIP exported from BamDude», the hint; «Import» waits for a file', async () => {
+    mount();
+    const dialog = screen.getByRole('dialog', { name: 'Import a product' });
+    expect(dialog).toHaveAccessibleDescription('A ZIP exported from BamDude');
+    expect(dialog).toHaveTextContent('Files the library already has (the same hash) are not duplicated. Plates come from the files themselves.');
+    expect(within(dialog).getByText('A new folder named after the product')).toBeInTheDocument();
+    expect(importButton()).toBeDisabled();
+  });
+
+  it('under a request says «Importing…», and nothing closes it — decided in the same frame', async () => {
+    const send = vi.spyOn(api, 'importProduct').mockReturnValue(new Promise(() => {}) as never);
+    const onClose = mount();
+    fireEvent.change(await screen.findByTestId('import-file-input'), { target: { files: [zip()] } });
+    const submit = importButton();
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    act(() => {
+      submit.click();
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      cancel.click();
+      submit.click();
+    });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(importButton()).toHaveTextContent('Importing…');
   });
 
   it('sends the chosen folder as the destination for files nobody already has', async () => {
@@ -173,7 +223,7 @@ describe('ImportProductDialog', () => {
     fireEvent.change(await screen.findByTestId('import-file-input'), { target: { files: [zip()] } });
     fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
 
-    expect(await screen.findByText(/not a ZIP archive/i)).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent('The uploaded file is not a ZIP archive');
     expect(navigate).not.toHaveBeenCalled();
   });
 
@@ -184,7 +234,7 @@ describe('ImportProductDialog', () => {
     fireEvent.change(await screen.findByTestId('import-file-input'), { target: { files: [zip()] } });
     fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
 
-    expect(await screen.findByText(/too large to import/i)).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent('This archive is too large to import.');
   });
 
   it('cannot be submitted before an archive is chosen', async () => {
@@ -209,7 +259,7 @@ describe('ImportProductDialog', () => {
     const dialog = await screen.findByRole('dialog');
     expect(dialog).toHaveAttribute('aria-modal', 'true');
     expect(dialog).toHaveAccessibleName('Import a product');
-    expect(dialog).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Choose a ZIP…' })).toHaveFocus());
 
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();

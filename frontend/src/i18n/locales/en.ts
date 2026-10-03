@@ -6698,29 +6698,36 @@ export default {
       incompleteHint: 'Marked ready, but it has no parts or no plate now',
     },
     categories: {
-      title: 'Product categories',
-      add: 'Add',
+      title: 'Categories',
       new: 'New category',
       name: 'Category name',
+      rename: 'Rename {{name}}',
       delete: 'Delete {{name}}',
-      deleteTitle: 'Delete the category?',
+      products_one: '{{count}} product',
+      products_other: '{{count}} products',
+      deleteTitle: 'Delete the category “{{name}}”?',
       deleteBody_one: '{{count}} product will be left without a category',
       deleteBody_other: '{{count}} products will be left without a category',
       empty: 'No categories yet',
+      loadFailed: 'Could not read the categories',
     },
     import: {
       title: 'Import a product',
-      hint: 'A ZIP exported from BamDude: the card, the composition, the files and the documents.',
+      subtitle: 'A ZIP exported from BamDude',
+      // Not a link: the destination is where files NOBODY ALREADY HAS land, and
+      // linking the folder would claim every other file in it for this product.
+      hint: 'Files the library already has (the same hash) are not duplicated. Plates come from the files themselves.',
       file: 'Archive',
       choose: 'Choose a ZIP…',
       folder: 'Put new files in',
-      // Not a link: the destination is where files NOBODY ALREADY HAS land, and
-      // linking the folder would claim every other file in it for this product.
-      folderHint: 'Files the library already has are reused; only the rest are stored here.',
       newFolder: 'A new folder named after the product',
       submit: 'Import',
+      importing: 'Importing…',
       tooLarge: 'This archive is too large to import.',
-      failed: 'The archive could not be imported: {{detail}}',
+      // WS-13 E10 G03: the result, in the dialog.
+      done: 'Product “{{name}}” imported',
+      noWarnings: 'No warnings',
+      open: 'Open the product',
     },
     // The catalog's row and card parts (WS-13 E8 B).
     row: {
@@ -6834,7 +6841,6 @@ export default {
       duplicated: 'Copy created — composition, variants and files copied, stock not',
       hidden: 'Product hidden from the catalog',
       shown: 'Product is back in the catalog',
-      imported: 'Product imported',
       createdFromFile: 'Product created from the file — parts seeded from its plates',
       exportFailed: 'The export failed (HTTP {{status}}).',
       promoted: 'Added to the catalog',
