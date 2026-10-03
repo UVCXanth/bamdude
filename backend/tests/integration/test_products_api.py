@@ -90,7 +90,7 @@ async def _plates(db, product_id: int) -> list[tuple[int, int]]:
 async def test_from_file_creates_a_ready_product(committing_client, sliced_file):
     r = await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")
     assert r.status_code == 200, r.text
-    body = r.json()
+    body = r.json()["product"]
     assert body["name"] == "m" and body["library_file_ids"] == [sliced_file.id]
     assert sorted(p["name_key"] for p in body["parts"]) == ["bracket.stl", "clip.stl", "lid.stl"]
     assert all(p["auto"] for p in body["parts"])
@@ -128,7 +128,7 @@ async def test_a_plate_with_no_estimate_reports_no_time_rather_than_zero(committ
     await db_session.commit()
     await db_session.refresh(f)
 
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{f.id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{f.id}")).json()["product"]["id"]
     plates = (await committing_client.get(f"/api/v1/products/{pid}/plates")).json()
 
     assert [p["plate_index"] for p in plates] == [1, 2]
@@ -137,7 +137,7 @@ async def test_a_plate_with_no_estimate_reports_no_time_rather_than_zero(committ
 
 @pytest.mark.asyncio
 async def test_parts_can_be_edited_merged_and_aliased(committing_client, sliced_file):
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["product"]["id"]
     parts = {p["name_key"]: p for p in (await committing_client.get(f"/api/v1/products/{pid}")).json()["parts"]}
 
     r = await committing_client.patch(
@@ -188,7 +188,7 @@ async def test_parts_can_be_edited_merged_and_aliased(committing_client, sliced_
 async def test_deleting_a_part_takes_its_procurement_rows_with_it(committing_client, db_session, sliced_file):
     """``project_procurement.product_part_id`` is ON DELETE CASCADE, which only
     PostgreSQL honours — the route must not rely on it."""
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["product"]["id"]
     part_id = (
         await committing_client.post(
             f"/api/v1/products/{pid}/parts", json={"kind": "purchased", "name": "M3 screw", "qty_per_unit": 8}
@@ -211,7 +211,7 @@ async def test_deleting_a_part_takes_its_stock_movements_with_it(committing_clie
     only, exactly like the procurement rows beside it. Left behind, the ledger
     would hold a balance for a part nothing can name — invisible to every
     reader (they all join ``product_parts``) and impossible to correct."""
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["product"]["id"]
     parts = {p["name_key"]: p for p in (await committing_client.get(f"/api/v1/products/{pid}")).json()["parts"]}
     doomed, kept = parts["bracket.stl"]["id"], parts["lid.stl"]["id"]
     await move(db_session, part_id=doomed, delta=3, reason="unfiled_print")
@@ -229,7 +229,7 @@ async def test_merging_a_part_moves_its_stock_onto_the_target(committing_client,
     """Free stock is parts on a shelf, and a merge says those parts are these
     parts — so unlike the procurement counts (deliberately dropped), the
     balance follows into the surviving part rather than evaporating."""
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["product"]["id"]
     parts = {p["name_key"]: p for p in (await committing_client.get(f"/api/v1/products/{pid}")).json()["parts"]}
     target, source = parts["bracket.stl"]["id"], parts["lid.stl"]["id"]
     await move(db_session, part_id=target, delta=1, reason="unfiled_print")
@@ -247,7 +247,7 @@ async def test_merging_a_part_moves_its_stock_onto_the_target(committing_client,
 
 @pytest.mark.asyncio
 async def test_delete_is_refused_while_an_order_references_it(committing_client, db_session, sliced_file):
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["product"]["id"]
     project = Project(name="O")
     db_session.add(project)
     await db_session.flush()
@@ -264,7 +264,7 @@ async def test_delete_is_refused_while_an_order_references_it(committing_client,
 
 @pytest.mark.asyncio
 async def test_inactive_products_are_filtered_and_duplicate_copies_setup(committing_client, sliced_file):
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["product"]["id"]
     await committing_client.patch(f"/api/v1/products/{pid}", json={"is_active": False})
     assert (await committing_client.get("/api/v1/products?active=true")).json() == []
     assert len((await committing_client.get("/api/v1/products")).json()) == 1
@@ -303,7 +303,7 @@ async def test_setting_and_unlinking_files_keeps_pivot_and_plates_in_step(commit
     # load, and a lazy load inside an async session is a ``MissingGreenlet``.
     second_id = second.id
 
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["product"]["id"]
 
     r = await committing_client.put(f"/api/v1/products/{pid}/files", json={"library_file_ids": [second_id]})
     assert r.status_code == 200, r.text
@@ -334,7 +334,7 @@ async def test_a_second_product_on_the_same_file_survives_the_first_unlinking(
     """``sync_product_for_file`` is handed the file's FULL product set, so one
     product letting go must not evict the other from the pivot."""
     fid = sliced_file.id  # plain int: ``expire_all`` turns attribute reads into lazy loads
-    first = (await committing_client.post(f"/api/v1/products/from-file/{fid}")).json()["id"]
+    first = (await committing_client.post(f"/api/v1/products/from-file/{fid}")).json()["product"]["id"]
     second = (await committing_client.post("/api/v1/products", json={"name": "Shared"})).json()["id"]
 
     r = await committing_client.put(f"/api/v1/products/{second}/files", json={"library_file_ids": [fid]})
@@ -536,7 +536,7 @@ async def test_a_duplicate_gets_its_own_dedicated_cover_file(committing_client):
 
 @pytest.mark.asyncio
 async def test_a_purchased_part_refuses_an_alias(committing_client, sliced_file):
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["product"]["id"]
     part_id = (
         await committing_client.post(
             f"/api/v1/products/{pid}/parts", json={"kind": "purchased", "name": "M3 screw", "qty_per_unit": 8}
@@ -550,7 +550,7 @@ async def test_a_purchased_part_refuses_an_alias(committing_client, sliced_file)
 async def test_an_empty_patch_does_not_clear_the_seeded_flag(committing_client, sliced_file):
     """``auto`` records that an operator has taken the row over. A PATCH that
     edits nothing has not."""
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["product"]["id"]
     part_id = (await committing_client.get(f"/api/v1/products/{pid}")).json()["parts"][0]["id"]
     r = await committing_client.patch(f"/api/v1/products/{pid}/parts/{part_id}", json={})
     assert r.status_code == 200 and r.json()["auto"] is True
@@ -579,10 +579,11 @@ async def test_names_are_trimmed_before_their_length_is_measured(committing_clie
     assert (await committing_client.post("/api/v1/products/", json={"name": "A" * 256})).status_code == 422
     assert (await committing_client.post("/api/v1/products/", json={"name": "   "})).status_code == 422
 
-    # Parts carry the same rule at their own bound of 512.
+    # Parts carry the same rule at their own bound of 512. A PRINTED part: a purchased
+    # one's key adds «purchased:» and is bounded at 502 characters of name (WS-13 E10 A03).
     part_fits = "B" * 512
     r = await committing_client.post(
-        f"/api/v1/products/{pid}/parts", json={"kind": "purchased", "name": f" {part_fits} ", "qty_per_unit": 1}
+        f"/api/v1/products/{pid}/parts", json={"kind": "printed", "name": f" {part_fits} ", "qty_per_unit": 1}
     )
     assert r.status_code == 200, r.text
     assert r.json()["name"] == part_fits
@@ -612,7 +613,7 @@ async def test_names_are_trimmed_before_their_length_is_measured(committing_clie
 
 async def _card_product(client, db, tmp_path, **card):
     file = await make_card_file(db, tmp_path, **card)
-    body = (await client.post(f"/api/v1/products/from-file/{file.id}")).json()
+    body = (await client.post(f"/api/v1/products/from-file/{file.id}")).json()["product"]
     return file.id, body
 
 
@@ -669,8 +670,8 @@ async def test_a_placeholder_title_never_becomes_the_product_name(committing_cli
 @pytest.mark.asyncio
 async def test_a_second_product_from_the_same_file_gets_its_own_copies(committing_client, db_session, tmp_path):
     file = await make_card_file(db_session, tmp_path)
-    first = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()
-    second = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()
+    first = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()["product"]
+    second = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()["product"]
 
     assert first["id"] != second["id"]
     assert len(first["attachments"]) == len(second["attachments"]) == 5
@@ -694,7 +695,7 @@ async def test_an_import_skips_what_the_category_does_not_allow(committing_clien
             "Auxiliaries/Bill of Materials/sheet.png": PNG_A,
         },
     )
-    body = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()
+    body = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()["product"]
 
     assert [a["original_name"] for a in body["attachments"]] == ["a.png"]
     assert sorted(p.suffix for p in product_attachments_dir(body["id"]).iterdir()) == [".png"]
@@ -786,13 +787,16 @@ async def test_from_file_logs_the_notes_it_has_nowhere_to_return(committing_clie
     with caplog.at_level(logging.INFO, logger="backend.app.api.routes.products"):
         r = await committing_client.post(f"/api/v1/products/from-file/{file.id}")
     assert r.status_code == 200, r.text
-    # The response is untouched — this is a log line, not a wire change. (The
-    # `notes` key it does carry is the product's own free-text column, not the
-    # card's; a plain `ProductResponse` is exactly what the detail GET answers.)
-    body = r.json()
+    # WS-13 E10 A02: the notes travel with the product, as the re-read's do — the
+    # product half is exactly what the detail GET answers, and the log keeps its lines.
+    body = r.json()["product"]
     detail = (await committing_client.get(f"/api/v1/products/{body['id']}")).json()
     assert set(body) == set(detail) and body["notes"] is None
     assert [a["original_name"] for a in body["attachments"]] == ["a.png"]
+    notes = r.json()["notes"]
+    assert any(n["code"] == "filled_field" and n["params"].get("field") == "license" for n in notes), notes
+    assert any(n["code"] == "imported_files" and n["params"].get("category") == "pictures" for n in notes), notes
+    assert any(n["code"] == "skipped_extension" and "run.exe" in str(n["params"]) for n in notes), notes
 
     lines = [rec.getMessage() for rec in caplog.records if rec.name == "backend.app.api.routes.products"]
     assert any("code=filled_field" in line and "'field': 'license'" in line for line in lines), lines
@@ -840,7 +844,7 @@ async def test_reread_wants_a_file_the_product_is_actually_linked_to(committing_
     stranger = await make_card_file(db_session, tmp_path, name="stranger.3mf")
     linked_id, stranger_id = linked.id, stranger.id
 
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{linked_id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{linked_id}")).json()["product"]["id"]
     assert (
         await committing_client.post(f"/api/v1/products/{pid}/card/reread", params={"file_id": stranger_id})
     ).status_code == 404
@@ -901,7 +905,7 @@ async def test_units_printed_total_counts_every_order_the_product_appears_in(com
     await db_session.commit()
     file_id = file.id
 
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{file_id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{file_id}")).json()["product"]["id"]
     other_pid = (await committing_client.post("/api/v1/products/", json={"name": "Not a lamp"})).json()["id"]
     assert (await committing_client.get(f"/api/v1/products/{pid}")).json()["units_printed_total"] == 0
 
@@ -957,7 +961,7 @@ async def test_the_same_name_in_two_folders_is_two_files(committing_client, db_s
             "Auxiliaries/Assembly Guide/guide.png": PNG_A + b"different",
         },
     )
-    body = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()
+    body = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()["product"]
 
     pairs = sorted((a["category"], a["original_name"]) for a in body["attachments"])
     assert pairs == [("assembly", "guide.png"), ("pictures", "guide.png")]
@@ -984,7 +988,7 @@ async def test_an_oversized_member_is_skipped_with_a_note_never_read(
             "Auxiliaries/Bill of Materials/huge.csv": BOM_CSV * 20,
         },
     )
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()["product"]["id"]
     notes = (await committing_client.post(f"/api/v1/products/{pid}/card/reread", params={"file_id": file.id})).json()[
         "notes"
     ]
@@ -1017,7 +1021,7 @@ async def test_a_file_with_nothing_left_to_give_says_so(committing_client, db_se
     """``nothing_to_fill`` is a code like any other — an empty list would leave
     the dialog with nothing to say and look like a failure."""
     file = await make_card_file(db_session, tmp_path, name="twice.3mf")
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{file.id}")).json()["product"]["id"]
 
     # Everything is already filled and every attachment is re-imported, so the
     # second read reports the replacement and the imports, not "nothing".
@@ -1092,7 +1096,7 @@ async def test_renaming_a_purchased_part_refreshes_its_key(committing_client, db
     """A purchased part IS its name: ``name_key`` is derived from it, and a
     rename that leaves the key behind makes the two disagree for good. The
     procurement rows reference the part id, so nothing of the order moves."""
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["product"]["id"]
     screw = (
         await committing_client.post(
             f"/api/v1/products/{pid}/parts", json={"kind": "purchased", "name": "M3 screw", "qty_per_unit": 8}
@@ -1143,7 +1147,7 @@ async def test_renaming_a_purchased_part_refreshes_its_key(committing_client, db
 async def test_a_printed_parts_key_survives_a_rename(committing_client, sliced_file):
     """The mirror image: a printed part's key is the 3MF object name, not its
     display name. Refreshing it on a rename would orphan every archive row."""
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["product"]["id"]
     part = next(
         p
         for p in (await committing_client.get(f"/api/v1/products/{pid}")).json()["parts"]
@@ -1172,11 +1176,11 @@ async def test_deleting_a_product_takes_every_parts_stock_movements_with_it(comm
     fires on PostgreSQL only. Left behind on SQLite the rows would not merely
     linger, because a fresh install REUSES rowids and they would eventually
     attach themselves to whichever part inherited the id."""
-    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["id"]
+    pid = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["product"]["id"]
     parts = {p["name_key"]: p for p in (await committing_client.get(f"/api/v1/products/{pid}")).json()["parts"]}
     for key in ("bracket.stl", "lid.stl"):
         await move(db_session, part_id=parts[key]["id"], delta=2, reason="unfiled_print")
-    survivor = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()
+    survivor = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["product"]
     kept = [p for p in survivor["parts"] if p["name_key"] == "clip.stl"][0]["id"]
     await move(db_session, part_id=kept, delta=7, reason="unfiled_print")
     await db_session.commit()

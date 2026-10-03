@@ -62,7 +62,7 @@ async def test_ready_needs_parts_and_a_plate_and_draft_saves_anyway(committing_c
 
 @pytest.mark.asyncio
 async def test_a_product_from_a_sliced_file_may_be_ready(committing_client, sliced_file):
-    p = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()
+    p = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["product"]
     assert p["status"] == "draft"
     ready = await committing_client.patch(f"/api/v1/products/{p['id']}", json={"status": "ready"})
     assert ready.status_code == 200 and ready.json()["status"] == "ready"
@@ -96,7 +96,7 @@ async def test_a_copy_keeps_version_and_category_but_not_the_sku(committing_clie
 
 @pytest.mark.asyncio
 async def test_a_plate_names_its_printer_model(committing_client, sliced_file):
-    p = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()
+    p = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["product"]
     plates = (await committing_client.get(f"/api/v1/products/{p['id']}/plates")).json()
     assert [pl["printer_model"] for pl in plates] == ["X1C"]
 
@@ -104,7 +104,7 @@ async def test_a_plate_names_its_printer_model(committing_client, sliced_file):
 @pytest.mark.asyncio
 async def test_ready_counts_only_plates_outside_the_trash(committing_client, db_session, sliced_file):
     # What the row, the card and the dialog show: a plate of a trashed file is no plate.
-    p = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()
+    p = (await committing_client.post(f"/api/v1/products/from-file/{sliced_file.id}")).json()["product"]
     await db_session.execute(
         update(LibraryFile).where(LibraryFile.id == sliced_file.id).values(deleted_at=datetime.now(UTC))
     )

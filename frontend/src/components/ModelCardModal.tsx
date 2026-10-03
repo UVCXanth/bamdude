@@ -608,7 +608,7 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
 
   const create = useMutation({
     mutationFn: () => api.createProductFromFile(fileId),
-    onSuccess: (product) => {
+    onSuccess: ({ product }) => {
       invalidateProductCatalog(queryClient);
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       onClose();

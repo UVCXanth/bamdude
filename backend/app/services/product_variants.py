@@ -274,7 +274,9 @@ class GroupDraft:
     temp_id: str | None
     name: str
     options: list[OptionDraft]
-    default: int | str
+    #: ``None`` only for an existing group whose stored standard is already ``None``
+    #: (WS-13 E10 A06) — checked against the stored group in :func:`apply`.
+    default: int | str | None
 
 
 def revision(state: Sequence[Any]) -> str:
@@ -324,11 +326,17 @@ def _check_form(draft: Sequence[GroupDraft]) -> None:
 
     for group in draft:
         claim("group", group)
-        if not group.options:
+        # An EXISTING group may arrive empty or without a standard: whether it already
+        # was is the stored group's question, answered in ``apply`` (WS-13 E10 A06).
+        inherited = group.id is not None
+        if not group.options and not inherited:
             raise _refusal(422, "invalid_draft", NO_OPTIONS, group=_ref(group))
         for option in group.options:
             claim("option", option)
-        if group.default not in {_ref(o) for o in group.options}:
+        if group.default is None:
+            if not inherited:
+                raise _refusal(422, "invalid_draft", DRAFT_DEFAULT, group=_ref(group))
+        elif group.default not in {_ref(o) for o in group.options}:
             raise _refusal(422, "invalid_draft", DRAFT_DEFAULT, group=_ref(group))
 
 
@@ -358,6 +366,19 @@ async def apply(db: AsyncSession, product_id: int, seen_revision: str, draft: Se
                 raise VariantError(404, "Variant option not found")
             if group.id is None or owner[option.id] != group.id:
                 raise _refusal(422, "option_moved", OPTION_MOVED, group=_ref(group), option=option.id)
+    # The inherited state, two INDEPENDENT checks against the stored group (WS-13 E10
+    # A06, R11): no standard only where the group already had none — its name and
+    # options may still change, a standard never appears by itself — and no options
+    # only where it was already empty. A standard is never taken away, a non-empty
+    # group is never emptied.
+    for group in draft:
+        if group.id is None:
+            continue
+        stored = by_group[group.id]
+        if group.default is None and stored.default_option_id is not None:
+            raise _refusal(422, "invalid_draft", DRAFT_DEFAULT, group=group.id)
+        if not group.options and stored.options:
+            raise _refusal(422, "invalid_draft", NO_OPTIONS, group=group.id)
     group_keys: set[str] = set()
     for group in draft:
         if variant_key(group.name) in group_keys:
@@ -445,7 +466,12 @@ async def apply(db: AsyncSession, product_id: int, seen_revision: str, draft: Se
     # (d) standards of existing groups.
     for group in draft:
         if group.id is not None:
-            default = group.default if isinstance(group.default, int) else made_options[group.default]
+            if group.default is None:
+                default = None
+            elif isinstance(group.default, int):
+                default = group.default
+            else:
+                default = made_options[group.default]
             by_group[group.id].default_option_id = default
     await db.flush()
     # (e) dropped options, (f) dropped groups — guarded above.

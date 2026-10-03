@@ -24,7 +24,10 @@ describe('FromFileDialog', () => {
 
   it('creates a product from the picked file', async () => {
     vi.spyOn(api, 'getLibraryFilesPaged').mockResolvedValue(page as never);
-    const create = vi.spyOn(api, 'createProductFromFile').mockResolvedValue({ id: 9, name: 'flask' } as never);
+    // WS-13 E10 A02: the answer is the product AND what its file gave.
+    const create = vi
+      .spyOn(api, 'createProductFromFile')
+      .mockResolvedValue({ product: { id: 9, name: 'flask' }, notes: [] } as never);
     const onCreated = vi.fn();
     render(<FromFileDialog onClose={() => {}} onCreated={onCreated} />);
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'flask' } });

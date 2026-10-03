@@ -2758,7 +2758,8 @@ export interface VariantGroupDraft {
   id?: number;
   temp_id?: string;
   name: string;
-  default: number | string;
+  /** `null` only for an existing group whose stored standard is already `null` (WS-13 E10 A06). */
+  default: number | string | null;
   options: VariantOptionDraft[];
 }
 
@@ -2802,6 +2803,10 @@ export interface ProductPartCreate {
   unit_price?: number | null;
   sourcing_url?: string | null;
   remarks?: string | null;
+  /** A printed part's whole alias list — its own key always stays (WS-13 E10 A05). */
+  aliases?: string[] | null;
+  /** Created already bound to this option (A05). */
+  variant_option_id?: number | null;
 }
 
 export interface ProductPartUpdate {
@@ -2814,6 +2819,8 @@ export interface ProductPartUpdate {
   variant_option_id?: number | null;
   /** «Не рахувати» — 422 on a part in the kit, 409 while it holds stock or is ordered. */
   ignored?: boolean;
+  /** Absent or `null` — unchanged; a list — the whole list, own key kept (A05). */
+  aliases?: string[] | null;
 }
 
 export interface PlateYieldEntry {
@@ -3871,6 +3878,12 @@ export interface CardNote {
 }
 
 export interface RereadResponse {
+  product: Product;
+  notes: CardNote[];
+}
+
+/** `POST /products/from-file/{id}` (WS-13 E10 A02) — the new product and what its file gave. */
+export interface ProductFromFileResponse {
   product: Product;
   notes: CardNote[];
 }
@@ -12670,7 +12683,7 @@ export const api = {
   createProduct: (data: ProductCreate) =>
     request<Product>('/products/', { method: 'POST', body: JSON.stringify(data) }),
   createProductFromFile: (libraryFileId: number) =>
-    request<Product>(`/products/from-file/${libraryFileId}`, { method: 'POST' }),
+    request<ProductFromFileResponse>(`/products/from-file/${libraryFileId}`, { method: 'POST' }),
   updateProduct: (id: number, data: ProductUpdate) =>
     request<Product>(`/products/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteProduct: (id: number) =>

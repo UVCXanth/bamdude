@@ -30,8 +30,36 @@ def _writes(tree: ast.AST) -> list[int]:
         elif name in {"append", "remove"} and isinstance(func, ast.Attribute):
             owner = func.value
             if isinstance(owner, ast.Attribute) and owner.attr == "options":
-                hits.append(node.lineno)
+                # A visibly constructed object of another class is a read model (the
+                # catalog row's ``ListVariantOption``); a variable or a model is a write.
+                arg = node.args[0] if node.args else None
+                built = arg.func if isinstance(arg, ast.Call) else None
+                built_name = (
+                    built.id
+                    if isinstance(built, ast.Name)
+                    else built.attr
+                    if isinstance(built, ast.Attribute)
+                    else None
+                )
+                if built_name is None or built_name in MODELS:
+                    hits.append(node.lineno)
     return sorted(hits)
+
+
+def test_the_guard_tells_a_read_model_from_an_orm_write():
+    """``.options.append(<a variable>)`` and ``.options.append(ProductVariantOption(...))``
+    are ORM writes; ``.options.append(ListVariantOption(...))`` builds a READ model (the
+    catalog row's variants) and is not. It flagged that line since WS-13 E5 (E10 T1)."""
+    tree = ast.parse(
+        "\n".join(
+            [
+                "group.options.append(row)",
+                "group.options.append(ProductVariantOption(name='x'))",
+                "group.options.append(ListVariantOption(id=1, name='x'))",
+            ]
+        )
+    )
+    assert _writes(tree) == [1, 2, 2]
 
 
 def test_nothing_but_the_variant_writer_writes_groups_and_options():

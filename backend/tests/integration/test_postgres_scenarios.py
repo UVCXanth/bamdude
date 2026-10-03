@@ -667,6 +667,24 @@ class TestLockProtocol:
         assert conf["which"] == "waiting" and (conf["a"], conf["b"]) == ("ok", "ok"), conf
         assert conf["line_groups"] == 2 and conf["kept_blue"] and conf["key_ok"], conf
 
+    def test_a_part_born_bound_wins_against_deleting_its_option(self, tmp_path_factory):
+        """WS-13 E10 R10: the create holds the gate; the delete WAITS (no 409 product_busy —
+        the gate is not a NOWAIT footprint), then sees the bound part and refuses."""
+        r = _protocol(tmp_path_factory, "bound_part_first")
+        assert r["which"] == "waiting", r
+        assert r["a"] == "ok", r
+        assert r["b"].startswith("http:409:") and "bound to this option" in r["b"], r
+        assert r["option_exists"] and r["part"]["variant_option_id"] is not None, r
+
+    def test_deleting_an_option_first_refuses_the_part_born_bound_to_it(self, tmp_path_factory):
+        """WS-13 E10 R10: the delete holds the gate; the create WAITS, then reads the
+        option behind the gate — gone: 422, and neither the part nor its aliases exist."""
+        r = _protocol(tmp_path_factory, "option_delete_first")
+        assert r["which"] == "waiting", r
+        assert r["a"] == "ok", r
+        assert r["b"].startswith("http:422:"), r
+        assert not r["option_exists"] and r["part"] is None, r
+
 
 class TestStockJournalPages:
     """WS-13 E1 T9 / ST1: the journal's numbered pages on a real PostgreSQL."""

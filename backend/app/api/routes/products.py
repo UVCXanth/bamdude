@@ -89,6 +89,7 @@ from backend.app.schemas.product import (
     ProductFileOut,
     ProductFilesOut,
     ProductFolderOut,
+    ProductFromFileResponse,
     ProductImportResponse,
     ProductKitsOut,
     ProductListItem,
@@ -147,6 +148,10 @@ from backend.app.services.product_card import (
     usable_title,
 )
 from backend.app.services.product_composition import (
+    KEY_MAX,
+    AliasTaken,
+    AliasTooLong,
+    OwnKeyAlias,
     PartSource,
     add_alias,
     estimate_seconds,
@@ -156,6 +161,7 @@ from backend.app.services.product_composition import (
     recipes_for_product,
     recipes_for_products,
     remove_alias,
+    set_aliases,
     source_summary,
 )
 from backend.app.services.product_files import (
@@ -1148,11 +1154,12 @@ async def create_product(
     return await _response(db, product)
 
 
-@router.post("/from-file/{library_file_id}", response_model=ProductResponse)
+@router.post("/from-file/{library_file_id}", response_model=ProductFromFileResponse)
 async def create_product_from_file(
     library_file_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_CREATE),
+    user: User | None = RequirePermission(Permission.PROJECTS_CREATE),
 ):
     """'Print this file five times' must not require authoring a product.
 
@@ -1171,7 +1178,11 @@ async def create_product_from_file(
     prose: nothing here knows the operator's language.
     """
     file = (await db.execute(LibraryFile.active().where(LibraryFile.id == library_file_id))).scalar_one_or_none()
-    if file is None:
+    # The library's own authority, asked before anything is read or written (WS-13 E10
+    # A01): a file the library does not show this caller — ``none``, another user's or an
+    # ownerless file under ``own``, an API key whose scope or owner lacks the library —
+    # is the same 404 a missing one is.
+    if file is None or not file_name_visible(file, user, await library_name_scope(request, db, user)):
         raise HTTPException(status_code=404, detail="Library file not found")
     stem = Path(file.filename).name
     for suffix in (".gcode.3mf", ".3mf", ".gcode"):
@@ -1184,9 +1195,11 @@ async def create_product_from_file(
     await db.flush()
     desired = await _file_product_ids(db, file.id) | {product.id}
     await sync_product_for_file(db, library_file_id=file.id, product_ids=sorted(desired))
-    for note in await fill_from_file(db, product, file, replace_3mf_attachments=False, card=card):
+    notes = await fill_from_file(db, product, file, replace_3mf_attachments=False, card=card)
+    for note in notes:
         logger.info("Product %s from library file %s: code=%s params=%s", product.id, file.id, note.code, note.params)
-    return await _response(db, product, reload_links=True)
+    # The notes travel with the product now (WS-13 E10 A02), as the re-read's do.
+    return ProductFromFileResponse(product=await _response(db, product, reload_links=True), notes=notes)
 
 
 # ---------- export / import (spec §Decisions 6) ----------
@@ -1463,6 +1476,45 @@ _NOT_IN_KIT = "A part that is not counted cannot be in the kit"
 _CANNOT_IGNORE = "This part holds stock or is ordered; it cannot be marked as not counted"
 # A bought part is never on a plate, so «not a part of it» never applies (final review I3).
 _PRINTED_ONLY = "Only a printed part can be marked as not counted"
+_NAME_TOO_LONG = "The part name is too long"
+
+
+def _part_key(kind: str, name: str) -> str:
+    """A part's key — ``purchased:`` + the collapsed lower-cased name, or the canonical
+    lower-cased object name — refused before any flush when it outgrows ``name_key``
+    (WS-13 E10 A03, R08): lower-casing can grow a name and the purchased prefix adds ten
+    characters, so the field's own bound does not settle it. A printed part's key is
+    derived once, at creation — a rename keeps it (R12)."""
+    key = purchased_name_key(name) if kind == "purchased" else name_key(canonicalize(name))
+    if len(key) > KEY_MAX:
+        raise HTTPException(status_code=422, detail=_NAME_TOO_LONG)
+    return key
+
+
+async def _ensure_own_option(db: AsyncSession, product: Product, option_id: int) -> None:
+    owner = await db.scalar(
+        select(ProductVariantGroup.product_id)
+        .join(ProductVariantOption, ProductVariantOption.group_id == ProductVariantGroup.id)
+        .where(ProductVariantOption.id == option_id)
+    )
+    if owner != product.id:
+        raise HTTPException(status_code=422, detail="That option does not belong to this product")
+
+
+def _apply_alias_change(change) -> None:
+    """Run one alias write and say its refusal in the route's own sentence (A04)."""
+    try:
+        change()
+    except AliasTaken as e:
+        raise HTTPException(status_code=409, detail=f"'{e.key}' already belongs to part '{e.owner}'") from e
+    except OwnKeyAlias as e:
+        raise HTTPException(status_code=400, detail="A part cannot drop its own key") from e
+    except AliasTooLong as e:
+        raise HTTPException(status_code=422, detail="An alias is too long") from e
+
+
+def _apply_aliases(parts, part: ProductPart, desired: list[str]) -> None:
+    _apply_alias_change(lambda: set_aliases(parts, part, desired))
 
 
 async def _part(db: AsyncSession, product: Product, part_id: int) -> ProductPart:
@@ -1484,10 +1536,17 @@ async def create_part(
         raise HTTPException(status_code=422, detail=_PRINTED_ONLY)
     if data.ignored and data.qty_per_unit > 0:
         raise HTTPException(status_code=422, detail=_NOT_IN_KIT)
-    if data.kind == "purchased":
-        key = purchased_name_key(data.name)
-    else:
-        key = name_key(canonicalize(data.name))
+    if data.aliases is not None and data.kind != "printed":
+        raise HTTPException(status_code=400, detail="Purchased parts have no aliases")
+    if data.variant_option_id is not None:
+        # A part born bound (WS-13 E10 A05, R10): the product gate before anything in
+        # the session changes — it WAITS, as every writer's does — then, behind it, the
+        # state every check below stands on, read fresh: the option (a concurrent
+        # delete may have won), the parts and their aliases (the duplicate check).
+        await product_gate.product_gate(db, [product.id])
+        product = await _get(db, product_id, fresh=True)
+        await _ensure_own_option(db, product, data.variant_option_id)
+    key = _part_key(data.kind, data.name)
     if any(key == p.name_key or key in (p.aliases or []) for p in product.parts):
         raise HTTPException(status_code=409, detail="A part with this name already exists")
     part = ProductPart(
@@ -1502,8 +1561,13 @@ async def create_part(
         unit_price=data.unit_price,
         sourcing_url=data.sourcing_url,
         remarks=data.remarks,
+        # Into the final composition (K22): nothing is frozen — the saved lines that
+        # chose this option take it, the others do not; a parts-only line never does.
+        variant_option_id=data.variant_option_id,
         sort_order=max((p.sort_order for p in product.parts), default=-1) + 1,
     )
+    if data.aliases is not None:
+        _apply_aliases([*product.parts, part], part, data.aliases)
     db.add(part)
     await db.flush()
     await db.refresh(part)
@@ -1533,13 +1597,9 @@ async def update_part(
         product = await _get(db, product_id, fresh=True)
     part = await _part(db, product, part_id)
     if "variant_option_id" in data.model_fields_set and data.variant_option_id is not None:
-        owner = await db.scalar(
-            select(ProductVariantGroup.product_id)
-            .join(ProductVariantOption, ProductVariantOption.group_id == ProductVariantGroup.id)
-            .where(ProductVariantOption.id == data.variant_option_id)
-        )
-        if owner != product.id:
-            raise HTTPException(status_code=422, detail="That option does not belong to this product")
+        await _ensure_own_option(db, product, data.variant_option_id)
+    if data.aliases is not None and part.kind != "printed":
+        raise HTTPException(status_code=400, detail="Purchased parts have no aliases")
     if "variant_option_id" in data.model_fields_set:
         # Saved order lines keep the kit they had (spec workshop-product-variants).
         try:
@@ -1553,7 +1613,7 @@ async def update_part(
     # every rename: refreshing it would orphan the archive rows that match on it.
     new_key = None
     if "name" in data.model_fields_set and part.kind == "purchased":
-        new_key = purchased_name_key(data.name)
+        new_key = _part_key("purchased", data.name)
         if new_key != part.name_key and any(
             p is not part and (new_key == p.name_key or new_key in (p.aliases or [])) for p in product.parts
         ):
@@ -1574,8 +1634,11 @@ async def update_part(
             or await line_config.part_in_use(db, part.id)
         ):
             raise HTTPException(status_code=409, detail=_CANNOT_IGNORE)
-    for field_name in data.model_fields_set:
+    for field_name in data.model_fields_set - {"aliases"}:
         setattr(part, field_name, getattr(data, field_name))
+    if data.aliases is not None:
+        # The whole list, through the alias writers — never a bare setattr (A05, R04).
+        _apply_aliases(product.parts, part, data.aliases)
     if new_key is not None:
         # The procurement rows reference the part ID, so nothing of the order
         # moves with the key — there is no migration here, only a stale value.
@@ -1691,10 +1754,7 @@ async def add_part_alias(
         # alias maps a 3MF object name onto a part, and nothing on a plate is
         # ever a purchased screw.
         raise HTTPException(status_code=400, detail="Purchased parts have no aliases")
-    try:
-        add_alias(product.parts, part, data.name_key.strip().lower())
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+    _apply_alias_change(lambda: add_alias(product.parts, part, data.name_key.strip().lower()))
     await db.flush()
     await db.refresh(part)
     return await _part_out(db, part)
@@ -1710,10 +1770,7 @@ async def remove_part_alias(
 ):
     """Query param dodges URL-encoding traps in part keys (same trick the old parts ledger used)."""
     part = await _part(db, await _get(db, product_id), part_id)
-    try:
-        remove_alias(part, name_key)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+    _apply_alias_change(lambda: remove_alias(part, name_key))
     await db.flush()
     await db.refresh(part)
     return await _part_out(db, part)

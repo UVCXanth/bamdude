@@ -1172,3 +1172,75 @@ async def scenario_stale_reads() -> dict:
 
 
 SCENARIOS["stale_reads"] = scenario_stale_reads
+
+
+# ---------- WS-13 E10 R10 — a part born bound against deleting its option ----------
+#
+# The product gate WAITS (FOR NO KEY UPDATE, no NOWAIT): whichever door takes it first
+# finishes, and the other — behind the gate — reads the state the first one left.
+
+
+async def _part_named(product_id: int, name: str) -> dict | None:
+    from backend.app.core.database import async_session
+    from backend.app.models.product import ProductPart
+
+    async with async_session() as db:
+        part = await db.scalar(
+            select(ProductPart).where(ProductPart.product_id == product_id, ProductPart.name == name)
+        )
+        if part is None:
+            return None
+        return {"variant_option_id": part.variant_option_id, "aliases": list(part.aliases or [])}
+
+
+async def _option_exists(option_id: int) -> bool:
+    from backend.app.models.product_variant import ProductVariantOption
+
+    return await _count(ProductVariantOption, ProductVariantOption.id == option_id) == 1
+
+
+async def scenario_bound_part_first() -> dict:
+    """A creates a part bound to «blue» and stops right after taking the gate; B deletes
+    «blue» and must wait; A commits — B, behind the gate, sees the bound part and refuses."""
+    from backend.app.api.routes import products as product_routes
+    from backend.app.schemas.product import ProductPartCreate
+
+    s = await shop()
+    blue = s["options"]["blue"]
+    data = ProductPartCreate(kind="printed", name="Blue shade", aliases=["blue_shade_v2"], variant_option_id=blue)
+    result = await duel(
+        lambda db: product_routes.create_part(s["product"], data, db, None),
+        lambda db: product_routes.delete_variant_option(s["product"], s["group"], blue, db, None),
+        a_on="product_gate",
+    )
+    return {
+        **result,
+        "part": await _part_named(s["product"], "Blue shade"),
+        "option_exists": await _option_exists(blue),
+    }
+
+
+async def scenario_option_delete_first() -> dict:
+    """A deletes «blue» and stops right after taking the gate; B creates a part bound to
+    it and must wait; A commits — B, behind the gate, finds no such option: 422, and no
+    part (nor its aliases) is written."""
+    from backend.app.api.routes import products as product_routes
+    from backend.app.schemas.product import ProductPartCreate
+
+    s = await shop()
+    blue = s["options"]["blue"]
+    data = ProductPartCreate(kind="printed", name="Blue shade", aliases=["blue_shade_v2"], variant_option_id=blue)
+    result = await duel(
+        lambda db: product_routes.delete_variant_option(s["product"], s["group"], blue, db, None),
+        lambda db: product_routes.create_part(s["product"], data, db, None),
+        a_on="product_gate",
+    )
+    return {
+        **result,
+        "part": await _part_named(s["product"], "Blue shade"),
+        "option_exists": await _option_exists(blue),
+    }
+
+
+SCENARIOS["bound_part_first"] = scenario_bound_part_first
+SCENARIOS["option_delete_first"] = scenario_option_delete_first

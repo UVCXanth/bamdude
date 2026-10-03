@@ -246,7 +246,8 @@ describe('ModelCardModal — a library file', () => {
 
   it('makes a product of the file and opens it', async () => {
     vi.spyOn(api, 'getLibraryFileCard').mockResolvedValue(fileCard as never);
-    const create = vi.spyOn(api, 'createProductFromFile').mockResolvedValue({ id: 55 } as never);
+    // WS-13 E10 A02: the answer is the product AND what its file gave.
+    const create = vi.spyOn(api, 'createProductFromFile').mockResolvedValue({ product: { id: 55 }, notes: [] } as never);
     render(<ModelCardModal source={{ kind: 'file', id: 3 }} onClose={() => {}} />);
 
     fireEvent.click(await screen.findByRole('button', { name: /create product/i }));

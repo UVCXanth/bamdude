@@ -375,10 +375,48 @@ def merge_parts(target: ProductPart, source: ProductPart) -> None:
     target.auto = False
 
 
+class AliasTaken(ValueError):
+    """The key already resolves to another part — its own key or one of its aliases.
+
+    A ``ValueError`` still, so every older caller that catches one keeps working; the
+    routes read ``key`` and ``owner`` to say it in a sentence the API-error catalog
+    translates (WS-13 E10 A04 — ``str(e)`` never reached the catalog)."""
+
+    def __init__(self, key: str, owner: str):
+        super().__init__(f"'{key}' already belongs to part '{owner}'")
+        self.key = key
+        self.owner = owner
+
+
+class OwnKeyAlias(ValueError):
+    """A part's own key is not an alias it can drop."""
+
+    def __init__(self) -> None:
+        super().__init__("A part cannot drop its own key")
+
+
+class AliasTooLong(ValueError):
+    """An alias, normalised, is longer than ``name_key`` holds."""
+
+    def __init__(self) -> None:
+        super().__init__("An alias is too long")
+
+
+#: ``name_key``'s column — a part's key and every alias fit in it (WS-13 E10 A03).
+KEY_MAX = 512
+
+
+def normalise_alias(raw: str) -> str:
+    """An alias as the routes have always stored it: trimmed and lower-cased."""
+    return (raw or "").strip().lower()
+
+
 def add_alias(parts: Iterable[ProductPart], target: ProductPart, key: str) -> None:
+    if len(key) > KEY_MAX:
+        raise AliasTooLong()
     owner = part_index(parts).get(key)
     if owner is not None and owner is not target:
-        raise ValueError(f"'{key}' already belongs to part '{owner.name}'")
+        raise AliasTaken(key, owner.name)
     aliases = list(target.aliases or [target.name_key])
     if key not in aliases:
         aliases.append(key)
@@ -399,8 +437,32 @@ def remove_alias(target: ProductPart, key: str) -> None:
     function's business.
     """
     if key == target.name_key:
-        raise ValueError("a part cannot drop its own key")
+        raise OwnKeyAlias()
     had_list = bool(target.aliases)
     remaining = [a for a in (target.aliases or []) if a != key]
     target.aliases = remaining or ([target.name_key] if had_list else [])
     target.auto = False
+
+
+def set_aliases(parts: Iterable[ProductPart], target: ProductPart, desired: Iterable[str]) -> None:
+    """Replace a printed part's aliases with ``desired`` — the part dialog's whole list
+    in one save (WS-13 E10 A05).
+
+    Each entry is normalised as the single routes do (:func:`normalise_alias`); blanks
+    are dropped, duplicates collapse, and the part's own key stays first whatever the
+    list says. The writes go through :func:`remove_alias` and :func:`add_alias`, so a
+    key another part owns refuses (:class:`AliasTaken`) exactly as the single route
+    does — the caller's transaction rolls back, nothing is half-written."""
+    parts = list(parts)
+    wanted: list[str] = []
+    for raw in desired:
+        key = normalise_alias(raw)
+        if key and key != target.name_key and key not in wanted:
+            wanted.append(key)
+    for key in [a for a in (target.aliases or []) if a != target.name_key and a not in wanted]:
+        remove_alias(target, key)
+    for key in wanted:
+        if key not in (target.aliases or []):
+            add_alias(parts, target, key)
+    if not target.aliases:
+        target.aliases = [target.name_key]

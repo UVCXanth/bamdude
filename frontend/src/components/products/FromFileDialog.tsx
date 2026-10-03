@@ -77,7 +77,7 @@ export function FromFileDialog({ onClose, onCreated }: FromFileDialogProps) {
 
   const create = useMutation({
     mutationFn: (fileId: number) => api.createProductFromFile(fileId),
-    onSuccess: (created) => {
+    onSuccess: ({ product: created }) => {
       invalidateProductCatalog(queryClient);
       // Its own key, not `products.toast.saved`: nothing was saved here — a
       // product was CREATED, out of a file the operator picked, and the toast

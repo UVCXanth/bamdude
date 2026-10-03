@@ -6,7 +6,7 @@ every read from the linked file's ``file_metadata``.
 """
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -61,10 +61,11 @@ class ProductCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str | None = None
     notes: str | None = None
-    designer: str | None = None
-    license: str | None = None
-    source_url: str | None = None
-    design_id: str | None = None
+    # Bounded by their columns (WS-13 E10 A03): longer reached PostgreSQL as a 500.
+    designer: str | None = Field(default=None, max_length=255)
+    license: str | None = Field(default=None, max_length=255)
+    source_url: str | None = Field(default=None, max_length=2048)
+    design_id: str | None = Field(default=None, max_length=64)
     # spec workshop-product-catalog, rules 1 and 13–15. A blank SKU / version
     # is no value; the SKU's uniqueness and the ready gate are the route's.
     sku: str | None = Field(default=None, max_length=64)
@@ -92,10 +93,10 @@ class ProductUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     notes: str | None = None
-    designer: str | None = None
-    license: str | None = None
-    source_url: str | None = None
-    design_id: str | None = None
+    designer: str | None = Field(default=None, max_length=255)
+    license: str | None = Field(default=None, max_length=255)
+    source_url: str | None = Field(default=None, max_length=2048)
+    design_id: str | None = Field(default=None, max_length=64)
     is_active: bool | None = None
     # One-way promotion (spec Decision 2): the only value accepted is
     # ``catalog``; an adhoc product never becomes adhoc again, and the
@@ -140,7 +141,7 @@ class ProductUpdate(BaseModel):
 
 
 class ProductDuplicate(BaseModel):
-    name: str | None = None
+    name: str | None = Field(default=None, max_length=255)
 
 
 class ProductPartCreate(BaseModel):
@@ -150,8 +151,14 @@ class ProductPartCreate(BaseModel):
     #: «Не рахувати» (spec workshop-order-issue-followups, rule 34) — only with a zero.
     ignored: bool = False
     unit_price: float | None = None
-    sourcing_url: str | None = None
+    sourcing_url: str | None = Field(default=None, max_length=512)
     remarks: str | None = None
+    #: The whole alias list of a printed part, normalised by the route — its own key
+    #: always stays (WS-13 E10 A05). A purchased part takes none.
+    aliases: list[Annotated[str, Field(max_length=512)]] | None = None
+    #: Created already bound to this option: the new part enters the final composition
+    #: — the lines and positions that chose it — with nothing frozen (A05, K22).
+    variant_option_id: int | None = None
 
     @field_validator("name", mode="before")
     @classmethod
@@ -168,9 +175,12 @@ class ProductPartUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=512)
     qty_per_unit: int | None = Field(default=None, ge=0)
     unit_price: float | None = None
-    sourcing_url: str | None = None
+    sourcing_url: str | None = Field(default=None, max_length=512)
     remarks: str | None = None
     sort_order: int | None = None
+    #: Absent or ``null`` — the aliases stay; a list — the whole list, own key kept
+    #: (WS-13 E10 A05). Written beside the other fields, in the same transaction.
+    aliases: list[Annotated[str, Field(max_length=512)]] | None = None
     #: The option this part belongs to, or ``null`` for a part in every
     #: configuration (spec workshop-product-variants, rule 19). The route
     #: refuses an option of another product.
@@ -479,8 +489,9 @@ class VariantGroupDraftIn(BaseModel):
     temp_id: str | None = Field(default=None, max_length=64)
     name: str = Field(min_length=1, max_length=128)
     options: list[VariantOptionDraftIn] = Field(default_factory=list, max_length=200)
-    #: The standard option — an ``id`` or a ``temp_id`` of THIS group's options.
-    default: int | str
+    #: The standard option — an ``id`` or a ``temp_id`` of THIS group's options; ``null``
+    #: only for an existing group whose stored standard is already ``null`` (WS-13 E10 A06).
+    default: int | str | None = None
 
     @field_validator("name", mode="before")
     @classmethod
@@ -728,6 +739,14 @@ class RereadResponse(BaseModel):
     place the operator learns that a field was left alone because it was theirs,
     or that a file was skipped because its category does not carry that type.
     """
+
+    product: ProductResponse
+    notes: list[CardNote] = []
+
+
+class ProductFromFileResponse(BaseModel):
+    """``POST /products/from-file/{library_file_id}`` (WS-13 E10 A02) — the new product and
+    what its file gave, the way the re-read answers; the notes used to reach only the log."""
 
     product: ProductResponse
     notes: list[CardNote] = []
