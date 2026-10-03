@@ -12,6 +12,7 @@ import type { DateFormat, TimeFormat } from '../../utils/date';
 import { DispatchNoteSheet } from '../../components/stock/DispatchNoteSheet';
 import { WaybillEditor } from '../../components/stock/WaybillEditor';
 import { LoadFailedNote } from '../../components/workshop/LoadFailedNote';
+import { RefreshFailedNote } from '../../components/workshop/RefreshFailedNote';
 import { WorkshopPanel, WorkshopTableScroll } from '../../components/workshop/WorkshopPanel';
 import { useDispatchNote } from '../../hooks/useDispatchNotes';
 
@@ -26,7 +27,7 @@ export function DispatchNotePage() {
   const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const { hasPermission } = useAuth();
-  const { data: note, error, refetch } = useDispatchNote(Number(id));
+  const { data: note, error, isFetching, refetch } = useDispatchNote(Number(id));
   // The server sends naive UTC; the app's formatter reads it as such and follows the settings.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
   const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;
@@ -125,6 +126,8 @@ export function DispatchNotePage() {
             {t('stock.dispatchNote.print')}
           </Button>
         </div>
+        {/* A re-read that failed keeps the note and says so (K; final review M5) — never on paper. */}
+        {error && !isFetching && <RefreshFailedNote onRetry={() => void refetch()} />}
       </div>
       {/* A narrow screen scrolls the sheet in a region of its own, never the page (E12 pilot at
           390 px); on paper every container around the sheet gives its scrolling up (index.css). */}

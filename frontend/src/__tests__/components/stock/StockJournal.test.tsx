@@ -126,6 +126,15 @@ describe('StockJournal', () => {
       expect(within(part).getByText(/counted by the operator/)).toBeInTheDocument();
     });
 
+    // Final review (declined, ruled a finding): E03 names the customer only without an order.
+    it('the customer is named only without an order — the order already says whose it is', async () => {
+      get.mockResolvedValue(answer([{ ...issue, project: { id: 42, code: 'OR-0042', name: 'Order for Ivan' } }]));
+      render(<StockJournal />);
+      const row = await screen.findByTestId('journal-row-finished-4');
+      expect(within(row).getByRole('link', { name: 'OR-0042' })).toBeInTheDocument();
+      expect(within(row).queryByText('ACME')).toBeNull();
+    });
+
     it('a finished-goods note is shown as typed, even when it spells a server token', async () => {
       get.mockResolvedValue(answer([{ ...issue, note: 'assembled' }]));
       render(<StockJournal />);

@@ -153,8 +153,9 @@ describe('DispatchNotesTable (J01)', () => {
   });
 
   it('«Open» opens the note; the headers sort on the server', () => {
-    const { onSortChange } = table([row({ id: 3 })]);
-    expect(within(screen.getByTestId('note-3')).getByRole('link', { name: 'Open' })).toHaveAttribute(
+    // Final review M10: every row's «Open» names its note.
+    const { onSortChange } = table([row({ id: 3, code: 'DN-0003' })]);
+    expect(within(screen.getByTestId('note-3')).getByRole('link', { name: 'Open DN-0003' })).toHaveAttribute(
       'href',
       '/stock/dispatch-notes/3',
     );
@@ -209,6 +210,19 @@ describe('WaybillEditor (J03, R08)', () => {
     await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
     expect(update).toHaveBeenCalledWith(1, { waybill: '2045' });
     await act(async () => sent.resolve(row({ waybill: '2045' })));
+  });
+
+  // Final review M11: the saved waybill is what the row says at once — not the old one until
+  // the list is read again; a later answer of the list still wins.
+  it('after a save the new waybill shows at once, and the next answer of the list wins', async () => {
+    update.mockResolvedValue(row({ waybill: '2045' }));
+    const { rerender } = render(<WaybillEditor noteId={1} waybill={null} canEdit />);
+    fireEvent.click(pencil());
+    fireEvent.change(field(), { target: { value: '2045' } });
+    fireEvent.keyDown(field(), { key: 'Enter' });
+    expect(await screen.findByText('Waybill 2045')).toBeInTheDocument();
+    rerender(<WaybillEditor noteId={1} waybill="3000" canEdit />);
+    expect(screen.getByText('Waybill 3000')).toBeInTheDocument();
   });
 
   it('an emptied field sends null', async () => {

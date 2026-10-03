@@ -7,6 +7,7 @@ import type { StockItemDetail } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { Button } from '../../components/Button';
 import { CardActionMenu, CardActionMenuItem } from '../../components/CardActionMenu';
+import { manualReserved } from '../../components/stock/manualReservation';
 import { StatTile, StatTiles } from '../../components/StatTile';
 import { CONFIG_ACCENT_CLASS, lineConfigLabel } from '../../components/projects/lineConfigLabel';
 import { StockDialogs } from '../../components/stock/StockDialogs';
@@ -306,6 +307,9 @@ function ActionsPanel({
     ? t('stock.item.panel.needsText', { short: item.short_by, kits: item.can_assemble })
     : t('stock.item.panel.freeText');
 
+  // What the stock dialogs may move is the manual reservation only (R03): with only orders'
+  // reservations a release or an issue has nothing to take here (final review M6).
+  const manual = manualReserved(item.reservations);
   const actions: { kind: Exclude<NonNullable<StockDialogState>['kind'], 'receipt' | 'stocktake'>; label: string; reason?: string }[] = [
     {
       kind: 'assemble',
@@ -320,12 +324,22 @@ function ActionsPanel({
     {
       kind: 'release',
       label: t('stock.finished.action.release'),
-      reason: item.reserved <= 0 ? t('stock.finished.disabled.release') : undefined,
+      reason:
+        item.reserved <= 0
+          ? t('stock.finished.disabled.release')
+          : manual <= 0
+            ? t('stock.item.releaseNoManual')
+            : undefined,
     },
     {
       kind: 'issue',
       label: t('stock.finished.action.issue'),
-      reason: item.on_hand <= 0 ? t('stock.finished.disabled.issue') : undefined,
+      reason:
+        item.on_hand <= 0
+          ? t('stock.finished.disabled.issue')
+          : item.available <= 0 && manual <= 0
+            ? t('stock.item.issueAllHeld')
+            : undefined,
     },
     { kind: 'params', label: t('stock.finished.action.params') },
   ];

@@ -55,6 +55,51 @@ describe('AssembleDialog', () => {
   });
 
   describe('from a position: its configuration is fixed', () => {
+    // Final review I1: the dialog that writes parts off says which product it assembles —
+    // from the row's names, before the shelf has answered.
+    it('names the product it assembles before the shelf has answered', async () => {
+      vi.spyOn(api, 'getStockItem').mockReturnValue(new Promise(() => {}) as never);
+      render(<AssembleDialog item={pipeItem} onClose={() => {}} />);
+      const product = await screen.findByTestId('assemble-product');
+      expect(product).toHaveTextContent('Product');
+      expect(product).toHaveTextContent('Pipe · SK-0005 · standard');
+    });
+
+    // Final review I2: a focus the operator placed after the refusal stays theirs.
+    it('a re-read that answers while the operator types leaves the cursor where they put it', async () => {
+      const again = deferred<StockItemDetail>();
+      vi.spyOn(api, 'getStockItem')
+        .mockResolvedValueOnce({ ...pipeDetail, can_assemble: 3 })
+        .mockReturnValueOnce(again.promise as never)
+        .mockResolvedValue({ ...pipeDetail, can_assemble: 3 });
+      assemble.mockRejectedValue(new ApiError('Only 1 can be assembled from the free parts', 409));
+      render(<AssembleDialog item={pipeItem} onClose={() => {}} />);
+      await waitFor(() => expect(screen.getByText('up to 3')).toBeInTheDocument());
+      submit().focus();
+      fireEvent.click(submit());
+      expect(await screen.findByRole('alert')).toHaveTextContent('Only 1 can be assembled from the free parts');
+      const noteField = screen.getByLabelText('Note');
+      noteField.focus();
+      await act(async () => again.resolve({ ...pipeDetail, can_assemble: 3 }));
+      await waitFor(() => expect(screen.getByText('up to 3')).toBeInTheDocument());
+      expect(noteField).toHaveFocus();
+    });
+
+    // Final review M3: after a failed re-read nothing is being read — no «reading…».
+    it('a re-read that failed after a refusal says so, with no «reading…» left', async () => {
+      vi.spyOn(api, 'getStockItem')
+        .mockResolvedValueOnce({ ...pipeDetail, can_assemble: 3 })
+        .mockRejectedValue(new Error('HTTP 500'));
+      assemble.mockRejectedValue(new ApiError('Only 1 can be assembled from the free parts', 409));
+      render(<AssembleDialog item={pipeItem} onClose={() => {}} />);
+      await waitFor(() => expect(screen.getByText('up to 3')).toBeInTheDocument());
+      fireEvent.click(submit());
+      expect(await screen.findByRole('alert')).toHaveTextContent('Only 1 can be assembled from the free parts');
+      expect(await screen.findByText('Could not refresh')).toBeInTheDocument();
+      expect(screen.queryAllByText('reading…')).toHaveLength(0);
+      expect(submit()).toBeDisabled();
+    });
+
     it('the kit against the shelf, what each part writes off, and the position it grows — from the current read', async () => {
       render(<AssembleDialog item={pipeItem} onClose={() => {}} />);
       await waitFor(() => expect(screen.getByTestId('assemble-position')).toHaveTextContent('Stock position: SK-0005 · standard · now 5 pcs'));
@@ -223,6 +268,8 @@ describe('AssembleDialog', () => {
     fireEvent.change(howMany(), { target: { value: '2' } });
     fireEvent.change(screen.getByLabelText('Note'), { target: { value: 'batch 7' } });
     const reads = (api.getStockItem as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+    // A real press puts the focus on the button first.
+    submit().focus();
     fireEvent.click(submit());
     fireEvent.click(submit());
     expect(await screen.findByRole('alert')).toHaveTextContent('Only 1 can be assembled from the free parts');

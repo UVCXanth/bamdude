@@ -17,6 +17,7 @@ import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { WorkshopField, WorkshopFormGrid } from '../workshop/WorkshopFormGrid';
 import { DispatchNoteCreated } from './DispatchNoteCreated';
 import { StockLookupNote, StockPositionHeader, StockProductChoice } from './StockProductChoice';
+import { manualReserved } from './manualReservation';
 import { useStockTarget } from './useStockTarget';
 
 const FIELD_CLASS =
@@ -90,6 +91,7 @@ export function StockMoveDialog({
     why: `${uid}-why`,
     noPosition: `${uid}-no-position`,
     fromReserve: `${uid}-from-reserve`,
+    countedInvalid: `${uid}-counted-invalid`,
   };
 
   const [productId, setProductId] = useState<number | null>(forProduct ?? null);
@@ -108,9 +110,7 @@ export function StockMoveDialog({
   const options = Object.values(choices);
   const { groupsReady, lookup, lookupCurrent, lookupOwn, positionId, detail, detailCurrent, figures, shownFigures, reread, rereading } =
     useStockTarget({ item, productId, options });
-  const manual = figures
-    ? figures.reservations.filter((r) => r.project_id == null).reduce((sum, r) => sum + r.qty, 0)
-    : undefined;
+  const manual = figures ? manualReserved(figures.reservations) : undefined;
 
   // ---- the customer's contacts, for the recipient (G05, G08)
   const contacts = useQuery({
@@ -119,6 +119,12 @@ export function StockMoveDialog({
     enabled: kind === 'issue' && customerId != null,
     retry: false,
   });
+  // Each pick is read now (G08): a customer read a minute ago is not this pick's answer.
+  useEffect(() => {
+    if (kind === 'issue' && customerId != null) void contacts.refetch({ cancelRefetch: false });
+    // The customer is the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customerId]);
   const recipient =
     recipientEdit && recipientEdit.customerId === customerId
       ? recipientEdit.value
@@ -131,6 +137,8 @@ export function StockMoveDialog({
   const countedValid =
     counted.trim() !== '' && Number.isInteger(countedValue) && countedValue >= 0 && countedValue <= MAX_QTY;
   const amountValid = kind === 'stocktake' ? countedValid : qtyValid;
+  // An empty count is only not typed yet; a typed one that is no count says why (final review M8).
+  const countedTyped = counted.trim() !== '';
 
   const noPosition = item == null && lookupCurrent && lookupOwn != null && lookupOwn.item == null;
   // A count of 0 of a configuration with no position would move nothing, and the server
@@ -168,6 +176,8 @@ export function StockMoveDialog({
   else if (kind === 'issue' && fromReserve && manual === 0) why = { text: t('stock.move.fromReserveEmpty'), id: ids.why, focus: ids.fromReserve };
   else if (kind !== 'stocktake' && !qtyValid) why = { text: t('stock.move.qtyInvalid'), id: `${ids.qty}-hint`, focus: ids.qty };
   else if (over) why = { text: t('stock.move.overLimit', { n: limitValue }), id: `${ids.qty}-hint`, focus: ids.qty };
+  else if (kind === 'stocktake' && countedTyped && !countedValid)
+    why = { text: t('stock.move.countedInvalid'), id: ids.countedInvalid, focus: ids.counted };
   else if (kind === 'stocktake' && belowReserve) why = { text: t('stock.move.belowReserve', { n: figures?.reserved }), id: ids.why, focus: ids.counted };
   else if (kind === 'stocktake' && noteMissing) why = { text: t('stock.move.noteRequired'), id: `${ids.note}-hint`, focus: ids.note };
 
@@ -223,6 +233,10 @@ export function StockMoveDialog({
   useEffect(() => {
     if (!refocus.current || rereading || pending) return;
     refocus.current = false;
+    // A focus the operator placed meanwhile is theirs (final review I2): only a lost one — on
+    // the page, or still on the primary that went grey — is given back.
+    const active = document.activeElement;
+    if (active && active !== document.body && active.id !== submitId) return;
     const to = canSubmit ? submitId : (why?.focus ?? (kind === 'stocktake' ? ids.counted : ids.qty));
     document.getElementById(to)?.focus();
   });
@@ -256,9 +270,14 @@ export function StockMoveDialog({
     : t('stock.move.subtitle');
 
   // The limit's line under the quantity: the limit named, «reading…», or why it is too much.
+  // A read that failed is said by its note, with a retry; nothing is «being read» then (final
+  // review M3) — so no limit is named until a read answers.
+  const readFailed =
+    (positionId != null && detail.isError && !detail.isFetching) ||
+    (item == null && groupsReady && lookup.isError && !lookup.isFetching);
   let limitText: string | undefined;
   if (!qtyValid && kind !== 'stocktake') limitText = t('stock.move.qtyInvalid');
-  else if (limitValue === undefined) limitText = t('stock.move.reading');
+  else if (limitValue === undefined) limitText = readFailed ? undefined : t('stock.move.reading');
   else if (limitValue !== null) limitText = over ? t('stock.move.overLimit', { n: limitValue }) : t(`stock.move.limit.${limitKey}`, { n: limitValue });
   const showFromReserve = kind === 'issue' && ((manual ?? 0) > 0 || fromReserve);
   const positionNotes =
@@ -359,6 +378,11 @@ export function StockMoveDialog({
                   {shownFigures && (
                     <span>{t('stock.move.now', { onHand: shownFigures.on_hand, reserved: shownFigures.reserved })}</span>
                   )}
+                  {countedTyped && !countedValid && (
+                    <span id={ids.countedInvalid} className="text-status-warning">
+                      {t('stock.move.countedInvalid')}
+                    </span>
+                  )}
                   {diff != null && (
                     <span>
                       {t('stock.move.difference')}{' '}
@@ -412,7 +436,7 @@ export function StockMoveDialog({
               <WorkshopField label={t('stock.move.customer')} htmlFor={ids.customer} full>
                 <CustomerPicker id={ids.customer} value={customerId} onChange={setCustomerId} />
               </WorkshopField>
-              {customerId != null && (contacts.isPending || contacts.isError) && (
+              {customerId != null && (!contacts.isFetchedAfterMount || contacts.isError) && (
                 <div data-testid="stock-move-contacts" className="col-span-full flex items-center gap-2 text-xs text-bambu-gray">
                   {contacts.isError ? (
                     <>

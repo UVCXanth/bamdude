@@ -190,6 +190,26 @@ describe('StockItemPage', () => {
       expect(within(panel).getByRole('button', { name: 'Location and minimum' })).toBeEnabled();
     });
 
+    // Final review M6: the page holds the reservations — a move a stock dialog cannot make
+    // (an order's reservation) is greyed here with its reason, not opened to say «0».
+    it('only orders hold the stock: «Release» and «Issue» say so', async () => {
+      getItem.mockResolvedValue({
+        ...pipeDetail,
+        on_hand: 4,
+        reserved: 4,
+        available: 0,
+        reservations: [{ project_line_id: 3, project_id: 42, project_code: 'OR-0042', qty: 4 }],
+      });
+      renderPage();
+      const panel = await screen.findByTestId('item-actions');
+      const release = within(panel).getByRole('button', { name: 'Release reservation' });
+      expect(release).toBeDisabled();
+      expect(release).toHaveAccessibleDescription('Nothing is in the manual reservation — an order releases its own');
+      const issue = within(panel).getByRole('button', { name: 'Issue' });
+      expect(issue).toBeDisabled();
+      expect(issue).toHaveAccessibleDescription('Everything on hand is held by orders — issue it from the order');
+    });
+
     it('«Assemble from parts» opens the assembly of this position', async () => {
       vi.spyOn(api, 'getProduct').mockResolvedValue({ id: 1, name: 'Pipe', variant_groups: [] } as never);
       renderPage();

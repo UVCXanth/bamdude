@@ -7460,6 +7460,7 @@ export default {
       figures: 'On hand {{onHand}} · reserved {{reserved}} · available {{available}}',
       qty: 'Quantity, pcs',
       qtyInvalid: 'The quantity is a whole number from 1',
+      countedInvalid: 'The count is a whole number from 0',
       // R03: the active limit, named.
       limit: {
         reserve: 'You can reserve {{n}} (available)',
@@ -7490,7 +7491,7 @@ export default {
         receipt: "Increases the position's stock.",
         stocktake: 'Records the counted quantity; the difference goes into the journal.',
         reserve: 'Increases the reservation; no more than is available.',
-        release: 'Decreases the reservation; no more than is reserved.',
+        release: "Decreases the manual reservation; an order's reservation is released in its order.",
         issue: 'Decreases the stock; no more than is available, or within the manual reservation.',
       },
       saved: 'The stock was updated.',
@@ -7546,6 +7547,9 @@ export default {
         freeText: 'Free units can be issued or reserved.',
       },
       noKits: 'Nothing can be assembled from the free parts of this configuration now',
+      // A move the stock dialogs cannot make when only orders hold the stock (R03).
+      releaseNoManual: 'Nothing is in the manual reservation — an order releases its own',
+      issueAllHeld: 'Everything on hand is held by orders — issue it from the order',
       reservations: 'Reservations',
       noReservations: 'No reservations.',
       qty: '{{n}} pcs',

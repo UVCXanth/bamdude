@@ -3,6 +3,7 @@ import type { ReactNode, RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { DispatchNotesParams } from '../../api/client';
 import { useDispatchNotes } from '../../hooks/useDispatchNotes';
+import { StockTableSkeleton } from './StockTableSkeleton';
 import { useFocusWhenRowLeaves } from '../../hooks/useFocusWhenRowLeaves';
 import { answeredEmpty, listState } from '../../utils/listState';
 import { PaginationBar } from '../PaginationBar';
@@ -66,11 +67,8 @@ export function DispatchNotesList({
 
   return (
     <>
-      {state === 'loading' && (
-        <p role="status" className="text-sm text-bambu-gray">
-          {t('common.loading')}
-        </p>
-      )}
+      {/* The first read is shaped like the table that comes (B04; final review M4). */}
+      {state === 'loading' && <StockTableSkeleton tab="notes" />}
       {state === 'failed' && <LoadFailedNote message={t('stock.notes.error')} onRetry={() => refetch()} />}
       {state === 'refresh-failed' && <RefreshFailedNote onRetry={() => void refetch()} />}
       {emptyAnswer && empty}

@@ -256,7 +256,38 @@ describe('StockMoveDialog', () => {
     });
   });
 
+  // Final review M7: the server's manual reservation is a reservation with no order LINE —
+  // a line it could not resolve to an order still belongs to that order, never to the hand.
+  it('a reservation of an order line the server could not name is not manual', async () => {
+    getItem.mockResolvedValue({
+      ...r03,
+      reserved: 4,
+      available: 8,
+      reservations: [{ project_line_id: 7, project_id: null, project_code: null, qty: 4 }],
+    });
+    render(<StockMoveDialog kind="release" item={pipeItem} onClose={() => {}} />);
+    await waitFor(() => expect(limit()).toHaveTextContent('No more than 0'));
+    expect(submit()).toBeDisabled();
+  });
+
+  // Final review M13: the release's hint says what its limit says.
+  it('the release says it touches only the manual reservation', async () => {
+    render(<StockMoveDialog kind="release" item={pipeItem} onClose={() => {}} />);
+    expect(
+      await screen.findByText("Decreases the manual reservation; an order's reservation is released in its order."),
+    ).toBeInTheDocument();
+  });
+
   describe('a stocktake (G04)', () => {
+    // Final review M8: a count that is no count says why the primary waits.
+    it('a count that is not a whole number from 0 says so', async () => {
+      render(<StockMoveDialog kind="stocktake" item={pipeItem} onClose={() => {}} />);
+      const counted = await screen.findByLabelText('Counted on the shelf');
+      fireEvent.change(counted, { target: { value: '2.5' } });
+      await waitFor(() => expect(submit()).toHaveAccessibleDescription('The count is a whole number from 0'));
+      expect(submit()).toBeDisabled();
+    });
+
     it('the counted quantity beside what stands now, and the change', async () => {
       render(<StockMoveDialog kind="stocktake" item={pipeItem} onClose={() => {}} />);
       expect(await screen.findByText('Now: on hand 5, reserved 2')).toBeInTheDocument();
@@ -390,6 +421,28 @@ describe('StockMoveDialog', () => {
       expect(screen.getByLabelText('Recipient name')).toHaveValue('Petro');
     });
 
+    // Final review M12 (G08): a customer read a minute ago is read again at the pick.
+    it('a cached customer is read again at the pick: «reading…» until it answers, then its contact', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } });
+      client.setQueryData(['customer-recipient', 9], {
+        ...acme,
+        contacts: [{ id: 1, name: 'Old', phone: null, delivery_method_name: null, delivery_details: null }],
+      });
+      const read = deferred<typeof acme>();
+      const get = vi.spyOn(api, 'getCustomer').mockReturnValue(read.promise as never);
+      render(
+        <QueryClientProvider client={client}>
+          <StockMoveDialog kind="issue" item={pipeItem} onClose={() => {}} />
+        </QueryClientProvider>,
+      );
+      await pickCustomer();
+      await waitFor(() => expect(get).toHaveBeenCalledWith(9));
+      expect(screen.getByText('Reading the contacts…')).toBeInTheDocument();
+      await act(async () => read.resolve(acme));
+      await waitFor(() => expect(screen.getByLabelText('Recipient name')).toHaveValue('Ivan'));
+      expect(screen.queryByText('Reading the contacts…')).toBeNull();
+    });
+
     it('an issue names the dispatch note it made', async () => {
       move.mockResolvedValue({ ...pipeItem, moved: true, issue_id: 7, issue_code: 'DN-0007' });
       vi.spyOn(api, 'getCustomer').mockResolvedValue({ id: 9, name: 'ACME', contacts: [] } as never);
@@ -426,7 +479,7 @@ describe('StockMoveDialog', () => {
       ['receipt', 'Received from a partner…', "Increases the position's stock."],
       ['issue', 'Shipped…', 'Decreases the stock; no more than is available, or within the manual reservation.'],
       ['reserve', '', 'Increases the reservation; no more than is available.'],
-      ['release', '', 'Decreases the reservation; no more than is reserved.'],
+      ['release', '', "Decreases the manual reservation; an order's reservation is released in its order."],
       ['stocktake', '', 'Records the counted quantity; the difference goes into the journal.'],
     ])('%s: the basis field and the kind’s hint', async (kind, placeholder, hint) => {
       render(<StockMoveDialog kind={kind} item={pipeItem} onClose={() => {}} />);
@@ -458,6 +511,8 @@ describe('StockMoveDialog', () => {
       fireEvent.change(qty(), { target: { value: '5' } });
       fireEvent.change(screen.getByLabelText('Basis / note'), { target: { value: 'for Ivan' } });
       const reads = getItem.mock.calls.length;
+      // A real press puts the focus on the button first.
+      submit().focus();
       fireEvent.click(submit());
       const alert = await screen.findByRole('alert');
       expect(alert).toHaveTextContent('Only 3 available');
@@ -484,6 +539,38 @@ describe('StockMoveDialog', () => {
       expect(await screen.findByRole('alert')).toHaveTextContent('Only 2 available');
       await waitFor(() => expect(limit()).toHaveTextContent('No more than 2'));
       await waitFor(() => expect(qty()).toHaveFocus());
+      expect(submit()).toBeDisabled();
+    });
+
+    // Final review I2: the re-read can answer while the operator is already fixing the draft —
+    // a focus they placed is theirs; only a focus that was lost is given back.
+    it('a re-read that answers while the operator types leaves the cursor where they put it', async () => {
+      const again = deferred<StockItemDetail>();
+      getItem.mockResolvedValueOnce(r03).mockReturnValueOnce(again.promise as never).mockResolvedValue(r03);
+      move.mockRejectedValue(new ApiError('Only 3 available', 409));
+      render(<StockMoveDialog kind="reserve" item={pipeItem} onClose={() => {}} />);
+      await waitFor(() => expect(limit()).toHaveTextContent('You can reserve 6 (available)'));
+      fireEvent.change(qty(), { target: { value: '5' } });
+      submit().focus();
+      fireEvent.click(submit());
+      expect(await screen.findByRole('alert')).toHaveTextContent('Only 3 available');
+      const noteField = screen.getByLabelText('Basis / note');
+      noteField.focus();
+      await act(async () => again.resolve(r03));
+      await waitFor(() => expect(limit()).toHaveTextContent('You can reserve 6 (available)'));
+      expect(noteField).toHaveFocus();
+    });
+
+    // Final review M3: nothing is being read after a failed re-read — no «reading…».
+    it('a re-read that failed after a refusal names no limit it does not have', async () => {
+      getItem.mockResolvedValueOnce(r03).mockRejectedValue(new Error('HTTP 500'));
+      move.mockRejectedValue(new ApiError('Only 3 available', 409));
+      render(<StockMoveDialog kind="reserve" item={pipeItem} onClose={() => {}} />);
+      await waitFor(() => expect(limit()).toHaveTextContent('You can reserve 6 (available)'));
+      fireEvent.click(submit());
+      expect(await screen.findByRole('alert')).toHaveTextContent('Only 3 available');
+      expect(await screen.findByText('Could not refresh')).toBeInTheDocument();
+      expect(screen.queryAllByText('reading…')).toHaveLength(0);
       expect(submit()).toBeDisabled();
     });
 

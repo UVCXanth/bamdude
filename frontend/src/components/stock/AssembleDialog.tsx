@@ -131,6 +131,10 @@ export function AssembleDialog({
   useEffect(() => {
     if (!refocus.current || rereading || pending) return;
     refocus.current = false;
+    // A focus the operator placed meanwhile is theirs (final review I2): only a lost one — on
+    // the page, or still on the primary that went grey — is given back.
+    const active = document.activeElement;
+    if (active && active !== document.body && active.id !== submitId) return;
     document.getElementById(canSubmit ? submitId : ids.qty)?.focus();
   });
   const submit = () => {
@@ -143,14 +147,17 @@ export function AssembleDialog({
     });
   };
 
+  // A read that failed: an alert with its retry; one that failed again over an answer: a note.
+  // Nothing is «being read» then (final review M3) — the limit and the position wait unnamed.
+  const readQuery = item ? detail : groupsReady ? lookup : undefined;
+  const readFailed = readQuery != null && readQuery.isError && !readQuery.isFetching;
+
   let limitText: string;
   if (!countValid) limitText = t('stock.move.qtyInvalid');
-  else if (canAssemble == null) limitText = t('stock.move.reading');
+  else if (canAssemble == null) limitText = readFailed ? '' : t('stock.move.reading');
   else if (over) limitText = t('stock.move.overLimit', { n: canAssemble });
   else limitText = t('stock.assemble.upTo', { n: canAssemble });
 
-  // A read that failed: an alert with its retry; one that failed again over an answer: a note.
-  const readQuery = item ? detail : groupsReady ? lookup : undefined;
   const readNote =
     readQuery && readQuery.isError && !readQuery.isFetching ? (
       readQuery.data ? (
@@ -202,6 +209,16 @@ export function AssembleDialog({
         }}
       >
         <WorkshopFormGrid>
+          {item != null && (
+            // The position's product, fixed (R01) — named from the row before anything is read
+            // (final review I1), as the move dialog names it in its subtitle.
+            <div className="col-span-full flex min-w-0 flex-col gap-1" data-testid="assemble-product">
+              <p className="text-sm text-bambu-gray-light">{t('stock.move.product')}</p>
+              <p className="text-sm text-white">
+                {[item.product.name, item.code, lineConfigLabel(item.configuration, 'product', t)].filter(Boolean).join(' · ')}
+              </p>
+            </div>
+          )}
           {item == null && (
             <StockProductChoice
               productId={productId}
@@ -244,13 +261,15 @@ export function AssembleDialog({
               className={FIELD_CLASS}
             />
           </WorkshopField>
-          <p data-testid="assemble-position" className="col-span-full rounded-lg bg-bambu-dark px-3 py-2 text-sm text-bambu-gray-light">
-            {target === undefined
-              ? t('stock.move.reading')
-              : target === null
-                ? t('stock.assemble.newPosition')
-                : t('stock.assemble.position', { label: targetLabel(target.code, target.configuration), n: target.onHand })}
-          </p>
+          {!(target === undefined && readFailed) && (
+            <p data-testid="assemble-position" className="col-span-full rounded-lg bg-bambu-dark px-3 py-2 text-sm text-bambu-gray-light">
+              {target === undefined
+                ? t('stock.move.reading')
+                : target === null
+                  ? t('stock.assemble.newPosition')
+                  : t('stock.assemble.position', { label: targetLabel(target.code, target.configuration), n: target.onHand })}
+            </p>
+          )}
           {readNote && <div className="col-span-full">{readNote}</div>}
         </WorkshopFormGrid>
 

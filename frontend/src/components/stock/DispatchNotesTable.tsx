@@ -147,6 +147,7 @@ export function DispatchNotesTable({
                   <td className="p-2 text-right">
                     <Link
                       to={`/stock/dispatch-notes/${note.id}`}
+                      aria-label={`${t('stock.notes.open')} ${note.code}`}
                       className="inline-flex items-center gap-1 px-2 py-1 rounded text-sm text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary"
                     >
                       <FileText className="w-4 h-4" aria-hidden />

@@ -503,7 +503,8 @@ function JournalChange({ row }: { row: StockJournalRow }) {
   );
 }
 
-/** Order · dispatch note · customer · note — a server note is a token and is translated; an
+/** Order · dispatch note · customer (only without an order — the order already says whose,
+ *  E03) · note — a server note is a token and is translated; an
  *  operator's is verbatim. Only the parts ledger writes tokens: every finished-goods note is
  *  the operator's own, even one that happens to spell a token. */
 function JournalContext({ row }: { row: StockJournalRow }) {
@@ -520,7 +521,7 @@ function JournalContext({ row }: { row: StockJournalRow }) {
         {row.issue.code}
       </Link>
     ) : null,
-    row.customer ? <span key="customer">{row.customer.name}</span> : null,
+    row.customer && !row.project ? <span key="customer">{row.customer.name}</span> : null,
     note ? (
       <span key="note" className="text-bambu-gray">
         {note}

@@ -39,6 +39,13 @@ export function WaybillEditor({
   const queryClient = useQueryClient();
   const errorId = useId();
   const [draft, setDraft] = useState<string | null>(null);
+  // A saved waybill is what the row says at once — until the list or the document answers
+  // with anything else for it (final review M11).
+  const [saved, setSaved] = useState<{ value: string | null; over: string | null } | null>(null);
+  const shown = saved && saved.over === waybill ? saved.value : waybill;
+  useEffect(() => {
+    if (saved && waybill !== saved.over) setSaved(null);
+  }, [waybill, saved]);
   const [error, setError] = useState<string | null>(null);
   // Where the focus goes once the editor is gone, and whether a save closed it.
   const [after, setAfter] = useState<'pencil' | 'saved' | null>(null);
@@ -49,8 +56,9 @@ export function WaybillEditor({
 
   const save = useMutation({
     mutationFn: (value: string | null) => api.updateStockIssue(noteId, { waybill: value }),
-    onSuccess: () => {
+    onSuccess: (_row, value) => {
       sent.current = false;
+      setSaved({ value, over: waybill });
       void queryClient.invalidateQueries({ queryKey: ['dispatch-notes'] });
       void queryClient.invalidateQueries({ queryKey: ['dispatch-note', noteId] });
       setDraft(null);
@@ -90,7 +98,7 @@ export function WaybillEditor({
   const submit = () => {
     if (sent.current || pending || draft === null) return;
     const next = draft.trim();
-    if (next === (waybill ?? '').trim()) {
+    if (next === (shown ?? '').trim()) {
       close();
       return;
     }
@@ -103,7 +111,7 @@ export function WaybillEditor({
     return (
       <span className="flex items-center gap-1 text-xs text-bambu-gray">
         <span className="tabular-nums">
-          {waybill ? t('stock.dispatchNote.waybill', { waybill }) : t('stock.notes.noWaybill')}
+          {shown ? t('stock.dispatchNote.waybill', { waybill: shown }) : t('stock.notes.noWaybill')}
         </span>
         {canEdit && (
           <button
@@ -111,7 +119,7 @@ export function WaybillEditor({
             type="button"
             onClick={() => {
               setError(null);
-              setDraft(waybill ?? '');
+              setDraft(shown ?? '');
             }}
             aria-label={t('stock.notes.editWaybill')}
             title={t('stock.notes.editWaybill')}

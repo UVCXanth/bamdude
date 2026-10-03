@@ -79,6 +79,13 @@ describe('DispatchNotesSection', () => {
     expect(await screen.findByText('No issues yet')).toBeInTheDocument();
   });
 
+  // Final review M4 (B04): the first read is shaped like the table that comes.
+  it('the first read is the table’s skeleton', async () => {
+    vi.spyOn(api, 'getDispatchNotes').mockReturnValue(new Promise(() => {}) as never);
+    render(<DispatchNotesSection projectId={5} canEdit={false} inTab />);
+    expect(await screen.findByTestId('stock-skeleton')).toHaveAttribute('data-tab', 'notes');
+  });
+
   it('in the order’s tab: no heading of its own, and the wait and the empty list in words', async () => {
     let answer: (value: never) => void = () => {};
     vi.spyOn(api, 'getDispatchNotes').mockReturnValue(new Promise((resolve) => (answer = resolve)) as never);

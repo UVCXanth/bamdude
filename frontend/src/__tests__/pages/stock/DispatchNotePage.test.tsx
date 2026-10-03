@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Route, Routes } from 'react-router';
 import { render } from '../../utils';
 import { ApiError, api } from '../../../api/client';
@@ -158,6 +159,27 @@ describe('DispatchNotePage', () => {
       expect(sub).toHaveTextContent(`${formatDateTime('2026-09-28T09:30:00')} · OR-0005 · Hall lights · ACME`);
       expect(within(sub).getByRole('link', { name: 'OR-0005' })).toHaveAttribute('href', '/projects/5');
       expect(within(sub).getByRole('link', { name: 'ACME' })).toHaveAttribute('href', '/customers/2');
+    });
+
+    // Final review M5 (K): a re-read that failed keeps the note and says so, above the sheet.
+    it('a re-read that failed keeps the note and says so above it', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      vi.spyOn(api, 'getDispatchNote').mockResolvedValueOnce(note).mockRejectedValue(new Error('HTTP 500'));
+      window.history.pushState({}, '', '/stock/dispatch-notes/42');
+      render(
+        <QueryClientProvider client={client}>
+          <Routes>
+            <Route path="/stock/dispatch-notes/:id" element={<DispatchNotePage />} />
+          </Routes>
+        </QueryClientProvider>,
+      );
+      await screen.findByTestId('dispatch-note-sheet');
+      await act(async () => {
+        await client.invalidateQueries({ queryKey: ['dispatch-note'] });
+      });
+      const controls = screen.getByTestId('dispatch-note-controls');
+      expect(await within(controls).findByText('Could not refresh')).toBeInTheDocument();
+      expect(screen.getByTestId('dispatch-note-sheet')).toBeInTheDocument();
     });
 
     it('a deleted order and customer are named, not linked', async () => {
