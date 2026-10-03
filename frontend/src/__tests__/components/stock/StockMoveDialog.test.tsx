@@ -64,6 +64,25 @@ describe('StockMoveDialog', () => {
     await waitFor(() => expect(lookup).toHaveBeenLastCalledWith(1, [101]));
   });
 
+  it('a receipt for a group without a standard starts at «No choice» and the first option is a real choice', async () => {
+    const noStandard = { ...pipeProduct, variant_groups: pipeProduct.variant_groups.map((g) => ({ ...g, default_option_id: null })) };
+    vi.spyOn(api, 'getProduct').mockResolvedValue(noStandard as never);
+    const lookup = vi.spyOn(api, 'lookupStockItem').mockResolvedValue({
+      item: null,
+      configuration: { choices: [], changed_parts: [] },
+      can_assemble: 0,
+      parts: [],
+    });
+    render(<StockMoveDialog kind="receipt" productId={1} onClose={() => {}} />);
+    const select = (await screen.findByRole('combobox', { name: 'Tail' })) as HTMLSelectElement;
+    expect(select.value).toBe('');
+    await waitFor(() => expect(lookup).toHaveBeenLastCalledWith(1, []));
+    fireEvent.change(select, { target: { value: '100' } });
+    await waitFor(() => expect(lookup).toHaveBeenLastCalledWith(1, [100]));
+    fireEvent.change(select, { target: { value: '' } });
+    await waitFor(() => expect(lookup).toHaveBeenLastCalledWith(1, []));
+  });
+
   it('a stocktake sends the counted quantity, not a change', async () => {
     render(<StockMoveDialog kind="stocktake" item={pipeItem} onClose={() => {}} />);
     fireEvent.change(screen.getByLabelText('Counted on the shelf'), { target: { value: '7' } });

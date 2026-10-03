@@ -122,6 +122,13 @@ export function CompositionTab({
   const [focusPart, setFocusPart] = useState<number | null>(null);
   const [deleting, setDeleting] = useState<ProductPart | null>(null);
   const [adding, setAdding] = useState(false);
+  // «Done», the X and Escape ask the mutation cache itself: `saving` above is a render
+  // late, and «Add» then «Done» at once closed the dialog under a request still running —
+  // its refusal and the draft went with it (WS-13 E9 Codex review V02).
+  const closeAdding = () => {
+    if (queryClient.isMutating({ mutationKey: compositionKey }) > 0) return;
+    setAdding(false);
+  };
   const [addError, setAddError] = useState<string | null>(null);
   const [variantsOpen, setVariantsOpen] = useState(false);
   const editId = useId();
@@ -447,11 +454,11 @@ export function CompositionTab({
         <WorkshopDialog
           size="md"
           title={t('products.detail.composition.addPart')}
-          onClose={() => setAdding(false)}
+          onClose={closeAdding}
           pending={saving > 0}
           error={addError ?? undefined}
           footer={
-            <Button variant="secondary" onClick={() => setAdding(false)} disabled={saving > 0}>
+            <Button variant="secondary" onClick={closeAdding} disabled={saving > 0}>
               {t('products.detail.composition.done')}
             </Button>
           }

@@ -24,6 +24,31 @@ describe('AssembleDialog', () => {
     await waitFor(() => expect(assemble).toHaveBeenCalledWith({ item_id: 5, qty: 1 }));
   });
 
+  // WS-13 E9 Codex review V01: a group with no standard option showed its first option
+  // while the lookup and the assembly sent no choice at all.
+  it('a group without a standard reads «No choice» and sends what it shows', async () => {
+    const noStandard = { ...pipeProduct, variant_groups: pipeProduct.variant_groups.map((g) => ({ ...g, default_option_id: null })) };
+    vi.spyOn(api, 'getProduct').mockResolvedValue(noStandard as never);
+    const lookup = vi
+      .spyOn(api, 'lookupStockItem')
+      .mockResolvedValue({ item: null, configuration: { choices: [], changed_parts: [] }, can_assemble: 1, parts: [] });
+    const send = vi.spyOn(api, 'assembleStock').mockResolvedValue(pipeItem);
+    render(<AssembleDialog productId={1} onClose={() => {}} />);
+    const select = (await screen.findByRole('combobox', { name: 'Tail' })) as HTMLSelectElement;
+    expect(select.value).toBe('');
+    expect(select.selectedOptions[0]).toHaveTextContent('No choice');
+    // The first option is a real choice: picking it sends its id.
+    fireEvent.change(select, { target: { value: '100' } });
+    await waitFor(() => expect(lookup).toHaveBeenLastCalledWith(1, [100]));
+    // Back to «No choice»: the choice goes, never a 0.
+    fireEvent.change(select, { target: { value: '' } });
+    await waitFor(() => expect(lookup).toHaveBeenLastCalledWith(1, []));
+    await waitFor(() => expect(screen.getByTestId('assemble-submit')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('assemble-submit'));
+    await waitFor(() => expect(send).toHaveBeenCalled());
+    expect(send.mock.calls[0][0]).toMatchObject({ product_id: 1, options: [] });
+  });
+
   it('opened for one product: names it and reads no catalog', async () => {
     vi.spyOn(api, 'getProducts').mockResolvedValue([pipeProduct] as never);
     vi.spyOn(api, 'getProduct').mockResolvedValue(pipeProduct as never);

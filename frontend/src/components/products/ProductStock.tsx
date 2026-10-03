@@ -50,7 +50,9 @@ export function ProductStock({ productId, canEdit, hasVariants = false }: Produc
   const inKit = balances.filter((b) => b.qty_per_unit > 0);
   const outOfKit = balances.filter((b) => b.qty_per_unit === 0);
   const byOption = hasVariants ? (data?.kits_by_option ?? []) : [];
-  const noKit = !hasVariants && data != null && data.kits_available === 0;
+  // A zero shuts «Assemble…» only while the shelf stands behind it: after a failed re-read the
+  // cached zero may be stale, and the dialog's own lookup decides (F02, R03; WS-13 E9 Codex V03).
+  const noKit = !hasVariants && !isError && data != null && data.kits_available === 0;
 
   let body;
   if (!data) {

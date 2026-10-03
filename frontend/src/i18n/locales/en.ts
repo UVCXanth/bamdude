@@ -7273,6 +7273,7 @@ export default {
     },
     move: {
       product: 'Product',
+      noChoice: 'No choice',
       position: 'Position {{code}}: on hand {{onHand}}, available {{available}}.',
       willCreate: 'A new position will be created.',
       noPosition: 'This configuration has no position yet.',

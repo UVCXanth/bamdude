@@ -376,6 +376,39 @@ describe('CompositionTab', () => {
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     });
 
+    // WS-13 E9 Codex review V02: «Add» then «Done» at once — each its own act, nothing
+    // batched — closed the dialog before the request answered; the refusal and the draft
+    // were lost with it.
+    it('«Add» then «Done» at once: the dialog waits, and a refusal keeps the draft and its sentence', async () => {
+      let refuse!: (e: Error) => void;
+      const create = vi.spyOn(api, 'createProductPart').mockReturnValue(new Promise((_resolve, reject) => (refuse = reject)) as never);
+      render(<Host />);
+      fireEvent.click(screen.getByRole('button', { name: 'Add part' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Add part' });
+      fireEvent.change(within(dialog).getByLabelText('Part'), { target: { value: 'Hinge' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
+      fireEvent.keyDown(window, { key: 'Escape' });
+      await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+      await act(async () => refuse(new ApiError('Name already exists', 409)));
+      expect(screen.getByRole('dialog', { name: 'Add part' })).toBeInTheDocument();
+      expect(screen.getByText('Name already exists')).toBeInTheDocument();
+      expect(screen.getByLabelText('Part')).toHaveValue('Hinge');
+    });
+
+    it('a second «Add» before the first answers sends nothing more', async () => {
+      const create = vi.spyOn(api, 'createProductPart').mockReturnValue(new Promise(() => {}) as never);
+      render(<Host />);
+      fireEvent.click(screen.getByRole('button', { name: 'Add part' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Add part' });
+      fireEvent.change(within(dialog).getByLabelText('Part'), { target: { value: 'Hinge' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
+      await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(create).toHaveBeenCalledTimes(1);
+    });
+
     it('the add dialog does not close while a part is on its way', async () => {
       let land: () => void = () => {};
       vi.spyOn(api, 'createProductPart').mockReturnValue(new Promise((resolve) => (land = () => resolve(parts[0] as never))));

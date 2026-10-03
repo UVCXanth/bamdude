@@ -1079,11 +1079,44 @@ async (page, selftest = null) => {
     await p3.getByRole('button', { name: 'Зібрати готові вироби з деталей…' }).click();
     const dialog = await p3.getByRole('dialog').count();
     await c3.close();
+    // Codex review V01: a group without a standard reads «Без вибору», and what the dialog
+    // shows is what it sends — the lookup and the assembly carry no option.
+    const lookups = [];
+    const assembles = [];
+    const noStandard = (b) => ({ ...b, variant_groups: (b.variant_groups ?? []).map((g) => ({ ...g, default_option_id: null })) });
+    const { ctx: c4, p: p4, errors: errors4 } = await open(1440, {
+      rewrite: [[DETAIL(P1), noStandard]],
+      gets: [[/\/stock\/items\/lookup/, (url) => {
+        lookups.push(new URL(url).search);
+        return { json: { item: null, configuration: { choices: [], changed_parts: [] }, can_assemble: 1, parts: [] } };
+      }]],
+      writes: [recorder(assembles, /\/stock\/assemble$/, () => ({ id: 99901, code: 'SK-99901', product_id: Number(P1), on_hand: 1, reserved: 0, available: 1 }))],
+    });
+    await goto(p4, P1, '?tab=stock');
+    await p4.waitForTimeout(800);
+    await p4.getByRole('button', { name: 'Зібрати готові вироби з деталей…' }).click();
+    const assembleDialog = p4.getByRole('dialog');
+    await assembleDialog.getByRole('combobox').first().waitFor({ timeout: 5000 });
+    const shown = await assembleDialog.getByRole('combobox').evaluateAll((ss) => ss.map((s) => ({ value: s.value, text: (s.selectedOptions[0]?.textContent ?? '').trim() })));
+    const fileNoChoice = await shoot(p4, 'stock-assemble-no-standard@1440');
+    await p4.waitForFunction(() => !document.querySelector('[data-testid="assemble-submit"]')?.disabled, null, { timeout: 5000 }).catch(() => {});
+    await p4.getByTestId('assemble-submit').click();
+    await p4.waitForTimeout(800);
+    await c4.close();
+    const noChoice = { shown, lookups, sent: assembles.map((a) => a.body) };
     return {
-      recipe: { url: '/products/{product:8|1}?tab=stock', fixture: ['product 8 without variants, 0 kits (rewritten)', 'its shelf 500', 'product 1: standard 0, an option 1 (rewritten)'] },
-      measured: { zero, failed, variants, dialog, errors },
-      pass: zero.disabled && zero.title === 'Немає жодного повного комплекту' && failed && variants && dialog === 1 && errors.length === 0,
-      screenshots: [],
+      recipe: {
+        url: '/products/{product:8|1}?tab=stock',
+        fixture: ['product 8 without variants, 0 kits (rewritten)', 'its shelf 500', 'product 1: standard 0, an option 1 (rewritten)',
+          'product 1 with no standard option in its groups (rewritten)', 'GET /stock/items/lookup: can assemble 1 (answered here)', 'POST /stock/assemble: answered here'],
+      },
+      measured: { zero, failed, variants, dialog, noChoice, errors: [...errors, ...errors4] },
+      pass: zero.disabled && zero.title === 'Немає жодного повного комплекту' && failed && variants && dialog === 1 &&
+        shown.length > 0 && shown.every((x) => x.value === '' && x.text === 'Без вибору') &&
+        lookups.length > 0 && lookups.every((q) => !/options=/.test(q)) &&
+        assembles.length === 1 && assembles[0].body?.product_id === Number(P1) && JSON.stringify(assembles[0].body?.options ?? null) === '[]' &&
+        errors.length === 0 && errors4.length === 0,
+      screenshots: [fileNoChoice],
     };
   });
 

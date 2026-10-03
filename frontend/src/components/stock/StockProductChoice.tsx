@@ -62,9 +62,18 @@ export function StockProductChoice({
             className="flex-1"
             aria-label={group.name}
             value={String(choices[group.id] ?? group.default_option_id ?? '')}
-            onChange={(e) => onChoices({ ...choices, [group.id]: Number(e.target.value) })}
+            onChange={(e) => {
+              const next = { ...choices };
+              if (e.target.value === '') delete next[group.id];
+              else next[group.id] = Number(e.target.value);
+              onChoices(next);
+            }}
             disabled={disabled}
           >
+            {/* A group without a standard: «No choice» is what the server is told by
+                saying nothing, so it is what the field shows until an option is picked
+                (WS-13 E9 Codex review V01 — the first option showed while none was sent). */}
+            {group.default_option_id == null && <option value="">{t('stock.move.noChoice')}</option>}
             {group.options.map((o) => (
               <option key={o.id} value={o.id}>
                 {o.name}

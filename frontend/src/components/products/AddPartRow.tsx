@@ -50,6 +50,9 @@ export function AddPartRow({ productId, canEdit, onError }: AddPartRowProps) {
   // is disabled while the request runs, and a browser does not focus a disabled field.
   const focusName = useRef(false);
   const [landed, setLanded] = useState(0);
+  // One part per «Add»: `isPending` disables the button a render late, and a second click
+  // before it sent a second request (WS-13 E9 Codex review V02).
+  const sending = useRef(false);
 
   const add = useMutation({
     mutationKey: compositionMutationKey(productId),
@@ -80,6 +83,9 @@ export function AddPartRow({ productId, canEdit, onError }: AddPartRowProps) {
     // A name (or alias) another part already owns answers 409 — the server's
     // own sentence, with the form left holding what was typed.
     onError: (e: Error) => (onError ? onError(e.message) : showToast(e.message, 'error')),
+    onSettled: () => {
+      sending.current = false;
+    },
   });
 
   useEffect(() => {
@@ -185,7 +191,15 @@ export function AddPartRow({ productId, canEdit, onError }: AddPartRowProps) {
           </>
         )}
 
-        <Button size="sm" onClick={() => add.mutate()} disabled={name.trim() === '' || add.isPending}>
+        <Button
+          size="sm"
+          onClick={() => {
+            if (sending.current) return;
+            sending.current = true;
+            add.mutate();
+          }}
+          disabled={name.trim() === '' || add.isPending}
+        >
           <Plus className="w-4 h-4" />
           {t('products.composition.add')}
         </Button>

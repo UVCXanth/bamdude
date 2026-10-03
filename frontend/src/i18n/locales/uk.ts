@@ -7425,6 +7425,7 @@ export default {
     },
     move: {
       product: 'Виріб',
+      noChoice: 'Без вибору',
       position: 'Позиція {{code}}: залишок {{onHand}}, доступно {{available}}.',
       willCreate: 'Буде створено нову позицію.',
       noPosition: 'Для цієї конфігурації ще немає позиції.',

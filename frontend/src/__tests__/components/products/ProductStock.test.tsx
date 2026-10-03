@@ -238,6 +238,36 @@ describe('ProductStock', () => {
     expect(client!.getQueryCache().find({ queryKey: ['product-stock', 5] })?.meta?.refreshToast).toBe(true);
   });
 
+  // WS-13 E9 Codex review V03 (F02, R03): a zero the last read did not confirm is not a
+  // reason to shut «Assemble…» — the dialog's own lookup decides what can be assembled.
+  it('a zero the shelf could not re-read does not keep «Assemble…» shut', async () => {
+    const get = vi.spyOn(api, 'getProductStock').mockResolvedValue({ ...stock, kits_available: 0 });
+    let client: QueryClient | null = null;
+    render(
+      <>
+        <CaptureClient onReady={(qc) => (client = qc)} />
+        <ProductStock productId={5} canEdit />
+      </>,
+    );
+    await screen.findByTestId('stock-kits');
+    const assemble = () => screen.getByRole('button', { name: /Assemble/ });
+    // A fresh zero, no variants: nothing to assemble.
+    expect(assemble()).toBeDisabled();
+    get.mockRejectedValue(new ApiError('Bad gateway', 502));
+    await act(async () => {
+      await client!.invalidateQueries({ queryKey: ['product-stock', 5] });
+    });
+    expect(client!.getQueryState(['product-stock', 5])?.status).toBe('error');
+    // TanStack tells its observers a tick later than the cache: wait for the page to hear it.
+    await waitFor(() => expect(assemble()).toBeEnabled());
+    // The shelf answers again with a zero: shut again.
+    get.mockResolvedValue({ ...stock, kits_available: 0 });
+    await act(async () => {
+      await client!.invalidateQueries({ queryKey: ['product-stock', 5] });
+    });
+    await waitFor(() => expect(assemble()).toBeDisabled());
+  });
+
   it('says the product counts no printed parts rather than showing an empty table', async () => {
     // ⚠️ `balances` is empty only when the product COUNTS nothing — every
     // counted part comes back, with a 0 where nothing has moved. So this

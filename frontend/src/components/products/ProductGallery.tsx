@@ -105,10 +105,14 @@ export function ProductGallery({
   //
   // ⚠️ **No cache-busting query parameter.** `GET /products/{id}/cover-image`
   // answers `Cache-Control: private, no-cache`, which makes the browser
-  // revalidate that stable url on every render — so a version counter here
-  // would only add a second, weaker answer to the same question, and one that
-  // every other renderer of the cover (`ProductCard`, `OrderCard`) does not
-  // have. One rule, and it lives on the response.
+  // revalidate that stable url whenever it LOADS it — a page load, or an `<img>`
+  // mounted afresh (a catalog or order card opened later). A re-render does not
+  // reload an `<img>` whose `src` did not change: one already on screen — this
+  // gallery's cover tile, the product page's side panel — keeps the old picture
+  // until it remounts or the page reloads (WS-13 E9 Codex review; whether a new
+  // cover should show at once is the owner's F6 call). A version counter here
+  // would be a second answer the other renderers (`ProductCard`, `OrderCard`)
+  // do not share. One rule, and it lives on the response.
   const done = () => {
     // ⚠️ One call: the product keys are order views since Ruling 29, and they
     // are wanted here for their own sake as well — the first picture is the
