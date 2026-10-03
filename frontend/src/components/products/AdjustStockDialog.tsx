@@ -1,133 +1,234 @@
-import { useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { Loader2 } from 'lucide-react';
 import { api } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
-import { Button } from '../Button';
-import { Modal } from '../Modal';
-import { Select } from '../Select';
+import { useProductStock } from '../../hooks/useProductStock';
 import { invalidateStock } from '../../utils/queryInvalidation';
+import { Button } from '../Button';
+import { Select } from '../Select';
+import { LoadFailedNote } from '../workshop/LoadFailedNote';
+import { WorkshopDialog } from '../workshop/WorkshopDialog';
+import { WorkshopField, WorkshopFormGrid } from '../workshop/WorkshopFormGrid';
 
 const FIELD_CLASS =
-  'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none';
+  'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
+const NOTE_MAX = 500;
 
 interface AdjustStockDialogProps {
   productId: number;
-  parts: { part_id: number; name: string }[];
+  productName: string;
+  /** The part to start on; the operator's own pick otherwise. */
+  initialPartId?: number;
   onClose: () => void;
-  /** The Stock tab invalidates its own two keys here; the product page needs
-   *  nothing beyond the defaults below. */
-  onSaved?: () => void;
 }
 
 /**
- * The hand correction: the operator counted the shelf and it disagreed with us.
+ * The hand correction of free parts (WS-13 E10 I01–I03, F25): the operator counted the
+ * shelf and it disagreed with us.
  *
- * Only COUNTED parts are offered, because they are the only ones that hold a
- * balance — the server answers 422 for any other, and offering a part whose
- * only possible outcome is an error is worse than not offering it.
+ * ⚠️ **The dialog reads the shelf itself** (`useProductStock`, the one declaration of
+ * `['product-stock', id]`, R07) — both doors hand it only the product. «Now N → will be
+ * N + Δ» is a projection of the typed number over a SUCCESSFUL, CURRENT read (K17), not a
+ * sum of rows: while the shelf is read it is «…», after a failed read it is not shown at
+ * all (the server is the guard), and below zero it says so and «Save» waits.
  *
- * ⚠️ It rides the shared shell like every other dialog here, which is what
- * carries the `role`, the `aria-modal`, the name, the focus and Escape
- * (finding M1). An overlay without them is an anonymous `<div>` a screen reader
- * never announces, and a keyboard user who opens it starts at the top of the
- * page behind.
+ * A refusal (409 below zero, 422 a part that holds no stock) stays in the dialog, and the
+ * shelf is read again — the part, the change and the reason stay as typed, nothing is
+ * sent again by itself. A part the new read no longer holds is said so; it is never
+ * swapped for another. Only counted parts are offered: the shelf's own list.
  */
-export function AdjustStockDialog({ productId, parts, onClose, onSaved }: AdjustStockDialogProps) {
+export function AdjustStockDialog({ productId, productName, initialPartId, onClose }: AdjustStockDialogProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
+  const ids = { part: useId(), delta: useId(), note: useId(), form: useId() };
 
-  const [partId, setPartId] = useState<number>(parts[0]?.part_id ?? 0);
+  const stock = useProductStock(productId);
+  const balances = stock.data?.balances ?? [];
+
+  // The choice is fixed at the first read (or handed over) and never moves by itself.
+  const [part, setPart] = useState<{ id: number; name: string } | null>(null);
+  let chosen = part;
+  if (chosen == null) {
+    const first = initialPartId != null ? balances.find((b) => b.part_id === initialPartId) : balances[0];
+    if (first) {
+      chosen = { id: first.part_id, name: first.name };
+      setPart(chosen);
+    } else if (initialPartId != null) {
+      chosen = { id: initialPartId, name: `#${initialPartId}` };
+    }
+  }
+  const balance = chosen ? balances.find((b) => b.part_id === chosen.id) : undefined;
+  const partGone = stock.data != null && chosen != null && balance == null;
+
   const [delta, setDelta] = useState('1');
   const [note, setNote] = useState('');
+  // After a refusal the shelf is read again; until it answers nothing is projected.
+  const [rereading, setRereading] = useState(false);
 
+  const parsed = Number(delta);
+  const deltaValid = delta.trim() !== '' && Number.isInteger(parsed) && parsed !== 0;
+  const noteValid = note.trim() !== '';
+  const fresh = stock.data != null && !stock.isError && !rereading;
+  const next = balance && deltaValid ? balance.balance + parsed : null;
+  const below = fresh && next != null && next < 0;
+
+  // The cursor starts in the first field (J).
+  useEffect(() => {
+    document.getElementById(ids.part)?.focus();
+    // Once, at the opening.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ⚠️ Synchronous: one press, one correction; nothing closes the dialog under it.
+  const sent = useRef(false);
   const adjust = useMutation({
-    mutationFn: () => api.adjustProductStock(productId, { part_id: partId, delta: Number(delta), note: note.trim() }),
+    mutationFn: (body: { part_id: number; delta: number; note: string }) => api.adjustProductStock(productId, body),
     onSuccess: () => {
-      // The stock helper (WS-13 E9 F04), never `['products']` alone: the shelf and its
-      // journal, the product's own `kits_available` (`['product']`) and the catalog's
-      // figures (`['products']`, the drafts badge) are all its keys — the catalog's
-      // facets and categories do not move with the shelf, and a second helper would
-      // refetch the catalog list twice. No order view moves: a hand correction changes
-      // what is free, never what a line has already reserved.
+      // Once, here: the shelf and its journal, the product's kits and the catalog's figures
+      // are all the stock helper's keys — the doors add nothing of their own.
       invalidateStock(queryClient);
-      onSaved?.();
       showToast(t('stock.adjust.saved'));
       onClose();
     },
-    // 409 (would go below zero) and 422 (not a counted part) both arrive as the
-    // server's own sentence in `detail`, which is what `ApiError.message` is.
-    onError: (e: Error) => showToast(e.message, 'error'),
+    onError: () => {
+      sent.current = false;
+      setRereading(true);
+      void stock.refetch().finally(() => setRereading(false));
+    },
   });
+  const pending = adjust.isPending;
+  const submitId = `${ids.form}-submit`;
+  useEffect(() => {
+    if (adjust.isError) document.getElementById(submitId)?.focus();
+  }, [adjust.isError, adjust.error, submitId]);
 
-  const parsed = Number(delta);
-  const valid = Number.isInteger(parsed) && parsed !== 0 && note.trim().length > 0 && partId > 0;
+  const close = () => {
+    if (sent.current) return;
+    onClose();
+  };
+
+  const canSave = !pending && chosen != null && !partGone && deltaValid && noteValid && !below;
+  const submit = () => {
+    if (sent.current || !canSave || chosen == null) return;
+    sent.current = true;
+    adjust.mutate({ part_id: chosen.id, delta: parsed, note: note.trim() });
+  };
+
+  let projection;
+  if (stock.isError && !rereading) {
+    projection = <LoadFailedNote message={t('stock.adjust.loadFailed')} onRetry={() => stock.refetch()} />;
+  } else {
+    const text = !fresh
+      ? '…'
+      : next != null && balance
+        ? below
+          ? `${t('stock.adjust.projection', { now: balance.balance, next })} — ${t('stock.adjust.belowZero')}`
+          : t('stock.adjust.projection', { now: balance.balance, next })
+        : '';
+    projection = (
+      <p
+        data-testid="stock-adjust-projection"
+        className={`text-sm tabular-nums ${below ? 'text-amber-700 dark:text-amber-400' : 'text-bambu-gray-light'}`}
+      >
+        {text}
+      </p>
+    );
+  }
 
   return (
-    <Modal onClose={onClose} title={t('stock.adjust.title')} size="md">
-      <div className="p-4 space-y-3">
-        <div>
-          <label htmlFor="stock-adjust-part" className="block text-sm text-bambu-gray mb-1">
-            {t('stock.adjust.part')}
-          </label>
-          <Select
-            className="w-full"
-            id="stock-adjust-part"
-            value={partId}
-            onChange={(e) => setPartId(Number(e.target.value))}
+    <WorkshopDialog
+      size="md"
+      onClose={close}
+      title={t('stock.adjust.title')}
+      subtitle={productName}
+      pending={pending}
+      error={adjust.isError ? (adjust.error as Error).message : undefined}
+      footer={
+        <>
+          <Button type="button" variant="secondary" onClick={close} disabled={pending}>
+            {t('common.cancel')}
+          </Button>
+          <Button id={submitId} type="submit" form={ids.form} disabled={!canSave} data-testid="stock-adjust-submit">
+            {pending && <Loader2 className="w-4 h-4 animate-spin" />}
+            {pending ? t('stock.adjust.saving') : t('stock.adjust.submit')}
+          </Button>
+        </>
+      }
+    >
+      <form
+        id={ids.form}
+        noValidate
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit();
+        }}
+      >
+        <WorkshopFormGrid>
+          <WorkshopField
+            label={t('stock.adjust.part')}
+            htmlFor={ids.part}
+            hint={partGone ? t('stock.adjust.partGone') : undefined}
           >
-            {parts.map((p) => (
-              <option key={p.part_id} value={p.part_id}>
-                {p.name}
-              </option>
-            ))}
-          </Select>
-        </div>
-
-        <div>
-          <label htmlFor="stock-adjust-delta" className="block text-sm text-bambu-gray mb-1">
-            {t('stock.adjust.delta')}
-          </label>
-          <input
-            id="stock-adjust-delta"
-            type="number"
-            value={delta}
-            onChange={(e) => setDelta(e.target.value)}
-            className={FIELD_CLASS}
-          />
-        </div>
-
-        <div>
-          <label htmlFor="stock-adjust-note" className="block text-sm text-bambu-gray mb-1">
-            {t('stock.adjust.note')}
-          </label>
-          <input
-            id="stock-adjust-note"
-            type="text"
-            maxLength={500}
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder={t('stock.adjust.notePlaceholder')}
-            className={FIELD_CLASS}
-          />
-        </div>
-      </div>
-
-      <div className="p-4 border-t border-bambu-dark-tertiary flex gap-3">
-        <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
-          {t('common.cancel')}
-        </Button>
-        <Button
-          type="button"
-          onClick={() => adjust.mutate()}
-          disabled={!valid || adjust.isPending}
-          className="flex-1"
-          data-testid="stock-adjust-submit"
-        >
-          {t('stock.adjust.submit')}
-        </Button>
-      </div>
-    </Modal>
+            <Select
+              id={ids.part}
+              className="w-full"
+              value={chosen?.id ?? ''}
+              onChange={(e) => {
+                const picked = balances.find((b) => b.part_id === Number(e.target.value));
+                if (picked) setPart({ id: picked.part_id, name: picked.name });
+              }}
+              aria-describedby={partGone ? `${ids.part}-hint` : undefined}
+              aria-invalid={partGone || undefined}
+              disabled={pending}
+            >
+              {chosen != null && balance == null && <option value={chosen.id}>{chosen.name}</option>}
+              {balances.map((b) => (
+                <option key={b.part_id} value={b.part_id}>
+                  {t('stock.adjust.partOption', { name: b.name, count: b.balance })}
+                </option>
+              ))}
+            </Select>
+          </WorkshopField>
+          <WorkshopField
+            label={t('stock.adjust.delta')}
+            htmlFor={ids.delta}
+            hint={!deltaValid ? t('stock.adjust.deltaHint') : undefined}
+          >
+            <input
+              id={ids.delta}
+              type="number"
+              step={1}
+              value={delta}
+              onChange={(e) => setDelta(e.target.value)}
+              aria-describedby={!deltaValid ? `${ids.delta}-hint` : undefined}
+              className={`${FIELD_CLASS} tabular-nums`}
+              disabled={pending}
+            />
+          </WorkshopField>
+          <WorkshopField
+            label={t('stock.adjust.note')}
+            htmlFor={ids.note}
+            hint={!noteValid ? t('stock.adjust.noteHint') : undefined}
+            full
+          >
+            <input
+              id={ids.note}
+              type="text"
+              maxLength={NOTE_MAX}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder={t('stock.adjust.notePlaceholder')}
+              aria-describedby={!noteValid ? `${ids.note}-hint` : undefined}
+              className={FIELD_CLASS}
+              disabled={pending}
+            />
+          </WorkshopField>
+        </WorkshopFormGrid>
+        {projection}
+      </form>
+    </WorkshopDialog>
   );
 }

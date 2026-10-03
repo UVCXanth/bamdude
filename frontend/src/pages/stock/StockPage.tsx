@@ -1,5 +1,4 @@
 import { useEffect, useId, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 import { ArrowDownToLine, Loader2, Warehouse, Wrench } from 'lucide-react';
@@ -25,7 +24,6 @@ import { parsePageSize, usePersistedState } from '../../hooks/usePersistedState'
 import { useSearchBox } from '../../hooks/useSearchBox';
 import { useStockItems } from '../../hooks/useFinishedStock';
 import { useStockPage } from '../../hooks/useStock';
-import { invalidateStock } from '../../utils/queryInvalidation';
 import { WorkshopTabPanel, WorkshopTabs } from '../../components/workshop/WorkshopTabs';
 
 const TABS = ['finished', 'parts', 'journal', 'notes'] as const;
@@ -313,7 +311,6 @@ function FinishedTab({ onDialog }: { onDialog: (dialog: StockDialogState) => voi
 function PartsTab() {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
-  const queryClient = useQueryClient();
   const canEdit = hasPermission('projects:update');
 
   const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
@@ -417,12 +414,7 @@ function PartsTab() {
       )}
 
       {adjusting && (
-        <AdjustStockDialog
-          productId={adjusting.id}
-          parts={adjusting.parts.map((b) => ({ part_id: b.part_id, name: b.name }))}
-          onClose={() => setAdjusting(null)}
-          onSaved={() => invalidateStock(queryClient)}
-        />
+        <AdjustStockDialog productId={adjusting.id} productName={adjusting.name} onClose={() => setAdjusting(null)} />
       )}
     </>
   );

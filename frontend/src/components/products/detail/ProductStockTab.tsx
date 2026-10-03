@@ -105,7 +105,7 @@ function FinishedPositions({ productId, canEdit }: { productId: number; canEdit:
  * — the finished positions and the free parts, each with states of its own — and the
  * product's movements under them.
  */
-export function ProductStockTab({ product }: { product: Pick<Product, 'id' | 'variant_groups'> }) {
+export function ProductStockTab({ product }: { product: Pick<Product, 'id' | 'name' | 'variant_groups'> }) {
   const { hasPermission } = useAuth();
   const canEdit = hasPermission('projects:update');
   return (
@@ -115,7 +115,12 @@ export function ProductStockTab({ product }: { product: Pick<Product, 'id' | 'va
         className="grid items-start gap-3 grid-cols-[repeat(auto-fit,minmax(min(420px,100%),1fr))] max-[1101px]:grid-cols-1"
       >
         <FinishedPositions productId={product.id} canEdit={canEdit} />
-        <ProductStock productId={product.id} canEdit={canEdit} hasVariants={(product.variant_groups ?? []).length > 0} />
+        <ProductStock
+          productId={product.id}
+          productName={product.name}
+          canEdit={canEdit}
+          hasVariants={(product.variant_groups ?? []).length > 0}
+        />
       </div>
       <ProductJournal productId={product.id} />
     </div>

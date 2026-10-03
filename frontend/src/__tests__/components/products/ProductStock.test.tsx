@@ -121,7 +121,7 @@ describe('ProductStock', () => {
   it('shows the server kits and every counted balance — the movements are the tab’s journal', async () => {
     vi.spyOn(api, 'getProductStock').mockResolvedValue(stock);
 
-    render(<ProductStock productId={5} canEdit />);
+    render(<ProductStock productId={5} productName="Flask kit" canEdit />);
 
     // The headline is `kits_available` as sent — NOT `min(balance/qty)` redone
     // here, which would drift the moment a part stopped counting.
@@ -142,7 +142,7 @@ describe('ProductStock', () => {
       <>
         <ProductProbe onFetch={product} />
         <ProductsProbe onFetch={products} />
-        <ProductStock productId={5} canEdit />
+        <ProductStock productId={5} productName="Flask kit" canEdit />
       </>,
     );
     await waitFor(() => expect(get).toHaveBeenCalledTimes(1));
@@ -150,7 +150,9 @@ describe('ProductStock', () => {
     await waitFor(() => expect(products).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByRole('button', { name: /adjust/i }));
-    fireEvent.change(screen.getByLabelText(/part/i), { target: { value: '2' } });
+    // The dialog reads the shelf itself, a current read (WS-13 E10 R07) — one more fetch.
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    fireEvent.change(screen.getByLabelText('Part'), { target: { value: '2' } });
     fireEvent.change(screen.getByLabelText(/change/i), { target: { value: '-2' } });
     fireEvent.change(screen.getByLabelText(/why/i), { target: { value: 'counted the shelf' } });
     fireEvent.click(screen.getByTestId('stock-adjust-submit'));
@@ -161,7 +163,7 @@ describe('ProductStock', () => {
     // All three caches were dropped, which the watching observers turn into
     // real refetches — the shelf, the product's own `kits_available` and the
     // catalog card that shows it.
-    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(3));
     await waitFor(() => expect(product).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(products).toHaveBeenCalledTimes(2));
   });
@@ -172,9 +174,11 @@ describe('ProductStock', () => {
       new ApiError('Lid holds 5; stock never goes below 0', 409),
     );
 
-    render(<ProductStock productId={5} canEdit />);
+    render(<ProductStock productId={5} productName="Flask kit" canEdit />);
     fireEvent.click(await screen.findByRole('button', { name: /adjust/i }));
-    fireEvent.change(screen.getByLabelText(/change/i), { target: { value: '-99' } });
+    // Within the shelf as this dialog read it — the server's ledger is the one that refuses
+    // (somebody took parts meanwhile); below the read the dialog does not send at all.
+    fireEvent.change(screen.getByLabelText(/change/i), { target: { value: '-3' } });
     fireEvent.change(screen.getByLabelText(/why/i), { target: { value: 'miscount' } });
     fireEvent.click(screen.getByTestId('stock-adjust-submit'));
 
@@ -186,7 +190,7 @@ describe('ProductStock', () => {
   it('offers a reader no way to correct the shelf', async () => {
     vi.spyOn(api, 'getProductStock').mockResolvedValue(stock);
 
-    render(<ProductStock productId={5} canEdit={false} />);
+    render(<ProductStock productId={5} productName="Flask kit" canEdit={false} />);
 
     expect(await screen.findByTestId('stock-kits')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /adjust/i })).not.toBeInTheDocument();
@@ -198,7 +202,7 @@ describe('ProductStock', () => {
     // is there, so it must be able to say that it does not know.
     vi.spyOn(api, 'getProductStock').mockRejectedValue(new ApiError('Product not found', 404));
 
-    render(<ProductStock productId={5} canEdit />);
+    render(<ProductStock productId={5} productName="Flask kit" canEdit />);
 
     expect(await screen.findByTestId('stock-error')).toHaveTextContent(/could not load the stock/i);
     expect(screen.queryByTestId('stock-no-counted-parts')).not.toBeInTheDocument();
@@ -219,7 +223,7 @@ describe('ProductStock', () => {
     render(
       <>
         <CaptureClient onReady={(qc) => (client = qc)} />
-        <ProductStock productId={5} canEdit />
+        <ProductStock productId={5} productName="Flask kit" canEdit />
       </>,
     );
     expect(await screen.findByTestId('stock-kits')).toHaveTextContent('3');
@@ -246,7 +250,7 @@ describe('ProductStock', () => {
     render(
       <>
         <CaptureClient onReady={(qc) => (client = qc)} />
-        <ProductStock productId={5} canEdit />
+        <ProductStock productId={5} productName="Flask kit" canEdit />
       </>,
     );
     await screen.findByTestId('stock-kits');
@@ -274,7 +278,7 @@ describe('ProductStock', () => {
     // sentence is about the product's composition, never about an empty shelf.
     vi.spyOn(api, 'getProductStock').mockResolvedValue({ kits_by_option: [], balances: [], kits_available: 0, movements: [] });
 
-    render(<ProductStock productId={5} canEdit />);
+    render(<ProductStock productId={5} productName="Flask kit" canEdit />);
 
     expect(await screen.findByTestId('stock-no-counted-parts')).toBeInTheDocument();
     expect(screen.queryByTestId('stock-kits')).not.toBeInTheDocument();
@@ -294,7 +298,7 @@ describe('ProductStock', () => {
       movements: [],
     });
 
-    render(<ProductStock productId={5} canEdit />);
+    render(<ProductStock productId={5} productName="Flask kit" canEdit />);
 
     expect(await screen.findByTestId('stock-kits')).toHaveTextContent('0');
     expect(screen.getByTestId('stock-balance-1')).toHaveTextContent('0');
@@ -308,13 +312,14 @@ describe('ProductStock', () => {
     // never announces, opening at the top of the page behind.
     vi.spyOn(api, 'getProductStock').mockResolvedValue(stock);
 
-    render(<ProductStock productId={5} canEdit />);
+    render(<ProductStock productId={5} productName="Flask kit" canEdit />);
     fireEvent.click(await screen.findByRole('button', { name: /adjust/i }));
 
     const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveAttribute('aria-modal', 'true');
-    expect(dialog).toHaveAccessibleName('Adjust the stock');
-    await waitFor(() => expect(document.activeElement).toBe(dialog));
+    expect(dialog).toHaveAccessibleName('Adjust free parts');
+    // The cursor starts in the first field (WS-13 E10 J).
+    await waitFor(() => expect(screen.getByLabelText('Part')).toHaveFocus());
 
     fireEvent.keyDown(document, { key: 'Escape' });
 
@@ -328,7 +333,7 @@ describe('ProductStock', () => {
     const adjust = vi.spyOn(api, 'adjustProductStock').mockResolvedValue(stock.movements[2]);
     vi.spyOn(api, 'getProductStock').mockResolvedValue(stock);
 
-    render(<ProductStock productId={5} canEdit />);
+    render(<ProductStock productId={5} productName="Flask kit" canEdit />);
     fireEvent.click(await screen.findByRole('button', { name: /adjust/i }));
     const submit = screen.getByTestId('stock-adjust-submit');
 
@@ -414,7 +419,7 @@ describe('ProductStock · parts held for orders and parts out of the kit', () =>
       kits_available: 4,
       movements: [],
     });
-    render(<ProductStock productId={5} canEdit={false} />);
+    render(<ProductStock productId={5} productName="Flask kit" canEdit={false} />);
     expect(await screen.findByTestId('stock-held-1')).toHaveTextContent('3');
     const group = screen.getByTestId('stock-out-of-kit');
     expect(within(group).getByText('Out of kit')).toBeInTheDocument();

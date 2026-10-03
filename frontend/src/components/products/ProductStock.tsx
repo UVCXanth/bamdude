@@ -10,6 +10,8 @@ import { AdjustStockDialog } from './AdjustStockDialog';
 
 interface ProductStockProps {
   productId: number;
+  /** Named by the adjust dialog's subtitle. */
+  productName: string;
   /** `projects:update` — the page asks the question once and hands the answer down. */
   canEdit: boolean;
   /** The product has variant groups: the kits are counted per option (WS-13 E9 F02). */
@@ -40,7 +42,7 @@ const KV = 'grid grid-cols-[1fr_auto] gap-x-3.5 gap-y-1.5 text-sm text-bambu-gra
  * under a zero kit count; the sentence is only for a product with no printed part to
  * count at all. The movements are the tab's journal (F03), not a list here.
  */
-export function ProductStock({ productId, canEdit, hasVariants = false }: ProductStockProps) {
+export function ProductStock({ productId, productName, canEdit, hasVariants = false }: ProductStockProps) {
   const { t } = useTranslation();
   const [adjusting, setAdjusting] = useState(false);
   const [assembling, setAssembling] = useState(false);
@@ -190,11 +192,7 @@ export function ProductStock({ productId, canEdit, hasVariants = false }: Produc
       )}
 
       {adjusting && (
-        <AdjustStockDialog
-          productId={productId}
-          parts={balances.map((b) => ({ part_id: b.part_id, name: b.name }))}
-          onClose={() => setAdjusting(false)}
-        />
+        <AdjustStockDialog productId={productId} productName={productName} onClose={() => setAdjusting(false)} />
       )}
       {assembling && <AssembleDialog productId={productId} onClose={() => setAssembling(false)} />}
     </section>
