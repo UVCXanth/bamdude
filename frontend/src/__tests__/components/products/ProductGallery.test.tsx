@@ -217,6 +217,18 @@ describe('ProductGallery', () => {
     expect(pictureSrc).not.toContain('v=');
   });
 
+  it('given the page’s cover version, the cover tile carries it — a new version is a new address', () => {
+    const { rerender } = render(<ProductGallery product={product} canEdit coverVersion="2026-10-03T10:00:00Z|" />);
+    const src = () => screen.getByTestId('product-gallery-cover').getAttribute('src') ?? '';
+    const first = src();
+    expect(first).toBe(api.getProductCoverImageUrl(7, '2026-10-03T10:00:00Z|'));
+    expect(first).toContain('?v=');
+    rerender(<ProductGallery product={product} canEdit coverVersion="2026-10-03T10:00:05Z|b.png" />);
+    expect(src()).not.toBe(first);
+    // A picture's own address names its file and never changes.
+    expect(screen.getByTestId('gallery-picture-a.png').querySelector('img')?.getAttribute('src')).not.toContain('v=');
+  });
+
   it('breaks a tie on the filename, exactly as the server does', () => {
     // Two pictures at `sort_order: 0` is the ordinary case, not a corner one:
     // every upload into an empty category starts at 0, and a partial reorder

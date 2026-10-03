@@ -21,6 +21,10 @@ export function ProductVisual({ product, canEdit }: { product: Product; canEdit:
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const caption = [product.code, product.version].filter(Boolean).join(' · ');
+  // A new cover is a new address on this page (the owner's F6): any change of the cover
+  // writes the product row, and `updated_at` moves; the explicit cover's name covers two
+  // changes inside one second, which SQLite's timestamp does not tell apart.
+  const coverVersion = `${product.updated_at}|${product.cover_image_filename ?? ''}`;
   return (
     <div data-testid="product-visual">
       {product.has_cover ? (
@@ -30,7 +34,7 @@ export function ProductVisual({ product, canEdit }: { product: Product; canEdit:
           onClick={() => setOpen(true)}
           className="block w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-bambu-green"
         >
-          <ProductThumb product={product} variant="visual" caption={caption} />
+          <ProductThumb product={product} variant="visual" caption={caption} coverVersion={coverVersion} />
         </button>
       ) : (
         <ProductThumb product={product} variant="visual" caption={caption} />
@@ -42,7 +46,7 @@ export function ProductVisual({ product, canEdit }: { product: Product; canEdit:
       </div>
       {open && (
         <WorkshopDialog size="lg" title={t('products.gallery.title')} onClose={() => setOpen(false)}>
-          <ProductGallery product={product} canEdit={canEdit} bare />
+          <ProductGallery product={product} canEdit={canEdit} bare coverVersion={coverVersion} />
         </WorkshopDialog>
       )}
     </div>

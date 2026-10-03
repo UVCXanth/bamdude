@@ -12890,8 +12890,11 @@ export const api = {
       'PUT',
     );
   },
-  getProductCoverImageUrl: (productId: number) =>
-    withMediaToken(`${API_BASE}/products/${productId}/cover-image`),
+  /** `version` — the product page's cache-buster (the owner's F6, WS-13 E9): a cover set
+   *  there shows at once. It goes INTO the address, before the token `withMediaToken`
+   *  stamps; every other renderer passes none and keeps the bare, revalidated address. */
+  getProductCoverImageUrl: (productId: number, version?: string) =>
+    withMediaToken(`${API_BASE}/products/${productId}/cover-image${version ? `?v=${encodeURIComponent(version)}` : ''}`),
   /** Clears the explicit choice; the first-picture default resumes. */
   deleteProductCover: (productId: number) =>
     request<{ status: string }>(`/products/${productId}/cover-image`, { method: 'DELETE' }),

@@ -79,13 +79,17 @@ export function ProductThumb({
   product,
   variant,
   caption,
+  coverVersion,
 }: {
   product: Pick<ProductListItem, 'id' | 'has_cover'>;
   variant: Variant;
   /** Under the placeholder's icon — the visual field's «{code} · {version}» only. */
   caption?: string;
+  /** The product page's cover version (`getProductCoverImageUrl`): a new cover is a new
+   *  address there, so it shows at once. The catalog passes none. */
+  coverVersion?: string;
 }) {
   if (!product.has_cover) return <Placeholder variant={variant} caption={caption} />;
-  const src = api.getProductCoverImageUrl(product.id);
+  const src = api.getProductCoverImageUrl(product.id, coverVersion);
   return <Cover key={src} src={src} variant={variant} caption={caption} />;
 }

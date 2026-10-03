@@ -736,9 +736,20 @@ async (page, selftest = null) => {
 
   await scenario('visual@1440', ['E9-B06', 'R07', 'K8'], async () => {
     const picture = { category: 'pictures', filename: 'e09-pic.png', original_name: 'e09-pic.png', size: 2048, sort_order: 0, source: 'manual', source_file_id: null, uploaded_at: null };
+    const second = { ...picture, filename: 'e09-pic-2.png', original_name: 'e09-pic-2.png', sort_order: 99 };
+    // The owner's F6 (2026-10-03): a cover set on the product page shows at once. After the
+    // PUT (answered here) the product reads back with the cover named and a later
+    // `updated_at`, as the server writes it.
+    const covers = [];
     const { ctx, p, errors } = await open(1440, {
-      rewrite: [[DETAIL(P1), (b) => ({ ...b, has_cover: true, attachments: [...(b.attachments ?? []), picture] })]],
+      rewrite: [[DETAIL(P1), (b) => ({
+        ...b,
+        has_cover: true,
+        attachments: [...(b.attachments ?? []), picture, second],
+        ...(covers.length ? { cover_image_filename: second.filename, updated_at: '2099-01-01T00:00:00' } : {}),
+      })]],
       gets: [[/\/(cover-image|attachment-image\/)/, () => ({ file: job.cover_png })]],
+      writes: [recorder(covers, /\/products\/\d+\/cover-image$/, () => ({ status: 'success', filename: second.filename }))],
     });
     await goto(p, P1);
     const cover = await p.getByTestId('product-visual').locator('img').evaluate((img) => ({ natural: img.naturalWidth, hidden: img.hidden }));
@@ -757,11 +768,29 @@ async (page, selftest = null) => {
     await p.keyboard.press('Escape');
     await p.waitForTimeout(400);
     const afterSecond = { dialog: await dialog.count(), focus: await p.evaluate(() => document.activeElement?.textContent?.trim() ?? '') };
+    // F6: «Зробити обкладинкою» — the visual field's address moves at once, and the dialog's
+    // cover tile moves with it.
+    const sideSrc = () => p.getByTestId('product-visual').locator('img').getAttribute('src');
+    const before = await sideSrc();
+    await opener.click();
+    await dialog.waitFor({ timeout: 5000 });
+    await dialog.getByRole('button', { name: 'Зробити обкладинкою: e09-pic-2.png' }).click();
+    await p.waitForFunction((old) => document.querySelector('[data-testid="product-visual"] img')?.getAttribute('src') !== old, before, { timeout: 5000 }).catch(() => {});
+    const after = await sideSrc();
+    const tile = await dialog.getByTestId('product-gallery-cover').getAttribute('src');
+    const strip = (src) => (src ?? '').replace(/[?&]token=[^&]*/, '');
+    const coverMoved = { put: covers.length, before: strip(before), after: strip(after), tile: strip(tile) };
     await ctx.close();
     return {
-      recipe: { url: '/products/{product:1}', fixture: ['GET /products/{1}: has_cover, one picture (rewritten)', 'GET cover-image / attachment-image: the fixture PNG'], actions: ['«Зображення…»', 'the picture', 'Escape', 'Escape'] },
-      measured: { cover, bodyGallery, afterFirst, afterSecond, errors },
-      pass: cover.natural > 0 && !cover.hidden && bodyGallery === 0 && afterFirst.viewer === 0 && afterFirst.dialog === 1 && afterSecond.dialog === 0 && afterSecond.focus === 'Зображення…' && errors.length === 0,
+      recipe: {
+        url: '/products/{product:1}',
+        fixture: ['GET /products/{1}: has_cover, two pictures; after the PUT the second named as the cover and a later updated_at (rewritten)', 'GET cover-image / attachment-image: the fixture PNG', 'PUT …/cover-image: answered here'],
+        actions: ['«Зображення…»', 'the picture', 'Escape', 'Escape', '«Зображення…»', '«Зробити обкладинкою: e09-pic-2.png»'],
+      },
+      measured: { cover, bodyGallery, afterFirst, afterSecond, coverMoved, errors },
+      pass: cover.natural > 0 && !cover.hidden && bodyGallery === 0 && afterFirst.viewer === 0 && afterFirst.dialog === 1 && afterSecond.dialog === 0 && afterSecond.focus === 'Зображення…' &&
+        coverMoved.put === 1 && /\/cover-image\?v=/.test(coverMoved.before) && coverMoved.after !== coverMoved.before && /\/cover-image\?v=/.test(coverMoved.after) &&
+        coverMoved.tile === coverMoved.after && errors.length === 0,
       screenshots: [file],
     };
   });

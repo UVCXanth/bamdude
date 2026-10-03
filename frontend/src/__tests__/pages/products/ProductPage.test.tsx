@@ -479,6 +479,40 @@ describe('ProductPage', () => {
       expect(within(dialog).getAllByRole('heading').filter((h) => h.textContent === 'Pictures')).toHaveLength(1);
     });
 
+    // The owner's F6 (2026-10-03): on the product page a new cover shows at once — the
+    // visual field and the dialog's gallery address the cover with the product's version;
+    // every other renderer keeps the bare address.
+    it('a cover chosen in «Pictures…» shows in the visual field at once', async () => {
+      const picture = (filename: string, sort_order: number) => ({
+        category: 'pictures' as const,
+        filename,
+        original_name: filename,
+        size: 1,
+        sort_order,
+        source: 'manual' as const,
+        source_file_id: null,
+        uploaded_at: null,
+      });
+      const pictures = [picture('a.png', 0), picture('b.png', 1)];
+      withProduct({ has_cover: true, cover_image_filename: null, attachments: pictures, updated_at: '2026-10-03T10:00:00Z' });
+      vi.spyOn(api, 'setProductCover').mockImplementation(async () => {
+        withProduct({ has_cover: true, cover_image_filename: 'b.png', attachments: pictures, updated_at: '2026-10-03T10:00:05Z' });
+        return { status: 'success', filename: 'b.png' } as never;
+      });
+      mountAt();
+      const coverSrc = () => within(screen.getByTestId('product-visual')).getByTestId('product-cover').getAttribute('src') ?? '';
+      await waitFor(() => expect(within(screen.getByTestId('product-visual')).getByTestId('product-cover')).toBeInTheDocument());
+      const before = coverSrc();
+      expect(before).toMatch(/\/products\/1\/cover-image\?v=/);
+      fireEvent.click(screen.getByRole('button', { name: 'Pictures…' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Pictures' });
+      expect(within(dialog).getByTestId('product-gallery-cover').getAttribute('src')).toBe(before);
+      fireEvent.click(within(dialog).getByRole('button', { name: /set as cover: b\.png/i }));
+      await waitFor(() => expect(coverSrc()).not.toBe(before));
+      expect(coverSrc()).toMatch(/\/products\/1\/cover-image\?v=/);
+      expect(within(dialog).getByTestId('product-gallery-cover').getAttribute('src')).toBe(coverSrc());
+    });
+
     it('a click on the cover opens the same dialog', async () => {
       withProduct({ has_cover: true });
       mountAt();

@@ -26,6 +26,9 @@ interface ProductGalleryProps {
   /** Inside a dialog that already names it (the product page's «Pictures», WS-13 E9 B06):
    *  no heading of its own, the dialog's title is the name. */
   bare?: boolean;
+  /** The product page's cover version — see the cache note below. The card dialog
+   *  passes none. */
+  coverVersion?: string;
 }
 
 const TILE_CLASS = 'w-40 h-40 rounded-xl object-contain bg-bambu-dark border border-bambu-dark-tertiary';
@@ -57,6 +60,7 @@ export function ProductGallery({
   testIdSuffix = '',
   headingKey = 'products.gallery.title',
   bare = false,
+  coverVersion,
 }: ProductGalleryProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -103,16 +107,16 @@ export function ProductGallery({
   // Every mutation touches the product row, the catalog cards and the order
   // cards — all three render this cover.
   //
-  // ⚠️ **No cache-busting query parameter.** `GET /products/{id}/cover-image`
-  // answers `Cache-Control: private, no-cache`, which makes the browser
-  // revalidate that stable url whenever it LOADS it — a page load, or an `<img>`
-  // mounted afresh (a catalog or order card opened later). A re-render does not
-  // reload an `<img>` whose `src` did not change: one already on screen — this
-  // gallery's cover tile, the product page's side panel — keeps the old picture
-  // until it remounts or the page reloads (WS-13 E9 Codex review; whether a new
-  // cover should show at once is the owner's F6 call). A version counter here
-  // would be a second answer the other renderers (`ProductCard`, `OrderCard`)
-  // do not share. One rule, and it lives on the response.
+  // ⚠️ **Cache-busting only where the owner asked for it.** `GET /products/{id}/cover-image`
+  // answers `Cache-Control: private, no-cache`, which makes the browser revalidate
+  // that stable url whenever it LOADS it — a page load, or an `<img>` mounted afresh
+  // (a catalog or order card opened later). A re-render does not reload an `<img>`
+  // whose `src` did not change, so a cover set here stayed old on screen until a
+  // reload (WS-13 E9 Codex review). The owner's F6 (2026-10-03): on the PRODUCT PAGE
+  // it shows at once — the page passes `coverVersion` (the product's `updated_at`
+  // and its explicit cover) to this gallery and to its visual field. Every other
+  // renderer — this gallery in the card dialog, `ProductCard`, `OrderCard` — keeps
+  // the bare address and the response's rule.
   const done = () => {
     // ⚠️ One call: the product keys are order views since Ruling 29, and they
     // are wanted here for their own sake as well — the first picture is the
@@ -238,7 +242,7 @@ export function ProductGallery({
         {product.has_cover ? (
           <img
             data-testid={testId('product-gallery-cover')}
-            src={api.getProductCoverImageUrl(product.id)}
+            src={api.getProductCoverImageUrl(product.id, coverVersion)}
             alt={t('products.gallery.cover')}
             className={TILE_CLASS}
           />
