@@ -120,14 +120,16 @@ function ContactRow({
           </button>
         )}
       </div>
-      <div className="grid gap-2 items-end grid-cols-[repeat(3,minmax(0,1fr))_auto] max-[761px]:grid-cols-[minmax(0,1fr)_auto]">
+      {/* Top-aligned: a row's labels stay on one line however tall the method's cell grows
+          under its select; the × and «+ Note» sit at their row's foot, beside the fields. */}
+      <div className="grid gap-2 items-start grid-cols-[repeat(3,minmax(0,1fr))_auto] max-[761px]:grid-cols-[minmax(0,1fr)_auto]">
         <button
           type="button"
           onClick={onRemove}
           disabled={disabled || confirming}
           aria-label={t('customers.contacts.remove')}
           title={t('customers.contacts.remove')}
-          className="col-start-4 row-start-1 max-[761px]:col-start-2 p-2 rounded-lg text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary disabled:opacity-50"
+          className="col-start-4 row-start-1 self-end max-[761px]:col-start-2 p-2 rounded-lg text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary disabled:opacity-50"
         >
           <X className="w-4 h-4" />
         </button>
@@ -189,7 +191,7 @@ function ContactRow({
         </div>
         {text('deliveryDetails', 'customers.delivery.details', 'text', 'col-span-2')}
         {!noteOpen && (
-          <div className={FIELD_CELL}>
+          <div className={`${FIELD_CELL} self-end`}>
             <button
               type="button"
               onClick={() => {

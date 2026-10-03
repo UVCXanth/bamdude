@@ -162,7 +162,8 @@ export function CustomersTable({ customers, actions, sort, onSortChange, footer 
                         '—'
                       )}
                     </td>
-                    <td data-testid={`customer-${customer.id}-orders`} className="text-bambu-gray">
+                    {/* Its lines are short and never broken: a long name takes the width. */}
+                    <td data-testid={`customer-${customer.id}-orders`} className="text-bambu-gray whitespace-nowrap">
                       <div>
                         <span className="text-white tabular-nums">{customer.figures.projects}</span>{' '}
                         {t('customers.table.total')}
