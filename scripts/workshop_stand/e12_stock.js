@@ -1510,6 +1510,8 @@ async (page, selftest = null) => {
     await route(/^http:\/\/e12-pdf\.local\//, (r) => r.fulfill({ status: 200, path: job.pdf, contentType: 'application/pdf' }));
     const shots = [];
     for (let i = 1; i <= Math.min(pages, 4); i += 1) {
+      // A fresh load for every page: a change of the fragment alone leaves the viewer where it was.
+      await p.goto('about:blank').catch(() => {});
       await p.goto(`http://e12-pdf.local/note-40-lines.pdf#page=${i}`, { waitUntil: 'load' }).catch(() => {});
       await p.waitForTimeout(2500);
       shots.push(await shoot(p, `note-pdf-page-${i}`));
