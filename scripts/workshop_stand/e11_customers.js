@@ -786,6 +786,8 @@ async (page, selftest = null) => {
     const confirmText = await textOf(confirm);
     const file = await shoot(p, 'reference-delete');
     await confirm.getByRole('button', { name: 'Видалити' }).click();
+    // The confirmation stays until the list is read again; the reference under it is inert.
+    await confirm.waitFor({ state: 'detached' });
     await ref.getByLabel('Новий спосіб доставки').fill('Meest');
     await ref.getByRole('button', { name: 'Додати' }).click();
     await p.waitForTimeout(600);
@@ -817,9 +819,11 @@ async (page, selftest = null) => {
     const d = dialogOf(p, 'Нове замовлення');
     await d.waitFor();
     await d.getByLabel('Замовник', { exact: true }).selectOption({ label: 'Новий замовник…' });
-    await d.getByPlaceholder("Ім'я замовника").fill(NAME1);
+    const field = d.getByPlaceholder("Ім'я замовника");
+    await field.fill(NAME1);
     const readsBefore = requests.filter((r) => /GET \/api\/v1\/customers\/?$/.test(r)).length;
-    await d.getByRole('button', { name: 'Створити', exact: true }).click();
+    // The picker's own «Create» — the order form has a «Create» of its own.
+    await field.locator('xpath=..').getByRole('button', { name: 'Створити', exact: true }).click();
     await d.getByRole('button', { name: 'Обрати його' }).waitFor();
     const file = await shoot(p, 'picker-namesake');
     await d.getByRole('button', { name: 'Обрати його' }).click();
