@@ -913,6 +913,8 @@ async (page, selftest = null) => {
     await within(p.waitForFunction(() => document.querySelector('input[aria-label="Новий спосіб доставки"]')?.value === ''), 6000, 'add_never_done');
     await ref.getByRole('button', { name: 'Готово' }).click();
     await ref.waitFor({ state: 'detached' });
+    // The add re-reads the list; while it is read the failure is not said — wait for its answer.
+    await row.getByText('Не вдалося прочитати способи доставки').waitFor({ timeout: 8000 });
     const select = row.getByLabel('Спосіб доставки');
     const offered = await select.locator('option').evaluateAll((os) => os.map((o) => o.textContent.trim()));
     const chosen = await select.evaluate((s) => s.selectedOptions[0]?.textContent.trim());
@@ -945,6 +947,8 @@ async (page, selftest = null) => {
     await field.fill('Нова майстерня');
     await field.locator('xpath=..').getByRole('button', { name: 'Створити', exact: true }).click();
     await within(p.waitForFunction(() => [...document.querySelectorAll('select')].some((s) => s.value === '991')), 6000, 'never_chosen');
+    // The create re-reads the list; while it is read the failure is not said — wait for its answer.
+    await d.getByText('Не вдалося прочитати замовників').waitFor({ timeout: 8000 });
     const picker = d.getByLabel('Замовник', { exact: true });
     const chosen = await picker.evaluate((s) => s.selectedOptions[0]?.textContent.trim());
     const failure = await d.getByText('Не вдалося прочитати замовників').count();
