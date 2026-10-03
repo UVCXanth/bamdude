@@ -1672,3 +1672,128 @@ def test_every_e09_pair_is_a_plain_recipe_on_both_sides():
         assert capture_serve.side_rewrites("mockup", recipe["mockup"], str) == []
         assert capture_serve.side_rewrites("app", recipe["app"], str) == []
     assert ids == ["e09-product-menu"]
+
+
+# ---- WS-13 E10 editors runner (e10_editors.js): E4's harness around E10's scenarios ----
+
+import e10_evidence  # noqa: E402
+
+_E10_RUNNER = Path(__file__).resolve().parents[3] / "scripts" / "workshop_stand" / "e10_editors.js"
+
+
+@pytest.mark.parametrize(
+    ("case", "code", "at"),
+    [
+        ("e10_prep_read_throws", "read_network", "/products/1"),
+    ],
+)
+def test_e10_a_failed_preparation_read_ends_the_run_incomplete_and_names_no_secret(case, code, at):
+    run = _e04_run(case, _E10_RUNNER)
+
+    records = _e04_records(run)
+    assert [r["id"] for r in records] == ["runner"]
+    assert records[0]["error"] == {"code": code, "stage": "prepare", "name": "RunnerFailure", "at": at}
+    assert _e04_done(run)["incomplete"] is True
+
+
+def test_e10_a_real_scenario_that_throws_fails_safely_and_closes_its_context():
+    run = _e04_run("e10_real_scenario_throws", _E10_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["id"] == "form@1440" and rec["pass"] is False
+    assert rec["error"] == {"code": "error", "stage": "form@1440", "name": "Error"}
+    assert _e04_done(run)["incomplete"] is False
+    _e04_closed_in_order(run)
+
+
+@pytest.mark.parametrize("case", ["route_fails_live", "scenario_reports_the_token", "open_outside_a_scenario"])
+def test_e10_keeps_the_e04_guards(case):
+    run = _e04_run(case, _E10_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is False
+    if case != "scenario_reports_the_token":  # that one opens no context
+        _e04_closed_in_order(run)
+
+
+def test_e10_a_record_carrying_the_media_token_is_replaced_by_a_failure():
+    run = _e04_run("scenario_reports_the_media_token", _E10_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["error"] == {"code": "secret_in_record", "stage": "echo"}
+    assert "mq7-media-marker-fake" not in json.dumps(run["posts"])
+
+
+def test_e10_a_get_is_answered_by_its_turn():
+    run = _e04_run("gets_by_turn", _E10_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is True
+    answered = [e for e in run["log"] if e.startswith("fulfill.")]
+    assert answered == ['fulfill.500.{"detail":"e10 runner"}', 'fulfill.200.{"n":1,"seen":2}']
+    _e04_closed_in_order(run)
+
+
+def test_e10_the_runner_declares_exactly_the_scenarios_the_manifest_expects():
+    run = _e04_run("declared", _E10_RUNNER)
+
+    assert _e04_records(run) == []
+    assert _e04_done(run)["declared"] == list(e10_evidence.DETAIL_SCENARIOS)
+
+
+def test_e10_a_full_run_is_judged_against_the_e10_scenarios():
+    ids = list(e10_evidence.DETAIL_SCENARIOS)
+    done = {"count": len(ids), "incomplete": False, "declared": ids}
+    records = [{"id": i} for i in ids]
+
+    verdict = e04_evidence.run_completeness(
+        finished=True, done=done, records=records, only="", expected=e10_evidence.DETAIL_SCENARIOS
+    )
+    assert verdict["complete"] is True
+    assert (
+        e04_evidence.run_completeness(
+            finished=True, done=done, records=records, only="", expected=e09_evidence.DETAIL_SCENARIOS
+        )["complete"]
+        is False
+    )
+
+
+def test_the_e10_pairs_add_the_ten_dialogs_at_1440_and_390_on_a_copy_of_the_plan():
+    base = json.loads((Path(e10_evidence.HERE) / "capture_plan.json").read_text(encoding="utf-8"))
+    before = json.dumps(base, sort_keys=True)
+
+    plan, only, stage = e10_evidence.pairs_plan(base, run="")
+    assert stage == "e10-product-editors-pairs"
+    assert plan["widths"] == {"wide": [1440], "narrow": [390]}
+    assert only == [r["id"] for r in e10_evidence.e10_recipes()]
+    assert set(only) <= {s["id"] for s in plan["surfaces"]}
+    assert all(str(w) in plan["heights"] for w in (1440, 390))
+    # The E0 plan itself is untouched.
+    assert json.dumps(base, sort_keys=True) == before
+
+
+def test_every_e10_pair_is_a_dialog_and_a_plain_recipe_on_both_sides():
+    ids = []
+    for recipe in e10_evidence.e10_recipes():
+        ids.append(recipe["id"])
+        assert recipe["measure"] == "dialog"
+        assert capture_serve.side_rewrites("mockup", recipe["mockup"], str) == []
+        assert capture_serve.side_rewrites("app", recipe["app"], str) == []
+    assert ids == [
+        "e10-product-new",
+        "e10-product-edit",
+        "e10-part-new",
+        "e10-part-edit-printed",
+        "e10-part-edit-purchased",
+        "e10-variants",
+        "e10-from-file",
+        "e10-import",
+        "e10-reread",
+        "e10-adjust",
+    ]
+
+
+def test_an_e10_job_names_the_products():
+    mapping = {"product:1": {"id": 11}, "product:8": {"id": 18}, "product:900": {"id": 19}}
+
+    assert e10_evidence.job_entities(mapping) == {"products": {"1": 11, "8": 18}}
