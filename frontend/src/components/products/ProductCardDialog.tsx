@@ -1,21 +1,23 @@
-import { useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Loader2 } from 'lucide-react';
+import { useNavigate } from 'react-router';
+import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import type { Product, ProductCreate, ProductListItem, ProductStatus, ProductUpdate } from '../../api/client';
 import { Button } from '../Button';
 import { Select } from '../Select';
-import { Modal } from '../Modal';
-import { useAuth } from '../../contexts/AuthContext';
+import { WorkshopDialog } from '../workshop/WorkshopDialog';
+import { WorkshopField, WorkshopFormGrid } from '../workshop/WorkshopFormGrid';
 import { useToast } from '../../contexts/ToastContext';
-import { ProductGallery } from './ProductGallery';
 import { useProductDetail } from '../../hooks/useProductDetail';
 import { invalidateOrderViews, invalidateProductCatalog } from '../../utils/queryInvalidation';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
-const LABEL_CLASS = 'block text-sm font-medium text-white mb-1';
+
+/** The columns' own lengths (WS-13 E10 B02, A03) — the server answers 422 past them. */
+const MAX = { name: 255, sku: 64, version: 64, designer: 255, license: 255, sourceUrl: 2048, designId: 64 } as const;
 
 interface ProductCardDialogProps {
   product?: Product | ProductListItem | null;
@@ -27,104 +29,136 @@ function isFullProduct(product: Product | ProductListItem | null | undefined): p
   return !!product && 'description' in product;
 }
 
-/** The card's own frame, on the shared shell — one place for the two states
- *  below (the fetch and the form) to agree on width and title. */
-function Shell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  return (
-    <Modal onClose={onClose} title={title} size="2xl">
-      {children}
-    </Modal>
-  );
-}
-
 /**
- * The product card in one dialog: the fields somebody types, and the gallery.
+ * Create / edit a product's card (WS-13 E10 §B, F13): the Workshop dialog frame,
+ * the mockup's fields and «More» for the two it does not draw. Pictures are not
+ * here (B08) — they are the product page's «Pictures…».
  *
- * Opened from a card, it is handed a `ProductListItem`, which carries only the
- * counts — so the full product is fetched first and the form is not mounted
- * until it arrives. `OrderModal` solves the same trap by HIDING the fields a
- * list row lacks; here that would leave an edit dialog with nothing but a name
- * box, so the record is fetched instead. Either way the rule holds: no input
- * ever shows blank over text the user was not shown, because whatever is typed
- * into it REPLACES that text.
+ * ⚠️ **One session, one base (J).** A product opened from a list is read in full
+ * first; the first full product — handed over or read — becomes the session's
+ * base once. A background refresh of the same product changes neither the base
+ * nor what was typed, and the PATCH carries only what differs from that base. A
+ * new id is a new session.
  *
- * ⚠️ **The gallery half exists only in edit mode**, and that is not a layout
- * preference: an upload needs a product id to hang the file on, and a product
- * being created does not have one yet. The create flow is the pass-2 one,
- * untouched.
- *
- * There is deliberately no `onSaved` callback — the same decision
- * `CustomerModal` and `OrderModal` record: both call sites just close the
- * dialog, and the saved record reaches every list through the invalidations
- * below. A prop nobody passes is a second way to learn the same fact, and the
- * one that goes uncalled when somebody adds a third call site.
+ * There is deliberately no `onSaved` callback — the same decision `OrderModal`
+ * records: the saved record reaches every list through the invalidations, and a
+ * new product opens at once (B06).
  */
 export function ProductCardDialog({ product, onClose }: ProductCardDialogProps) {
   const { t } = useTranslation();
-  const needsFetch = !!product && !isFullProduct(product);
-  // ⚠️ Through the shared hook, and `null` rather than an `enabled` flag of its
-  // own. TanStack gives a query the LAST observer's options, so the dialog's
-  // own `useQuery` took `meta: { refreshToast: true }` off the product page
-  // underneath for as long as it was open — a failed background refetch then
-  // said nothing on the page the flag exists for. See `useProductDetail`.
-  const { data: fetched, error } = useProductDetail(needsFetch ? product!.id : null);
+  const full = isFullProduct(product) ? product : null;
+  const fetchId = product && !full ? product.id : null;
+  // ⚠️ Through the shared hook, and `null` rather than an `enabled` flag of its own:
+  // TanStack gives a query the LAST observer's options, so an own `useQuery` would
+  // take `meta: { refreshToast: true }` off the product page underneath.
+  const read = useProductDetail(fetchId);
 
-  const loaded = needsFetch ? fetched : (product as Product | null | undefined);
-  if (needsFetch && !loaded) {
-    // A failed fetch says so — a spinner that never stops is the same screen as
-    // a slow server, and one of the two never ends.
+  // The session: the product id it is for, and its base — taken once, while rendering.
+  const [session, setSession] = useState<{ id: number | null; base: Product | null }>({
+    id: product?.id ?? null,
+    base: full,
+  });
+  let current = session;
+  if ((product?.id ?? null) !== session.id) {
+    current = { id: product?.id ?? null, base: full };
+    setSession(current);
+  } else if (current.base == null && fetchId != null && read.data && read.data.id === current.id) {
+    current = { ...current, base: read.data };
+    setSession(current);
+  }
+
+  if (current.id != null && current.base == null) {
     return (
-      <Shell title={t('products.modal.editTitle')} onClose={onClose}>
-        <div className="p-8 flex justify-center">
-          {error ? (
-            <p className="text-sm text-red-600 dark:text-red-500">{(error as Error).message}</p>
-          ) : (
-            <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
-          )}
-        </div>
-      </Shell>
+      <WorkshopDialog
+        onClose={onClose}
+        title={t('products.modal.editTitle')}
+        size="lg"
+        footer={
+          <>
+            <Button type="button" variant="secondary" onClick={onClose}>
+              {t('common.cancel')}
+            </Button>
+            <Button type="button" disabled>
+              {t('products.modal.save')}
+            </Button>
+          </>
+        }
+      >
+        {read.isError ? (
+          <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-red-600 dark:text-red-500">
+            <span>
+              {t('products.modal.loadFailed')} {(read.error as Error)?.message}
+            </span>
+            <Button variant="secondary" size="sm" onClick={() => void read.refetch()}>
+              {t('common.retry')}
+            </Button>
+          </div>
+        ) : (
+          <div role="status" aria-busy className="space-y-3">
+            <span className="sr-only">{t('common.loading')}</span>
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="h-9 rounded-lg bg-bambu-dark-tertiary/60 animate-pulse" />
+            ))}
+          </div>
+        )}
+      </WorkshopDialog>
     );
   }
 
-  return <ProductForm product={loaded ?? null} onClose={onClose} />;
+  return <ProductForm key={current.id ?? 'new'} base={current.base} onClose={onClose} />;
 }
 
-interface ProductFormProps {
-  product: Product | null;
-  onClose: () => void;
-}
-
-/** Split out so every field can be seeded by `useState` from a record that is
- *  already in hand — a form whose initial values arrive later would have to
- *  re-seed itself and could overwrite what the user has already typed. */
-function ProductForm({ product, onClose }: ProductFormProps) {
+function ProductForm({ base, onClose }: { base: Product | null; onClose: () => void }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { showToast } = useToast();
-  const { hasPermission } = useAuth();
-  const isEdit = !!product;
+  const isEdit = base != null;
+
+  const ids = {
+    name: useId(),
+    sku: useId(),
+    version: useId(),
+    category: useId(),
+    status: useId(),
+    description: useId(),
+    designer: useId(),
+    license: useId(),
+    sourceUrl: useId(),
+    more: useId(),
+    designId: useId(),
+    notes: useId(),
+  };
+  // The cursor starts in the name (B01). The Modal focuses its panel in its own
+  // (child) effect; this one runs after it.
+  const nameId = ids.name;
+  useEffect(() => {
+    document.getElementById(nameId)?.focus();
+  }, [nameId]);
 
   const initial = {
-    name: product?.name ?? '',
-    description: product?.description ?? '',
-    designer: product?.designer ?? '',
-    license: product?.license ?? '',
-    sourceUrl: product?.source_url ?? '',
-    designId: product?.design_id ?? '',
-    notes: product?.notes ?? '',
-    sku: product?.sku ?? '',
-    version: product?.version ?? '',
-    categoryId: product?.category ? String(product.category.id) : '',
-    status: (product?.status ?? 'draft') as ProductStatus,
+    name: base?.name ?? '',
+    description: base?.description ?? '',
+    designer: base?.designer ?? '',
+    license: base?.license ?? '',
+    sourceUrl: base?.source_url ?? '',
+    designId: base?.design_id ?? '',
+    notes: base?.notes ?? '',
+    sku: base?.sku ?? '',
+    version: base?.version ?? '',
+    categoryId: base?.category ? String(base.category.id) : '',
+    status: (base?.status ?? 'draft') as ProductStatus,
   };
-  // spec workshop-product-catalog, rule 14: the server refuses «ready» without
-  // parts and a plate (409); the option says so before anybody tries.
-  const canBeReady = !!product && product.parts_count > 0 && product.plates_count > 0;
-  const { data: categories = [] } = useQuery({
+  // The server refuses «ready» without parts and a plate (409); the option says so
+  // before anybody tries — and a new product has neither (B04).
+  const canBeReady = isEdit && base.parts_count > 0 && base.plates_count > 0;
+
+  const categoriesQuery = useQuery({
     queryKey: ['product-categories'],
     queryFn: () => api.getProductCategories(),
     staleTime: 60_000,
   });
+  const categories = categoriesQuery.data ?? [];
 
   const [name, setName] = useState(initial.name);
   const [description, setDescription] = useState(initial.description);
@@ -135,233 +169,325 @@ function ProductForm({ product, onClose }: ProductFormProps) {
   const [notes, setNotes] = useState(initial.notes);
   const [sku, setSku] = useState(initial.sku);
   const [version, setVersion] = useState(initial.version);
-  const [categoryId, setCategoryId] = useState(initial.categoryId);
+  // The chosen category with the name it was chosen under: a directory refresh that
+  // drops it must still be able to name it (J).
+  const [category, setCategory] = useState<{ id: string; name: string }>({
+    id: initial.categoryId,
+    name: base?.category?.name ?? '',
+  });
+  const categoryId = category.id;
   const [status, setStatus] = useState<ProductStatus>(initial.status);
+  // «More» opens by itself when it holds something (B03); folding it keeps the values.
+  const [moreOpen, setMoreOpen] = useState(initial.designId !== '' || initial.notes !== '');
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  // The chosen category is shown by its own name while the directory loads, and as
+  // «(no longer exists)» once a loaded directory lacks it — never as the first option.
+  const chosenListed = categoryId === '' || categories.some((c) => String(c.id) === categoryId);
+  const categoryGone = categoriesQuery.isSuccess && !chosenListed;
+  const chosenName = category.name || `#${categoryId}`;
+
+  /** The fields that differ from the session's base; a blank one goes as none (B05). */
+  function changedFields(): ProductUpdate {
+    const data: ProductUpdate = {};
+    const text = (value: string, was: string, key: keyof ProductUpdate) => {
+      if (value.trim() !== was) (data as Record<string, unknown>)[key] = value.trim() || null;
+    };
+    if (name.trim() !== initial.name) data.name = name.trim();
+    text(description, initial.description, 'description');
+    text(designer, initial.designer, 'designer');
+    text(license, initial.license, 'license');
+    text(sourceUrl, initial.sourceUrl, 'source_url');
+    text(designId, initial.designId, 'design_id');
+    text(notes, initial.notes, 'notes');
+    text(sku, initial.sku, 'sku');
+    text(version, initial.version, 'version');
+    if (categoryId !== initial.categoryId) data.category_id = categoryId ? Number(categoryId) : null;
+    if (status !== initial.status) data.status = status;
+    return data;
+  }
+
+  function created(): ProductCreate {
+    return {
+      name: name.trim(),
+      description: description.trim() || null,
+      designer: designer.trim() || null,
+      license: license.trim() || null,
+      source_url: sourceUrl.trim() || null,
+      design_id: designId.trim() || null,
+      notes: notes.trim() || null,
+      // The catalog fields go only when given; a new product has no plates, so
+      // «ready» cannot be chosen — the status goes only if it ever were.
+      ...(sku.trim() ? { sku: sku.trim() } : {}),
+      ...(version.trim() ? { version: version.trim() } : {}),
+      ...(categoryId ? { category_id: Number(categoryId) } : {}),
+      ...(status === 'ready' ? { status } : {}),
+    };
+  }
 
   const mutation = useMutation({
-    mutationFn: () => {
-      const trimmed = {
-        name: name.trim(),
-        description: description.trim(),
-        designer: designer.trim(),
-        license: license.trim(),
-        source_url: sourceUrl.trim(),
-        design_id: designId.trim(),
-        notes: notes.trim(),
-        sku: sku.trim(),
-        version: version.trim(),
-      };
-      const category_id = categoryId ? Number(categoryId) : null;
-      if (product) {
-        const data: ProductUpdate = {};
-        if (trimmed.name !== initial.name) data.name = trimmed.name;
-        if (trimmed.description !== initial.description) data.description = trimmed.description || null;
-        if (trimmed.designer !== initial.designer) data.designer = trimmed.designer || null;
-        if (trimmed.license !== initial.license) data.license = trimmed.license || null;
-        if (trimmed.source_url !== initial.sourceUrl) data.source_url = trimmed.source_url || null;
-        if (trimmed.design_id !== initial.designId) data.design_id = trimmed.design_id || null;
-        if (trimmed.notes !== initial.notes) data.notes = trimmed.notes || null;
-        if (trimmed.sku !== initial.sku) data.sku = trimmed.sku || null;
-        if (trimmed.version !== initial.version) data.version = trimmed.version || null;
-        if (categoryId !== initial.categoryId) data.category_id = category_id;
-        if (status !== initial.status) data.status = status;
-        return api.updateProduct(product.id, data);
-      }
-      const data: ProductCreate = {
-        name: trimmed.name,
-        description: trimmed.description || null,
-        designer: trimmed.designer || null,
-        license: trimmed.license || null,
-        source_url: trimmed.source_url || null,
-        design_id: trimmed.design_id || null,
-        notes: trimmed.notes || null,
-        // A new product has no plates yet, so it starts as a draft; the
-        // catalog fields go only when given.
-        ...(trimmed.sku ? { sku: trimmed.sku } : {}),
-        ...(trimmed.version ? { version: trimmed.version } : {}),
-        ...(category_id !== null ? { category_id } : {}),
-      };
-      return api.createProduct(data);
-    },
-    onSuccess: () => {
-      // ⚠️ One call, product keys included since Ruling 29 — and this is the
-      // dialog that actually renames a product:
-      // `ProjectLineResponse.product_name` is denormalised, so an order card
-      // and every order line kept the OLD name for as long as their
-      // `staleTime` said the answer was fresh. Same one decision as an order
-      // save — see `utils/queryInvalidation`.
+    mutationFn: (data: ProductUpdate | ProductCreate) =>
+      base ? api.updateProduct(base.id, data as ProductUpdate) : api.createProduct(data as ProductCreate),
+    onSuccess: (saved) => {
+      // ⚠️ Order views too: `ProjectLineResponse.product_name` is denormalised, so a
+      // rename reaches an order card only through its own keys (Ruling 29).
       invalidateOrderViews(queryClient);
       // A new product is a draft, and a category change moves the directory's counts.
       invalidateProductCatalog(queryClient);
-      showToast(t('products.toast.saved'));
       onClose();
+      if (base) {
+        showToast(t('products.toast.updated'));
+        return;
+      }
+      showToast(t('products.toast.created'));
+      // The new product opens at once (B06, the mockup's `product-save`).
+      navigate(`/products/${saved.id}`);
     },
-    onError: (e: Error) => showToast(e.message, 'error'),
   });
 
-  const canSubmit = name.trim() !== '' && !mutation.isPending;
+  // ⚠️ Synchronous (B07): a press and an Escape in the same tick see `isPending`
+  // still false — the ref makes «one press, one request» and «no closing under a
+  // request» hold; a refusal re-arms it.
+  const sent = useRef(false);
+  const formId = useId();
+  const submitId = `${formId}-submit`;
+  // After a refusal the fields are live again: the focus goes back to the button
+  // that sent it, never to BODY (J).
+  useEffect(() => {
+    if (mutation.isError) {
+      sent.current = false;
+      document.getElementById(submitId)?.focus();
+    }
+  }, [mutation.isError, mutation.error, submitId]);
 
-  const textField = (
+  function close() {
+    if (sent.current) return;
+    onClose();
+  }
+
+  const pending = mutation.isPending;
+
+  function submit() {
+    if (sent.current || pending || categoryGone) return;
+    if (name.trim() === '') {
+      setLocalError(t('products.modal.nameRequired'));
+      document.getElementById(nameId)?.focus();
+      return;
+    }
+    setLocalError(null);
+    if (base) {
+      const data = changedFields();
+      if (Object.keys(data).length === 0) {
+        onClose();
+        return;
+      }
+      sent.current = true;
+      mutation.mutate(data);
+      return;
+    }
+    sent.current = true;
+    mutation.mutate(created());
+  }
+
+  const error = localError ?? (mutation.isError ? (mutation.error as Error).message : undefined);
+  const subtitle = isEdit ? (base.sku ? `${base.code} · ${base.sku}` : base.code) : t('products.modal.createSubtitle');
+
+  const textInput = (
     id: string,
-    label: string,
     value: string,
     setValue: (v: string) => void,
-    type: 'text' | 'url' = 'text',
-    required = false,
+    maxLength: number,
+    extra: { type?: 'text' | 'url'; placeholder?: string } = {},
   ) => (
-    <div>
-      <label className={LABEL_CLASS} htmlFor={id}>
-        {label}
-      </label>
-      <input
-        id={id}
-        type={type}
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        className={FIELD_CLASS}
-        disabled={mutation.isPending}
-        required={required}
-      />
-    </div>
+    <input
+      id={id}
+      type={extra.type ?? 'text'}
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      maxLength={maxLength}
+      placeholder={extra.placeholder}
+      className={FIELD_CLASS}
+      disabled={pending}
+    />
   );
 
   return (
-    <Shell title={isEdit ? t('products.modal.editTitle') : t('products.modal.createTitle')} onClose={onClose}>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (canSubmit) mutation.mutate();
-        }}
-      >
-        <div className="p-4 space-y-4">
-          {textField('product-name', t('products.modal.name'), name, setName, 'text', true)}
-
-          <div>
-            <label className={LABEL_CLASS} htmlFor="product-description">
-              {t('products.modal.description')}
-            </label>
-            <textarea
-              id="product-description"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              className={`${FIELD_CLASS} min-h-[72px]`}
-              disabled={mutation.isPending}
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            {textField('product-sku', t('products.modal.sku'), sku, setSku)}
-            {textField('product-version', t('products.modal.version'), version, setVersion)}
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className={LABEL_CLASS} htmlFor="product-category">
-                {t('products.modal.category')}
-              </label>
-              <Select
-                id="product-category"
-                value={categoryId}
-                onChange={(e) => setCategoryId(e.target.value)}
-                disabled={mutation.isPending}
-                className="w-full"
-              >
-                <option value="">{t('products.modal.noCategory')}</option>
-                {categories.map((category) => (
-                  <option key={category.id} value={String(category.id)}>
-                    {category.name}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            {isEdit && (
-              <div>
-                <label className={LABEL_CLASS} htmlFor="product-status">
-                  {t('products.modal.status')}
-                </label>
-                <Select
-                  id="product-status"
-                  value={status}
-                  onChange={(e) => setStatus(e.target.value as ProductStatus)}
-                  disabled={mutation.isPending}
-                  aria-describedby={!canBeReady ? 'product-status-hint' : undefined}
-                  className="w-full"
-                >
-                  <option value="draft">{t('products.status.draft')}</option>
-                  {/* Kept selectable when it is already the value — a product
-                      marked ready that lost its plates is shown as it is. */}
-                  <option value="ready" disabled={!canBeReady && initial.status !== 'ready'}>
-                    {t('products.status.ready')}
-                  </option>
-                </Select>
-                {!canBeReady && (
-                  <p id="product-status-hint" className="mt-1 text-xs text-bambu-gray">
-                    {t('products.modal.readyNeedsParts')}
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            {textField('product-designer', t('products.modal.designer'), designer, setDesigner)}
-            {textField('product-license', t('products.modal.license'), license, setLicense)}
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            {textField('product-source-url', t('products.modal.sourceUrl'), sourceUrl, setSourceUrl, 'url')}
-            {textField('product-design-id', t('products.modal.designId'), designId, setDesignId)}
-          </div>
-
-          <div>
-            <label className={LABEL_CLASS} htmlFor="product-notes">
-              {t('products.modal.notes')}
-            </label>
-            <textarea
-              id="product-notes"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              className={`${FIELD_CLASS} min-h-[72px]`}
-              disabled={mutation.isPending}
-            />
-          </div>
-
-          {/* The gallery writes through its own routes, immediately — it is not
-              part of this form's submit, and a picture uploaded here stays
-              uploaded whether or not the fields are saved. */}
-          {product && (
-            <div className="pt-4 border-t border-bambu-dark-tertiary">
-              {/* ⚠️ `testIdSuffix` — the product page renders its own gallery
-                  and this dialog opens OVER it, so without the suffix every
-                  `getByTestId` in a page test would find two. `headingKey` is
-                  the same problem for the people the page is for: two live
-                  regions both called "Pictures" is what a screen reader hears
-                  while this dialog is open. */}
-              <ProductGallery
-                product={product}
-                canEdit={hasPermission('projects:update')}
-                testIdSuffix="-dialog"
-                headingKey="products.gallery.titleInDialog"
-              />
-            </div>
-          )}
-        </div>
-
-        <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark-tertiary">
-          <Button type="button" variant="secondary" onClick={onClose} disabled={mutation.isPending}>
+    <WorkshopDialog
+      onClose={close}
+      title={isEdit ? t('products.modal.editTitle') : t('products.modal.createTitle')}
+      subtitle={subtitle}
+      size="lg"
+      pending={pending}
+      error={error}
+      footer={
+        <>
+          <Button type="button" variant="secondary" onClick={close} disabled={pending}>
             {t('common.cancel')}
           </Button>
-          <Button type="submit" disabled={!canSubmit}>
-            {mutation.isPending ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : isEdit ? (
-              t('products.modal.save')
-            ) : (
-              t('products.modal.create')
-            )}
+          <Button id={submitId} type="submit" form={formId} disabled={pending || categoryGone}>
+            {pending && <Loader2 className="w-4 h-4 animate-spin" />}
+            {pending
+              ? isEdit
+                ? t('products.modal.saving')
+                : t('products.modal.creating')
+              : isEdit
+                ? t('products.modal.save')
+                : t('products.modal.create')}
           </Button>
-        </div>
+        </>
+      }
+    >
+      {/* `noValidate`: every check this form has is said in the dialog's slot (B05);
+          a browser bubble would stop an empty name before it, and would refuse the
+          mockup's own `makerworld.com/…` source — the side panel opens a link
+          without a scheme (`sourceHref`). */}
+      <form
+        id={formId}
+        noValidate
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit();
+        }}
+      >
+        <WorkshopFormGrid>
+          <WorkshopField label={t('products.modal.name')} htmlFor={ids.name} full>
+            <input
+              id={ids.name}
+              type="text"
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setLocalError(null);
+              }}
+              maxLength={MAX.name}
+              aria-invalid={localError != null || undefined}
+              className={FIELD_CLASS}
+              disabled={pending}
+            />
+          </WorkshopField>
+
+          <WorkshopField label={t('products.modal.sku')} htmlFor={ids.sku}>
+            {textInput(ids.sku, sku, setSku, MAX.sku, { placeholder: t('products.modal.skuPlaceholder') })}
+          </WorkshopField>
+          <WorkshopField label={t('products.modal.version')} htmlFor={ids.version}>
+            {textInput(ids.version, version, setVersion, MAX.version, {
+              placeholder: t('products.modal.versionPlaceholder'),
+            })}
+          </WorkshopField>
+
+          <WorkshopField
+            label={t('products.modal.category')}
+            htmlFor={ids.category}
+            hint={categoryGone ? t('products.modal.categoryGoneHint') : undefined}
+          >
+            <Select
+              id={ids.category}
+              value={categoryId}
+              onChange={(e) =>
+                setCategory({
+                  id: e.target.value,
+                  name: categories.find((c) => String(c.id) === e.target.value)?.name ?? '',
+                })
+              }
+              disabled={pending}
+              aria-describedby={categoryGone ? `${ids.category}-hint` : undefined}
+              aria-invalid={categoryGone || undefined}
+              className="w-full"
+            >
+              <option value="">{t('products.modal.noCategory')}</option>
+              {categories.map((category) => (
+                <option key={category.id} value={String(category.id)}>
+                  {category.name}
+                </option>
+              ))}
+              {!chosenListed && (
+                <option value={categoryId}>
+                  {categoryGone ? t('products.modal.categoryGone', { name: chosenName }) : chosenName}
+                </option>
+              )}
+            </Select>
+          </WorkshopField>
+
+          <WorkshopField
+            label={t('products.modal.readiness')}
+            htmlFor={ids.status}
+            hint={!canBeReady ? t('products.modal.readyNeedsParts') : undefined}
+          >
+            <Select
+              id={ids.status}
+              value={status}
+              onChange={(e) => setStatus(e.target.value as ProductStatus)}
+              disabled={pending}
+              aria-describedby={!canBeReady ? `${ids.status}-hint` : undefined}
+              className="w-full"
+            >
+              <option value="draft">{t('products.status.draft')}</option>
+              {/* Kept selectable when it is already the value — a product marked
+                  ready that lost its plates is shown as it is. */}
+              <option value="ready" disabled={!canBeReady && initial.status !== 'ready'}>
+                {t('products.status.ready')}
+              </option>
+            </Select>
+          </WorkshopField>
+
+          <WorkshopField label={t('products.modal.description')} htmlFor={ids.description} full>
+            <textarea
+              id={ids.description}
+              rows={3}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className={FIELD_CLASS}
+              disabled={pending}
+            />
+          </WorkshopField>
+
+          <WorkshopField label={t('products.modal.designer')} htmlFor={ids.designer}>
+            {textInput(ids.designer, designer, setDesigner, MAX.designer)}
+          </WorkshopField>
+          <WorkshopField label={t('products.modal.license')} htmlFor={ids.license}>
+            {textInput(ids.license, license, setLicense, MAX.license)}
+          </WorkshopField>
+
+          <WorkshopField label={t('products.modal.sourceUrl')} htmlFor={ids.sourceUrl} full>
+            {textInput(ids.sourceUrl, sourceUrl, setSourceUrl, MAX.sourceUrl, {
+              type: 'url',
+              placeholder: t('products.modal.sourcePlaceholder'),
+            })}
+          </WorkshopField>
+
+          {/* «More» (B03, K12): the two fields the mockup does not draw. */}
+          <div className="col-span-full">
+            <button
+              type="button"
+              onClick={() => setMoreOpen((open) => !open)}
+              aria-expanded={moreOpen}
+              aria-controls={ids.more}
+              className="inline-flex items-center gap-1 rounded text-sm text-bambu-gray-light hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green"
+            >
+              {moreOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              {t('products.modal.more')}
+            </button>
+          </div>
+          {/* `contents`: the two fields sit on the form's own grid; `hidden` wins over
+              it (Tailwind's preflight makes `[hidden]` `display: none !important`). */}
+          <div id={ids.more} hidden={!moreOpen} className="contents">
+            <WorkshopField label={t('products.modal.designId')} htmlFor={ids.designId}>
+              {textInput(ids.designId, designId, setDesignId, MAX.designId)}
+            </WorkshopField>
+            <div aria-hidden className="max-[761px]:hidden" />
+            <WorkshopField label={t('products.modal.notes')} htmlFor={ids.notes} full>
+              <textarea
+                id={ids.notes}
+                rows={3}
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                className={FIELD_CLASS}
+                disabled={pending}
+              />
+            </WorkshopField>
+          </div>
+        </WorkshopFormGrid>
       </form>
-    </Shell>
+    </WorkshopDialog>
   );
 }

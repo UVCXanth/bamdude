@@ -257,14 +257,6 @@ describe('ProductGallery', () => {
     expect(screen.getByRole('button', { name: /this is the cover: apple\.png/i })).toBeDisabled();
   });
 
-  it('suffixes every testid so a page and the dialog over it never collide', () => {
-    render(<ProductGallery product={product} canEdit testIdSuffix="-dialog" />);
-
-    expect(screen.getByTestId('product-gallery-dialog')).toBeInTheDocument();
-    expect(screen.getByTestId('gallery-picture-a.png-dialog')).toBeInTheDocument();
-    expect(screen.queryByTestId('product-gallery')).not.toBeInTheDocument();
-  });
-
   it('moves focus into the lightbox and gives it back on close', () => {
     render(<ProductGallery product={product} canEdit />);
 
@@ -294,8 +286,6 @@ describe('ProductGallery', () => {
   });
 
   it('names the gallery section after its own heading', () => {
-    // Two galleries are live at once whenever the card dialog opens over the
-    // product page, so each has to say which one it is.
     render(<ProductGallery product={product} canEdit />);
     expect(screen.getByTestId('product-gallery')).toHaveAccessibleName('Pictures');
   });

@@ -13,21 +13,10 @@ import { byAttachmentOrder } from './attachmentOrder';
 interface ProductGalleryProps {
   product: Product;
   canEdit: boolean;
-  /** Appended to every `data-testid` here. The product PAGE renders this
-   *  gallery and so does the card DIALOG opened over it, and two live galleries
-   *  with the same testids make every `getByTestId` in a page test ambiguous —
-   *  the page passes nothing, the dialog passes `-dialog`. */
-  testIdSuffix?: string;
-  /** The catalogue key of this gallery's own heading, which is also the section's
-   *  accessible name. Same collision as `testIdSuffix`, for the people rather
-   *  than the tests: while the card dialog is open two galleries are live, and
-   *  "Pictures" names both of them. */
-  headingKey?: string;
   /** Inside a dialog that already names it (the product page's «Pictures», WS-13 E9 B06):
    *  no heading of its own, the dialog's title is the name. */
   bare?: boolean;
-  /** The product page's cover version — see the cache note below. The card dialog
-   *  passes none. */
+  /** The product page's cover version — see the cache note below. */
   coverVersion?: string;
 }
 
@@ -57,8 +46,6 @@ const ICON_BUTTON_CLASS =
 export function ProductGallery({
   product,
   canEdit,
-  testIdSuffix = '',
-  headingKey = 'products.gallery.title',
   bare = false,
   coverVersion,
 }: ProductGalleryProps) {
@@ -69,8 +56,6 @@ export function ProductGallery({
   const coverInput = useRef<HTMLInputElement>(null);
   const [lightbox, setLightbox] = useState<number | null>(null);
   const headingId = useId();
-
-  const testId = (name: string) => `${name}${testIdSuffix}`;
 
   // ⚠️ The tie-break is the server's, not "whatever order the array arrived
   // in": `sorted_attachments` orders by `(sort_order, filename)`, and two
@@ -181,14 +166,14 @@ export function ProductGallery({
     <section
       className="space-y-3"
       aria-labelledby={bare ? undefined : headingId}
-      data-testid={testId('product-gallery')}
+      data-testid="product-gallery"
     >
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           {!bare && (
             <h2 id={headingId} className="text-lg font-semibold text-white flex items-center gap-2">
               <Image className="w-5 h-5" />
-              {t(headingKey)}
+              {t('products.gallery.title')}
             </h2>
           )}
           <p className="text-xs text-bambu-gray">{t('products.gallery.coverHint')}</p>
@@ -198,7 +183,7 @@ export function ProductGallery({
           <div className="flex items-center gap-2 flex-wrap">
             <input
               ref={pictureInput}
-              data-testid={testId('gallery-upload-input')}
+              data-testid="gallery-upload-input"
               type="file"
               accept="image/*"
               className="hidden"
@@ -210,7 +195,7 @@ export function ProductGallery({
             />
             <input
               ref={coverInput}
-              data-testid={testId('gallery-cover-input')}
+              data-testid="gallery-cover-input"
               type="file"
               accept="image/*"
               className="hidden"
@@ -241,14 +226,14 @@ export function ProductGallery({
       <div className="flex gap-4 flex-wrap items-start">
         {product.has_cover ? (
           <img
-            data-testid={testId('product-gallery-cover')}
+            data-testid="product-gallery-cover"
             src={api.getProductCoverImageUrl(product.id, coverVersion)}
             alt={t('products.gallery.cover')}
             className={TILE_CLASS}
           />
         ) : (
           <div
-            data-testid={testId('product-cover-placeholder')}
+            data-testid="product-cover-placeholder"
             className={`${TILE_CLASS} flex items-center justify-center`}
           >
             <Package className="w-8 h-8 text-bambu-gray" />
@@ -264,7 +249,7 @@ export function ProductGallery({
               >
                 <button
                   type="button"
-                  data-testid={testId(`gallery-picture-${picture.filename}`)}
+                  data-testid={`gallery-picture-${picture.filename}`}
                   onClick={() => setLightbox(index)}
                   className="block w-full"
                 >
@@ -369,7 +354,7 @@ export function ProductGallery({
             </button>
           )}
           <img
-            data-testid={testId('gallery-lightbox-image')}
+            data-testid="gallery-lightbox-image"
             src={api.getProductAttachmentImageUrl(product.id, pictures[lightbox].filename)}
             alt={pictures[lightbox].original_name}
             className="max-h-[85vh] max-w-full rounded-lg"

@@ -1,30 +1,38 @@
 /**
- * One dialog, two sections — the fields the operator types and the gallery.
+ * The product form (WS-13 E10 B01–B08, F13): the Workshop dialog frame, the
+ * mockup's field order, «More» for the two fields the mockup does not draw,
+ * readiness on both create and edit, every refusal in the dialog's own slot,
+ * no closing under a request and the new product opened at once.
  *
- * The fields half is the pass-2 `ProductModal` unchanged, and that is what the
- * first two tests pin: a create still posts every field, an edit still PATCHes
- * only what moved. The gallery half exists only in edit mode, because a product
- * that does not exist yet has no id to hang an upload on.
+ * The draft session (J): the base is the first full product, a background
+ * refresh never reseeds what was typed, the PATCH is the difference from that
+ * base, and a chosen category that disappeared is not quietly swapped.
  */
 
 import { useState } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, screen, fireEvent, waitFor, within, render as renderBare } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter, Route, Routes } from 'react-router';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
-import type { Product } from '../../../api/client';
+import type { Product, ProductListItem } from '../../../api/client';
 import { ProductCardDialog } from '../../../components/products/ProductCardDialog';
-import { ProductGallery } from '../../../components/products/ProductGallery';
+import { ToastProvider } from '../../../contexts/ToastContext';
 
 const product = {
   id: 7,
+  code: 'PR-0007',
   name: 'Flask',
   is_active: true,
+  sku: 'FLK-1',
+  version: null,
+  category: { id: 3, name: 'Hooks' },
+  status: 'draft',
   has_cover: false,
   cover_image_filename: null,
-  parts_count: 0,
-  plates_count: 0,
+  parts_count: 2,
+  plates_count: 1,
   lines_count: 0,
   description: 'A flask',
   notes: null,
@@ -41,33 +49,29 @@ const product = {
   updated_at: '2026-09-01T00:00:00Z',
 } as unknown as Product;
 
-const picture = (filename: string, original: string, sort: number) => ({
-  category: 'pictures',
-  filename,
-  original_name: original,
-  size: 1024,
-  sort_order: sort,
-  source: 'manual',
-  source_file_id: null,
-  uploaded_at: null,
-});
-
-/** The same product with a picture in it — the gallery's lightbox needs one. */
-const withPictures = { ...product, attachments: [picture('a.png', 'front.png', 0)] } as unknown as Product;
-
 const noop = () => {};
 
-/** The dialog the way a page opens it — a control that mounts it and takes it
- *  away again, which is the only shape in which "the focus comes back" can be
- *  observed at all. */
-function Openable() {
+function primary(name: RegExp = /^(save|create) product$/i) {
+  return screen.getByRole('button', { name });
+}
+
+/** The dialog the way a page opens it, so "the focus comes back" can be observed. */
+function Openable({ onClose = noop }: { onClose?: () => void }) {
   const [open, setOpen] = useState(false);
   return (
     <>
       <button type="button" onClick={() => setOpen(true)}>
         open card
       </button>
-      {open && <ProductCardDialog product={product} onClose={() => setOpen(false)} />}
+      {open && (
+        <ProductCardDialog
+          product={product}
+          onClose={() => {
+            onClose();
+            setOpen(false);
+          }}
+        />
+      )}
     </>
   );
 }
@@ -81,193 +85,361 @@ describe('ProductCardDialog', () => {
     ]);
   });
 
-  describe('catalog fields (spec workshop-product-catalog, rule 23)', () => {
-    const catalogProduct = {
-      ...product,
-      sku: 'LMP-1',
-      version: null,
-      category: { id: 3, name: 'Hooks' },
-      status: 'draft',
-      parts_count: 2,
-      plates_count: 1,
-    } as unknown as Product;
-
-    it('edits SKU, version, category and status, sending only what changed', async () => {
-      const update = vi.spyOn(api, 'updateProduct').mockResolvedValue(catalogProduct as never);
-      render(<ProductCardDialog product={catalogProduct} onClose={noop} />);
-      await screen.findByRole('option', { name: 'Vases' });
-      expect(screen.getByLabelText('SKU')).toHaveValue('LMP-1');
-      fireEvent.change(screen.getByLabelText('SKU'), { target: { value: 'LMP-2' } });
-      fireEvent.change(screen.getByLabelText('Category'), { target: { value: '4' } });
-      fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'ready' } });
-      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-      await waitFor(() => expect(update).toHaveBeenCalledWith(7, { sku: 'LMP-2', category_id: 4, status: 'ready' }));
+  describe('the frame (B01)', () => {
+    it('a new product: its title, the mockup sentence, «Create product», the cursor in the name', async () => {
+      render(<ProductCardDialog product={null} onClose={noop} />);
+      const dialog = screen.getByRole('dialog', { name: 'New product' });
+      expect(dialog).toHaveAccessibleDescription('Parts appear once you link a sliced file, or add them by hand');
+      expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+      expect(primary(/^create product$/i)).toBeInTheDocument();
+      await waitFor(() => expect(screen.getByLabelText('Name')).toHaveFocus());
     });
 
-    it('clears the category and a blank SKU goes as none', async () => {
-      const update = vi.spyOn(api, 'updateProduct').mockResolvedValue(catalogProduct as never);
-      render(<ProductCardDialog product={catalogProduct} onClose={noop} />);
+    it('an edit: its title, «code · SKU» under it, «Save product»', () => {
+      render(<ProductCardDialog product={product} onClose={noop} />);
+      const dialog = screen.getByRole('dialog', { name: 'Edit product' });
+      expect(dialog).toHaveAccessibleDescription('PR-0007 · FLK-1');
+      expect(primary(/^save product$/i)).toBeInTheDocument();
+    });
+
+    it('a product without a SKU shows its code alone', () => {
+      render(<ProductCardDialog product={{ ...product, sku: null } as Product} onClose={noop} />);
+      expect(screen.getByRole('dialog')).toHaveAccessibleDescription('PR-0007');
+    });
+
+    it('is named by its heading and hands the focus back on Escape', async () => {
+      render(<Openable />);
+      const opener = screen.getByRole('button', { name: 'open card' });
+      opener.focus();
+      fireEvent.click(opener);
+      const dialog = await screen.findByRole('dialog');
+      expect(dialog).toHaveAttribute('aria-modal', 'true');
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(opener).toHaveFocus();
+    });
+  });
+
+  describe('the fields (B02, B03)', () => {
+    it('come in the mockup order, «More» last, each bounded by its column', () => {
+      render(<ProductCardDialog product={product} onClose={noop} />);
+      const dialog = screen.getByRole('dialog');
+      const labels = Array.from(dialog.querySelectorAll('label')).map((l) => l.textContent);
+      expect(labels.slice(0, 9)).toEqual([
+        'Name',
+        'SKU',
+        'Version',
+        'Category',
+        'Readiness',
+        'Description',
+        'Designer',
+        'Licence',
+        'Source',
+      ]);
+      expect(screen.getByLabelText('Name')).toHaveAttribute('maxLength', '255');
+      expect(screen.getByLabelText('SKU')).toHaveAttribute('maxLength', '64');
+      expect(screen.getByLabelText('Version')).toHaveAttribute('maxLength', '64');
+      expect(screen.getByLabelText('Designer')).toHaveAttribute('maxLength', '255');
+      expect(screen.getByLabelText('Licence')).toHaveAttribute('maxLength', '255');
+      expect(screen.getByLabelText('Source')).toHaveAttribute('maxLength', '2048');
+      expect(screen.getByLabelText('Design ID')).toHaveAttribute('maxLength', '64');
+    });
+
+    it('«More» starts folded when both of its fields are empty, and unfolds on a press', () => {
+      render(<ProductCardDialog product={product} onClose={noop} />);
+      const more = screen.getByRole('button', { name: 'More' });
+      expect(more).toHaveAttribute('aria-expanded', 'false');
+      const region = document.getElementById(more.getAttribute('aria-controls') as string);
+      expect(region).not.toBeVisible();
+      fireEvent.click(more);
+      expect(more).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByLabelText('Design ID')).toBeVisible();
+      expect(screen.getByLabelText('Notes')).toBeVisible();
+    });
+
+    it('«More» starts open when a design ID or a note is there', () => {
+      render(<ProductCardDialog product={{ ...product, notes: 'Print upright' } as Product} onClose={noop} />);
+      expect(screen.getByRole('button', { name: 'More' })).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByLabelText('Notes')).toHaveValue('Print upright');
+    });
+
+    it('folding «More» loses nothing, and what it holds is sent', async () => {
+      const update = vi.spyOn(api, 'updateProduct').mockResolvedValue(product as never);
+      render(<ProductCardDialog product={product} onClose={noop} />);
+      const more = screen.getByRole('button', { name: 'More' });
+      fireEvent.click(more);
+      fireEvent.change(screen.getByLabelText('Design ID'), { target: { value: 'MW-42' } });
+      fireEvent.click(more);
+      fireEvent.click(more);
+      expect(screen.getByLabelText('Design ID')).toHaveValue('MW-42');
+      fireEvent.click(more);
+      fireEvent.click(primary());
+      await waitFor(() => expect(update).toHaveBeenCalledWith(7, { design_id: 'MW-42' }));
+    });
+  });
+
+  describe('readiness (B04)', () => {
+    it('an edit offers «Ready to print» with parts and a plate', async () => {
+      render(<ProductCardDialog product={product} onClose={noop} />);
+      expect(await screen.findByRole('option', { name: 'Ready to print' })).toBeEnabled();
+    });
+
+    it('an edit without a plate keeps it shut and says why', () => {
+      render(<ProductCardDialog product={{ ...product, plates_count: 0 } as Product} onClose={noop} />);
+      expect(screen.getByRole('option', { name: 'Ready to print' })).toBeDisabled();
+      expect(screen.getByLabelText('Readiness')).toHaveAccessibleDescription('Needs parts and a plate');
+    });
+
+    it('a new product shows the field with «Ready to print» shut, and never sends a status', async () => {
+      const create = vi.spyOn(api, 'createProduct').mockResolvedValue(product as never);
+      render(<ProductCardDialog product={null} onClose={noop} />);
+      expect(screen.getByLabelText('Readiness')).toHaveValue('draft');
+      expect(screen.getByRole('option', { name: 'Ready to print' })).toBeDisabled();
+      expect(screen.getByLabelText('Readiness')).toHaveAccessibleDescription('Needs parts and a plate');
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Lid' } });
+      fireEvent.click(primary());
+      await waitFor(() => expect(create).toHaveBeenCalled());
+      expect(create.mock.calls[0][0]).not.toHaveProperty('status');
+    });
+
+    it('the server refusing «ready» is said in the dialog, the focus on «Save product»', async () => {
+      vi.spyOn(api, 'updateProduct').mockRejectedValue(new Error('A product needs parts and a plate to be ready to print'));
+      render(<ProductCardDialog product={product} onClose={noop} />);
+      fireEvent.change(screen.getByLabelText('Readiness'), { target: { value: 'ready' } });
+      fireEvent.click(primary());
+      expect(await screen.findByRole('alert')).toHaveTextContent('A product needs parts and a plate to be ready to print');
+      await waitFor(() => expect(primary()).toHaveFocus());
+    });
+  });
+
+  describe('checks and what is sent (B05)', () => {
+    it('an empty name is said in the dialog and nothing is sent', async () => {
+      const create = vi.spyOn(api, 'createProduct');
+      render(<ProductCardDialog product={null} onClose={noop} />);
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: '   ' } });
+      fireEvent.click(primary());
+      expect(await screen.findByRole('alert')).toHaveTextContent('Enter a name.');
+      expect(screen.getByLabelText('Name')).toHaveFocus();
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('a SKU another product holds is the server sentence in the slot, never a toast', async () => {
+      vi.spyOn(api, 'updateProduct').mockRejectedValue(new Error('Another product already has this SKU'));
+      render(<ProductCardDialog product={product} onClose={noop} />);
+      fireEvent.change(screen.getByLabelText('SKU'), { target: { value: 'LMP-1' } });
+      fireEvent.click(primary());
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent('Another product already has this SKU');
+      expect(screen.getAllByText('Another product already has this SKU')).toHaveLength(1);
+      // What was typed stays where it was.
+      expect(screen.getByLabelText('SKU')).toHaveValue('LMP-1');
+    });
+
+    it('an edit sends only what changed, a blank field as none', async () => {
+      const update = vi.spyOn(api, 'updateProduct').mockResolvedValue(product as never);
+      render(<ProductCardDialog product={product} onClose={noop} />);
       await screen.findByRole('option', { name: 'Vases' });
       fireEvent.change(screen.getByLabelText('SKU'), { target: { value: '  ' } });
-      fireEvent.change(screen.getByLabelText('Category'), { target: { value: '' } });
-      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-      await waitFor(() => expect(update).toHaveBeenCalledWith(7, { sku: null, category_id: null }));
+      fireEvent.change(screen.getByLabelText('Category'), { target: { value: '4' } });
+      fireEvent.change(screen.getByLabelText('Licence'), { target: { value: 'CC-BY' } });
+      fireEvent.click(primary());
+      await waitFor(() => expect(update).toHaveBeenCalledWith(7, { sku: null, category_id: 4, license: 'CC-BY' }));
     });
 
-    it('offers «Ready to print» only with parts and a plate, and says why', async () => {
-      render(<ProductCardDialog product={{ ...catalogProduct, plates_count: 0 } as Product} onClose={noop} />);
-      expect(await screen.findByRole('option', { name: 'Ready to print' })).toBeDisabled();
-      expect(screen.getByText('Needs parts and a plate')).toBeInTheDocument();
-    });
-
-    it('a new product takes SKU, version and category, and stays a draft', async () => {
+    it('a create sends every field, the catalog ones only when given', async () => {
       const create = vi.spyOn(api, 'createProduct').mockResolvedValue(product as never);
       render(<ProductCardDialog product={null} onClose={noop} />);
       await screen.findByRole('option', { name: 'Hooks' });
-      expect(screen.queryByLabelText('Status')).not.toBeInTheDocument();
-      fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: 'Lid' } });
-      fireEvent.change(screen.getByLabelText('SKU'), { target: { value: 'LID-1' } });
-      fireEvent.change(screen.getByLabelText('Version'), { target: { value: 'v2' } });
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Lid' } });
+      fireEvent.change(screen.getByLabelText('Designer'), { target: { value: 'Ada' } });
       fireEvent.change(screen.getByLabelText('Category'), { target: { value: '3' } });
-      fireEvent.click(screen.getByRole('button', { name: /^create$/i }));
+      fireEvent.change(screen.getByLabelText('Source'), { target: { value: 'makerworld.com/x' } });
+      fireEvent.click(primary());
       await waitFor(() =>
-        expect(create).toHaveBeenCalledWith(expect.objectContaining({ sku: 'LID-1', version: 'v2', category_id: 3 })),
+        expect(create).toHaveBeenCalledWith({
+          name: 'Lid',
+          description: null,
+          designer: 'Ada',
+          license: null,
+          source_url: 'makerworld.com/x',
+          design_id: null,
+          notes: null,
+          category_id: 3,
+        }),
       );
+    });
+
+    it('an edit with nothing changed closes without a request', () => {
+      const update = vi.spyOn(api, 'updateProduct');
+      const onClose = vi.fn();
+      render(<ProductCardDialog product={product} onClose={onClose} />);
+      fireEvent.click(primary());
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(update).not.toHaveBeenCalled();
     });
   });
 
-  it('creates a product from the fields section', async () => {
-    const create = vi.spyOn(api, 'createProduct').mockResolvedValue(product as never);
-    render(<ProductCardDialog product={null} onClose={noop} />);
+  describe('after the save (B06)', () => {
+    it('a new product opens at once, with the mockup toast', async () => {
+      vi.spyOn(api, 'createProduct').mockResolvedValue({ ...product, id: 42 } as never);
+      vi.spyOn(api, 'getProduct').mockResolvedValue({ ...product, id: 42 } as never);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const onClose = vi.fn();
+      // Bare: the shared wrapper already holds a router, and this one must start at the catalog.
+      renderBare(
+        <QueryClientProvider client={client}>
+          <MemoryRouter initialEntries={['/products']}>
+            <ToastProvider>
+              <Routes>
+                <Route path="/products" element={<ProductCardDialog product={null} onClose={onClose} />} />
+                <Route path="/products/:id" element={<p>product page</p>} />
+              </Routes>
+            </ToastProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Lid' } });
+      fireEvent.click(primary());
+      expect(await screen.findByText('product page')).toBeInTheDocument();
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(screen.getByText('Product created — link a file or add parts')).toBeInTheDocument();
+    });
 
-    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: 'Lid' } });
-    fireEvent.change(screen.getByLabelText(/designer/i), { target: { value: 'Ada' } });
-    fireEvent.click(screen.getByRole('button', { name: /^create$/i }));
+    it('an edit closes and says «Product updated»', async () => {
+      vi.spyOn(api, 'updateProduct').mockResolvedValue(product as never);
+      const onClose = vi.fn();
+      render(<ProductCardDialog product={product} onClose={onClose} />);
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Beaker' } });
+      fireEvent.click(primary());
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText('Product updated')).toBeInTheDocument();
+    });
 
-    await waitFor(() =>
-      expect(create).toHaveBeenCalledWith({
-        name: 'Lid',
-        description: null,
-        designer: 'Ada',
-        license: null,
-        source_url: null,
-        design_id: null,
-        notes: null,
-      }),
-    );
+    it('a rename reaches the order views, not only the product keys', async () => {
+      // `ProjectLineResponse.product_name` is denormalised: an order card and every
+      // line of an order page keep the OLD name until their keys are invalidated.
+      vi.spyOn(api, 'updateProduct').mockResolvedValue(product as never);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      for (const key of [['projects', {}], ['project', 1], ['customers'], ['products']]) {
+        client.setQueryData(key, { seeded: true });
+      }
+      render(
+        <QueryClientProvider client={client}>
+          <ProductCardDialog product={product} onClose={noop} />
+        </QueryClientProvider>,
+      );
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Beaker' } });
+      fireEvent.click(primary());
+      await waitFor(() => expect(client.getQueryState(['projects', {}])?.isInvalidated).toBe(true));
+      expect(client.getQueryState(['project', 1])?.isInvalidated).toBe(true);
+      expect(client.getQueryState(['customers'])?.isInvalidated).toBe(true);
+      expect(client.getQueryState(['products'])?.isInvalidated).toBe(true);
+    });
   });
 
-  it('sends only the field that changed on an edit', async () => {
-    const update = vi.spyOn(api, 'updateProduct').mockResolvedValue(product as never);
+  describe('under a request (B07)', () => {
+    it('Escape, X and «Cancel» do not close it — decided in the same tick as the press', async () => {
+      const create = vi.spyOn(api, 'createProduct').mockReturnValue(new Promise(() => {}) as never);
+      const onClose = vi.fn();
+      render(<ProductCardDialog product={null} onClose={onClose} />);
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Lid' } });
+      // One act = one frame: nothing re-renders between the press and the rest, so
+      // `isPending` (and with it the disabled X and buttons) is not there yet — only
+      // the form's own synchronous guard can refuse these.
+      const submit = primary();
+      const cancel = screen.getByRole('button', { name: 'Cancel' });
+      const x = screen.getByRole('button', { name: 'Close' });
+      act(() => {
+        submit.click();
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        cancel.click();
+        x.click();
+        submit.click();
+      });
+      await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(onClose).not.toHaveBeenCalled();
+      expect(create).toHaveBeenCalledTimes(1);
+    });
+
+    it('a refusal re-arms the button', async () => {
+      const update = vi
+        .spyOn(api, 'updateProduct')
+        .mockRejectedValueOnce(new Error('Another product already has this SKU'))
+        .mockResolvedValueOnce(product as never);
+      const onClose = vi.fn();
+      render(<ProductCardDialog product={product} onClose={onClose} />);
+      fireEvent.change(screen.getByLabelText('SKU'), { target: { value: 'LMP-1' } });
+      fireEvent.click(primary());
+      await screen.findByRole('alert');
+      fireEvent.change(screen.getByLabelText('SKU'), { target: { value: 'LMP-2' } });
+      fireEvent.click(primary());
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      expect(update).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('carries no gallery (B08)', () => {
     render(<ProductCardDialog product={product} onClose={noop} />);
-
-    fireEvent.change(screen.getByLabelText(/licence|license/i), { target: { value: 'CC-BY' } });
-    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-
-    await waitFor(() => expect(update).toHaveBeenCalledWith(7, { license: 'CC-BY' }));
-  });
-
-  it('a rename reaches the order views, not only the product keys', async () => {
-    // ⚠️ This is the dialog that actually renames a product, and
-    // `ProjectLineResponse.product_name` is denormalised: an order card and
-    // every line of an order page kept the OLD name for as long as their
-    // `staleTime` said the answer was fresh. Invalidating `['products']` alone
-    // cannot reach them — they are `['projects']` / `['project', id]`.
-    vi.spyOn(api, 'updateProduct').mockResolvedValue(product as never);
-    // The default `gcTime` on purpose: a seeded entry nothing observes is
-    // collected at once under `gcTime: 0`, and "was it invalidated" cannot be
-    // asked of a query that is no longer there.
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    for (const key of [['projects', {}], ['project', 1], ['customers'], ['products']]) {
-      client.setQueryData(key, { seeded: true });
-    }
-
-    render(
-      <QueryClientProvider client={client}>
-        <ProductCardDialog product={product} onClose={noop} />
-      </QueryClientProvider>,
-    );
-    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: 'Beaker' } });
-    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-
-    await waitFor(() => expect(client.getQueryState(['projects', {}])?.isInvalidated).toBe(true));
-    expect(client.getQueryState(['project', 1])?.isInvalidated).toBe(true);
-    expect(client.getQueryState(['customers'])?.isInvalidated).toBe(true);
-    expect(client.getQueryState(['products'])?.isInvalidated).toBe(true);
-  });
-
-  it('carries the gallery in edit mode and not in create mode', () => {
-    // ⚠️ `-dialog`: the product page renders its own gallery and this dialog
-    // opens OVER it, so the two would otherwise answer the same testid.
-    const { unmount } = render(<ProductCardDialog product={product} onClose={noop} />);
-    expect(screen.getByTestId('product-gallery-dialog')).toBeInTheDocument();
-    expect(screen.queryByTestId('product-gallery')).not.toBeInTheDocument();
-    unmount();
-
-    render(<ProductCardDialog product={null} onClose={noop} />);
     expect(screen.queryByTestId('product-gallery-dialog')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('product-gallery')).not.toBeInTheDocument();
   });
 
-  it('is a modal dialog named by its heading, and hands the focus back on Escape', async () => {
-    render(<Openable />);
-    const opener = screen.getByRole('button', { name: 'open card' });
-    opener.focus();
-    fireEvent.click(opener);
+  describe('the draft session (J)', () => {
+    const listRow = { ...product } as unknown as ProductListItem;
+    delete (listRow as unknown as Record<string, unknown>).description;
 
-    // The gallery inside carries no dialog role, so there is exactly one.
-    const dialog = await screen.findByRole('dialog');
-    expect(dialog).toHaveAttribute('aria-modal', 'true');
-    expect(dialog).toHaveAccessibleName('Edit product');
-    expect(dialog).toHaveFocus();
+    it('a catalog row reads the full product first — a reading state, never empty fields', async () => {
+      let resolve: (p: Product) => void = noop;
+      vi.spyOn(api, 'getProduct').mockReturnValue(new Promise<Product>((r) => (resolve = r)) as never);
+      render(<ProductCardDialog product={listRow} onClose={noop} />);
+      expect(screen.getByRole('status')).toBeInTheDocument();
+      expect(screen.queryByLabelText('Name')).not.toBeInTheDocument();
+      resolve(product);
+      expect(await screen.findByLabelText('Name')).toHaveValue('Flask');
+    });
 
-    fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(opener).toHaveFocus();
-  });
+    it('a failed read says so and retries', async () => {
+      const read = vi.spyOn(api, 'getProduct').mockRejectedValueOnce(new Error('HTTP 500')).mockResolvedValueOnce(product);
+      render(<ProductCardDialog product={listRow} onClose={noop} />);
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent('Could not read the product.');
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+      expect(await screen.findByLabelText('Name')).toHaveValue('Flask');
+      expect(read).toHaveBeenCalledTimes(2);
+    });
 
-  it('lets Escape close the LIGHTBOX first and the dialog only after it', async () => {
-    // ⚠️ One Escape used to close the whole dialog out from under the
-    // lightbox, throwing away everything typed into the form on the way. Both
-    // overlays are the shared shell now, and the modal stack hands Escape to
-    // the topmost one — the lightbox, which mounted last.
-    const onClose = vi.fn();
-    render(<ProductCardDialog product={withPictures} onClose={onClose} />);
+    it('a background refresh reseeds nothing, and the PATCH is the difference from the base', async () => {
+      const update = vi.spyOn(api, 'updateProduct').mockResolvedValue(product as never);
+      const { rerender } = render(<ProductCardDialog product={product} onClose={noop} />);
+      fireEvent.change(screen.getByLabelText('Licence'), { target: { value: 'CC-BY' } });
+      rerender(<ProductCardDialog product={{ ...product, name: 'Flask 2', license: 'MIT' } as Product} onClose={noop} />);
+      expect(screen.getByLabelText('Licence')).toHaveValue('CC-BY');
+      expect(screen.getByLabelText('Name')).toHaveValue('Flask');
+      fireEvent.click(primary());
+      await waitFor(() => expect(update).toHaveBeenCalledWith(7, { license: 'CC-BY' }));
+    });
 
-    const name = screen.getByLabelText(/^name$/i) as HTMLInputElement;
-    fireEvent.change(name, { target: { value: 'Beaker' } });
+    it('a chosen category that is gone is named so and blocks the save until another is chosen', async () => {
+      const update = vi.spyOn(api, 'updateProduct').mockResolvedValue(product as never);
+      render(<ProductCardDialog product={{ ...product, category: { id: 9, name: 'Old' } } as Product} onClose={noop} />);
+      expect(await screen.findByRole('option', { name: 'Old (no longer exists)' })).toBeInTheDocument();
+      expect(screen.getByLabelText('Category')).toHaveValue('9');
+      expect(screen.getByLabelText('Category')).toHaveAccessibleDescription(
+        'This category no longer exists — choose another one.',
+      );
+      expect(primary()).toBeDisabled();
+      fireEvent.change(screen.getByLabelText('Category'), { target: { value: '' } });
+      expect(primary()).toBeEnabled();
+      fireEvent.click(primary());
+      await waitFor(() => expect(update).toHaveBeenCalledWith(7, { category_id: null }));
+    });
 
-    fireEvent.click(screen.getByTestId('gallery-picture-a.png-dialog'));
-    expect(screen.getByRole('dialog', { name: 'Picture viewer' })).toBeInTheDocument();
-
-    fireEvent.keyDown(window, { key: 'Escape' });
-    expect(screen.queryByRole('dialog', { name: 'Picture viewer' })).not.toBeInTheDocument();
-    expect(onClose).not.toHaveBeenCalled();
-    expect((screen.getByLabelText(/^name$/i) as HTMLInputElement).value).toBe('Beaker');
-
-    // ...and the next one closes the dialog, now that nothing is over it.
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Picture viewer' })).not.toBeInTheDocument());
-    fireEvent.keyDown(window, { key: 'Escape' });
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it('names its own gallery apart from the page gallery underneath it', () => {
-    // ⚠️ Two live galleries with the same accessible name is what a screen
-    // reader hears when the card dialog opens over the product page: two
-    // regions called "Pictures", one of which is the one being edited. The
-    // testid suffix solved this for the tests; the heading solves it for the
-    // people the page is for.
-    render(
-      <>
-        <ProductGallery product={product} canEdit />
-        <ProductCardDialog product={product} onClose={noop} />
-      </>,
-    );
-
-    const page = screen.getByTestId('product-gallery');
-    const dialog = screen.getByTestId('product-gallery-dialog');
-    expect(within(page).getByRole('heading', { name: 'Pictures' })).toBeInTheDocument();
-    expect(within(dialog).getByRole('heading', { name: 'Pictures of this product' })).toBeInTheDocument();
-    expect(page).toHaveAccessibleName('Pictures');
-    expect(dialog).toHaveAccessibleName('Pictures of this product');
+    it('while the categories load, the chosen one is shown by its own name, not as «No category»', () => {
+      vi.spyOn(api, 'getProductCategories').mockReturnValue(new Promise(() => {}) as never);
+      render(<ProductCardDialog product={product} onClose={noop} />);
+      expect(screen.getByLabelText('Category')).toHaveValue('3');
+      expect(screen.getByRole('option', { name: 'Hooks' })).toBeInTheDocument();
+    });
   });
 });
