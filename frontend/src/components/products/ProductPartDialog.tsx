@@ -288,7 +288,8 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
                 readOnly
                 value={kindLabel(kind)}
                 aria-describedby={`${ids.kind}-hint`}
-                className={`${FIELD_CLASS} text-bambu-gray-light`}
+                // Read-only: no field ground, so it does not look like a box to type into.
+                className="w-full cursor-default rounded-lg border border-transparent bg-transparent px-0 py-2 text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green"
               />
             ) : (
               <Select
