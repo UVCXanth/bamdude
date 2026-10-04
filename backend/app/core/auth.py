@@ -1430,7 +1430,6 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.LIBRARY_READ_ALL: "can_read_status",
     Permission.ORDERS_READ: "can_read_status",
     Permission.PRODUCTS_READ: "can_read_status",
-    Permission.CUSTOMERS_READ: "can_read_status",
     Permission.STOCK_READ: "can_read_status",
     Permission.INVENTORY_READ: "can_read_status",
     Permission.INVENTORY_VIEW_ASSIGNMENTS: "can_read_status",
@@ -1546,6 +1545,8 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.PRODUCTS_CREATE: "can_manage_projects",
     Permission.PRODUCTS_UPDATE: "can_manage_projects",
     Permission.PRODUCTS_DELETE: "can_manage_projects",
+    # A customer's contacts are personal data: not the status scope's (WS-13 E13 O14).
+    Permission.CUSTOMERS_READ: "can_manage_projects",
     Permission.CUSTOMERS_CREATE: "can_manage_projects",
     Permission.CUSTOMERS_UPDATE: "can_manage_projects",
     Permission.CUSTOMERS_DELETE: "can_manage_projects",

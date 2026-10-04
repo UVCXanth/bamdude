@@ -202,14 +202,16 @@ WORKSHOP_WRITES = (
     Permission.CUSTOMERS_DELETE,
     Permission.STOCK_MOVE,
     Permission.STOCK_ADJUST,
+    # A customer's contacts are personal data: the manage scope's, not the status scope's.
+    Permission.CUSTOMERS_READ,
 )
-WORKSHOP_READS = (Permission.ORDERS_READ, Permission.PRODUCTS_READ, Permission.CUSTOMERS_READ, Permission.STOCK_READ)
+WORKSHOP_READS = (Permission.ORDERS_READ, Permission.PRODUCTS_READ, Permission.STOCK_READ)
 
 
 def test_manage_projects_scope():
     """#1893, WS-13 E13 m194: the Workshop key scope carries every Workshop write — orders,
-    catalog, customers, stock and filing prints; a key without it cannot. The reads ride
-    can_read_status, not can_manage_projects."""
+    catalog, customers, stock and filing prints — and the customer directory; a key without
+    it cannot. The other reads ride can_read_status, not can_manage_projects."""
     proj = _key(can_manage_projects=True)
     for perm in WORKSHOP_WRITES:
         _check_apikey_permissions(proj, [perm.value])

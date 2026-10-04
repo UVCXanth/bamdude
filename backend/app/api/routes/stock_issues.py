@@ -7,8 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.api.routes._workshop_rights import bind_workshop_credentials
-from backend.app.core.auth import RequirePermission
+from backend.app.api.routes._workshop_rights import bind_workshop_credentials, read_required, workshop_view
+from backend.app.core.auth import RequireAnyPermission, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.stock_issue import StockIssue, StockIssueLine
@@ -32,19 +32,14 @@ _ISSUE_SORT = SortSpec(
 )
 
 
-def _search(q: str):
-    """The note's code, the order's, the names and the lines' text (spec workshop-dispatch-notes, rule 12)."""
+def _search(q: str, *, sensitive: bool = True):
+    """The note's code, the order's, the names and the lines' text (spec workshop-dispatch-notes, rule 12).
+    The recipient only for a caller who may see it (WS-13 E13 O25) — a search is an oracle too."""
     needle = like_contains(q)
-    matches = [
-        column.ilike(needle, escape="\\")
-        for column in (
-            StockIssue.customer_name,
-            StockIssue.recipient_name,
-            StockIssue.waybill,
-            StockIssue.order_code,
-            StockIssue.order_name,
-        )
-    ]
+    columns = [StockIssue.customer_name, StockIssue.waybill, StockIssue.order_code, StockIssue.order_name]
+    if sensitive:
+        columns.insert(1, StockIssue.recipient_name)
+    matches = [column.ilike(needle, escape="\\") for column in columns]
     matches.append(
         exists(
             select(StockIssueLine.id).where(
@@ -78,16 +73,24 @@ async def list_stock_issues(
     per_page: int = Query(24, ge=1, le=200),
     all: bool = Query(False, description="Skip pagination and return every matching note"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.STOCK_READ),
+    _: User | None = RequireAnyPermission(Permission.STOCK_READ, Permission.ORDERS_READ, Permission.CUSTOMERS_READ),
 ):
-    """Dispatch notes — the stock page's tab, an order's «Видачі», a customer's issues (rules 12, 20–22)."""
+    """Dispatch notes — the stock page's tab, an order's «Видачі», a customer's issues (rules 12, 20–22).
+
+    Every note is the stock's; an order's notes are its readers' too, a customer's notes the
+    customer's readers'. The recipient's block and the note go to whoever keeps the contacts
+    or ships (WS-13 E13 O25); anyone else gets minimal rows."""
+    view = await workshop_view()
+    in_context = view.stock or (project_id is not None and view.orders) or (customer_id is not None and view.customers)
+    if not in_context:
+        raise read_required("stock")
     query = select(StockIssue)
     if customer_id is not None:
         query = query.where(StockIssue.customer_id == customer_id)
     if project_id is not None:
         query = query.where(StockIssue.project_id == project_id)
     if q and q.strip():
-        query = query.where(_search(q.strip()))
+        query = query.where(_search(q.strip(), sensitive=view.recipient))
     total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
     key, direction, _computed = resolve_sort(_ISSUE_SORT, sort_by)
     column, _nulls_last = _ISSUE_SORT.sql[key]
@@ -100,19 +103,49 @@ async def list_stock_issues(
     if not all:
         query = query.limit(per_page).offset((page - 1) * per_page)
     issues = (await db.execute(query)).scalars().all()
-    return StockIssuePage(items=await issue_rows(db, issues), meta=page_meta(total, page, per_page, all))
+    rows = await issue_rows(db, issues)
+    if not view.recipient:
+        rows = [_restricted(row) for row in rows]
+    return StockIssuePage(items=rows, meta=page_meta(total, page, per_page, all))
+
+
+_SENSITIVE = ("recipient_name", "recipient_phone", "delivery_method", "delivery_details", "note")
+
+
+def _restricted(row):
+    return row.model_copy(update={**dict.fromkeys(_SENSITIVE, None), "restricted": True})
 
 
 @router.get("/{issue_id}", response_model=DispatchNoteOut)
 async def get_dispatch_note(
     issue_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.STOCK_READ),
+    _: User | None = RequireAnyPermission(Permission.STOCK_READ, Permission.ORDERS_READ, Permission.CUSTOMERS_READ),
 ):
-    """The document, drawn only from its snapshot (rule 14)."""
+    """The document, drawn only from its snapshot (rule 14).
+
+    Its reader's context as the list's; the document IS the recipient and the supplier's
+    details, so it opens only for whoever keeps the contacts or ships (WS-13 E13 O25) — never
+    printed masked as if whole."""
     issue = await db.get(StockIssue, issue_id)
     if issue is None:
         raise HTTPException(status_code=404, detail="Dispatch note not found")
+    view = await workshop_view()
+    in_context = (
+        view.stock
+        or (issue.project_id is not None and view.orders)
+        or (issue.customer_id is not None and view.customers)
+    )
+    if not in_context:
+        raise read_required("stock")
+    if not view.recipient:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "dispatch_note_restricted",
+                "message": "Opening a dispatch note needs the customers' read or the stock's move right",
+            },
+        )
     return await note_out(db, issue)
 
 

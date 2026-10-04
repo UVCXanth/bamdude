@@ -261,6 +261,9 @@ class StockIssueRow(BaseModel):
     waybill: str | None = None
     note: str | None = None
     created_by_name: str | None = None
+    #: The recipient's block and the note are left out: the caller neither keeps the contacts
+    #: nor ships the goods (WS-13 E13 O25) — the row is minimal and the document does not open.
+    restricted: bool = False
 
 
 class StockIssuePage(BaseModel):
