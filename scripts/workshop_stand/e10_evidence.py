@@ -78,6 +78,7 @@ DETAIL_SCENARIOS = (
     "categories@1440",
     "adjust@1440",
     "keyboard@1440",
+    "reader@1440",
     "short@390x600",
     "short@1024x600",
     "grid@761",

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { FolderKanban, Loader2 } from 'lucide-react';
@@ -39,6 +39,9 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
   const [orderId, setOrderId] = useState<number | null>(bound?.orderId ?? null);
   const [lineId, setLineId] = useState<number | null>(bound?.lineId ?? null);
   const [error, setError] = useState<string | null>(null);
+  // One press, one request (WS-13 E13 G04): a second press in the same tick — before
+  // `isPending` reaches the button — finds the ref set. A refusal frees it for a retry.
+  const sent = useRef(false);
   const single = archiveIds.length === 1;
   const canRemove = single && bound?.orderId != null;
 
@@ -53,11 +56,16 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
     onClose();
   };
 
+  const refused = (e: Error) => {
+    sent.current = false;
+    setError(e.message);
+  };
+
   const assign = useMutation({
     mutationFn: (target: number) => api.addArchivesToOrder(target, archiveIds, lineId),
     onMutate: () => setError(null),
     onSuccess: done,
-    onError: (e: Error) => setError(e.message),
+    onError: refused,
   });
 
   const remove = useMutation({
@@ -67,7 +75,7 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
     mutationFn: () => api.updateArchive(archiveIds[0], { project_id: null, project_line_id: null }),
     onMutate: () => setError(null),
     onSuccess: done,
-    onError: (e: Error) => setError(e.message),
+    onError: refused,
   });
 
   const pending = assign.isPending || remove.isPending;
@@ -125,7 +133,15 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
 
       <div className="flex flex-wrap gap-3 p-4 border-t border-bambu-dark-tertiary">
         {canRemove && (
-          <Button variant="danger" onClick={() => remove.mutate()} disabled={pending}>
+          <Button
+            variant="danger"
+            onClick={() => {
+              if (sent.current) return;
+              sent.current = true;
+              remove.mutate();
+            }}
+            disabled={pending}
+          >
             {remove.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
             {t('archives.menu.removeFromOrder')}
           </Button>
@@ -134,7 +150,11 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
           {t('common.cancel')}
         </Button>
         <Button
-          onClick={() => orderId != null && assign.mutate(orderId)}
+          onClick={() => {
+            if (orderId == null || sent.current) return;
+            sent.current = true;
+            assign.mutate(orderId);
+          }}
           className="flex-1"
           disabled={orderId == null || pending}
         >

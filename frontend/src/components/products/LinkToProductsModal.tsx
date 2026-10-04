@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link2, Loader2, Package, X } from 'lucide-react';
@@ -62,6 +62,10 @@ export function LinkToProductsModal({ kind, item, onClose }: LinkToProductsModal
     [item.products, item.product_ids],
   );
   const [selectedIds, setSelectedIds] = useState<Set<number>>(initialIds);
+  // A refusal stays here, in the server's words, with the picks intact (WS-13 E13 G04);
+  // one press is one request — a second press in the same tick finds the ref set.
+  const [error, setError] = useState<string | null>(null);
+  const sent = useRef(false);
   // ⚠️ Frozen at mount, deliberately — one rule, one hook, shared with
   // `ProductPicker`. `selectableProducts` keeps an INACTIVE product on offer
   // only because something is linked to it, so keying that off the live
@@ -95,6 +99,7 @@ export function LinkToProductsModal({ kind, item, onClose }: LinkToProductsModal
   };
 
   const save = useMutation({
+    onMutate: () => setError(null),
     mutationFn: async (productIds: number[]) => {
       if (kind === 'folder') await api.updateLibraryFolder(item.id, { product_ids: productIds });
       else await api.updateLibraryFile(item.id, { product_ids: productIds });
@@ -122,7 +127,10 @@ export function LinkToProductsModal({ kind, item, onClose }: LinkToProductsModal
       }
       onClose();
     },
-    onError: (e: Error) => showToast(e.message, 'error'),
+    onError: (e: Error) => {
+      sent.current = false;
+      setError(e.message);
+    },
   });
 
   // `||`, not `??` — an empty `print_name` is as absent as a null one, which
@@ -178,13 +186,25 @@ export function LinkToProductsModal({ kind, item, onClose }: LinkToProductsModal
             <p className="text-xs text-bambu-gray italic mt-2">{t('fileManager.noProductsSelected')}</p>
           )}
         </div>
+        {error && (
+          <p role="alert" className="text-sm text-red-600 dark:text-red-400 [overflow-wrap:anywhere]">
+            {error}
+          </p>
+        )}
       </div>
 
       <div className="p-4 border-t border-bambu-dark-tertiary flex justify-end gap-2">
         <Button variant="secondary" onClick={onClose}>
           {t('common.cancel')}
         </Button>
-        <Button onClick={() => save.mutate([...selectedIds])} disabled={save.isPending}>
+        <Button
+          onClick={() => {
+            if (sent.current) return;
+            sent.current = true;
+            save.mutate([...selectedIds]);
+          }}
+          disabled={save.isPending}
+        >
           {save.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : t('common.save')}
         </Button>
       </div>

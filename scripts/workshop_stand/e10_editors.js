@@ -976,6 +976,48 @@ async (page, selftest = null) => {
     };
   });
 
+  // ---------------------------------------------------------------- a reader (WS-13 E13 G02)
+  // The editors' pages to a user who may read the Workshop and change nothing: no door to a
+  // write is drawn — none disabled without a reason, none reachable by Tab.
+  await scenario('reader@1440', ['E13-G02'], async () => {
+    const groups = await read('/groups/');
+    const adminPerms = (Array.isArray(groups) ? groups : groups.items).find((g) => g.name === 'Administrators').permissions;
+    const WRITES = ['projects:create', 'projects:update', 'projects:delete'];
+    const READER = { is_admin: false, role: 'user', permissions: adminPerms.filter((perm) => !WRITES.includes(perm)) };
+    const { ctx, p, errors } = await open(1440, { me: READER });
+    await goto(p, '/products');
+    const list = {
+      create: await p.getByRole('button', { name: /^Новий виріб$/ }).count(),
+      categories: await p.getByRole('button', { name: 'Керувати категоріями' }).count(),
+    };
+    await goto(p, `/products/${P1}`);
+    const detail = {
+      edit: await p.getByRole('button', { name: /^Редагувати$/ }).count(),
+      rowMenus: await p.locator('[data-testid^="part-"][data-testid$="-row"]').getByRole('button', { name: 'Дії' }).count(),
+      disabledWithoutReason: await p.locator('main button:disabled:not([title]):not([aria-describedby])').count(),
+    };
+    // Every stop of the keyboard on the page, by name: a write door would be one of them.
+    const stops = [];
+    for (let i = 0; i < 40; i += 1) {
+      await p.keyboard.press('Tab');
+      stops.push(await focusAt(p));
+    }
+    await ctx.close();
+    const WRITE = /Редагувати|Видалити|Новий виріб|Злити|Додати деталь|Керувати категоріями|Створити|Зберегти/;
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: {
+        url: '/products → /products/{product:1}',
+        fixture: ['/auth/me: the Administrators’ permissions without projects:create / update / delete'],
+        actions: ['look for every write door', 'Tab forty times through the product page'],
+      },
+      measured: { list, detail, stops, errors },
+      pass: list.create === 0 && list.categories === 0 && detail.edit === 0 && detail.rowMenus === 0 &&
+        detail.disabledWithoutReason === 0 && !stops.some((s) => WRITE.test(s)) && errors.length === 0,
+      screenshots: [],
+    };
+  });
+
   // ---------------------------------------------------------------- windows (K.1, R09)
   for (const [id, w, h] of [['short@390x600', 390, 600], ['short@1024x600', 1024, 600]]) {
     await scenario(id, ['E10-J', 'E10-K1'], async () => {
