@@ -11,7 +11,7 @@ import { useBlobPreview } from '../../hooks/useBlobPreview';
 import { formatFileSize } from '../../utils/file';
 import { formatDateTime } from '../../utils/date';
 import { Button } from '../Button';
-import { ConfirmModal } from '../ConfirmModal';
+import { ActionConfirm } from '../workshop/ActionConfirm';
 import { Modal } from '../Modal';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
@@ -68,7 +68,7 @@ export function OrderAttachments({ order, canEdit }: OrderAttachmentsProps) {
     // alone cannot say which one, and the mutation is shared by every row.
     onMutate: (filename: string) => setDeletingName(filename),
     onSuccess: refresh,
-    onError: (e: Error) => showToast(e.message, 'error'),
+    // A refusal is the confirmation's to show, in its own dialog (WS-13 E13 E02).
     onSettled: () => setDeletingName(null),
   });
 
@@ -207,16 +207,13 @@ export function OrderAttachments({ order, canEdit }: OrderAttachmentsProps) {
       )}
 
       {confirming && (
-        <ConfirmModal
+        <ActionConfirm
           title={t('orders.attachments.confirmTitle', { name: confirming.original_name || confirming.filename })}
-          message={t('orders.attachments.confirmText')}
-          confirmText={t('orders.attachments.confirm')}
-          variant="danger"
-          onConfirm={() => {
-            remove.mutate(confirming.filename);
-            setConfirming(null);
-          }}
-          onCancel={() => setConfirming(null)}
+          body={<p className="text-sm text-bambu-gray">{t('orders.attachments.confirmText')}</p>}
+          primaryLabel={t('orders.attachments.confirm')}
+          danger
+          send={() => remove.mutateAsync(confirming.filename)}
+          onClose={() => setConfirming(null)}
         />
       )}
 

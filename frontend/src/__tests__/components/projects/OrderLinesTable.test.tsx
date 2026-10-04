@@ -354,6 +354,15 @@ describe('OrderLinesTable · the table (E4 B)', () => {
     await waitFor(() => expect(shelf).toHaveBeenCalledTimes(2));
   });
 
+  it('keeps a refused delete in its dialog, in the server’s words (E13 E02)', async () => {
+    vi.spyOn(api, 'deleteOrderLine').mockRejectedValue(new Error('The line holds issued units'));
+    render(<OrderLinesTable order={order} canEdit />);
+    fireEvent.click(within(await openMenu('Flask')).getByRole('menuitem', { name: 'Delete line' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Delete line «Flask»?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('The line holds issued units');
+  });
+
   it('says how to start when there are no lines', () => {
     render(<OrderLinesTable order={withLines()} canEdit />);
     expect(screen.getByText('No lines yet — add a product or parts from the catalog.')).toBeInTheDocument();

@@ -24,6 +24,7 @@ export function ActionConfirm({
   subtitle,
   body,
   primaryLabel,
+  cancelLabel,
   danger = false,
   send,
   onClose,
@@ -33,6 +34,8 @@ export function ActionConfirm({
   subtitle?: ReactNode;
   body: ReactNode;
   primaryLabel: string;
+  /** The way back, where «Cancel» says less than the action's own word (discarding a draft: «Stay»). */
+  cancelLabel?: string;
   danger?: boolean;
   /** The write and everything after its success; it rejects with the refusal. */
   send: () => Promise<unknown>;
@@ -75,7 +78,7 @@ export function ActionConfirm({
       footer={
         <>
           <Button variant="secondary" onClick={close} disabled={busy}>
-            {t('common.cancel')}
+            {cancelLabel ?? t('common.cancel')}
           </Button>
           <Button
             id={primaryId}

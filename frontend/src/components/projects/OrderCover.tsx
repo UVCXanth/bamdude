@@ -5,6 +5,7 @@ import { Image as ImageIcon, Loader2, Trash2, Upload } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Order } from '../../api/client';
 import { Button } from '../Button';
+import { ActionConfirm } from '../workshop/ActionConfirm';
 import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
@@ -46,15 +47,17 @@ export function OrderCoverThumb({ order, canEdit, onOpen }: { order: Order; canE
 }
 
 /**
- * Upload or remove the cover (WS-13 E3 C05) — the same two mutations the
- * header's cover column used to carry, with the refusal and the wait in the
- * dialog rather than behind it.
+ * Upload or remove the cover (WS-13 E3 C05) — the same two writes the header's
+ * cover column used to carry, with the refusal and the wait in the dialog rather
+ * than behind it. Removing deletes the picture for good, so it asks first, naming
+ * the order and what stays (WS-13 E13 E01).
  */
 export function OrderCoverDialog({ order, onClose }: { order: Order; onClose: () => void }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const fileInput = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const [asking, setAsking] = useState(false);
 
   const refresh = () => invalidateOrderViews(queryClient, { orderId: order.id });
 
@@ -65,14 +68,7 @@ export function OrderCoverDialog({ order, onClose }: { order: Order; onClose: ()
     onError: (e: Error) => setError(e.message),
   });
 
-  const remove = useMutation({
-    mutationFn: () => api.deleteProjectCoverImage(order.id),
-    onMutate: () => setError(null),
-    onSuccess: refresh,
-    onError: (e: Error) => setError(e.message),
-  });
-
-  const busy = upload.isPending || remove.isPending;
+  const busy = upload.isPending;
 
   return (
     <WorkshopDialog
@@ -117,13 +113,27 @@ export function OrderCoverDialog({ order, onClose }: { order: Order; onClose: ()
             {t('orders.cover.upload')}
           </Button>
           {order.cover_image_filename && (
-            <Button variant="secondary" size="sm" onClick={() => remove.mutate()} disabled={busy}>
+            <Button variant="secondary" size="sm" onClick={() => setAsking(true)} disabled={busy}>
               <Trash2 className="w-4 h-4" />
               {t('orders.cover.remove')}
             </Button>
           )}
         </div>
       </div>
+      {asking && (
+        <ActionConfirm
+          title={t('orders.cover.removeTitle', { name: order.name })}
+          body={<p className="text-sm text-bambu-gray">{t('orders.cover.removeBody')}</p>}
+          primaryLabel={t('orders.cover.removeConfirm')}
+          danger
+          send={async () => {
+            setError(null);
+            await api.deleteProjectCoverImage(order.id);
+            refresh();
+          }}
+          onClose={() => setAsking(false)}
+        />
+      )}
     </WorkshopDialog>
   );
 }

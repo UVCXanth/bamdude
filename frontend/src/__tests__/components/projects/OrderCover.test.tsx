@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import { OrderCoverDialog, OrderCoverThumb } from '../../../components/projects/OrderCover';
@@ -67,10 +67,16 @@ describe('OrderCoverDialog', () => {
     await waitFor(() => expect(upload).toHaveBeenCalledWith(1, file));
   });
 
-  it('removes a cover there is, and offers no removal when there is none', async () => {
+  it('asks before removing a cover, naming the order and what goes (E13 E01); none to remove — no offer', async () => {
     const remove = vi.spyOn(api, 'deleteProjectCoverImage').mockResolvedValue({} as never);
     const { unmount } = render(<OrderCoverDialog order={withCover} onClose={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    const ask = await screen.findByRole('dialog', { name: 'Remove the cover of «Ten flasks»?' });
+    expect(ask).toHaveTextContent(
+      'The uploaded cover picture is deleted. The order’s attachments and the library’s files stay.',
+    );
+    expect(remove).not.toHaveBeenCalled();
+    fireEvent.click(within(ask).getByRole('button', { name: 'Remove cover' }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith(1));
     unmount();
 

@@ -7,7 +7,7 @@ import { api } from '../../api/client';
 import type { Order, ProjectLine } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { getColorName } from '../../utils/colors';
-import { ConfirmModal } from '../ConfirmModal';
+import { ActionConfirm } from '../workshop/ActionConfirm';
 import { CardActionMenu, CardActionMenuItem } from '../CardActionMenu';
 import { ProgressBar } from './ProgressBar';
 import { LinePartsTable } from './LinePartsTable';
@@ -102,7 +102,7 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2 }: OrderLines
       invalidate();
       setDeleting(null);
     },
-    onError: (e: Error) => showToast(e.message, 'error'),
+    // A refusal is the confirmation's to show, in its own dialog (WS-13 E13 E02).
   });
 
   const toggleExpanded = (lineId: number) =>
@@ -401,14 +401,13 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2 }: OrderLines
       )}
 
       {deleting && (
-        <ConfirmModal
+        <ActionConfirm
           title={t('orders.lines.confirmDeleteTitle', { product: deleting.product_name })}
-          message={t('orders.lines.confirmDelete')}
-          confirmText={t('orders.lines.confirmDeleteAction')}
-          variant="danger"
-          isLoading={remove.isPending}
-          onConfirm={() => remove.mutate(deleting.id)}
-          onCancel={() => setDeleting(null)}
+          body={<p className="text-sm text-bambu-gray">{t('orders.lines.confirmDelete')}</p>}
+          primaryLabel={t('orders.lines.confirmDeleteAction')}
+          danger
+          send={() => remove.mutateAsync(deleting.id)}
+          onClose={() => setDeleting(null)}
         />
       )}
     </section>

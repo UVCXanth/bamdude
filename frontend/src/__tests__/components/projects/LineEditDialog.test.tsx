@@ -514,6 +514,8 @@ describe('LineEditDialog · its own rules (E4 D02, D03, D05)', () => {
       fireEvent.change(await screen.findByLabelText('Note'), { target: { value: 'spares' } });
       fireEvent.click(screen.getByRole('button', { name: 'Change part quantities…' }));
       const ask = await screen.findByRole('dialog', { name: 'Discard unsaved changes to the line?' });
+      // The Workshop's one confirmation (E13 E02), not the generic ConfirmModal.
+      expect(ask.querySelector('[data-workshop-dialog-footer]')).not.toBeNull();
       fireEvent.click(within(ask).getByRole('button', { name: 'Stay' }));
       await waitFor(() =>
         expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes to the line?' })).not.toBeInTheDocument(),

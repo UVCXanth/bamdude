@@ -6,12 +6,11 @@ import { Package } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Archive, Order, ProjectLine } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
-import { useToast } from '../../contexts/ToastContext';
 import { formatDateTime } from '../../utils/date';
 import { getArchiveStatusBadge } from '../../utils/archiveStatus';
 import { Button } from '../Button';
 import { CardActionMenu, CardActionMenuItem } from '../CardActionMenu';
-import { ConfirmModal } from '../ConfirmModal';
+import { ActionConfirm } from '../workshop/ActionConfirm';
 import { LoadingBlock } from '../LoadingBlock';
 import { PaginationBar } from '../PaginationBar';
 import { Select } from '../Select';
@@ -427,7 +426,6 @@ function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: Arch
   const { t } = useTranslation();
   const { canModify } = useAuth();
   const queryClient = useQueryClient();
-  const { showToast } = useToast();
   const [dialog, setDialog] = useState<'defects' | 'assign' | 'remove' | null>(null);
 
   const badge = getArchiveStatusBadge(archive.status);
@@ -451,7 +449,8 @@ function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: Arch
       invalidateOrderViews(queryClient, { orderId: order.id });
       setDialog(null);
     },
-    onError: (e: Error) => showToast(e.message, 'error'),
+    // A refusal (403, 409 a print its order received) is the confirmation's to show,
+    // in its own dialog (WS-13 E13 E02).
   });
 
   return (
@@ -578,16 +577,15 @@ function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: Arch
       )}
       {dialog === 'assign' && <AssignLineDialog archive={archive} order={order} onClose={() => setDialog(null)} />}
       {dialog === 'remove' && (
-        <ConfirmModal
+        // ⚠️ One click, one request: ActionConfirm holds the second click while the first
+        // unlink is in flight, so the same print is never unfiled twice.
+        <ActionConfirm
           title={t('orders.prints.remove.title', { name })}
-          message={t('orders.prints.remove.message')}
-          confirmText={t('orders.prints.remove.confirm')}
-          variant="danger"
-          // ⚠️ Loading while the unlink is in flight: a second click must not fire the
-          // same DELETE against a print the first one already unfiled.
-          isLoading={remove.isPending}
-          onConfirm={() => remove.mutate()}
-          onCancel={() => setDialog(null)}
+          body={<p className="text-sm text-bambu-gray">{t('orders.prints.remove.message')}</p>}
+          primaryLabel={t('orders.prints.remove.confirm')}
+          danger
+          send={() => remove.mutateAsync()}
+          onClose={() => setDialog(null)}
         />
       )}
     </div>

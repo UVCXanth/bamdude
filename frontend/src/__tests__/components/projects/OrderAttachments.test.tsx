@@ -109,6 +109,15 @@ describe('OrderAttachments', () => {
     await waitFor(() => expect(screen.getByTestId('attachment-delete-b.pdf')).toBeEnabled());
   });
 
+  it('keeps a refused delete in its dialog, in the server’s words (E13 E02)', async () => {
+    vi.spyOn(api, 'deleteProjectAttachment').mockRejectedValue(new Error('Attachment not found'));
+    render(<OrderAttachments order={order} canEdit />);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete attachment «Quote.pdf»' }));
+    const ask = await screen.findByRole('dialog', { name: 'Delete the attachment «Quote.pdf»?' });
+    fireEvent.click(within(ask).getByRole('button', { name: 'Delete' }));
+    expect(await within(ask).findByRole('alert')).toHaveTextContent('Attachment not found');
+  });
+
   it('says each file’s type, size and upload time, and lets only pictures be viewed', () => {
     render(<OrderAttachments order={pictures} canEdit />);
     const row = (name: string) => screen.getByText(name).closest('li') as HTMLElement;

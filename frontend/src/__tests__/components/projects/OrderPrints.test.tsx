@@ -525,6 +525,21 @@ describe('OrderPrints', () => {
     await waitFor(() => expect(remove).toHaveBeenCalledWith(1, [1]));
   });
 
+  it('keeps a refused removal in its dialog, in the server’s words (E13 E02)', async () => {
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue(rows([1]) as never);
+    vi.spyOn(api, 'removeArchivesFromProject').mockRejectedValue(
+      new Error('These prints went onto the shelf for the order — they cannot leave it'),
+    );
+    render(<OrderPrints order={lineOrder([1])} canEdit />);
+    await screen.findByTestId('prints-line-10');
+    fireEvent.click(within(await openMenu(1)).getByRole('menuitem', { name: /remove from/i }));
+    const ask = await screen.findByRole('dialog', { name: 'Remove the print «p1.3mf» from the order?' });
+    fireEvent.click(within(ask).getByRole('button', { name: 'Remove' }));
+    expect(await within(ask).findByRole('alert')).toHaveTextContent(
+      'These prints went onto the shelf for the order — they cannot leave it',
+    );
+  });
+
   it('will not unlink the same print twice while the first request is in flight', async () => {
     vi.spyOn(api, 'getProjectArchives').mockResolvedValue(rows([1]) as never);
     const remove = vi.spyOn(api, 'removeArchivesFromProject').mockReturnValue(new Promise(() => {}) as never);

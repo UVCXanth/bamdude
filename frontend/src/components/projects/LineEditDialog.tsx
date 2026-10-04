@@ -10,7 +10,7 @@ import { useConfigurationKits } from '../../hooks/useConfigurationKits';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 import { getColorName } from '../../utils/colors';
 import { Button } from '../Button';
-import { ConfirmModal } from '../ConfirmModal';
+import { ActionConfirm } from '../workshop/ActionConfirm';
 import { Select } from '../Select';
 import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { WorkshopField, WorkshopFormGrid } from '../workshop/WorkshopFormGrid';
@@ -472,17 +472,17 @@ export function LineEditDialog({ order, line, onClose, onConfigure }: LineEditDi
       </WorkshopDialog>
 
       {leaving && (
-        <ConfirmModal
+        <ActionConfirm
           title={t('orders.lineEdit.discardTitle')}
-          message={t('orders.lineEdit.discardMessage')}
-          confirmText={t('orders.lineEdit.discardConfirm')}
-          cancelText={t('orders.lineEdit.stay')}
-          variant="warning"
-          onConfirm={() => {
+          body={<p className="text-sm text-bambu-gray">{t('orders.lineEdit.discardMessage')}</p>}
+          primaryLabel={t('orders.lineEdit.discardConfirm')}
+          cancelLabel={t('orders.lineEdit.stay')}
+          danger
+          send={async () => {
             setLeaving(false);
             onConfigure();
           }}
-          onCancel={() => setLeaving(false)}
+          onClose={() => setLeaving(false)}
         />
       )}
     </>

@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { Product } from '../../../api/client';
@@ -95,12 +95,27 @@ describe('ProductGallery', () => {
     await waitFor(() => expect(upload).toHaveBeenCalledWith(7, file));
   });
 
-  it('deletes a picture', async () => {
+  it('asks before deleting a picture, naming it and what stays (E13 E01)', async () => {
     const remove = vi.spyOn(api, 'deleteProductAttachment').mockResolvedValue([] as never);
     render(<ProductGallery product={product} canEdit />);
 
     fireEvent.click(screen.getByRole('button', { name: /remove picture: back\.png/i }));
+    const ask = await screen.findByRole('dialog', { name: 'Delete the picture «back.png»?' });
+    expect(ask).toHaveTextContent(
+      'The picture is deleted from «Flask». The other pictures stay; if it was the cover, the first picture becomes the cover.',
+    );
+    expect(remove).not.toHaveBeenCalled();
+    fireEvent.click(within(ask).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith(7, 'b.png'));
+  });
+
+  it('keeps a refused delete in its dialog, in the server’s words', async () => {
+    vi.spyOn(api, 'deleteProductAttachment').mockRejectedValue(new Error('Attachment not found'));
+    render(<ProductGallery product={product} canEdit />);
+    fireEvent.click(screen.getByRole('button', { name: /remove picture: back\.png/i }));
+    const ask = await screen.findByRole('dialog', { name: 'Delete the picture «back.png»?' });
+    fireEvent.click(within(ask).getByRole('button', { name: 'Delete' }));
+    expect(await within(ask).findByRole('alert')).toHaveTextContent('Attachment not found');
   });
 
   it('offers "clear cover" only when an explicit cover was chosen', () => {
@@ -112,11 +127,17 @@ describe('ProductGallery', () => {
     expect(screen.getByRole('button', { name: /clear cover/i })).toBeInTheDocument();
   });
 
-  it('clears the explicit cover', async () => {
+  it('asks before clearing the explicit cover, naming the product and what stays (E13 E01)', async () => {
     const clear = vi.spyOn(api, 'deleteProductCover').mockResolvedValue({ status: 'success' } as never);
     render(<ProductGallery product={{ ...product, cover_image_filename: 'b.png' }} canEdit />);
 
     fireEvent.click(screen.getByRole('button', { name: /clear cover/i }));
+    const ask = await screen.findByRole('dialog', { name: 'Clear the cover of «Flask»?' });
+    expect(ask).toHaveTextContent(
+      'The cover goes back to the first picture of the gallery, and the pictures stay. A cover uploaded on its own is deleted.',
+    );
+    expect(clear).not.toHaveBeenCalled();
+    fireEvent.click(within(ask).getByRole('button', { name: 'Clear cover' }));
     await waitFor(() => expect(clear).toHaveBeenCalledWith(7));
   });
 

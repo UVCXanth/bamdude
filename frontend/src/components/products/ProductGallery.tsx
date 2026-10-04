@@ -5,6 +5,7 @@ import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Image, Loader2, Pack
 import { api } from '../../api/client';
 import type { Product, ProductAttachment } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+import { ActionConfirm } from '../workshop/ActionConfirm';
 import { Button } from '../Button';
 import { Modal } from '../Modal';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
@@ -128,17 +129,11 @@ export function ProductGallery({
     onError: fail,
   });
 
-  const clearCover = useMutation({
-    mutationFn: () => api.deleteProductCover(product.id),
-    onSuccess: done,
-    onError: fail,
-  });
-
-  const remove = useMutation({
-    mutationFn: (filename: string) => api.deleteProductAttachment(product.id, filename),
-    onSuccess: done,
-    onError: fail,
-  });
+  // Clearing the cover and deleting a picture cannot be undone: each asks first, naming
+  // what it touches and what stays, and a refusal stays in its dialog (WS-13 E13 E01).
+  const [asking, setAsking] = useState<{ kind: 'cover' } | { kind: 'picture'; filename: string; name: string } | null>(
+    null,
+  );
 
   const reorder = useMutation({
     mutationFn: (filenames: string[]) => api.reorderProductAttachments(product.id, 'pictures', filenames),
@@ -158,8 +153,6 @@ export function ProductGallery({
     uploadPicture.isPending ||
     uploadCover.isPending ||
     pickCover.isPending ||
-    clearCover.isPending ||
-    remove.isPending ||
     reorder.isPending;
 
   return (
@@ -214,7 +207,7 @@ export function ProductGallery({
               {t('products.gallery.uploadCover')}
             </Button>
             {product.cover_image_filename && (
-              <Button type="button" variant="secondary" size="sm" onClick={() => clearCover.mutate()} disabled={busy}>
+              <Button type="button" variant="secondary" size="sm" onClick={() => setAsking({ kind: 'cover' })} disabled={busy}>
                 <X className="w-4 h-4" />
                 {t('products.gallery.clearCover')}
               </Button>
@@ -316,7 +309,9 @@ export function ProductGallery({
                       className={`${ICON_BUTTON_CLASS} text-status-error`}
                       disabled={busy}
                       aria-label={`${t('products.gallery.removePicture')}: ${picture.original_name}`}
-                      onClick={() => remove.mutate(picture.filename)}
+                      onClick={() =>
+                        setAsking({ kind: 'picture', filename: picture.filename, name: picture.original_name })
+                      }
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -329,6 +324,37 @@ export function ProductGallery({
           <p className="text-sm text-bambu-gray/70 italic self-center">{t('products.gallery.empty')}</p>
         )}
       </div>
+
+      {asking?.kind === 'cover' && (
+        <ActionConfirm
+          title={t('products.gallery.clearCoverTitle', { name: product.name })}
+          body={<p className="text-sm text-bambu-gray">{t('products.gallery.clearCoverBody')}</p>}
+          primaryLabel={t('products.gallery.clearCover')}
+          danger
+          send={async () => {
+            await api.deleteProductCover(product.id);
+            done();
+          }}
+          onClose={() => setAsking(null)}
+        />
+      )}
+      {asking?.kind === 'picture' && (
+        <ActionConfirm
+          title={t('products.gallery.removeTitle', { name: asking.name })}
+          body={
+            <p className="text-sm text-bambu-gray">
+              {t('products.gallery.removeBody', { product: product.name })}
+            </p>
+          }
+          primaryLabel={t('products.gallery.removeConfirm')}
+          danger
+          send={async () => {
+            await api.deleteProductAttachment(product.id, asking.filename);
+            done();
+          }}
+          onClose={() => setAsking(null)}
+        />
+      )}
 
       {lightbox !== null && pictures[lightbox] && (
         <Modal variant="lightbox" onClose={() => setLightbox(null)} ariaLabel={t('products.gallery.lightbox')}>
