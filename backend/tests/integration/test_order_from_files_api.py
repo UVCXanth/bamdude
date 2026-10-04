@@ -125,7 +125,7 @@ async def test_preview_honours_the_library_ownership_read_split(async_client: As
     grp = await async_client.post(
         "/api/v1/groups/",
         headers=admin,
-        json={"name": "pf_read_own", "permissions": ["library:read_own", "projects:read"]},
+        json={"name": "pf_read_own", "permissions": ["library:read_own", "products:read"]},
     )
     assert grp.status_code == 201, grp.text
     created = await async_client.post(
@@ -411,7 +411,7 @@ async def _read_own_caller(async_client: AsyncClient, name: str) -> tuple[dict, 
         headers=admin,
         json={
             "name": f"{name}_grp",
-            "permissions": ["library:read_own", "projects:read", "projects:create", "projects:update"],
+            "permissions": ["library:read_own", "orders:read", "orders:create", "orders:update", "products:read"],
         },
     )
     assert grp.status_code == 201, grp.text

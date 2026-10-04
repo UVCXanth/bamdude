@@ -93,9 +93,9 @@ export function useCustomerActions({
 
   const available: CustomerActionsHost['available'] = () => {
     const out: CustomerAction[] = [];
-    if (hasPermission('projects:update')) out.push('edit');
-    if (hasPermission('projects:create')) out.push('newOrder');
-    if (hasPermission('projects:delete')) out.push('delete');
+    if (hasPermission('customers:update')) out.push('edit');
+    if (hasPermission('orders:create')) out.push('newOrder');
+    if (hasPermission('customers:delete')) out.push('delete');
     return out;
   };
 

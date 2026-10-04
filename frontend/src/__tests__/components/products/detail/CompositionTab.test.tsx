@@ -161,7 +161,7 @@ describe('CompositionTab', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     // Granted outright: the helper's own user arrives a tick later than the first render.
-    auth.granted = new Set(['projects:read', 'projects:update']);
+    auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read', 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     vi.spyOn(api, 'getProductSources').mockResolvedValue(sources);
     vi.spyOn(api, 'getSettings').mockResolvedValue({ currency: 'EUR' } as never);
   });
@@ -278,7 +278,7 @@ describe('CompositionTab', () => {
 
   describe('C09–C10 the doors into the editors', () => {
     it('a reader sees no door at all', () => {
-      auth.granted = new Set(['projects:read']);
+      auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read']);
       render(<Host />);
       expect(screen.queryByRole('button', { name: 'Add part' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Manage variants…' })).not.toBeInTheDocument();

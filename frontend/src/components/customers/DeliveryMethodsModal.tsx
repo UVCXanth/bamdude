@@ -30,7 +30,7 @@ const NAME_MAX = 255;
  * reference. A method contacts use cannot be deleted — the reason is on screen and
  * describes the button (the server answers 409 too); a free one is confirmed first.
  * Refusals stay where they happened; nothing is a toast. Every writer here takes
- * `projects:update` (G07) — without it the reference is read only.
+ * `customers:update` (G07) — without it the reference is read only.
  */
 export function DeliveryMethodsModal({
   onClose,
@@ -44,7 +44,7 @@ export function DeliveryMethodsModal({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { hasPermission } = useAuth();
-  const canEdit = hasPermission('projects:update');
+  const canEdit = hasPermission('customers:update');
   const list = useDeliveryMethods();
   const uid = useId();
   const renameButtonId = (id: number) => `${uid}-rename-${id}`;

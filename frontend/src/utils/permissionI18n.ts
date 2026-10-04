@@ -48,7 +48,10 @@ const CATEGORY_KEYS: Record<string, string> = {
   'Queue': 'queue',
   'Library': 'library',
   'MakerWorld': 'makerworld',
-  'Projects': 'projects',
+  'Orders': 'orders',
+  'Products': 'products',
+  'Customers': 'customers',
+  'Stock': 'stock',
   'Filaments': 'filaments',
   'Inventory': 'inventory',
   'Smart Plugs': 'smartPlugs',
@@ -113,6 +116,8 @@ const ACTION_KEYS: Record<string, string> = {
   'Import': 'import',
   'Connect': 'connect',
   'Manage': 'manage',
+  'Move': 'move',
+  'Adjust': 'adjust',
 };
 
 // Labels that don't follow the simple "Action Resource" pattern
@@ -140,6 +145,6 @@ const LABEL_OVERRIDES: Record<string, string> = {
   'User Email Notifications': 'userEmailNotifications',
   // stats:filter_by_user → "Filter By User Stats" (multi-word action)
   'Filter By User Stats': 'statsFilterByUser',
-  // projects:file_prints → "File Prints Projects" (multi-word action)
-  'File Prints Projects': 'filePrintsProjects',
+  // orders:file_prints → "File Prints Orders" (multi-word action)
+  'File Prints Orders': 'filePrintsOrders',
 };

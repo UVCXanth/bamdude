@@ -10,7 +10,7 @@ import { WorkshopPanel, WorkshopTableScroll } from '../workshop/WorkshopPanel';
 
 interface StockProductsTableProps {
   products: StockListItem[];
-  /** `projects:update`, read once by the page. */
+  /** `stock:move`, read once by the page. */
   canEdit: boolean;
   onAdjust: (product: StockListItem) => void;
   /** «Assemble» for this product — its configuration is chosen in the dialog (R01). */

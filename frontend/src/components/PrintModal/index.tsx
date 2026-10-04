@@ -1106,7 +1106,7 @@ export function PrintModal({
   // plates — which legitimately re-asks the server — would quietly overwrite a
   // deliberate "Without an order" with whatever the next plate needs.
   const [orderFilingTouched, setOrderFilingTouched] = useState(() => seededAnswer?.orderFilingKind !== undefined);
-  // ⚠️ `projects:read` is part of ASKING, not just of answering. The candidates
+  // ⚠️ `orders:read` is part of ASKING, not just of answering. The candidates
   // endpoint requires it beside the library read (it names orders and how much
   // of them is left), so without it the request is a guaranteed 403 — a round
   // trip whose only visible effect is a submit button disabled while it happens
@@ -1119,7 +1119,7 @@ export function PrintModal({
     !orderAnswered &&
     projectId == null &&
     projectLineId == null &&
-    hasPermission('projects:read') &&
+    hasPermission('orders:read') &&
     (mode === 'reprint' || mode === 'add-to-queue');
   // The plate the dialog asks about: the FIRST ticked one, else the plate the
   // auto-select effect is about to tick (the same rule that effect uses), else
@@ -1155,7 +1155,7 @@ export function PrintModal({
 
   // Decision 6: offered only for a batch, and only to an operator who can
   // actually create the order this would file itself under.
-  const offerNewOrder = asksAboutOrder && isBatch && hasPermission('projects:create');
+  const offerNewOrder = asksAboutOrder && isBatch && hasPermission('orders:create');
 
   // ⚠️ **The proposal is DERIVED, never synced into state by an effect.** The
   // silent members of a grouped run submit from an effect of their own, and

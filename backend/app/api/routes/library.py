@@ -277,8 +277,8 @@ def _mtime_to_utc(st_mtime: float) -> datetime:
 
 # Linking a file or a folder to a product is the order desk's business as well
 # (WS-13 E13 B01): beside the library right, a write that changes the links asks
-# ``projects:update`` through the canonical gate, before anything is written.
-_projects_update = require_permission(Permission.PROJECTS_UPDATE)
+# ``products:update`` through the canonical gate, before anything is written.
+_products_update = require_permission(Permission.PRODUCTS_UPDATE)
 
 
 async def _product_ids_of_files(db: AsyncSession, file_ids: list[int]) -> dict[int, set[int]]:
@@ -1111,10 +1111,10 @@ async def create_folder(
     creds: RequestCredentials = Depends(request_credentials),
 ):
     """Create a new folder."""
-    # A folder born linked to products asks ``projects:update`` too (WS-13 E13 B01) —
+    # A folder born linked to products asks ``products:update`` too (WS-13 E13 B01) —
     # first, because inside an external parent the directory is made on the share.
     if data.product_ids:
-        await creds.check(_projects_update)
+        await creds.check(_products_update)
     # Verify parent exists if specified
     if data.parent_id is not None:
         parent_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == data.parent_id))
@@ -1356,10 +1356,10 @@ async def update_folder(
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
 
-    # An explicit product list — ``[]`` included — asks ``projects:update`` too
+    # An explicit product list — ``[]`` included — asks ``products:update`` too
     # (WS-13 E13 B01), before any field is written.
     if data.product_ids is not None:
-        await creds.check(_projects_update)
+        await creds.check(_products_update)
 
     if data.name is not None:
         folder.name = data.name
@@ -1560,8 +1560,8 @@ async def unlink_folder_from_product(
 ):
     """Remove the (folder, product) pivot row. Idempotent: 404 only when
     the folder doesn't exist; missing pivot is treated as already-gone.
-    Unlinking always asks ``projects:update`` too (WS-13 E13 B01)."""
-    await creds.check(_projects_update)
+    Unlinking always asks ``products:update`` too (WS-13 E13 B01)."""
+    await creds.check(_products_update)
     result = await db.execute(
         select(LibraryFolder).options(selectinload(LibraryFolder.products)).where(LibraryFolder.id == folder_id)
     )
@@ -1593,10 +1593,10 @@ async def unlink_file_from_product(
     creds: RequestCredentials = Depends(request_credentials),
 ):
     """Remove the (file, product) pivot row. Idempotent: missing pivot
-    treated as already-gone. Unlinking always asks ``projects:update`` too
+    treated as already-gone. Unlinking always asks ``products:update`` too
     (WS-13 E13 B01)."""
     user, can_modify_all = auth_result
-    await creds.check(_projects_update)
+    await creds.check(_products_update)
 
     result = await db.execute(
         select(LibraryFile).options(selectinload(LibraryFile.products)).where(LibraryFile.id == file_id)
@@ -4403,7 +4403,7 @@ async def get_library_file_order_candidates(
             Permission.LIBRARY_READ_OWN,
         )
     ),
-    _: User | None = Depends(require_permission(Permission.PROJECTS_READ)),
+    _: User | None = Depends(require_permission(Permission.ORDERS_READ)),
 ):
     """Which orders this plate could be filed under, best first (spec pass 7).
 
@@ -4413,7 +4413,7 @@ async def get_library_file_order_candidates(
 
     Two permissions, both required: the ownership-scoped LIBRARY read decides
     whether the caller may see this FILE at all (404 otherwise, exactly as
-    ``/card`` answers), and ``PROJECTS_READ`` because the answer names orders,
+    ``/card`` answers), and ``orders:read`` because the answer names orders,
     their customers' work and how much of it is left. A caller who may read the
     library but not the orders gets 403 and learns nothing about either.
 
@@ -4456,10 +4456,10 @@ async def preview_parts_of_files(
             Permission.LIBRARY_READ_OWN,
         )
     ),
-    _: User | None = Depends(require_permission(Permission.PROJECTS_READ)),
+    _: User | None = Depends(require_permission(Permission.PRODUCTS_READ)),
 ):
     """What the selected files make, unified by part — step 1 of the library
-    wizard (spec 2026-09-06, Slice C). Read-only. ``PROJECTS_READ`` beside the
+    wizard (spec 2026-09-06, Slice C). Read-only. ``products:read`` beside the
     library read because the answer names a catalogue product.
 
     Same ownership-scoped read split as ``/files/{file_id}/order-candidates``:
@@ -5330,20 +5330,20 @@ async def update_file(
             raise HTTPException(status_code=404, detail="Folder not found")
 
     # The product list this PUT ends with, decided before anything is written: a
-    # change of links asks ``projects:update`` too (WS-13 E13 B01) — always for an
+    # change of links asks ``products:update`` too (WS-13 E13 B01) — always for an
     # explicit list, for a move only when the target's set differs from the file's
     # — and a refusal leaves the file as it was. ``None`` = links untouched.
     desired_product_ids: list[int] | None = None
     if data.product_ids is not None:
         # Explicit product_ids override wins over the folder-inherited list.
-        await creds.check(_projects_update)
+        await creds.check(_products_update)
         desired_product_ids = [p.id for p in await _resolve_products_for_assign(db, data.product_ids)]
     elif data.folder_id is not None:
         # Moving to root (``0``) clears product links — root has no folder, so
         # nothing to inherit from.
         desired_product_ids = [p.id for p in target_folder.products] if target_folder else []
         if set(desired_product_ids) != {p.id for p in file.products}:
-            await creds.check(_projects_update)
+            await creds.check(_products_update)
 
     if data.filename is not None:
         # Reject the full FAT32/exFAT-illegal set (Bambu-Studio parity), not just
@@ -5736,7 +5736,7 @@ async def move_files(
 
     # A move replaces each file's product links with the target's, so a batch in
     # which any file the loop below would move ends with a different set asks
-    # ``projects:update`` too (WS-13 E13 B01) — before the first file moves, so a
+    # ``products:update`` too (WS-13 E13 B01) — before the first file moves, so a
     # refusal moves nothing. The two skips decided up front (not the owner, a
     # read-only source) are left out; a later byte-move skip is not foreseen, so
     # its file may ask for a change that then does not happen — a refusal errs
@@ -5758,7 +5758,7 @@ async def move_files(
     ]
     current_links = await _product_ids_of_files(db, moving)
     if any(links != set(target_product_ids) for links in current_links.values()):
-        await creds.check(_projects_update)
+        await creds.check(_products_update)
 
     moved = 0
     skipped = 0

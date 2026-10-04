@@ -43,7 +43,7 @@ export function CustomersTable({ customers, actions, sort, onSortChange, footer 
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const hasActions =
-    hasPermission('projects:update') || hasPermission('projects:create') || hasPermission('projects:delete');
+    hasPermission('customers:update') || hasPermission('orders:create') || hasPermission('customers:delete');
   const uid = useId();
   const [open, setOpen] = useState<Set<number>>(() => new Set());
   const toggle = (id: number) =>

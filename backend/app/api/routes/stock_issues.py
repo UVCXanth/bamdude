@@ -77,7 +77,7 @@ async def list_stock_issues(
     per_page: int = Query(24, ge=1, le=200),
     all: bool = Query(False, description="Skip pagination and return every matching note"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.STOCK_READ),
 ):
     """Dispatch notes — the stock page's tab, an order's «Видачі», a customer's issues (rules 12, 20–22)."""
     query = select(StockIssue)
@@ -106,7 +106,7 @@ async def list_stock_issues(
 async def get_dispatch_note(
     issue_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.STOCK_READ),
 ):
     """The document, drawn only from its snapshot (rule 14)."""
     issue = await db.get(StockIssue, issue_id)
@@ -120,7 +120,7 @@ async def update_stock_issue(
     issue_id: int,
     data: StockIssueUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.STOCK_MOVE),
 ):
     """The waybill number (at most 24 characters) and the note — nothing else."""
     issue = await db.get(StockIssue, issue_id)

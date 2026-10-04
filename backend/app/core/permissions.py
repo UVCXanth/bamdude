@@ -80,15 +80,26 @@ class Permission(StrEnum):
     MAKERWORLD_VIEW = "makerworld:view"
     MAKERWORLD_IMPORT = "makerworld:import"
 
-    # Projects
-    PROJECTS_READ = "projects:read"
-    PROJECTS_CREATE = "projects:create"
-    PROJECTS_UPDATE = "projects:update"
-    PROJECTS_DELETE = "projects:delete"
-    # File any print under an order and take it out (m193, WS-13 E13): a print from the
-    # printer's screen or a slicer has no owner, and `archives:update_all` would open
-    # everybody's photos and files too.
-    PROJECTS_FILE_PRINTS = "projects:file_prints"
+    # Workshop (WS-13 E13, m194): each domain has its own rights. ``orders:file_prints`` files
+    # any print — past or future, own, someone else's or ownerless — under an open order; it
+    # opens nothing else of an archive. ``stock:move`` is the flow of goods, ``stock:adjust``
+    # the corrections of the books.
+    ORDERS_READ = "orders:read"
+    ORDERS_CREATE = "orders:create"
+    ORDERS_UPDATE = "orders:update"
+    ORDERS_DELETE = "orders:delete"
+    ORDERS_FILE_PRINTS = "orders:file_prints"
+    PRODUCTS_READ = "products:read"
+    PRODUCTS_CREATE = "products:create"
+    PRODUCTS_UPDATE = "products:update"
+    PRODUCTS_DELETE = "products:delete"
+    CUSTOMERS_READ = "customers:read"
+    CUSTOMERS_CREATE = "customers:create"
+    CUSTOMERS_UPDATE = "customers:update"
+    CUSTOMERS_DELETE = "customers:delete"
+    STOCK_READ = "stock:read"
+    STOCK_MOVE = "stock:move"
+    STOCK_ADJUST = "stock:adjust"
 
     # Inventory (Spool Inventory, Spool Catalog, Color Catalog)
     INVENTORY_READ = "inventory:read"
@@ -282,12 +293,29 @@ PERMISSION_CATEGORIES = {
         Permission.MAKERWORLD_VIEW,
         Permission.MAKERWORLD_IMPORT,
     ],
-    "Projects": [
-        Permission.PROJECTS_READ,
-        Permission.PROJECTS_CREATE,
-        Permission.PROJECTS_UPDATE,
-        Permission.PROJECTS_DELETE,
-        Permission.PROJECTS_FILE_PRINTS,
+    "Orders": [
+        Permission.ORDERS_READ,
+        Permission.ORDERS_CREATE,
+        Permission.ORDERS_UPDATE,
+        Permission.ORDERS_DELETE,
+        Permission.ORDERS_FILE_PRINTS,
+    ],
+    "Products": [
+        Permission.PRODUCTS_READ,
+        Permission.PRODUCTS_CREATE,
+        Permission.PRODUCTS_UPDATE,
+        Permission.PRODUCTS_DELETE,
+    ],
+    "Customers": [
+        Permission.CUSTOMERS_READ,
+        Permission.CUSTOMERS_CREATE,
+        Permission.CUSTOMERS_UPDATE,
+        Permission.CUSTOMERS_DELETE,
+    ],
+    "Stock": [
+        Permission.STOCK_READ,
+        Permission.STOCK_MOVE,
+        Permission.STOCK_ADJUST,
     ],
     "Inventory": [
         Permission.INVENTORY_READ,
@@ -462,12 +490,23 @@ DEFAULT_GROUPS = {
             # Orca Cloud preset picker populates. Bambu Cloud (CLOUD_AUTH)
             # stays admin-only (more sensitive account binding).
             Permission.ORCA_CLOUD_AUTH.value,
-            # Projects - full access
-            Permission.PROJECTS_READ.value,
-            Permission.PROJECTS_CREATE.value,
-            Permission.PROJECTS_UPDATE.value,
-            Permission.PROJECTS_DELETE.value,
-            Permission.PROJECTS_FILE_PRINTS.value,
+            # Workshop - full access (orders, catalog, customers, stock)
+            Permission.ORDERS_READ.value,
+            Permission.ORDERS_CREATE.value,
+            Permission.ORDERS_UPDATE.value,
+            Permission.ORDERS_DELETE.value,
+            Permission.ORDERS_FILE_PRINTS.value,
+            Permission.PRODUCTS_READ.value,
+            Permission.PRODUCTS_CREATE.value,
+            Permission.PRODUCTS_UPDATE.value,
+            Permission.PRODUCTS_DELETE.value,
+            Permission.CUSTOMERS_READ.value,
+            Permission.CUSTOMERS_CREATE.value,
+            Permission.CUSTOMERS_UPDATE.value,
+            Permission.CUSTOMERS_DELETE.value,
+            Permission.STOCK_READ.value,
+            Permission.STOCK_MOVE.value,
+            Permission.STOCK_ADJUST.value,
             # Inventory - full access
             Permission.INVENTORY_READ.value,
             Permission.INVENTORY_CREATE.value,
@@ -555,7 +594,10 @@ DEFAULT_GROUPS = {
             Permission.LIBRARY_READ_ALL.value,
             Permission.LIBRARY_NOTES_WRITE.value,
             Permission.MAKERWORLD_VIEW.value,
-            Permission.PROJECTS_READ.value,
+            Permission.ORDERS_READ.value,
+            Permission.PRODUCTS_READ.value,
+            Permission.CUSTOMERS_READ.value,
+            Permission.STOCK_READ.value,
             Permission.INVENTORY_READ.value,
             Permission.INVENTORY_VIEW_ASSIGNMENTS.value,
             Permission.INVENTORY_FORECAST_READ.value,

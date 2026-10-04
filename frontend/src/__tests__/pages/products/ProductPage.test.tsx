@@ -442,7 +442,7 @@ describe('ProductPage', () => {
     });
 
     it('is disabled for somebody who may not change the product', async () => {
-      auth.granted = new Set(['projects:read']);
+      auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read']);
       mountAt();
       expect(await screen.findByRole('checkbox', { name: /in the catalog/i })).toBeDisabled();
     });

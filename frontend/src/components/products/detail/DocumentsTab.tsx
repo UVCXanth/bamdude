@@ -71,7 +71,7 @@ export function DocumentsTab({
 }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
-  const canEdit = hasPermission('projects:update');
+  const canEdit = hasPermission('products:update');
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   // Per section: two sections may upload at once, and each waits for its own (E9 final review).

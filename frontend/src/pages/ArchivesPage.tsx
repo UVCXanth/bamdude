@@ -673,7 +673,7 @@ function ArchiveCard({
       onClick: () => setShowAddToOrder(true),
       // WS-13 E13 B06: filing rewrites the archive AND the order, as the server asks.
       disabled: !canFileArchive(hasPermission, canModify, archive.created_by_id),
-      title: !hasPermission('projects:update')
+      title: !hasPermission('orders:update')
         ? t('archives.permission.noFileUnderOrder')
         : !canModify('archives', 'update', archive.created_by_id)
           ? t('archives.permission.noUpdateArchives')
@@ -2063,7 +2063,7 @@ function ArchiveListRow({
       onClick: () => setShowAddToOrder(true),
       // WS-13 E13 B06: filing rewrites the archive AND the order, as the server asks.
       disabled: !canFileArchive(hasPermission, canModify, archive.created_by_id),
-      title: !hasPermission('projects:update')
+      title: !hasPermission('orders:update')
         ? t('archives.permission.noFileUnderOrder')
         : !canModify('archives', 'update', archive.created_by_id)
           ? t('archives.permission.noUpdateArchives')
@@ -3165,13 +3165,13 @@ export function ArchivesPage() {
   const selectionMode = isSelectionMode || selectedIds.size > 0;
   // The bulk «Order» asks every selected print, as the server does (WS-13 E13 B06). A
   // selected print not on this page has no owner to read, so it counts as ownerless —
-  // `update_all` or the Workshop's `projects:file_prints` moves it.
+  // `update_all` or the Workshop's `orders:file_prints` moves it.
   const canFileSelection = Array.from(selectedIds).every((id) =>
     canFileArchive(hasPermission, canModify, archives?.find((a) => a.id === id)?.created_by_id ?? null),
   );
   const fileSelectionTitle = canFileSelection
     ? undefined
-    : !hasPermission('projects:update')
+    : !hasPermission('orders:update')
       ? t('archives.permission.noFileUnderOrder')
       : hasAnyPermission('archives:update_own', 'archives:update_all')
         ? t('archives.permission.notAllSelected')

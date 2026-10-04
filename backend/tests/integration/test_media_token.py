@@ -225,7 +225,11 @@ async def test_a_trashed_own_archive_still_shows_its_thumbnail(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_a_token_without_the_resources_permission_is_forbidden(async_client: AsyncClient):
-    jwt, _ = await _make_user(async_client, username="mt_projects", permissions=["projects:read"])
+    jwt, _ = await _make_user(
+        async_client,
+        username="mt_projects",
+        permissions=["orders:read", "products:read", "customers:read", "stock:read"],
+    )
     token = await _mint(async_client, jwt)
     assert (await _raw_get(async_client, _with_token("/api/v1/archives/1/thumbnail", token))).status_code == 403
 

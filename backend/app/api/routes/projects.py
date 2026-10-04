@@ -595,7 +595,7 @@ async def list_projects(
     per_page: int = Query(24, ge=1, le=200),
     all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.ORDERS_READ),
 ):
     """The orders list. ``page`` is the compat switch (the inventory's contract).
 
@@ -804,7 +804,7 @@ async def _list_rows(db: AsyncSession, projects: Sequence[Project]) -> list[Proj
 @router.get("/summary", response_model=OrdersSummary)
 async def orders_summary(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.ORDERS_READ),
 ):
     """The orders page's tiles (spec workshop-lists, rules 1–2): the farm's
     ACTIVE orders, whatever the list below them is filtered by. Declared above
@@ -837,7 +837,7 @@ async def orders_summary(
 @router.get("/nav-badges", response_model=ProjectsNavBadges)
 async def projects_nav_badges(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.ORDERS_READ),
 ):
     """The sidebar badges of the Projects section (spec workshop-nav, rule 9):
     asked from every page of the app, so one COUNT per badge and nothing that
@@ -874,7 +874,7 @@ async def get_order_board(
     responsible_id: int | None = None,
     q: str | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.ORDERS_READ),
 ):
     """The kanban in one request (spec workshop-order-views, rule 5): active orders
     by their manual stage — the most urgent first, at most ``_BOARD_LIMIT`` each —
@@ -913,7 +913,7 @@ async def get_order_deadlines(
     responsible_id: int | None = None,
     q: str | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.ORDERS_READ),
 ):
     """The deadlines board (spec workshop-order-views, rules 14–16). The forecast is
     one ``forecast_projects`` walk over the active orders under the filters, on
@@ -1002,10 +1002,10 @@ async def get_order_deadlines(
 @router.get("/assignees", response_model=list[OrderAssigneeOut])
 async def list_order_assignees(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.ORDERS_READ),
 ):
     """Who may be made responsible for an order (spec workshop-order-stage, rule 26):
-    every active user, by name. Under ``projects:read`` — the administrative user
+    every active user, by name. Under ``orders:read`` — the administrative user
     list is not something everyone who works with orders may read. Declared above
     ``/{project_id}``, or ``assignees`` would be parsed as an id."""
     rows = (
@@ -1106,7 +1106,7 @@ def _consumed_its_stock(status: str | None) -> bool:
 async def create_project(
     data: ProjectCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_CREATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_CREATE),
 ):
     await _check_customer(db, data.customer_id)
     await _check_contact(db, data.contact_id, data.customer_id)
@@ -1145,7 +1145,7 @@ async def create_project_from_files(
     data: OrderFromFilesRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_CREATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_CREATE),
 ):
     """Product + order out of library files, with nobody authoring either
     (spec 2026-09-06, Slice C). One request, one transaction: a refusal after
@@ -1225,7 +1225,7 @@ def _order_forecast_fields(f: farm_forecast.OrderForecast) -> dict:
 async def get_orders_forecast(
     ids: str | None = Query(None, description="Comma-separated order ids, at most 200"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.ORDERS_READ),
 ):
     """«Ready by» for a page of orders (spec 2026-09-06, Slice B). Advisory:
     reads the database only, gates nothing. An unknown id is absent; a closed
@@ -1270,7 +1270,7 @@ def _need_row_fields(r: filament_needs.NeedRow) -> dict:
 
 @router.get("/filament", response_model=FarmNeedsOut)
 async def get_orders_filament(
-    db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
+    db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.ORDERS_READ)
 ):
     """What every active order still needs, per material and colour, against the shelf."""
     farm = await filament_needs.needs_of_farm(db)
@@ -1285,7 +1285,7 @@ async def get_orders_filament(
 
 @router.get("/{project_id}", response_model=ProjectResponse)
 async def get_project(
-    project_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
+    project_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.ORDERS_READ)
 ):
     return await _response(db, project_id)
 
@@ -1306,7 +1306,7 @@ async def update_project(
     data: ProjectUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     project = await _get_project(db, project_id)
     completing = data.status == "completed" and project.status != "completed"
@@ -1434,11 +1434,11 @@ async def set_project_stage(
     project_id: int,
     data: ProjectStageUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     """Set the order's stage by hand — the only way it changes (spec workshop-order-stage, rule 4).
 
-    Whoever is on the farm with ``projects:update`` may set it, and the journal
+    Whoever is on the farm with ``orders:update`` may set it, and the journal
     says who. The same stage again writes nothing; a closed order has none.
     """
     project = await _get_project(db, project_id)
@@ -1490,7 +1490,7 @@ async def _line_positions(db: AsyncSession, lines) -> dict[int, StockPositionRef
 async def get_fulfilment(
     project_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.ORDERS_READ),
 ):
     """What each line can assemble, receive and issue now — the numbers the issue dialog
     shows and the ones ``POST`` checks against (one arithmetic, ``order_fulfilment.state``)
@@ -1534,7 +1534,7 @@ async def fulfil_order(
     data: FulfilmentIn,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     """One «Виконати» of the issue dialog: assemble, receive and issue, one issue for the
     whole batch, and — asked and everything issued — the order completed. A number above
@@ -1589,7 +1589,7 @@ async def fulfil_order(
 async def get_stock_offers(
     project_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.ORDERS_READ),
 ):
     """What the shelves could cover of what this order has not printed, is not printing
     and has not queued (spec workshop-order-issue, rule 17) — an active order only."""
@@ -1603,7 +1603,7 @@ async def take_stock(
     request: Request,
     data: TakeStockIn | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     """Take the offers — the numbers the banner showed, clamped to the offer now and to
     the shelf; the answer says what each line asked and got (rule 20)."""
@@ -1625,7 +1625,7 @@ async def delete_project(
     project_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_DELETE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_DELETE),
 ):
     """Archives and queue rows survive, unlinked (SET NULL done explicitly — SQLite enforces nothing)."""
     project = await _get_project(db, project_id)
@@ -1791,7 +1791,7 @@ async def add_lines_batch(
     data: BatchLinesIn,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     """Add many lines in one transaction (spec workshop-add-to-order, rule 11): products
     with their configuration and stock, parts of a product, one-offs from a file plate.
@@ -1819,7 +1819,7 @@ async def add_line(
     project_id: int,
     data: ProjectLineCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     project = await _get_project(db, project_id)
     _check_line_create(data)
@@ -1841,7 +1841,7 @@ async def update_line(
     line_id: int,
     data: ProjectLineUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     line = await _get_line(db, project_id, line_id)
     if line.mode == "parts":
@@ -1962,7 +1962,7 @@ async def configure_line(
     line_id: int,
     data: LineConfigurationIn,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     """Change a line's options and counts (spec workshop-product-variants, rules 11–14).
 
@@ -2051,7 +2051,7 @@ async def delete_line(
     line_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     line = await _get_line(db, project_id, line_id)
     # The gate of its product first (WS-13 E1 BL3): the cascade below may delete it.
@@ -2100,7 +2100,7 @@ async def delete_line(
 async def bank_surplus(
     project_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     """Move this order's overprint onto the product's shelf (pass 8, Decision 2).
 
@@ -2195,7 +2195,7 @@ async def update_procurement(
     part_id: int,
     data: ProcurementUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     project = await _get_project(db, project_id)
     part = await db.get(ProductPart, part_id)
@@ -2229,7 +2229,7 @@ async def list_project_archives(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.ORDERS_READ),
 ):
     """List archives in a project.
 
@@ -2273,14 +2273,14 @@ async def list_project_archives(
 
 
 # Filing a print under an order, or taking it out, rewrites the archive as well
-# (WS-13 E13 B03): beside ``projects:update`` it asks the archive's own update right
+# (WS-13 E13 B03): beside ``orders:update`` it asks the archive's own update right
 # through the canonical ownership gate, called with the request's credentials.
 _archives_update = require_ownership_permission(Permission.ARCHIVES_UPDATE_ALL, Permission.ARCHIVES_UPDATE_OWN)
-_file_prints = require_permission(Permission.PROJECTS_FILE_PRINTS)
+_file_prints = require_permission(Permission.ORDERS_FILE_PRINTS)
 
 
 async def _ensure_may_move_archives(creds: RequestCredentials, archives: list[PrintArchive]) -> None:
-    """``projects:file_prints`` — the Workshop's own right (m193) — files any print; else
+    """``orders:file_prints`` — the Workshop's own right (m193, m194) — files any print; else
     ``archives:update_all`` moves any print, ``archives:update_own`` only the caller's
     own — an ownerless print only ``all``. One print out of reach refuses the whole
     batch, before anything is written.
@@ -2306,7 +2306,7 @@ async def add_archives_to_project(
     project_id: int,
     data: BatchAddArchives,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
     creds: RequestCredentials = Depends(request_credentials),
 ):
     """File existing prints under this order, optionally under one of its lines."""
@@ -2374,7 +2374,7 @@ async def remove_archives_from_project(
     project_id: int,
     data: BatchAddArchives,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
     creds: RequestCredentials = Depends(request_credentials),
 ):
     """Unfile prints from this order — the line goes with the order, never alone."""
@@ -2444,7 +2444,7 @@ async def get_order_print_parts(
     project_id: int,
     archive_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.ORDERS_READ),
 ):
     """The print's part rows for the order page's defects dialog.
 
@@ -2462,11 +2462,11 @@ async def record_order_print_defects(
     archive_id: int,
     data: OrderPrintDefectsIn,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     """Record what came out bad on one of this order's prints (spec 2026-09-11 §4).
 
-    Under ``projects:update`` and scoped to a print FILED under this order: the
+    Under ``orders:update`` and scoped to a print FILED under this order: the
     defects change the order's figures, so the order's permission is the right
     one, and an operator who may edit the order need not hold
     ``archives:update_all`` for a print somebody else started. The writer is the
@@ -2496,7 +2496,7 @@ async def add_queue_items_to_project(
     project_id: int,
     data: BatchAddQueueItems,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     """Batch add queue items to a project.
 
@@ -2545,7 +2545,7 @@ async def upload_attachment(
     project_id: int,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     """Upload an attachment to a project."""
     logger.info("=== UPLOAD START: %s for project %s ===", file.filename, project_id)
@@ -2627,7 +2627,7 @@ async def download_attachment(
     project_id: int,
     filename: str,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.ORDERS_READ),
 ):
     """Download an attachment from a project."""
     # Validate filename to prevent path traversal
@@ -2665,7 +2665,7 @@ async def delete_attachment(
     project_id: int,
     filename: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     """Delete an attachment from a project."""
     # Validate filename to prevent path traversal
@@ -2723,7 +2723,7 @@ async def upload_project_cover_image(
     project_id: int,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     """Upload (or replace) the project's cover image (#1155).
 
@@ -2788,13 +2788,13 @@ async def upload_project_cover_image(
 async def get_project_cover_image(
     project_id: int,
     db: AsyncSession = Depends(get_db),
-    _=Depends(require_media_permission(Permission.PROJECTS_READ)),
+    _=Depends(require_media_permission(Permission.ORDERS_READ)),
 ):
     """Stream the project's cover image (#1155).
 
     Browsers can't attach ``Authorization: Bearer ...`` to ``<img src>``
     requests, so this route takes a media token in ``?token=`` (or the
-    ordinary headers) under ``projects:read`` — audit D9 a2; it used to take
+    ordinary headers) under ``orders:read`` — audit D9 a2; it used to take
     the camera stream token, which cost ``camera:view``. The frontend wraps
     URLs via ``withMediaToken``.
     """
@@ -2834,7 +2834,7 @@ async def get_project_cover_image(
 async def delete_project_cover_image(
     project_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     """Remove the project's cover image (#1155)."""
     result = await db.execute(select(Project).where(Project.id == project_id))
@@ -2925,7 +2925,7 @@ async def get_project_timeline(
     project_id: int,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.ORDERS_READ),
 ):
     """Everything that happened to a project, newest first.
 
@@ -3150,7 +3150,7 @@ async def duplicate_project(
     project_id: int,
     data: ProjectDuplicate = Body(default_factory=ProjectDuplicate),
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_CREATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_CREATE),
 ):
     """A reorder: lines, customer, notes, attachments come across; history never does; status is active."""
     source = await _get_project(db, project_id)
@@ -3350,7 +3350,7 @@ async def get_order_plan(
     project_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: User | None = RequirePermission(Permission.PROJECTS_READ),
+    user: User | None = RequirePermission(Permission.ORDERS_READ),
 ):
     """What to print next for every line of this order (spec pass 3).
 
@@ -3376,7 +3376,7 @@ async def get_order_queue(
     project_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.ORDERS_READ),
 ):
     """The order's live work in both queue tiers (spec workshop-order-queue): the
     archives printing now, the printer-queue rows waiting, and the auto-queue rows
@@ -3427,7 +3427,7 @@ async def get_order_queue(
 
 @router.get("/{project_id}/forecast", response_model=OrderForecastDetailOut)
 async def get_order_forecast(
-    project_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
+    project_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.ORDERS_READ)
 ):
     """One order's «ready by», with its lines and the farm's proposed split per row."""
     await _get_project(db, project_id)
@@ -3456,7 +3456,7 @@ async def get_order_forecast(
 
 @router.get("/{project_id}/filament", response_model=OrderNeedsOut)
 async def get_order_filament(
-    project_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
+    project_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.ORDERS_READ)
 ):
     await _get_project(db, project_id)
     needs = (await filament_needs.needs_of_orders(db, [project_id]))[project_id]
@@ -3494,13 +3494,13 @@ async def enqueue_order_plan(
     project_id: int,
     data: PlanEnqueueRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE, Permission.QUEUE_CREATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE, Permission.QUEUE_CREATE),
 ):
     """Send plan rows to the auto-queue, or to one printer's queue.
 
     Both queue doors (``POST /queue/``, ``POST /auto-queue/``) require
     ``queue:create``; this one also changes what an order has coming, so it
-    asks for ``projects:update`` too — ``RequirePermission`` demands ALL of the
+    asks for ``orders:update`` too — ``RequirePermission`` demands ALL of the
     permissions it is given.
 
     ⚠️ **Routing is not dispatching.** Naming a printer says WHERE the work is
@@ -3726,13 +3726,13 @@ async def rebalance_order_line(
     project_id: int,
     line_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE, Permission.QUEUE_UPDATE_ALL),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE, Permission.QUEUE_UPDATE_ALL),
 ):
     """Move this line's still-pending auto-queue prints to idle printers of another
     model where that finishes sooner (spec 2026-09-10) — the setting and the
     cooldown do not apply to a button.
 
-    ``queue:update_all`` beside ``projects:update``: this rewrites router rows
+    ``queue:update_all`` beside ``orders:update``: this rewrites router rows
     whoever queued them. The handler does not commit — ``get_db`` does — but the
     writer that creates the extra prints commits per call, exactly as the plan's
     enqueue door does.

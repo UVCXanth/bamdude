@@ -3,7 +3,7 @@
  * once by its own button — an explicit rename in the row (Enter / «Save», Escape or
  * «Cancel» undo the row only), a delete confirmed and refused while contacts use the method
  * (the reason on screen, not only in a title), an add whose refusal stays under its field —
- * with its reads' states and the rights its writers take (`projects:update`, G07).
+ * with its reads' states and the rights its writers take (`customers:update`, G07).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -31,7 +31,7 @@ function asReader() {
         is_active: true,
         is_admin: false,
         groups: [{ id: 2, name: 'Viewers' }],
-        permissions: ['projects:read'],
+        permissions: ['orders:read', 'products:read', 'customers:read', 'stock:read'],
         created_at: '2024-01-01T00:00:00Z',
       }),
     ),
@@ -325,7 +325,7 @@ describe('DeliveryMethodsModal', () => {
     });
   });
 
-  it('without projects:update the reference is read only (G07)', async () => {
+  it('without customers:update the reference is read only (G07)', async () => {
     asReader();
     render(<DeliveryMethodsModal onClose={() => {}} />);
     await screen.findByTestId('method-row-Pickup');

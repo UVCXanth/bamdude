@@ -90,7 +90,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   const chosenOrderClosed = chosenOrder.data != null && chosenOrder.data.status !== 'active';
   // WS-13 E13 B06: the order and the line move only with the right to change orders;
   // without it they are shown, not offered (the server asks it of a changed binding).
-  const canChangeOrder = hasPermission('projects:update');
+  const canChangeOrder = hasPermission('orders:update');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [notes, setNotes] = useState(archive.notes || '');
   const [tags, setTags] = useState(archive.tags || '');
@@ -449,7 +449,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
             so on a failed or cancelled one this button can do nothing but
             answer "this print counted nothing into stock", which reads as a
             bug in the button rather than as the rule it is. */}
-        {hasPermission('projects:update') &&
+        {hasPermission('stock:adjust') &&
           archive.status === 'completed' &&
           archive.project_id == null &&
           projectId == null && (

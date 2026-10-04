@@ -13,7 +13,7 @@ import { WorkshopDialog } from '../../workshop/WorkshopDialog';
  *
  * The pictures live in a dialog now, not in the page's body (K8): «Pictures…» under the
  * field — for every reader — and a click on the cover open the same outer dialog with the
- * existing gallery (managing it stays `projects:update`'s, the viewer is everyone's). The
+ * existing gallery (managing it stays `products:update`'s, the viewer is everyone's). The
  * gallery's viewer opens OVER that dialog: Escape closes only the topmost layer (the modal
  * stack), and each layer gives the focus back to what opened it.
  */

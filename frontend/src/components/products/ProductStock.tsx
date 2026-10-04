@@ -12,7 +12,7 @@ interface ProductStockProps {
   productId: number;
   /** Named by the adjust dialog's subtitle. */
   productName: string;
-  /** `projects:update` — the page asks the question once and hands the answer down. */
+  /** `stock:move` — the page asks the question once and hands the answer down. */
   canEdit: boolean;
   /** The product has variant groups: the kits are counted per option (WS-13 E9 F02). */
   hasVariants?: boolean;

@@ -61,6 +61,13 @@ _PERMISSION_RENAMES: dict[str, str] = {
     "github:restore": "git:restore",
 }
 
+# Keys this migration must KEEP although the live enum no longer has them, because a later
+# migration converts them: m194 maps ``projects:*`` onto the Workshop's domain rights (WS-13
+# E13). Without this, a database that reaches m046 after the split — an install from before
+# v0.4.4, an old backup — would lose every Workshop right before m194 could convert it. The
+# owner's narrow exception to "never edit a shipped migration" (N14): nothing else here changed.
+_CARRIED_FORWARD: frozenset[str] = frozenset({"projects:read", "projects:create", "projects:update", "projects:delete"})
+
 
 def _normalize(perms: list[str], valid: set[str]) -> list[str]:
     """Apply renames + drop unknown keys + de-dupe, preserving first-seen
@@ -86,7 +93,7 @@ async def seed(session_factory):
     # to materialise before m046 is registered.
     from backend.app.core.permissions import ALL_PERMISSIONS
 
-    valid = set(ALL_PERMISSIONS)
+    valid = set(ALL_PERMISSIONS) | _CARRIED_FORWARD
 
     # Column-explicit read + Core update — the model evolves, and an
     # entity-wide ``select(Group)`` would emit future columns in the SQL

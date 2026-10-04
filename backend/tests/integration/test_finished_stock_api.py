@@ -264,7 +264,9 @@ async def test_params_and_the_sidebar_badge(committing_client, farm):
 async def test_reading_is_not_moving(async_client: AsyncClient, farm):
     admin = {"Authorization": f"Bearer {create_access_token(data={'sub': 'test_admin'})}"}
     grp = await async_client.post(
-        "/api/v1/groups/", headers=admin, json={"name": "stock_readers", "permissions": ["projects:read"]}
+        "/api/v1/groups/",
+        headers=admin,
+        json={"name": "stock_readers", "permissions": ["orders:read", "products:read", "customers:read", "stock:read"]},
     )
     assert grp.status_code == 201, grp.text
     created = await async_client.post(

@@ -1,11 +1,11 @@
 """Filing a print under an order asks for the print too (WS-13 E13 B03, B04, B05).
 
 ``add-archives`` / ``remove-archives`` move an archive's order, so beside
-``projects:update`` they ask the archive's own update right through the canonical
+``orders:update`` they ask the archive's own update right through the canonical
 ownership gate: ``archives:update_all`` files any print, ``archives:update_own`` only
 the caller's own, an ownerless print only ``all``; one print out of reach refuses the
 whole batch and nothing is written. The archive editor is the mirror image: a PATCH
-that actually moves the order or the line asks ``projects:update`` as well, and one
+that actually moves the order or the line asks ``orders:update`` as well, and one
 that merely sends the binding it already has asks nothing more.
 
 A print taken from another order by ``add-archives`` leaves that order, so the order
@@ -28,7 +28,7 @@ from backend.tests.integration.test_workshop_library_rights import _jwt, _key, _
 
 pytestmark = pytest.mark.integration
 
-_PU = Permission.PROJECTS_UPDATE.value
+_PU = Permission.ORDERS_UPDATE.value
 _ALL = Permission.ARCHIVES_UPDATE_ALL.value
 _OWN = Permission.ARCHIVES_UPDATE_OWN.value
 _REFUSED = "You can only update your own archives"
@@ -55,8 +55,8 @@ async def _order_of(db, archive_id: int) -> tuple[int | None, int | None]:
 
 @pytest.fixture
 async def desk(db_session, committing_client, catalog):  # noqa: F811 — the fixture's value
-    """Users: ``ar_own`` (projects:update + archives:update_own), ``ar_all`` (+ update_all),
-    ``ar_none`` (projects:update only), ``ar_editor`` (archives:update_all only). Order A
+    """Users: ``ar_own`` (orders:update + archives:update_own), ``ar_all`` (+ update_all),
+    ``ar_none`` (orders:update only), ``ar_editor`` (archives:update_all only). Order A
     with two lines, order B with one; three unfiled prints — ``ar_own``'s, ``ar_all``'s
     and an ownerless one."""
     own = await _user(db_session, "ar_own", [_PU, _OWN])
@@ -150,12 +150,12 @@ class TestFilingAsksForThePrint:
 class TestTheWorkshopsOwnRightFilesAnyPrint:
     """Owner's ruling 2026-10-04 (E13 final review #1): a print from the printer's screen or a
     slicer has no owner, so ``archives:update_own`` never reaches it — and the default Operators
-    hold only that. ``projects:file_prints`` files and unfiles ANY print under an order without
+    hold only that. ``orders:file_prints`` files and unfiles ANY print under an order without
     ``archives:update_all`` (which would also open other people's photos and files)."""
 
     @pytest.mark.asyncio
     async def test_the_right_files_and_unfiles_ownerless_and_others_prints(self, committing_client, db_session, desk):
-        await _user(db_session, "ar_filer", [_PU, _OWN, Permission.PROJECTS_FILE_PRINTS.value])
+        await _user(db_session, "ar_filer", [_PU, _OWN, Permission.ORDERS_FILE_PRINTS.value])
         ids = [desk["ownerless"], desk["theirs"]]
         r = await _add(committing_client, desk["a"], ids, "ar_filer")
         assert r.status_code == 200, r.text
@@ -167,14 +167,14 @@ class TestTheWorkshopsOwnRightFilesAnyPrint:
 
     @pytest.mark.asyncio
     async def test_the_right_still_needs_projects_update(self, committing_client, db_session, desk):
-        await _user(db_session, "ar_filer_ro", [Permission.PROJECTS_FILE_PRINTS.value])
+        await _user(db_session, "ar_filer_ro", [Permission.ORDERS_FILE_PRINTS.value])
         r = await _add(committing_client, desk["a"], [desk["ownerless"]], "ar_filer_ro")
         assert r.status_code == 403, r.text
         assert await _order_of(db_session, desk["ownerless"]) == (None, None)
 
     @pytest.mark.asyncio
     async def test_a_key_files_with_the_right_only_inside_its_projects_scope(self, committing_client, db_session, desk):
-        filer = await _user(db_session, "ar_filer_key", [_PU, Permission.PROJECTS_FILE_PRINTS.value])
+        filer = await _user(db_session, "ar_filer_key", [_PU, Permission.ORDERS_FILE_PRINTS.value])
         url = f"/api/v1/projects/{desk['a']}/add-archives"
         body = {"archive_ids": [desk["ownerless"]]}
         without = await _key(db_session, filer, can_manage_projects=False, can_manage_archives=True)
@@ -186,7 +186,7 @@ class TestTheWorkshopsOwnRightFilesAnyPrint:
 
 
 class TestTheEditorAsksForTheOrder:
-    """B04: only a binding that actually changes asks ``projects:update``."""
+    """B04: only a binding that actually changes asks ``orders:update``."""
 
     @pytest.fixture
     async def filed(self, committing_client, desk):

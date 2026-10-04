@@ -72,7 +72,7 @@ describe('DocumentsTab', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
-    auth.granted = new Set(['projects:read', 'projects:update']);
+    auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read', 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     urls = [];
     revoked = [];
     let n = 0;
@@ -255,7 +255,7 @@ describe('DocumentsTab', () => {
     });
 
     it('a reader can download and view, and nothing more', () => {
-      auth.granted = new Set(['projects:read']);
+      auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read']);
       render(<Host />);
       expect(screen.queryByRole('button', { name: /upload/i })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /delete/i })).not.toBeInTheDocument();

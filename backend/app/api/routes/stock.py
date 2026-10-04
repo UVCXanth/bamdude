@@ -221,7 +221,7 @@ async def stock_summary(
     per_page: int = Query(24, ge=1, le=200),
     all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.STOCK_READ),
 ):
     """Every product with a shelf (see ``_stock_rows``). ``page`` is the compat
     switch every list of the section has (spec projects-lists-parity rule 1,
@@ -254,7 +254,7 @@ async def stock_summary(
 @router.get("/figures", response_model=StockFigures)
 async def stock_figures(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.STOCK_READ),
 ):
     """The stock page's tiles — the whole shelf, never the list's search or its
     «only with stock» (spec workshop-lists, rules 1, 4). The same rows the list
@@ -277,7 +277,7 @@ async def stock_movements(
     before_id: int | None = Query(None, ge=1),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.STOCK_READ),
 ):
     """The farm's ledger, newest first, one keyset page at a time.
 
@@ -427,7 +427,7 @@ async def list_stock_items(
     per_page: int = Query(24, ge=1, le=200),
     all: bool = Query(False),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.STOCK_READ),
 ):
     """The finished-goods positions — filtered, searched, sorted and paged in SQL."""
     query = select(StockItem).join(Product, Product.id == StockItem.product_id)
@@ -451,7 +451,7 @@ async def list_stock_items(
 @router.get("/items/summary", response_model=StockItemsSummary)
 async def stock_items_summary(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.STOCK_READ),
 ):
     """The finished-goods tiles — the whole farm, never the list's filters."""
     on_hand, reserved = (
@@ -477,7 +477,7 @@ async def lookup_stock_item(
         None, description="Chosen option ids, comma-separated; other groups take their standard"
     ),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.STOCK_READ),
 ):
     """What a dialog shows for a product and its options before anything moves."""
     choices = await _choices_from_options(db, product_id, _parse_options(options))
@@ -550,7 +550,7 @@ async def _choices_for_items(db: AsyncSession, items: list[tuple[int, list[int]]
 async def suggest_stock(
     data: StockSuggestIn,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.STOCK_READ),
 ):
     """What each line would take from stock — ready units of its configuration first,
     then kits of free parts, the rest to print (spec workshop-add-to-order, rules 5, 10).
@@ -574,7 +574,7 @@ _JOURNAL_PAGE_AND_CURSOR = "Use either page or cursor, not both"
 async def get_stock_journal_products(
     book: Literal["both", "finished", "parts"] = Query("both"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.STOCK_READ),
 ):
     """The journal's product filter: products the chosen books moved (WS-13 E1 ST2)."""
     return await stock_journal.journal_products(db, book)
@@ -592,7 +592,7 @@ async def get_stock_journal(
     per_page: int = Query(50, ge=1, le=200),
     sort_by: str | None = Query(None, description="With page set: date-desc (the default) or date-asc"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.STOCK_READ),
 ):
     """Both stock ledgers as one feed, newest first, one keyset page at a time — or,
     with ``page`` set, by numbered pages with a total (WS-13 E1 ST1); never both."""
@@ -621,7 +621,7 @@ async def get_stock_journal(
 async def get_stock_item(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.STOCK_READ),
 ):
     return await finished_stock_views.item_detail(db, await _item_or_404(db, item_id))
 
@@ -631,7 +631,7 @@ async def update_stock_item(
     item_id: int,
     data: StockItemParamsIn,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.STOCK_ADJUST),
 ):
     """Комірка й мінімум — parameters of the position, not stock."""
     item = await _item_or_404(db, item_id)
@@ -647,7 +647,7 @@ async def move_stock(
     data: StockMoveIn,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.STOCK_MOVE),
 ):
     """One movement of a position: receipt, stocktake, reserve, release or issue.
 
@@ -721,7 +721,7 @@ async def assemble_stock(
     data: StockAssembleIn,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.STOCK_MOVE),
 ):
     """Зібрати з деталей — the kit's parts leave the shelf, the position grows."""
     item = await _resolve_item(db, item_id=data.item_id, product_id=data.product_id, options=data.options, create=True)

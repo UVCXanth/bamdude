@@ -218,7 +218,7 @@ async def list_customers(
     per_page: int = Query(24, ge=1, le=200),
     all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.CUSTOMERS_READ),
 ):
     """The customers list. ``page`` is the compat switch (the inventory's contract).
 
@@ -322,7 +322,7 @@ async def _warn_of_namesake(db: AsyncSession, name: str, own_id: int | None = No
 async def create_customer(
     data: CustomerCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_CREATE),
+    _: User | None = RequirePermission(Permission.CUSTOMERS_CREATE),
 ):
     if not data.allow_duplicate_name:
         await _warn_of_namesake(db, data.name)
@@ -336,7 +336,7 @@ async def create_customer(
 @router.get("/summary", response_model=CustomersSummary)
 async def customers_summary(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.CUSTOMERS_READ),
 ):
     """The customers page's tiles — the whole farm, never the list's search
     (spec workshop-lists, rules 1, 3). One grouped query, the list's own.
@@ -353,7 +353,7 @@ async def customers_summary(
 
 @router.get("/{customer_id}", response_model=CustomerResponse)
 async def get_customer(
-    customer_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
+    customer_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.CUSTOMERS_READ)
 ):
     return await _response(db, customer_id)
 
@@ -363,7 +363,7 @@ async def update_customer(
     customer_id: int,
     data: CustomerUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.CUSTOMERS_UPDATE),
 ):
     customer = await _get_or_404(db, customer_id)
     # Only a request that CHANGES the name is asked — the same name again, or its case
@@ -382,7 +382,9 @@ async def update_customer(
 
 @router.delete("/{customer_id}")
 async def delete_customer(
-    customer_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_DELETE)
+    customer_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.CUSTOMERS_DELETE),
 ):
     # A plain ``get``, not ``_get_or_404``: that one loads the contacts, and the
     # ORM would then try to null out the very rows deleted below.

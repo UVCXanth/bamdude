@@ -22,7 +22,7 @@ from backend.app.services.product_sync import sync_product_for_file
 
 pytestmark = pytest.mark.integration
 
-_READ = Permission.PROJECTS_READ.value
+_READ = Permission.PRODUCTS_READ.value
 
 
 async def _user(db, username: str, permissions: list[str]) -> User:

@@ -1,7 +1,7 @@
 /**
  * Linking a library file or folder to products is the order desk's business too
  * (WS-13 E13 B01/B06): the file manager offers it only with the library right AND
- * `projects:update`, and a move that would change which products a file belongs to
+ * `products:update`, and a move that would change which products a file belongs to
  * (a folder brings its own set; the root has none) is not offered without it — the
  * dialog says why. The server stays the final gate.
  */
@@ -113,7 +113,7 @@ describe('FileManagerPage — links to products ask the right to change orders (
   });
 
   it('offers it with the right to change orders too', async () => {
-    auth.granted = new Set([...LIBRARY, 'projects:update']);
+    auth.granted = new Set([...LIBRARY, 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     render(<FileManagerPage />);
     await screen.findByText('Linked');
     expect(screen.queryAllByTitle('Link to products').length).toBeGreaterThan(0);
@@ -135,7 +135,7 @@ describe('FileManagerPage — links to products ask the right to change orders (
   });
 
   it('offers every move with the right to change orders', async () => {
-    auth.granted = new Set([...LIBRARY, 'projects:update']);
+    auth.granted = new Set([...LIBRARY, 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     render(<FileManagerPage />);
     await screen.findByText('Linked');
     const dialog = await openMoveFor('Linked');
@@ -147,7 +147,7 @@ describe('FileManagerPage — links to products ask the right to change orders (
   // WS-13 E13 final review #3: a move can relink files (it changes their products), so the
   // catalog's figures and a product's files are read again — as a link from the dialog does.
   it('refreshes the product catalog and the products’ files after a move', async () => {
-    auth.granted = new Set([...LIBRARY, 'projects:update']);
+    auth.granted = new Set([...LIBRARY, 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     server.use(http.post('/api/v1/library/files/move', () => HttpResponse.json({ status: 'ok', moved: 1 })));
     const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
     render(<FileManagerPage />);

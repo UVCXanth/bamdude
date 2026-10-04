@@ -106,7 +106,7 @@ export function CompositionTab({
 }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
-  const canEdit = hasPermission('projects:update');
+  const canEdit = hasPermission('products:update');
   const queryClient = useQueryClient();
   const { showToast } = useToast();
 

@@ -72,7 +72,7 @@ function asReader() {
         is_active: true,
         is_admin: false,
         groups: [{ id: 2, name: 'Viewers' }],
-        permissions: ['projects:read'],
+        permissions: ['orders:read', 'products:read', 'customers:read', 'stock:read'],
         created_at: '2024-01-01T00:00:00Z',
       }),
     ),

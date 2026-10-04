@@ -35,7 +35,7 @@ interface PlanLineProps {
   canQueue: boolean;
   canPrint: boolean;
   busy: boolean;
-  /** The operator may rewrite router rows (`projects:update` + `queue:update_all`). */
+  /** The operator may rewrite router rows (`orders:update` + `queue:update_all`). */
   canRebalance: boolean;
   onRebalance: () => void;
   /** Filament price per gram, recovered from a costed row of the plan, so a

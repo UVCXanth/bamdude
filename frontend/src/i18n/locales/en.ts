@@ -10767,7 +10767,10 @@ export default {
       queue: 'Queue',
       library: 'Library',
       makerworld: 'MakerWorld',
-      projects: 'Projects',
+      orders: 'Orders',
+      products: 'Products',
+      customers: 'Customers',
+      stock: 'Stock',
       filaments: 'Filaments',
       inventory: 'Inventory',
       smartPlugs: 'Smart Plugs',
@@ -10811,7 +10814,9 @@ export default {
       purge: 'Purge',
       import: 'Import',
       connect: 'Connect',
-      manage: 'Manage'
+      manage: 'Manage',
+      move: 'Move',
+      adjust: 'Adjust'
     },
     labels: {
       printerFiles: 'Printer Files',
@@ -10835,7 +10840,7 @@ export default {
       viewAssignments: 'View Spool Assignments',
       userEmailNotifications: 'User Email Notifications',
       statsFilterByUser: 'Filter Stats By User',
-      filePrintsProjects: 'File Prints Under Orders'
+      filePrintsOrders: 'File Prints Under Orders'
     }
   },
   telegram: {

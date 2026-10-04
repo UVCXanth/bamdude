@@ -223,16 +223,16 @@ describe('OrderPage', () => {
 
   it('offers a read-only viewer no way to change a line', async () => {
     // The NEGATIVE half of the lines table's permission gate, which nothing
-    // pinned: `projects:read` renders the order, `projects:update` renders the
+    // pinned: `orders:read` renders the order, `orders:update` renders the
     // affordances, and the page is the only place the two are joined
-    // (`canEdit = hasPermission('projects:update')`). A default-true `canEdit`,
+    // (`canEdit = hasPermission('orders:update')`). A default-true `canEdit`,
     // a gate dropped from a row's action cell, or the page passing `canEdit`
     // it never computed all show up here.
     //
     // ⚠️ Not "no print button": pass 3 took printing off the row entirely and
     // the plan block owns it now, so what a viewer must not see is edit,
     // reorder, delete and add-line.
-    auth.granted = new Set(['projects:read']);
+    auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read']);
     vi.spyOn(api, 'getOrder').mockResolvedValue(order as never);
 
     window.history.pushState({}, '', '/projects/1');

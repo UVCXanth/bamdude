@@ -1,7 +1,7 @@
 /**
  * The archive editor and the print's order (WS-13 E13 D01–D04, B06):
  * - the order and the line are the shared server-side pickers, read-only without
- *   `projects:update`;
+ *   `orders:update`;
  * - a save that did not touch them sends no binding at all — an unread or
  *   unreadable picker can never write an empty one;
  * - a refusal stays in the dialog, in the server's words;
@@ -69,7 +69,7 @@ describe('EditArchiveModal — the print’s order', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     inval.catalog.mockClear();
-    auth.granted = new Set(['projects:update', 'archives:update_all']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'archives:update_all']);
     vi.spyOn(api, 'getPrinters').mockResolvedValue([] as never);
     vi.spyOn(api, 'getTags').mockResolvedValue([] as never);
     vi.spyOn(api, 'getOrdersPaged').mockResolvedValue({

@@ -10928,7 +10928,10 @@ export default {
       queue: 'Черга',
       library: 'Бібліотека',
       makerworld: 'MakerWorld',
-      projects: 'Проєкти',
+      orders: 'Замовлення',
+      products: 'Вироби',
+      customers: 'Замовники',
+      stock: 'Склад',
       filaments: 'Філаменти',
       inventory: 'Інвентар',
       smartPlugs: 'Розумні розетки',
@@ -10972,7 +10975,9 @@ export default {
       purge: 'Очищення',
       import: 'Імпорт',
       connect: 'Підключення',
-      manage: 'Керування'
+      manage: 'Керування',
+      move: 'Переміщення',
+      adjust: 'Коригування'
     },
     labels: {
       printerFiles: 'Файли принтера',
@@ -10996,7 +11001,7 @@ export default {
       viewAssignments: 'Перегляд призначень котушок',
       userEmailNotifications: 'Email-сповіщення користувача',
       statsFilterByUser: 'Фільтр статистики за користувачем',
-      filePrintsProjects: 'Прив\'язування друків до замовлень'
+      filePrintsOrders: 'Прив\'язування друків до замовлень'
     }
   },
   telegram: {

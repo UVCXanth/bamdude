@@ -64,7 +64,7 @@ async def _get_or_404(db: AsyncSession, category_id: int) -> ProductCategory:
 @router.get("", response_model=list[ProductCategoryOut])
 @router.get("/", response_model=list[ProductCategoryOut])
 async def list_product_categories(
-    db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
+    db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PRODUCTS_READ)
 ):
     return await _listing(db)
 
@@ -74,7 +74,7 @@ async def list_product_categories(
 async def create_product_category(
     data: ProductCategoryIn,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     await _refuse_duplicate(db, data.name)
     category = ProductCategory(name=data.name, name_key=category_key(data.name))
@@ -88,7 +88,7 @@ async def rename_product_category(
     category_id: int,
     data: ProductCategoryIn,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     category = await _get_or_404(db, category_id)
     await _refuse_duplicate(db, data.name, own_id=category.id)
@@ -102,7 +102,7 @@ async def rename_product_category(
 async def delete_product_category(
     category_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     category = await _get_or_404(db, category_id)
     cleared = (

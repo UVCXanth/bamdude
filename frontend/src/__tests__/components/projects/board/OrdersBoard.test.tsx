@@ -7,7 +7,7 @@ import { OrdersBoard } from '../../../../components/projects/board/OrdersBoard';
 import { NO_ACTIONS, WithOrderActions } from '../../../fixtures/orderActionsHost';
 import { ORDER_ROW_DEFAULTS } from '../../../wireDefaults';
 
-// Dragging is gated on `projects:update`, and the real provider resolves the
+// Dragging is gated on `orders:update`, and the real provider resolves the
 // admin only after its own request — the hook alone is replaced.
 const auth = vi.hoisted(() => ({ canUpdate: true }));
 vi.mock('../../../../contexts/AuthContext', async (importOriginal) => {

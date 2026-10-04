@@ -126,15 +126,15 @@ export function useProductActions<P extends ProductRef>({
 
   const available: ProductActionsHost<P>['available'] = (p) => {
     const catalog = p.origin === 'catalog';
-    const update = hasPermission('projects:update');
+    const update = hasPermission('products:update');
     const out: ProductAction[] = [];
     if (update) out.push('edit');
-    if (update && catalog && p.is_active) out.push('toOrder');
-    if (hasPermission('projects:create')) out.push('duplicate');
-    if (hasPermission('projects:read')) out.push('export');
+    if (hasPermission('orders:update') && catalog && p.is_active) out.push('toOrder');
+    if (hasPermission('products:create')) out.push('duplicate');
+    if (hasPermission('products:read')) out.push('export');
     if (update && catalog) out.push(p.is_active ? 'hide' : 'show');
     if (update && !catalog) out.push('promote');
-    if (hasPermission('projects:delete')) out.push('delete');
+    if (hasPermission('products:delete')) out.push('delete');
     return out;
   };
 

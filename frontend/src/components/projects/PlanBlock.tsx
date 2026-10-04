@@ -197,11 +197,11 @@ export function PlanBlock({
     });
   }, [plan]);
 
-  // The endpoint demands `projects:update` AND `queue:create`; a user missing
+  // The endpoint demands `orders:update` AND `queue:create`; a user missing
   // either never sees the button rather than being handed a 403 on click.
   const canQueue = canEdit && hasPermission('queue:create');
   const canPrint = hasPermission('printers:control');
-  const canRebalance = canEdit && hasPermission('projects:update') && hasPermission('queue:update_all');
+  const canRebalance = canEdit && hasPermission('orders:update') && hasPermission('queue:update_all');
 
   const invalidate = useCallback(() => {
     invalidateOrderViews(queryClient, { orderId: order.id });

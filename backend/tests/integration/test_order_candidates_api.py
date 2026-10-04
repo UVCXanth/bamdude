@@ -394,13 +394,13 @@ async def test_an_unknown_or_trashed_file_is_404(committing_client, db_session, 
 async def test_a_read_own_caller_only_sees_their_own_files_candidates(async_client: AsyncClient, db_session, lamp):
     """The ownership gate is the FILE's, and it answers 404 rather than 403 —
     the same shape ``/card`` gives, so an id cannot be enumerated through this
-    door either. ``projects:read`` is required beside it because the answer
+    door either. ``orders:read`` is required beside it because the answer
     names orders and how much of them is left."""
     admin = {"Authorization": f"Bearer {create_access_token(data={'sub': 'test_admin'})}"}
     grp = await async_client.post(
         "/api/v1/groups/",
         headers=admin,
-        json={"name": "oc_read_own", "permissions": ["library:read_own", "projects:read"]},
+        json={"name": "oc_read_own", "permissions": ["library:read_own", "orders:read"]},
     )
     assert grp.status_code == 201, grp.text
     created = await async_client.post(

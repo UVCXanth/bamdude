@@ -87,7 +87,7 @@ function PositionView({ item, refreshFailed, onRetry }: { item: StockItemDetail;
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { hasPermission } = useAuth();
-  const canEdit = hasPermission('projects:update');
+  const canEdit = hasPermission('stock:move');
   const heading = useRef<HTMLHeadingElement>(null);
   const [dialog, setDialog] = useState<StockDialogState>(null);
   const caption = lineConfigLabel(item.configuration, 'product', t);

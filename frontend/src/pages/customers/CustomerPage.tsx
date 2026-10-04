@@ -183,13 +183,13 @@ export function CustomerPage() {
           <p className="text-sm text-bambu-gray">{`${customer.code} · ${t(`customers.kind.${customer.kind}`)}`}</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {hasPermission('projects:update') && (
+          {hasPermission('customers:update') && (
             <Button variant="secondary" onClick={() => customerActions.run('edit', customer)}>
               <Pencil className="w-4 h-4" />
               {t('common.edit')}
             </Button>
           )}
-          {hasPermission('projects:create') && (
+          {hasPermission('orders:create') && (
             <Button onClick={() => create(id)}>
               <Plus className="w-4 h-4" />
               {t('customers.page.newOrder')}
@@ -308,7 +308,7 @@ export function CustomerPage() {
           <DispatchNotesSection
             key={customer.id}
             customerId={customer.id}
-            canEdit={hasPermission('projects:update')}
+            canEdit={hasPermission('stock:move')}
             title={t('customers.page.issues')}
             caption={t('customers.page.issuesCaption')}
           />

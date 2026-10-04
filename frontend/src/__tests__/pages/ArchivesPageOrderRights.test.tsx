@@ -1,7 +1,7 @@
 /**
  * «Add to order» on the archives page follows the server's rule (WS-13 E13 B06):
  * filing a print under an order rewrites the archive AND the order, so it needs
- * `projects:update` and the right to change THAT archive — `update_all` any print,
+ * `orders:update` and the right to change THAT archive — `update_all` any print,
  * `update_own` only the caller's own, an ownerless print only `update_all`. The bulk
  * action asks it of every selected print.
  */
@@ -66,7 +66,7 @@ async function addToOrderItem(id: number): Promise<HTMLElement> {
 describe('ArchivesPage — who may file a print under an order (E13 B06)', () => {
   beforeEach(() => {
     localStorage.clear();
-    auth.granted = new Set(['archives:read_all', 'projects:read']);
+    auth.granted = new Set(['archives:read_all', 'orders:read', 'products:read', 'customers:read', 'stock:read']);
     server.use(
       http.get('/api/v1/archives/', () =>
         HttpResponse.json({ data: ARCHIVES, meta: { current_page: 1, per_page: 50, total: 3, last_page: 1 } }),
@@ -78,7 +78,7 @@ describe('ArchivesPage — who may file a print under an order (E13 B06)', () =>
   });
 
   it('files only the caller’s own print with «update own»', async () => {
-    auth.granted = new Set([...auth.granted, 'projects:update', 'archives:update_own']);
+    auth.granted = new Set([...auth.granted, 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'archives:update_own']);
     render(<ArchivesPage />);
     await waitFor(() => expect(cardOf(3)).not.toBeNull());
     expect(await addToOrderItem(1)).not.toBeDisabled();
@@ -100,7 +100,7 @@ describe('ArchivesPage — who may file a print under an order (E13 B06)', () =>
   });
 
   it('files any print with «update all» and the right to change orders', async () => {
-    auth.granted = new Set([...auth.granted, 'projects:update', 'archives:update_all']);
+    auth.granted = new Set([...auth.granted, 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'archives:update_all']);
     render(<ArchivesPage />);
     await waitFor(() => expect(cardOf(3)).not.toBeNull());
     expect(await addToOrderItem(3)).not.toBeDisabled();
@@ -109,7 +109,7 @@ describe('ArchivesPage — who may file a print under an order (E13 B06)', () =>
   // The Workshop's own right (m193, owner's ruling 2026-10-04): the default Operators file
   // external (ownerless) and other people's prints without «update all».
   it('files any print with the Workshop’s «file prints» right, the bulk action too', async () => {
-    auth.granted = new Set([...auth.granted, 'projects:update', 'archives:update_own', 'projects:file_prints']);
+    auth.granted = new Set([...auth.granted, 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'archives:update_own', 'orders:file_prints']);
     render(<ArchivesPage />);
     await waitFor(() => expect(cardOf(3)).not.toBeNull());
     expect(await addToOrderItem(3)).not.toBeDisabled();
@@ -122,7 +122,7 @@ describe('ArchivesPage — who may file a print under an order (E13 B06)', () =>
   });
 
   it('asks the bulk action of every selected print', async () => {
-    auth.granted = new Set([...auth.granted, 'projects:update', 'archives:update_own']);
+    auth.granted = new Set([...auth.granted, 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'archives:update_own']);
     render(<ArchivesPage />);
     await waitFor(() => expect(cardOf(2)).not.toBeNull());
     fireEvent.click(within(await menuOf(1)).getByRole('button', { name: 'Select' }));

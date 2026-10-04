@@ -75,9 +75,9 @@ class APIKey(Base):
     # have no per-row ownership identity). Default True; m104 backfills existing
     # rows to False.
     can_manage_archives: Mapped[bool] = mapped_column(Boolean, default=True)
-    # Project write scope (upstream Bambuddy #1893). Carves PROJECTS_CREATE /
-    # _UPDATE / _DELETE + membership (add-archives, gated on PROJECTS_UPDATE) out
-    # of the admin denylist so automations can organize prints into projects.
+    # The Workshop's write scope (upstream Bambuddy #1893): every write of orders, the
+    # catalog, customers and stock, and filing prints under orders (WS-13 E13, m194) —
+    # carved out of the admin denylist so automations can organize prints into orders.
     # Default True; m104 backfills existing rows to False.
     can_manage_projects: Mapped[bool] = mapped_column(Boolean, default=True)
     # Direct-to-device label printing: poll for work and queue a label.

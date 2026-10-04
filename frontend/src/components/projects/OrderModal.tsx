@@ -382,9 +382,9 @@ function OrderForm({
                 setContactChoice(undefined);
               }}
               disabled={pending}
-              // A new customer is created by `POST /customers`, which asks `projects:create`
+              // A new customer is created by `POST /customers`, which asks `customers:create`
               // (WS-13 E13 G01) — an editor of orders without it is not offered one.
-              allowCreate={hasPermission('projects:create')}
+              allowCreate={hasPermission('customers:create')}
             />
           </WorkshopField>
 

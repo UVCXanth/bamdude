@@ -1,6 +1,6 @@
 /**
- * A READER of the Workshop (WS-13 E13 G02) — `projects:read` and the read rights a page
- * needs to render, and none of `projects:create` / `projects:update` / `projects:delete` —
+ * A READER of the Workshop (WS-13 E13 G02) — the four Workshop reads and the read rights a page
+ * needs to render, and none of the Workshop's create / update / delete rights —
  * is offered no write action. A control the reader may not use is ABSENT, not merely
  * greyed: a hidden control is never reachable by the keyboard either. Each target also
  * gets its positive control, so a test that finds nothing proves something.
@@ -51,7 +51,7 @@ vi.mock('../../contexts/AuthContext', async (importOriginal) => {
 });
 
 /** What a reader holds: the Workshop and the pages it reads beside it, nothing that writes. */
-const READER = ['projects:read', 'library:read_all', 'archives:read_all', 'printers:read', 'inventory:read'];
+const READER = ['orders:read', 'products:read', 'customers:read', 'stock:read', 'library:read_all', 'archives:read_all', 'printers:read', 'inventory:read'];
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -117,7 +117,7 @@ describe('StockPage — a reader moves nothing', () => {
   });
 
   it('offers them with the right to change orders', async () => {
-    auth.granted = new Set([...READER, 'projects:update']);
+    auth.granted = new Set([...READER, 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     render(<StockPage />);
     expect(await screen.findByRole('button', { name: 'Assemble from parts…' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Receipt' })).toBeInTheDocument();
@@ -185,7 +185,7 @@ describe('DispatchNotePage — a reader reads and prints the note, and edits no 
   });
 
   it('offers the pencil with the right to change orders', async () => {
-    auth.granted = new Set([...READER, 'projects:update']);
+    auth.granted = new Set([...READER, 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     renderNote();
     expect(await screen.findByRole('button', { name: 'Edit the waybill' })).toBeInTheDocument();
   });
@@ -269,7 +269,7 @@ describe('ProductsPage — a reader exports, and creates or changes nothing', ()
   });
 
   it('with the rights to create and to change, they are offered', async () => {
-    auth.granted = new Set([...READER, 'projects:create', 'projects:update']);
+    auth.granted = new Set([...READER, 'orders:create', 'products:create', 'customers:create', 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     render(<ProductsPage />);
     expect(await screen.findByRole('button', { name: /New product/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Manage categories/ })).toBeInTheDocument();
@@ -347,7 +347,7 @@ describe('OrdersPage — a reader opens orders, and creates or changes none', ()
   });
 
   it('with the rights to create and to change, they are offered', async () => {
-    auth.granted = new Set([...READER, 'projects:create', 'projects:update']);
+    auth.granted = new Set([...READER, 'orders:create', 'products:create', 'customers:create', 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     render(<OrdersPage />);
     expect(await screen.findByRole('button', { name: /New order/ })).toBeInTheDocument();
     expect(await screen.findByTestId('order-1-menu')).toBeInTheDocument();
@@ -393,7 +393,7 @@ describe('CustomersTable — a reader gets no actions column', () => {
   });
 
   it('with the right to change customers the column and the menu are there', async () => {
-    auth.granted = new Set([...READER, 'projects:update']);
+    auth.granted = new Set([...READER, 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     render(<CustomersHost />);
     const region = await screen.findByRole('region', { name: 'Customers' });
     const headers = within(region)
@@ -419,21 +419,21 @@ describe('useCustomerActions — the menu offers exactly what the rights allow',
   });
 
   it('the right to create offers «New order» alone', async () => {
-    auth.granted = new Set([...READER, 'projects:create']);
+    auth.granted = new Set([...READER, 'orders:create', 'products:create', 'customers:create']);
     render(<CustomersHost />);
     await screen.findByRole('region', { name: 'Customers' });
     expect(menuOf()).toEqual(['New order']);
   });
 
   it('the right to delete offers «Delete» alone', async () => {
-    auth.granted = new Set([...READER, 'projects:delete']);
+    auth.granted = new Set([...READER, 'orders:delete', 'products:delete', 'customers:delete']);
     render(<CustomersHost />);
     await screen.findByRole('region', { name: 'Customers' });
     expect(menuOf()).toEqual(['Delete']);
   });
 
   it('every right offers every action, in the menu’s order', async () => {
-    auth.granted = new Set([...READER, 'projects:create', 'projects:update', 'projects:delete']);
+    auth.granted = new Set([...READER, 'orders:create', 'products:create', 'customers:create', 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'orders:delete', 'products:delete', 'customers:delete']);
     render(<CustomersHost />);
     await screen.findByRole('region', { name: 'Customers' });
     expect(menuOf()).toEqual(['Edit', 'New order', 'Delete']);

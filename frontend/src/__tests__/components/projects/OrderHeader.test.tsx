@@ -221,7 +221,7 @@ describe('OrderHeader · bank the surplus', () => {
   });
 
   it('is not offered to a reader, whatever the count (spec §I1, R08)', () => {
-    auth.granted = new Set(['projects:read']);
+    auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read']);
     mount(withBankable(5));
     expect(screen.queryByTestId('order-bank-surplus')).not.toBeInTheDocument();
   });
@@ -275,7 +275,7 @@ describe('OrderHeader · actions', () => {
   });
 
   it('gives a reader no actions at all — no buttons and no menu', () => {
-    auth.granted = new Set(['projects:read']);
+    auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read']);
     mount(makeOrder());
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Order actions OR-0001' })).toBeNull();
@@ -304,7 +304,7 @@ describe('OrderHeader · cover', () => {
   });
 
   it('shows a reader the picture alone, named', () => {
-    auth.granted = new Set(['projects:read']);
+    auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read']);
     mount(makeOrder({ cover_image_filename: 'cover.png' }));
     expect(screen.queryByRole('button', { name: 'Change cover' })).toBeNull();
     expect(screen.getByRole('img', { name: 'Cover of Ten flasks' })).toBeInTheDocument();

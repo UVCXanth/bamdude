@@ -26,7 +26,7 @@ interface FinishedGoodsTableProps {
   /** The list's `sort_by`; the headers ask the SERVER to sort. */
   sort: string;
   onSortChange: (sortBy: string) => void;
-  /** `projects:update`, read once by the page. */
+  /** `stock:move`, read once by the page. */
   canEdit: boolean;
   onAction: (kind: FinishedAction, item: StockItem) => void;
   /** The page bar, drawn inside the same panel under the rows (outside the scroll). */

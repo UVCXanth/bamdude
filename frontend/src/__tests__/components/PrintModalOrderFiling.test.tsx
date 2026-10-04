@@ -57,7 +57,7 @@ vi.mock('../../utils/queryInvalidation', async (importOriginal) => {
 });
 
 /** What the mocked `useAuth` grants. Reset in `beforeEach`, narrowed in the one
- *  test that asks what a caller without `projects:read` sees. */
+ *  test that asks what a caller without `orders:read` sees. */
 const auth = vi.hoisted(() => ({ granted: new Set<string>() }));
 
 vi.mock('../../contexts/AuthContext', async (importOriginal) => {
@@ -165,7 +165,7 @@ function serveCandidates(byPlate: Record<number, OrderCandidate[]>, seen?: numbe
 
 beforeEach(() => {
   vi.restoreAllMocks();
-  auth.granted = new Set(['projects:read', 'projects:create', 'printers:control']);
+  auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read', 'orders:create', 'products:create', 'customers:create', 'printers:control']);
   invalidatedCandidates.mockClear();
   server.use(
     http.get('/api/v1/printers/', () => HttpResponse.json(mockPrinters)),
@@ -679,7 +679,7 @@ describe('PrintModal — the order this print is filed under', () => {
   });
 
   it('does not ask at all without permission to read orders', async () => {
-    // ⚠️ The candidates endpoint needs `projects:read` beside the library read —
+    // ⚠️ The candidates endpoint needs `orders:read` beside the library read —
     // it names orders and how much of each is left. Asking anyway is a
     // guaranteed 403 whose only visible effect is a submit button disabled while
     // it happens and a field that never appears.

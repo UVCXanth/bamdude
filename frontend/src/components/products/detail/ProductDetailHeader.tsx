@@ -79,7 +79,7 @@ export function ProductDetailHeader({
             actions={actions}
             testId="product-page-menu"
             exclude={AS_BUTTONS}
-            reread={hasPermission('projects:update') ? onReread : undefined}
+            reread={hasPermission('products:update') ? onReread : undefined}
           />
         </div>
       </div>

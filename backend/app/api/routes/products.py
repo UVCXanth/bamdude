@@ -731,7 +731,7 @@ async def list_products(
     per_page: int = Query(24, ge=1, le=200),
     all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
     db: AsyncSession = Depends(get_db),
-    user: User | None = RequirePermission(Permission.PROJECTS_READ),
+    user: User | None = RequirePermission(Permission.PRODUCTS_READ),
 ):
     """The product catalog. ``page`` is the compat switch (the inventory's contract).
 
@@ -1040,7 +1040,7 @@ async def list_product_parts(
     per_page: int = Query(24, ge=1, le=200),
     all: bool = Query(False, description="Refused: the picker is paged"),
     db: AsyncSession = Depends(get_db),
-    user: User | None = RequirePermission(Permission.PROJECTS_READ),
+    user: User | None = RequirePermission(Permission.PRODUCTS_READ),
 ):
     """Printed parts of active catalogue products, searched, filtered and paged in SQL —
     the add-to-order dialog's «parts of a product» tab (spec workshop-add-to-order, rule 16).
@@ -1116,7 +1116,7 @@ async def list_product_parts(
 
 @router.get("/facets", response_model=ProductFacetsOut)
 async def list_product_facets(
-    db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
+    db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PRODUCTS_READ)
 ):
     """The values the catalog's filters offer (spec workshop-product-catalog, rule 12):
     what the catalog's products are made of and sliced for — a model only from a
@@ -1144,7 +1144,7 @@ async def list_product_facets(
 async def create_product(
     data: ProductCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_CREATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_CREATE),
 ):
     product = Product(**data.model_dump(exclude=set(CATALOG_FIELDS)))
     db.add(product)
@@ -1159,7 +1159,7 @@ async def create_product_from_file(
     library_file_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: User | None = RequirePermission(Permission.PROJECTS_CREATE),
+    user: User | None = RequirePermission(Permission.PRODUCTS_CREATE),
 ):
     """'Print this file five times' must not require authoring a product.
 
@@ -1249,7 +1249,7 @@ async def import_product(
     # INGESTS FILES INTO THE LIBRARY. A caller who may create products but may
     # not upload must not gain an upload route by wrapping the bytes in a
     # product archive.
-    current_user: User | None = RequirePermission(Permission.PROJECTS_CREATE, Permission.LIBRARY_UPLOAD),
+    current_user: User | None = RequirePermission(Permission.PRODUCTS_CREATE, Permission.LIBRARY_UPLOAD),
 ):
     declared = request.headers.get("content-length") or ""
     if declared.isdigit() and int(declared) > import_limit():
@@ -1264,7 +1264,7 @@ async def import_product(
 
 @router.get("/{product_id}/export")
 async def export_product(
-    product_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
+    product_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PRODUCTS_READ)
 ):
     """The product as a ZIP: ``product.json``, its files, its attachments.
 
@@ -1286,7 +1286,7 @@ async def export_product(
 
 @router.get("/{product_id}", response_model=ProductResponse)
 async def get_product(
-    product_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
+    product_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PRODUCTS_READ)
 ):
     return await _response(db, await _get(db, product_id))
 
@@ -1296,7 +1296,7 @@ async def update_product(
     product_id: int,
     data: ProductUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
     # The catalog fields first: their refusals must come before any write.
@@ -1309,7 +1309,7 @@ async def update_product(
 
 @router.delete("/{product_id}")
 async def delete_product(
-    product_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_DELETE)
+    product_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PRODUCTS_DELETE)
 ):
     product = await _get(db, product_id)
     await product_gate.product_gate(db, [product.id])
@@ -1396,7 +1396,7 @@ async def duplicate_product(
     product_id: int,
     data: ProductDuplicate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_CREATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_CREATE),
 ):
     """Composition, aliases, links, pictures and documents: a copy, never a move.
 
@@ -1529,7 +1529,7 @@ async def create_part(
     product_id: int,
     data: ProductPartCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
     if data.ignored and data.kind != "printed":
@@ -1580,7 +1580,7 @@ async def update_part(
     part_id: int,
     data: ProductPartUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
     if "variant_option_id" in data.model_fields_set:
@@ -1658,7 +1658,7 @@ async def delete_part(
     product_id: int,
     part_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
     # The gate, then everything the deletion rewrites or removes, without waiting
@@ -1694,7 +1694,7 @@ async def merge_part(
     part_id: int,
     data: ProductPartMerge,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
     await product_gate.product_gate(db, [product.id])
@@ -1745,7 +1745,7 @@ async def add_part_alias(
     part_id: int,
     data: ProductPartAlias,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
     part = await _part(db, product, part_id)
@@ -1766,7 +1766,7 @@ async def remove_part_alias(
     part_id: int,
     name_key: str,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     """Query param dodges URL-encoding traps in part keys (same trick the old parts ledger used)."""
     part = await _part(db, await _get(db, product_id), part_id)
@@ -1796,7 +1796,7 @@ async def create_variant_group(
     product_id: int,
     data: VariantGroupCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     """A group with its options, the first one standard. A product already on
     orders gets the standard recorded on each of its lines (rule 5)."""
@@ -1813,7 +1813,7 @@ async def apply_variants(
     product_id: int,
     data: VariantsApplyIn,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     """The variants manager's Save (WS-13 E1 VR5): the whole draft in one transaction,
     checked against the revision it was opened at. A refusal anywhere writes nothing."""
@@ -1841,7 +1841,7 @@ async def update_variant_group(
     group_id: int,
     data: VariantGroupUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     """Rename, reorder, or pick another standard. A new standard changes no saved
     line — every line recorded its choice (rule 5)."""
@@ -1860,7 +1860,7 @@ async def delete_variant_group(
     product_id: int,
     group_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     """Refused while an order line has a choice in it or a part is bound to one
     of its options — either would change a kit somebody already relies on."""
@@ -1878,7 +1878,7 @@ async def create_variant_option(
     group_id: int,
     data: VariantOptionCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
     try:
@@ -1895,7 +1895,7 @@ async def update_variant_option(
     option_id: int,
     data: VariantOptionUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
     try:
@@ -1913,7 +1913,7 @@ async def delete_variant_option(
     group_id: int,
     option_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     """Refused for the standard option, for one an order line chose, and for one
     parts are bound to (spec workshop-product-variants, owner's call: 409)."""
@@ -1930,7 +1930,7 @@ async def get_product_stock(
     product_id: int,
     limit: int = Query(200, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.STOCK_READ, Permission.PRODUCTS_READ),
 ):
     """The product's free stock: what is on the shelf, how many kits, how it got there.
 
@@ -1979,7 +1979,7 @@ async def get_product_kits(
     ),
     counts: str | None = Query(None, description="Changed per-unit counts as part_id:qty, comma-separated"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.STOCK_READ),
 ):
     """Whole kits of ONE configuration the free stock can make — what the
     add-line row and the line editor may offer to take off the shelf. The
@@ -2013,7 +2013,7 @@ async def adjust_product_stock(
     product_id: int,
     data: StockAdjustIn,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.STOCK_ADJUST),
 ):
     """A hand correction: the operator counted the shelf and it disagreed with us.
 
@@ -2092,7 +2092,7 @@ async def list_plates(
     product_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: User | None = RequirePermission(Permission.PROJECTS_READ),
+    user: User | None = RequirePermission(Permission.PRODUCTS_READ),
 ):
     product = await _get(db, product_id)
     names = {p.id: p.name for p in product.parts}
@@ -2123,7 +2123,7 @@ _ESTIMATE_REASONS = (
 async def get_product_estimate(
     product_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.PRODUCTS_READ),
 ):
     """One unit of the standard configuration, printed from scratch in whole plates
     (WS-13 E1 ES1–ES5): the plan engine's own covering over the product's sliced plates
@@ -2188,7 +2188,7 @@ async def get_product_sources(
     product_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: User | None = RequirePermission(Permission.PROJECTS_READ),
+    user: User | None = RequirePermission(Permission.PRODUCTS_READ),
 ):
     """Every printed part's sources — the composition tab (WS-13 E1 PS6)."""
     product = await _get(db, product_id)
@@ -2214,7 +2214,7 @@ async def get_product_files(
     product_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: User | None = RequirePermission(Permission.PROJECTS_READ),
+    user: User | None = RequirePermission(Permission.PRODUCTS_READ),
 ):
     """Every file linked to the product outside the trash — STL / STEP without plates
     too — with its folder (one join) and its plates (WS-13 E1 PS7). A file the library
@@ -2288,7 +2288,7 @@ async def set_files(
     product_id: int,
     data: FileLinkRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
     wanted = set(data.library_file_ids)
@@ -2315,7 +2315,7 @@ async def unlink_file(
     product_id: int,
     file_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
     desired = await _file_product_ids(db, file_id) - {product_id}
@@ -2328,7 +2328,7 @@ async def set_folders(
     product_id: int,
     data: FolderLinkRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
     wanted = set(data.library_folder_ids)
@@ -2352,7 +2352,7 @@ async def unlink_folder(
     product_id: int,
     folder_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
     await _apply_folder(db, folder_id, await _folder_product_ids(db, folder_id) - {product_id})
@@ -2386,7 +2386,7 @@ async def reread_card(
     product_id: int,
     file_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     """Read the card out of a linked file again.
 
@@ -2414,7 +2414,7 @@ async def reread_card(
 async def list_attachments(
     product_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.PRODUCTS_READ),
 ):
     return sorted_attachments(await _get(db, product_id))
 
@@ -2425,7 +2425,7 @@ async def upload_attachment(
     file: UploadFile = File(...),
     category: str = Form(...),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     """⚠️ ``CATEGORY_EXTENSIONS[category]`` is the only defence against an
     executable landing in the attachments directory (spec §Risks) — the category
@@ -2485,7 +2485,7 @@ async def reorder_attachments(
     product_id: int,
     data: AttachmentOrderRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     """The gallery order is data, not a render-time sort (parent spec).
 
@@ -2523,7 +2523,7 @@ async def download_attachment(
     product_id: int,
     filename: str,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+    _: User | None = RequirePermission(Permission.PRODUCTS_READ),
 ):
     """Bearer-authenticated, and it gives the operator's own name back."""
     safe_attachment_name(filename)
@@ -2552,7 +2552,7 @@ async def get_attachment_image(
     product_id: int,
     filename: str,
     db: AsyncSession = Depends(get_db),
-    _=Depends(require_media_permission(Permission.PROJECTS_READ)),
+    _=Depends(require_media_permission(Permission.PRODUCTS_READ)),
 ):
     """Pictures for ``<img src>``, which cannot carry an Authorization header —
     so this takes a media token (or the ordinary headers) under the product's
@@ -2593,7 +2593,7 @@ async def delete_attachment(
     product_id: int,
     filename: str,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     safe_attachment_name(filename)
     product = await _get(db, product_id)
@@ -2649,7 +2649,7 @@ async def set_product_cover_image(
     product_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     """Two bodies on one path (spec §Decisions 4).
 
@@ -2704,7 +2704,7 @@ async def set_product_cover_image(
 async def get_product_cover_image(
     product_id: int,
     db: AsyncSession = Depends(get_db),
-    _=Depends(require_media_permission(Permission.PROJECTS_READ)),
+    _=Depends(require_media_permission(Permission.PRODUCTS_READ)),
 ):
     """The effective cover — the explicit column, else the first picture.
 
@@ -2748,7 +2748,7 @@ async def get_product_cover_image(
 async def delete_product_cover_image(
     product_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     """Clears the explicit choice; the first-picture default resumes."""
     product = await _get(db, product_id)

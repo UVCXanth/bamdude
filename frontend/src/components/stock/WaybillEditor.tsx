@@ -10,7 +10,7 @@ const ICON_BTN = 'p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-da
 
 /**
  * A dispatch note's waybill — the one thing besides its note that changes after the issue
- * (WS-13 E12 J03, R08): «Waybill N» or «No waybill», and a pencil (`projects:update`) that
+ * (WS-13 E12 J03, R08): «Waybill N» or «No waybill», and a pencil (`stock:move`) that
  * opens a field. The same editor stands in the notes' tables and on the document page.
  *
  * The full cycle: the draft is taken once, when the editing starts — a re-read of the list

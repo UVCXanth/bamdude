@@ -1062,7 +1062,7 @@ async def find_similar_archives(
 
 # Moving a print to another order or line is the order desk's business as well
 # (WS-13 E13 B04), asked through the canonical gate with the request's credentials.
-_projects_update = require_permission(Permission.PROJECTS_UPDATE)
+_orders_update = require_permission(Permission.ORDERS_UPDATE)
 
 
 @router.patch("/{archive_id}", response_model=ArchiveResponse)
@@ -1131,7 +1131,7 @@ async def _update_archive_locked(
         if archive.created_by_id != user.id:
             raise HTTPException(403, "You can only update your own archives")
 
-    # Only a binding that actually changes asks ``projects:update`` (WS-13 E13 B04):
+    # Only a binding that actually changes asks ``orders:update`` (WS-13 E13 B04):
     # the editor sends the order and the line with every save. The gate reads the
     # credentials the dependency above already resolved for this request, so it
     # writes nothing under the write scope.
@@ -1139,7 +1139,7 @@ async def _update_archive_locked(
     if ("project_id" in fields and update_data.project_id != archive.project_id) or (
         "project_line_id" in fields and update_data.project_line_id != archive.project_line_id
     ):
-        await creds.check(_projects_update)
+        await creds.check(_orders_update)
 
     # Filed under an order for the first time: whatever this print put on the
     # free-stock shelf has to come back off it, because the order's own figures
@@ -1282,7 +1282,7 @@ async def _update_archive_locked(
 async def count_archive_into_stock(
     archive_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.STOCK_ADJUST),
 ):
     """Count an old order-less print into the product's free stock by hand.
 

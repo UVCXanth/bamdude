@@ -70,7 +70,7 @@ const withVariants = {
 describe('ProductStockTab', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    auth.granted = new Set(['projects:read', 'projects:update']);
+    auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read', 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     vi.spyOn(api, 'getSettings').mockResolvedValue({ date_format: 'iso' } as never);
     vi.spyOn(api, 'getStockItems').mockResolvedValue(positions([position(3, 'Cork'), position(4, null, { location: 'A-1', below_min: true, min_qty: 5 })]));
     vi.spyOn(api, 'getProductStock').mockResolvedValue(shelf);
@@ -168,7 +168,7 @@ describe('ProductStockTab', () => {
     });
 
     it('a reader has no door', async () => {
-      auth.granted = new Set(['projects:read']);
+      auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read']);
       render(<ProductStockTab product={plain} />);
       await screen.findByTestId('stock-balance-1');
       expect(screen.queryByRole('button', { name: 'Receipt' })).not.toBeInTheDocument();

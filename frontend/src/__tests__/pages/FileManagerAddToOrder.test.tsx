@@ -1,6 +1,6 @@
 /**
  * «Add to order…» from the file manager (WS-13 E13 C01–C03): on a file the server can
- * plan (`plan_eligible`) and only with `projects:update`, from the card's menu, the
+ * plan (`plan_eligible`) and only with `orders:update`, from the card's menu, the
  * list row's menu and the plate gallery. It opens the add-to-order dialog with no
  * order — which ACTIVE order is asked first — on the «One-off from a file» tab with
  * the file already picked, and from the gallery with its plate too. Opening it writes
@@ -77,7 +77,7 @@ const PLATES = {
   })),
 };
 
-const BASE = ['library:read_all', 'library:upload', 'library:update_all', 'projects:read'];
+const BASE = ['library:read_all', 'library:upload', 'library:update_all', 'orders:read', 'products:read', 'customers:read', 'stock:read'];
 
 function cardOf(name: string): HTMLElement {
   return screen.getByText(name).closest('.group') as HTMLElement;
@@ -94,7 +94,7 @@ describe('FileManagerPage — «Add to order…» (E13 C)', () => {
     localStorage.clear();
     window.history.replaceState({}, '', '/files');
     filesQueries = [];
-    auth.granted = new Set([...BASE, 'projects:update']);
+    auth.granted = new Set([...BASE, 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     server.use(
       http.get('/api/v1/library/folders', () => HttpResponse.json([])),
       http.get('/api/v1/library/files', ({ request }) => {

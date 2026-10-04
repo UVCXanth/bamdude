@@ -46,7 +46,7 @@ describe('the one-off tab of «Add to order» (WS-13 E5 E)', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
-    auth.granted = new Set(['projects:update', 'library:read_own']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'library:read_own']);
     vi.spyOn(api, 'getProductsPaged').mockResolvedValue(pageOf([], 0));
     vi.spyOn(api, 'getProductCategories').mockResolvedValue([]);
     vi.spyOn(api, 'getProductFacets').mockResolvedValue({ materials: [], colors: [], models: [] });
@@ -81,7 +81,7 @@ describe('the one-off tab of «Add to order» (WS-13 E5 E)', () => {
   const fileRow = (name: RegExp) => screen.getByRole('button', { name });
 
   it('without the right to read the library, explains and reads nothing (R04)', async () => {
-    auth.granted = new Set(['projects:update']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
     fireEvent.click(screen.getByRole('tab', { name: 'One-off from a file' }));
     expect(

@@ -1,7 +1,7 @@
 """A library file's NAME reaches a caller only as far as the library shows it (WS-13 E1 LV1–LV3).
 
 The catalog searches the names of the files linked to a product. Before LV that
-search ran for anyone with ``projects:read``, so a caller the library would refuse
+search ran for anyone with the catalog's read, so a caller the library would refuse
 could still learn a file's name by searching for it — and the search's ``total``
 and category counts told the same thing without a single row. The rule is the
 library's own: ``library:read_all`` sees every file, ``library:read_own`` only
@@ -27,7 +27,7 @@ from backend.app.services.product_sync import sync_product_for_file
 
 pytestmark = pytest.mark.integration
 
-_READ = Permission.PROJECTS_READ.value
+_READ = Permission.PRODUCTS_READ.value
 _ALL = Permission.LIBRARY_READ_ALL.value
 _OWN = Permission.LIBRARY_READ_OWN.value
 

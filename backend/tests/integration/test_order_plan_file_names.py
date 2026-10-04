@@ -1,6 +1,6 @@
 """The order's print plan names a library file only as far as the library shows it (WS-13 E1 LV5).
 
-``GET /projects/{id}/plan`` is open to ``projects:read``, and each row and each
+``GET /projects/{id}/plan`` is open to ``orders:read``, and each row and each
 alternative plate carries the name of the file it prints. Before LV5 that name
 went to every reader, so a caller the library would refuse learned a file's name
 from an order it may read. The rule is the library's own (``library_name_scope``
@@ -30,7 +30,7 @@ from backend.tests.unit.services.test_product_composition import counting_statem
 
 pytestmark = pytest.mark.integration
 
-_READ = Permission.PROJECTS_READ.value
+_READ = Permission.ORDERS_READ.value
 _ALL = Permission.LIBRARY_READ_ALL.value
 _OWN = Permission.LIBRARY_READ_OWN.value
 

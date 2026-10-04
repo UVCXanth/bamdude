@@ -264,7 +264,7 @@ function ContactRow({
  * row above it is not; «Make main» moves a row to the top. A contact orders name is removed
  * only after a second click that says what happens to them; emptying such a row field by
  * field would drop it all the same, so it holds the save (in `CustomerModal`). The delivery
- * reference opens over the form only for somebody who may change it (`projects:update`, R03).
+ * reference opens over the form only for somebody who may change it (`customers:update`, R03).
  */
 export function ContactRowsEditor({
   drafts,

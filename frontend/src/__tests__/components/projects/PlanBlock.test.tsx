@@ -344,7 +344,7 @@ describe('PlanBlock', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     printModal.props = null;
-    auth.granted = new Set(['projects:update', 'queue:create', 'printers:control']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'queue:create', 'printers:control']);
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(plan);
     vi.spyOn(api, 'getProductPlates').mockResolvedValue(plates);
     // The currency is the test's choice, not `formatMoney`'s USD fallback —
@@ -543,7 +543,7 @@ describe('PlanBlock', () => {
   });
 
   it('offers Rebalance on a line with pending router rows, calls the API and re-reads the order', async () => {
-    auth.granted = new Set(['projects:update', 'queue:create', 'queue:update_all']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'queue:create', 'queue:update_all']);
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue({
       ...plan,
       lines: [{ ...plan.lines[0], pending_auto_prints: 2 }],
@@ -572,7 +572,7 @@ describe('PlanBlock', () => {
     // `pending_auto_prints` counts rows the procedure itself refuses — pinned,
     // staged, scheduled — so the button shows for a line of pinned rows, and
     // "nothing would finish sooner" would then be a lie about the farm.
-    auth.granted = new Set(['projects:update', 'queue:create', 'queue:update_all']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'queue:create', 'queue:update_all']);
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue({
       ...plan,
       lines: [{ ...plan.lines[0], pending_auto_prints: 2 }],
@@ -593,7 +593,7 @@ describe('PlanBlock', () => {
   });
 
   it('keeps the farm answer when nothing was refused and nothing moved', async () => {
-    auth.granted = new Set(['projects:update', 'queue:create', 'queue:update_all']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'queue:create', 'queue:update_all']);
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue({
       ...plan,
       lines: [{ ...plan.lines[0], pending_auto_prints: 2 }],
@@ -613,13 +613,13 @@ describe('PlanBlock', () => {
   });
 
   it('hides Rebalance when the line has nothing pending in the router, or the operator may not rewrite the queue', async () => {
-    auth.granted = new Set(['projects:update', 'queue:create', 'queue:update_all']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'queue:create', 'queue:update_all']);
     render(<PlanBlock order={order} canEdit />);
     await screen.findByTestId('plan-line-10');
     expect(screen.queryByTestId('plan-line-10-rebalance')).toBeNull();
 
     cleanup();
-    auth.granted = new Set(['projects:update', 'queue:create']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'queue:create']);
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue({
       ...plan,
       lines: [{ ...plan.lines[0], pending_auto_prints: 2 }],
@@ -716,7 +716,7 @@ describe('PlanBlock', () => {
     // opening PrintModal dispatches to a machine and is `printers:control`.
     // Somebody trusted with the paperwork is not thereby trusted to start a
     // print, and vice versa.
-    auth.granted = new Set(['projects:update', 'printers:control']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'printers:control']);
     render(<PlanBlock order={order} canEdit />);
 
     expect(await screen.findByTestId('plan-row-10-100-printer')).toBeInTheDocument();
@@ -724,7 +724,7 @@ describe('PlanBlock', () => {
     expect(screen.queryByTestId('plan-enqueue-all')).not.toBeInTheDocument();
 
     cleanup();
-    auth.granted = new Set(['projects:update', 'queue:create']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'queue:create']);
     render(<PlanBlock order={order} canEdit />);
 
     expect(await screen.findByTestId('plan-row-10-100-queue')).toBeInTheDocument();
@@ -1045,7 +1045,7 @@ describe('PlanBlock', () => {
   it('offers the add-plate menu to somebody who can only print', async () => {
     // Adding a row is a client-side what-if — nothing is written anywhere. A
     // `printers:control` user reaches the printer button through it.
-    auth.granted = new Set(['projects:update', 'printers:control']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'printers:control']);
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithSpare);
     vi.spyOn(api, 'getProductPlates').mockResolvedValue([...plates, spare]);
 
@@ -1737,7 +1737,7 @@ describe('PlanBlock', () => {
   it('lets a reader open the farm proposal and read it, with nothing to change or send', async () => {
     // R06: without `queue:create` the panel is read-only — the numbers, and no field,
     // no «apply», no «queue split».
-    auth.granted = new Set(['projects:update']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
     vi.spyOn(api, 'getOrderForecast').mockResolvedValue(proposing);
     render(<PlanBlock order={order} canEdit />);
@@ -1762,7 +1762,7 @@ describe('PlanBlock', () => {
   });
 
   it('gives a reader no split toggle when the farm proposes nothing', async () => {
-    auth.granted = new Set(['projects:update']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
     render(<PlanBlock order={order} canEdit />);
 

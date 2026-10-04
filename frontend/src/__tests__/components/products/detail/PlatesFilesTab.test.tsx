@@ -125,7 +125,7 @@ function Host() {
 }
 
 const card = (id: number) => screen.getByTestId(`product-file-${id}`);
-const EDITOR_WITH_LIBRARY = ['projects:read', 'projects:update', 'library:read_all'];
+const EDITOR_WITH_LIBRARY = ['orders:read', 'products:read', 'customers:read', 'stock:read', 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'library:read_all'];
 
 describe('PlatesFilesTab', () => {
   beforeEach(() => {
@@ -284,7 +284,7 @@ describe('PlatesFilesTab', () => {
     });
 
     it('an editor without the library: no «Link a file…», no links into it — unlinking stays', async () => {
-      auth.granted = new Set(['projects:read', 'projects:update']);
+      auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read', 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
       render(<Host />);
       await screen.findByTestId('product-file-30');
       expect(screen.queryByRole('link')).not.toBeInTheDocument();
@@ -293,7 +293,7 @@ describe('PlatesFilesTab', () => {
     });
 
     it('a reader: no doors at all', async () => {
-      auth.granted = new Set(['projects:read', 'library:read_all']);
+      auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read', 'library:read_all']);
       render(<Host />);
       await screen.findByTestId('product-file-30');
       expect(screen.queryByRole('button', { name: 'Re-read the card from a file…' })).not.toBeInTheDocument();

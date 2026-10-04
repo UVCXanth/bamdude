@@ -109,7 +109,7 @@ export function PlatesFilesTab({
 }) {
   const { t } = useTranslation();
   const { hasPermission, hasAnyPermission } = useAuth();
-  const canEdit = hasPermission('projects:update');
+  const canEdit = hasPermission('products:update');
   const library = hasAnyPermission('library:read_all', 'library:read_own');
   const queryClient = useQueryClient();
   const groups = useProductFileGroups(product.id);

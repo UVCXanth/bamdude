@@ -71,7 +71,7 @@ function open(over: Partial<ProductListItem> = {}) {
 
 describe('ProductActionMenu — To order…', () => {
   beforeEach(() => {
-    auth.granted = new Set(['projects:update']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
   });
 
   it('opens the dialog on this product', async () => {

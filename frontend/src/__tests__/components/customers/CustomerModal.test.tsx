@@ -3,7 +3,7 @@
  * rows in its grid, the server's refusals in the dialog, the namesake warning that belongs
  * to the name it was given for (R01), a PATCH of what changed since the dialog opened, the
  * method select's own read states (R04) and the delivery reference behind
- * `projects:update` (R03).
+ * `customers:update` (R03).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -60,7 +60,7 @@ function asCreator() {
         is_active: true,
         is_admin: false,
         groups: [{ id: 3, name: 'Clerks' }],
-        permissions: ['projects:read', 'projects:create'],
+        permissions: ['orders:read', 'products:read', 'customers:read', 'stock:read', 'orders:create', 'products:create', 'customers:create'],
         created_at: '2024-01-01T00:00:00Z',
       }),
     ),

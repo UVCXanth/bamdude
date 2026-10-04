@@ -119,7 +119,7 @@ export function DispatchNotePage() {
                 </Fragment>
               ))}
             </p>
-            <WaybillEditor noteId={note.id} waybill={note.waybill} canEdit={hasPermission('projects:update')} />
+            <WaybillEditor noteId={note.id} waybill={note.waybill} canEdit={hasPermission('stock:move')} />
           </div>
           <Button onClick={() => window.print()}>
             <Printer className="w-4 h-4" />

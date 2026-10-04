@@ -11331,7 +11331,7 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^/api/v1/products/\d+/attachment-image/[^/]+$"),
     # The product and order covers, both media-token routes. The write methods
     # share these paths and ride in with them — the middleware sees a path, not
-    # a method — and are stopped by their own PROJECTS_UPDATE permission.
+    # a method — and are stopped by their own products:update / orders:update permission.
     re.compile(r"^/api/v1/products/\d+/cover-image$"),
     re.compile(r"^/api/v1/projects/\d+/cover-image$"),
     re.compile(r"^/api/v1/archives/\d+/qrcode$"),

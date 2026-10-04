@@ -351,7 +351,7 @@ describe('the order action host', () => {
   });
 
   it('shows a reader no menu trigger at all (R06)', () => {
-    auth.granted = new Set(['projects:read']);
+    auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read']);
     render(<Page initial={[row()]} />);
     expect(screen.queryByRole('button', { name: 'Order actions OR-0001' })).not.toBeInTheDocument();
   });

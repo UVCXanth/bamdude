@@ -51,7 +51,7 @@ export function ProductSidePanel({ product, actions }: { product: Product; actio
 
   return (
     <WorkshopPanel flush data-testid="product-side" className="min-w-0">
-      <ProductVisual product={product} canEdit={hasPermission('projects:update')} />
+      <ProductVisual product={product} canEdit={hasPermission('products:update')} />
       <dl aria-label={t('products.detail.facts.label')} className="grid gap-3.5 p-4">
         <Fact label={t('products.detail.facts.readiness')}>
           <ProductStatusBadge product={product} showReady />

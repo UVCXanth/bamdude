@@ -77,7 +77,7 @@ export function OrdersBoard({ filters, onOpenList, onReset, actions }: OrdersBoa
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: boardKeyboardCoordinates }),
   );
-  const canMove = hasPermission('projects:update');
+  const canMove = hasPermission('orders:update');
   const filtered = Object.values(filters).some((v) => v != null && v !== '');
   const nothing = data != null && !isPlaceholderData && BOARD_COLUMNS.every((key) => data[key].total === 0);
 
@@ -184,7 +184,7 @@ interface BoardColumnProps {
   columnKey: BoardColumnKey;
   title: string;
   column: OrderBoardColumn | undefined;
-  /** Its cards carry a handle — never in «done», never without `projects:update`. */
+  /** Its cards carry a handle — never in «done», never without `orders:update`. */
   canDrag: boolean;
   /** A card may land here — every column, «done» included, for whoever may change orders. */
   canDrop: boolean;

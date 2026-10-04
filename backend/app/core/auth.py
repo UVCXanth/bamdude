@@ -1428,7 +1428,10 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.LIBRARY_READ: "can_read_status",
     Permission.LIBRARY_READ_OWN: "can_read_status",
     Permission.LIBRARY_READ_ALL: "can_read_status",
-    Permission.PROJECTS_READ: "can_read_status",
+    Permission.ORDERS_READ: "can_read_status",
+    Permission.PRODUCTS_READ: "can_read_status",
+    Permission.CUSTOMERS_READ: "can_read_status",
+    Permission.STOCK_READ: "can_read_status",
     Permission.INVENTORY_READ: "can_read_status",
     Permission.INVENTORY_VIEW_ASSIGNMENTS: "can_read_status",
     Permission.INVENTORY_FORECAST_READ: "can_read_status",
@@ -1531,18 +1534,25 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.ARCHIVES_UPDATE_ALL: "can_manage_archives",
     Permission.ARCHIVES_DELETE_OWN: "can_manage_archives",
     Permission.ARCHIVES_DELETE_ALL: "can_manage_archives",
-    # can_manage_projects — project curation. Carved out of the admin denylist
-    # so automations can create projects and batch-add archives via API key
-    # (#1893). The project mutation routes gate on plain
-    # ``RequirePermission(Permission.PROJECTS_*)`` (no OWN/ALL ownership split —
-    # projects have no per-row ownership permission), so the three CRUD
-    # permissions map directly to the one scope. Membership edits
-    # (add-archives-to-project) gate on PROJECTS_UPDATE, so they're covered.
-    # PROJECTS_READ stays under can_read_status.
-    Permission.PROJECTS_CREATE: "can_manage_projects",
-    Permission.PROJECTS_UPDATE: "can_manage_projects",
-    Permission.PROJECTS_FILE_PRINTS: "can_manage_projects",
-    Permission.PROJECTS_DELETE: "can_manage_projects",
+    # can_manage_projects — the Workshop's writes (orders, catalog, customers, stock,
+    # filing prints). Carved out of the admin denylist so automations can create orders
+    # and batch-add archives via API key (#1893). The Workshop's rights have no OWN/ALL
+    # split, so every write maps directly to the one scope (WS-13 E13, m194); the reads
+    # stay under can_read_status.
+    Permission.ORDERS_CREATE: "can_manage_projects",
+    Permission.ORDERS_UPDATE: "can_manage_projects",
+    Permission.ORDERS_DELETE: "can_manage_projects",
+    Permission.ORDERS_FILE_PRINTS: "can_manage_projects",
+    Permission.PRODUCTS_CREATE: "can_manage_projects",
+    Permission.PRODUCTS_UPDATE: "can_manage_projects",
+    Permission.PRODUCTS_DELETE: "can_manage_projects",
+    Permission.CUSTOMERS_CREATE: "can_manage_projects",
+    Permission.CUSTOMERS_UPDATE: "can_manage_projects",
+    Permission.CUSTOMERS_DELETE: "can_manage_projects",
+    # Not can_manage_inventory: m086 set that scope equal to can_queue on old keys, which
+    # would hand finished-goods writes to keys whose Workshop scope m104 switched off.
+    Permission.STOCK_MOVE: "can_manage_projects",
+    Permission.STOCK_ADJUST: "can_manage_projects",
     # can_access_cloud — narrow opt-in; also enforced at the router-level
     # ``_cloud_api_key_gate``, gated here too for defence-in-depth.
     Permission.CLOUD_AUTH: "can_access_cloud",
@@ -1605,7 +1615,7 @@ _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
         # library curation surface unreachable for API keys via
         # require_ownership_permission. Purge stays denied (genuinely destructive).
         Permission.LIBRARY_PURGE,
-        # PROJECTS_CREATE / _UPDATE / _DELETE moved to the allowlist under
+        # The Workshop's writes moved to the allowlist under
         # can_manage_projects (#1893) — they were denied for every API key,
         # making the project-management surface (create, add-archives, delete)
         # unreachable, same regression class as the archives/library carve-outs.
@@ -2374,7 +2384,7 @@ async def library_name_scope(request: Request | None, db: AsyncSession, user: Us
     X-API-Key header first, then a Bearer key or JWT); the per-request authority
     caches mean nothing is validated twice. Routes outside the library that show a
     file's name — the product catalog's search, a plate list — ask this, never
-    ``projects:read`` alone.
+    ``products:read`` alone.
     """
     if request is None:
         return "none"
@@ -2497,7 +2507,7 @@ def require_ownership_permission(
 class RequestCredentials:
     """The request's own credentials, for a route that asks a SECOND gate only in
     some cases — a library write that changes a file's product links needs
-    ``projects:update`` too (WS-13 E13 B02).
+    ``products:update`` too (WS-13 E13 B02).
 
     :meth:`check` calls a checker a ``require_*`` factory returned, with these
     credentials, exactly as ``Depends`` would (``routes/monitor.py`` does it by
@@ -2512,6 +2522,18 @@ class RequestCredentials:
 
     async def check(self, gate: Callable[..., Awaitable[Any]]) -> Any:
         return await gate(request=self.request, credentials=self.credentials, x_api_key=self.x_api_key)
+
+    async def allows(self, gate: Callable[..., Awaitable[Any]]) -> bool:
+        """:meth:`check` without the refusal — a read mask asks "may this caller see it?"
+        of the very gate a route would ask (WS-13 E13). The gate's 403 is "no"; any other
+        failure (401, a broken gate) is not a mask decision and propagates."""
+        try:
+            await self.check(gate)
+        except HTTPException as refused:
+            if refused.status_code == 403:
+                return False
+            raise
+        return True
 
 
 async def request_credentials(

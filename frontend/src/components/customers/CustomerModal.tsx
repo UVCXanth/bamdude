@@ -249,7 +249,7 @@ export function CustomerModal({ customer, onClose }: CustomerModalProps) {
               drafts={drafts}
               onChange={setDrafts}
               disabled={pending}
-              canManageMethods={hasPermission('projects:update')}
+              canManageMethods={hasPermission('customers:update')}
             />
           </div>
           <WorkshopField label={t('customers.modal.notes')} htmlFor={ids.notes} full>

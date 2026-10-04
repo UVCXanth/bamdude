@@ -675,13 +675,13 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
         </h2>
       </div>
       <div className="flex items-center gap-2">
-        {hasPermission('projects:create') && (
+        {hasPermission('products:create') && (
           <Button variant="secondary" size="sm" onClick={() => create.mutate()} disabled={create.isPending}>
             {create.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Package className="w-4 h-4" />}
             {t('modelCard.createProduct')}
           </Button>
         )}
-        {hasPermission('projects:update') && linked.length > 0 && (
+        {hasPermission('products:update') && linked.length > 0 && (
           <div className="relative">
             {/* ⚠️ `haspopup` + `expanded` on the TRIGGER, not on the menu.
                 The menu below already has `role="menu"`, but a screen reader

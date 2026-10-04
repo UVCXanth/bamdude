@@ -130,7 +130,7 @@ export function CustomersPage() {
     <div className="workshop p-4">
       <ListPageHeader title={t('customers.list.title')} subtitle={t('customers.list.subtitle')} headingRef={heading}>
         <ListViewToggle value={view} options={views} onChange={setView} />
-        {hasPermission('projects:create') && (
+        {hasPermission('customers:create') && (
           <Button onClick={() => setCreating(true)}>
             <Plus className="w-4 h-4" />
             {t('customers.list.newCustomer')}

@@ -106,7 +106,7 @@ export function OrderView({
   // banner's counts. Only an active order has anything to issue.
   const fulfilment = useFulfilment(
     Number.isFinite(id) ? id : null,
-    order?.status === 'active' && hasPermission('projects:update'),
+    order?.status === 'active' && hasPermission('orders:update'),
   );
 
   const forecast = useQuery({
@@ -182,7 +182,7 @@ export function OrderView({
     );
   }
 
-  const canEdit = hasPermission('projects:update');
+  const canEdit = hasPermission('orders:update');
   const ref = toOrderRef(order);
   // What every run from this view adds: the full order, and — for a delete — the
   // forget-on-unmount of THIS view's query, then the owner's way out (E6 B08).

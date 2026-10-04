@@ -6,6 +6,8 @@ Filing a print under an order (or taking it out) asked for the right to edit THA
 took filing external prints away from them. ``archives:update_all`` would have opened other
 people's photos and files too (upstream security #5), so the owner chose a Workshop right of
 its own, ``projects:file_prints``: seeded to Administrators (O2 discipline) and Operators.
+m194 later carried it over as ``orders:file_prints``; the defaults hold the successor, and
+m193's own seed still writes the string it shipped with.
 """
 
 import pytest
@@ -15,13 +17,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.core.permissions import DEFAULT_GROUPS, Permission
 from backend.app.migrations import m193_projects_file_prints as m193
 
-FILE_PRINTS = Permission.PROJECTS_FILE_PRINTS.value
+FILE_PRINTS = "projects:file_prints"
+SUCCESSOR = Permission.ORDERS_FILE_PRINTS.value
 
 
-def test_a_fresh_install_gives_the_right_to_administrators_and_operators_only():
-    assert FILE_PRINTS in DEFAULT_GROUPS["Administrators"]["permissions"]
-    assert FILE_PRINTS in DEFAULT_GROUPS["Operators"]["permissions"]
-    assert FILE_PRINTS not in DEFAULT_GROUPS["Viewers"]["permissions"]
+def test_a_fresh_install_gives_the_successor_to_administrators_and_operators_only():
+    assert SUCCESSOR in DEFAULT_GROUPS["Administrators"]["permissions"]
+    assert SUCCESSOR in DEFAULT_GROUPS["Operators"]["permissions"]
+    assert SUCCESSOR not in DEFAULT_GROUPS["Viewers"]["permissions"]
     assert Permission.ARCHIVES_UPDATE_ALL.value not in DEFAULT_GROUPS["Operators"]["permissions"]
 
 

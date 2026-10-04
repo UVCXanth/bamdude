@@ -107,7 +107,7 @@ function FinishedPositions({ productId, canEdit }: { productId: number; canEdit:
  */
 export function ProductStockTab({ product }: { product: Pick<Product, 'id' | 'name' | 'variant_groups'> }) {
   const { hasPermission } = useAuth();
-  const canEdit = hasPermission('projects:update');
+  const canEdit = hasPermission('stock:move');
   return (
     <div className="space-y-5">
       <div

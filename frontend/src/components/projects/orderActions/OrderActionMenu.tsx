@@ -55,9 +55,9 @@ export function OrderActionMenu({
   const items = orderMenuItems(
     order,
     {
-      update: hasPermission('projects:update'),
-      create: hasPermission('projects:create'),
-      remove: hasPermission('projects:delete'),
+      update: hasPermission('orders:update'),
+      create: hasPermission('orders:create'),
+      remove: hasPermission('orders:delete'),
     },
     context,
   );

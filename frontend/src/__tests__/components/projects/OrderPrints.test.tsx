@@ -78,7 +78,7 @@ async function openMenu(id: number) {
 describe('OrderPrints', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    auth.granted = new Set(['projects:update', 'archives:update_all', 'printers:read']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'archives:update_all', 'printers:read']);
     vi.spyOn(api, 'getPrintersWithArchived').mockResolvedValue([
       { id: 3, name: 'P1S-02', model: 'P1S' },
     ] as never);
@@ -211,7 +211,7 @@ describe('OrderPrints', () => {
   });
 
   it('asks nothing about printers without the right to read them, and keeps the cards', async () => {
-    auth.granted = new Set(['projects:update', 'archives:update_all']);
+    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'archives:update_all']);
     vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
       { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: 10, plate_index: 1, printer_id: 3, completed_at: '2026-09-28T09:42:00Z' },
     ] as never);
@@ -451,7 +451,7 @@ describe('OrderPrints', () => {
     };
 
     it('offers it for an own print only, with «update own»', async () => {
-      auth.granted = new Set(['projects:update', 'archives:update_own']);
+      auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'archives:update_own']);
       vi.spyOn(api, 'getProjectArchives').mockResolvedValue(three as never);
       render(<OrderPrints order={lineOrder([1, 2, 3])} canEdit />);
       await screen.findByText('mine.3mf');
@@ -480,7 +480,7 @@ describe('OrderPrints', () => {
     };
 
     it('takes only an own print out of the order with «update own», and keeps the defects on every card', async () => {
-      auth.granted = new Set(['projects:update', 'archives:update_own']);
+      auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'archives:update_own']);
       vi.spyOn(api, 'getProjectArchives').mockResolvedValue(three as never);
       render(<OrderPrints order={lineOrder([1, 2, 3])} canEdit />);
       await screen.findByText('mine.3mf');
@@ -490,7 +490,7 @@ describe('OrderPrints', () => {
     });
 
     it('takes no print out of the order without an archive right', async () => {
-      auth.granted = new Set(['projects:update']);
+      auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
       vi.spyOn(api, 'getProjectArchives').mockResolvedValue(three as never);
       render(<OrderPrints order={lineOrder([1, 2, 3])} canEdit />);
       await screen.findByText('mine.3mf');
@@ -498,7 +498,7 @@ describe('OrderPrints', () => {
     });
 
     it('offers no menu on a print it may not move that has no defects to record', async () => {
-      auth.granted = new Set(['projects:update', 'archives:update_own']);
+      auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'archives:update_own']);
       vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
         { id: 2, filename: 'theirs.3mf', status: 'printing', project_line_id: 10, created_by_id: 8 },
       ] as never);

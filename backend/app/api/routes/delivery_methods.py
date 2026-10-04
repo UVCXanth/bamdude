@@ -61,7 +61,7 @@ async def _get_or_404(db: AsyncSession, method_id: int) -> DeliveryMethod:
 @router.get("", response_model=list[DeliveryMethodOut])
 @router.get("/", response_model=list[DeliveryMethodOut])
 async def list_delivery_methods(
-    db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
+    db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.CUSTOMERS_READ)
 ):
     return await _listing(db)
 
@@ -71,7 +71,7 @@ async def list_delivery_methods(
 async def create_delivery_method(
     data: DeliveryMethodIn,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.CUSTOMERS_UPDATE),
 ):
     await _refuse_duplicate(db, data.name)
     last = await db.scalar(select(func.max(DeliveryMethod.position)))
@@ -85,7 +85,7 @@ async def create_delivery_method(
 async def reorder_delivery_methods(
     data: DeliveryMethodOrder,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.CUSTOMERS_UPDATE),
 ):
     methods = {m.id: m for m in (await db.execute(select(DeliveryMethod))).scalars()}
     if len(data.ids) != len(set(data.ids)) or set(data.ids) != set(methods):
@@ -101,7 +101,7 @@ async def rename_delivery_method(
     method_id: int,
     data: DeliveryMethodIn,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.CUSTOMERS_UPDATE),
 ):
     method = await _get_or_404(db, method_id)
     await _refuse_duplicate(db, data.name, own_id=method.id)
@@ -115,7 +115,7 @@ async def rename_delivery_method(
 async def delete_delivery_method(
     method_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    _: User | None = RequirePermission(Permission.CUSTOMERS_UPDATE),
 ):
     method = await _get_or_404(db, method_id)
     used = await db.scalar(

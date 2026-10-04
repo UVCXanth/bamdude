@@ -37,7 +37,7 @@ vi.mock('../../../utils/queryInvalidation', async (importOriginal) => {
   };
 });
 
-const ALL = ['projects:read', 'projects:create', 'projects:update', 'projects:delete'];
+const ALL = ['orders:read', 'products:read', 'customers:read', 'stock:read', 'orders:create', 'products:create', 'customers:create', 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'orders:delete', 'products:delete', 'customers:delete'];
 
 const flask: ProductListItem = {
   ...PRODUCT_ROW_DEFAULTS,
@@ -123,7 +123,7 @@ describe('ProductActionMenu — the items (F02)', () => {
   });
 
   it('an item without its right is not shown', () => {
-    auth.granted = new Set(['projects:read']);
+    auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read']);
     render(<Harness products={[flask]} />);
     openMenu();
     expect(items()).toEqual(['Export ZIP']);

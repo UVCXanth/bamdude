@@ -1,7 +1,7 @@
 """«New product from file» asks the library's own authority, and says what the file gave (WS-13 E10 A01–A02).
 
 ``POST /products/from-file/{id}`` used to take any active library file by id under
-``projects:create`` alone: a caller who may not see a file in the library could still
+the catalog's create right alone: a caller who may not see a file in the library could still
 create a product from it, and so read its card (title, designer, description, plates)
 through the product. A01 asks exactly what the library asks — ``library_name_scope``
 (``all`` / ``own`` / ``none``, an API key by its scope AND its owner) and then
@@ -27,8 +27,8 @@ from backend.app.models.user import User
 
 pytestmark = pytest.mark.integration
 
-_CREATE = Permission.PROJECTS_CREATE.value
-_READ = Permission.PROJECTS_READ.value
+_CREATE = Permission.PRODUCTS_CREATE.value
+_READ = Permission.PRODUCTS_READ.value
 _ALL = Permission.LIBRARY_READ_ALL.value
 _OWN = Permission.LIBRARY_READ_OWN.value
 

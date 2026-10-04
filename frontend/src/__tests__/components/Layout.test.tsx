@@ -441,7 +441,7 @@ describe('Layout', () => {
       expect(sidebarLink('/queue')).toBeNull();
     });
 
-    it('hides Projects and asks no badge count without projects:read', async () => {
+    it('hides Projects and asks no badge count without a Workshop read', async () => {
       let asked = 0;
       server.use(
         http.get('/api/v1/projects/nav-badges', () => {

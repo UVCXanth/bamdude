@@ -67,7 +67,7 @@ export function OrderHeader({
   // fetches them; the formatters cover the unresolved first paint.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
 
-  const canUpdate = hasPermission('projects:update');
+  const canUpdate = hasPermission('orders:update');
   const active = order.status === 'active';
   const ref = toOrderRef(order);
   const bankable = order.figures.bankable_surplus;

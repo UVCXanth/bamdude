@@ -189,24 +189,47 @@ def test_manage_archives_scope_but_not_purge():
         _check_apikey_permissions(_key(can_queue=True), [Permission.ARCHIVES_DELETE_ALL.value])
 
 
+WORKSHOP_WRITES = (
+    Permission.ORDERS_CREATE,
+    Permission.ORDERS_UPDATE,
+    Permission.ORDERS_DELETE,
+    Permission.ORDERS_FILE_PRINTS,
+    Permission.PRODUCTS_CREATE,
+    Permission.PRODUCTS_UPDATE,
+    Permission.PRODUCTS_DELETE,
+    Permission.CUSTOMERS_CREATE,
+    Permission.CUSTOMERS_UPDATE,
+    Permission.CUSTOMERS_DELETE,
+    Permission.STOCK_MOVE,
+    Permission.STOCK_ADJUST,
+)
+WORKSHOP_READS = (Permission.ORDERS_READ, Permission.PRODUCTS_READ, Permission.CUSTOMERS_READ, Permission.STOCK_READ)
+
+
 def test_manage_projects_scope():
-    """#1893: a Manage-Projects key can create/update/delete projects and add
-    archives (membership gates on PROJECTS_UPDATE); a key without it cannot.
-    PROJECTS_READ rides can_read_status, not can_manage_projects."""
+    """#1893, WS-13 E13 m194: the Workshop key scope carries every Workshop write — orders,
+    catalog, customers, stock and filing prints; a key without it cannot. The reads ride
+    can_read_status, not can_manage_projects."""
     proj = _key(can_manage_projects=True)
-    for perm in (
-        Permission.PROJECTS_CREATE,
-        Permission.PROJECTS_UPDATE,
-        Permission.PROJECTS_DELETE,
-    ):
+    for perm in WORKSHOP_WRITES:
         _check_apikey_permissions(proj, [perm.value])
-    # PROJECTS_READ is a read scope, not a management one.
-    with pytest.raises(HTTPException):
-        _check_apikey_permissions(proj, [Permission.PROJECTS_READ.value])
-    _check_apikey_permissions(_key(can_read_status=True), [Permission.PROJECTS_READ.value])
-    # No management scope → project mutations denied.
-    with pytest.raises(HTTPException):
-        _check_apikey_permissions(_key(can_read_status=True), [Permission.PROJECTS_CREATE.value])
+    for perm in WORKSHOP_READS:
+        with pytest.raises(HTTPException):
+            _check_apikey_permissions(proj, [perm.value])
+        _check_apikey_permissions(_key(can_read_status=True), [perm.value])
+    # No management scope → Workshop writes denied.
+    for perm in WORKSHOP_WRITES:
+        with pytest.raises(HTTPException):
+            _check_apikey_permissions(_key(can_read_status=True), [perm.value])
+
+
+def test_stock_writes_do_not_ride_the_inventory_scope():
+    """m086 set can_manage_inventory equal to can_queue on old keys; finished-goods writes on
+    that scope would reach keys whose Workshop scope m104 switched off."""
+    inv = _key(can_manage_inventory=True, can_queue=True)
+    for perm in (Permission.STOCK_MOVE, Permission.STOCK_ADJUST):
+        with pytest.raises(HTTPException):
+            _check_apikey_permissions(inv, [perm.value])
 
 
 def test_new_manage_scopes_do_not_cross_leak():
@@ -219,7 +242,7 @@ def test_new_manage_scopes_do_not_cross_leak():
     with pytest.raises(HTTPException):
         _check_apikey_permissions(maint, [Permission.ARCHIVES_DELETE_ALL.value])
     with pytest.raises(HTTPException):
-        _check_apikey_permissions(arch, [Permission.PROJECTS_CREATE.value])
+        _check_apikey_permissions(arch, [Permission.ORDERS_CREATE.value])
     with pytest.raises(HTTPException):
         _check_apikey_permissions(proj, [Permission.MAINTENANCE_UPDATE.value])
     # And a library/inventory key doesn't gain any of the three.
@@ -227,7 +250,7 @@ def test_new_manage_scopes_do_not_cross_leak():
     for perm in (
         Permission.MAINTENANCE_UPDATE,
         Permission.ARCHIVES_DELETE_ALL,
-        Permission.PROJECTS_CREATE,
+        Permission.ORDERS_CREATE,
     ):
         with pytest.raises(HTTPException):
             _check_apikey_permissions(lib, [perm.value])

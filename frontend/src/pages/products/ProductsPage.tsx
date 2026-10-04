@@ -222,7 +222,7 @@ export function ProductsPage() {
     <div className="workshop p-4">
       <ListPageHeader title={t('products.list.title')} subtitle={subtitle} headingRef={heading}>
         <ListViewToggle value={view} options={views} onChange={setView} />
-        {hasPermission('projects:create') && (
+        {hasPermission('products:create') && (
           // On a phone the three wrap rather than squeeze their labels onto two lines.
           <div className="flex flex-wrap items-center gap-2 [&>button]:whitespace-nowrap">
             <Button variant="secondary" onClick={() => setFromFile(true)}>
@@ -230,7 +230,7 @@ export function ProductsPage() {
               {t('products.list.fromFile')}
             </Button>
             {/* An import INGESTS FILES INTO THE LIBRARY, so the server asks for
-                the upload permission beside `projects:create`. The button is
+                the upload permission beside `products:create`. The button is
                 shown to anyone who may create a product — the refusal, when it
                 comes, is the server's own sentence in the dialog. */}
             <Button variant="secondary" onClick={() => setImporting(true)}>
@@ -279,7 +279,7 @@ export function ProductsPage() {
           state={state}
           selected={extra.category}
           onSelect={(value) => setExtra('category', value)}
-          onManage={hasPermission('projects:update') ? () => setManaging(true) : undefined}
+          onManage={hasPermission('products:update') ? () => setManaging(true) : undefined}
         />
         <div className="min-w-0">
           {/* C07: the chosen category and the server's total under every filter. */}

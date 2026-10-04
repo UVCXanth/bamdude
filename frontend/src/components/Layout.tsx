@@ -357,7 +357,7 @@ export function Layout() {
   // The Projects section's badges — asked only when its entry is shown (the
   // same test `isHidden` applies, `navPermissions.projects`). A failed count
   // reads as 0: a hint, not data, so the badge just stays away.
-  const canSeeProjects = !authEnabled || hasPermission('projects:read');
+  const canSeeProjects = !authEnabled || hasPermission('orders:read');
   const { data: navBadges } = useWorkshopBadges(canSeeProjects);
   const workshopBadges = {
     activeOrders: navBadges?.active_orders ?? 0,
@@ -426,7 +426,7 @@ export function Layout() {
       stats: 'stats:read',
       profiles: 'kprofiles:read',
       maintenance: 'maintenance:read',
-      projects: 'projects:read',
+      projects: ['orders:read', 'products:read', 'customers:read', 'stock:read'],
       inventory: 'inventory:read',
       files: ['library:read', 'library:read_own', 'library:read_all'],
       makerworld: 'makerworld:view',

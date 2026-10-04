@@ -414,7 +414,7 @@ interface MoveFilesModalProps {
   /** The files being moved — their products decide which folders a move may reach. */
   files: LibraryFileListItem[];
   currentFolderId: number | null;
-  /** `projects:update`: a move that changes a file's products needs it (WS-13 E13 B01). */
+  /** `products:update`: a move that changes a file's products needs it (WS-13 E13 B01). */
   canChangeProducts: boolean;
   onClose: () => void;
   onMove: (folderId: number | null) => void;
@@ -894,7 +894,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
             )}
             {/* WS-13 E13 C01: a one-off line from this file in an existing order — on a
                 file the server can plan, and only with the right to change orders. */}
-            {onAddToOrder && file.plan_eligible && hasPermission('projects:update') && (
+            {onAddToOrder && file.plan_eligible && hasPermission('orders:update') && (
               <>
                 <div role="separator" className="my-1 border-t border-bambu-dark-tertiary" />
                 <button
@@ -1371,7 +1371,7 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
                 </button>
               )}
               {/* WS-13 E13 C01 — see the list row's menu. */}
-              {onAddToOrder && file.plan_eligible && hasPermission('projects:update') && (
+              {onAddToOrder && file.plan_eligible && hasPermission('orders:update') && (
                 <>
                   <div role="separator" className="my-1 border-t border-bambu-dark-tertiary" />
                   <button
@@ -3335,7 +3335,7 @@ export function FileManagerPage() {
                         <span className="hidden sm:inline">{t('fileManager.schedulePrint')}</span>
                       </Button>
                     )}
-                    {selectedPlannable.length > 0 && hasPermission('projects:create') && (
+                    {selectedPlannable.length > 0 && hasPermission('orders:create') && (
                       <Button
                         variant="secondary"
                         size="sm"
@@ -3866,7 +3866,7 @@ export function FileManagerPage() {
           initialPlateIndex={galleryTarget.plateIndex}
           onClose={() => setGalleryTarget(null)}
           onAddToOrder={
-            galleryTarget.file.plan_eligible && hasPermission('projects:update')
+            galleryTarget.file.plan_eligible && hasPermission('orders:update')
               ? (plateIndex) => openAddToOrder(galleryTarget.file, plateIndex)
               : undefined
           }
@@ -3930,7 +3930,7 @@ export function FileManagerPage() {
           folders={folders}
           files={(files ?? []).filter((f) => selectedFiles.includes(f.id))}
           currentFolderId={selectedFolderId}
-          canChangeProducts={hasPermission('projects:update')}
+          canChangeProducts={hasPermission('products:update')}
           onClose={() => setShowMoveModal(false)}
           onMove={(folderId) => moveFilesMutation.mutate({ fileIds: selectedFiles, folderId })}
           isLoading={moveFilesMutation.isPending}
@@ -3945,7 +3945,7 @@ export function FileManagerPage() {
           folders={folders}
           files={[moveFile]}
           currentFolderId={selectedFolderId}
-          canChangeProducts={hasPermission('projects:update')}
+          canChangeProducts={hasPermission('products:update')}
           onClose={() => setMoveFile(null)}
           onMove={(folderId) => {
             moveFilesMutation.mutate({ fileIds: [moveFile.id], folderId });

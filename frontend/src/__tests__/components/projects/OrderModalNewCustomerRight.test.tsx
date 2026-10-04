@@ -1,6 +1,6 @@
 /**
  * «New customer…» in the order form creates a customer, which the server allows
- * with `projects:create` only — an editor of orders without it is not offered the
+ * with `customers:create` only — an editor of orders without it is not offered the
  * option (WS-13 E13 G01).
  */
 
@@ -24,21 +24,21 @@ vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
   };
 });
 
-describe('OrderModal — «New customer…» asks projects:create (G01)', () => {
+describe('OrderModal — «New customer…» asks customers:create (G01)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.spyOn(api, 'getCustomers').mockResolvedValue([{ id: 2, name: 'ACME', figures: {} }] as never);
   });
 
   it('is not offered to an editor without the right to create', async () => {
-    auth.granted = new Set(['projects:read', 'projects:update']);
+    auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read', 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     render(<OrderModal onClose={() => {}} />);
     await screen.findByRole('option', { name: /ACME/ });
     expect(screen.queryByRole('option', { name: 'New customer…' })).not.toBeInTheDocument();
   });
 
-  it('is offered with projects:create', async () => {
-    auth.granted = new Set(['projects:read', 'projects:create']);
+  it('is offered with customers:create', async () => {
+    auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read', 'orders:create', 'products:create', 'customers:create']);
     render(<OrderModal onClose={() => {}} />);
     expect(await screen.findByRole('option', { name: 'New customer…' })).toBeInTheDocument();
   });

@@ -50,7 +50,7 @@ const MODES: StockItemsMode[] = ['tracked', 'low', 'reserved', 'all'];
 export function StockPage() {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
-  const canEdit = hasPermission('projects:update');
+  const canEdit = hasPermission('stock:move');
   const [dialog, setDialog] = useState<StockDialogState>(null);
   const tabsId = useId();
   const heading = useRef<HTMLHeadingElement>(null);
@@ -159,7 +159,7 @@ function NotesTab({ headingRef }: { headingRef: RefObject<HTMLHeadingElement | n
           setPerPage(n);
           setPage(1);
         }}
-        canEdit={hasPermission('projects:update')}
+        canEdit={hasPermission('stock:move')}
         fallbackRef={headingRef}
         empty={
           q ? (
@@ -201,7 +201,7 @@ function FinishedTab({ onDialog }: { onDialog: (dialog: StockDialogState) => voi
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { hasPermission } = useAuth();
-  const canEdit = hasPermission('projects:update');
+  const canEdit = hasPermission('stock:move');
   const modesId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -336,7 +336,7 @@ function FinishedTab({ onDialog }: { onDialog: (dialog: StockDialogState) => voi
 function PartsTab({ onDialog }: { onDialog: (dialog: StockDialogState) => void }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
-  const canEdit = hasPermission('projects:update');
+  const canEdit = hasPermission('stock:move');
   const searchRef = useRef<HTMLInputElement>(null);
 
   const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({

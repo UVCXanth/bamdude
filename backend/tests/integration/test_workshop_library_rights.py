@@ -3,7 +3,7 @@
 A library user organises files; a product's plates are the Workshop's. Every library
 write that changes which products a file or folder belongs to — an explicit
 ``product_ids``, an unlink, and a move whose destination brings another set of
-products — asks ``projects:update`` too, through the canonical gate called with the
+products — asks ``products:update`` too, through the canonical gate called with the
 request's own credentials (an API key passes its scope AND its owner's rights). A move
 that keeps every file's products, and a new folder without products, stay library work.
 
@@ -35,9 +35,9 @@ _LIBRARY = [
     Permission.LIBRARY_UPLOAD.value,
     Permission.LIBRARY_UPDATE_ALL.value,
     Permission.LIBRARY_READ_ALL.value,
-    Permission.PROJECTS_READ.value,
+    Permission.PRODUCTS_READ.value,
 ]
-_PROJECTS_UPDATE = Permission.PROJECTS_UPDATE.value
+_PRODUCTS_UPDATE = Permission.PRODUCTS_UPDATE.value
 _PLATES = {"plates": [{"index": 1, "printable_objects": {"1": "flask"}, "print_time_seconds": 60}]}
 
 
@@ -98,7 +98,7 @@ async def shelf(db_session):
     """Two products; folders F1 and F2 linked to P1, F3 to P2, F0 to none; file «a» in F1
     (P1), file «b» at the root linked to P1 directly, file «c» in F0 (no products)."""
     await _user(db_session, "lr_lib", _LIBRARY)
-    await _user(db_session, "lr_both", [*_LIBRARY, _PROJECTS_UPDATE])
+    await _user(db_session, "lr_both", [*_LIBRARY, _PRODUCTS_UPDATE])
     p1, p2 = Product(name="P1"), Product(name="P2")
     db_session.add_all([p1, p2])
     await db_session.flush()
@@ -251,9 +251,9 @@ class TestApiKeys:
     async def test_a_key_needs_its_scope_and_its_owners_right(
         self, async_client: AsyncClient, db_session, shelf, header
     ):
-        owner_with = await _user(db_session, f"lr_kw_{header}", [*_LIBRARY, _PROJECTS_UPDATE])
+        owner_with = await _user(db_session, f"lr_kw_{header}", [*_LIBRARY, _PRODUCTS_UPDATE])
         owner_without = await _user(db_session, f"lr_ko_{header}", _LIBRARY)
-        gone = await _user(db_session, f"lr_kg_{header}", [*_LIBRARY, _PROJECTS_UPDATE], is_active=False)
+        gone = await _user(db_session, f"lr_kg_{header}", [*_LIBRARY, _PRODUCTS_UPDATE], is_active=False)
 
         def auth(raw: str) -> dict:
             return {"X-API-Key": raw} if header == "x-api-key" else {"Authorization": f"Bearer {raw}"}
@@ -281,7 +281,7 @@ class TestApiKeys:
     ):
         """L.2 B01 / R03: a move that changes a file's products, sent with an API key — the
         second check asks the KEY's scope, and a refusal moves nothing."""
-        owner = await _user(db_session, f"lr_km_{header}", [*_LIBRARY, _PROJECTS_UPDATE])
+        owner = await _user(db_session, f"lr_km_{header}", [*_LIBRARY, _PRODUCTS_UPDATE])
 
         def auth(raw: str) -> dict:
             return {"X-API-Key": raw} if header == "x-api-key" else {"Authorization": f"Bearer {raw}"}
@@ -309,15 +309,17 @@ class TestOrderFileIntake:
             db_session,
             "lr_own",
             [
-                Permission.PROJECTS_READ.value,
-                Permission.PROJECTS_CREATE.value,
-                _PROJECTS_UPDATE,
+                Permission.ORDERS_READ.value,
+                Permission.ORDERS_CREATE.value,
+                Permission.ORDERS_UPDATE.value,
                 Permission.LIBRARY_READ_OWN.value,
             ],
         )
-        other = await _user(db_session, "lr_other", [Permission.PROJECTS_READ.value])
+        other = await _user(db_session, "lr_other", [Permission.ORDERS_READ.value])
         await _user(
-            db_session, "lr_nolib", [Permission.PROJECTS_READ.value, Permission.PROJECTS_CREATE.value, _PROJECTS_UPDATE]
+            db_session,
+            "lr_nolib",
+            [Permission.ORDERS_READ.value, Permission.ORDERS_CREATE.value, Permission.ORDERS_UPDATE.value],
         )
         nolib = (await db_session.execute(select(User).where(User.username == "lr_nolib"))).scalar_one()
         own = await _file(db_session, "own.gcode.3mf", owner=me)
@@ -401,9 +403,9 @@ class TestOrderFileIntake:
         self, async_client: AsyncClient, db_session, files
     ):
         reader = await _user(
-            db_session, "lr_key_reader", [Permission.PROJECTS_UPDATE.value, Permission.LIBRARY_READ_ALL.value]
+            db_session, "lr_key_reader", [Permission.ORDERS_UPDATE.value, Permission.LIBRARY_READ_ALL.value]
         )
-        blind = await _user(db_session, "lr_key_blind", [Permission.PROJECTS_UPDATE.value])
+        blind = await _user(db_session, "lr_key_blind", [Permission.ORDERS_UPDATE.value])
         url = f"/api/v1/projects/{files['order']}/lines/batch"
         body = {"lines": [self._plate(files["foreign"])]}
         no_scope = await _key(db_session, reader, can_manage_projects=True, can_read_status=False)
