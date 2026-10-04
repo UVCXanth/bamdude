@@ -232,7 +232,8 @@ class ProductPartResponse(BaseModel):
     # route answering with a part reads it, and ``0`` here means "no stock",
     # not "not asked". A purchased part or one marked «не рахувати» has no
     # balance to have and reads 0 for good.
-    stock_balance: int = 0
+    # Null for a caller without stock:read (WS-13 E13 O12).
+    stock_balance: int | None = 0
 
     @field_validator("aliases", mode="before")
     @classmethod
@@ -450,10 +451,10 @@ class VariantOptionOut(BaseModel):
     position: int = 0
     #: Order lines that chose this option, and parts bound to it — what a delete
     #: would be refused over, so the card can grey the button out beforehand.
-    lines_count: int = 0
+    lines_count: int | None = 0
     parts_count: int = 0
     #: Finished-goods positions whose configuration chose it (spec workshop-finished-goods, rule 14).
-    stock_count: int = 0
+    stock_count: int | None = 0
 
 
 class VariantGroupOut(BaseModel):
@@ -465,8 +466,8 @@ class VariantGroupOut(BaseModel):
     #: What would refuse the group's delete, counted by the server exactly as the delete
     #: guard counts (WS-13 E1 VR9): lines and positions with a choice in it, parts bound
     #: to one of its options.
-    lines_count: int = 0
-    stock_count: int = 0
+    lines_count: int | None = 0
+    stock_count: int | None = 0
     parts_count: int = 0
 
 
@@ -609,15 +610,17 @@ class ProductListItem(BaseModel):
     has_cover: bool = False
     parts_count: int = 0
     plates_count: int = 0
-    lines_count: int = 0
+    # The order counts and the stock figures below are null for a caller who may not read
+    # that domain (WS-13 E13 O12).
+    lines_count: int | None = 0
     # Whole units the free stock can already make (pass 8, Decision 6) — the
     # scarcest counted part decides, because a kit is the unit the operator
     # thinks in. On the LIST too, and read there for every product in one
     # aggregated query: a per-product read would be an N+1 behind the catalog.
-    kits_available: int = 0
+    kits_available: int | None = 0
     #: Ready units free across the product's finished-goods positions (spec
     #: workshop-add-to-order, rule 15) — one grouped read per page.
-    finished_available: int = 0
+    finished_available: int | None = 0
     #: The product's plate materials, colours and printer models (stored facets,
     #: files outside the trash only), sorted — the add-to-order dialog's selects and chips.
     materials: list[str] = []
@@ -635,9 +638,9 @@ class ProductListItem(BaseModel):
     #: WS-13 E5 H01 — the groups with their options, in ``position``/``id`` order;
     #: one grouped read per page. The detail overrides it with the full groups.
     variant_groups: list[ListVariantGroup] = []
-    active_orders_count: int = 0
-    finished_positions: int = 0
-    finished_below_min: int = 0
+    active_orders_count: int | None = 0
+    finished_positions: int | None = 0
+    finished_below_min: int | None = 0
     # ``catalog`` | ``adhoc_job`` | ``adhoc_plate`` (models.product.ProductOrigin).
     origin: str = "catalog"
     origin_file_id: int | None = None
@@ -662,11 +665,11 @@ class ProductResponse(ProductListItem):
     # All-time units printed across EVERY order of this product (spec §Decisions
     # 7). Computed per request from the order figures, never stored — the number
     # on the product page and the one on the order must not be able to disagree.
-    units_printed_total: int = 0
+    units_printed_total: int | None = 0
     #: WS-13 E9 A01 — the tab counts: attachments outside the gallery (not ``pictures``)
     #: and DISTINCT orders with a line of this product, whatever their status.
     documents_count: int = 0
-    orders_count: int = 0
+    orders_count: int | None = 0
     created_at: datetime
     updated_at: datetime
 

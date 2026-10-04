@@ -34,6 +34,12 @@ from sqlalchemy.orm import selectinload
 from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
+from backend.app.api.routes._workshop_rights import (
+    WorkshopView,
+    bind_workshop_credentials,
+    read_required,
+    workshop_view,
+)
 from backend.app.api.routes.library import file_name_visible, library_file_name_visible
 from backend.app.core.auth import RequirePermission, library_name_scope, require_media_permission
 from backend.app.core.database import get_db
@@ -188,7 +194,7 @@ from backend.app.utils.printer_models import normalize_model_name
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/products", tags=["products"])
+router = APIRouter(prefix="/products", tags=["products"], dependencies=[Depends(bind_workshop_credentials)])
 
 _LOAD = (
     selectinload(Product.parts),
@@ -427,7 +433,42 @@ async def _variant_groups_out(db: AsyncSession, groups: list[ProductVariantGroup
     ]
 
 
+_STOCK_FIELDS = ("kits_available", "finished_available", "finished_positions", "finished_below_min")
+_ORDER_FIELDS = ("lines_count", "active_orders_count", "orders_count", "units_printed_total")
+
+
+def _masked(row, view: WorkshopView):
+    """A product row as this caller may see it (WS-13 E13 O12): its stock figures need
+    ``stock:read``, its order counts ``orders:read`` — null without them, never a 0 that
+    reads as "none"."""
+    update: dict = {}
+    if not view.stock:
+        update.update({f: None for f in _STOCK_FIELDS if f in type(row).model_fields})
+    if not view.orders:
+        update.update({f: None for f in _ORDER_FIELDS if f in type(row).model_fields})
+    if isinstance(row, ProductResponse):
+        if not view.stock:
+            update["parts"] = [part.model_copy(update={"stock_balance": None}) for part in row.parts]
+        if not (view.stock and view.orders):
+            hide = {"stock_count"} if not view.stock else set()
+            hide |= {"lines_count"} if not view.orders else set()
+            update["variant_groups"] = [
+                group.model_copy(
+                    update={
+                        **dict.fromkeys(hide),
+                        "options": [o.model_copy(update=dict.fromkeys(hide)) for o in group.options],
+                    }
+                )
+                for group in row.variant_groups
+            ]
+    return row.model_copy(update=update) if update else row
+
+
 async def _response(db: AsyncSession, product: Product, *, reload_links: bool = False) -> ProductResponse:
+    return _masked(await _full_response(db, product, reload_links=reload_links), await workshop_view())
+
+
+async def _full_response(db: AsyncSession, product: Product, *, reload_links: bool = False) -> ProductResponse:
     # ``category`` too: a row built in this request (a copy, a new product) has
     # it unloaded, and reading it would be a lazy load the async session refuses.
     links = ["parts", "plates", "library_files", "library_folders", "category"]
@@ -756,6 +797,12 @@ async def list_products(
         stock = "kits"
     paged = page is not None
     key, direction, computed = resolve_sort(_PRODUCT_SORT, sort_by)
+    # A filter or sort on what the caller may not see is refused, never ignored (WS-13 E13 O12).
+    view = await workshop_view()
+    if not view.stock and (stock is not None or key in ("finished", "kits")):
+        raise read_required("stock")
+    if not view.orders and (key == "orders" or include_adhoc):
+        raise read_required("orders")
     conditions = []
     # The catalogue never saw an adhoc product (spec Decision 2); only a
     # caller that asks by name gets them.
@@ -796,7 +843,8 @@ async def list_products(
         .where(*conditions)
     )
     if not paged:
-        return await _catalog_rows(db, (await db.execute(query.order_by(Product.name))).scalars().all())
+        rows = await _catalog_rows(db, (await db.execute(query.order_by(Product.name))).scalars().all())
+        return [_masked(row, view) for row in rows]
     if computed:
         candidates = (await db.execute(query)).scalars().all()
         figures = await _PRODUCT_COMPUTED[key](db, candidates)
@@ -814,7 +862,7 @@ async def list_products(
         await db.scalar(select(func.count(Product.id)).where(Product.origin == ProductOrigin.CATALOG.value)) or 0
     )
     return ProductListPage(
-        items=await _catalog_rows(db, products),
+        items=[_masked(row, view) for row in await _catalog_rows(db, products)],
         meta=page_meta(total, page, per_page, all),
         categories=categories,
         uncategorized=uncategorized,
@@ -1947,7 +1995,12 @@ async def get_product_stock(
     # Every movement's part is one of this product's own — ``part_stock.movements``
     # joins ``product_parts`` on this very product — so the names cost nothing.
     names = {part.id: part.name for part in product.parts}
-    orders = await orders_of_lines(db, {r.project_line_id for r in rows if r.project_line_id is not None})
+    # Which order a movement served is the orders' to show (WS-13 E13 O12).
+    orders = (
+        await orders_of_lines(db, {r.project_line_id for r in rows if r.project_line_id is not None})
+        if (await workshop_view()).orders
+        else {}
+    )
     labels = await stock_views.option_labels(
         db, {p.variant_option_id for p in product.parts if p.variant_option_id is not None}
     )

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.api.routes._workshop_rights import bind_workshop_credentials
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -18,7 +19,7 @@ from backend.app.models.customer import CustomerContact, DeliveryMethod, deliver
 from backend.app.models.user import User
 from backend.app.schemas.delivery_method import DeliveryMethodIn, DeliveryMethodOrder, DeliveryMethodOut
 
-router = APIRouter(prefix="/delivery-methods", tags=["customers"])
+router = APIRouter(prefix="/delivery-methods", tags=["customers"], dependencies=[Depends(bind_workshop_credentials)])
 
 
 async def _listing(db: AsyncSession) -> list[DeliveryMethodOut]:

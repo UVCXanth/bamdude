@@ -154,7 +154,8 @@ class CustomerContactOut(BaseModel):
     delivery_details: str | None
     note: str | None
     # Orders that name this contact — what the form warns about before removing it.
-    orders_count: int
+    # Null for a caller without orders:read (WS-13 E13 O12).
+    orders_count: int | None
 
 
 class CustomerResponse(BaseModel):
@@ -172,7 +173,8 @@ class CustomerResponse(BaseModel):
     # broad member listed first would match a detail instance and drop the three
     # keys that cost archive work. Validation is not what this order is for —
     # both members are built here, never parsed from a client.
-    figures: CustomerFigures | CustomerListFigures
+    # Null for a caller without orders:read (WS-13 E13 O12).
+    figures: CustomerFigures | CustomerListFigures | None
 
     class Config:
         from_attributes = True

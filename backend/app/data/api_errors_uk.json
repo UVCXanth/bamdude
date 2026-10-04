@@ -496,6 +496,7 @@
   "Missing permission: queue:reorder": "Немає дозволу: queue:reorder",
   "Missing permission: {} or {}": "Немає дозволу: {} або {}",
   "Missing required permissions: {}": "Немає потрібних дозволів: {}",
+  "Missing required permissions: {}:read": "Немає потрібних дозволів: {}:read",
   "Missing spool tag (tray_uuid or tag_uid)": "Немає тегу котушки (tray_uuid або tag_uid)",
   "Mode must be 'print_queue', 'file_manager', or 'proxy'": "Режим має бути «print_queue», «file_manager» або «proxy»",
   "Model provider error: {}": "Помилка постачальника моделей: {}",

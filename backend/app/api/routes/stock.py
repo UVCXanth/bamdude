@@ -13,12 +13,19 @@ from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.auth import RequirePermission, acting_user
+from backend.app.api.routes._workshop_rights import bind_workshop_credentials, ensure
+from backend.app.core.auth import (
+    RequestCredentials,
+    RequireAnyPermission,
+    RequirePermission,
+    acting_user,
+    request_credentials,
+)
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.customer import Customer
 from backend.app.models.finished_stock import StockItem, StockItemChoice
-from backend.app.models.product import Product, ProductPart
+from backend.app.models.product import Product, ProductOrigin, ProductPart
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
@@ -42,6 +49,9 @@ from backend.app.schemas.finished_stock import (
 from backend.app.schemas.listing import StockFigures, StockListPage
 from backend.app.schemas.product import StockBalanceOut
 from backend.app.schemas.stock import (
+    StockCatalogGroup,
+    StockCatalogOption,
+    StockCatalogProduct,
     StockListItem,
     StockMovementRowOut,
     StockMovementsPageOut,
@@ -81,10 +91,11 @@ from backend.app.services.list_paging import (
     slice_page,
     sort_computed,
 )
+from backend.app.services.product_files import effective_cover
 from backend.app.services.product_gate import product_gate
 from backend.app.services.stock_views import movement_out, orders_of_lines
 
-router = APIRouter(prefix="/stock", tags=["stock"])
+router = APIRouter(prefix="/stock", tags=["stock"], dependencies=[Depends(bind_workshop_credentials)])
 
 # All the keys are computed: the ``with_stock`` filter needs the balances, so
 # the set is built in Python whole before it can be sorted or cut (spec
@@ -448,6 +459,52 @@ async def list_stock_items(
     )
 
 
+@router.get("/catalog", response_model=list[StockCatalogProduct])
+async def stock_catalog(
+    q: str | None = Query(None, description="Name or SKU"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequireAnyPermission(Permission.STOCK_READ, Permission.PRODUCTS_READ),
+):
+    """The products a stock dialog may pick, with their variant groups (WS-13 E13 O12, STK-10):
+    a storekeeper picks a product and its options without the catalog's read — no prices, no
+    part shelf, no order counts. The catalog's own products, as the dialogs always listed."""
+    query = select(Product).where(Product.origin == ProductOrigin.CATALOG.value)
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        query = query.where(or_(Product.name.ilike(needle), Product.sku.ilike(needle)))
+    products = (await db.execute(query.order_by(Product.name, Product.id))).scalars().all()
+    groups: dict[int, list[ProductVariantGroup]] = {}
+    if products:
+        rows = await db.execute(
+            select(ProductVariantGroup)
+            .options(selectinload(ProductVariantGroup.options))
+            .where(ProductVariantGroup.product_id.in_([p.id for p in products]))
+            .order_by(ProductVariantGroup.position, ProductVariantGroup.id)
+        )
+        for group in rows.scalars().all():
+            groups.setdefault(group.product_id, []).append(group)
+    return [
+        StockCatalogProduct(
+            id=p.id,
+            code=code_for("product", p.id),
+            name=p.name,
+            sku=p.sku,
+            origin=p.origin,
+            has_cover=effective_cover(p) is not None,
+            variant_groups=[
+                StockCatalogGroup(
+                    id=g.id,
+                    name=g.name,
+                    default_option_id=g.default_option_id,
+                    options=[StockCatalogOption(id=o.id, name=o.name) for o in g.options],
+                )
+                for g in groups.get(p.id, [])
+            ],
+        )
+        for p in products
+    ]
+
+
 @router.get("/items/summary", response_model=StockItemsSummary)
 async def stock_items_summary(
     db: AsyncSession = Depends(get_db),
@@ -551,10 +608,13 @@ async def suggest_stock(
     data: StockSuggestIn,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.STOCK_READ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """What each line would take from stock — ready units of its configuration first,
     then kits of free parts, the rest to print (spec workshop-add-to-order, rules 5, 10).
-    Writes nothing."""
+    Writes nothing. An item naming an order line reads that order (WS-13 E13)."""
+    if any(item.line_id is not None for item in data.items):
+        await ensure(creds, Permission.ORDERS_READ)
     choices = await _choices_for_items(db, [(item.product_id, item.options) for item in data.items])
     requests = [
         stock_pick.PickRequest(item.product_id, chosen, item.part_counts, item.quantity, item.line_id)
@@ -647,14 +707,19 @@ async def move_stock(
     data: StockMoveIn,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.STOCK_MOVE),
+    current_user: User | None = RequireAnyPermission(Permission.STOCK_MOVE, Permission.STOCK_ADJUST),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """One movement of a position: receipt, stocktake, reserve, release or issue.
 
     A receipt, and a count of more than nothing, create the position; a count of
     0 of a configuration with no position moves nothing and leaves nothing behind
     (a position appears with its first movement). ``moved`` is False when the
-    count matched the shelf."""
+    count matched the shelf.
+
+    A stocktake corrects the books — ``stock:adjust``; every other kind moves goods —
+    ``stock:move`` (WS-13 E13). Asked before the position may be created."""
+    await ensure(creds, Permission.STOCK_ADJUST if data.kind == "stocktake" else Permission.STOCK_MOVE)
     item = await _resolve_item(
         db,
         item_id=data.item_id,

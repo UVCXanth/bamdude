@@ -6,6 +6,12 @@ from sqlalchemy import delete, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.api.routes._workshop_rights import (
+    WorkshopView,
+    bind_workshop_credentials,
+    read_required,
+    workshop_view,
+)
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -36,7 +42,7 @@ from backend.app.services.list_paging import (
 )
 from backend.app.services.order_metrics import customer_figures
 
-router = APIRouter(prefix="/customers", tags=["customers"])
+router = APIRouter(prefix="/customers", tags=["customers"], dependencies=[Depends(bind_workshop_credentials)])
 
 
 def _customers_query():
@@ -91,6 +97,19 @@ def _customer_out(customer: Customer, figures, orders: dict[int, int]) -> Custom
     )
 
 
+def _masked(row: CustomerResponse, view: WorkshopView) -> CustomerResponse:
+    """A customer as this caller may see it (WS-13 E13 O12): the orders' counts and money
+    are the orders' — null without ``orders:read``."""
+    if view.orders:
+        return row
+    return row.model_copy(
+        update={
+            "figures": None,
+            "contacts": [c.model_copy(update={"orders_count": None}) for c in row.contacts],
+        }
+    )
+
+
 async def _sync_contacts(db: AsyncSession, customer_id: int, items: list[CustomerContactIn]) -> None:
     """The form's list, synced by id (spec rule 13): an id updates its row, no id
     creates one, a contact missing from the list is removed — and every order
@@ -132,7 +151,7 @@ async def _sync_contacts(db: AsyncSession, customer_id: int, items: list[Custome
 async def _response(db: AsyncSession, customer_id: int) -> CustomerResponse:
     customer = await _get_or_404(db, customer_id)
     figures = CustomerFigures.model_validate(await customer_figures(db, customer.id))
-    return _customer_out(customer, figures, await _contact_orders(db, customer.id))
+    return _masked(_customer_out(customer, figures, await _contact_orders(db, customer.id)), await workshop_view())
 
 
 def _empty_light_figures() -> CustomerListFigures:
@@ -233,6 +252,10 @@ async def list_customers(
     """
     paged = page is not None
     key, direction, computed = resolve_sort(_CUSTOMER_SORT, sort_by)
+    view = await workshop_view()
+    # The computed keys are order counts and money (WS-13 E13 O12).
+    if computed and not view.orders:
+        raise read_required("orders")
     query = _customers_query()
     if not paged:
         query = query.order_by(Customer.name)
@@ -286,7 +309,7 @@ async def list_customers(
     # ``.get(default)``, never ``or``: the question is whether the customer HAS
     # a row in the grouped result, not whether the model it holds is truthy —
     # two different questions that happen to agree.
-    items = [_customer_out(c, figures.get(c.id, _empty_light_figures()), orders) for c in rows]
+    items = [_masked(_customer_out(c, figures.get(c.id, _empty_light_figures()), orders), view) for c in rows]
     if not paged:
         return items
     if computed:
@@ -342,12 +365,14 @@ async def customers_summary(
     (spec workshop-lists, rules 1, 3). One grouped query, the list's own.
     Declared above ``/{customer_id}``, or ``summary`` would be parsed as an id."""
     figures = (await _light_figures_by_customer(db)).values()
+    # The order tiles are the orders' (WS-13 E13 O12).
+    orders = (await workshop_view()).orders
     return CustomersSummary(
         customers=await db.scalar(select(func.count(Customer.id))) or 0,
         regular=await db.scalar(select(func.count(Customer.id)).where(Customer.kind == "regular")) or 0,
-        with_active=sum(1 for f in figures if f.active > 0),
-        active_orders=sum(f.active for f in figures),
-        total_price=round(sum(f.total_price for f in figures), 2),
+        with_active=sum(1 for f in figures if f.active > 0) if orders else None,
+        active_orders=sum(f.active for f in figures) if orders else None,
+        total_price=round(sum(f.total_price for f in figures), 2) if orders else None,
     )
 
 

@@ -119,11 +119,12 @@ class DroppedPartOut(BaseModel):
 
 class LineConfigurationImpact(BaseModel):
     reserved_before: int = 0
-    reserved_after: int = 0
+    #: Null for a caller without stock:read — what the new kit would get is the shelf's (WS-13 E13 O12).
+    reserved_after: int | None = 0
     #: The ready units the line holds and would hold in the new configuration's
     #: position (spec workshop-add-to-order, rule 8).
     finished_before: int = 0
-    finished_after: int = 0
+    finished_after: int | None = 0
     dropping: list[DroppedPartOut] = []
 
 
@@ -991,7 +992,8 @@ class FulfilmentStateOut(BaseModel):
     #: Can the order be closed now — fully issued, or fully on the shelf when it closes to stock.
     can_complete: bool = False
     #: The order's contact person, else the customer's main contact (rule 18).
-    recipient: RecipientOut
+    # Null for a caller who neither keeps the contacts nor ships the goods (WS-13 E13 O25).
+    recipient: RecipientOut | None = None
 
 
 class FulfilmentOut(BaseModel):

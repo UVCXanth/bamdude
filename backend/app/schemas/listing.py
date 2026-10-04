@@ -187,9 +187,10 @@ class CustomersSummary(BaseModel):
     customers: int
     # customers of kind "regular" — the tile's «N regular» line (spec workshop-customers, rule 15)
     regular: int
-    with_active: int
-    active_orders: int
-    total_price: float
+    # The three order tiles are null for a caller without orders:read (WS-13 E13 O12).
+    with_active: int | None
+    active_orders: int | None
+    total_price: float | None
 
 
 class StockListPage(BaseModel):
@@ -214,11 +215,12 @@ class ProjectsNavBadges(BaseModel):
     section (spec workshop-nav, rule 9). One COUNT per field; WS-07 adds
     ``draft_products``, WS-09 ``stock_below_min``."""
 
-    active_orders: int
+    # Each null when the caller may not read its domain (WS-13 E13 O12).
+    active_orders: int | None
     # Active catalog products still in draft (spec workshop-product-catalog, rule 18).
-    draft_products: int = 0
+    draft_products: int | None = 0
     # Finished-goods positions whose free quantity is under their minimum (spec workshop-finished-goods, rule 19).
-    stock_below_min: int = 0
+    stock_below_min: int | None = 0
 
 
 # ---------- issues of goods (spec workshop-order-issue, rules 21–22) ----------

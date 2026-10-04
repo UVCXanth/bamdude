@@ -105,6 +105,7 @@ async def test_a_computed_key_sorts_by_its_figure(async_client, db_session, monk
                 from_stock_units=0,
                 prints_in_progress=0,
                 prints_queued=queued[pid],
+                bankable_surplus=0,
                 progress=0.0,
             )
             for pid in project_ids
@@ -225,6 +226,7 @@ async def test_every_sort_key_really_orders_both_ways(async_client, db_session, 
                 from_stock_units=0,
                 prints_in_progress=figure[pid] + 1,
                 prints_queued=10 - figure[pid],
+                bankable_surplus=0,
                 progress=figure[pid] / 10,
             )
             for pid in project_ids

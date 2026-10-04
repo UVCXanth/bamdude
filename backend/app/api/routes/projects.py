@@ -24,12 +24,19 @@ from sqlalchemy.orm import selectinload
 
 # Aliased: a private name imported into a module this size could be shadowed
 # by a local helper of the same name without anyone noticing.
+from backend.app.api.routes._workshop_rights import (
+    bind_workshop_credentials,
+    ensure,
+    ensure_coded,
+    workshop_view,
+)
 from backend.app.api.routes.auto_queue import _to_response as auto_queue_row_response, auto_queue_item_load_options
 from backend.app.api.routes.library import file_name_visible
 from backend.app.api.routes.print_queue import _enrich_response as queue_row_response, queue_item_load_options
 from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import (
     RequestCredentials,
+    RequireAnyPermission,
     RequirePermission,
     acting_user,
     library_name_scope,
@@ -207,7 +214,7 @@ from backend.app.services.queue_batch import enqueue_batch_copies
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/projects", tags=["projects"])
+router = APIRouter(prefix="/projects", tags=["projects"], dependencies=[Depends(bind_workshop_credentials)])
 
 
 # ---------- response building ----------
@@ -356,6 +363,9 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
     customer = await db.get(Customer, project.customer_id) if project.customer_id else None
     contact = await db.get(CustomerContact, project.contact_id) if project.contact_id else None
     responsible = await db.get(User, project.responsible_id) if project.responsible_id else None
+    # A contact's phone and email are the customer directory's (WS-13 E13 O12); the order
+    # itself shows who receives it — the name and the role.
+    sees_contacts = (await workshop_view()).customers
     lines = [
         ProjectLineResponse(
             id=line.id,
@@ -426,8 +436,8 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
             code=code_for("contact", contact.id),
             name=contact.name,
             role=contact.role,
-            phone=contact.phone,
-            email=contact.email,
+            phone=contact.phone if sees_contacts else None,
+            email=contact.email if sees_contacts else None,
         )
         if contact
         else None,
@@ -837,22 +847,38 @@ async def orders_summary(
 @router.get("/nav-badges", response_model=ProjectsNavBadges)
 async def projects_nav_badges(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.ORDERS_READ),
+    _: User | None = RequireAnyPermission(Permission.ORDERS_READ, Permission.PRODUCTS_READ, Permission.STOCK_READ),
 ):
     """The sidebar badges of the Projects section (spec workshop-nav, rule 9):
     asked from every page of the app, so one COUNT per badge and nothing that
     loads an order — ``/summary`` computes every active order's figures and is
-    the tiles', not the menu's. Declared above ``/{project_id}``."""
-    active = await db.scalar(select(func.count(Project.id)).where(Project.status == "active")) or 0
-    drafts = (
-        await db.scalar(
-            select(func.count(Product.id)).where(
-                Product.origin == ProductOrigin.CATALOG.value, Product.is_active.is_(True), Product.status == "draft"
-            )
-        )
-        or 0
+    the tiles', not the menu's. Declared above ``/{project_id}``.
+
+    Three domains in one answer: each count needs its own domain's read and is null
+    without it (WS-13 E13 O12) — the route opens to any of the three."""
+    view = await workshop_view()
+    active = (
+        await db.scalar(select(func.count(Project.id)).where(Project.status == "active")) or 0 if view.orders else None
     )
-    below_min = await db.scalar(select(func.count(StockItem.id)).where(finished_stock_views.BELOW_MIN)) or 0
+    drafts = (
+        (
+            await db.scalar(
+                select(func.count(Product.id)).where(
+                    Product.origin == ProductOrigin.CATALOG.value,
+                    Product.is_active.is_(True),
+                    Product.status == "draft",
+                )
+            )
+            or 0
+        )
+        if view.products
+        else None
+    )
+    below_min = (
+        await db.scalar(select(func.count(StockItem.id)).where(finished_stock_views.BELOW_MIN)) or 0
+        if view.stock
+        else None
+    )
     return ProjectsNavBadges(active_orders=active, draft_products=drafts, stock_below_min=below_min)
 
 
@@ -1107,7 +1133,10 @@ async def create_project(
     data: ProjectCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.ORDERS_CREATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
+    specs = [_spec_of(line) for line in data.lines]
+    await _intake_rights(creds, specs)
     await _check_customer(db, data.customer_id)
     await _check_contact(db, data.contact_id, data.customer_id)
     # Every product exists before the order does: a refused line creates nothing.
@@ -1136,7 +1165,7 @@ async def create_project(
     # An order created WITH its lines takes the same road as a line added later
     # (spec workshop-add-to-order, rule 12) — configuration, stock and journal —
     # so the same dialog never means something else on the path that creates most lines.
-    await _intake(db, project, [_spec_of(line) for line in data.lines], current_user, _no_library_file)
+    await _intake(db, project, specs, current_user, _no_library_file)
     return await _response(db, project.id)
 
 
@@ -1146,6 +1175,7 @@ async def create_project_from_files(
     request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.ORDERS_CREATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Product + order out of library files, with nobody authoring either
     (spec 2026-09-06, Slice C). One request, one transaction: a refusal after
@@ -1154,6 +1184,10 @@ async def create_project_from_files(
     over the one catalogue product linking every file), ``plates`` (the print
     dialog, copies per plate). The files are the caller's to name — the library's
     library's own reading rule (:func:`_library_visible`)."""
+    if data.kind == "catalog":
+        # An order of a catalog product names the catalog (WS-13 E13 O06); a job or plates
+        # order makes its own one-off products, which belong to the order.
+        await ensure(creds, Permission.PRODUCTS_READ)
     visible = await _library_visible(request, db, current_user)
     try:
         if data.kind == "job":
@@ -1500,12 +1534,19 @@ async def get_fulfilment(
     ctx = await order_fulfilment.load_context(db, project)
     state = await order_fulfilment.state(db, project, ctx=ctx)
     configurations = await _configurations(db, ctx)
+    view = await workshop_view()
     positions = await _line_positions(db, ctx.lines)
-    recipient = (
-        await stock_issues.default_recipient(db, project=project, customer_id=project.customer_id)
-        if project.customer_id is not None
-        else stock_issues.Recipient()
-    )
+    if not view.stock:
+        # The shelf a position lies on is the stock's; its code stays as the line's label.
+        positions = {line_id: ref.model_copy(update={"location": None}) for line_id, ref in positions.items()}
+    # The recipient's phone and address — for whoever keeps the contacts or ships (O25).
+    recipient = None
+    if view.recipient:
+        recipient = _recipient_out(
+            await stock_issues.default_recipient(db, project=project, customer_id=project.customer_id)
+            if project.customer_id is not None
+            else stock_issues.Recipient()
+        )
     return FulfilmentStateOut(
         lines=[
             LineStateOut(
@@ -1524,7 +1565,7 @@ async def get_fulfilment(
         can_issue=state.can_issue,
         closes_to_stock=state.closes_to_stock,
         can_complete=state.can_complete,
-        recipient=_recipient_out(recipient),
+        recipient=recipient,
     )
 
 
@@ -1534,11 +1575,15 @@ async def fulfil_order(
     data: FulfilmentIn,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE, Permission.STOCK_MOVE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """One «Виконати» of the issue dialog: assemble, receive and issue, one issue for the
     whole batch, and — asked and everything issued — the order completed. A number above
-    what the order allows is refused with its sentence and nothing is written."""
+    what the order allows is refused with its sentence and nothing is written. A write-off
+    corrects the books, so it asks ``stock:adjust`` too (WS-13 E13 O06)."""
+    if any(line.write_off or any(part.write_off for part in line.parts) for line in data.lines):
+        await ensure(creds, Permission.STOCK_ADJUST)
     project = await _get_project(db, project_id)
     requests = []
     for line in data.lines:
@@ -1589,7 +1634,7 @@ async def fulfil_order(
 async def get_stock_offers(
     project_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.ORDERS_READ),
+    _: User | None = RequirePermission(Permission.ORDERS_READ, Permission.STOCK_READ),
 ):
     """What the shelves could cover of what this order has not printed, is not printing
     and has not queued (spec workshop-order-issue, rule 17) — an active order only."""
@@ -1603,7 +1648,7 @@ async def take_stock(
     request: Request,
     data: TakeStockIn | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE, Permission.STOCK_MOVE),
 ):
     """Take the offers — the numbers the banner showed, clamped to the offer now and to
     the shelf; the answer says what each line asked and got (rule 20)."""
@@ -1770,6 +1815,25 @@ def _no_library_file(_file: LibraryFile) -> bool:
     return False
 
 
+def _takes_stock(spec) -> bool:
+    """A product line that asks the shelf — ``auto`` or a number above nothing."""
+    if getattr(spec, "kind", None) != "product":
+        return False
+    stock = spec.stock
+    return stock == "auto" or stock.from_finished > 0 or stock.from_kits > 0
+
+
+async def _intake_rights(creds: RequestCredentials, specs) -> None:
+    """What lines ask beside the order's own right (WS-13 E13 O06), before anything is
+    written: a product or parts line names the catalog (``products:read``); a line that
+    takes from the shelf moves stock — ``auto`` included, so a client without the right
+    sends ``none``."""
+    if any(getattr(spec, "kind", None) in ("product", "parts") for spec in specs):
+        await ensure(creds, Permission.PRODUCTS_READ)
+    if any(_takes_stock(spec) for spec in specs):
+        await ensure_coded(creds, Permission.STOCK_MOVE, "stock_move_required")
+
+
 async def _intake(
     db: AsyncSession,
     project: Project,
@@ -1792,11 +1856,13 @@ async def add_lines_batch(
     request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Add many lines in one transaction (spec workshop-add-to-order, rule 11): products
     with their configuration and stock, parts of a product, one-offs from a file plate.
     Any refused line refuses the whole batch. The stock is taken as far as the shelf
     goes; ``results`` says what each line asked and got."""
+    await _intake_rights(creds, data.lines)
     project = await _get_project(db, project_id)
     intakes = await _intake(db, project, data.lines, current_user, await _library_visible(request, db, current_user))
     return BatchLinesOut(
@@ -1820,10 +1886,13 @@ async def add_line(
     data: ProjectLineCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
+    spec = _spec_of(data)
+    await _intake_rights(creds, [spec])
     project = await _get_project(db, project_id)
     _check_line_create(data)
-    await _intake(db, project, [_spec_of(data)], current_user, _no_library_file)
+    await _intake(db, project, [spec], current_user, _no_library_file)
     return await _response(db, project.id)
 
 
@@ -1842,6 +1911,7 @@ async def update_line(
     data: ProjectLineUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     line = await _get_line(db, project_id, line_id)
     if line.mode == "parts":
@@ -1891,6 +1961,13 @@ async def update_line(
     before = {field_name: getattr(line, field_name) for field_name in tracked}
     stock_before = await part_stock.reserved_units_for_line(db, line)
     finished_before = await finished_stock.held_for_line(db, line.id)
+    # Taking MORE off a shelf moves stock; giving back is the edit's own consequence
+    # (WS-13 E13 O23). Asked here — under the line's locks, before the first write (O22).
+    takes_more = (wants_finished and data.from_finished > (line.from_finished or 0)) or (
+        data.from_stock_units is not None and data.from_stock_units > stock_before
+    )
+    if takes_more:
+        await ensure(creds, Permission.STOCK_MOVE)
     for field_name in data.model_fields_set - {"from_stock_units", "from_finished"}:
         setattr(line, field_name, getattr(data, field_name))
     try:
@@ -1962,7 +2039,8 @@ async def configure_line(
     line_id: int,
     data: LineConfigurationIn,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_READ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Change a line's options and counts (spec workshop-product-variants, rules 11–14).
 
@@ -1970,7 +2048,13 @@ async def configure_line(
     journaled; with ``dry_run`` nothing is written and the answer is what the
     change would do — the parts that drop out and what of them is already
     printed or queued, and the reservation before and after.
+
+    The preview is a read (``orders:read``; its shelf figures need ``stock:read``); the
+    change is an edit, and a line that holds stock moves it to the new kit — ``stock:move``
+    too, asked under the line's locks (WS-13 E13 O22).
     """
+    if not data.dry_run:
+        await ensure(creds, Permission.ORDERS_UPDATE)
     line = await _get_line(db, project_id, line_id)
     # The product's gate before the configuration is read or written (WS-13 E1 BL3 / BL4):
     # a variant group added meanwhile is then seen, not overwritten.
@@ -1993,6 +2077,8 @@ async def configure_line(
             raise HTTPException(status_code=e.status, detail=str(e)) from e
     old_key = line.config_key
     finished_before = await finished_stock.held_for_line(db, line.id)
+    if not data.dry_run and (finished_before or await part_stock.reserved_units_for_line(db, line)):
+        await ensure(creds, Permission.STOCK_MOVE)
     try:
         outcome = await line_config.set_configuration(
             db, line, choices=data.choices, counts=data.part_counts, actor=current_user, dry_run=data.dry_run
@@ -2009,11 +2095,13 @@ async def configure_line(
             if outcome.new_key == old_key:
                 free += finished_before  # the same position: the line keeps its own
             finished_after = min(finished_before, line.quantity, free)
+        # What the new configuration would get depends on the shelf — the stock's to show.
+        sees_stock = (await workshop_view()).stock
         return LineConfigurationImpact(
             reserved_before=outcome.reserved_before,
-            reserved_after=outcome.reserved_after,
+            reserved_after=outcome.reserved_after if sees_stock else None,
             finished_before=finished_before,
-            finished_after=finished_after,
+            finished_after=finished_after if sees_stock else None,
             dropping=[
                 DroppedPartOut(
                     part_id=d.part_id,
@@ -2100,7 +2188,7 @@ async def delete_line(
 async def bank_surplus(
     project_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE, Permission.STOCK_MOVE),
 ):
     """Move this order's overprint onto the product's shelf (pass 8, Decision 2).
 
@@ -2229,9 +2317,13 @@ async def list_project_archives(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.ORDERS_READ),
+    user: User | None = RequirePermission(Permission.ORDERS_READ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """List archives in a project.
+
+    A print the caller may not read as an archive (WS-13 E13 O12) is a minimal row —
+    what the order page shows of it — marked ``restricted``.
 
     ``limit`` is bounded at 500 — what the order page walks in — because an
     unbounded one is a whole farm's print history in a single response for the
@@ -2269,13 +2361,69 @@ async def list_project_archives(
     # Import the response converter from archives module
     from backend.app.api.routes.archives import archive_to_response
 
-    return [archive_to_response(a) for a in archives]
+    reads_all, reads_own = await _owner_reads(creds, _archives_read_all, _archives_read_own)
+
+    def visible(archive: PrintArchive) -> bool:
+        return reads_all or (reads_own and user is not None and archive.created_by_id == user.id)
+
+    out = []
+    for archive in archives:
+        row = archive_to_response(archive)
+        if not visible(archive):
+            row = {key: row.get(key) for key in _ARCHIVE_SUMMARY} | {"restricted": True}
+        out.append(row)
+    return out
 
 
 # Filing a print under an order, or taking it out, rewrites the archive as well
 # (WS-13 E13 B03): beside ``orders:update`` it asks the archive's own update right
 # through the canonical ownership gate, called with the request's credentials.
 _archives_update = require_ownership_permission(Permission.ARCHIVES_UPDATE_ALL, Permission.ARCHIVES_UPDATE_OWN)
+# The archive and queue sections' own reads, asked of an order's rows (WS-13 E13 O12).
+_archives_read_all = require_permission(Permission.ARCHIVES_READ_ALL)
+_archives_read_own = require_permission(Permission.ARCHIVES_READ_OWN)
+_queue_read_all = require_permission(Permission.QUEUE_READ_ALL)
+_queue_read_own = require_permission(Permission.QUEUE_READ_OWN)
+# What an order page shows of a print it lists; the rest of the archive is the archive
+# section's, for a caller who may read that archive.
+_ARCHIVE_SUMMARY = (
+    "id",
+    "printer_id",
+    "project_id",
+    "project_line_id",
+    "library_file_id",
+    "filename",
+    "print_name",
+    "plate_index",
+    "status",
+    "quantity",
+    "defective_count",
+    "created_by_id",
+    "created_at",
+    "started_at",
+    "completed_at",
+)
+# A queue row's operator, slots and settings are the queue section's.
+_QUEUE_PRIVATE = (
+    "created_by_id",
+    "created_by_username",
+    "ams_mapping",
+    "nozzle_mapping",
+    "nozzle_rack_choice",
+    "filament_routing",
+    "selected_macro_ids",
+    "swap_macro_events",
+    "error_message",
+)
+
+
+async def _owner_reads(creds: RequestCredentials, all_gate, own_gate):
+    """``(reads every row, reads own rows)`` through the section's own gates."""
+    if await creds.allows(all_gate):
+        return True, True
+    return False, await creds.allows(own_gate)
+
+
 _file_prints = require_permission(Permission.ORDERS_FILE_PRINTS)
 
 
@@ -2905,17 +3053,19 @@ def _archive_event_timestamp(archive: PrintArchive) -> datetime:
     return archive.completed_at or archive.started_at or archive.created_at
 
 
-def _queue_display_name(item) -> str:
+def _queue_display_name(item, name_visible) -> str:
     """Best-effort name for a queue row, which has no name of its own.
 
     Works for both queue tables: each references an archive and/or a library
     file, and neither carries a ``print_name`` column — reading one off the row
-    itself is what used to 500 this endpoint.
+    itself is what used to 500 this endpoint. A library file's name only when
+    ``name_visible`` says the library would show it (WS-13 E13 O12, as ``/plan``).
     """
+    library_name = item.library_file.filename if item.library_file and name_visible(item.library_file) else None
     return (
         (item.archive.print_name if item.archive else None)
         or (item.archive.filename if item.archive else None)
-        or (item.library_file.filename if item.library_file else None)
+        or library_name
         or "(unnamed queue item)"
     )
 
@@ -2923,9 +3073,10 @@ def _queue_display_name(item) -> str:
 @router.get("/{project_id}/timeline", response_model=list[TimelineEvent])
 async def get_project_timeline(
     project_id: int,
+    request: Request,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.ORDERS_READ),
+    user: User | None = RequirePermission(Permission.ORDERS_READ),
 ):
     """Everything that happened to a project, newest first.
 
@@ -3004,6 +3155,11 @@ async def get_project_timeline(
         .all()
     )
 
+    name_scope = await library_name_scope(request, db, user)
+
+    def name_visible(f) -> bool:
+        return file_name_visible(f, user, name_scope)
+
     for item in queued_items:
         if item.archive_id and item.archive_id in archive_ids:
             continue
@@ -3012,7 +3168,7 @@ async def get_project_timeline(
                 event_type="queued",
                 timestamp=item.created_at,
                 title=_EVENT_TITLES["queued"],
-                description=_queue_display_name(item),
+                description=_queue_display_name(item, name_visible),
                 metadata={"queue_item_id": item.id},
             )
         )
@@ -3043,7 +3199,7 @@ async def get_project_timeline(
                 event_type="auto_queued",
                 timestamp=item.created_at,
                 title=_EVENT_TITLES["auto_queued"],
-                description=_queue_display_name(item),
+                description=_queue_display_name(item, name_visible),
                 metadata={"auto_queue_item_id": item.id, "target_model": item.target_model},
             )
         )
@@ -3150,7 +3306,7 @@ async def duplicate_project(
     project_id: int,
     data: ProjectDuplicate = Body(default_factory=ProjectDuplicate),
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.ORDERS_CREATE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_CREATE, Permission.ORDERS_READ),
 ):
     """A reorder: lines, customer, notes, attachments come across; history never does; status is active."""
     source = await _get_project(db, project_id)
@@ -3376,7 +3532,8 @@ async def get_order_queue(
     project_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.ORDERS_READ),
+    user: User | None = RequirePermission(Permission.ORDERS_READ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """The order's live work in both queue tiers (spec workshop-order-queue): the
     archives printing now, the printer-queue rows waiting, and the auto-queue rows
@@ -3412,7 +3569,20 @@ async def get_order_queue(
         )
         for archive, printer_name in (await db.execute(printing_q)).all()
     ]
-    pending = [queue_row_response(item) for item in (await db.execute(pending_q)).scalars().all()]
+    # A row the caller may not read as a queue row loses its operator, slots and settings;
+    # a library file's name shows only to whom the library shows it (WS-13 E13 O12).
+    reads_all, reads_own = await _owner_reads(creds, _queue_read_all, _queue_read_own)
+    name_scope = await library_name_scope(request, db, user)
+
+    def projected(item, row):
+        update = {}
+        if getattr(row, "library_file_name", None) and not file_name_visible(item.library_file, user, name_scope):
+            update["library_file_name"] = None
+        if not (reads_all or (reads_own and user is not None and item.created_by_id == user.id)):
+            update.update(dict.fromkeys((f for f in _QUEUE_PRIVATE if f in type(row).model_fields), None))
+        return row.model_copy(update=update) if update else row
+
+    pending = [projected(item, queue_row_response(item)) for item in (await db.execute(pending_q)).scalars().all()]
     awaiting = []
     if scope is None:
         awaiting_q = (
@@ -3421,7 +3591,9 @@ async def get_order_queue(
             .where(AutoQueueItem.project_id == project_id, *awaiting_auto_row_conditions())
             .order_by(AutoQueueItem.position, AutoQueueItem.id)
         )
-        awaiting = [auto_queue_row_response(item) for item in (await db.execute(awaiting_q)).scalars().all()]
+        awaiting = [
+            projected(item, auto_queue_row_response(item)) for item in (await db.execute(awaiting_q)).scalars().all()
+        ]
     return OrderQueueOut(printing=printing, pending=pending, awaiting=awaiting)
 
 

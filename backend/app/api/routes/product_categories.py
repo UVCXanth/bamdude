@@ -12,6 +12,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.api.routes._workshop_rights import bind_workshop_credentials
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -20,7 +21,7 @@ from backend.app.models.product_category import ProductCategory, category_key
 from backend.app.models.user import User
 from backend.app.schemas.product_category import ProductCategoryIn, ProductCategoryOut
 
-router = APIRouter(prefix="/product-categories", tags=["products"])
+router = APIRouter(prefix="/product-categories", tags=["products"], dependencies=[Depends(bind_workshop_credentials)])
 
 
 async def _listing(db: AsyncSession, only_id: int | None = None) -> list[ProductCategoryOut]:

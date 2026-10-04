@@ -38,6 +38,7 @@ _LIBRARY = [
     Permission.PRODUCTS_READ.value,
 ]
 _PRODUCTS_UPDATE = Permission.PRODUCTS_UPDATE.value
+_NO_STOCK = {"from_finished": 0, "from_kits": 0}
 _PLATES = {"plates": [{"index": 1, "printable_objects": {"1": "flask"}, "print_time_seconds": 60}]}
 
 
@@ -312,6 +313,7 @@ class TestOrderFileIntake:
                 Permission.ORDERS_READ.value,
                 Permission.ORDERS_CREATE.value,
                 Permission.ORDERS_UPDATE.value,
+                Permission.PRODUCTS_READ.value,
                 Permission.LIBRARY_READ_OWN.value,
             ],
         )
@@ -319,7 +321,12 @@ class TestOrderFileIntake:
         await _user(
             db_session,
             "lr_nolib",
-            [Permission.ORDERS_READ.value, Permission.ORDERS_CREATE.value, Permission.ORDERS_UPDATE.value],
+            [
+                Permission.ORDERS_READ.value,
+                Permission.ORDERS_CREATE.value,
+                Permission.ORDERS_UPDATE.value,
+                Permission.PRODUCTS_READ.value,
+            ],
         )
         nolib = (await db_session.execute(select(User).where(User.username == "lr_nolib"))).scalar_one()
         own = await _file(db_session, "own.gcode.3mf", owner=me)
@@ -372,7 +379,11 @@ class TestOrderFileIntake:
     async def test_a_refused_file_line_leaves_the_whole_batch_unwritten(
         self, async_client: AsyncClient, db_session, files
     ):
-        lines = [{"kind": "product", "product_id": files["catalog"], "quantity": 1}, self._plate(files["foreign"])]
+        # No stock asked: the shelf is stock:move's (WS-13 E13), and this test is about the library.
+        lines = [
+            {"kind": "product", "product_id": files["catalog"], "quantity": 1, "stock": _NO_STOCK},
+            self._plate(files["foreign"]),
+        ]
         r = await async_client.post(
             f"/api/v1/projects/{files['order']}/lines/batch", json={"lines": lines}, headers=_jwt("lr_own")
         )
@@ -387,7 +398,7 @@ class TestOrderFileIntake:
         headers = _jwt("lr_nolib")
         r = await async_client.post(
             f"/api/v1/projects/{files['order']}/lines/batch",
-            json={"lines": [{"kind": "product", "product_id": files["catalog"], "quantity": 1}]},
+            json={"lines": [{"kind": "product", "product_id": files["catalog"], "quantity": 1, "stock": _NO_STOCK}]},
             headers=headers,
         )
         assert r.status_code == 200, r.text

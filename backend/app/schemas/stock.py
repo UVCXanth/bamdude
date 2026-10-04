@@ -17,6 +17,33 @@ from backend.app.services.part_stock import REASONS
 StockReason = Enum("StockReason", {r: r for r in REASONS}, type=str)
 
 
+class StockCatalogOption(BaseModel):
+    id: int
+    name: str
+
+
+class StockCatalogGroup(BaseModel):
+    id: int
+    name: str
+    #: The standard option — what a dialog shows chosen; null when the group has none.
+    default_option_id: int | None = None
+    options: list[StockCatalogOption] = []
+
+
+class StockCatalogProduct(BaseModel):
+    """``GET /stock/catalog`` — what a stock dialog needs to pick a product and its options
+    (WS-13 E13 O12, STK-10): no prices, no part shelf, no order counts. ``origin`` tells a
+    one-off product (assembly treats it apart)."""
+
+    id: int
+    code: str
+    name: str
+    sku: str | None = None
+    origin: str
+    has_cover: bool = False
+    variant_groups: list[StockCatalogGroup] = []
+
+
 class StockReservationOut(BaseModel):
     """An ACTIVE order's line holding kits of this product off the shelf.
 

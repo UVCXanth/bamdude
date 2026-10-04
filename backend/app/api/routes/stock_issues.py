@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.api.routes._workshop_rights import bind_workshop_credentials
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -18,7 +19,7 @@ from backend.app.services.entity_codes import id_from_query
 from backend.app.services.list_paging import SortSpec, like_contains, page_meta, resolve_sort
 from backend.app.services.stock_issue_views import issue_rows, note_out
 
-router = APIRouter(prefix="/stock-issues", tags=["stock"])
+router = APIRouter(prefix="/stock-issues", tags=["stock"], dependencies=[Depends(bind_workshop_credentials)])
 
 _ISSUE_SORT = SortSpec(
     sql={
