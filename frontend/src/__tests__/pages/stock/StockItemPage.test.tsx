@@ -211,7 +211,7 @@ describe('StockItemPage', () => {
     });
 
     it('«Assemble from parts» opens the assembly of this position', async () => {
-      vi.spyOn(api, 'getProduct').mockResolvedValue({ id: 1, name: 'Pipe', variant_groups: [] } as never);
+      vi.spyOn(api, 'getStockProduct').mockResolvedValue({ id: 1, name: 'Pipe', variant_groups: [] } as never);
       renderPage();
       const panel = await screen.findByTestId('item-actions');
       fireEvent.click(within(panel).getByRole('button', { name: 'Assemble from parts' }));

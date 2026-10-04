@@ -166,6 +166,24 @@ describe('DispatchNotesTable (J01)', () => {
   });
 });
 
+describe('a restricted note (WS-13 E13 O25)', () => {
+  it('is listed without its recipient and does not open — it says why instead', () => {
+    render(
+      <DispatchNotesTable
+        items={[row({ id: 4, code: 'DN-0004', recipient_name: null, recipient_phone: null, restricted: true })]}
+        sort="created-desc"
+        onSortChange={vi.fn()}
+        canEdit={false}
+        footer={null}
+      />,
+    );
+    const line = screen.getByTestId('note-4');
+    expect(within(line).queryByRole('link', { name: /DN-0004/ })).not.toBeInTheDocument();
+    expect(within(line).getByText('DN-0004')).toHaveAttribute('title', expect.stringMatching(/read customers or to move stock/));
+    expect(within(line).getByText('ACME')).toBeInTheDocument();
+  });
+});
+
 describe('WaybillEditor (J03, R08)', () => {
   let update: ReturnType<typeof vi.spyOn>;
 

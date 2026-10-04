@@ -38,7 +38,11 @@ const customers = [
 describe('OrderModal · contact person', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue(customers as never);
+    // The contact field reads the chosen customer's contact options (WS-13 E13 R12).
+    vi.spyOn(api, 'getContactOptions').mockImplementation(
+      async (id: number) => (customers.find((c) => c.id === id)?.contacts ?? []) as never,
+    );
   });
 
   it('appears with a customer, takes the main contact on choosing one and re-picks it on a switch', async () => {
@@ -57,6 +61,7 @@ describe('OrderModal · contact person', () => {
     fireEvent.change(screen.getByLabelText('Customer'), { target: { value: '3' } });
     await waitFor(() => expect(contact).toBeDisabled());
     fireEvent.change(screen.getByLabelText('Customer'), { target: { value: '1' } });
+    await waitFor(() => expect(contact).toHaveValue('10'));
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Lamps' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
     await waitFor(() =>
@@ -65,12 +70,12 @@ describe('OrderModal · contact person', () => {
   });
 
   it('names a nameless contact by its role — once — as the customer pages do', async () => {
-    vi.spyOn(api, 'getCustomers').mockResolvedValue([
-      customer(4, 'Delta', [
-        { ...blank, id: 40, code: 'CT-0040', name: null, role: 'Warehouse' },
-        { ...blank, id: 41, code: 'CT-0041', name: 'Ira', role: 'Buyer' },
-      ]),
-    ] as never);
+    const delta = customer(4, 'Delta', [
+      { ...blank, id: 40, code: 'CT-0040', name: null, role: 'Warehouse' },
+      { ...blank, id: 41, code: 'CT-0041', name: 'Ira', role: 'Buyer' },
+    ]);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue([delta] as never);
+    vi.spyOn(api, 'getContactOptions').mockResolvedValue(delta.contacts as never);
     render(<OrderModal defaultCustomerId={4} onClose={() => {}} />);
     expect(await screen.findByRole('option', { name: 'Warehouse' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'Ira — Buyer' })).toBeInTheDocument();

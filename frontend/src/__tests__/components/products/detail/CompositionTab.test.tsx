@@ -163,7 +163,7 @@ describe('CompositionTab', () => {
     // Granted outright: the helper's own user arrives a tick later than the first render.
     auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read', 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     vi.spyOn(api, 'getProductSources').mockResolvedValue(sources);
-    vi.spyOn(api, 'getSettings').mockResolvedValue({ currency: 'EUR' } as never);
+    vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ currency: 'EUR' } as never);
   });
 
   describe('D01 the variants card', () => {

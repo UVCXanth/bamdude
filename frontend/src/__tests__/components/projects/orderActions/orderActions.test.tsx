@@ -253,7 +253,7 @@ describe('the order action host', () => {
   it('routes «Completed» chosen in the form to «Stock & issue», writing no status (B04 end to end)', async () => {
     const update = vi.spyOn(api, 'updateOrder');
     vi.spyOn(api, 'getOrder').mockResolvedValue(makeOrder({ id: 1, code: 'OR-0001', name: 'Ten flasks', status: 'active' }));
-    vi.spyOn(api, 'getCustomers').mockResolvedValue([]);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue([]);
     vi.spyOn(api, 'getOrderAssignees').mockResolvedValue([]);
     vi.spyOn(api, 'getFulfilment').mockReturnValue(new Promise(() => {}));
     vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
@@ -288,7 +288,7 @@ describe('the order action host', () => {
     const trigger = () => screen.getByRole('button', { name: 'Order actions OR-0001' });
 
     beforeEach(() => {
-      vi.spyOn(api, 'getCustomers').mockResolvedValue([]);
+      vi.spyOn(api, 'getCustomerOptions').mockResolvedValue([]);
       vi.spyOn(api, 'getOrderAssignees').mockResolvedValue([]);
       vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
     });
@@ -337,7 +337,7 @@ describe('the order action host', () => {
       .spyOn(api, 'updateOrder')
       .mockResolvedValue(makeOrder({ id: 1, code: 'OR-0001', name: 'Ten flasks!', status: 'cancelled' }));
     vi.spyOn(api, 'getOrder').mockResolvedValue(makeOrder({ id: 1, code: 'OR-0001', name: 'Ten flasks', status: 'active' }));
-    vi.spyOn(api, 'getCustomers').mockResolvedValue([]);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue([]);
     vi.spyOn(api, 'getOrderAssignees').mockResolvedValue([]);
     render(<Page initial={[row()]} />);
     openMenu();

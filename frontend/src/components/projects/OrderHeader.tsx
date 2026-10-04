@@ -1,8 +1,6 @@
 import { Link } from 'react-router';
-import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ExternalLink, PackageCheck, PackagePlus, Pencil } from 'lucide-react';
-import { api } from '../../api/client';
 import type { Order } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatMoney } from '../../utils/currency';
@@ -17,6 +15,7 @@ import { ResponsibleName } from './ResponsibleName';
 import { OrderActionMenu } from './orderActions/OrderActionMenu';
 import { toOrderRef } from './orderActions/orderRef';
 import type { OrderActions, RunExtra } from './orderActions/useOrderActions';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 interface OrderHeaderProps {
   order: Order;
@@ -65,7 +64,7 @@ export function OrderHeader({
   const { hasPermission } = useAuth();
   // The app-wide currency and date format, fetched the way every other screen
   // fetches them; the formatters cover the unresolved first paint.
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
 
   const canUpdate = hasPermission('orders:update');
   const active = order.status === 'active';

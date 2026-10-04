@@ -18,6 +18,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { useOrderDetail } from '../../hooks/useOrderDetail';
 import { Select } from '../Select';
 import { toOrderRef, type OrderRef } from './orderActions/orderRef';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 /** The mockup's nine card colours (WS-13 E6 C03), in its order. */
 const ORDER_COLORS = ['#4eac48', '#5983b1', '#d0863c', '#b04a3f', '#858c55', '#8a8a8a', '#9a6fb0', '#3fa7a0', '#c9a23f'];
@@ -148,9 +149,8 @@ function OrderForm({
   const navigate = useNavigate();
   const { showToast } = useToast();
   const { user, hasPermission } = useAuth();
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
-  // The customers the picker already reads — same key, one cache — carry their contacts.
-  const { data: customers = [] } = useQuery({ queryKey: ['customers'], queryFn: api.getCustomers });
+  const { data: settings } = useUiPreferences();
+
   const { data: assignees = [] } = useQuery({ queryKey: ['order-assignees'], queryFn: api.getOrderAssignees });
 
   const isEdit = base != null;
@@ -197,7 +197,19 @@ function OrderForm({
   // `undefined` = «the main contact of whichever customer is chosen»; a number or
   // null is the operator's own pick. Choosing a customer resets it to the main one.
   const [contactChoice, setContactChoice] = useState<number | null | undefined>(base ? initial.contactId : undefined);
-  const contactsOf = customers.find((c) => c.id === customerId)?.contacts ?? [];
+  // The chosen customer's contacts as the form picks one — name and role, never the
+  // directory's phones and addresses (WS-13 E13 R12). An order's own contact the list does not
+  // offer (gone since) stays chosen, by the name the order carries.
+  const { data: contactOptions = [], isLoading: contactsLoading } = useQuery({
+    queryKey: ['customer-contact-options', customerId],
+    queryFn: () => api.getContactOptions(customerId as number),
+    enabled: customerId != null,
+  });
+  const keptContact =
+    base?.contact_id != null && customerId === base.customer_id && !contactOptions.some((c) => c.id === base.contact_id)
+      ? { id: base.contact_id, code: base.contact?.code ?? '', name: base.contact?.name ?? null, role: base.contact?.role ?? null }
+      : null;
+  const contactsOf = keptContact ? [...contactOptions, keptContact] : contactOptions;
   const contactId = contactChoice === undefined ? (contactsOf[0]?.id ?? null) : contactChoice;
   // A new order is the signed-in user's unless another is chosen; `undefined` means «not
   // chosen yet», so the field never flashes «Not assigned» before `/auth/me` answers.
@@ -291,7 +303,10 @@ function OrderForm({
     }
   }, [mutation.isError, mutation.error, submitId]);
 
-  const canSubmit = name.trim() !== '' && !mutation.isPending;
+  // A customer just chosen takes its main contact — once its contacts have answered, or the
+  // order would be sent with none while they are on the way.
+  const contactPending = customerId != null && contactChoice === undefined && contactsLoading;
+  const canSubmit = name.trim() !== '' && !mutation.isPending && !contactPending;
 
   function submit() {
     if (!canSubmit || sent.current) return;

@@ -77,7 +77,7 @@ const save = () => screen.getByRole('button', { name: /^(save part|saving…)$/i
 describe('ProductPartDialog', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.spyOn(api, 'getSettings').mockResolvedValue({ currency: 'EUR' } as never);
+    vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ currency: 'EUR' } as never);
   });
 
   describe('the frame (C01)', () => {

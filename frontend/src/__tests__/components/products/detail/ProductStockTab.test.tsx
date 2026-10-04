@@ -76,6 +76,7 @@ describe('ProductStockTab', () => {
     vi.spyOn(api, 'getProductStock').mockResolvedValue(shelf);
     vi.spyOn(api, 'getStockJournal').mockResolvedValue({ items: [], next_cursor: null, meta: { total: 0, current_page: 1, per_page: 24, last_page: 1 } });
     vi.spyOn(api, 'getProduct').mockResolvedValue(withVariants);
+    vi.spyOn(api, 'getStockProduct').mockResolvedValue(withVariants as never);
     vi.spyOn(api, 'lookupStockItem').mockResolvedValue({ item: null, configuration: { choices: [], changed_parts: [] }, parts: [], can_assemble: 0 } as never);
   });
 

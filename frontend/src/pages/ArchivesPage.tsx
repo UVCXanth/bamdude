@@ -70,7 +70,7 @@ import { getArchiveStatusBadge } from '../utils/archiveStatus';
 import { formatDateTime, formatDateOnly, type TimeFormat, type DateFormat, formatDuration } from '../utils/date';
 import { getCurrencySymbol } from '../utils/currency';
 import { getBedTypeInfo } from '../utils/bedType';
-import type { Archive, OrderListItem, ArchiveListParams } from '../api/client';
+import type { Archive, ArchiveListParams } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { Select } from '../components/Select';
@@ -188,7 +188,6 @@ function ArchiveCard({
   isSelected,
   onSelect,
   selectionMode,
-  projects,
   isHighlighted,
   timeFormat = 'system',
   dateFormat = 'system',
@@ -202,7 +201,6 @@ function ArchiveCard({
   isSelected: boolean;
   onSelect: (id: number) => void;
   selectionMode: boolean;
-  projects: OrderListItem[] | undefined;
   isHighlighted?: boolean;
   timeFormat?: TimeFormat;
   dateFormat?: DateFormat;
@@ -659,7 +657,7 @@ function ArchiveCard({
     },
     // The order's own page, not the list. It opened the list only because
     // there was no detail page worth landing on.
-    ...(archive.project_id && archive.project_name ? [{
+    ...(archive.project_id && archive.project_name && hasPermission('orders:read') ? [{
       label: t('archives.menu.goToOrder', { name: archive.project_name }),
       icon: <FolderKanban className="w-4 h-4 text-bambu-green" />,
       onClick: () => navigate(`/projects/${archive.project_id}`),
@@ -1002,20 +1000,30 @@ function ArchiveCard({
               {archive.content_hash.slice(0, 8).toUpperCase()}
             </span>
           )}
-          {archive.project_name && archive.project_id != null && (
+          {/* The order is a label in its own colour, carried by the archive (WS-13 E13
+              ARC-01) — a link to it only for whoever may read orders. */}
+          {archive.project_name && archive.project_id != null && (hasPermission('orders:read') ? (
             <Link
               to={`/projects/${archive.project_id}`}
               onClick={(e) => e.stopPropagation()}
               className="text-xs px-1.5 py-0.5 rounded-full truncate max-w-[120px] hover:brightness-125 transition"
               style={{
-                backgroundColor: `${projects?.find(p => p.id === archive.project_id)?.color || '#6b7280'}20`,
-                color: projects?.find(p => p.id === archive.project_id)?.color || '#6b7280'
+                backgroundColor: `${archive.project_color || '#6b7280'}20`,
+                color: archive.project_color || '#6b7280'
               }}
               title={t('archives.card.order', { name: archive.project_name })}
             >
               {archive.project_name}
             </Link>
-          )}
+          ) : (
+            <span
+              className="text-xs px-1.5 py-0.5 rounded-full truncate max-w-[120px]"
+              style={{ backgroundColor: `${archive.project_color || '#6b7280'}20`, color: archive.project_color || '#6b7280' }}
+              title={t('archives.card.order', { name: archive.project_name })}
+            >
+              {archive.project_name}
+            </span>
+          ))}
         </div>
 
         {/* Stats */}
@@ -2052,7 +2060,7 @@ function ArchiveListRow({
       disabled: !canModify('archives', 'update', archive.created_by_id),
       title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
     },
-    ...(archive.project_id && archive.project_name ? [{
+    ...(archive.project_id && archive.project_name && hasPermission('orders:read') ? [{
       label: t('archives.menu.goToOrder', { name: archive.project_name }),
       icon: <FolderKanban className="w-4 h-4 text-bambu-green" />,
       onClick: () => navigate(`/projects/${archive.project_id}`),
@@ -3021,11 +3029,6 @@ export function ArchivesPage() {
     enabled: viewMode === 'calendar',
   });
 
-  const { data: projects } = useQuery({
-    queryKey: ['projects', {}],
-    queryFn: () => api.getOrders({}),
-  });
-
   // Archive trash count for the header badge (#1008 follow-up). Empty/error
   // is silently treated as zero so a broken trash endpoint doesn't break
   // the Archives page.
@@ -3803,7 +3806,6 @@ export function ArchivesPage() {
               isSelected={selectedIds.has(archive.id)}
               onSelect={toggleSelect}
               selectionMode={selectionMode}
-              projects={projects}
               isHighlighted={archive.id === highlightedArchiveId}
               timeFormat={timeFormat}
               dateFormat={dateFormat}

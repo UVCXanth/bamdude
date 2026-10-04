@@ -48,7 +48,7 @@ function Grab() {
 beforeEach(() => {
   vi.restoreAllMocks();
   grabbed.client = null;
-  vi.spyOn(api, 'getCustomers').mockResolvedValue([{ id: 2, name: 'ACME', contacts: [], figures: {} }] as never);
+  vi.spyOn(api, 'getCustomerOptions').mockResolvedValue([{ id: 2, name: 'ACME', contacts: [], figures: {} }] as never);
   vi.spyOn(api, 'getOrderAssignees').mockResolvedValue([{ id: 1, username: 'admin' }]);
   vi.spyOn(api, 'getSettings').mockResolvedValue({ currency: 'USD' } as never);
 });

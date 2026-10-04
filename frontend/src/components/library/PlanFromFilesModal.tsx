@@ -9,6 +9,8 @@ import { Button } from '../Button';
 import { Modal } from '../Modal';
 import { PlanBlock } from '../projects/PlanBlock';
 import { useToast } from '../../contexts/ToastContext';
+import { useAuth } from '../../contexts/AuthContext';
+import { canFileFuturePrint } from '../../utils/workshopRights';
 import { useOrderDetail } from '../../hooks/useOrderDetail';
 import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
@@ -37,6 +39,7 @@ function stem(filename: string): string {
  */
 export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps) {
   const { t } = useTranslation();
+  const { hasPermission } = useAuth();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const headingId = useId();
@@ -241,7 +244,13 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
       ) : (
         <div className="p-4 space-y-4">
           {order.data ? (
-            <PlanBlock order={order.data} canEdit variant="dialog" onEnqueued={() => setEnqueued(true)} />
+            // Sending the plan files new work under the order (Fф, WS-13 E13 ORD-33).
+            <PlanBlock
+              order={order.data}
+              canEdit={canFileFuturePrint(hasPermission)}
+              variant="dialog"
+              onEnqueued={() => setEnqueued(true)}
+            />
           ) : (
             <Loader2 className="w-5 h-5 animate-spin text-bambu-gray" />
           )}
@@ -255,9 +264,13 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
                 <Button onClick={() => finish('queued')}>{t('orders.fromFiles.close')}</Button>
               ) : (
                 <>
-                  <Button variant="secondary" onClick={() => cancel.mutate()} disabled={cancel.isPending}>
-                    {t('orders.fromFiles.cancel')}
-                  </Button>
+                  {/* «Cancel» deletes the order this dialog created — the right to delete orders
+                      (WS-13 E13 T17); without it the order is kept. */}
+                  {hasPermission('orders:delete') && (
+                    <Button variant="secondary" onClick={() => cancel.mutate()} disabled={cancel.isPending}>
+                      {t('orders.fromFiles.cancel')}
+                    </Button>
+                  )}
                   <Button onClick={() => finish('created')}>{t('orders.fromFiles.keepOrder')}</Button>
                 </>
               )}

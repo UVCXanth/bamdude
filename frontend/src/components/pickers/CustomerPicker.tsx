@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 import { api, ApiError } from '../../api/client';
-import type { Customer } from '../../api/client';
+import type { CustomerOption } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Select } from '../Select';
 import { LoadFailedNote } from '../workshop/LoadFailedNote';
@@ -48,14 +48,15 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate, id }: C
   const [warned, setWarned] = useState<{ name: string; message: string; namesake: number | null } | null>(null);
   const [choosing, setChoosing] = useState<Choosing>('idle');
   // Customers this picker created — offered even when the list was never read (Codex E11-V03).
-  const [created, setCreated] = useState<Customer[]>([]);
+  const [created, setCreated] = useState<CustomerOption[]>([]);
   const sent = useRef(false);
   const reading = useRef(false);
   const generation = useRef(0);
   const nameNow = useRef(name);
   nameNow.current = name;
 
-  const customersQuery = useQuery({ queryKey: ['customers'], queryFn: api.getCustomers });
+  // The option list, not the directory (WS-13 E13 R12): naming a customer is not reading its contacts.
+  const customersQuery = useQuery({ queryKey: ['customer-options'], queryFn: api.getCustomerOptions });
   const read = customersQuery.data;
   // A current answer is the whole list; otherwise what is known — the last answer plus what
   // this picker created — and the failed read says so with its retry.
@@ -80,10 +81,12 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate, id }: C
       sent.current = false;
       // The select shows the new customer at once — not «no customer» until (or unless)
       // the list is read again — and without calling a list of one the whole list.
-      setCreated((known) => (known.some((c) => c.id === made.id) ? known : [...known, made]));
-      queryClient.setQueryData<Customer[]>(['customers'], (old) =>
-        old && !old.some((c) => c.id === made.id) ? [...old, made] : old,
+      const option: CustomerOption = { id: made.id, code: made.code, name: made.name };
+      setCreated((known) => (known.some((c) => c.id === made.id) ? known : [...known, option]));
+      queryClient.setQueryData<CustomerOption[]>(['customer-options'], (old) =>
+        old && !old.some((c) => c.id === made.id) ? [...old, option] : old,
       );
+      queryClient.invalidateQueries({ queryKey: ['customer-options'] });
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       onChange(made.id);
       leave();
@@ -125,8 +128,8 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate, id }: C
     setChoosing('reading');
     try {
       const list = await queryClient.fetchQuery({
-        queryKey: ['customers'],
-        queryFn: api.getCustomers,
+        queryKey: ['customer-options'],
+        queryFn: api.getCustomerOptions,
         // ⚠️ The app keeps every query fresh for a minute: a default fetch would answer
         // from the cache that does not know the namesake (Codex E11 r2 note 1).
         staleTime: 0,

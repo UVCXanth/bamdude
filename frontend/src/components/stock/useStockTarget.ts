@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { UseQueryResult } from '@tanstack/react-query';
 import type { StockItem } from '../../api/client';
 import { useStockItem, useStockLookup } from '../../hooks/useFinishedStock';
-import { useProductDetail } from '../../hooks/useProductDetail';
+import { useStockProduct } from '../../hooks/useStockProduct';
 
 /**
  * The CURRENT answer of a query (WS-13 E12 G08): a success of THIS key that arrived after
@@ -42,7 +42,7 @@ export function useStockTarget({
 }) {
   const [rereading, setRereading] = useState(false);
 
-  const product = useProductDetail(item ? null : productId);
+  const product = useStockProduct(item ? null : productId);
   // The groups must be read before a configuration means anything (G08).
   const groupsReady = item == null && productId != null && product.data != null;
   const lookup = useStockLookup(groupsReady ? productId : null, options);

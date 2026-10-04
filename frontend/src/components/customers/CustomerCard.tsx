@@ -57,12 +57,13 @@ export function CustomerCard({
         <div>
           <dt className="text-xs text-bambu-gray">{t('customers.card.orders')}</dt>
           <dd className="text-sm text-white tabular-nums">
-            {t('customers.card.ordersValue', { total: figures.projects, active: figures.active })}
+            {/* The orders' figures are the orders' — «—» without their read (WS-13 E13 O12). */}
+            {figures ? t('customers.card.ordersValue', { total: figures.projects, active: figures.active }) : '—'}
           </dd>
         </div>
         <div>
           <dt className="text-xs text-bambu-gray">{t('customers.card.total')}</dt>
-          <dd className="text-sm text-white tabular-nums">{formatMoney(figures.total_price, currency)}</dd>
+          <dd className="text-sm text-white tabular-nums">{figures ? formatMoney(figures.total_price, currency) : '—'}</dd>
         </div>
       </dl>
       <div

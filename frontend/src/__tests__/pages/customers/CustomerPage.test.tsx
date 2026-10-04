@@ -227,7 +227,7 @@ describe('CustomerPage', () => {
     it('the header: «code · type», Edit, the primary New order, and a menu with Delete only — no note there', async () => {
       vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
       vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
-      vi.spyOn(api, 'getCustomers').mockResolvedValue([customer] as never);
+      vi.spyOn(api, 'getCustomerOptions').mockResolvedValue([customer] as never);
       mountAt();
       const header = await screen.findByTestId('customer-header');
       expect(within(header).getByRole('heading', { level: 1, name: 'ACME' })).toHaveAttribute('tabindex', '-1');

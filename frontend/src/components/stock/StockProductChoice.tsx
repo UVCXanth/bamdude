@@ -1,7 +1,7 @@
 import { useId } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { LineConfiguration, StockLookup } from '../../api/client';
-import { useProductDetail } from '../../hooks/useProductDetail';
+import { useStockProduct } from '../../hooks/useStockProduct';
 import { ProductPicker } from '../pickers/ProductPicker';
 import { Select } from '../Select';
 import { lineConfigLabel } from '../projects/lineConfigLabel';
@@ -49,7 +49,8 @@ export function StockProductChoice({
   const { t } = useTranslation();
   const ownId = useId();
   const inputId = productInputId ?? `${ownId}-product`;
-  const product = useProductDetail(productId);
+  // From the stock catalog — a storekeeper picks without the catalog's read (WS-13 E13 STK-10).
+  const product = useStockProduct(productId);
   const groups = productId != null ? (product.data?.variant_groups ?? []) : [];
 
   return (
@@ -64,6 +65,7 @@ export function StockProductChoice({
       ) : (
         <WorkshopField label={t('stock.move.product')} htmlFor={inputId} full>
           <ProductPicker
+            source="stock"
             inputId={inputId}
             value={productId}
             onChange={(id) => {

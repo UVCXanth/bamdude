@@ -30,6 +30,7 @@ import { DETAIL_COLUMNS } from '../../components/workshop/detailLayout';
 import { WorkshopPanel } from '../../components/workshop/WorkshopPanel';
 import { WorkshopTabPanel } from '../../components/workshop/WorkshopTabs';
 import { answeredEmpty, listState } from '../../utils/listState';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 /**
  * One customer, as the mockup draws it (WS-13 E11 E): the header — «code · type», Edit, the
@@ -123,7 +124,7 @@ export function CustomerPage() {
   }, [ordersQuery.data, ordersQuery.isPlaceholderData, clampToLastPage]);
   // The app-wide currency, fetched the way every other money-showing screen
   // fetches it; `formatMoney` covers the unresolved first paint.
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
 
   if (isLoading) {
     return (
@@ -157,7 +158,8 @@ export function CustomerPage() {
   }
 
   const figures = customer.figures;
-  const detailed = 'ordered' in figures ? figures : null;
+  // The orders' figures are the orders' — «—» without their read (WS-13 E13 O12).
+  const detailed = figures != null && 'ordered' in figures ? figures : null;
   // WS-13 E7 C05 (R03): a failed read of this customer's orders is not «no orders».
   const ordersState = listState({
     data: ordersQuery.data,
@@ -220,17 +222,21 @@ export function CustomerPage() {
             <StatTile
               testId="customer-tile-orders"
               label={t('customers.page.tiles.orders')}
-              value={figures.projects}
-              sub={t('customers.page.tiles.ordersSub', {
-                active: figures.active,
-                completed: figures.completed,
-                cancelled: figures.cancelled,
-              })}
+              value={figures ? figures.projects : '—'}
+              sub={
+                figures
+                  ? t('customers.page.tiles.ordersSub', {
+                      active: figures.active,
+                      completed: figures.completed,
+                      cancelled: figures.cancelled,
+                    })
+                  : undefined
+              }
             />
             <StatTile
               testId="customer-tile-money"
               label={t('customers.page.tiles.money')}
-              value={formatMoney(figures.total_price, settings?.currency)}
+              value={figures ? formatMoney(figures.total_price, settings?.currency) : '—'}
               sub={
                 detailed
                   ? t('customers.page.tiles.moneySub', { cost: formatMoney(detailed.total_cost, settings?.currency) })

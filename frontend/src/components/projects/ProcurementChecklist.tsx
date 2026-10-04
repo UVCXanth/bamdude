@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ExternalLink } from 'lucide-react';
 import { api } from '../../api/client';
@@ -7,6 +7,7 @@ import type { Order, ProcurementRow } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { formatMoney } from '../../utils/currency';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 interface ProcurementChecklistProps {
   order: Order;
@@ -70,7 +71,7 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
     if (sent.current[partId] === record) delete sent.current[partId];
   };
 
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
 
   const save = useMutation({
     mutationFn: ({ partId, acquired }: { partId: number; acquired: number; record: SentRecord }) =>

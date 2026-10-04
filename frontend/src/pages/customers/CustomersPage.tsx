@@ -26,6 +26,7 @@ import { useListUrlState } from '../../hooks/useListUrlState';
 import { parseListView, parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
 import { useSearchBox } from '../../hooks/useSearchBox';
 import { answeredEmpty, listState } from '../../utils/listState';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 const SHOW = ['all', 'active', 'regular'] as const;
 type Show = (typeof SHOW)[number];
@@ -124,7 +125,7 @@ export function CustomersPage() {
       />
     ) : null;
   // The currency, the way every money-showing screen reads it (the table asks too).
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
 
   return (
     <div className="workshop p-4">

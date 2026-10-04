@@ -1,10 +1,8 @@
 import { Fragment, useId, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
-import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { api } from '../../api/client';
 import type { Customer, CustomerContact } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatMoney } from '../../utils/currency';
@@ -15,6 +13,7 @@ import { CustomerAvatar } from './CustomerAvatar';
 import type { CustomerActionsHost } from './useCustomerActions';
 import { ContactReach } from './ContactReach';
 import { contactTitle, deliveryLine, mailtoHref, methodLine, telHref } from './contactFormat';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 interface CustomersTableProps {
   customers: Customer[];
@@ -55,7 +54,7 @@ export function CustomersTable({ customers, actions, sort, onSortChange, footer 
     });
   // The app-wide currency, fetched the way every other money-showing screen
   // fetches it; `formatMoney` covers the unresolved first paint.
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
   const plain = (label: string) => <th className="font-normal text-left">{label}</th>;
   const columns = hasActions ? 7 : 6;
 
@@ -168,6 +167,9 @@ export function CustomersTable({ customers, actions, sort, onSortChange, footer 
                     </td>
                     {/* Its lines are short and never broken: a long name takes the width. */}
                     <td data-testid={`customer-${customer.id}-orders`} className="text-bambu-gray whitespace-nowrap">
+                      {/* The orders' figures are the orders' — «—» without their read (WS-13 E13 O12). */}
+                      {customer.figures == null ? '—' : (
+                      <>
                       <div>
                         <span className="text-white tabular-nums">{customer.figures.projects}</span>{' '}
                         {t('customers.table.total')}
@@ -183,9 +185,11 @@ export function CustomersTable({ customers, actions, sort, onSortChange, footer 
                           cancelled: customer.figures.cancelled,
                         })}
                       </div>
+                      </>
+                      )}
                     </td>
                     <td className="text-right tabular-nums text-white">
-                      {formatMoney(customer.figures.total_price, settings?.currency)}
+                      {customer.figures == null ? '—' : formatMoney(customer.figures.total_price, settings?.currency)}
                     </td>
                     {hasActions && (
                       <td className="text-right">

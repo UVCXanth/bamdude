@@ -1,7 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { api } from '../../../api/client';
 import type { StockJournalBook } from '../../../api/client';
 import { useStockJournalPage } from '../../../hooks/useFinishedStock';
 import type { DateFormat, TimeFormat } from '../../../utils/date';
@@ -10,6 +8,7 @@ import { PaginationBar } from '../../PaginationBar';
 import { JournalTable } from '../../stock/StockJournal';
 import { LoadFailedNote } from '../../workshop/LoadFailedNote';
 import { RefreshFailedNote } from '../../workshop/RefreshFailedNote';
+import { useUiPreferences } from '../../../hooks/useUiPreferences';
 
 const BOOKS: StockJournalBook[] = ['both', 'finished', 'parts'];
 const PER_PAGE = 24;
@@ -32,7 +31,7 @@ export function ProductJournal({ productId }: { productId: number }) {
   const [book, setBook] = useState<StockJournalBook>('both');
   const [page, setPage] = useState(1);
   const journal = useStockJournalPage({ product_id: productId, book, page, per_page: PER_PAGE, sort_by: 'date-desc' });
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
   const dateFormat = (settings?.date_format || 'system') as DateFormat;
   const timeFormat = (settings?.time_format || 'system') as TimeFormat;
 

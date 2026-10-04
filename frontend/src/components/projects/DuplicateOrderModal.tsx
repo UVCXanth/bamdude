@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
@@ -12,6 +12,7 @@ import { invalidateOrderViews } from '../../utils/queryInvalidation';
 import { formatCalendarDate } from '../../utils/date';
 import { isPastDueDate } from '../../utils/orderDates';
 import type { OrderRef } from './orderActions/orderRef';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 /** `projects.name` is `String(255)`; the server refuses a longer explicit name (E6 G02). */
 const NAME_MAX = 255;
@@ -36,7 +37,7 @@ export function DuplicateOrderModal({ order, onClose }: { order: OrderRef; onClo
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { showToast } = useToast();
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
   const formId = useId();
   const nameId = useId();
   // The cursor starts in the copy's name, as the mockup's dialog does; the Modal focuses its

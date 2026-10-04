@@ -1,10 +1,9 @@
 import { Fragment } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useParams } from 'react-router';
-import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Printer } from 'lucide-react';
-import { ApiError, api } from '../../api/client';
+import { ApiError } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { Button } from '../../components/Button';
 import { formatDateTime } from '../../utils/date';
@@ -15,6 +14,7 @@ import { LoadFailedNote } from '../../components/workshop/LoadFailedNote';
 import { RefreshFailedNote } from '../../components/workshop/RefreshFailedNote';
 import { WorkshopPanel, WorkshopTableScroll } from '../../components/workshop/WorkshopPanel';
 import { useDispatchNote } from '../../hooks/useDispatchNotes';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 /**
  * `/stock/dispatch-notes/:id` — the note (spec workshop-dispatch-notes, rule 19; WS-13 E12
@@ -29,13 +29,26 @@ export function DispatchNotePage() {
   const { hasPermission } = useAuth();
   const { data: note, error, isFetching, refetch } = useDispatchNote(Number(id));
   // The server sends naive UTC; the app's formatter reads it as such and follows the settings.
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
   const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;
   const dateFormat = (settings?.date_format ?? 'system') as DateFormat;
   const valid = Number.isInteger(Number(id)) && Number(id) > 0;
 
   if (!note) {
     // Only a 404 is «not found»; any other failure says it could not load (final review M4).
+    // A note its reader may not open (WS-13 E13 O25) — said, with the way back, never «could not load».
+    if (error instanceof ApiError && error.code === 'dispatch_note_restricted') {
+      return (
+        <div className="workshop p-4">
+          <WorkshopPanel>
+            <p className="mb-2 text-base font-semibold text-white">{t('stock.dispatchNote.restricted')}</p>
+            <Link to="/stock?tab=notes" className="text-sm text-bambu-green hover:underline">
+              {t('stock.dispatchNote.backToNotes')}
+            </Link>
+          </WorkshopPanel>
+        </div>
+      );
+    }
     if (!valid || (error instanceof ApiError && error.status === 404)) {
       return (
         <div className="workshop p-4">

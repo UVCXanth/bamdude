@@ -349,7 +349,7 @@ describe('PlanBlock', () => {
     vi.spyOn(api, 'getProductPlates').mockResolvedValue(plates);
     // The currency is the test's choice, not `formatMoney`'s USD fallback —
     // otherwise the money assertions pass on an unresolved settings query.
-    vi.spyOn(api, 'getSettings').mockResolvedValue({ currency: 'UAH' } as never);
+    vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ currency: 'UAH' } as never);
     // A row with alternatives asks which printers exist, so "to printer…" can
     // hand the dialog the file that machine was sliced for. A plan without one
     // asks nothing — the query is gated — and this mock covers both.

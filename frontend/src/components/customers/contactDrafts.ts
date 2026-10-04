@@ -44,7 +44,8 @@ export function draftFromContact(c: CustomerContact): ContactDraft {
     key: nextKey(),
     id: c.id,
     code: c.code,
-    ordersCount: c.orders_count,
+    // Masked without the orders' read (WS-13 E13 O12): unknown here, the server keeps its rule.
+    ordersCount: c.orders_count ?? 0,
     name: c.name ?? '',
     role: c.role ?? '',
     phone: c.phone ?? '',

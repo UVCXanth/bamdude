@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Download, Eye, Loader2, Trash2, Upload } from 'lucide-react';
 import { api } from '../../api/client';
@@ -14,6 +14,7 @@ import { Button } from '../Button';
 import { ActionConfirm } from '../workshop/ActionConfirm';
 import { Modal } from '../Modal';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 interface OrderAttachmentsProps {
   order: Order;
@@ -56,7 +57,7 @@ export function OrderAttachments({ order, canEdit }: OrderAttachmentsProps) {
   const [confirming, setConfirming] = useState<ProjectAttachment | null>(null);
   const [progress, setProgress] = useState<{ n: number; of: number } | null>(null);
 
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
 
   const attachments = order.attachments ?? [];
 

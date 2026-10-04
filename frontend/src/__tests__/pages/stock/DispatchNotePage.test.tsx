@@ -130,6 +130,16 @@ describe('DispatchNotePage', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  it('a note its reader may not open says why, with the way back — not «could not load» (WS-13 E13 O25)', async () => {
+    vi.spyOn(api, 'getDispatchNote').mockRejectedValue(
+      new ApiError('Opening a dispatch note needs the customers’ read or the stock’s move right', 403, 'dispatch_note_restricted'),
+    );
+    renderAt();
+    expect(await screen.findByText(/needs the right to read customers or to move stock/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Back to the notes' })).toHaveAttribute('href', '/stock?tab=notes');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('a failure that is not «not found» is an alert with its retry (final review M4, E12 J04)', async () => {
     const get = vi.spyOn(api, 'getDispatchNote').mockRejectedValueOnce(new ApiError('Internal Server Error', 500));
     renderAt();

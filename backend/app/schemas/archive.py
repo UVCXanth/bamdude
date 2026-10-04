@@ -106,6 +106,8 @@ class ArchiveResponse(BaseModel):
     project_name: str | None = None  # Included for convenience
     # The order's status: a reprint inherits the order only while it is open (WS-13 E13 ARC-08).
     project_status: str | None = None
+    # The order's colour for the archive's label — no order list is read for it (WS-13 E13 ARC-01).
+    project_color: str | None = None
     # The library file this print was dispatched from (m014). The archive UI
     # links a print card back to the file's print history via ?file=<id>.
     library_file_id: int | None = None

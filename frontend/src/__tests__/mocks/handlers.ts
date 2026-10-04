@@ -302,6 +302,11 @@ export const handlers = [
     });
   }),
 
+  // The curated copy (#1293) the Workshop and the printer cards render with.
+  http.get('/api/v1/settings/ui-preferences', () => {
+    return HttpResponse.json({ currency: 'USD', date_format: 'system', time_format: 'system' });
+  }),
+
   http.patch('/api/v1/settings/', async ({ request }) => {
     const body = (await request.json()) as Record<string, unknown>;
     return HttpResponse.json(body);

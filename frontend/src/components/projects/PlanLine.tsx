@@ -11,6 +11,7 @@ import { PlanUnsatisfiable } from './PlanUnsatisfiable';
 import { projectPlan, type YieldByPlate } from './planMath';
 import { lineConfigLabel } from './lineConfigLabel';
 import { Select } from '../Select';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 interface PlanLineProps {
   order: Order;
@@ -135,7 +136,7 @@ export function PlanLine({
 
   // The user's own time format, the way every other ETA-showing screen reads
   // it; `etaShort` covers the unresolved first paint with its own default.
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
 
   const counted = useMemo(() => {
     const source = order.lines.find((l) => l.id === line.line_id);

@@ -20,7 +20,7 @@ function countOf(product: Product, section: ProductSection): number | undefined 
     case 'docs':
       return product.documents_count;
     case 'orders':
-      return product.orders_count;
+      return product.orders_count ?? undefined; // masked without the orders' read (WS-13 E13 O12)
     case 'stock':
       return undefined;
   }

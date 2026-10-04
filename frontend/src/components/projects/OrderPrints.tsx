@@ -20,6 +20,7 @@ import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { OrderPrintDefectsDialog } from './OrderPrintDefectsDialog';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 import { lineConfigLabel } from './lineConfigLabel';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 interface OrderPrintsProps {
   order: Order;
@@ -178,7 +179,7 @@ function OrderPrintsOf({ order, canEdit }: OrderPrintsProps) {
     enabled: canSeePrinters,
   });
   const printerNames = useMemo(() => new Map((printers ?? []).map((p) => [p.id, p.name])), [printers]);
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
 
   // One page per group, by the group's key. Clamped on every render to the pages the
   // group has NOW — a print unlinked, moved or loaded changes that under the page.

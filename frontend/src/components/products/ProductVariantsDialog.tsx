@@ -86,16 +86,17 @@ export function ProductVariantsDialog({ product, onClose }: { product: Product; 
     if (option.key === group.standard) return t('products.variants.isStandard');
     const stored = storedOption(option.id);
     if (!stored) return null;
-    if (stored.lines_count > 0) return t('products.variants.chosenInLines', { count: stored.lines_count });
-    if ((stored.stock_count ?? 0) > 0) return t('products.variants.heldByStock', { count: stored.stock_count });
+    // A count the server masks (WS-13 E13 O12) is not known here — the server keeps its rule.
+    if ((stored.lines_count ?? 0) > 0) return t('products.variants.chosenInLines', { count: stored.lines_count ?? 0 });
+    if ((stored.stock_count ?? 0) > 0) return t('products.variants.heldByStock', { count: stored.stock_count ?? 0 });
     if (stored.parts_count > 0) return t('products.variants.hasParts', { count: stored.parts_count });
     return null;
   };
   const groupRefusal = (group: DraftGroup): string | null => {
     const stored = storedGroup(group.id);
     if (!stored) return null;
-    if (stored.lines_count > 0) return t('products.variants.chosenInLines', { count: stored.lines_count });
-    if (stored.stock_count > 0) return t('products.variants.heldByStock', { count: stored.stock_count });
+    if ((stored.lines_count ?? 0) > 0) return t('products.variants.chosenInLines', { count: stored.lines_count ?? 0 });
+    if ((stored.stock_count ?? 0) > 0) return t('products.variants.heldByStock', { count: stored.stock_count ?? 0 });
     if (stored.parts_count > 0) return t('products.variants.hasParts', { count: stored.parts_count });
     return null;
   };

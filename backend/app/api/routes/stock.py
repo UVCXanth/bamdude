@@ -462,13 +462,19 @@ async def list_stock_items(
 @router.get("/catalog", response_model=list[StockCatalogProduct])
 async def stock_catalog(
     q: str | None = Query(None, description="Name or SKU"),
+    product_id: int | None = Query(None, description="One product, whatever its origin (a dialog opened for it)"),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequireAnyPermission(Permission.STOCK_READ, Permission.PRODUCTS_READ),
 ):
     """The products a stock dialog may pick, with their variant groups (WS-13 E13 O12, STK-10):
     a storekeeper picks a product and its options without the catalog's read — no prices, no
     part shelf, no order counts. The catalog's own products, as the dialogs always listed."""
-    query = select(Product).where(Product.origin == ProductOrigin.CATALOG.value)
+    # A dialog opened for one product names it by id — a one-off too (its assembly rule needs the
+    # origin); the pick list is the catalog's own products (WS-13 E13 T17).
+    if product_id is not None:
+        query = select(Product).where(Product.id == product_id)
+    else:
+        query = select(Product).where(Product.origin == ProductOrigin.CATALOG.value)
     if q and q.strip():
         needle = f"%{q.strip()}%"
         query = query.where(or_(Product.name.ilike(needle), Product.sku.ilike(needle)))
@@ -490,6 +496,7 @@ async def stock_catalog(
             name=p.name,
             sku=p.sku,
             origin=p.origin,
+            is_active=bool(p.is_active),
             has_cover=effective_cover(p) is not None,
             variant_groups=[
                 StockCatalogGroup(

@@ -1,11 +1,10 @@
-import { useQuery } from '@tanstack/react-query';
-import { api } from '../../../api/client';
 import type { DateFormat, TimeFormat } from '../../../utils/date';
 import { formatCalendarDate, formatDateOnly } from '../../../utils/date';
+import { useUiPreferences } from '../../../hooks/useUiPreferences';
 
 /** The user's date and time format — the same `['settings']` read every page shares. */
 export function useDateSettings(): { dateFormat: DateFormat; timeFormat: TimeFormat } {
-  const { data } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data } = useUiPreferences();
   return { dateFormat: data?.date_format ?? 'system', timeFormat: data?.time_format ?? 'system' };
 }
 

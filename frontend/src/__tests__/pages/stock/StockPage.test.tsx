@@ -12,7 +12,7 @@ import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { StockFigures, StockItem, StockItemsPage, StockListPage } from '../../../api/client';
 import { StockPage } from '../../../pages/stock/StockPage';
-import { PRODUCT_ROW_DEFAULTS, STOCK_ROW_DEFAULTS } from '../../wireDefaults';
+import { STOCK_ROW_DEFAULTS } from '../../wireDefaults';
 import { pipeProduct } from '../../components/stock/stockFixtures';
 
 const lamp = {
@@ -59,9 +59,9 @@ describe('StockPage', () => {
     vi.spyOn(api, 'getStockFigures').mockResolvedValue(figures);
     getJournal = vi.spyOn(api, 'getStockJournal').mockResolvedValue({ items: [], next_cursor: null, meta: null });
     vi.spyOn(api, 'getSettings').mockResolvedValue({ date_format: 'system' } as never);
-    getProducts = vi.spyOn(api, 'getProducts').mockResolvedValue([
-      { ...PRODUCT_ROW_DEFAULTS, id: 1, code: 'PR-0001', name: 'Lamp', is_active: true, sku: null, version: null, category: null, status: 'ready', origin: 'catalog', origin_file_id: null, origin_plate_index: null, cover_image_filename: null, has_cover: false, parts_count: 2, plates_count: 1, lines_count: 0, kits_available: 3, finished_available: 0, materials: [], colors: [], models: [] },
-      { ...PRODUCT_ROW_DEFAULTS, id: 2, code: 'PR-0002', name: 'Old vase', is_active: false, sku: null, version: null, category: null, status: 'ready', origin: 'catalog', origin_file_id: null, origin_plate_index: null, cover_image_filename: null, has_cover: false, parts_count: 1, plates_count: 1, lines_count: 0, kits_available: 0, finished_available: 0, materials: [], colors: [], models: [] },
+    getProducts = vi.spyOn(api, 'getStockCatalog').mockResolvedValue([
+      { id: 1, code: 'PR-0001', name: 'Lamp', is_active: true, sku: null, origin: 'catalog', has_cover: false, variant_groups: [] },
+      { id: 2, code: 'PR-0002', name: 'Old vase', is_active: false, sku: null, origin: 'catalog', has_cover: false, variant_groups: [] },
     ]);
   });
 
@@ -352,7 +352,7 @@ describe('StockPage', () => {
     });
 
     it("a row's «Assemble» opens the assembly for that product, its configuration still to choose", async () => {
-      vi.spyOn(api, 'getProduct').mockResolvedValue({ ...pipeProduct, name: 'Lamp', variant_groups: [] } as never);
+      vi.spyOn(api, 'getStockProduct').mockResolvedValue({ ...pipeProduct, name: 'Lamp', variant_groups: [] } as never);
       const lookup = vi
         .spyOn(api, 'lookupStockItem')
         .mockResolvedValue({ item: null, configuration: { choices: [], changed_parts: [] }, can_assemble: 3, parts: [] });

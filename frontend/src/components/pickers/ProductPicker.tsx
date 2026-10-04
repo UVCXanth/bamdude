@@ -17,21 +17,32 @@ interface ProductPickerProps {
   allowCreate?: boolean;
   /** The search field's id — a label names it and a dialog puts the cursor there. */
   inputId?: string;
+  /** `stock` — the stock catalog (WS-13 E13 STK-10): what a stock dialog picks from, readable with
+   *  the stock's read alone; nothing is created from it. */
+  source?: 'catalog' | 'stock';
 }
 
 /** Searchable list over the product catalog, with an inline "create product
  *  from this name" affordance when nothing matches (used for adding an order
  *  line or linking a file to a not-yet-catalogued product). */
-export function ProductPicker({ value, onChange, disabled, allowCreate, inputId }: ProductPickerProps) {
+export function ProductPicker({ value, onChange, disabled, allowCreate, inputId, source = 'catalog' }: ProductPickerProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState('');
 
-  const { data: products } = useQuery({
+  const fromStock = source === 'stock';
+  const { data: catalog } = useQuery({
     queryKey: ['products', {}],
     queryFn: () => api.getProducts({}),
+    enabled: !fromStock,
   });
+  const { data: stockCatalog } = useQuery({
+    queryKey: ['stock-catalog'],
+    queryFn: () => api.getStockCatalog(),
+    enabled: fromStock,
+  });
+  const products = fromStock ? stockCatalog : catalog;
 
   // Whatever this picker ARRIVED bound to stays offered, in the catalog or
   // not — the same rule, from the same hook, as `LinkToProductsModal`. Keying
@@ -44,7 +55,7 @@ export function ProductPicker({ value, onChange, disabled, allowCreate, inputId 
   const filtered = query
     ? bound.filter((p) => p.name.toLowerCase().includes(query) || p.code.toLowerCase().includes(query))
     : bound;
-  const offerCreate = Boolean(allowCreate) && filtered.length === 0 && query.length > 0;
+  const offerCreate = Boolean(allowCreate) && !fromStock && filtered.length === 0 && query.length > 0;
 
   const createMutation = useMutation({
     mutationFn: (name: string) => api.createProduct({ name }),

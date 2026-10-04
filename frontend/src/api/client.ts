@@ -1431,6 +1431,8 @@ export interface Archive {
   project_name: string | null;
   /** The order's status — a reprint inherits it only while it is open (WS-13 E13 ARC-08). */
   project_status?: string | null;
+  /** The order's colour for the archive's label (WS-13 E13 ARC-01). */
+  project_color?: string | null;
   /** The library file this print was dispatched from (m014). NULL for an
    *  external print or one whose source was never matched into the library —
    *  a print card can only link to `/archives?file=<id>` when it is set. */
@@ -1905,10 +1907,10 @@ export interface DroppedPart {
 /** What a configuration change would do — the server's dry run (rule 14). */
 export interface LineConfigurationImpact {
   reserved_before: number;
-  reserved_after: number;
+  reserved_after: number | null;
   /** Ready units the line holds and would hold in the new configuration's position. */
   finished_before: number;
-  finished_after: number;
+  finished_after: number | null;
   dropping: DroppedPart[];
 }
 
@@ -2252,9 +2254,9 @@ export interface OrdersSummary {
 }
 /** `GET /projects/nav-badges` — the sidebar's counts for the Projects section. */
 export interface ProjectsNavBadges {
-  active_orders: number;
+  active_orders: number | null;
   /** Active catalog products still in draft (spec workshop-product-catalog, rule 18). */
-  draft_products: number;
+  draft_products: number | null;
   /** Finished-goods positions whose free quantity is under their minimum (spec workshop-finished-goods, rule 22). */
   stock_below_min?: number;
 }
@@ -2622,9 +2624,9 @@ export interface CustomersSummary {
   customers: number;
   /** Customers of kind `regular`. */
   regular: number;
-  with_active: number;
-  active_orders: number;
-  total_price: number;
+  with_active: number | null;
+  active_orders: number | null;
+  total_price: number | null;
 }
 
 /** The detail endpoint's superset. Reading a list row for `printed` is the
@@ -2656,7 +2658,7 @@ export interface CustomerContact {
   delivery_details: string | null;
   note: string | null;
   /** Orders naming this contact — the form warns before removing it. */
-  orders_count: number;
+  orders_count: number | null;
 }
 
 /** A row of the customer form: `id` updates that contact, no `id` creates one. */
@@ -2690,7 +2692,7 @@ export interface Customer {
   created_at: string;
   updated_at: string;
   contacts: CustomerContact[];
-  figures: CustomerListFigures | CustomerFigures;
+  figures: CustomerListFigures | CustomerFigures | null;
 }
 
 export interface CustomerCreate {
@@ -2759,7 +2761,7 @@ export interface ProductPart {
    *  two — where the caller has a part in hand and no stock response beside it.
    *  Rendering a product's shelf out of these would be a second reading of the
    *  same ledger, one part at a time. */
-  stock_balance: number;
+  stock_balance: number | null;
   /** The option this part belongs to, or `null` for a part in every
    *  configuration (spec workshop-product-variants, rule 3). */
   variant_option_id: number | null;
@@ -2771,11 +2773,11 @@ export interface VariantOption {
   name: string;
   position: number;
   /** Order lines that chose it. */
-  lines_count: number;
+  lines_count: number | null;
   /** Parts bound to it. */
   parts_count: number;
   /** Finished-goods positions whose configuration chose it. */
-  stock_count: number;
+  stock_count: number | null;
 }
 
 /** A choice an order makes once per unit — «Хвіст: прямий / кутовий». */
@@ -2786,8 +2788,8 @@ export interface VariantGroup {
   default_option_id: number | null;
   options: VariantOption[];
   /** WS-13 E1 VR9 — what would refuse the group's delete, counted as the delete guard counts. */
-  lines_count: number;
-  stock_count: number;
+  lines_count: number | null;
+  stock_count: number | null;
   parts_count: number;
 }
 
@@ -3066,13 +3068,13 @@ export interface ProductListItem {
   has_cover: boolean;
   parts_count: number;
   plates_count: number;
-  lines_count: number;
+  lines_count: number | null;
   /** Whole units the free stock can already make (pass 8) — `min` over the
    *  counted parts of `balance / qty_per_unit`, floored. Carried by the LIST
    *  response at no extra request, so the card reads it directly. */
-  kits_available: number;
+  kits_available: number | null;
   /** Free ready units over every finished-goods position of the product. */
-  finished_available: number;
+  finished_available: number | null;
   /** The product's plate materials, colours and printer models (stored facets) — a
    *  model only from a printable file (WS-13 E1 K2). */
   materials: string[];
@@ -3090,10 +3092,10 @@ export interface ProductListItem {
    *  (`Product`) carries the full groups under the same name. */
   variant_groups: ListVariantGroup[];
   /** Distinct active orders with a line of the product. */
-  active_orders_count: number;
+  active_orders_count: number | null;
   /** Ready-goods positions on record, and those below their minimum. */
-  finished_positions: number;
-  finished_below_min: number;
+  finished_positions: number | null;
+  finished_below_min: number | null;
 }
 
 export interface Product extends ProductListItem {
@@ -3115,11 +3117,11 @@ export interface Product extends ProductListItem {
    *  ordered 2 reports 3, exactly as its order page does — see
    *  `order_metrics.units_delivered`). Still not "units ever printed": a print
    *  nobody ordered is not in it. */
-  units_printed_total: number;
+  units_printed_total: number | null;
   /** WS-13 E9 A01 — attachments outside the gallery (not `pictures`). */
   documents_count: number;
   /** WS-13 E9 A01 — DISTINCT orders with a line of this product, any status. */
-  orders_count: number;
+  orders_count: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -3583,6 +3585,37 @@ export interface StockIssueRow {
   waybill: string | null;
   note: string | null;
   created_by_name: string | null;
+  /** The recipient and the note are left out — the caller neither keeps the contacts nor ships
+   *  the goods (WS-13 E13 O25); the document does not open for them. */
+  restricted?: boolean;
+}
+
+/** A product as a stock dialog picks it (`GET /stock/catalog`, WS-13 E13 STK-10): its options and
+ *  its origin — no prices, no part shelf, no order counts, so a storekeeper needs no catalog read. */
+export interface StockCatalogProduct {
+  id: number;
+  code: string;
+  name: string;
+  sku: string | null;
+  origin: ProductOrigin;
+  is_active: boolean;
+  has_cover: boolean;
+  variant_groups: { id: number; name: string; default_option_id: number | null; options: { id: number; name: string }[] }[];
+}
+
+/** A customer as a picker names it (`GET /customers/options`, WS-13 E13 R12) — no contacts. */
+export interface CustomerOption {
+  id: number;
+  code: string;
+  name: string;
+}
+
+/** A contact as the order form picks one (`GET /customers/{id}/contact-options`) — name and role. */
+export interface ContactOption {
+  id: number;
+  code: string;
+  name: string | null;
+  role: string | null;
 }
 
 export interface StockIssuePage {
@@ -12678,6 +12711,16 @@ export const api = {
 
   // Customers
   getCustomers: () => request<Customer[]>('/customers/'),
+  /** The products a stock dialog may pick, with their options (WS-13 E13 STK-10). */
+  getStockCatalog: () => request<StockCatalogProduct[]>('/stock/catalog'),
+  /** One product a stock dialog was opened for — a one-off too; null when it is gone. */
+  getStockProduct: async (productId: number) =>
+    (await request<StockCatalogProduct[]>(`/stock/catalog?product_id=${productId}`))[0] ?? null,
+  /** Every customer as a picker names it — readable by whoever names a customer on an order or
+   *  an issue, not only the directory's readers (WS-13 E13 R12). */
+  getCustomerOptions: () => request<CustomerOption[]>('/customers/options'),
+  /** A customer's contacts as an order form picks one: name and role, no phone or address. */
+  getContactOptions: (customerId: number) => request<ContactOption[]>(`/customers/${customerId}/contact-options`),
   /** The customers page's list — the only caller that sends `page`. */
   getCustomersPaged: (params: PagedListParams & { with_active?: boolean; kind?: CustomerKind }) => {
     const qs = new URLSearchParams();

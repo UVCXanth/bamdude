@@ -258,3 +258,4 @@ async def test_an_archive_says_whether_its_order_is_open(committing_client, db_s
     r = await committing_client.get(f"/api/v1/archives/{held['archive']}")
     assert r.status_code == 200, r.text
     assert r.json()["project_status"] == "active"
+    assert "project_color" in r.json()

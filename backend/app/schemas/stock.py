@@ -40,6 +40,8 @@ class StockCatalogProduct(BaseModel):
     name: str
     sku: str | None = None
     origin: str
+    #: A retired product is still named by its id, and the pick list hides it (as the catalog's picker).
+    is_active: bool = True
     has_cover: bool = False
     variant_groups: list[StockCatalogGroup] = []
 

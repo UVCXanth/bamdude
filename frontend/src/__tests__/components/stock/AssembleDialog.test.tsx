@@ -41,8 +41,8 @@ describe('AssembleDialog', () => {
     vi.restoreAllMocks();
     assemble = vi.spyOn(api, 'assembleStock').mockResolvedValue(pipeItem);
     vi.spyOn(api, 'getStockItem').mockResolvedValue(pipeDetail);
-    vi.spyOn(api, 'getProducts').mockResolvedValue([pipeProduct] as never);
-    vi.spyOn(api, 'getProduct').mockResolvedValue(pipeProduct as never);
+    vi.spyOn(api, 'getStockCatalog').mockResolvedValue([pipeProduct] as never);
+    vi.spyOn(api, 'getStockProduct').mockResolvedValue(pipeProduct as never);
   });
 
   it('the frame: its title and what it does', async () => {
@@ -213,7 +213,7 @@ describe('AssembleDialog', () => {
       const lookup = vi.spyOn(api, 'lookupStockItem').mockResolvedValue(lookupOf(1, pipeItem));
       render(<AssembleDialog productId={1} onClose={() => {}} />);
       await waitFor(() => expect(screen.getByTestId('stock-locked-product')).toHaveTextContent('PR-0001 · Pipe'));
-      expect(api.getProducts).not.toHaveBeenCalled();
+      expect(api.getStockCatalog).not.toHaveBeenCalled();
       expect(((await screen.findByLabelText('Tail')) as HTMLSelectElement).value).toBe('100');
       await waitFor(() => expect(lookup).toHaveBeenLastCalledWith(1, []));
       await waitFor(() => expect(screen.getByTestId('assemble-position')).toHaveTextContent('Stock position: SK-0005 · standard · now 5 pcs'));
@@ -253,7 +253,7 @@ describe('AssembleDialog', () => {
     // while the lookup and the assembly sent no choice at all.
     it('a group without a standard reads «No choice» and sends what it shows', async () => {
       const noStandard = { ...pipeProduct, variant_groups: pipeProduct.variant_groups.map((g) => ({ ...g, default_option_id: null })) };
-      vi.spyOn(api, 'getProduct').mockResolvedValue(noStandard as never);
+      vi.spyOn(api, 'getStockProduct').mockResolvedValue(noStandard as never);
       const lookup = vi
         .spyOn(api, 'lookupStockItem')
         .mockResolvedValue({ item: null, configuration: { choices: [], changed_parts: [] }, can_assemble: 1, parts: [] });
@@ -272,7 +272,7 @@ describe('AssembleDialog', () => {
     });
 
     it('a one-off product is not kept in finished stock — the primary says so', async () => {
-      vi.spyOn(api, 'getProduct').mockResolvedValue({ ...pipeProduct, origin: 'order' } as never);
+      vi.spyOn(api, 'getStockProduct').mockResolvedValue({ ...pipeProduct, origin: 'order' } as never);
       vi.spyOn(api, 'lookupStockItem').mockResolvedValue(lookupOf(2));
       render(<AssembleDialog productId={1} onClose={() => {}} />);
       await waitFor(() => expect(submit()).toHaveAccessibleDescription('A one-off product is not kept in finished stock'));

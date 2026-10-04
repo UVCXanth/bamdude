@@ -16,6 +16,7 @@ import { projectPlan, rowDistribution, splitIsOff, type ChosenByRow, type SplitB
 import { invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInvalidation';
 import { useOrderPlan } from '../../hooks/useOrderPlan';
 import { useOrderFilament } from '../../hooks/useOrderFilament';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 /**
  * What to print next for this order, per line.
@@ -70,7 +71,7 @@ export function PlanBlock({
 
   // The app-wide currency, fetched the way every other money-showing screen
   // fetches it; `formatMoney` covers the unresolved first paint.
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
 
   // The line ETA and the farm's proposed split. Keyed the same way `OrderPage`
   // already queries it (`['order-forecast', id]`) — TanStack dedupes the two

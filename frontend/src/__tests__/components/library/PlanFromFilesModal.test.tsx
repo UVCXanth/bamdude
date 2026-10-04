@@ -5,6 +5,20 @@ import { http, HttpResponse } from 'msw';
 import { render } from '../../utils';
 import { server } from '../../mocks/server';
 import { PlanFromFilesModal } from '../../../components/library/PlanFromFilesModal';
+import type { Permission } from '../../../api/client';
+
+/** null = the real (admin) rights; a set narrows them for one test. */
+const auth = vi.hoisted(() => ({ granted: null as Set<string> | null }));
+vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../contexts/AuthContext')>();
+  return {
+    ...actual,
+    useAuth: () => {
+      const real = actual.useAuth();
+      return { ...real, hasPermission: (p: Permission) => auth.granted?.has(p) ?? real.hasPermission(p) };
+    },
+  };
+});
 
 const PREVIEW = {
   files: [
@@ -24,6 +38,7 @@ const ORDER = { id: 42, name: 'Flasks', status: 'active', lines: [], figures: { 
 describe('PlanFromFilesModal', () => {
   const created = vi.fn();
   beforeEach(() => {
+    auth.granted = null;
     created.mockReset();
     server.use(
       http.post('/api/v1/library/files/parts-preview', () => HttpResponse.json(PREVIEW)),
@@ -85,6 +100,17 @@ describe('PlanFromFilesModal', () => {
     // A refetch triggered by the cancel would be in flight by now.
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(askedAfterDelete).toEqual([]);
+  });
+
+  // WS-13 E13 T17: «Cancel» on the plan step deletes the order — only with the right to delete
+  // orders; the plan is sent with the right to file work under an order.
+  it('offers no «Cancel» that deletes the order without the right to delete orders', async () => {
+    auth.granted = new Set(['orders:read', 'orders:create', 'orders:update', 'products:read', 'library:read_all', 'queue:create']);
+    render(<PlanFromFilesModal fileIds={[5, 6]} onClose={() => {}} />);
+    await userEvent.type(await screen.findByLabelText('flask'), '10');
+    await userEvent.click(screen.getByRole('button', { name: 'Calculate' }));
+    expect(await screen.findByRole('button', { name: 'Keep the order' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
   });
 
   it('offers the catalogue product and asks for units instead', async () => {

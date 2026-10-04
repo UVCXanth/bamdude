@@ -34,7 +34,7 @@ const order = {
 describe('OrderModal', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.spyOn(api, 'getCustomers').mockResolvedValue([{ id: 2, name: 'ACME', figures: {} }] as never);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue([{ id: 2, name: 'ACME', figures: {} }] as never);
     vi.spyOn(api, 'getFulfilment').mockResolvedValue({
       lines: [],
       ordered: 10,
@@ -124,7 +124,7 @@ describe('OrderModal', () => {
 describe('OrderModal · completing', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.spyOn(api, 'getCustomers').mockResolvedValue([{ id: 2, name: 'ACME', figures: {} }] as never);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue([{ id: 2, name: 'ACME', figures: {} }] as never);
   });
 
   it('offers «Completed» on an active order whatever is issued — the door is «Stock & issue» (WS-13 E6 C06, R01)', () => {

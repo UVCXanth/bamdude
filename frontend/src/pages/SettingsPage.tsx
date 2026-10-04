@@ -1160,6 +1160,8 @@ export function SettingsPage() {
       // baseline never lags behind a save regardless.
       serverBaselineRef.current = data;
       queryClient.setQueryData(['settings'], data);
+      // The curated copy every non-settings page renders with (dates, times, currency).
+      queryClient.invalidateQueries({ queryKey: ['ui-preferences'] });
       // Don't call setLocalSettings(data) here - it would overwrite in-progress
       // user input (e.g. typing a hostname) with the stale saved snapshot,
       // causing the text field to reset mid-typing. Instead, let the useEffect

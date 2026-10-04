@@ -18,6 +18,7 @@ import { ProductPartDialog } from '../ProductPartDialog';
 import { ProductVariantsDialog } from '../ProductVariantsDialog';
 import { deleteProductPart } from '../partMutations';
 import { ModelChip } from './ModelChip';
+import { useUiPreferences } from '../../../hooks/useUiPreferences';
 
 const HEAD = 'px-3 py-2 text-left text-xs font-normal text-bambu-gray';
 const CELL = 'px-3 py-2 align-top';
@@ -118,7 +119,7 @@ export function CompositionTab({
   const keepFocusWhenRowLeaves = useFocusWhenRowLeaves(headingRef);
   const rowOf = (part: ProductPart) => document.querySelector(`[data-testid="part-${part.id}-row"]`);
 
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
   const sources = useQuery<ProductSources>({
     queryKey: ['product-part-sources', product.id],
     queryFn: () => api.getProductSources(product.id),
@@ -394,8 +395,8 @@ export function CompositionTab({
                   name: deleting.name,
                 })}
               </p>
-              {deleting.kind === 'printed' && deleting.stock_balance > 0 && (
-                <p>{t('products.partDelete.onShelf', { count: deleting.stock_balance })}</p>
+              {deleting.kind === 'printed' && (deleting.stock_balance ?? 0) > 0 && (
+                <p>{t('products.partDelete.onShelf', { count: deleting.stock_balance ?? 0 })}</p>
               )}
             </div>
           }

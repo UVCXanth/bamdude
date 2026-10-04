@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { api, STOCK_ITEM_KINDS, STOCK_REASONS } from '../../api/client';
+import { STOCK_ITEM_KINDS, STOCK_REASONS } from '../../api/client';
 import type { StockJournalBook, StockJournalProduct, StockJournalRow } from '../../api/client';
 import { useStockJournalPage, useStockJournalProducts } from '../../hooks/useFinishedStock';
 import type { StockJournalPageParams } from '../../hooks/useFinishedStock';
@@ -22,6 +22,7 @@ import { LoadFailedNote } from '../workshop/LoadFailedNote';
 import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { WorkshopPanel, WorkshopTableScroll } from '../workshop/WorkshopPanel';
 import { StockTableSkeleton } from './StockTableSkeleton';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 const BOOKS: StockJournalBook[] = ['both', 'finished', 'parts'];
 const SORTS = ['date-desc', 'date-asc'] as const;
@@ -272,7 +273,7 @@ function JournalView({
   onReset,
 }: JournalViewProps) {
   const { t } = useTranslation();
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
   const dateFormat = (settings?.date_format || 'system') as DateFormat;
   const timeFormat = (settings?.time_format || 'system') as TimeFormat;
 

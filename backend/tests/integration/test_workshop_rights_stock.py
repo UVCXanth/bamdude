@@ -210,3 +210,26 @@ async def test_the_stock_catalog_lets_a_storekeeper_pick_a_product_without_the_c
     assert "parts" not in row and "kits_available" not in row
     assert (await committing_client.get("/api/v1/products/", headers=_jwt("st_keeper"))).status_code == 403
     assert (await committing_client.get("/api/v1/stock/catalog", headers=_jwt("st_nobody"))).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_a_dialog_opened_for_one_product_reads_it_from_the_stock_catalog_whatever_its_origin(
+    committing_client, db_session, shelf
+):
+    """WS-13 E13 T17: a stock dialog opened for one product (a position's row, a product page) reads
+    that product's options here — a one-off product too, which the pick list leaves out — and
+    says whether it is retired, as the picker hides a retired one."""
+    from backend.app.models.product import Product
+
+    one_off = Product(name="One-off lamp", origin="adhoc_job")
+    db_session.add(one_off)
+    await db_session.commit()
+    await _user(db_session, "st_keeper_one", ["stock:read", "stock:move"])
+    listed = await committing_client.get("/api/v1/stock/catalog", headers=_jwt("st_keeper_one"))
+    assert one_off.id not in [r["id"] for r in listed.json()]
+    named = await committing_client.get(
+        "/api/v1/stock/catalog", params={"product_id": one_off.id}, headers=_jwt("st_keeper_one")
+    )
+    assert named.status_code == 200, named.text
+    [row] = named.json()
+    assert (row["id"], row["origin"], row["is_active"]) == (one_off.id, "adhoc_job", True)

@@ -44,7 +44,8 @@ export function MergePartDialog({ product, source, onClose, beforeSend }: MergeP
   const primaryId = useId();
 
   const targets = product.parts.filter((p) => p.kind === 'printed' && p.id !== source.id).sort(byOrder);
-  const holdsNoStock = (target: ProductPart) => source.stock_balance > 0 && target.ignored;
+  const shelf = source.stock_balance ?? 0; // masked without the stock's read (WS-13 E13 O12)
+  const holdsNoStock = (target: ProductPart) => shelf > 0 && target.ignored;
   const chosen = targets.find((p) => String(p.id) === targetId);
 
   const merge = useMutation({
@@ -124,7 +125,7 @@ export function MergePartDialog({ product, source, onClose, beforeSend }: MergeP
       {/* Only what applies to THIS source: no stock to move, no binding to lose — no line. */}
       <ul className="list-disc space-y-1 pl-5 text-sm text-bambu-gray-light">
         <li>{t('products.mergeDialog.names', { name: source.name })}</li>
-        {source.stock_balance > 0 && <li>{t('products.mergeDialog.stock', { count: source.stock_balance })}</li>}
+        {shelf > 0 && <li>{t('products.mergeDialog.stock', { count: shelf })}</li>}
         <li>{t('products.mergeDialog.orders')}</li>
         <li>{t('products.mergeDialog.procurement')}</li>
         {source.variant_option_id != null && <li>{t('products.mergeDialog.variant')}</li>}

@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
@@ -12,6 +12,7 @@ import { Select } from '../Select';
 import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { WorkshopField, WorkshopFormGrid } from '../workshop/WorkshopFormGrid';
 import { compositionMutationKey, invalidateComposition } from './partMutations';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
@@ -57,7 +58,7 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
 
   const groups = product.variant_groups ?? [];
   const optionLabel = new Map(groups.flatMap((g) => g.options.map((o) => [o.id, `${g.name}: ${o.name}`] as const)));

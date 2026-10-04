@@ -133,8 +133,8 @@ export function useCustomerActions({
         subtitle={`${active.customer.code} · ${active.customer.name}`}
         body={
           <div className="space-y-2 text-sm text-bambu-gray-light">
-            {figures.projects > 0 && <p>{t('customers.confirm.orders', { count: figures.projects })}</p>}
-            {figures.active > 0 && <p>{t('customers.confirm.active', { count: figures.active })}</p>}
+            {figures != null && figures.projects > 0 && <p>{t('customers.confirm.orders', { count: figures.projects })}</p>}
+            {figures != null && figures.active > 0 && <p>{t('customers.confirm.active', { count: figures.active })}</p>}
             <p>{t('customers.confirm.always')}</p>
           </div>
         }

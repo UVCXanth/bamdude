@@ -136,3 +136,44 @@ describe('ArchivesPage — who may file a print under an order (E13 B06)', () =>
     );
   });
 });
+
+// WS-13 E13 T17 (ARC-01): a print's order is a label — its colour comes with the archive, no
+// order list is asked for it — and a link to the order only for whoever may read orders.
+describe('ArchivesPage — the order a print belongs to', () => {
+  let ordersAsked: number;
+  const filed = { ...archive(7, 'Filed', 5), project_id: 4, project_name: 'Kickstarter batch', project_color: '#ff0000' };
+
+  beforeEach(() => {
+    localStorage.clear();
+    ordersAsked = 0;
+    server.use(
+      http.get('/api/v1/archives/', () =>
+        HttpResponse.json({ data: [filed], meta: { current_page: 1, per_page: 50, total: 1, last_page: 1 } }),
+      ),
+      http.get('/api/v1/printers/', () => HttpResponse.json([])),
+      http.get('/api/v1/projects/', () => {
+        ordersAsked += 1;
+        return HttpResponse.json([]);
+      }),
+      http.get('/api/v1/archives/tags', () => HttpResponse.json([])),
+    );
+  });
+
+  it('an orders reader gets the order as a link in its own colour, and no order list is asked', async () => {
+    auth.granted = new Set(['archives:read_all', 'orders:read']);
+    render(<ArchivesPage />);
+    await waitFor(() => expect(cardOf(7)).not.toBeNull());
+    const chip = within(cardOf(7)).getByText('Kickstarter batch');
+    expect(chip.closest('a')).toHaveAttribute('href', '/projects/4');
+    expect(chip.closest('a')).toHaveStyle({ color: '#ff0000' });
+    expect(ordersAsked).toBe(0);
+  });
+
+  it('without the orders read the order is a label, not a link', async () => {
+    auth.granted = new Set(['archives:read_all']);
+    render(<ArchivesPage />);
+    await waitFor(() => expect(cardOf(7)).not.toBeNull());
+    expect(within(cardOf(7)).getByText('Kickstarter batch').closest('a')).toBeNull();
+    expect(ordersAsked).toBe(0);
+  });
+});

@@ -57,16 +57,20 @@ export function ProductStockFact({
   product: Pick<Product, 'id' | 'finished_available' | 'finished_positions' | 'finished_below_min' | 'kits_available'>;
 }) {
   const { t } = useTranslation();
+  // The stock's figures are the stock's — «—» without its read (WS-13 E13 O12).
+  if (product.finished_available == null || product.kits_available == null) {
+    return <div data-testid="product-stock-fact">—</div>;
+  }
   return (
     <div data-testid="product-stock-fact">
       <b className="text-sm font-medium text-white">
         {product.finished_available} {t('products.row.finished', { count: product.finished_available })} ·{' '}
         {t('products.detail.stock.kits', { count: product.kits_available })}
       </b>
-      {product.finished_below_min > 0 && (
+      {(product.finished_below_min ?? 0) > 0 && (
         <small className="block mt-0.5 text-xs text-amber-700 dark:text-amber-400">{t('products.row.belowMin')}</small>
       )}
-      {product.finished_positions > 1 && <PositionsBreakdown productId={product.id} />}
+      {(product.finished_positions ?? 0) > 1 && <PositionsBreakdown productId={product.id} />}
     </div>
   );
 }

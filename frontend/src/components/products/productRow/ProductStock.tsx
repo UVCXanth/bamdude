@@ -14,13 +14,21 @@ export function ProductStock({
 }) {
   const { t } = useTranslation();
   const available = product.finished_available;
+  // The stock's figures are the stock's — «—» without its read (WS-13 E13 O12).
+  if (available == null || product.kits_available == null) {
+    return (
+      <div data-testid="product-stock" className="text-sm text-bambu-gray">
+        —
+      </div>
+    );
+  }
   return (
     <div data-testid="product-stock" className="text-sm">
       <b className={`tabular-nums ${available > 0 ? 'text-bambu-green' : 'text-bambu-gray'}`}>{available}</b>{' '}
       <small className="text-xs text-bambu-gray">
         {t('products.row.finished', { count: available })}
-        {product.finished_positions > 1 && t('products.row.inConfigs', { count: product.finished_positions })}
-        {product.finished_below_min > 0 && (
+        {(product.finished_positions ?? 0) > 1 && t('products.row.inConfigs', { count: product.finished_positions ?? 0 })}
+        {(product.finished_below_min ?? 0) > 0 && (
           <>
             {' · '}
             <span className="text-amber-700 dark:text-amber-400">{t('products.row.belowMin')}</span>

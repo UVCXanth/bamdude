@@ -1,11 +1,10 @@
-import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { api } from '../../api/client';
 import { formatDateTime } from '../../utils/date';
 import { hoursMinutes } from '../../utils/forecast';
 import { Button } from '../Button';
 import { WorkshopPanel } from '../workshop/WorkshopPanel';
 import type { ForecastView } from './orderForecastView';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 /**
  * «Forecast» — the order page's side panel, active orders only (WS-13 E3 G02):
@@ -34,7 +33,7 @@ export function OrderForecastPanel({
   headingLevel?: 2 | 3;
 }) {
   const { t } = useTranslation();
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
 
   const body = () => {
     if (remaining === 0) return <p className="text-sm text-bambu-green">{t('orders.forecast.allCovered')}</p>;

@@ -292,7 +292,7 @@ describe('CustomersPage', () => {
 
     it('«New order» opens the order form with this customer chosen', async () => {
       vi.spyOn(api, 'getCustomersPaged').mockResolvedValue(pageOf(customers));
-      vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+      vi.spyOn(api, 'getCustomerOptions').mockResolvedValue(customers as never);
       window.history.pushState({}, '', '/customers');
       render(<CustomersPage />);
       (await openMenu()).getByRole('menuitem', { name: 'New order' }).click();

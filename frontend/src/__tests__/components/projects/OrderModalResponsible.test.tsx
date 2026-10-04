@@ -13,7 +13,7 @@ const assignees = [
 describe('OrderModal · responsible', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.spyOn(api, 'getCustomers').mockResolvedValue([] as never);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue([] as never);
     vi.spyOn(api, 'getOrderAssignees').mockResolvedValue(assignees);
   });
 

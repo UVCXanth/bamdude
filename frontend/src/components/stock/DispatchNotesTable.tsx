@@ -1,9 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
-import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { FileText } from 'lucide-react';
-import { api } from '../../api/client';
 import type { StockIssueRow } from '../../api/client';
 import { SortableHeader } from '../SortableHeader';
 import { CONFIG_ACCENT_CLASS, isNonStandardConfiguration, lineConfigLabel } from '../projects/lineConfigLabel';
@@ -11,6 +9,7 @@ import { formatDateTime } from '../../utils/date';
 import type { DateFormat, TimeFormat } from '../../utils/date';
 import { WorkshopPanel, WorkshopTableScroll } from '../workshop/WorkshopPanel';
 import { WaybillEditor } from './WaybillEditor';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 /**
  * Dispatch notes — one table for the stock tab, an order's «Issues» and a customer's
@@ -46,7 +45,7 @@ export function DispatchNotesTable({
 }) {
   const { t } = useTranslation();
   // The server sends naive UTC; the app's formatter reads it as such and follows the settings.
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
   const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;
   const dateFormat = (settings?.date_format ?? 'system') as DateFormat;
   const plain = (label: string) => <th className="font-normal p-2 text-left">{label}</th>;
@@ -82,9 +81,14 @@ export function DispatchNotesTable({
               return (
                 <tr key={note.id} className="border-t border-bambu-dark-tertiary text-white align-top" data-testid={`note-${note.id}`}>
                   <td className="p-2 whitespace-nowrap">
-                    <Link to={`/stock/dispatch-notes/${note.id}`} className="text-bambu-green hover:underline">
-                      {note.code}
-                    </Link>
+                    {/* A restricted note does not open (WS-13 E13 O25): its code says why. */}
+                    {note.restricted ? (
+                      <span title={t('stock.dispatchNote.restricted')}>{note.code}</span>
+                    ) : (
+                      <Link to={`/stock/dispatch-notes/${note.id}`} className="text-bambu-green hover:underline">
+                        {note.code}
+                      </Link>
+                    )}
                     <WaybillEditor noteId={note.id} waybill={note.waybill} canEdit={canEdit} onSaved={onWaybillSaved} />
                   </td>
                   <td className="p-2 whitespace-nowrap text-bambu-gray">
@@ -145,14 +149,16 @@ export function DispatchNotesTable({
                   <td className="p-2 text-right tabular-nums">{note.units}</td>
                   <td className="p-2 text-bambu-gray">{note.created_by_name ?? ''}</td>
                   <td className="p-2 text-right">
-                    <Link
-                      to={`/stock/dispatch-notes/${note.id}`}
-                      aria-label={`${t('stock.notes.open')} ${note.code}`}
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded text-sm text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary"
-                    >
-                      <FileText className="w-4 h-4" aria-hidden />
-                      {t('stock.notes.open')}
-                    </Link>
+                    {!note.restricted && (
+                      <Link
+                        to={`/stock/dispatch-notes/${note.id}`}
+                        aria-label={`${t('stock.notes.open')} ${note.code}`}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded text-sm text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary"
+                      >
+                        <FileText className="w-4 h-4" aria-hidden />
+                        {t('stock.notes.open')}
+                      </Link>
+                    )}
                   </td>
                 </tr>
               );

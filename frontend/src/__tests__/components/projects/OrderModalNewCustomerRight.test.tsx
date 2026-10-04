@@ -27,7 +27,7 @@ vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
 describe('OrderModal — «New customer…» asks customers:create (G01)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.spyOn(api, 'getCustomers').mockResolvedValue([{ id: 2, name: 'ACME', figures: {} }] as never);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue([{ id: 2, name: 'ACME', figures: {} }] as never);
   });
 
   it('is not offered to an editor without the right to create', async () => {

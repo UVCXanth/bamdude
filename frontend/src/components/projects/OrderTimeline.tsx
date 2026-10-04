@@ -10,6 +10,7 @@ import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { WorkshopPanel } from '../workshop/WorkshopPanel';
 import { journalText } from './orderJournal';
 import { JOURNAL_ICONS } from './orderJournalIcons';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 /** The print and queue events the timeline merges with the journal (not journal kinds). */
 const EVENT_ICONS: Record<string, { icon: LucideIcon; tone: string }> = {
@@ -50,7 +51,7 @@ export function OrderTimeline({ orderId, headingLevel = 2 }: OrderTimelineProps)
     queryFn: () => api.getProjectTimeline(orderId),
   });
 
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
   const timeFormat: TimeFormat = settings?.time_format || 'system';
   const dateFormat = (settings?.date_format || 'system') as DateFormat;
 

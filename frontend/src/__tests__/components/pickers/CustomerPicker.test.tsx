@@ -28,7 +28,7 @@ describe('CustomerPicker', () => {
   beforeEach(() => vi.restoreAllMocks());
 
   it('a created customer is chosen and shown at once — even when the list cannot be read again', async () => {
-    vi.spyOn(api, 'getCustomers').mockResolvedValueOnce(customers as never).mockRejectedValue(new Error('HTTP 500'));
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValueOnce(customers as never).mockRejectedValue(new Error('HTTP 500'));
     vi.spyOn(api, 'createCustomer').mockResolvedValue({ ...customers[0], id: 9, code: 'CU-0009', name: 'Gamma' } as never);
     function Host() {
       const [value, setValue] = useState<number | null>(null);
@@ -41,7 +41,7 @@ describe('CustomerPicker', () => {
   });
 
   it('a created customer is a visible option even when the list was never read (Codex E11-V03)', async () => {
-    vi.spyOn(api, 'getCustomers').mockRejectedValue(new Error('offline'));
+    vi.spyOn(api, 'getCustomerOptions').mockRejectedValue(new Error('offline'));
     vi.spyOn(api, 'createCustomer').mockResolvedValue({ ...customers[0], id: 9, code: 'CU-0009', name: 'Beta' } as never);
     function Host() {
       const [value, setValue] = useState<number | null>(null);
@@ -66,7 +66,7 @@ describe('CustomerPicker', () => {
     const beta = { ...customers[0], id: 3, code: 'CU-0003', name: 'Beta' };
 
     it('says the server\'s sentence with «Choose it» and «Create another» — no toast', async () => {
-      vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+      vi.spyOn(api, 'getCustomerOptions').mockResolvedValue(customers as never);
       vi.spyOn(api, 'createCustomer').mockRejectedValue(taken());
       render(<CustomerPicker value={null} onChange={() => {}} allowCreate />);
       await openCreate('Beta');
@@ -77,7 +77,7 @@ describe('CustomerPicker', () => {
 
     it('«Choose it» reads the list afresh — past the app\'s minute of staleTime — and chooses the namesake', async () => {
       const read = vi
-        .spyOn(api, 'getCustomers')
+        .spyOn(api, 'getCustomerOptions')
         .mockResolvedValueOnce(customers as never)
         .mockResolvedValue([...customers, beta] as never);
       vi.spyOn(api, 'createCustomer').mockRejectedValue(taken());
@@ -96,7 +96,7 @@ describe('CustomerPicker', () => {
 
     it('a choice given up while its list is read is not made when the answer lands (R01)', async () => {
       let answer!: (v: unknown) => void;
-      vi.spyOn(api, 'getCustomers')
+      vi.spyOn(api, 'getCustomerOptions')
         .mockResolvedValueOnce(customers as never)
         .mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }) as never);
       vi.spyOn(api, 'createCustomer').mockRejectedValue(taken());
@@ -117,7 +117,7 @@ describe('CustomerPicker', () => {
 
     it('typing another name while the list is read drops that read', async () => {
       let answer!: (v: unknown) => void;
-      vi.spyOn(api, 'getCustomers')
+      vi.spyOn(api, 'getCustomerOptions')
         .mockResolvedValueOnce(customers as never)
         .mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }) as never);
       vi.spyOn(api, 'createCustomer').mockRejectedValue(taken());
@@ -136,7 +136,7 @@ describe('CustomerPicker', () => {
     });
 
     it('under its request the pressed button keeps the focus, and Escape there closes nothing around the picker', async () => {
-      vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+      vi.spyOn(api, 'getCustomerOptions').mockResolvedValue(customers as never);
       vi.spyOn(api, 'createCustomer').mockReturnValue(new Promise(() => {}) as never);
       const around = vi.fn();
       window.addEventListener('keydown', around);
@@ -161,7 +161,7 @@ describe('CustomerPicker', () => {
     });
 
     it('a namesake deleted meanwhile says so — and «Create another» stays', async () => {
-      vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+      vi.spyOn(api, 'getCustomerOptions').mockResolvedValue(customers as never);
       vi.spyOn(api, 'createCustomer').mockRejectedValue(taken());
       const onChange = vi.fn();
       render(<CustomerPicker value={null} onChange={onChange} allowCreate />);
@@ -173,7 +173,7 @@ describe('CustomerPicker', () => {
     });
 
     it('a list that could not be read says so with a retry — never a select with a hidden choice', async () => {
-      vi.spyOn(api, 'getCustomers').mockResolvedValueOnce(customers as never).mockRejectedValueOnce(new Error('HTTP 500'));
+      vi.spyOn(api, 'getCustomerOptions').mockResolvedValueOnce(customers as never).mockRejectedValueOnce(new Error('HTTP 500'));
       vi.spyOn(api, 'createCustomer').mockRejectedValue(taken());
       const onChange = vi.fn();
       render(<CustomerPicker value={null} onChange={onChange} allowCreate />);
@@ -186,7 +186,7 @@ describe('CustomerPicker', () => {
     });
 
     it('«Create another» sends the same name with the flag', async () => {
-      vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+      vi.spyOn(api, 'getCustomerOptions').mockResolvedValue(customers as never);
       const create = vi.spyOn(api, 'createCustomer').mockRejectedValueOnce(taken()).mockResolvedValueOnce({ id: 9 } as never);
       const onChange = vi.fn();
       render(<CustomerPicker value={null} onChange={onChange} allowCreate />);
@@ -197,7 +197,7 @@ describe('CustomerPicker', () => {
     });
 
     it('changing the name takes the warning away; the next create is an ordinary one', async () => {
-      vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+      vi.spyOn(api, 'getCustomerOptions').mockResolvedValue(customers as never);
       const create = vi.spyOn(api, 'createCustomer').mockRejectedValueOnce(taken()).mockResolvedValueOnce({ id: 9 } as never);
       render(<CustomerPicker value={null} onChange={() => {}} allowCreate />);
       await openCreate('Beta');
@@ -209,7 +209,7 @@ describe('CustomerPicker', () => {
     });
 
     it('under its request the field, Create, × and Escape do nothing — decided in the same frame', async () => {
-      vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+      vi.spyOn(api, 'getCustomerOptions').mockResolvedValue(customers as never);
       const create = vi.spyOn(api, 'createCustomer').mockReturnValue(new Promise(() => {}) as never);
       render(<CustomerPicker value={null} onChange={() => {}} allowCreate />);
       const select = await screen.findByRole('combobox');
@@ -230,20 +230,20 @@ describe('CustomerPicker', () => {
   });
 
   it('names each customer by its code and name', async () => {
-    vi.spyOn(api, 'getCustomers').mockResolvedValue(customers);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue(customers);
     render(<CustomerPicker value={null} onChange={() => {}} />);
     expect(await screen.findByRole('option', { name: 'CU-0001 · Acme' })).toBeInTheDocument();
   });
 
   it('renders "no customer" first', async () => {
-    vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue(customers as never);
     render(<CustomerPicker value={null} onChange={() => {}} />);
     const options = await screen.findAllByRole('option');
     expect(options[0]).toHaveTextContent('No customer');
   });
 
   it('choosing "new customer…" shows a name input, and submitting creates the customer', async () => {
-    vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue(customers as never);
     const create = vi.spyOn(api, 'createCustomer').mockResolvedValue({ id: 7, name: 'Beta' } as never);
     const onChange = vi.fn();
     render(<CustomerPicker value={null} onChange={onChange} allowCreate />);
@@ -256,7 +256,7 @@ describe('CustomerPicker', () => {
   });
 
   it('honours disabled once the create-name view is showing', async () => {
-    vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue(customers as never);
     const create = vi.spyOn(api, 'createCustomer').mockResolvedValue({ id: 8, name: 'Gamma' } as never);
     const { rerender } = render(<CustomerPicker value={null} onChange={() => {}} allowCreate />);
     const select = await screen.findByRole('combobox');
@@ -274,7 +274,7 @@ describe('CustomerPicker', () => {
   it('Escape in the name field steps back to the select without creating anything', async () => {
     // Picking "new customer…" by accident used to be a one-way door: the only
     // way back was to create a customer nobody wanted.
-    vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue(customers as never);
     const create = vi.spyOn(api, 'createCustomer').mockResolvedValue({ id: 9, name: 'Delta' } as never);
     render(<CustomerPicker value={null} onChange={() => {}} allowCreate />);
     const select = await screen.findByRole('combobox');
@@ -292,7 +292,7 @@ describe('CustomerPicker', () => {
   });
 
   it('the × beside Create goes back and forgets what was typed', async () => {
-    vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue(customers as never);
     const create = vi.spyOn(api, 'createCustomer').mockResolvedValue({ id: 9, name: 'Delta' } as never);
     render(<CustomerPicker value={null} onChange={() => {}} allowCreate />);
     const select = await screen.findByRole('combobox');
@@ -317,7 +317,7 @@ describe('CustomerPicker', () => {
     // buttons called "Cancel" in one form is a coin toss for anybody driving
     // it by accessible name — a screen reader, a keyboard user reading the
     // rotor, or a test.
-    vi.spyOn(api, 'getCustomers').mockResolvedValue(customers as never);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue(customers as never);
     render(<CustomerPicker value={null} onChange={() => {}} allowCreate />);
     const select = await screen.findByRole('combobox');
     fireEvent.change(select, {

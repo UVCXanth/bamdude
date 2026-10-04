@@ -1,8 +1,6 @@
 import type { ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, CheckCircle2 } from 'lucide-react';
-import { api } from '../../api/client';
 import type { ProjectFigures } from '../../api/client';
 import { formatMoney } from '../../utils/currency';
 import { formatDateOnly } from '../../utils/date';
@@ -10,6 +8,7 @@ import { hoursMinutes } from '../../utils/forecast';
 import { formatWeight } from '../../utils/weight';
 import { ProgressBar } from './ProgressBar';
 import type { ForecastView } from './orderForecastView';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 type Tone = 'ok' | 'warn' | 'late';
 
@@ -54,7 +53,7 @@ export function OrderFigures({ figures, forecast }: { figures: ProjectFigures; f
   const { t } = useTranslation();
   // The app-wide currency and date format, fetched the way every other screen
   // fetches them; the formatters cover the unresolved first paint.
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useUiPreferences();
   const money = (value: number) => formatMoney(value, settings?.currency);
 
   return (

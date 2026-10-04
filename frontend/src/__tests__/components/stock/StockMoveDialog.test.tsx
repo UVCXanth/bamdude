@@ -61,9 +61,9 @@ describe('StockMoveDialog', () => {
     vi.restoreAllMocks();
     move = vi.spyOn(api, 'moveStock').mockResolvedValue({ ...pipeItem, moved: true });
     getItem = vi.spyOn(api, 'getStockItem').mockResolvedValue(pipeDetail);
-    vi.spyOn(api, 'getProducts').mockResolvedValue([pipeProduct] as never);
-    vi.spyOn(api, 'getProduct').mockResolvedValue(pipeProduct as never);
-    vi.spyOn(api, 'getCustomers').mockResolvedValue([{ id: 9, code: 'CU-0009', name: 'ACME' }] as never);
+    vi.spyOn(api, 'getStockCatalog').mockResolvedValue([pipeProduct] as never);
+    vi.spyOn(api, 'getStockProduct').mockResolvedValue(pipeProduct as never);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue([{ id: 9, code: 'CU-0009', name: 'ACME' }] as never);
     vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
   });
 
@@ -140,7 +140,7 @@ describe('StockMoveDialog', () => {
 
     it("the lookup waits for the product's groups; a failed read of them offers a retry", async () => {
       const groups = deferred<typeof pipeProduct>();
-      vi.spyOn(api, 'getProduct').mockReturnValueOnce(groups.promise as never).mockResolvedValue(pipeProduct as never);
+      vi.spyOn(api, 'getStockProduct').mockReturnValueOnce(groups.promise as never).mockResolvedValue(pipeProduct as never);
       const lookup = vi.spyOn(api, 'lookupStockItem').mockResolvedValue(found());
       render(<StockMoveDialog kind="receipt" productId={1} onClose={() => {}} />);
       expect(await screen.findByText('Reading the variants…')).toBeInTheDocument();
@@ -159,7 +159,7 @@ describe('StockMoveDialog', () => {
       render(<StockMoveDialog kind="receipt" productId={1} onClose={() => {}} />);
       await waitFor(() => expect(screen.getByTestId('stock-locked-product')).toHaveTextContent('PR-0001 · Pipe'));
       expect(screen.queryByRole('button', { name: 'PR-0001 · Pipe' })).not.toBeInTheDocument();
-      expect(api.getProducts).not.toHaveBeenCalled();
+      expect(api.getStockCatalog).not.toHaveBeenCalled();
       fireEvent.change(await screen.findByLabelText('Tail'), { target: { value: '101' } });
       await waitFor(() => expect(lookup).toHaveBeenLastCalledWith(1, [101]));
     });
@@ -167,7 +167,7 @@ describe('StockMoveDialog', () => {
     // R11 / E9-V01: «No choice» is a configuration of its own.
     it('a group without a standard starts at «No choice»; the first option is a real choice; going back sends none', async () => {
       const noStandard = { ...pipeProduct, variant_groups: pipeProduct.variant_groups.map((g) => ({ ...g, default_option_id: null })) };
-      vi.spyOn(api, 'getProduct').mockResolvedValue(noStandard as never);
+      vi.spyOn(api, 'getStockProduct').mockResolvedValue(noStandard as never);
       const lookup = vi.spyOn(api, 'lookupStockItem').mockResolvedValue({ ...none, configuration: { choices: [], changed_parts: [] } });
       render(<StockMoveDialog kind="receipt" productId={1} onClose={() => {}} />);
       const select = (await screen.findByRole('combobox', { name: 'Tail' })) as HTMLSelectElement;

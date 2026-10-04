@@ -30,6 +30,8 @@ async def test_ui_preferences_exposes_a_known_ui_field(async_client: AsyncClient
     body = resp.json()
     assert "camera_view_mode" in body
     assert "time_format" in body
+    # The Workshop's prices render for an order clerk or a stock keeper too (WS-13 E13 T17).
+    assert "currency" in body
 
 
 @pytest.mark.asyncio

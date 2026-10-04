@@ -35,8 +35,10 @@ export function ProductComposition({ product, variant }: { product: Fields; vari
         {plates}
       </span>
       {variants && <small className="block text-xs text-bambu-gray">{variants}</small>}
-      {product.active_orders_count > 0 && (
-        <small className="block text-xs text-bambu-gray">{t('products.row.activeOrders', { count: product.active_orders_count })}</small>
+      {(product.active_orders_count ?? 0) > 0 && (
+        <small className="block text-xs text-bambu-gray">
+          {t('products.row.activeOrders', { count: product.active_orders_count ?? 0 })}
+        </small>
       )}
     </div>
   );
