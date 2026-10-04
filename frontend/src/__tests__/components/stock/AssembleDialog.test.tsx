@@ -114,6 +114,28 @@ describe('AssembleDialog', () => {
       expect(screen.getByTestId('assemble-parts')).not.toHaveAttribute('data-stale');
     });
 
+    // Codex E12-V05: a first read that failed is no answer of this dialog — a cache from before
+    // the opening (here «up to 123») stays off the screen; the retry's answer is shown.
+    it('a first read that failed shows no cached kit or limit; its retry does (Codex V05)', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } });
+      client.setQueryData(['stock-item', pipeItem.id], { ...pipeDetail, can_assemble: 123 });
+      vi.spyOn(api, 'getStockItem')
+        .mockRejectedValueOnce(new Error('HTTP 500'))
+        .mockResolvedValue({ ...pipeDetail, can_assemble: 3 });
+      render(
+        <QueryClientProvider client={client}>
+          <AssembleDialog item={pipeItem} onClose={() => {}} />
+        </QueryClientProvider>,
+      );
+      expect(await screen.findByText('Could not read the position')).toBeInTheDocument();
+      expect(screen.getByTestId('assemble-limit')).not.toHaveTextContent('123');
+      expect(screen.queryByTestId('assemble-parts')).toBeNull();
+      expect(submit()).toBeDisabled();
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      await waitFor(() => expect(screen.getByText('up to 3')).toBeInTheDocument());
+      expect(screen.getByTestId('assemble-parts')).toBeInTheDocument();
+    });
+
     // Final review M3: after a failed re-read nothing is being read — no «reading…».
     it('a re-read that failed after a refusal says so, with no «reading…» left', async () => {
       vi.spyOn(api, 'getStockItem')

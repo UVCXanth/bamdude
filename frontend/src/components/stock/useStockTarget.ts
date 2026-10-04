@@ -24,9 +24,12 @@ export function isCurrent(q: UseQueryResult<unknown>): boolean {
  * current answer gives a number: `figures` and `lookupCurrent` say so. What is SHOWN —
  * `shownFigures`, `lookupShown` — is the current answer, or the last answer of the SAME key
  * this dialog has read, kept on screen dimmed while that key is read again or after its re-read
- * failed (owner, F6 D1) — never as a limit. A cache from before the opening and another key's
- * answer show nothing («reading…»). After a refusal `reread()` asks both again and nothing is
- * judged until they answer.
+ * failed (owner, F6 D1) — never as a limit. «Read in this dialog» is a SUCCESS of the key since
+ * it became current here (its `dataUpdatedAt` against the moment it did): `isFetchedAfterMount`
+ * turns true on a failed read too, which let a cache from before the opening onto the screen
+ * (Codex E12-V05). A cache from before the opening and another key's answer show nothing
+ * («reading…»). After a refusal `reread()` asks both again and nothing is judged until they
+ * answer.
  */
 export function useStockTarget({
   item,
@@ -44,7 +47,10 @@ export function useStockTarget({
   const groupsReady = item == null && productId != null && product.data != null;
   const lookup = useStockLookup(groupsReady ? productId : null, options);
   const lookupKey = `${groupsReady ? productId : ''}:${[...options].sort((a, b) => a - b).join(',')}`;
+  // When the key became current here: only an answer that arrived after it was read HERE.
+  const [lookupSince, setLookupSince] = useState<{ key: string; at: number }>({ key: '', at: Infinity });
   useEffect(() => {
+    setLookupSince({ key: lookupKey, at: Date.now() });
     if (groupsReady) void lookup.refetch({ cancelRefetch: false });
     // The key is the trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -52,19 +58,28 @@ export function useStockTarget({
   const lookupCurrent = groupsReady && isCurrent(lookup) && !rereading;
   const lookupOwn = lookup.data && !lookup.isPlaceholderData ? lookup.data : undefined;
   // F6 D1: this key's answer, once read in this dialog, stays on screen while it is read again.
-  const lookupShown = lookupCurrent || (groupsReady && lookup.isFetchedAfterMount) ? lookupOwn : undefined;
+  const lookupSeen =
+    groupsReady && lookupSince.key === lookupKey && lookupOwn != null && lookup.dataUpdatedAt >= lookupSince.at;
+  const lookupShown = lookupCurrent || lookupSeen ? lookupOwn : undefined;
 
   const positionId = item?.id ?? lookupOwn?.item?.id;
   const detail = useStockItem(positionId ?? 0);
+  const [detailSince, setDetailSince] = useState<{ id: number | undefined; at: number }>({ id: undefined, at: Infinity });
   useEffect(() => {
+    setDetailSince({ id: positionId, at: Date.now() });
     if (positionId != null) void detail.refetch({ cancelRefetch: false });
     // The position is the trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [positionId]);
   const detailCurrent = positionId != null && isCurrent(detail) && !rereading;
   const figures = detailCurrent ? detail.data : undefined;
-  const shownFigures =
-    figures ?? (positionId != null && detail.isFetchedAfterMount && !detail.isPlaceholderData ? detail.data : undefined);
+  const detailSeen =
+    positionId != null &&
+    detailSince.id === positionId &&
+    !detail.isPlaceholderData &&
+    detail.data != null &&
+    detail.dataUpdatedAt >= detailSince.at;
+  const shownFigures = figures ?? (detailSeen ? detail.data : undefined);
 
   const reread = () => {
     setRereading(true);

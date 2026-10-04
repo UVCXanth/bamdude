@@ -167,7 +167,8 @@ export function AssembleDialog({
 
   const readNote =
     readQuery && readQuery.isError && !readQuery.isFetching ? (
-      readQuery.data ? (
+      // Over numbers on screen a refresh failed; over none, nothing was read (Codex V05).
+      shown ? (
         <RefreshFailedNote onRetry={() => readQuery.refetch()} />
       ) : (
         <LoadFailedNote

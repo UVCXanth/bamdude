@@ -684,6 +684,61 @@ describe('StockMoveDialog', () => {
       await waitFor(() => expect(submit()).toBeEnabled());
     });
 
+    // Codex E12-V05: a first read that failed is no answer of this dialog — a cache from before
+    // the opening stays off the screen; a retry that succeeds is one, and its numbers then hold
+    // (dimmed) through the next re-read of the same position.
+    it('a first read that failed shows no cached numbers; its retry does, and they hold through the next re-read (Codex V05)', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } });
+      client.setQueryData(['stock-item', 5], { ...r03, on_hand: 987, available: 985 });
+      const again = deferred<StockItemDetail>();
+      getItem
+        .mockRejectedValueOnce(new Error('HTTP 500'))
+        .mockResolvedValueOnce(r03)
+        .mockReturnValueOnce(again.promise as never);
+      render(
+        <QueryClientProvider client={client}>
+          <StockMoveDialog kind="reserve" item={pipeItem} onClose={() => {}} />
+        </QueryClientProvider>,
+      );
+      expect(await screen.findByText('Could not read the position')).toBeInTheDocument();
+      const header = screen.getByTestId('stock-position-header');
+      expect(header).not.toHaveTextContent('987');
+      expect(header).toHaveTextContent('…');
+      expect(screen.queryByTestId('stock-move-limit')).toBeNull();
+      expect(submit()).toBeDisabled();
+      fireEvent.click(within(screen.getByTestId('stock-move-position')).getByRole('button', { name: 'Retry' }));
+      await waitFor(() => expect(limit()).toHaveTextContent('You can reserve 6 (available)'));
+      expect(screen.getByTestId('stock-position-header')).toHaveTextContent('On hand 12');
+      act(() => {
+        void client.invalidateQueries({ queryKey: ['stock-item'] });
+      });
+      await waitFor(() => expect(submit()).toBeDisabled());
+      expect(screen.getByTestId('stock-position-header')).toHaveTextContent('On hand 12');
+      expect(screen.getByTestId('stock-position-header')).toHaveAttribute('data-stale', 'true');
+      await act(async () => again.resolve(r03));
+      await waitFor(() => expect(submit()).toBeEnabled());
+    });
+
+    it('from the header, a first lookup that failed shows no cached position line (Codex V05)', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } });
+      const cached = found({ ...pipeItem, on_hand: 987, available: 985 });
+      client.setQueryData(['stock-lookup', 1, ''], cached);
+      client.setQueryData(['stock-lookup', 1, '100'], cached);
+      vi.spyOn(api, 'lookupStockItem').mockRejectedValueOnce(new Error('HTTP 500')).mockResolvedValue(found());
+      render(
+        <QueryClientProvider client={client}>
+          <StockMoveDialog kind="receipt" onClose={() => {}} />
+        </QueryClientProvider>,
+      );
+      fireEvent.click(await screen.findByRole('button', { name: 'PR-0001 · Pipe' }));
+      expect(await screen.findByText('Could not read this configuration')).toBeInTheDocument();
+      expect(screen.queryByText(/987/)).toBeNull();
+      expect(submit()).toBeDisabled();
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      await waitFor(() => expect(screen.getByTestId('stock-lookup')).toHaveTextContent('Position SK-0005'));
+      expect(screen.queryByText(/987/)).toBeNull();
+    });
+
     it('another configuration on its way: «reading…», and the primary waits — the old answer proves nothing', async () => {
       const angled = deferred<StockLookup>();
       vi.spyOn(api, 'lookupStockItem').mockImplementation(async (_id: number, options: number[] = []) =>

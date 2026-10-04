@@ -307,9 +307,10 @@ export function StockMoveDialog({
   else if (shownLimit !== null)
     limitText = shownOver ? t('stock.move.overLimit', { n: shownLimit }) : t(`stock.move.limit.${limitKey}`, { n: shownLimit });
   const showFromReserve = kind === 'issue' && ((manual ?? shownManual ?? 0) > 0 || fromReserve);
+  // A failed read over numbers on screen is a refresh that failed; over none, nothing was read (V05).
   const positionNotes =
     positionId != null && detail.isError && !detail.isFetching ? (
-      detail.data ? (
+      shownFigures ? (
         <RefreshFailedNote onRetry={() => detail.refetch()} />
       ) : (
         <LoadFailedNote message={t('stock.move.positionFailed')} onRetry={() => detail.refetch()} />
@@ -369,20 +370,20 @@ export function StockMoveDialog({
                 productInputId={ids.product}
               />
               {groupsReady &&
-                (lookup.isError && !lookup.isFetching && !lookupOwn ? (
+                (lookup.isError && !lookup.isFetching && !lookupShown ? (
                   <div className="col-span-full">
                     <LoadFailedNote message={t('stock.move.lookupFailed')} onRetry={() => lookup.refetch()} />
                   </div>
                 ) : (
                   <>
                     <StockLookupNote
-                      lookup={lookupShown ?? lookupOwn}
+                      lookup={lookupShown}
                       creates={kind === 'receipt' || kind === 'stocktake'}
-                      reading={!lookupCurrent && !lookupShown && !(lookup.isError && lookupOwn)}
+                      reading={!lookupCurrent && !lookupShown}
                       stale={lookupStale}
                       noPositionId={ids.noPosition}
                     />
-                    {lookup.isError && lookupOwn && !lookup.isFetching && (
+                    {lookup.isError && lookupShown && !lookup.isFetching && (
                       <div className="col-span-full">
                         <RefreshFailedNote onRetry={() => lookup.refetch()} />
                       </div>
