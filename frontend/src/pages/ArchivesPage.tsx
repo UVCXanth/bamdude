@@ -3165,12 +3165,10 @@ export function ArchivesPage() {
   const selectionMode = isSelectionMode || selectedIds.size > 0;
   // The bulk «Order» asks every selected print, as the server does (WS-13 E13 B06). A
   // selected print not on this page has no owner to read, so it counts as ownerless —
-  // only `update_all` moves it.
-  const canFileSelection =
-    hasPermission('projects:update') &&
-    Array.from(selectedIds).every((id) =>
-      canModify('archives', 'update', archives?.find((a) => a.id === id)?.created_by_id ?? null),
-    );
+  // `update_all` or the Workshop's `projects:file_prints` moves it.
+  const canFileSelection = Array.from(selectedIds).every((id) =>
+    canFileArchive(hasPermission, canModify, archives?.find((a) => a.id === id)?.created_by_id ?? null),
+  );
   const fileSelectionTitle = canFileSelection
     ? undefined
     : !hasPermission('projects:update')

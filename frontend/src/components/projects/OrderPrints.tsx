@@ -6,6 +6,7 @@ import { Package } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Archive, Order, ProjectLine } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
+import { canFileArchive } from '../../utils/workshopRights';
 import { formatDateTime } from '../../utils/date';
 import { getArchiveStatusBadge } from '../../utils/archiveStatus';
 import { Button } from '../Button';
@@ -424,7 +425,7 @@ function printSubtitle(archive: Archive, t: ReturnType<typeof useTranslation>['t
 /** One print: what it was, where and when it ran, how it ended, and which line it answers to. */
 function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: ArchiveCardProps) {
   const { t } = useTranslation();
-  const { canModify } = useAuth();
+  const { canModify, hasPermission } = useAuth();
   const queryClient = useQueryClient();
   const [dialog, setDialog] = useState<'defects' | 'assign' | 'remove' | null>(null);
 
@@ -436,7 +437,7 @@ function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: Arch
   // would be allowed (admin / `update_all` any print; `update_own` its own only). Taking
   // the print out of the order rewrites the archive too (WS-13 E13 B03/B06), so it asks
   // the same; the defects are the order's own contract and stay with `canEdit`.
-  const canAssign = canEdit && canModify('archives', 'update', archive.created_by_id);
+  const canAssign = canEdit && canFileArchive(hasPermission, canModify, archive.created_by_id);
   const where = [
     (archive.plate_index ?? 0) > 0 ? t('orders.prints.plate', { n: archive.plate_index }) : null,
     printerName ?? null,

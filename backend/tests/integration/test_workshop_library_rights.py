@@ -274,6 +274,31 @@ class TestApiKeys:
         r = await async_client.delete(url, headers=auth(allowed))
         assert r.status_code == 204, r.text
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("header", ["x-api-key", "bearer"])
+    async def test_a_key_without_the_orders_scope_moves_nothing_that_relinks(
+        self, async_client: AsyncClient, db_session, shelf, header
+    ):
+        """L.2 B01 / R03: a move that changes a file's products, sent with an API key — the
+        second check asks the KEY's scope, and a refusal moves nothing."""
+        owner = await _user(db_session, f"lr_km_{header}", [*_LIBRARY, _PROJECTS_UPDATE])
+
+        def auth(raw: str) -> dict:
+            return {"X-API-Key": raw} if header == "x-api-key" else {"Authorization": f"Bearer {raw}"}
+
+        body = {"file_ids": [shelf["c"]], "folder_id": shelf["folders"]["F2"]}
+        no_scope = await _key(db_session, owner, can_manage_library=True, can_manage_projects=False)
+        r = await async_client.post("/api/v1/library/files/move", json=body, headers=auth(no_scope))
+        assert r.status_code == 403, r.text
+        row = await db_session.get(LibraryFile, shelf["c"])
+        await db_session.refresh(row)
+        assert row.folder_id == shelf["folders"]["F0"]
+        assert await _links(db_session, shelf["c"]) == set()
+        allowed = await _key(db_session, owner, can_manage_library=True, can_manage_projects=True)
+        r = await async_client.post("/api/v1/library/files/move", json=body, headers=auth(allowed))
+        assert r.status_code == 200, r.text
+        assert await _links(db_session, shelf["c"]) == {shelf["p1"]}
+
 
 class TestOrderFileIntake:
     """B07: the order routes that name a library file answer with the library's gate."""

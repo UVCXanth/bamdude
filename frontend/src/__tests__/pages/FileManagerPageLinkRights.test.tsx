@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
+import { QueryClient } from '@tanstack/react-query';
 import { render } from '../utils';
 import { server } from '../mocks/server';
 import { FileManagerPage } from '../../pages/FileManagerPage';
@@ -103,7 +104,7 @@ describe('FileManagerPage — links to products ask the right to change orders (
     render(<FileManagerPage />);
     await screen.findByText('Linked');
     expect(screen.queryAllByTitle('Link to products')).toHaveLength(0);
-    const badge = screen.getByTitle('Linked to 1 product(s)');
+    const badge = screen.getByTitle('Linked to 1 product');
     expect(badge.tagName).not.toBe('BUTTON');
     expect(screen.getByTitle('Lamp').tagName).not.toBe('BUTTON');
     const item = await openFolderMenu('Loose folder');
@@ -116,7 +117,7 @@ describe('FileManagerPage — links to products ask the right to change orders (
     render(<FileManagerPage />);
     await screen.findByText('Linked');
     expect(screen.queryAllByTitle('Link to products').length).toBeGreaterThan(0);
-    expect(screen.getByTitle('Linked to 1 product(s) (click to manage)').tagName).toBe('BUTTON');
+    expect(screen.getByTitle('Linked to 1 product (click to manage)').tagName).toBe('BUTTON');
     expect(await openFolderMenu('Loose folder')).not.toBeDisabled();
   });
 
@@ -141,6 +142,24 @@ describe('FileManagerPage — links to products ask the right to change orders (
     await waitFor(() => expect(target(dialog, 'Vase folder')).not.toBeDisabled());
     expect(target(dialog, 'Loose folder')).not.toBeDisabled();
     expect(dialog).not.toHaveTextContent('changes products');
+  });
+
+  // WS-13 E13 final review #3: a move can relink files (it changes their products), so the
+  // catalog's figures and a product's files are read again — as a link from the dialog does.
+  it('refreshes the product catalog and the products’ files after a move', async () => {
+    auth.granted = new Set([...LIBRARY, 'projects:update']);
+    server.use(http.post('/api/v1/library/files/move', () => HttpResponse.json({ status: 'ok', moved: 1 })));
+    const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
+    render(<FileManagerPage />);
+    await screen.findByText('Linked');
+    const dialog = await openMoveFor('Linked');
+    await waitFor(() => expect(target(dialog, 'Vase folder')).not.toBeDisabled());
+    fireEvent.click(target(dialog, 'Vase folder'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move' }));
+    const keys = () => invalidate.mock.calls.map(([filters]) => JSON.stringify((filters as { queryKey?: unknown })?.queryKey));
+    await waitFor(() => expect(keys()).toContain(JSON.stringify(['products'])));
+    expect(keys()).toContain(JSON.stringify(['product-file-groups']));
+    invalidate.mockRestore();
   });
 
   it('lets a file with no products move into a folder with none without the right', async () => {

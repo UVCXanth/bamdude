@@ -85,6 +85,10 @@ class Permission(StrEnum):
     PROJECTS_CREATE = "projects:create"
     PROJECTS_UPDATE = "projects:update"
     PROJECTS_DELETE = "projects:delete"
+    # File any print under an order and take it out (m193, WS-13 E13): a print from the
+    # printer's screen or a slicer has no owner, and `archives:update_all` would open
+    # everybody's photos and files too.
+    PROJECTS_FILE_PRINTS = "projects:file_prints"
 
     # Inventory (Spool Inventory, Spool Catalog, Color Catalog)
     INVENTORY_READ = "inventory:read"
@@ -283,6 +287,7 @@ PERMISSION_CATEGORIES = {
         Permission.PROJECTS_CREATE,
         Permission.PROJECTS_UPDATE,
         Permission.PROJECTS_DELETE,
+        Permission.PROJECTS_FILE_PRINTS,
     ],
     "Inventory": [
         Permission.INVENTORY_READ,
@@ -462,6 +467,7 @@ DEFAULT_GROUPS = {
             Permission.PROJECTS_CREATE.value,
             Permission.PROJECTS_UPDATE.value,
             Permission.PROJECTS_DELETE.value,
+            Permission.PROJECTS_FILE_PRINTS.value,
             # Inventory - full access
             Permission.INVENTORY_READ.value,
             Permission.INVENTORY_CREATE.value,

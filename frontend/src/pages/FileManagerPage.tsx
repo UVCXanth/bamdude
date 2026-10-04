@@ -114,7 +114,7 @@ import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
 import { LinkToProductsModal } from '../components/products/LinkToProductsModal';
 import { AddToOrderDialog } from '../components/projects/add-to-order/AddToOrderDialog';
 import { plateFileOf } from '../components/projects/add-to-order/addToOrderState';
-import { invalidateProductFiles, invalidateQueueViews } from '../utils/queryInvalidation';
+import { invalidateProductCatalog, invalidateProductFiles, invalidateQueueViews } from '../utils/queryInvalidation';
 import { canLinkFile, canLinkFolder, moveChangesProducts } from '../utils/workshopRights';
 import { writableFolders } from '../utils/folderTree';
 
@@ -2231,6 +2231,10 @@ export function FileManagerPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
+      // A move into or out of a product's folder relinks the files (WS-13 E13): the catalog's
+      // figures and what the products print from follow, as after a link from the dialog.
+      invalidateProductCatalog(queryClient);
+      invalidateProductFiles(queryClient);
       setSelectedFiles([]);
       setShowMoveModal(false);
       showToast(t('fileManager.toast.filesMoved'), 'success');

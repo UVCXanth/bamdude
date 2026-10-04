@@ -1541,6 +1541,7 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     # PROJECTS_READ stays under can_read_status.
     Permission.PROJECTS_CREATE: "can_manage_projects",
     Permission.PROJECTS_UPDATE: "can_manage_projects",
+    Permission.PROJECTS_FILE_PRINTS: "can_manage_projects",
     Permission.PROJECTS_DELETE: "can_manage_projects",
     # can_access_cloud — narrow opt-in; also enforced at the router-level
     # ``_cloud_api_key_gate``, gated here too for defence-in-depth.

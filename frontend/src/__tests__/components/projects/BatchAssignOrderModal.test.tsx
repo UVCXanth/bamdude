@@ -52,6 +52,25 @@ describe('BatchAssignOrderModal', () => {
     await waitFor(() => expect(line.selectedOptions[0]).toHaveTextContent('Vase × 1'));
   });
 
+  // WS-13 E13 final review #6 (D01): a print filed under a CLOSED order is shown there, but
+  // nothing new is filed into that order — no other line, no «Assign»; it can only leave.
+  it('files nothing new into the closed order a print sits in — it can only leave', async () => {
+    vi.spyOn(api, 'getOrder').mockResolvedValue({
+      id: 9,
+      code: 'OR-0009',
+      name: 'Shipped',
+      status: 'completed',
+      customer_name: null,
+      lines: [{ id: 90, product_name: 'Vase', quantity: 1, mode: 'product', configuration: { choices: [], changed_parts: [] } }],
+    } as never);
+    render(<BatchAssignOrderModal archiveIds={[3]} bound={{ orderId: 9, lineId: 90 }} onClose={() => {}} />);
+    const order = screen.getByRole('combobox', { name: 'Order' }) as HTMLSelectElement;
+    await waitFor(() => expect(order.selectedOptions[0]).toHaveTextContent('OR-0009 · Shipped · Completed'));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Line' })).toBeDisabled());
+    expect(screen.getByRole('button', { name: 'Assign' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Remove from order' })).not.toBeDisabled();
+  });
+
   it('takes one print out of its order', async () => {
     const patch = vi.spyOn(api, 'updateArchive').mockResolvedValue({} as never);
     const onClose = vi.fn();

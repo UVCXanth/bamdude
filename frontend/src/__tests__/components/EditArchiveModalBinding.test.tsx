@@ -115,6 +115,23 @@ describe('EditArchiveModal — the print’s order', () => {
     expect(screen.getByRole('combobox', { name: /line/i })).toBeDisabled();
   });
 
+  // WS-13 E13 final review #6 (D01): the closed order a print sits in stays shown, but its
+  // line cannot be changed into another line of that order.
+  it('keeps the line of a print in a closed order as it is', async () => {
+    vi.spyOn(api, 'getOrder').mockResolvedValue({ ...alpha, status: 'completed' } as never);
+    // A closed order is not in the active list the picker pages through.
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue({
+      items: [],
+      meta: { total: 0, current_page: 1, per_page: 20, last_page: 1 },
+      totals: { active: 0, completed: 1, cancelled: 0, all: 1, stages: {} },
+    } as never);
+    render(<EditArchiveModal archive={archive as never} onClose={() => {}} />);
+    const order = screen.getByRole('combobox', { name: 'Order' }) as HTMLSelectElement;
+    await waitFor(() => expect(order.selectedOptions[0]).toHaveTextContent('OR-0001 · Alpha · Completed'));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: /line/i })).toBeDisabled());
+    expect(order).not.toBeDisabled();
+  });
+
   it('keeps a refusal in the dialog, in the server’s words', async () => {
     vi.spyOn(api, 'updateArchive').mockRejectedValue(new ApiError('You can only update your own archives', 403));
     const onClose = vi.fn();

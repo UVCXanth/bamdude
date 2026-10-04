@@ -25,9 +25,16 @@ export function canLinkFolder(hasPermission: HasPermission) {
   return hasPermission('projects:update') && hasPermission('library:update_all');
 }
 
-/** File a print under an order or take it out: `update_own` only the caller's own, an ownerless print only `update_all`. */
+/**
+ * File a print under an order or take it out: the Workshop's own `projects:file_prints`
+ * (m193) files any print — a print from the printer's screen has no owner; otherwise
+ * `update_own` only the caller's own and an ownerless print only `update_all`.
+ */
 export function canFileArchive(hasPermission: HasPermission, canModify: CanModify, createdById: number | null | undefined) {
-  return hasPermission('projects:update') && canModify('archives', 'update', createdById);
+  return (
+    hasPermission('projects:update') &&
+    (hasPermission('projects:file_prints') || canModify('archives', 'update', createdById))
+  );
 }
 
 /**

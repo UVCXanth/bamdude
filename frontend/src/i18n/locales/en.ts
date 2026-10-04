@@ -1458,7 +1458,8 @@ export default {
         description: 'File {{count}} selected archive(s) under an order, and optionally under one of its lines.',
         order: 'Order',
         line: 'Line',
-        assign: 'Assign'
+        assign: 'Assign',
+        closed: 'The order is closed — nothing new is filed under it',
       }
     },
     platePicker: {
@@ -5221,8 +5222,10 @@ export default {
     linkFileDescription: 'Link "{{name}}" to one or more products so it shows up on their pages.',
     linkToProducts: 'Link to products',
     addToOrder: 'Add to order…',
-    linkedToNProducts: 'Linked to {{count}} product(s) (click to manage)',
-    linkedToNProductsReadOnly: 'Linked to {{count}} product(s)',
+    linkedToNProducts_one: 'Linked to {{count}} product (click to manage)',
+    linkedToNProducts_other: 'Linked to {{count}} products (click to manage)',
+    linkedToNProductsReadOnly_one: 'Linked to {{count}} product',
+    linkedToNProductsReadOnly_other: 'Linked to {{count}} products',
     moveChangesProducts: 'changes products',
     moveChangesProductsHint: 'A folder marked «changes products» would change which products these files belong to — that needs the right to change orders.',
     noProductsSelected: 'No products selected - saving will unlink the file from every product.',
@@ -10831,7 +10834,8 @@ export default {
       libraryNotesWrite: 'Write Library Notes',
       viewAssignments: 'View Spool Assignments',
       userEmailNotifications: 'User Email Notifications',
-      statsFilterByUser: 'Filter Stats By User'
+      statsFilterByUser: 'Filter Stats By User',
+      filePrintsProjects: 'File Prints Under Orders'
     }
   },
   telegram: {

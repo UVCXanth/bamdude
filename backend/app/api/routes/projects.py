@@ -36,6 +36,7 @@ from backend.app.core.auth import (
     request_credentials,
     require_media_permission,
     require_ownership_permission,
+    require_permission,
 )
 from backend.app.core.config import settings
 from backend.app.core.database import LOCK_NOT_AVAILABLE, get_db, sqlstate
@@ -2275,12 +2276,24 @@ async def list_project_archives(
 # (WS-13 E13 B03): beside ``projects:update`` it asks the archive's own update right
 # through the canonical ownership gate, called with the request's credentials.
 _archives_update = require_ownership_permission(Permission.ARCHIVES_UPDATE_ALL, Permission.ARCHIVES_UPDATE_OWN)
+_file_prints = require_permission(Permission.PROJECTS_FILE_PRINTS)
 
 
 async def _ensure_may_move_archives(creds: RequestCredentials, archives: list[PrintArchive]) -> None:
-    """``archives:update_all`` moves any print, ``archives:update_own`` only the caller's
+    """``projects:file_prints`` — the Workshop's own right (m193) — files any print; else
+    ``archives:update_all`` moves any print, ``archives:update_own`` only the caller's
     own — an ownerless print only ``all``. One print out of reach refuses the whole
-    batch, before anything is written."""
+    batch, before anything is written.
+
+    ⚠️ The Workshop right exists because a print from the printer's screen or a slicer
+    has no owner: ``update_own`` never reaches it, and ``update_all`` would also open
+    everybody's photos, sources and 3D files (upstream security #5)."""
+    try:
+        await creds.check(_file_prints)
+        return
+    except HTTPException as refused:
+        if refused.status_code != 403:
+            raise
     user, can_modify_all = await creds.check(_archives_update)
     if can_modify_all:
         return

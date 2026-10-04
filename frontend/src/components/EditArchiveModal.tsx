@@ -11,6 +11,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { OrderChoice } from './pickers/OrderChoice';
 import { OrderLinePicker } from './pickers/OrderLinePicker';
+import { useOrderDetail } from '../hooks/useOrderDetail';
 import { invalidateOrderViews, invalidateProductCatalog } from '../utils/queryInvalidation';
 import { Select } from './Select';
 
@@ -83,6 +84,10 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   // the order changes — the server rejects (400) a line belonging to another
   // order, so the mismatch must never be submittable from here.
   const [projectLineId, setProjectLineId] = useState<number | null>(archive.project_line_id ?? null);
+  // The chosen order's status (the line picker's own query): nothing new is filed into a
+  // closed order, so its line stays as it is.
+  const chosenOrder = useOrderDetail(projectId);
+  const chosenOrderClosed = chosenOrder.data != null && chosenOrder.data.status !== 'active';
   // WS-13 E13 B06: the order and the line move only with the right to change orders;
   // without it they are shown, not offered (the server asks it of a changed binding).
   const canChangeOrder = hasPermission('projects:update');
@@ -426,7 +431,8 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
             orderId={projectId}
             value={projectLineId}
             onChange={setProjectLineId}
-            disabled={!canChangeOrder}
+            // A closed order's line is not changed into another of its lines (D01).
+            disabled={!canChangeOrder || chosenOrderClosed}
           />
         </div>
 

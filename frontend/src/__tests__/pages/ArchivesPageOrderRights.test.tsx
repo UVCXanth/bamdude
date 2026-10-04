@@ -106,6 +106,21 @@ describe('ArchivesPage — who may file a print under an order (E13 B06)', () =>
     expect(await addToOrderItem(3)).not.toBeDisabled();
   });
 
+  // The Workshop's own right (m193, owner's ruling 2026-10-04): the default Operators file
+  // external (ownerless) and other people's prints without «update all».
+  it('files any print with the Workshop’s «file prints» right, the bulk action too', async () => {
+    auth.granted = new Set([...auth.granted, 'projects:update', 'archives:update_own', 'projects:file_prints']);
+    render(<ArchivesPage />);
+    await waitFor(() => expect(cardOf(3)).not.toBeNull());
+    expect(await addToOrderItem(3)).not.toBeDisabled();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(await addToOrderItem(2)).not.toBeDisabled();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(within(await menuOf(3)).getByRole('button', { name: 'Select' }));
+    fireEvent.click(cardOf(2));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Order' })).not.toBeDisabled());
+  });
+
   it('asks the bulk action of every selected print', async () => {
     auth.granted = new Set([...auth.granted, 'projects:update', 'archives:update_own']);
     render(<ArchivesPage />);

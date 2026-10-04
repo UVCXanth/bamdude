@@ -9,6 +9,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { OrderChoice } from '../pickers/OrderChoice';
 import { OrderLinePicker } from '../pickers/OrderLinePicker';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
+import { useOrderDetail } from '../../hooks/useOrderDetail';
 
 interface BatchAssignOrderModalProps {
   archiveIds: number[];
@@ -44,6 +45,11 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
   const sent = useRef(false);
   const single = archiveIds.length === 1;
   const canRemove = single && bound?.orderId != null;
+  // A print's own order stays shown whatever its status, but nothing new is filed into a
+  // closed one (D01): no other line, no «Assign» — the print can only leave. The same query
+  // the line picker reads, so no second request.
+  const chosen = useOrderDetail(orderId);
+  const closed = chosen.data != null && chosen.data.status !== 'active';
 
   const done = () => {
     queryClient.invalidateQueries({ queryKey: ['archives'] });
@@ -120,7 +126,7 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
             orderId={orderId}
             value={lineId}
             onChange={setLineId}
-            disabled={pending}
+            disabled={pending || closed}
           />
         </div>
 
@@ -160,7 +166,8 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
               sent.current = true;
               assign.mutate(orderId);
             }}
-            disabled={orderId == null || pending}
+            disabled={orderId == null || pending || closed}
+            title={closed ? t('archives.bulk.assignOrder.closed') : undefined}
           >
             {assign.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
             {t('archives.bulk.assignOrder.assign')}

@@ -1467,7 +1467,8 @@ export default {
         description: 'Віднести {{count}} вибраних архівів до замовлення і, за потреби, до однієї з його позицій.',
         order: 'Замовлення',
         line: 'Позиція',
-        assign: 'Прив\'язати'
+        assign: 'Прив\'язати',
+        closed: 'Замовлення закрите — нового до нього не прив\'язують',
       }
     },
     platePicker: {
@@ -5249,8 +5250,14 @@ export default {
     linkFileDescription: 'Прив\'язати "{{name}}" до одного або кількох виробів - файл з\'явиться на їхніх сторінках.',
     linkToProducts: 'Прив\'язати до виробів',
     addToOrder: 'Додати в замовлення…',
-    linkedToNProducts: 'Прив\'язано до {{count}} виробу/виробів (клік щоб керувати)',
-    linkedToNProductsReadOnly: 'Прив\'язано до {{count}} виробу/виробів',
+    linkedToNProducts_one: 'Прив\'язано до {{count}} виробу (клік — керувати)',
+    linkedToNProducts_few: 'Прив\'язано до {{count}} виробів (клік — керувати)',
+    linkedToNProducts_many: 'Прив\'язано до {{count}} виробів (клік — керувати)',
+    linkedToNProducts_other: 'Прив\'язано до {{count}} виробу (клік — керувати)',
+    linkedToNProductsReadOnly_one: 'Прив\'язано до {{count}} виробу',
+    linkedToNProductsReadOnly_few: 'Прив\'язано до {{count}} виробів',
+    linkedToNProductsReadOnly_many: 'Прив\'язано до {{count}} виробів',
+    linkedToNProductsReadOnly_other: 'Прив\'язано до {{count}} виробу',
     moveChangesProducts: 'змінює вироби',
     moveChangesProductsHint: 'Тека з позначкою «змінює вироби» змінила б, до яких виробів належать ці файли, — для цього потрібне право змінювати замовлення.',
     noProductsSelected: 'Жоден виріб не вибрано - збереження відв\'яже файл від усіх виробів.',
@@ -10988,7 +10995,8 @@ export default {
       libraryNotesWrite: 'Додавання нотаток до файлів',
       viewAssignments: 'Перегляд призначень котушок',
       userEmailNotifications: 'Email-сповіщення користувача',
-      statsFilterByUser: 'Фільтр статистики за користувачем'
+      statsFilterByUser: 'Фільтр статистики за користувачем',
+      filePrintsProjects: 'Прив\'язування друків до замовлень'
     }
   },
   telegram: {

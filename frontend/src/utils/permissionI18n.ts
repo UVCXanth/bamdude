@@ -140,4 +140,6 @@ const LABEL_OVERRIDES: Record<string, string> = {
   'User Email Notifications': 'userEmailNotifications',
   // stats:filter_by_user → "Filter By User Stats" (multi-word action)
   'Filter By User Stats': 'statsFilterByUser',
+  // projects:file_prints → "File Prints Projects" (multi-word action)
+  'File Prints Projects': 'filePrintsProjects',
 };

@@ -147,6 +147,44 @@ class TestFilingAsksForThePrint:
         assert (await _order_of(db_session, desk["ownerless"]))[0] == desk["a"]
 
 
+class TestTheWorkshopsOwnRightFilesAnyPrint:
+    """Owner's ruling 2026-10-04 (E13 final review #1): a print from the printer's screen or a
+    slicer has no owner, so ``archives:update_own`` never reaches it — and the default Operators
+    hold only that. ``projects:file_prints`` files and unfiles ANY print under an order without
+    ``archives:update_all`` (which would also open other people's photos and files)."""
+
+    @pytest.mark.asyncio
+    async def test_the_right_files_and_unfiles_ownerless_and_others_prints(self, committing_client, db_session, desk):
+        await _user(db_session, "ar_filer", [_PU, _OWN, Permission.PROJECTS_FILE_PRINTS.value])
+        ids = [desk["ownerless"], desk["theirs"]]
+        r = await _add(committing_client, desk["a"], ids, "ar_filer")
+        assert r.status_code == 200, r.text
+        assert (await _order_of(db_session, desk["ownerless"]))[0] == desk["a"]
+        assert (await _order_of(db_session, desk["theirs"]))[0] == desk["a"]
+        r = await _remove(committing_client, desk["a"], ids, "ar_filer")
+        assert r.status_code == 200, r.text
+        assert await _order_of(db_session, desk["ownerless"]) == (None, None)
+
+    @pytest.mark.asyncio
+    async def test_the_right_still_needs_projects_update(self, committing_client, db_session, desk):
+        await _user(db_session, "ar_filer_ro", [Permission.PROJECTS_FILE_PRINTS.value])
+        r = await _add(committing_client, desk["a"], [desk["ownerless"]], "ar_filer_ro")
+        assert r.status_code == 403, r.text
+        assert await _order_of(db_session, desk["ownerless"]) == (None, None)
+
+    @pytest.mark.asyncio
+    async def test_a_key_files_with_the_right_only_inside_its_projects_scope(self, committing_client, db_session, desk):
+        filer = await _user(db_session, "ar_filer_key", [_PU, Permission.PROJECTS_FILE_PRINTS.value])
+        url = f"/api/v1/projects/{desk['a']}/add-archives"
+        body = {"archive_ids": [desk["ownerless"]]}
+        without = await _key(db_session, filer, can_manage_projects=False, can_manage_archives=True)
+        r = await committing_client.post(url, json=body, headers={"X-API-Key": without})
+        assert r.status_code == 403, r.text
+        allowed = await _key(db_session, filer, can_manage_projects=True, can_manage_archives=False)
+        r = await committing_client.post(url, json=body, headers={"X-API-Key": allowed})
+        assert r.status_code == 200, r.text
+
+
 class TestTheEditorAsksForTheOrder:
     """B04: only a binding that actually changes asks ``projects:update``."""
 
