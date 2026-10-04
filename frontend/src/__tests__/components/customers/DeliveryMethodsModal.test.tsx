@@ -285,6 +285,23 @@ describe('DeliveryMethodsModal', () => {
       expect(read).toHaveBeenCalledTimes(2);
     });
 
+    it('a renamed method moves the stock dialog’s recipient too (E13 F03)', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+      client.setQueryData(['customer-recipient', 2], { delivery_method: 'Pickup' });
+      vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue(methods);
+      vi.spyOn(api, 'renameDeliveryMethod').mockResolvedValue({ ...methods[0], name: 'Self pickup' });
+      render(
+        <QueryClientProvider client={client}>
+          <DeliveryMethodsModal onClose={() => {}} />
+        </QueryClientProvider>,
+      );
+      fireEvent.click(await screen.findByRole('button', { name: 'Rename Pickup' }));
+      const field = within(rowOf('Pickup')).getByLabelText('Delivery method name');
+      fireEvent.change(field, { target: { value: 'Self pickup' } });
+      fireEvent.submit(field);
+      await waitFor(() => expect(client.getQueryState(['customer-recipient', 2])?.isInvalidated).toBe(true));
+    });
+
     it('a failed refresh keeps the list it had and says so', async () => {
       const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
       vi.spyOn(api, 'getDeliveryMethods').mockResolvedValueOnce(methods).mockRejectedValueOnce(new Error('HTTP 500'));

@@ -21,6 +21,7 @@ import { QueryClient } from '@tanstack/react-query';
 import {
   ORDER_VIEW_KEYS,
   PRODUCT_FILE_KEYS,
+  STOCK_KEYS,
   invalidateAfterDelete,
   invalidateOrderCandidates,
   invalidateOrderViews,
@@ -161,6 +162,35 @@ describe('invalidateOrderViews', () => {
     expect(keys).toEqual(expect.arrayContaining(['["products"]', '["projects","nav-badges"]', '["stock-journal-page"]']));
   });
 
+  it('pins the stock keys — a new view of the shelves is added here, on purpose (E13 F04)', () => {
+    expect(STOCK_KEYS.map((key) => key.join(' '))).toEqual([
+      'stock-items',
+      'stock-item',
+      'stock-lookup',
+      'stock-journal-page',
+      'stock-journal-products',
+      'stock-summary',
+      'stock-movements',
+      'product-stock',
+      'product-kits',
+      'product',
+      'products',
+      'projects nav-badges',
+      'dispatch-notes',
+      'dispatch-note',
+      'project-stock-offers',
+      'project-fulfilment',
+    ]);
+  });
+
+  it('a stock movement moves an order’s take-from-stock offers and its issue state (E13 F02)', () => {
+    const qc = new QueryClient();
+    seed(qc, [['project-stock-offers', 5], ['project-fulfilment', 5]]);
+    invalidateStock(qc);
+    expect(stale(qc, ['project-stock-offers', 5])).toBe(true);
+    expect(stale(qc, ['project-fulfilment', 5])).toBe(true);
+  });
+
   it('a manual issue refreshes the dispatch notes it made (final review I1)', () => {
     const qc = new QueryClient();
     seed(qc, [['dispatch-notes', { page: 1, sort_by: 'created-desc' }], ['dispatch-note', 7]]);
@@ -257,6 +287,22 @@ describe('invalidateAfterDelete', () => {
     expect(stale(qc, ['product-stock', 7])).toBe(true);
     expect(stale(qc, ['product', 7])).toBe(true);
     expect(stale(qc, ['products'])).toBe(true);
+  });
+
+  it('an order delete releases its reservations: the filament need and the shelves move (E13 F01)', () => {
+    const qc = new QueryClient();
+    const keys = [
+      ['orders-filament', { status: 'active' }],
+      ['stock-items', { page: 1 }],
+      ['stock-item', 3],
+      ['stock-summary'],
+      ['stock-journal-page', { page: 1 }],
+      ['stock-lookup', 7, 'std'],
+      ['product-kits', 7, 'std'],
+    ];
+    seed(qc, keys);
+    invalidateAfterDelete(qc, 'order');
+    for (const key of keys) expect(stale(qc, key)).toBe(true);
   });
 
   it('refreshes the order cards after a product goes, never the product', () => {

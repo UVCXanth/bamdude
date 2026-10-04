@@ -197,6 +197,10 @@ export const STOCK_KEYS: readonly (readonly string[])[] = [
   // A manual issue makes a dispatch note (spec workshop-dispatch-notes; final review I1).
   ['dispatch-notes'],
   ['dispatch-note'],
+  // What an order may still take from the shelf and what it can issue are read off the
+  // same shelves (WS-13 E13 F02).
+  ['project-stock-offers'],
+  ['project-fulfilment'],
 ];
 
 export function invalidateStock(qc: QueryClient): void {
@@ -214,7 +218,25 @@ const DELETE_KEYS: Record<DeletedKind, readonly string[]> = {
   // reservation and re-credits its finished prints, so the shelf moves — and
   // the page that deleted it is usually a LIST, which knows no product at all.
   // The dispatch notes keep their text but lose a link to what was deleted (all three kinds).
-  order: ['projects', 'customers', 'customer', 'product-stock', 'product', 'products', 'dispatch-notes', 'dispatch-note'],
+  // The released reservations move the finished-goods shelves and the filament need of the
+  // active orders too (WS-13 E13 F01).
+  order: [
+    'projects',
+    'customers',
+    'customer',
+    'product-stock',
+    'product',
+    'products',
+    'dispatch-notes',
+    'dispatch-note',
+    'orders-filament',
+    'stock-items',
+    'stock-item',
+    'stock-summary',
+    'stock-journal-page',
+    'stock-lookup',
+    'product-kits',
+  ],
   // An order card renders the product's cover off the `projects` query; the
   // catalog's filter choices and category counts lose the product too.
   product: ['products', 'projects', 'product-facets', 'product-categories', 'dispatch-notes', 'dispatch-note'],

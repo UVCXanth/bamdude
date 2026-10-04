@@ -64,13 +64,15 @@ export function DeliveryMethodsModal({
   // A delete takes its row — and the confirmation's opener — away: the focus goes to the add field.
   const deleted = useRef(false);
 
-  // Contacts read a method's name through the join: the lists AND an open customer page
-  // (`['customer', id]`) show it.
+  // Contacts read a method's name through the join: the lists, an open customer page
+  // (`['customer', id]`) and the stock dialog's recipient (`['customer-recipient', id]`,
+  // WS-13 E13 F03) show it.
   const refresh = () =>
     Promise.all([
       queryClient.invalidateQueries({ queryKey: ['delivery-methods'] }),
       queryClient.invalidateQueries({ queryKey: ['customers'] }),
       queryClient.invalidateQueries({ queryKey: ['customer'] }),
+      queryClient.invalidateQueries({ queryKey: ['customer-recipient'] }),
     ]);
 
   // ⚠️ Synchronous: one press, one request; nothing closes the reference under one.
