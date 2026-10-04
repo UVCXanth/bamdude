@@ -1501,30 +1501,46 @@ async (page, selftest = null) => {
   await scenario('waybill-note-switch', ['E12-J03', 'E12-R08'], async () => {
     // Codex E12-V01: the note page stays mounted from one note to the next. A draft typed on the
     // first is not carried to the second, and a save still on its way for the first changes
-    // nothing there when it answers.
+    // nothing there when it answers. The second note is read FIRST, so the move back to it
+    // finds it in the cache and draws no skeleton — the editor would stay mounted (a cold move
+    // unmounts it by itself and proves nothing).
     const out = {};
     const other = list(notesPage.items).find((n) => n.id !== N1) ?? { id: 0, code: '', waybill: null };
-    const toOther = (p) => p.evaluate((id) => {
-      history.pushState({}, '', `/stock/dispatch-notes/${id}`);
+    // A mark on the window proves the moves kept the document (and so the page) mounted — a
+    // reload would pass the oracles below for the wrong reason.
+    const toNote = (p, id) => p.evaluate((target) => {
+      window.__e12Mounted = true;
+      history.pushState({}, '', `/stock/dispatch-notes/${target}`);
       dispatchEvent(new PopStateEvent('popstate'));
-    }, other.id);
-    const arrived = (p) => p.getByRole('heading', { level: 1, name: new RegExp(other.code) }).waitFor({ timeout: 8000 });
+    }, id);
+    const stayed = (p) => p.evaluate(() => window.__e12Mounted === true);
+    const at = (p, code) => p.getByRole('heading', { level: 1, name: new RegExp(code) }).waitFor({ timeout: 8000 });
+    const firstThenBack = async (p) => {
+      await goto(p, `/stock/dispatch-notes/${other.id}`);
+      await toNote(p, N1);
+      await at(p, note1.code ?? 'DN-0001');
+    };
+    const toOther = async (p) => {
+      await toNote(p, other.id);
+      await at(p, other.code);
+    };
     {
       const writes = [];
       const { ctx, p, errors } = await open(1440, { writes: [recorder(writes, /\/api\/v1\/stock-issues\/\d+$/)] });
-      await goto(p, `/stock/dispatch-notes/${N1}`);
+      await firstThenBack(p);
       const controls = p.getByTestId('dispatch-note-controls');
       await controls.getByRole('button', { name: 'Змінити ТТН' }).click();
       await controls.getByLabel('ТТН', { exact: true }).fill('FOR-NOTE-ONE');
       await toOther(p);
-      await arrived(p);
       await p.waitForTimeout(600);
       out.draft = {
+        stayed: await stayed(p),
         open: await controls.getByLabel('ТТН', { exact: true }).count(),
         carried: (await textOf(controls)).includes('FOR-NOTE-ONE'),
       };
       out.file = await shoot(p, 'waybill-note-switch');
-      await controls.getByRole('button', { name: 'Змінити ТТН' }).click();
+      // An editor still open here is the defect itself: its value is recorded, not clicked past.
+      if (out.draft.open === 0) await controls.getByRole('button', { name: 'Змінити ТТН' }).click();
       out.draft.opened = await controls.getByLabel('ТТН', { exact: true }).inputValue();
       out.draft.writes = writes.length;
       out.draft.errors = errors;
@@ -1538,17 +1554,17 @@ async (page, selftest = null) => {
         await gate;
         return { __status: 422, json: { detail: 'Номер ТТН — не довше 24 символів' } };
       })] });
-      await goto(p, `/stock/dispatch-notes/${N1}`);
+      await firstThenBack(p);
       const controls = p.getByTestId('dispatch-note-controls');
       await controls.getByRole('button', { name: 'Змінити ТТН' }).click();
       await controls.getByLabel('ТТН', { exact: true }).fill('LATE-ONE');
       await controls.getByLabel('ТТН', { exact: true }).press('Enter');
       await p.waitForTimeout(300);
       await toOther(p);
-      await arrived(p);
       release();
       await p.waitForTimeout(1500);
       out.late = {
+        stayed: await stayed(p),
         writes: writes.map((w) => w.path),
         alert: await controls.getByRole('alert').count(),
         open: await controls.getByLabel('ТТН', { exact: true }).count(),
@@ -1559,9 +1575,9 @@ async (page, selftest = null) => {
     }
     return {
       env: { viewport: [1440, 900] },
-      recipe: { url: `/stock/dispatch-notes/${N1} → history to ${other.code} (the page stays mounted)`, fixture: ['PATCH answered by the runner', 'PATCH held, then 422'] },
+      recipe: { url: `/stock/dispatch-notes/${other.id} → in-app to ${N1} → edit → in-app back to ${other.code} (cached, the page stays mounted)`, fixture: ['PATCH answered by the runner', 'PATCH held, then 422'] },
       measured: { other: other.code, ...out, file: undefined },
-      pass: other.id > 0 && out.draft.open === 0 && !out.draft.carried && out.draft.opened === (other.waybill ?? '') &&
+      pass: other.id > 0 && out.draft.stayed && out.late.stayed && out.draft.open === 0 && !out.draft.carried && out.draft.opened === (other.waybill ?? '') &&
         out.draft.writes === 0 && out.draft.errors.length === 0 &&
         out.late.writes.length === 1 && out.late.writes[0].endsWith(`/stock-issues/${N1}`) && out.late.alert === 0 &&
         out.late.open === 0 && !out.late.carried,
