@@ -43,6 +43,7 @@ from backend.app.core.auth import (
     library_name_scope,
     request_credentials,
     require_media_permission,
+    require_ownership_permission,
     require_permission,
 )
 from backend.app.core.config import settings
@@ -214,6 +215,9 @@ from backend.app.services.product_gate import product_gate
 from backend.app.services.queue_batch import enqueue_batch_copies
 
 logger = logging.getLogger(__name__)
+
+# ``Fф`` at a gate (WS-13 E13 O10): work this request creates under an order — either right files it.
+_FILES_FUTURE = (Permission.ORDERS_UPDATE, Permission.ORDERS_FILE_PRINTS)
 
 router = APIRouter(prefix="/projects", tags=["projects"], dependencies=[Depends(bind_workshop_credentials)])
 
@@ -2376,6 +2380,8 @@ async def list_project_archives(
     return out
 
 
+# The queue's own update right, asked of the rows ``add-queue`` re-files (WS-13 E13 ORD-26).
+_queue_update = require_ownership_permission(Permission.QUEUE_UPDATE_ALL, Permission.QUEUE_UPDATE_OWN)
 # The archive and queue sections' own reads, asked of an order's rows (WS-13 E13 O12).
 _archives_read_all = require_permission(Permission.ARCHIVES_READ_ALL)
 _archives_read_own = require_permission(Permission.ARCHIVES_READ_OWN)
@@ -2644,7 +2650,8 @@ async def add_queue_items_to_project(
     project_id: int,
     data: BatchAddQueueItems,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
+    current_user: User | None = RequireAnyPermission(*_FILES_FUTURE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Batch add queue items to a project.
 
@@ -2652,29 +2659,40 @@ async def add_queue_items_to_project(
     ``add-archives``, ``remove-archives`` and ``archives.update_archive``
     follow. Re-filing an item under another order therefore drops the line it
     carries: keeping it would credit this order's work to a line of the old one.
-    """
-    # Verify project exists
-    result = await db.execute(select(Project).where(Project.id == project_id))
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Project not found")
 
-    # Update queue items
+    The work is not printed yet, so it is the Workshop's filing right for future
+    work (``Fф``) beside the queue's own update right — any row with
+    ``queue:update_all``, the caller's own with ``update_own`` (WS-13 E13 ORD-26).
+    Only pending work moves (409), into an open order; every order a row leaves is
+    journaled. Everything is asked before the first row moves.
+    """
+    await _get_project(db, project_id)
+    await order_filing.resolve_link(db, project_id, None)
+    items = [item for item_id in dict.fromkeys(data.queue_item_ids) if (item := await db.get(PrintQueueItem, item_id))]
+    user, can_update_all = await creds.check(_queue_update)
+    if not can_update_all and any(user is None or item.created_by_id != user.id for item in items):
+        raise HTTPException(status_code=403, detail="You can only update your own queue items")
+    if any(item.status != "pending" for item in items):
+        raise HTTPException(status_code=409, detail="Only pending queue jobs can be filed under an order")
+
     updated = 0
     filed = 0
-    for item_id in data.queue_item_ids:
-        result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))
-        item = result.scalar_one_or_none()
-        if item:
-            if item.project_line_id is not None:
-                stale = await db.get(ProjectLine, item.project_line_id)
-                if stale is None or stale.project_id != project_id:
-                    item.project_line_id = None
-            # Journaled only when it actually moves here — as ``add-archives`` does.
-            if item.project_id != project_id:
-                filed += 1
-            item.project_id = project_id
-            updated += 1
+    left: dict[int, int] = {}
+    for item in items:
+        if item.project_line_id is not None:
+            stale = await db.get(ProjectLine, item.project_line_id)
+            if stale is None or stale.project_id != project_id:
+                item.project_line_id = None
+        # Journaled only when it actually moves here — as ``add-archives`` does.
+        if item.project_id != project_id:
+            filed += 1
+            if item.project_id is not None:
+                left[item.project_id] = left.get(item.project_id, 0) + 1
+        item.project_id = project_id
+        updated += 1
 
+    for old_project, count in left.items():
+        await order_journal.record(db, old_project, "queue_items_unfiled", {"count": count}, actor=current_user)
     if filed:
         await order_journal.record(db, project_id, "queue_items_filed", {"count": filed}, actor=current_user)
     return {"message": f"Added {updated} queue items to project"}
@@ -3666,14 +3684,15 @@ async def enqueue_order_plan(
     project_id: int,
     data: PlanEnqueueRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE, Permission.QUEUE_CREATE),
+    current_user: User | None = RequireAnyPermission(*_FILES_FUTURE),
+    _queue: User | None = RequirePermission(Permission.QUEUE_CREATE),
 ):
     """Send plan rows to the auto-queue, or to one printer's queue.
 
     Both queue doors (``POST /queue/``, ``POST /auto-queue/``) require
-    ``queue:create``; this one also changes what an order has coming, so it
-    asks for ``orders:update`` too — ``RequirePermission`` demands ALL of the
-    permissions it is given.
+    ``queue:create``; this one also files the work under the order, so it asks
+    the Workshop's filing right too (``Fф``: ``orders:update`` or
+    ``orders:file_prints``, WS-13 E13 ORD-33), and the order must be open.
 
     ⚠️ **Routing is not dispatching.** Naming a printer says WHERE the work is
     filed, not whether the machine can take it now. The only thing this endpoint
@@ -3709,6 +3728,7 @@ async def enqueue_order_plan(
     printer kind without an id, or an auto kind with one, never reaches here.
     """
     lines_by_id = {line.id: line for line in (await _get_project(db, project_id)).lines}
+    await order_filing.resolve_link(db, project_id, None)
 
     printer_id: int | None = None
     printer_model: str | None = None
@@ -3898,20 +3918,23 @@ async def rebalance_order_line(
     project_id: int,
     line_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE, Permission.QUEUE_UPDATE_ALL),
+    current_user: User | None = RequireAnyPermission(*_FILES_FUTURE),
+    _queue: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
     """Move this line's still-pending auto-queue prints to idle printers of another
     model where that finishes sooner (spec 2026-09-10) — the setting and the
     cooldown do not apply to a button.
 
-    ``queue:update_all`` beside ``orders:update``: this rewrites router rows
-    whoever queued them. The handler does not commit — ``get_db`` does — but the
+    ``queue:update_all`` beside the Workshop's filing right (``Fф``, WS-13 E13
+    ORD-34): this rewrites router rows whoever queued them, and files the extra
+    prints under the line. The order must be open. The handler does not commit — ``get_db`` does — but the
     writer that creates the extra prints commits per call, exactly as the plan's
     enqueue door does.
     """
     project = await _get_project(db, project_id)
     if line_id not in {line.id for line in project.lines}:
         raise HTTPException(status_code=404, detail="Order line not found in this project")
+    await order_filing.resolve_link(db, project_id, line_id)
     # Read before the writer, which commits per call and expires what is loaded.
     line_product_id = next(ln.product_id for ln in project.lines if ln.id == line_id)
     result = await queue_rebalance.rebalance(db, line_ids=[line_id], force=True, current_user=current_user)

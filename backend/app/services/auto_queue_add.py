@@ -32,8 +32,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
-from backend.app.models.project import Project
-from backend.app.models.project_line import ProjectLine
 from backend.app.models.queue_source import QueueSource
 from backend.app.models.user import User
 from backend.app.schemas.auto_queue import AutoQueueItemCreate
@@ -42,7 +40,7 @@ from backend.app.services import queue_sources
 from backend.app.services.filament_intake import routing_detail
 from backend.app.services.filament_policy import feed_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
-from backend.app.services.order_filing import line_filer
+from backend.app.services.order_filing import line_filer, resolve_link
 from backend.app.services.queue_source_capture import (
     StagedSource,
     capture_staged,
@@ -85,23 +83,11 @@ async def add_items_to_auto_queue(
         if not library_file:
             raise HTTPException(400, "Library file not found")
 
-    if data.project_id is not None:
-        result = await db.execute(select(Project).where(Project.id == data.project_id))
-        if not result.scalar_one_or_none():
-            raise HTTPException(404, "Project not found")
-
-    # A file does not belong to an order, so there is nothing to fall back on:
-    # the caller names the order, or the row carries none.
-    effective_project_id = data.project_id
-
-    # The order LINE, by the same rule the queue and direct-print doors apply:
-    # it must be a line of the order named beside it (else 404, not a
-    # FK-constraint 500), and naming only the line derives the order.
-    if data.project_line_id is not None:
-        line = await db.get(ProjectLine, data.project_line_id)
-        if line is None or (data.project_id is not None and line.project_id != data.project_id):
-            raise HTTPException(404, "Order line not found in this project")
-        effective_project_id = line.project_id
+    # The order and its line by the one check every door of new work asks (WS-13
+    # E13 O21): it exists, the line is its own (naming only the line names the
+    # order), and it is open. A file does not belong to an order — the caller
+    # names one, or the row carries none.
+    effective_project_id, _ = await resolve_link(db, data.project_id, data.project_line_id)
 
     # Resolve plate IDs to fan out (one row per plate)
     plate_ids: list[int | None]

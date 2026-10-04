@@ -44,6 +44,10 @@ describe('the order journal · prints of the order (WS-13 E13 O08, ARC-07)', () 
     );
   });
 
+  it('says how many queue jobs left for another order', () => {
+    expect(journalText(event('queue_items_unfiled', { count: 2 }), t)).toBe('Queue jobs moved to another order: 2');
+  });
+
   it('names the print that went to the trash and came back', () => {
     expect(journalText(event('print_trashed', { archive_id: 3, name: 'Cube' }), t)).toBe('Print moved to the trash: Cube');
     const uk = i18n.getFixedT('uk');

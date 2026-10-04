@@ -16,6 +16,7 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.api_key import APIKey
 from backend.app.models.archive import PrintArchive
+from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.group import Group
 from backend.app.models.library import LibraryFile
 from backend.app.models.long_lived_token import LongLivedToken
@@ -484,6 +485,11 @@ async def delete_user(
             update(PrintQueueItem).where(PrintQueueItem.created_by_id == user_id).values(created_by_id=None)
         )
         await db.execute(update(LibraryFile).where(LibraryFile.created_by_id == user_id).values(created_by_id=None))
+
+    # The auto-queue forgets its creator too, in both branches (WS-13 E13 Q-08): its rows
+    # outlive the person — the work under way stays filed under its order — and on SQLite
+    # (no FK actions) a later user given the same id would otherwise inherit them.
+    await db.execute(update(AutoQueueItem).where(AutoQueueItem.created_by_id == user_id).values(created_by_id=None))
 
     # Cascade-delete the user's API keys. The model declares ON DELETE CASCADE
     # on api_keys.user_id, but SQLite has PRAGMA foreign_keys=OFF by default

@@ -6353,6 +6353,7 @@ export default {
         print_restored: 'Print restored from the trash: {{name}}',
         defects_recorded: 'Defects recorded: {{defective}}',
         queue_items_filed: 'Queue jobs filed under the order: {{count}}',
+        queue_items_unfiled: 'Queue jobs moved to another order: {{count}}',
         plan_enqueued: 'Plan sent to the queue — prints: {{prints}}',
         line_rebalanced: 'Line rebalanced: {{product}}',
         surplus_banked: 'Surplus banked to free stock — parts: {{parts}}',

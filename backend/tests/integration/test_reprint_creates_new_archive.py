@@ -48,12 +48,22 @@ def _write_minimal_3mf(path: Path) -> str:
     return h.hexdigest()
 
 
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_reprint_creates_new_archive_and_leaves_source_failed_row_intact(
-    db_session, test_engine, tmp_path, monkeypatch, printer_factory
-):
-    """Reprinting a 'failed' archive creates a new 'printing' row + leaves source untouched."""
+async def run_reprint(
+    db_session,
+    test_engine,
+    tmp_path,
+    monkeypatch,
+    printer_factory,
+    *,
+    source_project_id: int | None = None,
+    source_line_id: int | None = None,
+    job_project_id: int | None = None,
+    job_line_id: int | None = None,
+) -> dict:
+    """Run ``_run_reprint_archive`` for one 'failed' source archive with the hardware mocked.
+
+    Shared with ``test_archive_sourced_dispatch_uses_row_link``: the source may be filed under
+    one order and the job (the claim row the route wrote) under another."""
     from backend.app.core.config import settings as app_settings
     from backend.app.core.database import async_session as global_session_factory
 
@@ -108,7 +118,8 @@ async def test_reprint_creates_new_archive_and_leaves_source_failed_row_intact(
         source_content_hash=file_hash,
         library_file_id=lib.id,
         plate_index=2,
-        project_id=None,
+        project_id=source_project_id,
+        project_line_id=source_line_id,
         status="failed",  # the bug: this used to be flipped to 'printing'
         completed_at=datetime(2026, 5, 1, 12, 0, 0),
         print_name="source print",
@@ -181,6 +192,8 @@ async def test_reprint_creates_new_archive_and_leaves_source_failed_row_intact(
         printer_name=printer_name,
         options={"mesh_mode_fast_check": True, "ams_mapping": None},
         requested_by_user_id=99,  # the user who clicked Reprint
+        project_id=job_project_id,
+        project_line_id=job_line_id,
     )
     job.completion_event = MagicMock()
 
@@ -242,6 +255,30 @@ async def test_reprint_creates_new_archive_and_leaves_source_failed_row_intact(
 
     # Restore the global session factory so subsequent test cleanup is clean.
     monkeypatch.setattr("backend.app.services.background_dispatch.async_session", global_session_factory)
+    return {
+        "source_id": source_id,
+        "source_chain_hash": source_chain_hash,
+        "lib_id": lib_id,
+        "printer_id": printer_id,
+        "register": captured_register_args,
+        "job": job,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_reprint_creates_new_archive_and_leaves_source_failed_row_intact(
+    db_session, test_engine, tmp_path, monkeypatch, printer_factory
+):
+    """Reprinting a 'failed' archive creates a new 'printing' row + leaves source untouched."""
+    ran = await run_reprint(db_session, test_engine, tmp_path, monkeypatch, printer_factory)
+    source_id, source_chain_hash, lib_id, printer_id = (
+        ran["source_id"],
+        ran["source_chain_hash"],
+        ran["lib_id"],
+        ran["printer_id"],
+    )
+    captured_register_args, job = ran["register"], ran["job"]
 
     # 1) The source archive is UNTOUCHED — status still 'failed', completed_at preserved.
     db_session.expire_all()

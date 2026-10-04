@@ -748,6 +748,9 @@ class PlateAnswerIn(BaseModel):
     # Returned with a newly-owned hold. Optional keeps old API clients and
     # ownerless gates usable; new clients send it to reject stale cards.
     expected_gate_token: str | None = Field(default=None, min_length=1, max_length=64)
+    # «Repeat without order» (WS-13 E13 R11): the explicit choice, made before sending, to
+    # print it again without the row's order. Clear plate ignores it.
+    without_order: bool = False
 
 
 class WaitingPrintOut(BaseModel):

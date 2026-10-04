@@ -3305,6 +3305,7 @@ async def reprint_archive(
             Permission.ARCHIVES_REPRINT_OWN,
         )
     ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Dispatch an archived 3MF file for send/start on a printer."""
     from backend.app.models.printer import Printer
@@ -3327,6 +3328,18 @@ async def reprint_archive(
     if not can_modify_all:
         if archive.created_by_id != user.id:
             raise HTTPException(403, "You can only reprint your own archives")
+
+    # The new print is filed under the source's order and line unless the caller chose
+    # otherwise before sending (WS-13 E13 ARC-08): inherited, it is new work under the
+    # order — the Workshop's filing right and an open order, both copies and a direct
+    # print alike. The dispatcher files the new archive by this link, not the source's.
+    project_id: int | None = None
+    project_line_id: int | None = None
+    if body.keep_order and (archive.project_id is not None or archive.project_line_id is not None):
+        from backend.app.services import order_filing
+
+        await ensure_may_file_future(creds)
+        project_id, project_line_id = await order_filing.resolve_link(db, archive.project_id, archive.project_line_id)
 
     # Get printer
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
@@ -3399,8 +3412,8 @@ async def reprint_archive(
             swap_macro_events=body.swap_macro_events,
             selected_macro_ids=body.selected_macro_ids,
             created_by_id=user.id if user else None,
-            project_id=archive.project_id,
-            project_line_id=archive.project_line_id,
+            project_id=project_id,
+            project_line_id=project_line_id,
         )
         logger.info(
             "Queued %s reprint copies for archive %s on printer %s (batch %s)",
@@ -3426,10 +3439,11 @@ async def reprint_archive(
             archive_name=dispatch_source_name,
             printer_id=printer_id,
             printer_name=printer.name,
-            options=body.model_dump(exclude_none=True),
+            options=body.model_dump(exclude_none=True, exclude={"keep_order"}),
             requested_by_user_id=user.id if user else None,
             requested_by_username=user.username if user else None,
-            project_line_id=archive.project_line_id,
+            project_id=project_id,
+            project_line_id=project_line_id,
         )
     except DispatchEnqueueRejected as e:
         raise HTTPException(status_code=409, detail=str(e)) from e

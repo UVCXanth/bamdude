@@ -13,11 +13,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.api.routes._workshop_rights import may_file_future
 from backend.app.core import database
 from backend.app.core.api_key_scope import in_key_scope
 from backend.app.core.auth import (
+    RequestCredentials,
     RequireOverlayToken,
     RequirePermission,
+    request_credentials,
     require_media_permission,
     require_permission,
 )
@@ -85,7 +88,7 @@ from backend.app.services.bambu_mqtt import (
 )
 from backend.app.services.cloud_link.service import cloud_link_service
 from backend.app.services.mqtt_recorder import mqtt_recorder
-from backend.app.services.plate_answers import InvalidPlateAssessment, answer_plate_run
+from backend.app.services.plate_answers import FilingRefused, InvalidPlateAssessment, answer_plate_run
 from backend.app.services.plate_hold import (
     RepeatNotPossible,
     StalePlateAnswer,
@@ -3432,6 +3435,7 @@ async def repeat_print(
     data: PlateAnswerIn | None = None,
     current_user: User | None = RequirePermission(Permission.PRINTERS_CLEAR_PLATE),
     db: AsyncSession = Depends(get_db),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Print the job that just finished again — the card's other answer to a full plate.
 
@@ -3445,7 +3449,10 @@ async def repeat_print(
     part off — that is what pressing this means — and while the gate is armed
     ``_is_printer_idle`` is False, so the re-armed row would never dispatch.
 
-    Same permission as Clear plate: they are two answers to one question.
+    Same permission as Clear plate: they are two answers to one question. A row filed
+    under an order is new work under it (WS-13 E13 R11): the Workshop's filing right and
+    an open order, or ``without_order`` — the operator's explicit choice to print it
+    again without the order.
     """
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     if result.scalar_one_or_none() is None:
@@ -3466,7 +3473,11 @@ async def repeat_print(
             defects=write,
             actor_id=current_user.id if current_user else None,
             expected_gate_token=data.expected_gate_token if data is not None else None,
+            may_file_future=await may_file_future(creds),
+            without_order=bool(data is not None and data.without_order),
         )
+    except FilingRefused as e:
+        raise HTTPException(e.status, e.detail) from e
     except InvalidPlateAssessment as e:
         raise HTTPException(422, str(e)) from e
     except RepeatNotPossible as e:

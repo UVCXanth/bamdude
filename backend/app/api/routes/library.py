@@ -22,6 +22,7 @@ from sqlalchemy import and_, distinct, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.api.routes._workshop_rights import ensure_may_file_future
 from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
 from backend.app.core.auth import (
     RequestCredentials,
@@ -37,8 +38,6 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryFolder
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.product import Product, product_files, product_folders
-from backend.app.models.project import Project
-from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
 from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.library import (
@@ -109,7 +108,7 @@ from backend.app.services.library_preview import (
 )
 from backend.app.services.library_trash import library_trash_service
 from backend.app.services.line_composition import counted, default_options, standard_composition
-from backend.app.services.order_filing import order_candidates
+from backend.app.services.order_filing import order_candidates, resolve_link
 from backend.app.services.plate_summaries import cached_plates, plate_summary, split_types
 from backend.app.services.preview_artifacts import disk as preview_disk
 from backend.app.services.process_overrides import apply_process_overrides
@@ -1112,9 +1111,12 @@ async def create_folder(
 ):
     """Create a new folder."""
     # A folder born linked to products asks ``products:update`` too (WS-13 E13 B01) —
-    # first, because inside an external parent the directory is made on the share.
+    # first, and the products are read before anything is made (LIB-02): inside an
+    # external parent the folder is a directory on the share, and a refusal after the
+    # ``mkdir`` would leave one behind that no row describes.
     if data.product_ids:
         await creds.check(_products_update)
+    product_rows = await _resolve_products_for_assign(db, data.product_ids)
     # Verify parent exists if specified
     if data.parent_id is not None:
         parent_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == data.parent_id))
@@ -1163,7 +1165,7 @@ async def create_folder(
                 external_readonly=False,
                 external_show_hidden=parent.external_show_hidden,
             )
-            folder.products = await _resolve_products_for_assign(db, data.product_ids)
+            folder.products = product_rows
             db.add(folder)
             await db.commit()
             return FolderResponse(
@@ -1180,9 +1182,6 @@ async def create_folder(
                 created_at=folder.created_at,
                 updated_at=folder.updated_at,
             )
-
-    # Validate every requested product exists in one IN-list query.
-    product_rows = await _resolve_products_for_assign(db, data.product_ids)
 
     folder = LibraryFolder(
         name=data.name,
@@ -1356,9 +1355,9 @@ async def update_folder(
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
 
-    # An explicit product list — ``[]`` included — asks ``products:update`` too
-    # (WS-13 E13 B01), before any field is written.
-    if data.product_ids is not None:
+    # An explicit product list that CHANGES the folder's set asks ``products:update`` too
+    # (WS-13 E13 B01, LIB-03), before any field is written; the same set is library work.
+    if data.product_ids is not None and set(data.product_ids) != {p.id for p in folder.products}:
         await creds.check(_products_update)
 
     if data.name is not None:
@@ -1560,8 +1559,8 @@ async def unlink_folder_from_product(
 ):
     """Remove the (folder, product) pivot row. Idempotent: 404 only when
     the folder doesn't exist; missing pivot is treated as already-gone.
-    Unlinking always asks ``products:update`` too (WS-13 E13 B01)."""
-    await creds.check(_products_update)
+    Removing a link that is there asks ``products:update`` too (WS-13 E13 B01,
+    LIB-03); an absent one changes nothing and asks nothing more."""
     result = await db.execute(
         select(LibraryFolder).options(selectinload(LibraryFolder.products)).where(LibraryFolder.id == folder_id)
     )
@@ -1572,6 +1571,7 @@ async def unlink_folder_from_product(
     remaining = [p.id for p in folder.products if p.id != product_id]
     if len(remaining) == len(folder.products):
         return  # Idempotent: already not linked.
+    await creds.check(_products_update)
 
     # Same door as the folder PUT: the folder's own link, every child file's
     # link and the plates all move together.
@@ -1593,10 +1593,9 @@ async def unlink_file_from_product(
     creds: RequestCredentials = Depends(request_credentials),
 ):
     """Remove the (file, product) pivot row. Idempotent: missing pivot
-    treated as already-gone. Unlinking always asks ``products:update`` too
-    (WS-13 E13 B01)."""
+    treated as already-gone. Removing a link that is there asks
+    ``products:update`` too (WS-13 E13 B01, LIB-03)."""
     user, can_modify_all = auth_result
-    await creds.check(_products_update)
 
     result = await db.execute(
         select(LibraryFile).options(selectinload(LibraryFile.products)).where(LibraryFile.id == file_id)
@@ -1611,6 +1610,7 @@ async def unlink_file_from_product(
     remaining = [p.id for p in file.products if p.id != product_id]
     if len(remaining) == len(file.products):
         return  # Idempotent.
+    await creds.check(_products_update)
 
     # The sync owns ``product_files`` — never assign the collection here, or
     # the ORM re-INSERTs the row the sync already wrote (product_sync docstring).
@@ -4999,6 +4999,10 @@ async def get_library_file_filament_requirements(
     }
 
 
+_LIBRARY_READ_ALL = require_permission(Permission.LIBRARY_READ_ALL)
+_LIBRARY_READ_OWN = require_permission(Permission.LIBRARY_READ_OWN)
+
+
 @router.post("/files/{file_id}/print")
 async def print_library_file(
     file_id: int,
@@ -5006,6 +5010,7 @@ async def print_library_file(
     body: FilePrintRequest | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(require_permission(Permission.PRINTERS_CONTROL)),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Dispatch a library file for send/start on a printer.
 
@@ -5026,7 +5031,13 @@ async def print_library_file(
     result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
     lib_file = result.scalar_one_or_none()
 
-    if not lib_file:
+    # Printing a file is reading it (WS-13 E13 LIB-09): the library's own read, as its
+    # other doors ask it — someone else's file, or one in the trash, is the same 404 as a
+    # missing one.
+    reads_all = await creds.allows(_LIBRARY_READ_ALL)
+    if not (reads_all or await creds.allows(_LIBRARY_READ_OWN)) or not _library_file_visible(
+        lib_file, current_user, reads_all
+    ):
         raise HTTPException(status_code=404, detail="File not found")
 
     # Pre-flight: an older library row may pre-date rename/upload validation and
@@ -5063,23 +5074,13 @@ async def print_library_file(
     if not printer_manager.is_connected(printer_id):
         raise HTTPException(status_code=400, detail="Printer is not connected")
 
-    # Validate project exists before dispatching so a bogus ID yields 404, not a FK-constraint 500
-    if body.project_id is not None:
-        project_result = await db.execute(select(Project).where(Project.id == body.project_id))
-        if not project_result.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="Project not found")
-
-    # Same question of the order LINE, and the same reason: a bogus id is an
-    # FK-constraint 500 on PostgreSQL and a silently stored dangling reference
-    # on SQLite. The rule is ``queue_add``'s — the line must be a line of the
-    # order named beside it, and naming only the line derives the order. Asked
-    # once here, before both the queue and the direct-dispatch branch below.
-    effective_project_id = body.project_id
-    if body.project_line_id is not None:
-        line = await db.get(ProjectLine, body.project_line_id)
-        if line is None or (body.project_id is not None and line.project_id != body.project_id):
-            raise HTTPException(status_code=404, detail="Order line not found in this project")
-        effective_project_id = line.project_id
+    # Under an order: the Workshop's filing right (``Fф``), then the one check every
+    # door of new work asks — the order exists, the line is its own (naming only the
+    # line names the order), and the order is open (WS-13 E13 O10, O21). Asked once
+    # here, before both the queue and the direct-dispatch branch below.
+    if body.project_id is not None or body.project_line_id is not None:
+        await ensure_may_file_future(creds)
+    effective_project_id, _ = await resolve_link(db, body.project_id, body.project_line_id)
 
     plate_name = body.plate_name
     if not plate_name and body.plate_id is not None:
@@ -5330,13 +5331,15 @@ async def update_file(
             raise HTTPException(status_code=404, detail="Folder not found")
 
     # The product list this PUT ends with, decided before anything is written: a
-    # change of links asks ``products:update`` too (WS-13 E13 B01) — always for an
-    # explicit list, for a move only when the target's set differs from the file's
+    # change of links asks ``products:update`` too (WS-13 E13 B01) — for an explicit
+    # list or a move, only when the set it ends with differs from the file's (LIB-03)
     # — and a refusal leaves the file as it was. ``None`` = links untouched.
     desired_product_ids: list[int] | None = None
     if data.product_ids is not None:
-        # Explicit product_ids override wins over the folder-inherited list.
-        await creds.check(_products_update)
+        # Explicit product_ids override wins over the folder-inherited list; only a
+        # list that changes the file's set asks (LIB-03).
+        if set(data.product_ids) != {p.id for p in file.products}:
+            await creds.check(_products_update)
         desired_product_ids = [p.id for p in await _resolve_products_for_assign(db, data.product_ids)]
     elif data.folder_id is not None:
         # Moving to root (``0``) clears product links — root has no folder, so

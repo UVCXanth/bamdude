@@ -47,6 +47,11 @@ DEVIATIONS: dict[str, str] = {
     # F(print) = orders:file_prints OR (orders:update AND the archive's own right), asked per print (O21).
     "POST /api/v1/projects/{project_id}/add-archives": "either half of F(print) at the gate; F per print inside",
     "POST /api/v1/projects/{project_id}/remove-archives": "either half of F(print) at the gate; F per print inside",
+    # Fф = orders:update OR orders:file_prints for work a request creates under an order (O10);
+    # the queue's own right moved to a gate of its own beside it.
+    "POST /api/v1/projects/{project_id}/plan/enqueue": "Fф at its own gate, queue:create at another (ORD-33)",
+    "POST /api/v1/projects/{project_id}/lines/{line_id}/rebalance": "Fф at its own gate, queue:update_all beside (ORD-34)",
+    "POST /api/v1/projects/{project_id}/add-queue": "Fф at the gate; the queue's update right per row inside (ORD-26)",
 }
 
 

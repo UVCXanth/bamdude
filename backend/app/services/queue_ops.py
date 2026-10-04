@@ -358,7 +358,24 @@ def _copy_item_fields(src: PrintQueueItem, new_batch_id: str | None, new_positio
     return item
 
 
-async def clone_item(db: AsyncSession, item_id: int, keep_batch: bool = True) -> PrintQueueItem | None:
+def _as_new_work(clone: PrintQueueItem, created_by_id: int | None | str, keep_order: bool) -> None:
+    """A clone is new work (WS-13 E13 Q-02): its creator is whoever cloned it, and without
+    ``keep_order`` it carries no order. ``"source"`` keeps the source's creator (internal callers)."""
+    if created_by_id != "source":
+        clone.created_by_id = created_by_id
+    if not keep_order:
+        clone.project_id = None
+        clone.project_line_id = None
+
+
+async def clone_item(
+    db: AsyncSession,
+    item_id: int,
+    keep_batch: bool = True,
+    *,
+    created_by_id: int | None | str = "source",
+    keep_order: bool = True,
+) -> PrintQueueItem | None:
     """Insert a duplicate after *item_id*.
 
     ``keep_batch=True`` shares ``batch_id`` — new copy becomes a sibling
@@ -385,6 +402,7 @@ async def clone_item(db: AsyncSession, item_id: int, keep_batch: bool = True) ->
             )
         ).scalar() or 0
         clone = _copy_item_fields(src, new_batch_id, max_pos + 1)
+        _as_new_work(clone, created_by_id, keep_order)
         db.add(clone)
         await db.commit()
         await db.refresh(clone)
@@ -392,7 +410,9 @@ async def clone_item(db: AsyncSession, item_id: int, keep_batch: bool = True) ->
     return clone
 
 
-async def clone_batch(db: AsyncSession, batch_id: str) -> list[PrintQueueItem]:
+async def clone_batch(
+    db: AsyncSession, batch_id: str, *, created_by_id: int | None | str = "source", keep_order: bool = True
+) -> list[PrintQueueItem]:
     """Create a fresh batch (new batch_id) duplicating every pending item
     in the source batch.  Copies appended to end of queue, preserve
     intra-batch order.
@@ -426,6 +446,7 @@ async def clone_batch(db: AsyncSession, batch_id: str) -> list[PrintQueueItem]:
         ).scalar() or 0
         for i, src in enumerate(siblings):
             clone = _copy_item_fields(src, new_batch_id, max_pos + 1 + i)
+            _as_new_work(clone, created_by_id, keep_order)
             db.add(clone)
             clones.append(clone)
 

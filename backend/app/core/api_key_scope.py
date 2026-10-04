@@ -59,6 +59,10 @@ _QUEUE_ITEM_KEYS = frozenset({"source_queue_item_id", "queue_item_ids"})
 _QUEUE_ROUTER = "/api/v1/queue/"
 _QUEUE_ROUTER_ITEM_KEYS = frozenset({"item_ids"})
 _FARM_WIDE_ROUTERS = ("/api/v1/auto-queue",)
+# The Workshop's doors onto the same distributor (WS-13 E13 O14): a line's rebalance always,
+# an order plan sent to the auto-queue (``target.kind == "auto"``) — the distributor picks the printer.
+_FARM_WIDE_ROUTES = frozenset({"/api/v1/projects/{project_id}/lines/{line_id}/rebalance"})
+_FARM_WIDE_WHEN_AUTO = frozenset({"/api/v1/projects/{project_id}/plan/enqueue"})
 
 
 class _Unreadable(Exception):
@@ -274,7 +278,14 @@ async def enforce_printer_scope(db: AsyncSession, request: Request, api_key: Any
         return
 
     template = getattr(request.scope.get("route"), "path", request.url.path)
-    if any(template == router or template.startswith(router + "/") for router in _FARM_WIDE_ROUTERS):
+    farm_wide = template in _FARM_WIDE_ROUTES or any(
+        template == router or template.startswith(router + "/") for router in _FARM_WIDE_ROUTERS
+    )
+    if not farm_wide and template in _FARM_WIDE_WHEN_AUTO:
+        body = await _json_body(request)
+        target = body.get("target") if isinstance(body, dict) else None
+        farm_wide = isinstance(target, dict) and target.get("kind") == "auto"
+    if farm_wide:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="An API key restricted to specific printers cannot use the farm-wide auto-queue",

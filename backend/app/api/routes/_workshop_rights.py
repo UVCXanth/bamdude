@@ -26,6 +26,7 @@ from backend.app.core.auth import (
     require_permission,
 )
 from backend.app.core.permissions import Permission
+from backend.app.services.order_filing import FILING_FORBIDDEN
 
 # One checker per right, built once (``RequestCredentials.check`` contract).
 GATES = {
@@ -53,10 +54,6 @@ GATES = {
 # The archive's own update right — the other half of ``F(print)``.
 _ARCHIVES_UPDATE = require_ownership_permission(Permission.ARCHIVES_UPDATE_ALL, Permission.ARCHIVES_UPDATE_OWN)
 
-FILING_FORBIDDEN = {
-    "error": "filing_forbidden",
-    "message": "Filing work under an order needs orders:update or orders:file_prints",
-}
 
 _CREDS: ContextVar[RequestCredentials | None] = ContextVar("workshop_credentials", default=None)
 _VIEW: ContextVar[WorkshopView | None] = ContextVar("workshop_view", default=None)

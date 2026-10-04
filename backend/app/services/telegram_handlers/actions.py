@@ -277,7 +277,7 @@ async def cb_repeat_print(callback: CallbackQuery, tg_chat: TelegramChat | None 
         return
 
     from backend.app.core.database import async_session
-    from backend.app.services.plate_answers import answer_plate_run
+    from backend.app.services.plate_answers import FilingRefused, answer_plate_run
     from backend.app.services.plate_hold import RepeatNotPossible, StalePlateAnswer
 
     try:
@@ -288,7 +288,15 @@ async def cb_repeat_print(callback: CallbackQuery, tg_chat: TelegramChat | None 
                 expected_archive_id=archive_id,
                 expected_gate_token=gate_token,
                 action="repeat",
+                # The chat's role answers for the Workshop's filing right (WS-13 E13 R11).
+                may_file_future=has_perm(tg_chat, "orders:update") or has_perm(tg_chat, "orders:file_prints"),
             )
+    except FilingRefused as e:
+        # A print under an order: new work under it needs the filing right, and a closed
+        # order takes none. «Repeat without order» is the web app's explicit choice.
+        key = "printers.repeat_print_order_closed" if e.status == 409 else "printers.repeat_print_needs_order_right"
+        await callback.answer(t(lang, NS, key), show_alert=True)
+        return
     except RepeatNotPossible as e:
         # Nothing to send again — said plainly rather than queued and failed.
         await callback.answer(str(e), show_alert=True)

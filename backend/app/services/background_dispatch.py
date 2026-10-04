@@ -1116,6 +1116,7 @@ class BackgroundDispatchService:
         options: dict[str, Any],
         requested_by_user_id: int | None,
         requested_by_username: str | None,
+        project_id: int | None = None,
         project_line_id: int | None = None,
     ) -> dict[str, Any]:
         return await self._dispatch(
@@ -1127,6 +1128,7 @@ class BackgroundDispatchService:
             options=options,
             requested_by_user_id=requested_by_user_id,
             requested_by_username=requested_by_username,
+            project_id=project_id,
             project_line_id=project_line_id,
         )
 
@@ -2189,8 +2191,12 @@ class BackgroundDispatchService:
                     source_file=file_path,
                     dispatched_file=upload_file_path,
                     original_filename=archive_filename,
-                    project_id=source_archive.project_id if source_archive else job.project_id,
-                    project_line_id=source_archive.project_line_id if source_archive else job.project_line_id,
+                    # The JOB's link — what the request decided and the claim row carries
+                    # (WS-13 E13 Q-07) — never the source archive's: a reprint chosen
+                    # without the order, or a queue row filed under another order, prints
+                    # where it was filed.
+                    project_id=job.project_id,
+                    project_line_id=job.project_line_id,
                     # ⚠️ With a snapshot the chain root is the snapshot's own hash,
                     # and that is not a fallback for a missing row — it is the
                     # correct answer whenever one exists. ``source_content_hash``

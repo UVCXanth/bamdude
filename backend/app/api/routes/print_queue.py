@@ -14,8 +14,15 @@ from sqlalchemy import func, inspect as sa_inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import lazyload, load_only, selectinload
 
+from backend.app.api.routes._workshop_rights import ensure_may_file_future
 from backend.app.core.api_key_scope import key_printer_scope
-from backend.app.core.auth import RequirePermission, require_ownership_permission
+from backend.app.core.auth import (
+    RequestCredentials,
+    RequirePermission,
+    request_credentials,
+    require_ownership_permission,
+    require_permission,
+)
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -516,8 +523,12 @@ async def add_to_queue(
     data: PrintQueueItemCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.QUEUE_CREATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
-    """Add an item to the print queue."""
+    """Add an item to the print queue. Under an order it asks the Workshop's filing right
+    too (``Fф``, WS-13 E13 O10); the order's own checks are the writer's."""
+    if data.project_id is not None or data.project_line_id is not None:
+        await ensure_may_file_future(creds)
     # Queue creation alone may append work, but moving it in front of someone
     # else's pending jobs is a reorder operation. API keys map both permissions
     # to their existing ``can_queue`` scope; a signed-in user is checked here.
@@ -605,10 +616,13 @@ async def add_next_block_to_queue(
     data: PrintQueueNextBatchCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.QUEUE_CREATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Insert several plates as one contiguous urgent block for one printer."""
     if current_user is not None and not current_user.has_permission(Permission.QUEUE_REORDER.value):
         raise HTTPException(403, "Missing permission: queue:reorder")
+    if any(item.project_id is not None or item.project_line_id is not None for item in data.items):
+        await ensure_may_file_future(creds)
     items, _queue = await add_next_block_to_printer_queue(db, data.items, current_user)
     result = await db.execute(
         select(PrintQueueItem)
@@ -1497,12 +1511,39 @@ async def bump_item_bottom(
     return {"shifted": shifted, "block_size": len(block_ids)}
 
 
+_QUEUE_READ_ALL = require_permission(Permission.QUEUE_READ_ALL)
+
+
+async def _ensure_may_clone(
+    db: AsyncSession,
+    creds: RequestCredentials,
+    user: User | None,
+    rows: list[PrintQueueItem],
+    keep_order: bool,
+) -> None:
+    """A clone is new work made from someone's rows (WS-13 E13 Q-02): the rows must be the
+    caller's own or readable with ``queue:read_all`` (404 otherwise — like a missing id), and an
+    inherited order asks the Workshop's filing right and an open order. ``keep_order=false`` is
+    the explicit choice to clone without it."""
+    if not await creds.allows(_QUEUE_READ_ALL) and any(user is None or row.created_by_id != user.id for row in rows):
+        raise HTTPException(404, "Queue item not found")
+    links = {(row.project_id, row.project_line_id) for row in rows} - {(None, None)}
+    if keep_order and links:
+        from backend.app.services.order_filing import resolve_link
+
+        await ensure_may_file_future(creds)
+        for project_id, project_line_id in sorted(links, key=str):
+            await resolve_link(db, project_id, project_line_id)
+
+
 @router.post("/{item_id}/clone", response_model=PrintQueueItemResponse)
 async def clone_item_endpoint(
     item_id: int,
     scope: str = Query("single", pattern="^(single|batch)$"),
+    keep_order: bool = Query(True, description="Clone under the source's order (the default) or without it"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.QUEUE_CREATE),
+    current_user: User | None = RequirePermission(Permission.QUEUE_CREATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Clone a queue item.
 
@@ -1516,24 +1557,27 @@ async def clone_item_endpoint(
     status, mapped here and nowhere else (spec §6).
     """
     from backend.app.services.queue_counters import update_queue_counters
-    from backend.app.services.queue_ops import clone_batch, clone_item
+    from backend.app.services.queue_ops import clone_batch, clone_item, get_batch_pending_items
 
     src = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
     if not src:
         raise HTTPException(404, "Queue item not found")
+    rows = await get_batch_pending_items(db, src.batch_id) if scope == "batch" and src.batch_id else [src]
+    await _ensure_may_clone(db, creds, current_user, rows or [src], keep_order)
+    as_new = {"created_by_id": current_user.id if current_user else None, "keep_order": keep_order}
 
     try:
         if scope == "batch":
             if not src.batch_id:
                 raise HTTPException(400, "Item is not part of a batch")
-            clones = await clone_batch(db, src.batch_id)
+            clones = await clone_batch(db, src.batch_id, **as_new)
             if not clones:
                 raise HTTPException(400, "No pending items in batch to clone")
             await update_queue_counters(db, clones[0].queue_id)
             await db.commit()
             first = clones[0]
         else:
-            first = await clone_item(db, item_id, keep_batch=True)
+            first = await clone_item(db, item_id, keep_batch=True, **as_new)
             if first is None:
                 raise HTTPException(500, "Clone failed")
             await update_queue_counters(db, first.queue_id)
@@ -1970,8 +2014,10 @@ async def update_batch(
 async def clone_batch_endpoint(
     batch_id: str,
     scope: str = Query("batch", pattern="^(one|batch)$"),
+    keep_order: bool = Query(True, description="Clone under the source's order (the default) or without it"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.QUEUE_CREATE),
+    current_user: User | None = RequirePermission(Permission.QUEUE_CREATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Clone a batch.
 
@@ -1992,17 +2038,19 @@ async def clone_batch_endpoint(
     if not pending:
         raise HTTPException(404, "No pending items in batch")
     queue_id = pending[0].queue_id
+    await _ensure_may_clone(db, creds, current_user, pending[:1] if scope == "one" else pending, keep_order)
+    as_new = {"created_by_id": current_user.id if current_user else None, "keep_order": keep_order}
 
     try:
         if scope == "one":
-            new_item = await clone_item(db, pending[0].id, keep_batch=True)
+            new_item = await clone_item(db, pending[0].id, keep_batch=True, **as_new)
             if new_item is None:
                 raise HTTPException(500, "Clone failed")
             await update_queue_counters(db, queue_id)
             await db.commit()
             return {"cloned": 1, "scope": "one", "batch_id": batch_id, "new_item_id": new_item.id}
 
-        clones = await clone_batch(db, batch_id)
+        clones = await clone_batch(db, batch_id, **as_new)
         if not clones:
             raise HTTPException(500, "Clone failed")
         await update_queue_counters(db, queue_id)

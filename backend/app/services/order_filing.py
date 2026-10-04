@@ -77,6 +77,11 @@ CLOSED_STATUSES = ("completed", "cancelled")
 
 #: A new link to a closed order — the machine code the dialogs react to (WS-13 E13 O21).
 ORDER_CLOSED = {"error": "order_closed", "message": "This order is closed — nothing new is filed under it"}
+#: New work under an order without the Workshop's filing right (``Fф``, WS-13 E13 O10).
+FILING_FORBIDDEN = {
+    "error": "filing_forbidden",
+    "message": "Filing work under an order needs orders:update or orders:file_prints",
+}
 
 
 @dataclass
@@ -579,6 +584,7 @@ async def resolve_line_id(
 
 __all__ = [
     "CLOSED_STATUSES",
+    "FILING_FORBIDDEN",
     "LineFiler",
     "ORDER_CLOSED",
     "OrderCandidate",

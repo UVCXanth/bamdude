@@ -10,7 +10,7 @@ export const ORDER_JOURNAL_KINDS = [
   'order_created', 'status_changed', 'fields_changed', 'responsible_changed', 'stage_changed',
   'line_added', 'line_changed', 'line_removed', 'line_configured',
   'prints_filed', 'prints_unfiled', 'prints_relined', 'print_trashed', 'print_restored', 'defects_recorded',
-  'queue_items_filed', 'plan_enqueued', 'line_rebalanced',
+  'queue_items_filed', 'queue_items_unfiled', 'plan_enqueued', 'line_rebalanced',
   'surplus_banked', 'procurement_updated',
   'kits_assembled', 'goods_received', 'goods_issued', 'stock_taken', 'goods_written_off', 'goods_stocked',
   'attachment_added', 'attachment_removed', 'cover_changed',

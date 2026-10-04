@@ -66,6 +66,8 @@
     "btn_clear_plate": "Plate cleared",
     "btn_repeat_print": "Repeat print",
     "repeat_print_ok": "Printing it again.",
+    "repeat_print_needs_order_right": "This print belongs to an order: printing it again under the order needs the right to file work under orders. «Repeat without order» is in the web app.",
+    "repeat_print_order_closed": "This print's order is closed — nothing new is filed under it. «Repeat without order» is in the web app.",
     "repeat_print_none": "Nothing finished is waiting on this printer.",
     "clear_plate_ok": "Plate cleared! Next print starts shortly.",
     "clear_plate_fail": "Failed to clear plate",

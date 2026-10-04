@@ -144,25 +144,33 @@ class TestExplicitLinks:
         assert r.status_code == 200, r.text
 
     @pytest.mark.asyncio
-    async def test_editing_a_folder_asks_only_when_its_products_are_written(self, async_client: AsyncClient, shelf):
+    async def test_editing_a_folder_asks_only_when_its_products_change(self, async_client: AsyncClient, shelf):
+        """WS-13 E13 LIB-03: the set the folder ends with, compared with the one it has — an
+        explicit list that changes nothing is library work."""
         lib = _jwt("lr_lib")
         url = f"/api/v1/library/folders/{shelf['folders']['F0']}"
         assert (await async_client.put(url, json={"name": "Renamed"}, headers=lib)).status_code == 200
         assert (await async_client.put(url, json={"product_ids": None}, headers=lib)).status_code == 200
-        assert (await async_client.put(url, json={"product_ids": []}, headers=lib)).status_code == 403
+        assert (await async_client.put(url, json={"product_ids": []}, headers=lib)).status_code == 200
+        linked = f"/api/v1/library/folders/{shelf['folders']['F1']}"
+        assert (await async_client.put(linked, json={"product_ids": [shelf["p1"]]}, headers=lib)).status_code == 200
+        assert (await async_client.put(linked, json={"product_ids": []}, headers=lib)).status_code == 403
         assert (await async_client.put(url, json={"product_ids": [shelf["p1"]]}, headers=lib)).status_code == 403
         r = await async_client.put(url, json={"product_ids": [shelf["p1"]]}, headers=_jwt("lr_both"))
         assert r.status_code == 200, r.text
 
     @pytest.mark.asyncio
-    async def test_editing_a_file_asks_only_when_its_products_are_written(
+    async def test_editing_a_file_asks_only_when_its_products_change(
         self, async_client: AsyncClient, db_session, shelf
     ):
         lib = _jwt("lr_lib")
         url = f"/api/v1/library/files/{shelf['c']}"
         assert (await async_client.put(url, json={"notes": "x"}, headers=lib)).status_code == 200
         assert (await async_client.put(url, json={"product_ids": None}, headers=lib)).status_code == 200
-        assert (await async_client.put(url, json={"product_ids": []}, headers=lib)).status_code == 403
+        assert (await async_client.put(url, json={"product_ids": []}, headers=lib)).status_code == 200
+        linked = f"/api/v1/library/files/{shelf['b']}"
+        assert (await async_client.put(linked, json={"product_ids": [shelf["p1"]]}, headers=lib)).status_code == 200
+        assert (await async_client.put(linked, json={"product_ids": []}, headers=lib)).status_code == 403
         assert (await async_client.put(url, json={"product_ids": [shelf["p1"]]}, headers=lib)).status_code == 403
         assert await _links(db_session, shelf["c"]) == set()
         r = await async_client.put(url, json={"product_ids": [shelf["p1"]]}, headers=_jwt("lr_both"))
@@ -170,8 +178,12 @@ class TestExplicitLinks:
         assert await _links(db_session, shelf["c"]) == {shelf["p1"]}
 
     @pytest.mark.asyncio
-    async def test_unlinking_always_asks(self, async_client: AsyncClient, db_session, shelf):
+    async def test_unlinking_asks_only_for_a_link_that_is_there(self, async_client: AsyncClient, db_session, shelf):
         lib = _jwt("lr_lib")
+        absent_file = f"/api/v1/library/files/{shelf['c']}/products/{shelf['p1']}"
+        absent_folder = f"/api/v1/library/folders/{shelf['folders']['F0']}/products/{shelf['p1']}"
+        assert (await async_client.delete(absent_file, headers=lib)).status_code == 204
+        assert (await async_client.delete(absent_folder, headers=lib)).status_code == 204
         file_url = f"/api/v1/library/files/{shelf['a']}/products/{shelf['p1']}"
         folder_url = f"/api/v1/library/folders/{shelf['folders']['F1']}/products/{shelf['p1']}"
         assert (await async_client.delete(file_url, headers=lib)).status_code == 403
@@ -180,6 +192,26 @@ class TestExplicitLinks:
         both = _jwt("lr_both")
         assert (await async_client.delete(file_url, headers=both)).status_code == 204
         assert (await async_client.delete(folder_url, headers=both)).status_code == 204
+
+
+class TestAFolderOnTheShare:
+    @pytest.mark.asyncio
+    async def test_an_unknown_product_refuses_before_the_directory_is_made(
+        self, async_client: AsyncClient, db_session, tmp_path
+    ):
+        """WS-13 E13 LIB-02: inside an external parent the folder is a real directory on the
+        share — the products it is born linked to are checked before it is made, or a refusal
+        leaves a directory behind that no row describes."""
+        share = tmp_path / "share"
+        share.mkdir()
+        parent = LibraryFolder(name="Share", is_external=True, external_path=str(share), external_readonly=False)
+        db_session.add(parent)
+        await db_session.commit()
+        r = await async_client.post(
+            "/api/v1/library/folders/", json={"name": "New", "parent_id": parent.id, "product_ids": [999999]}
+        )
+        assert r.status_code == 404, r.text
+        assert not (share / "New").exists()
 
 
 class TestMoves:

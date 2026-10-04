@@ -8,6 +8,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from fastapi import HTTPException
 from sqlalchemy import select, text
 
 from backend.app.models.archive import PrintArchive
@@ -16,11 +17,13 @@ from backend.app.models.printer import Printer
 from backend.app.services.archive_defects import DefectsResult, DefectsWrite, record_defects
 from backend.app.services.archive_parts import load_rows
 from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+from backend.app.services.order_filing import FILING_FORBIDDEN, resolve_link
 from backend.app.services.plate_hold import (
     StalePlateAnswer,
     answer_by_clearing,
     answer_by_repeating,
     waiting_archive,
+    waiting_row,
 )
 
 _printer_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -37,6 +40,17 @@ class PlateAnswerResult:
 
 class PlateAnswerAlreadyHandled(StalePlateAnswer):
     """The held run has a receipt for the other completion action."""
+
+
+class FilingRefused(Exception):
+    """A repeat of a print filed under an order that may not be new work under it
+    (WS-13 E13 R11): ``status`` 403 without the filing right, 409 for a closed order;
+    ``detail`` is the machine-readable refusal. Nothing was written."""
+
+    def __init__(self, status: int, detail: dict):
+        super().__init__(detail.get("message", ""))
+        self.status = status
+        self.detail = detail
 
 
 class InvalidPlateAssessment(ValueError):
@@ -144,8 +158,18 @@ async def answer_plate_run(
     defects: DefectsWrite | None = None,
     actor_id: int | None = None,
     expected_gate_token: str | None = None,
+    may_file_future: bool = False,
+    without_order: bool = False,
 ) -> PlateAnswerResult:
     """Write defects and answer exactly the held run, then release the gate.
+
+    «Repeat» makes a new print of the held row, so a row filed under an order is new
+    work under it (WS-13 E13 R11): ``may_file_future`` — the door's own answer to the
+    Workshop's filing right (the route's credentials, the Telegram chat's role; this
+    service reads no rights) — and an open order, asked after an already accepted
+    receipt is returned and before anything is written (:class:`FilingRefused`).
+    ``without_order`` is the caller's explicit choice to repeat it without the order:
+    only the ROW loses it, the finished print keeps its own.
 
     The lock is intentionally process-local: BamDude has one scheduler and one
     Telegram poller in this process.  It closes the SQLite read-to-write window;
@@ -204,6 +228,16 @@ async def answer_plate_run(
         if archive is None and defects is not None:
             raise StalePlateAnswer("No finished print is waiting on this printer")
 
+        if action == "repeat" and not without_order:
+            held_row = await waiting_row(db, printer_id)
+            if held_row is not None and (held_row.project_id is not None or held_row.project_line_id is not None):
+                if not may_file_future:
+                    raise FilingRefused(403, FILING_FORBIDDEN)
+                try:
+                    await resolve_link(db, held_row.project_id, held_row.project_line_id)
+                except HTTPException as refused:
+                    raise FilingRefused(refused.status_code, refused.detail) from refused
+
         defects_result = None
         if defects is not None:
             if archive is None:
@@ -226,6 +260,9 @@ async def answer_plate_run(
                 )
                 if row is None:
                     raise StalePlateAnswer("No finished print is waiting on this printer")
+                if without_order:
+                    row.project_id = None
+                    row.project_line_id = None
                 item_id = row.id
 
             receipt = None

@@ -306,6 +306,11 @@ class ProjectPageResponse(BaseModel):
 class ReprintRequest(FilamentRoutingChoices):
     """Request body for reprinting an archive."""
 
+    # The reprint is filed under the source's order by default — and then asks the
+    # Workshop's filing right and an open order (WS-13 E13 ARC-08). ``False`` is the
+    # explicit choice, made before sending, to print it without the order.
+    keep_order: bool = True
+
     # Plate selection for multi-plate 3MF files
     # If not specified, auto-detects from file (legacy behavior for single-plate files)
     plate_id: int | None = None

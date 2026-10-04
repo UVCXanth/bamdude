@@ -16,6 +16,11 @@ from sqlalchemy import select
 from backend.app.models.project import Project, ProjectEvent
 from backend.tests.integration.test_order_issue_review_fixes import LEAVE, _fulfil, _lamp_order
 from backend.tests.integration.test_orders_api import _completed_print, catalog  # noqa: F401
+from backend.tests.integration.test_project_line_passthrough import (  # noqa: F401 - fixtures
+    linked_file,
+    order_line,
+    printer_with_queue,
+)
 from backend.tests.integration.test_workshop_archive_rights import (  # noqa: F401 — the shared fixture
     _add,
     _archive,
@@ -229,3 +234,398 @@ class TestCountingAnOldPrintIntoStock:
         assert (await committing_client.post(url.format(desk["theirs"]), headers=_jwt("fd_counter"))).status_code == 404
         blind = await committing_client.post(url.format(desk["theirs"]), headers=_jwt("fd_blind_counter"))
         assert blind.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Future work (O10, Q3): ``Fф`` = orders:file_prints OR orders:update, asked by every door
+# that creates work under an order; the order must be open (``order_filing.resolve_link``).
+# ---------------------------------------------------------------------------
+
+FORBIDDEN = "filing_forbidden"
+
+
+async def _queued_under(db, project_id: int) -> int:
+    from sqlalchemy import func
+
+    from backend.app.models.print_queue import PrintQueueItem
+
+    return await db.scalar(select(func.count(PrintQueueItem.id)).where(PrintQueueItem.project_id == project_id))
+
+
+async def _auto_queued_under(db, project_id: int) -> int:
+    from sqlalchemy import func
+
+    from backend.app.models.auto_queue import AutoQueueItem
+
+    return await db.scalar(select(func.count(AutoQueueItem.id)).where(AutoQueueItem.project_id == project_id))
+
+
+class TestTheQueueDoors:
+    @pytest.mark.asyncio
+    async def test_a_queue_row_under_an_order_asks_the_filing_right(
+        self, committing_client, db_session, order_line, printer_with_queue, linked_file
+    ):
+        project, _ = order_line
+        await _user(db_session, "ff_queuer", ["queue:create", "library:read_all"])
+        await _user(db_session, "ff_queuer_clerk", ["queue:create", "library:read_all", "orders:file_prints"])
+        body = {"queue_id": printer_with_queue.queue_id, "library_file_id": linked_file.id}
+        refused = await committing_client.post(
+            "/api/v1/queue/", json={**body, "project_id": project.id}, headers=_jwt("ff_queuer")
+        )
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["detail"]["error"] == FORBIDDEN
+        assert await _queued_under(db_session, project.id) == 0
+        plain = await committing_client.post("/api/v1/queue/", json=body, headers=_jwt("ff_queuer"))
+        assert plain.status_code == 200, plain.text
+        filed = await committing_client.post(
+            "/api/v1/queue/", json={**body, "project_id": project.id}, headers=_jwt("ff_queuer_clerk")
+        )
+        assert filed.status_code == 200, filed.text
+        assert await _queued_under(db_session, project.id) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_closed_order_takes_no_queue_row(
+        self, committing_client, db_session, order_line, printer_with_queue, linked_file
+    ):
+        project, line = order_line
+        await _close(db_session, project.id, "completed")
+        body = {"queue_id": printer_with_queue.queue_id, "library_file_id": linked_file.id}
+        for extra in ({"project_id": project.id}, {"project_line_id": line.id}):
+            r = await committing_client.post("/api/v1/queue/", json={**body, **extra})
+            assert r.status_code == 409, r.text
+            assert r.json()["detail"]["error"] == "order_closed"
+        assert await _queued_under(db_session, project.id) == 0
+
+    @pytest.mark.asyncio
+    async def test_the_next_block_asks_the_filing_right(
+        self, committing_client, db_session, order_line, printer_with_queue, linked_file
+    ):
+        project, _ = order_line
+        await _user(db_session, "ff_next", ["queue:create", "queue:reorder", "library:read_all"])
+        item = {
+            "queue_id": printer_with_queue.queue_id,
+            "library_file_id": linked_file.id,
+            "enqueue_position": "next",
+            "project_id": project.id,
+        }
+        r = await committing_client.post("/api/v1/queue/next-block", json={"items": [item]}, headers=_jwt("ff_next"))
+        assert r.status_code == 403, r.text
+        assert await _queued_under(db_session, project.id) == 0
+
+
+class TestTheAutoQueueDoor:
+    @pytest.mark.asyncio
+    async def test_an_auto_queue_row_under_an_order_asks_the_filing_right(
+        self, committing_client, db_session, order_line, linked_file
+    ):
+        project, _ = order_line
+        await _user(db_session, "ff_auto", ["queue:create", "library:read_all"])
+        await _user(db_session, "ff_auto_desk", ["queue:create", "library:read_all", "orders:update"])
+        body = {"library_file_id": linked_file.id, "project_id": project.id}
+        refused = await committing_client.post("/api/v1/auto-queue/", json=body, headers=_jwt("ff_auto"))
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["detail"]["error"] == FORBIDDEN
+        filed = await committing_client.post("/api/v1/auto-queue/", json=body, headers=_jwt("ff_auto_desk"))
+        assert filed.status_code in (200, 201), filed.text
+        assert await _auto_queued_under(db_session, project.id) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_closed_order_takes_no_auto_queue_row(self, committing_client, db_session, order_line, linked_file):
+        project, _ = order_line
+        await _close(db_session, project.id, "cancelled")
+        r = await committing_client.post(
+            "/api/v1/auto-queue/", json={"library_file_id": linked_file.id, "project_id": project.id}
+        )
+        assert r.status_code == 409, r.text
+
+    @pytest.mark.asyncio
+    async def test_the_source_must_be_visible_as_in_the_printer_queue(self, committing_client, db_session, linked_file):
+        await _user(db_session, "ff_auto_own", ["queue:create", "library:read_own"])
+        r = await committing_client.post(
+            "/api/v1/auto-queue/", json={"library_file_id": linked_file.id}, headers=_jwt("ff_auto_own")
+        )
+        assert r.status_code == 404, r.text
+
+
+class TestTheLibraryPrintDoor:
+    @pytest.mark.asyncio
+    async def test_a_direct_print_under_an_order_asks_the_filing_right_and_a_visible_file(
+        self, committing_client, db_session, order_line, printer_with_queue, linked_file
+    ):
+        from unittest.mock import AsyncMock, patch
+
+        project, line = order_line
+        await _user(db_session, "ff_printer", ["printers:control", "library:read_all"])
+        await _user(db_session, "ff_printer_desk", ["printers:control", "library:read_all", "orders:update"])
+        await _user(db_session, "ff_printer_blind", ["printers:control", "orders:update"])
+        url = f"/api/v1/library/files/{linked_file.id}/print?printer_id={printer_with_queue.id}"
+        with (
+            patch("backend.app.services.printer_manager.printer_manager.is_connected", return_value=True),
+            patch(
+                "backend.app.services.background_dispatch.background_dispatch.dispatch_print_library_file",
+                new=AsyncMock(return_value={"status": "dispatched", "dispatch_job_id": 1, "dispatch_position": 1}),
+            ) as dispatch,
+        ):
+            refused = await committing_client.post(url, json={"project_id": project.id}, headers=_jwt("ff_printer"))
+            assert refused.status_code == 403, refused.text
+            assert refused.json()["detail"]["error"] == FORBIDDEN
+            blind = await committing_client.post(url, json={}, headers=_jwt("ff_printer_blind"))
+            assert blind.status_code == 404, blind.text
+            assert dispatch.await_count == 0
+            filed = await committing_client.post(
+                url, json={"project_line_id": line.id}, headers=_jwt("ff_printer_desk")
+            )
+            assert filed.status_code == 200, filed.text
+            assert dispatch.await_args.kwargs["project_id"] == project.id
+            await _close(db_session, project.id, "completed")
+            closed = await committing_client.post(url, json={"project_id": project.id})
+            assert closed.status_code == 409, closed.text
+
+
+class TestTheOrderPlanDoors:
+    @pytest.mark.asyncio
+    async def test_the_plan_lets_the_filing_clerk_in_and_refuses_a_closed_order(
+        self, committing_client, db_session, order_line
+    ):
+        project, line = order_line
+        await _user(db_session, "ff_planner", ["queue:create"])
+        await _user(db_session, "ff_planner_clerk", ["queue:create", "orders:file_prints"])
+        body = {"items": [{"plate_id": 1, "count": 1, "line_id": line.id}], "target": {"kind": "auto"}}
+        url = f"/api/v1/projects/{project.id}/plan/enqueue"
+        assert (await committing_client.post(url, json=body, headers=_jwt("ff_planner"))).status_code == 403
+        await _close(db_session, project.id, "completed")
+        r = await committing_client.post(url, json=body, headers=_jwt("ff_planner_clerk"))
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"]["error"] == "order_closed"
+
+    @pytest.mark.asyncio
+    async def test_a_line_rebalance_asks_the_filing_right(self, committing_client, db_session, order_line):
+        project, line = order_line
+        await _user(db_session, "ff_balancer", ["queue:update_all"])
+        await _user(db_session, "ff_balancer_clerk", ["queue:update_all", "orders:file_prints"])
+        url = f"/api/v1/projects/{project.id}/lines/{line.id}/rebalance"
+        assert (await committing_client.post(url, headers=_jwt("ff_balancer"))).status_code == 403
+        r = await committing_client.post(url, headers=_jwt("ff_balancer_clerk"))
+        assert r.status_code == 200, r.text
+
+    @pytest.mark.asyncio
+    async def test_the_auto_queue_rebalance_asks_the_filing_right(self, committing_client, db_session):
+        await _user(db_session, "ff_router", ["queue:update_all"])
+        await _user(db_session, "ff_router_desk", ["queue:update_all", "orders:update"])
+        body = {"item_ids": [999999]}
+        refused = await committing_client.post("/api/v1/auto-queue/rebalance", json=body, headers=_jwt("ff_router"))
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["detail"]["error"] == FORBIDDEN
+        r = await committing_client.post("/api/v1/auto-queue/rebalance", json=body, headers=_jwt("ff_router_desk"))
+        assert r.status_code == 200, r.text
+
+
+class TestRefilingQueueRows:
+    @pytest.fixture
+    async def rows(self, db_session, order_line, printer_with_queue, linked_file):
+        from backend.app.models.print_queue import PrintQueueItem
+
+        project, _ = order_line
+        other = Project(name="Old order")
+        db_session.add(other)
+        await db_session.flush()
+        made = {}
+        for status in ("pending", "completed"):
+            row = PrintQueueItem(
+                queue_id=printer_with_queue.queue_id,
+                library_file_id=linked_file.id,
+                project_id=other.id,
+                status=status,
+            )
+            db_session.add(row)
+            await db_session.flush()
+            made[status] = row.id
+        await db_session.commit()
+        return {"order": project.id, "old": other.id, **made}
+
+    @pytest.mark.asyncio
+    async def test_it_asks_the_queue_right_too_and_journals_the_old_order(self, committing_client, db_session, rows):
+        await _user(db_session, "ff_refiler", ["orders:update"])
+        await _user(db_session, "ff_refiler_queue", ["orders:update", "queue:update_all"])
+        url = f"/api/v1/projects/{rows['order']}/add-queue"
+        body = {"queue_item_ids": [rows["pending"]]}
+        assert (await committing_client.post(url, json=body, headers=_jwt("ff_refiler"))).status_code == 403
+        r = await committing_client.post(url, json=body, headers=_jwt("ff_refiler_queue"))
+        assert r.status_code == 200, r.text
+        assert "queue_items_filed" in await _kinds(db_session, rows["order"])
+        assert "queue_items_unfiled" in await _kinds(db_session, rows["old"])
+
+    @pytest.mark.asyncio
+    async def test_only_pending_work_is_refiled(self, committing_client, db_session, rows):
+        r = await committing_client.post(
+            f"/api/v1/projects/{rows['order']}/add-queue",
+            json={"queue_item_ids": [rows["pending"], rows["completed"]]},
+        )
+        assert r.status_code == 409, r.text
+        assert await _queued_under(db_session, rows["order"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Inherited links (O10): a reprint and a clone inherit the source's order by default and then
+# ask ``Fф`` and an open order; ``keep_order=false`` is the explicit choice to print without it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def filed_print(db_session, order_line, linked_file):
+    """A completed print of an order's line, its 3MF on disk."""
+    from backend.app.models.archive import PrintArchive
+
+    project, line = order_line
+    archive = PrintArchive(
+        filename=linked_file.filename,
+        file_path=linked_file.file_path,
+        file_size=linked_file.file_size,
+        status="completed",
+        project_id=project.id,
+        project_line_id=line.id,
+    )
+    db_session.add(archive)
+    await db_session.commit()
+    return {"archive": archive.id, "order": project.id, "line": line.id}
+
+
+class TestTheReprintDoor:
+    @pytest.fixture
+    def dispatch(self):
+        from unittest.mock import AsyncMock, patch
+
+        with (
+            patch("backend.app.services.printer_manager.printer_manager.is_connected", return_value=True),
+            patch(
+                "backend.app.services.background_dispatch.background_dispatch.dispatch_reprint_archive",
+                new=AsyncMock(return_value={"status": "dispatched", "dispatch_job_id": 1, "dispatch_position": 1}),
+            ) as dispatched,
+        ):
+            yield dispatched
+
+    @pytest.mark.asyncio
+    async def test_an_inherited_order_asks_the_filing_right(
+        self, committing_client, db_session, filed_print, printer_with_queue, dispatch
+    ):
+        await _user(db_session, "ff_reprinter", ["archives:reprint_all"])
+        await _user(db_session, "ff_reprinter_desk", ["archives:reprint_all", "orders:update"])
+        url = f"/api/v1/archives/{filed_print['archive']}/reprint?printer_id={printer_with_queue.id}"
+        refused = await committing_client.post(url, json={}, headers=_jwt("ff_reprinter"))
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["detail"]["error"] == FORBIDDEN
+        assert dispatch.await_count == 0
+        filed = await committing_client.post(url, json={}, headers=_jwt("ff_reprinter_desk"))
+        assert filed.status_code == 200, filed.text
+        assert dispatch.await_args.kwargs["project_id"] == filed_print["order"]
+        assert dispatch.await_args.kwargs["project_line_id"] == filed_print["line"]
+
+    @pytest.mark.asyncio
+    async def test_printing_without_the_order_is_an_explicit_choice(
+        self, committing_client, db_session, filed_print, printer_with_queue, dispatch
+    ):
+        await _user(db_session, "ff_reprinter_plain", ["archives:reprint_all"])
+        url = f"/api/v1/archives/{filed_print['archive']}/reprint?printer_id={printer_with_queue.id}"
+        r = await committing_client.post(url, json={"keep_order": False}, headers=_jwt("ff_reprinter_plain"))
+        assert r.status_code == 200, r.text
+        assert dispatch.await_args.kwargs["project_id"] is None
+        assert dispatch.await_args.kwargs["project_line_id"] is None
+        assert "keep_order" not in dispatch.await_args.kwargs["options"]
+
+    @pytest.mark.asyncio
+    async def test_a_closed_order_is_not_inherited(
+        self, committing_client, db_session, filed_print, printer_with_queue, dispatch
+    ):
+        await _close(db_session, filed_print["order"], "completed")
+        url = f"/api/v1/archives/{filed_print['archive']}/reprint?printer_id={printer_with_queue.id}"
+        r = await committing_client.post(url, json={})
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"]["error"] == "order_closed"
+        assert (await committing_client.post(url, json={"keep_order": False})).status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_copies_carry_the_choice_too(self, committing_client, db_session, filed_print, printer_with_queue):
+        from unittest.mock import AsyncMock, patch
+
+        url = f"/api/v1/archives/{filed_print['archive']}/reprint?printer_id={printer_with_queue.id}"
+        with (
+            patch("backend.app.services.printer_manager.printer_manager.is_connected", return_value=True),
+            patch(
+                "backend.app.services.queue_batch.enqueue_batch_copies", new=AsyncMock(return_value=([], "b"))
+            ) as copies,
+        ):
+            r = await committing_client.post(url, json={"quantity": 2, "keep_order": False})
+        assert r.status_code == 200, r.text
+        assert copies.await_args.kwargs["project_id"] is None
+        assert copies.await_args.kwargs["project_line_id"] is None
+
+
+class TestTheCloneDoors:
+    @pytest.fixture
+    async def source(self, committing_client, db_session, order_line, printer_with_queue, linked_file):
+        """A pending queue row under the order, created by somebody else."""
+        from backend.app.models.print_queue import PrintQueueItem
+
+        project, line = order_line
+        r = await committing_client.post(
+            "/api/v1/queue/",
+            json={
+                "queue_id": printer_with_queue.queue_id,
+                "library_file_id": linked_file.id,
+                "project_line_id": line.id,
+                "quantity": 1,
+            },
+        )
+        assert r.status_code == 200, r.text
+        other = await _user(db_session, "ff_clone_owner", [])
+        row = await db_session.get(PrintQueueItem, r.json()["id"])
+        row.created_by_id = other.id
+        await db_session.commit()
+        return {"id": row.id, "order": project.id, "line": line.id}
+
+    async def _clone(self, client, item_id: int, who: str | None, **params):
+        headers = _jwt(who) if who else None
+        return await client.post(f"/api/v1/queue/{item_id}/clone", params=params, headers=headers)
+
+    @pytest.mark.asyncio
+    async def test_someone_elses_row_is_cloned_only_with_the_queues_read_all(
+        self, committing_client, db_session, source
+    ):
+        await _user(db_session, "ff_cloner_blind", ["queue:create", "orders:update"])
+        r = await self._clone(committing_client, source["id"], "ff_cloner_blind")
+        assert r.status_code == 404, r.text
+        assert await _queued_under(db_session, source["order"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_inherited_order_asks_the_filing_right_and_the_cloner_owns_the_copy(
+        self, committing_client, db_session, source
+    ):
+        from backend.app.models.print_queue import PrintQueueItem
+
+        await _user(db_session, "ff_cloner", ["queue:create", "queue:read_all"])
+        desk = await _user(db_session, "ff_cloner_desk", ["queue:create", "queue:read_all", "orders:update"])
+        refused = await self._clone(committing_client, source["id"], "ff_cloner")
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["detail"]["error"] == FORBIDDEN
+        r = await self._clone(committing_client, source["id"], "ff_cloner_desk")
+        assert r.status_code == 200, r.text
+        copy = await db_session.get(PrintQueueItem, r.json()["id"], populate_existing=True)
+        assert (copy.project_id, copy.project_line_id) == (source["order"], source["line"])
+        assert copy.created_by_id == desk.id
+
+    @pytest.mark.asyncio
+    async def test_a_clone_without_the_order_is_an_explicit_choice(self, committing_client, db_session, source):
+        from backend.app.models.print_queue import PrintQueueItem
+
+        await _user(db_session, "ff_cloner_plain", ["queue:create", "queue:read_all"])
+        r = await self._clone(committing_client, source["id"], "ff_cloner_plain", keep_order="false")
+        assert r.status_code == 200, r.text
+        copy = await db_session.get(PrintQueueItem, r.json()["id"], populate_existing=True)
+        assert (copy.project_id, copy.project_line_id) == (None, None)
+
+    @pytest.mark.asyncio
+    async def test_a_closed_order_is_not_inherited_by_a_clone(self, committing_client, db_session, source):
+        await _close(db_session, source["order"], "cancelled")
+        r = await self._clone(committing_client, source["id"], None)
+        assert r.status_code == 409, r.text
+        assert await _queued_under(db_session, source["order"]) == 1

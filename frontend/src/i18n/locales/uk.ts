@@ -6448,6 +6448,7 @@ export default {
         print_restored: 'Друк відновлено з кошика: {{name}}',
         defects_recorded: 'Записано брак: {{defective}}',
         queue_items_filed: 'Завдання черги прив’язано до замовлення: {{count}}',
+        queue_items_unfiled: 'Завдання черги перенесено до іншого замовлення: {{count}}',
         plan_enqueued: 'План у черзі — друків: {{prints}}',
         line_rebalanced: 'Перебалансовано позицію «{{product}}»',
         surplus_banked: 'Надлишок списано у вільний залишок — деталей: {{parts}}',

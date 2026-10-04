@@ -31,7 +31,8 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.auth import RequirePermission
+from backend.app.api.routes._workshop_rights import ensure_may_file_future
+from backend.app.core.auth import RequestCredentials, RequirePermission, request_credentials
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
@@ -247,6 +248,7 @@ async def add_to_auto_queue(
     data: AutoQueueItemCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.QUEUE_CREATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Add one or more items to the auto-queue.
 
@@ -261,7 +263,22 @@ async def add_to_auto_queue(
     Every gate and the fan-out itself live in
     ``services/auto_queue_add.py::add_items_to_auto_queue`` — the order plan's
     enqueue endpoint is the second caller.
+
+    Two questions are this door's own (WS-13 E13 Q-03): under an order it asks the
+    Workshop's filing right (``Fф``), and the source must be one the caller may read,
+    as the printer queue's door asks it — the order's own refusals and the visibility of
+    the plan's plate files are not asked of the planner's door.
     """
+    if data.project_id is not None or data.project_line_id is not None:
+        await ensure_may_file_future(creds)
+    from backend.app.models.library import LibraryFile
+    from backend.app.services.queue_add import ensure_source_visible
+
+    ensure_source_visible(
+        current_user,
+        archive=await db.get(PrintArchive, data.archive_id) if data.archive_id else None,
+        library_file=await db.get(LibraryFile, data.library_file_id) if data.library_file_id else None,
+    )
     items = await add_items_to_auto_queue(db, data, current_user)
 
     # Re-load first item with eager relationships for the response
@@ -583,6 +600,7 @@ async def rebalance_auto_queue_items(
     payload: AutoQueueRebalanceRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Rebalance the named pending items across printer models (spec 2026-09-10).
 
@@ -590,7 +608,11 @@ async def rebalance_auto_queue_items(
     under a line, pinned, scheduled, staged, already handed to a printer, and
     the rest of ``queue_rebalance.SKIP_REASONS``. The farm setting and the
     cooldown do not apply to a button.
+
+    It moves orders' line work and creates prints under their lines, so it asks the
+    Workshop's filing right too (``Fф``, WS-13 E13 Q-04).
     """
+    await ensure_may_file_future(creds)
     result = await queue_rebalance.rebalance(db, item_ids=payload.item_ids, force=True, current_user=current_user)
     await db.commit()
     return result.as_response()

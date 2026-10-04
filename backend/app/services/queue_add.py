@@ -29,8 +29,6 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
-from backend.app.models.project import Project
-from backend.app.models.project_line import ProjectLine
 from backend.app.models.queue_source import QueueSource
 from backend.app.models.user import User
 from backend.app.schemas.calibration_mode import mode_to_bool
@@ -46,7 +44,7 @@ from backend.app.services.filament_intake import (
 from backend.app.services.filament_policy import choices_policy, record_queue_source, serialize_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.library_helpers import sliced_by_content
-from backend.app.services.order_filing import resolve_line_id
+from backend.app.services.order_filing import resolve_line_id, resolve_link
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_ops import place_pending_block, queue_scope_lock
 from backend.app.services.queue_source_capture import (
@@ -145,16 +143,7 @@ async def add_items_to_printer_queue(
         archive = result.scalar_one_or_none()
         if not archive:
             raise HTTPException(400, "Archive not found")
-        # IDOR fix (security #2): a caller with QUEUE_CREATE could otherwise
-        # queue any user's archive without read access to it. Gate on
-        # ARCHIVES_READ_ALL or ownership; 404 (not 403) so we don't leak
-        # "this id exists but you can't queue it".
-        if (
-            current_user is not None
-            and not current_user.has_permission(Permission.ARCHIVES_READ_ALL.value)
-            and archive.created_by_id != current_user.id
-        ):
-            raise HTTPException(404, "Archive not found")
+        ensure_source_visible(current_user, archive=archive)
 
     # Validate library file exists (if provided) and get it for filament extraction.
     library_file = None
@@ -163,13 +152,7 @@ async def add_items_to_printer_queue(
         library_file = result.scalar_one_or_none()
         if not library_file:
             raise HTTPException(400, "Library file not found")
-        # Same IDOR gate for cross-user library-file queueing (security #2).
-        if (
-            current_user is not None
-            and not current_user.has_permission(Permission.LIBRARY_READ_ALL.value)
-            and library_file.created_by_id != current_user.id
-        ):
-            raise HTTPException(404, "Library file not found")
+        ensure_source_visible(current_user, library_file=library_file)
 
         # Pre-flight: refuse a FAT32-illegal filename at queue time rather than
         # letting the item sit pending only to fail at FTP dispatch (upstream #1540).
@@ -193,29 +176,16 @@ async def add_items_to_printer_queue(
                 400, "Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed."
             )
 
-    # Validate project exists before insert so a bogus ID yields 404, not an FK-constraint 500
-    if data.project_id is not None:
-        project_result = await db.execute(select(Project).where(Project.id == data.project_id))
-        if not project_result.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="Project not found")
-
-    # A file does not belong to an order, so there is nothing to fall back on:
-    # the caller names the order, or the row carries none.
-    effective_project_id = data.project_id
-
-    # An order LINE has to be a line of the order named alongside it, or this
-    # row would report progress against work nobody ordered. Naming only the
-    # line is enough — the order it belongs to is derived from it.
+    # The order and its line, through the one check every door of new work asks
+    # (WS-13 E13 O21): the order exists, the line is one of its own (naming only
+    # the line names its order), and the order is open. A file does not belong to
+    # an order, so there is nothing to fall back on.
     # ⚠️ Asked HERE, before the copy (§5 step 1 lists the order/plate choices
     # among what is checked first) — a bogus id must cost no walk over a share.
     # Which line an unnamed one resolves TO is asked later, inside the
     # publication's transaction, because that answer needs the plate the
     # captured bytes resolved.
-    if data.project_line_id is not None:
-        line = await db.get(ProjectLine, data.project_line_id)
-        if line is None or (data.project_id is not None and line.project_id != data.project_id):
-            raise HTTPException(status_code=404, detail="Order line not found in this project")
-        effective_project_id = line.project_id
+    effective_project_id, _ = await resolve_link(db, data.project_id, data.project_line_id)
 
     # ⚠️ ONE capture for the whole request, however many copies come out of it
     # (spec §5's fan-out rule, A01) — and the request's transaction is released
@@ -365,16 +335,7 @@ async def _add_items_from_queue_source(
                     f"File was sliced for {requirements.model} and cannot be dispatched to a {printer_model} printer",
                 )
 
-    if data.project_id is not None:
-        project_result = await db.execute(select(Project).where(Project.id == data.project_id))
-        if not project_result.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="Project not found")
-    effective_project_id = data.project_id
-    if data.project_line_id is not None:
-        line = await db.get(ProjectLine, data.project_line_id)
-        if line is None or (data.project_id is not None and line.project_id != data.project_id):
-            raise HTTPException(status_code=404, detail="Order line not found in this project")
-        effective_project_id = line.project_id
+    effective_project_id, _ = await resolve_link(db, data.project_id, data.project_line_id)
 
     printer_swap_on = bool(queue.printer and queue.printer.swap_mode_enabled)
     printer_id = queue.printer_id
@@ -710,18 +671,30 @@ def _new_rows_for_data(
 
 async def _effective_project_ids(db: AsyncSession, data_items: list[PrintQueueItemCreate]) -> list[int | None]:
     """Validate project references for all plates before touching their source."""
-    ids: list[int | None] = []
-    for data in data_items:
-        if data.project_id is not None and not await db.get(Project, data.project_id):
-            raise HTTPException(status_code=404, detail="Project not found")
-        effective_project_id = data.project_id
-        if data.project_line_id is not None:
-            line = await db.get(ProjectLine, data.project_line_id)
-            if line is None or (data.project_id is not None and line.project_id != data.project_id):
-                raise HTTPException(status_code=404, detail="Order line not found in this project")
-            effective_project_id = line.project_id
-        ids.append(effective_project_id)
-    return ids
+    return [(await resolve_link(db, data.project_id, data.project_line_id))[0] for data in data_items]
+
+
+def ensure_source_visible(
+    current_user: User | None, *, archive: PrintArchive | None = None, library_file: LibraryFile | None = None
+) -> None:
+    """The source a caller queues must be one they may read (security #2) — 404, not 403,
+    so an id that exists but is out of reach reads like one that does not. ``archives:read_all``
+    or the caller's own archive; ``library:read_all`` or the caller's own file. The printer
+    queue's door asked this all along; the auto-queue's asks it too (WS-13 E13 Q-03)."""
+    if current_user is None:
+        return
+    if (
+        archive is not None
+        and not current_user.has_permission(Permission.ARCHIVES_READ_ALL.value)
+        and archive.created_by_id != current_user.id
+    ):
+        raise HTTPException(404, "Archive not found")
+    if (
+        library_file is not None
+        and not current_user.has_permission(Permission.LIBRARY_READ_ALL.value)
+        and library_file.created_by_id != current_user.id
+    ):
+        raise HTTPException(404, "Library file not found")
 
 
 async def add_next_block_to_printer_queue(
