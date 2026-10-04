@@ -61,6 +61,18 @@ describe('BatchAssignOrderModal', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
+  // WS-13 E13 T9 (the acceptance frame): «Cancel» and «Assign» are one group, so when the
+  // footer is too narrow for all three the PAIR moves under «Remove from order» — the primary
+  // never ends up on a row of its own, away from its «Cancel».
+  it('keeps «Cancel» and «Assign» together, apart from «Remove from order»', async () => {
+    render(<BatchAssignOrderModal archiveIds={[3]} bound={{ orderId: 5, lineId: null }} onClose={() => {}} />);
+    const remove = await screen.findByRole('button', { name: 'Remove from order' });
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    const assign = screen.getByRole('button', { name: 'Assign' });
+    expect(cancel.parentElement).toBe(assign.parentElement);
+    expect(remove.parentElement).not.toBe(cancel.parentElement);
+  });
+
   it('offers no removal for a selection, nor for a print in no order', async () => {
     const { unmount } = render(<BatchAssignOrderModal archiveIds={[3, 4]} onClose={() => {}} />);
     await screen.findByRole('option', { name: 'OR-0005 · Flasks · no customer' });

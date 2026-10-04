@@ -85,7 +85,7 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
       onClose={onClose}
       title={single ? t('archives.menu.addToOrder') : t('archives.bulk.assignOrder.title')}
       icon={<FolderKanban className="w-5 h-5 text-bambu-green" />}
-      size="md"
+      size="lg"
       closeDisabled={pending}
     >
       <div className="p-4 space-y-4">
@@ -131,8 +131,9 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
         )}
       </div>
 
-      {/* The way out of the order on the left, the two answers on the right — three equal
-          buttons do not fit the dialog's width and pushed «Assign» onto a row of its own. */}
+      {/* The way out of the order on the left, the two answers on the right. The answers are
+          ONE group: where the three do not fit (a phone, a long translation) the pair moves under
+          «Remove from order» together — the primary never lands on a row of its own (E13 T9). */}
       <div className="flex flex-wrap items-center justify-end gap-3 p-4 border-t border-bambu-dark-tertiary">
         {canRemove && (
           <Button
@@ -149,20 +150,22 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
             {t('archives.menu.removeFromOrder')}
           </Button>
         )}
-        <Button variant="secondary" onClick={onClose} disabled={pending}>
-          {t('common.cancel')}
-        </Button>
-        <Button
-          onClick={() => {
-            if (orderId == null || sent.current) return;
-            sent.current = true;
-            assign.mutate(orderId);
-          }}
-          disabled={orderId == null || pending}
-        >
-          {assign.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
-          {t('archives.bulk.assignOrder.assign')}
-        </Button>
+        <div className="ml-auto flex gap-3">
+          <Button variant="secondary" onClick={onClose} disabled={pending}>
+            {t('common.cancel')}
+          </Button>
+          <Button
+            onClick={() => {
+              if (orderId == null || sent.current) return;
+              sent.current = true;
+              assign.mutate(orderId);
+            }}
+            disabled={orderId == null || pending}
+          >
+            {assign.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+            {t('archives.bulk.assignOrder.assign')}
+          </Button>
+        </div>
       </div>
     </Modal>
   );

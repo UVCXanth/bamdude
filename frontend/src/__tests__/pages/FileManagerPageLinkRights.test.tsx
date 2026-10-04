@@ -73,7 +73,8 @@ async function openMoveFor(name: string) {
   const card = screen.getByText(name).closest('.group') as HTMLElement;
   fireEvent.click(within(card).getByLabelText('Select file'));
   fireEvent.click(await screen.findByRole('button', { name: 'Move' }));
-  return screen.findByRole('dialog', { name: 'Move 1 File(s)' });
+  // The title counts in the language's plural forms (WS-13 E13 T9: «1 файлів» on the frame).
+  return screen.findByRole('dialog', { name: 'Move 1 file' });
 }
 
 // The files sit at the root, which the dialog already marks «current» — the empty set
