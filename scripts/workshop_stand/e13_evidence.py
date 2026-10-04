@@ -76,6 +76,9 @@ DETAIL_SCENARIOS = (
     "archive-edit-order@1440",
     "archive-edit-lines-states",
     "order-prints-unlink-rights",
+    "clerk-archives",
+    "clerk-order-prints",
+    "reprint-inherits-order",
     "link-products-rights",
     "file-move-links",
     # C — «Add to order…» from the file manager
@@ -100,6 +103,11 @@ DETAIL_SCENARIOS = (
     "rights-matrix",
     "customer-create-gate",
     "errors-sample",
+    # O19 — roles by their own rights
+    "storekeeper",
+    "orders-reader-customer-filter",
+    "dispatch-note-readers",
+    "catalog-editor",
     # H — the outer doors
     "print-modal-library",
     "print-modal-printer",
@@ -124,6 +132,8 @@ DETAIL_SCENARIOS = (
     "nav-badges-server",
     "order-stats-row",
     "order-activity",
+    # K03 — the built UI, from the stand's own server
+    "built-smoke",
 )
 
 

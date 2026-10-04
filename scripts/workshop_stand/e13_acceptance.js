@@ -187,7 +187,7 @@ async (page, selftest = null) => {
       if (step && step.delay) await new Promise((r) => setTimeout(r, step.delay));
       if (step && step.fail) return route.fulfill({ status: step.fail, json: { detail: 'e13 runner' } });
       // A body of the runner's own — the stand is never asked.
-      if (step && step.json) return route.fulfill({ status: 200, json: step.json });
+      if (step && step.json) return route.fulfill({ status: step.status ?? 200, json: step.json });
       // A picture of the runner's own (the cover fixture, K11): a real PNG file.
       if (step && step.file) return route.fulfill({ status: 200, path: step.file, contentType: 'image/png' });
       const failing = fail.find(([re]) => re.test(url));
@@ -290,6 +290,18 @@ async (page, selftest = null) => {
   // A user of the runner's own for the ownership cases — no stand row has this id.
   const ME_ID = 9001;
   const asUser = (permissions) => ({ id: ME_ID, is_admin: false, role: 'user', permissions });
+  // O19: roles named by their own rights, never «the administrator minus one» — each carries the
+  // non-Workshop reads its pages need to be reached at all, and no Workshop right it does not use.
+  const ROLE = {
+    // Files and unfiles any print (V03): no «change orders», no «update all» archives.
+    clerk: ['archives:read_all', 'printers:read', 'orders:read', 'orders:file_prints'],
+    // Moves goods, does not correct the books, never reads the catalog (R12).
+    storekeeper: ['stock:read', 'stock:move'],
+    ordersReader: ['orders:read'],
+    customersReader: ['customers:read'],
+    // Edits the catalog; no contacts, orders or stock (O19).
+    catalogEditor: ['products:read', 'products:update', 'library:read_all'],
+  };
   // What the boundary answers in the system language (api_errors_uk.json) — the runner answers
   // writes itself, so it says a refusal the way the server would.
   const UK = {
@@ -462,7 +474,7 @@ async (page, selftest = null) => {
       recipe: { url: '/archives → a card’s menu', fixture: ['/auth/me: update_own only, without orders:file_prints', '/auth/me: without orders:update and orders:file_prints', 'POST add-archives → 403'] },
       measured: { ...out, writes: writes.length, errors },
       pass: out.own.disabled && out.own.title === 'У вас немає дозволу оновлювати архіви' &&
-        out.orders.disabled && out.orders.title === 'Щоб додати друк до замовлення, потрібне право змінювати замовлення' &&
+        out.orders.disabled && out.orders.title === 'Щоб додати друк до замовлення, потрібне право змінювати замовлення або прив’язувати друки' &&
         out.refused.text === UK.ownArchives && out.refused.open && writes.length === 1 && errors.length === 0,
       screenshots: files,
     };
@@ -662,6 +674,209 @@ async (page, selftest = null) => {
       pass: !!menus[0] && menus[0].includes('Прибрати із замовлення') && menus[0].includes('Призначити до позиції…') &&
         [menus[1], menus[2]].every((m) => m === null || (!m.includes('Прибрати із замовлення') && !m.includes('Призначити до позиції…'))) &&
         errors.length === 0,
+      screenshots: files,
+    };
+  });
+
+  // V03 / O19 — the filing clerk: «file prints» alone, no «change orders», no «update all», for
+  // another's and an ownerless print, on every V01 door — each press checked by its method and
+  // route, and no general PATCH of the archive.
+  const NO_PATCH = (writes) => writes.every((w) => !(w.method === 'PATCH' && /\/api\/v1\/archives\/\d+$/.test(w.path)));
+
+  await scenario('clerk-archives', ['E13-V03', 'E13-B06', 'E13-O19'], async () => {
+    const writes = [];
+    let two = [];
+    const { ctx, p, errors } = await open(1440, {
+      storage: GRID,
+      me: asUser(ROLE.clerk),
+      // The first two cards: another's print under no order, and an ownerless print of OR-0031.
+      rewrite: [[/\/api\/v1\/archives\/?\?/, (json) => {
+        const data = list(json.data).map((a, i) => {
+          if (i === 0) return { ...a, created_by_id: 7, project_id: null, project_name: null, project_line_id: null };
+          if (i === 1) return { ...a, created_by_id: null, project_id: O241, project_name: order241.name, project_line_id: null };
+          return a;
+        });
+        two = data.slice(0, 2).map((a) => a.id);
+        return { ...json, data };
+      }]],
+      writes: [recorder(writes, /\/api\/v1\/(projects\/\d+\/(add|remove)-archives|archives\/\d+)$/)],
+    });
+    await goto(p, '/archives');
+    const entry = async (id) => {
+      const menu = await openArchiveMenu(p, id);
+      const item = menu.getByRole('button', { name: 'Додати до замовлення', exact: true });
+      return { item, state: { disabled: await item.isDisabled(), title: await item.getAttribute('title') } };
+    };
+    // (a) Another's print: filed under OR-0034.
+    const a = await entry(two[0]);
+    await a.item.click();
+    let d = dialogOf(p, 'Додати до замовлення');
+    await d.waitFor();
+    await p.waitForFunction((target) => {
+      const s = document.querySelector('#batch-assign-order');
+      return s && !s.disabled && [...s.options].some((o) => o.value === target);
+    }, String(O244), { timeout: 8000 });
+    await d.getByLabel('Замовлення', { exact: true }).selectOption(String(O244));
+    const files = [await shoot(p, 'clerk-archives-assign')];
+    await d.getByRole('button', { name: 'Прив\'язати', exact: true }).click();
+    await d.waitFor({ state: 'detached', timeout: 6000 });
+    // (b) The ownerless print of OR-0031: taken out of it.
+    const b = await entry(two[1]);
+    await b.item.click();
+    d = dialogOf(p, 'Додати до замовлення');
+    await d.waitFor();
+    const remove = d.getByRole('button', { name: 'Прибрати із замовлення', exact: true });
+    await remove.waitFor({ timeout: 6000 });
+    await remove.click();
+    await d.waitFor({ state: 'detached', timeout: 6000 });
+    await ctx.close();
+    const sent = writes.map((w) => ({ method: w.method, path: w.path, body: w.body }));
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: {
+        url: '/archives → the first card’s menu, then the second’s',
+        fixture: ['/auth/me: ' + ROLE.clerk.join(', ') + ' (user 9001)', 'the first card another user’s print under no order, the second an ownerless print of OR-0031', 'every write answered here'],
+        actions: ['«Додати до замовлення» → OR-0034 → «Прив’язати»', '«Додати до замовлення» → «Прибрати із замовлення»'],
+      },
+      measured: { archives: two, entries: [a.state, b.state], sent, errors },
+      pass: [a.state, b.state].every((s) => !s.disabled && s.title === 'Додати до замовлення') && sent.length === 2 &&
+        sent[0].method === 'POST' && sent[0].path === `/api/v1/projects/${O244}/add-archives` && same(sent[0].body, { archive_ids: [two[0]], project_line_id: null }) &&
+        sent[1].method === 'POST' && sent[1].path === `/api/v1/projects/${O241}/remove-archives` && same(sent[1].body, { archive_ids: [two[1]] }) &&
+        NO_PATCH(writes) && errors.length === 0,
+      screenshots: files,
+    };
+  });
+
+  await scenario('clerk-order-prints', ['E13-V03', 'E13-B06', 'E13-O19'], async () => {
+    const writes = [];
+    const two = [];
+    const lineOf = {};
+    const { ctx, p, errors } = await open(1440, {
+      me: asUser(ROLE.clerk),
+      // OR-0031's prints by id: an even one is another user's, an odd one nobody's — the two
+      // pressed are the first of each on screen (the tab pages each line's prints).
+      rewrite: [[new RegExp(`/api/v1/projects/${O241}/archives`), (json) => list(json).map((a) => {
+        lineOf[a.id] = a.project_line_id ?? null;
+        return { ...a, created_by_id: a.id % 2 === 0 ? 7 : null };
+      })]],
+      writes: [recorder(writes, /\/api\/v1\/(projects\/\d+\/(add|remove)-archives|archives\/\d+)$/)],
+    });
+    const trail = [];
+    try {
+    await goto(p, `/projects/${O241}?section=prints`);
+    await p.locator('[data-print-card]').first().waitFor({ timeout: 8000 });
+    const shown = (await p.locator('[data-testid^="print-menu-"]').evaluateAll((ts) => ts.map((t) => t.dataset.testid))).map((t) => Number(t.replace('print-menu-', '')));
+    two.push(shown.find((id) => id % 2 === 0), shown.find((id) => id % 2 === 1));
+    trail.push(`prints ${two.join(',')}; triggers ${shown.length}`);
+    const menuOf = async (id) => {
+      await p.getByTestId(`print-menu-${id}`).click();
+      await p.getByRole('menuitem').first().waitFor({ timeout: 6000 });
+      return p.getByRole('menuitem').evaluateAll((ms) => ms.map((m) => m.textContent.trim()));
+    };
+    // (a) Another's print moved to a line it is not under — or out of its line when the order
+    // has no other (the dialog sends only a change).
+    const other = linesOf(order241).find((l) => l.id !== lineOf[two[0]]);
+    const line = other ?? { id: null };
+    const menuA = await menuOf(two[0]);
+    trail.push(`menu A ${menuA.join('|')}`);
+    await p.getByRole('menuitem', { name: 'Призначити до позиції…' }).click();
+    const d = dialogOf(p, 'Призначити до позиції');
+    await d.waitFor();
+    trail.push('assign dialog');
+    await d.getByLabel('Позиція', { exact: true }).selectOption(line.id == null ? { label: 'Без позиції (інші друки)' } : String(line.id));
+    const files = [await shoot(p, 'clerk-order-prints-assign')];
+    await d.getByRole('button', { name: 'Призначити', exact: true }).click();
+    await d.waitFor({ state: 'detached', timeout: 6000 });
+    // (b) The ownerless print out of the order.
+    trail.push('assigned');
+    const menuB = await menuOf(two[1]);
+    trail.push(`menu B ${menuB.join('|')}`);
+    await p.getByRole('menuitem', { name: 'Прибрати із замовлення' }).click();
+    const confirm = p.getByRole('dialog').filter({ hasText: 'із замовлення?' }).last();
+    await confirm.waitFor();
+    await confirm.getByRole('button', { name: 'Прибрати', exact: true }).click();
+    await confirm.waitFor({ state: 'detached', timeout: 6000 });
+    await ctx.close();
+    const sent = writes.map((w) => ({ method: w.method, path: w.path, body: w.body }));
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: {
+        url: `/projects/{order:241}?section=prints`,
+        fixture: ['/auth/me: ' + ROLE.clerk.join(', ') + ' (user 9001)', 'OR-0031’s prints: an even id another user’s, an odd one nobody’s', 'every write answered here'],
+        actions: ['the first another’s print on screen: «Призначити до позиції…» → a line it is not under → «Призначити»', 'the first nobody’s: «Прибрати із замовлення» → «Прибрати»'],
+      },
+      measured: { prints: two, from: lineOf[two[0]] ?? null, line: line.id, menus: [menuA, menuB], sent, trail, errors },
+      pass: [menuA, menuB].every((m) => m.includes('Призначити до позиції…') && m.includes('Прибрати із замовлення')) && sent.length === 2 &&
+        sent[0].method === 'POST' && sent[0].path === `/api/v1/projects/${O241}/add-archives` && same(sent[0].body, { archive_ids: [two[0]], project_line_id: line.id }) &&
+        sent[1].method === 'POST' && sent[1].path === `/api/v1/projects/${O241}/remove-archives` && same(sent[1].body, { archive_ids: [two[1]] }) &&
+        NO_PATCH(writes) && errors.length === 0,
+      screenshots: files,
+    };
+    } catch (e) {
+      const file = await shoot(p, 'clerk-order-prints-failed').catch(() => null);
+      return { pass: false, error: safeError(e, 'clerk-order-prints'), measured: { trail }, screenshots: file ? [file] : [] };
+    }
+  });
+
+  await scenario('reprint-inherits-order', ['E13-O10', 'E13-V03', 'E13-O19'], async () => {
+    // Q3 / ARC-08: a reprint of an order's print keeps the order only for whoever may file
+    // future work — the filing clerk, by «file prints» alone; a printer operator without it is
+    // told so before sending, «without order» ticked and fixed. The body is pinned by
+    // PrintModalOrderFiling / repeatAndCloneWithoutOrder, the server by the filing doors' tests.
+    const out = {};
+    const files = [];
+    for (const [who, permissions] of [['clerk', [...ROLE.clerk, 'archives:reprint_all', 'printers:control']], ['operator', ['archives:read_all', 'printers:read', 'archives:reprint_all', 'printers:control']]]) {
+      let first = null;
+      const { ctx, p } = await open(1440, {
+        storage: GRID,
+        me: asUser(permissions),
+        rewrite: [
+          [/\/api\/v1\/archives\/?\?/, (json) => {
+            // The stand keeps no 3MF: the first card is told it has a sliced one — the dialog is
+            // opened and read, nothing is sent.
+            const data = list(json.data).map((a, i) => (i === 0 ? {
+              ...a, created_by_id: null, project_id: O241, project_name: order241.name,
+              file_path: a.file_path || 'archive/e13/fixture.gcode.3mf', filename: /\.gcode\.3mf$/i.test(a.filename ?? '') ? a.filename : 'fixture.gcode.3mf',
+            } : a));
+            first = data[0]?.id ?? null;
+            return { ...json, data };
+          }],
+          [/\/api\/v1\/archives\/\d+\/?(\?.*)?$/, (json) => (json && json.id === first ? {
+            ...json, created_by_id: null, project_id: O241, project_name: order241.name, project_status: 'active',
+            file_path: json.file_path || 'archive/e13/fixture.gcode.3mf', filename: /\.gcode\.3mf$/i.test(json.filename ?? '') ? json.filename : 'fixture.gcode.3mf',
+          } : json)],
+        ],
+      });
+      await goto(p, '/archives');
+      const button = archiveCard(p, first).getByRole('button', { name: 'Передрукувати' });
+      out[`${who}Trail`] = { first, buttons: await button.count(), enabled: (await button.count()) ? await button.first().isEnabled() : null, title: (await button.count()) ? await button.first().getAttribute('title') : null };
+      if (!out[`${who}Trail`].enabled) {
+        files.push(await shoot(p, `reprint-inherits-order-${who}-failed`));
+        await ctx.close();
+        continue;
+      }
+      await button.click();
+      const block = p.getByTestId('inherited-order');
+      await block.waitFor({ timeout: 10000 });
+      const box = block.getByRole('checkbox', { name: 'Друкувати без замовлення' });
+      out[who] = {
+        text: await textOf(block),
+        withoutOrder: await box.isChecked(),
+        fixed: await box.isDisabled(),
+      };
+      files.push(await shoot(p, `reprint-inherits-order-${who}`));
+      await ctx.close();
+    }
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: {
+        url: '/archives → the first card’s «Передрукувати»',
+        fixture: ['the first card an ownerless print of OR-0031 (active) with a sliced 3MF (the stand keeps none; the dialog is read, nothing sent)', '/auth/me clerk: ' + ROLE.clerk.join(', ') + ', archives:reprint_all, printers:control', '/auth/me operator: archives:read_all, printers:read, archives:reprint_all, printers:control'],
+      },
+      measured: out,
+      pass: !!out.clerk && !!out.operator && out.clerk.text.startsWith(`Замовлення: ${order241.name}`) && out.clerk.withoutOrder === false && out.clerk.fixed === false &&
+        out.operator.withoutOrder === true && out.operator.fixed === true &&
+        out.operator.text.includes('потрібне право змінювати замовлення або прив’язувати друки'),
       screenshots: files,
     };
   });
@@ -1498,6 +1713,214 @@ async (page, selftest = null) => {
       measured: { ...out, failing },
       pass: failing.length === 0 && out.order.kept.endsWith(' E13') && out.product.kept.endsWith(' E13') && out.customer.kept.endsWith(' E13') && out.stock.kept === '2',
       screenshots: files,
+    };
+  });
+
+  // ---------------------------------------------------------------- O19: roles by their own rights
+  // Each role is named by its rights, never «the administrator minus one»; reads go to the stand
+  // with its token, so what is measured is what the UI OFFERS and ASKS — a role's page that asks
+  // another domain is recorded as `foreign` (the server would answer it 403).
+  const foreignOf = (requests, domains) => requests.filter((r) => {
+    const m = /^GET \/api\/v1\/(projects|products|customers|stock)(\/[^?]*)?(\?.*)?$/.exec(r);
+    if (!m) return false;
+    if (m[1] === 'customers' && /^\/options\/?$/.test(m[2] ?? '')) return !domains.includes('orders') && !domains.includes('customers');
+    if (m[1] === 'stock' && /^\/catalog\/?$/.test(m[2] ?? '')) return !domains.includes('stock');
+    if (m[1] === 'projects' && /^\/nav-badges\/?$/.test(m[2] ?? '')) return !['orders', 'products', 'stock'].some((d) => domains.includes(d));
+    return !domains.includes(m[1] === 'projects' ? 'orders' : m[1]);
+  });
+
+  await scenario('storekeeper', ['E13-O19', 'E13-O06', 'E13-R12'], async () => {
+    // Moves goods, does not correct them, never reads the catalog: «Надходження» from the
+    // header, «Зібрати» from the free parts' row; no stocktake, location, minimum or «Коригувати».
+    const writes = [];
+    const { ctx, p, errors, requests } = await open(1440, {
+      me: asUser(ROLE.storekeeper),
+      writes: [recorder(writes, /\/api\/v1\/stock\/moves/, () => item1)],
+    });
+    await goto(p, '/stock');
+    await p.getByRole('button', { name: 'Надходження' }).click();
+    const d = dialogOf(p, 'Надходження');
+    await d.waitFor();
+    await d.getByRole('textbox', { name: 'Виріб' }).fill(product1.name.slice(0, 6));
+    await d.getByRole('button', { name: `${product1.code} · ${product1.name}`, exact: true }).click();
+    await d.getByTestId('stock-lookup').filter({ hasText: 'Позиція' }).waitFor({ timeout: 8000 });
+    await d.getByLabel('Кількість, шт.').fill('1');
+    await d.getByTestId('stock-move-submit').click();
+    await d.waitFor({ state: 'detached', timeout: 6000 });
+    const rowMenu = p.locator('[data-testid^="finished-"][data-testid$="-menu"]').first();
+    await rowMenu.click();
+    const menu = await p.locator('[data-testid^="finished-"][data-testid$="-menu-panel"]').getByRole('menuitem').evaluateAll((ms) => ms.map((m) => m.textContent.trim()));
+    await p.keyboard.press('Escape');
+    await goto(p, '/stock?tab=parts');
+    const firstRow = p.locator('[data-testid^="stock-row-"]').first();
+    await firstRow.waitFor({ timeout: 8000 });
+    const adjust = await p.getByRole('button', { name: 'Коригувати', exact: true }).count();
+    await firstRow.getByRole('button', { name: 'Зібрати' }).click();
+    const asm = dialogOf(p, 'Зібрати готові вироби з деталей');
+    await asm.waitFor({ timeout: 6000 });
+    const files = [await shoot(p, 'storekeeper-assemble')];
+    await p.keyboard.press('Escape');
+    await goto(p, `/stock/${POS1}`);
+    await p.getByRole('heading', { level: 1 }).waitFor({ timeout: 8000 });
+    const item = {
+      productLinks: await p.locator('a[href^="/products/"]').count(),
+      params: await p.getByTestId('item-actions').getByRole('button', { name: 'Комірка й мінімум' }).count(),
+      menu: await p.getByTestId('item-menu').count(),
+    };
+    files.push(await shoot(p, 'storekeeper-position'));
+    await ctx.close();
+    const foreign = foreignOf(requests, ['stock']);
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: {
+        url: '/stock → «Надходження»; /stock?tab=parts → «Зібрати»; /stock/{position:1}',
+        fixture: ['/auth/me: ' + ROLE.storekeeper.join(', ') + ' (user 9001)', 'POST /stock/moves answered here'],
+      },
+      measured: { sent: writes.map((w) => `${w.method} ${w.path}`), body: writes[0]?.body ?? null, menu, adjust, item, foreign: foreign.slice(0, 8), errors },
+      pass: writes.length === 1 && writes[0].method === 'POST' && writes[0].body?.kind === 'receipt' && writes[0].body?.product_id === PR1 &&
+        menu.includes('Надходження') && !menu.includes('Інвентаризація') && !menu.includes('Комірка й мінімум') &&
+        adjust === 0 && item.productLinks === 0 && item.params === 0 && item.menu === 0 && foreign.length === 0 && errors.length === 0,
+      screenshots: files,
+    };
+  });
+
+  await scenario('orders-reader-customer-filter', ['E13-O19', 'E13-R12'], async () => {
+    // `orders:read` alone filters its orders by customer from the option list, never the directory.
+    const target = (list(await read('/customers/options')))[0] ?? { id: CU1, name: '' };
+    const { ctx, p, errors, requests } = await open(1440, { me: asUser(ROLE.ordersReader) });
+    await goto(p, '/projects?tab=all');
+    const filter = p.locator('select').filter({ has: p.locator('option', { hasText: 'Усі замовники' }) }).first();
+    await filter.waitFor({ timeout: 8000 });
+    const options = await optionsOf(filter);
+    await filter.selectOption(String(target.id));
+    await p.waitForURL(new RegExp(`customer=${target.id}`), { timeout: 6000 });
+    await p.waitForTimeout(800);
+    const asked = requests.filter((r) => /^GET \/api\/v1\/projects\/?\?/.test(r) && new RegExp(`[?&]customer_id=${target.id}(&|$)`).test(r)).length;
+    const file = await shoot(p, 'orders-reader-customer-filter');
+    await ctx.close();
+    const foreign = foreignOf(requests, ['orders']);
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: { url: '/projects?tab=all → the customer filter → the first option', fixture: ['/auth/me: ' + ROLE.ordersReader.join(', ') + ' (user 9001)'] },
+      measured: { options: options.slice(0, 6), target: target.id, asked, optionsRead: requests.filter((r) => /\/customers\/options/.test(r)).length, foreign: foreign.slice(0, 8), errors },
+      pass: options[0] === 'Усі замовники' && options.includes(target.name) && asked >= 1 &&
+        requests.some((r) => /^GET \/api\/v1\/customers\/options/.test(r)) && foreign.length === 0 && errors.length === 0,
+      screenshots: [file],
+    };
+  });
+
+  await scenario('dispatch-note-readers', ['E13-O19', 'E13-O25'], async () => {
+    // An order's reader sees its notes as minimal rows that say why they do not open, and a
+    // note opened by its address explains itself and goes back, never into the stock; a
+    // customer's reader opens the note — and the note offers no way into the stock or the order.
+    const note = await read(`/stock-issues/${N1}`);
+    const SENSITIVE = ['recipient_name', 'recipient_phone', 'delivery_method', 'delivery_details', 'note'];
+    const RESTRICTED = 'Щоб відкрити накладну, потрібне право читати замовників або переміщувати склад — у ній контакти одержувача.';
+    const out = {};
+    const files = [];
+    if (note.project_id != null) {
+      const { ctx, p, errors } = await open(1440, {
+        me: asUser(ROLE.ordersReader),
+        // What the server answers an order's reader (O25): the rows without the recipient.
+        rewrite: [[/\/api\/v1\/stock-issues\/?\?/, (json) => ({ ...json, items: list(json.items).map((r) => ({ ...r, ...Object.fromEntries(SENSITIVE.map((k) => [k, null])), restricted: true })) })]],
+        gets: [[new RegExp(`/api/v1/stock-issues/${N1}/?(\\?.*)?$`), () => ({ status: 403, json: { detail: { error: 'dispatch_note_restricted', message: RESTRICTED } } })]],
+      });
+      await goto(p, `/projects/${note.project_id}?section=issues`);
+      const row = p.getByTestId(`note-${N1}`);
+      await row.waitFor({ timeout: 8000 });
+      const code = row.getByText(note.code, { exact: true }).first();
+      out.order = {
+        codeIsLink: await code.evaluate((el) => el.tagName === 'A'),
+        title: await code.getAttribute('title'),
+        open: await row.getByRole('link', { name: /Відкрити/ }).count(),
+      };
+      files.push(await shoot(p, 'dispatch-note-orders-reader-row'));
+      await p.goto(`${job.ui}/stock/dispatch-notes/${N1}`, { waitUntil: 'networkidle' });
+      await p.getByText(RESTRICTED).first().waitFor({ timeout: 8000 });
+      out.direct = {
+        back: await p.getByRole('button', { name: 'Назад', exact: true }).count(),
+        intoStock: await p.locator('a[href^="/stock"]').count(),
+      };
+      files.push(await shoot(p, 'dispatch-note-orders-reader-direct'));
+      out.errors = errors;
+      await ctx.close();
+    }
+    if (note.customer_id != null) {
+      const { ctx, p, errors, requests } = await open(1440, { me: asUser(ROLE.customersReader) });
+      await goto(p, `/customers/${note.customer_id}`);
+      const link = p.getByTestId(`note-${N1}`).getByRole('link', { name: note.code, exact: true });
+      await link.waitFor({ timeout: 8000 });
+      await link.click();
+      await p.getByTestId('dispatch-note-sheet').waitFor({ timeout: 8000 });
+      out.customer = {
+        intoStock: await p.locator('a[href^="/stock"]').count(),
+        intoOrder: await p.locator('a[href^="/projects/"]').count(),
+        customerLink: await p.locator(`a[href="/customers/${note.customer_id}"]`).count(),
+        foreign: foreignOf(requests, ['customers']).slice(0, 8),
+        errors,
+      };
+      files.push(await shoot(p, 'dispatch-note-customers-reader'));
+      await ctx.close();
+    }
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: {
+        url: `/projects/{order of note 90000}?section=issues → /stock/dispatch-notes/{note:90000}; /customers/{its customer} → the note`,
+        fixture: [
+          '/auth/me orders reader: ' + ROLE.ordersReader.join(', '),
+          '/auth/me customers reader: ' + ROLE.customersReader.join(', '),
+          'GET /stock-issues/ for the orders reader: the server’s restricted rows',
+          'GET /stock-issues/{note} for the orders reader: 403 dispatch_note_restricted',
+        ],
+      },
+      measured: { note: note.code, ...out },
+      pass: (note.project_id == null || (out.order.codeIsLink === false && out.order.title === RESTRICTED && out.order.open === 0 &&
+        out.direct.back === 1 && out.direct.intoStock === 0 && out.errors.length === 0)) &&
+        (note.customer_id == null || (out.customer.intoStock === 0 && out.customer.intoOrder === 0 && out.customer.customerLink >= 1 &&
+        out.customer.foreign.length === 0 && out.customer.errors.length === 0)) &&
+        (note.project_id != null || note.customer_id != null),
+      screenshots: files,
+    };
+  });
+
+  await scenario('catalog-editor', ['E13-O19'], async () => {
+    // Edits the catalog and reads nothing else of the Workshop — no contacts, no orders, no
+    // stock: its pages ask no other domain and offer no way into one.
+    // What the server answers this role (products.py `_masked`): the stock's and the orders'
+    // figures null — the stand's token is the administrator's, so the runner masks them.
+    const MASKED = ['kits_available', 'finished_available', 'finished_positions', 'finished_below_min', 'lines_count', 'active_orders_count', 'orders_count', 'units_printed_total'];
+    const mask = (row) => (row && typeof row === 'object' ? { ...row, ...Object.fromEntries(MASKED.filter((k) => k in row).map((k) => [k, null])) } : row);
+    const { ctx, p, errors, requests } = await open(1440, {
+      me: asUser(ROLE.catalogEditor),
+      rewrite: [
+        [/\/api\/v1\/products\/?\?/, (json) => ({ ...json, items: list(json.items).map(mask) })],
+        [new RegExp(`/api/v1/products/${PR1}/?(\\?.*)?$`), mask],
+      ],
+    });
+    const seen = {};
+    for (const path of ['/products', `/products/${PR1}?tab=stock`]) {
+      await goto(p, path);
+      await p.getByRole('heading', { level: 1 }).first().waitFor({ timeout: 8000 });
+      seen[path] = {
+        intoOthers: await p.locator('main a[href^="/projects"], main a[href^="/customers"], main a[href^="/stock"]').count(),
+        tabs: await p.getByRole('tab').evaluateAll((ts) => ts.map((t) => t.textContent.replace(/\s+/g, ' ').trim())),
+      };
+    }
+    const file = await shoot(p, 'catalog-editor-product');
+    await ctx.close();
+    const foreign = foreignOf(requests, ['products']);
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: {
+        url: '/products, /products/{product:1}?tab=stock',
+        fixture: ['/auth/me: ' + ROLE.catalogEditor.join(', ') + ' (user 9001)', 'GET /products/ and /products/{id}: the stock’s and the orders’ figures null, as the server masks them for this role'],
+      },
+      measured: { seen, foreign: foreign.slice(0, 8), errors },
+      pass: Object.values(seen).every((s) => s.intoOthers === 0) && (() => {
+        const tabs = seen[`/products/${PR1}?tab=stock`].tabs;
+        return tabs.length > 0 && !tabs.some((t) => /^(Залишки|Замовлення)/.test(t)); // «Склад виробу» is the composition
+      })() && foreign.length === 0 && errors.length === 0,
+      screenshots: [file],
     };
   });
 
@@ -2402,6 +2825,50 @@ async (page, selftest = null) => {
       pass: timeline.length > 0 && first.length === Math.min(10, timeline.length) && hasMore === timeline.length > 10
         && all.length === timeline.length && newestFirst && all.every((r) => r.text && r.meta)
         && actors.every((i) => all[i].meta.includes(timeline[i].metadata.user_name)) && errors.length === 0,
+      screenshots: [file],
+    };
+  });
+
+  // ---------------------------------------------------------------- K03: the built UI
+  await scenario('built-smoke', ['E13-K03'], async () => {
+    // The bundle `npm run build` wrote to static/, as the stand's own server hands it out — not
+    // Vite: the Workshop's main routes open where they were asked, render their heading, throw
+    // nothing and ask nothing the server refuses. The bundle's name carries its content hash.
+    const ROUTES = [
+      '/projects', `/projects/${O244}`, `/projects/${O241}?section=prints`, '/products', `/products/${PR1}`,
+      '/customers', `/customers/${CU1}`, '/stock', '/stock?tab=parts', '/stock?tab=notes', `/stock/${POS1}`,
+      `/stock/dispatch-notes/${N1}`, '/archives',
+    ];
+    const { ctx, p, errors } = await open(1440);
+    const consoleErrors = [];
+    p.on('console', (m) => {
+      if (m.type() === 'error') consoleErrors.push(String(m.text()).split('\n')[0].slice(0, 160));
+    });
+    const refused = [];
+    p.on('response', (r) => {
+      if (r.url().includes('/api/v1/') && r.status() >= 400) refused.push(`${r.request().method()} ${new URL(r.url()).pathname} ${r.status()}`);
+    });
+    const seen = [];
+    for (const path of ROUTES) {
+      await p.goto(`${job.api}${path}`, { waitUntil: 'networkidle' });
+      await p.waitForTimeout(500);
+      const heading = await p.locator('h1').first().textContent({ timeout: 4000 }).catch(() => null);
+      const at = new URL(p.url());
+      seen.push({ path, at: at.pathname + at.search, heading: heading ? heading.replace(/\s+/g, ' ').trim().slice(0, 60) : null });
+    }
+    const built = await p.evaluate(() => ({
+      bundle: [...document.querySelectorAll('script[src]')].map((s) => new URL(s.src).pathname).filter((s) => /^\/assets\/index-[\w-]+\.js$/.test(s)),
+      vite: performance.getEntriesByType('resource').some((e) => /\/@vite\/client|\/src\/main\.tsx/.test(e.name)),
+    }));
+    const file = await shoot(p, 'built-smoke-last-route');
+    await ctx.close();
+    const bounced = seen.filter((s) => s.at.split('?')[0] !== s.path.split('?')[0]);
+    return {
+      env: { viewport: [1440, 900], origin: 'the stand backend (static/), not Vite' },
+      recipe: { url: ROUTES.join(', '), fixture: ['the stand administrator; every write answered here'] },
+      measured: { built, seen, bounced, refused: refused.slice(0, 10), consoleErrors: consoleErrors.slice(0, 10), errors },
+      pass: built.bundle.length === 1 && built.vite === false && bounced.length === 0 && seen.every((s) => !!s.heading) &&
+        refused.length === 0 && consoleErrors.length === 0 && errors.length === 0,
       screenshots: [file],
     };
   });
