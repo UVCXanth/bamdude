@@ -432,11 +432,10 @@ function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: Arch
   const name = archive.print_name || archive.filename;
   const lineName = lines.find((line) => line.id === archive.project_line_id)?.product_name;
   const completed = archive.status === 'completed';
-  // R03: the server checks the ARCHIVE's owner on this write — offered only where it
-  // would be allowed (admin / `update_all` any print; `update_own` its own only). Taking
-  // the print out of the order rewrites the archive too (WS-13 E13 B03/B06), so it asks
-  // the same; the defects are the order's own contract and stay with `canEdit`.
-  const canAssign = canEdit && canFileArchive(hasPermission, canModify, archive.created_by_id);
+  // F(print) (WS-13 E13 O21): the filing right files and unfiles any print; `orders:update`
+  // only a print the archive right reaches — the server's own rule, offered only where it
+  // would be allowed. The defects are the order's own contract and stay with `canEdit`.
+  const canAssign = canFileArchive(hasPermission, canModify, archive.created_by_id);
   // Nothing new is filed under a closed order (409 `order_closed`) — a line change included;
   // a print may still leave it.
   const orderOpen = order.status !== 'completed' && order.status !== 'cancelled';
@@ -526,7 +525,7 @@ function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: Arch
         </small>
       </div>
 
-      {canEdit && (completed || canAssign) && (
+      {((canEdit && completed) || canAssign) && (
         <div className="flex-shrink-0">
           <CardActionMenu
             label={t('orders.prints.actions')}
@@ -535,7 +534,7 @@ function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: Arch
           >
             {(close) => (
               <>
-                {completed && (
+                {canEdit && completed && (
                   <CardActionMenuItem
                     onSelect={() => {
                       close();

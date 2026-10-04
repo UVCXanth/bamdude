@@ -70,6 +70,7 @@ import { ModelCompatChip } from './ModelCompatChip';
 import { queueResumePayload } from '../utils/queueStatus';
 import { invalidateQueueViews } from '../utils/queryInvalidation';
 import { usePlateDefects } from '../hooks/usePlateDefects';
+import { keepsOrderOnCopy } from '../utils/workshopRights';
 import { PlateDefectsRow } from './PlateDefectsRow';
 import { QueueSourceIndicator } from './QueueSourceIndicator';
 import { usePrinterQueueRows, useQueueSummarySnapshot } from '../hooks/FarmQueueScope';
@@ -282,8 +283,8 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
   });
 
   const cloneMutation = useMutation({
-    mutationFn: ({ id, scope }: { id: number; scope: 'single' | 'batch' }) =>
-      api.cloneQueueItem(id, scope),
+    mutationFn: ({ id, scope, keepOrder }: { id: number; scope: 'single' | 'batch'; keepOrder: boolean }) =>
+      api.cloneQueueItem(id, scope, keepOrder),
     onSuccess: () => {
       invalidateQueue();
       showToast(t('queueCard.toast.cloned'), 'success');
@@ -319,7 +320,8 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
   });
 
   const cloneBatchMutation = useMutation({
-    mutationFn: (batchId: string) => api.cloneBatch(batchId, 'batch'),
+    mutationFn: ({ batchId, keepOrder }: { batchId: string; keepOrder: boolean }) =>
+      api.cloneBatch(batchId, 'batch', keepOrder),
     onSuccess: () => {
       invalidateQueue();
       showToast(t('queueCard.toast.batchCloned'), 'success');
@@ -589,7 +591,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
 
   // The other answer to a full plate — see services/plate_hold on the backend.
   const repeatPrintMutation = useMutation({
-    mutationFn: () => api.repeatPrint(queue.printer_id, queueDefects.body()),
+    mutationFn: () => api.repeatPrint(queue.printer_id, queueDefects.repeatBody()),
     onSuccess: (result) => {
       invalidateQueueViews(queryClient);
       queryClient.invalidateQueries({ queryKey: ['printerStatus', queue.printer_id] });
@@ -908,7 +910,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
                     ) : (
                       <RotateCcw className="w-4 h-4" />
                     )}
-                    {t('queue.repeatPrint')}
+                    {queueDefects.repeatWithoutOrder ? t('orderFiling.repeatWithoutOrder') : t('queue.repeatPrint')}
                   </button>
                 )}
                 <button
@@ -990,7 +992,10 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
                   onMove={(direction) => reorderMutation.mutate({ id: item.id, direction })}
                   onBump={() => bumpMutation.mutate(item.id)}
                   onBumpBottom={() => bumpBottomMutation.mutate(item.id)}
-                  onClone={(scope) => cloneMutation.mutate({ id: item.id, scope })}
+                  onClone={(scope) =>
+                    cloneMutation.mutate({ id: item.id, scope, keepOrder: keepsOrderOnCopy(item.project_id, hasPermission) })
+                  }
+                  cloneWithoutOrder={!keepsOrderOnCopy(item.project_id, hasPermission)}
                   onSkip={() => skipMutation.mutate(item.id)}
                   onToggleManualStart={() => toggleManualStartMutation.mutate(item.id)}
                   onEdit={onEditItem ? () => onEditItem(item) : undefined}
@@ -998,7 +1003,13 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
                     item.batch_id ? () => cancelBatchMutation.mutate(item.batch_id!) : undefined
                   }
                   onCloneBatch={
-                    item.batch_id ? () => cloneBatchMutation.mutate(item.batch_id!) : undefined
+                    item.batch_id
+                      ? () =>
+                          cloneBatchMutation.mutate({
+                            batchId: item.batch_id!,
+                            keepOrder: keepsOrderOnCopy(item.project_id, hasPermission),
+                          })
+                      : undefined
                   }
                   onUngroupBatch={
                     item.batch_id ? () => ungroupMutation.mutate(item.batch_id!) : undefined
@@ -1104,6 +1115,8 @@ interface PendingItemRowProps {
   onBump: () => void;
   onBumpBottom: () => void;
   onClone: (scope: 'single' | 'batch') => void;
+  /** The clone goes without the row's order — said on every clone entry before sending (Q-02). */
+  cloneWithoutOrder?: boolean;
   onSkip: () => void;
   onToggleManualStart: () => void;
   onEdit?: () => void;
@@ -1137,6 +1150,7 @@ function PendingItemRow({
   onBump,
   onBumpBottom,
   onClone,
+  cloneWithoutOrder = false,
   onSkip,
   onToggleManualStart,
   onEdit,
@@ -1402,6 +1416,7 @@ function PendingItemRow({
                     className="w-full text-left px-3 py-1.5 text-white hover:bg-bambu-dark disabled:opacity-40 disabled:hover:bg-transparent"
                   >
                     {t('queueCard.actions.clone')}
+                    {cloneWithoutOrder && t('orderFiling.copySuffix')}
                   </button>
                   <button
                     disabled={!canUpdate}
@@ -1450,6 +1465,7 @@ function PendingItemRow({
                         className="w-full text-left px-3 py-1.5 text-white hover:bg-bambu-dark disabled:opacity-40 disabled:hover:bg-transparent"
                       >
                         {t('queueCard.batch.cloneBatch')}
+                        {cloneWithoutOrder && t('orderFiling.copySuffix')}
                       </button>
                       <button
                         disabled={!canUpdate}
@@ -1502,8 +1518,8 @@ function PendingItemRow({
           onClose={() => setBatchDialog(null)}
           batchSize={batchSize}
           title={t('queueCard.batch.cloneTitle')}
-          applyAllLabel={t('queueCard.batch.cloneAll', { count: batchSize })}
-          applyOneLabel={t('queueCard.batch.cloneOne')}
+          applyAllLabel={`${t('queueCard.batch.cloneAll', { count: batchSize })}${cloneWithoutOrder ? t('orderFiling.copySuffix') : ''}`}
+          applyOneLabel={`${t('queueCard.batch.cloneOne')}${cloneWithoutOrder ? t('orderFiling.copySuffix') : ''}`}
           onApplyAll={() => {
             setBatchDialog(null);
             if (onCloneBatch) onCloneBatch();

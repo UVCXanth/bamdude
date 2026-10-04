@@ -25,6 +25,7 @@ import {
 import { useMultiPrinterFilamentMapping, type PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
 import { useOrderCandidates } from '../../hooks/useOrderCandidates';
 import { OrderFilingField, type OrderFilingValue } from '../OrderFilingField';
+import { canFileFuturePrint, keepsOrderOnCopy } from '../../utils/workshopRights';
 import { isUnknownOutcome, queueAddOutcomeText, type QueueAddFailure } from '../../utils/queueSource';
 import { invalidateOrderCandidates, invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInvalidation';
 import { getCurrencySymbol } from '../../utils/currency';
@@ -1099,6 +1100,17 @@ export function PrintModal({
   // DIFFERENT order than the one the caller opened it for. An archive carries
   // the original print's own binding, and `reprintArchive` deliberately sends
   // neither id — so the question would have nowhere to go.
+  // A reprint of an archive inherits the archive's order (WS-13 E13 ARC-08) — only for whoever
+  // may file work under it and only while it is open. Anybody else is told so BEFORE sending,
+  // with «Print without order» ticked and fixed; whoever may keep it can still choose not to.
+  const inheritedOrder =
+    mode === 'reprint' && isArchiveSource && archiveDetails?.project_id != null ? archiveDetails : null;
+  const mayKeepOrder =
+    inheritedOrder != null &&
+    keepsOrderOnCopy(inheritedOrder.project_id, hasPermission, (inheritedOrder.project_status ?? 'active') === 'active');
+  const [printWithoutOrder, setPrintWithoutOrder] = useState(false);
+  const keepOrder = inheritedOrder == null || (mayKeepOrder && !printWithoutOrder);
+
   const [chosenOrderFiling, setChosenOrderFiling] = useState<OrderFilingValue>(() =>
     seededAnswer?.orderFilingKind ? { kind: seededAnswer.orderFilingKind } : { kind: 'none' },
   );
@@ -1114,12 +1126,16 @@ export function PrintModal({
   // gets exactly the dialog they had before this feature existed.
   // ⚠️ `orderAnswered` covers the answer "no order" too — a copied queue item
   // whose source was never filed must not be re-asked and handed a proposal.
+  // ⚠️ And the filing right for future work (Fф, WS-13 E13 O21): proposing an order and
+  // sending it is filing new work under it — without `orders:update` / `orders:file_prints`
+  // the server refuses the whole print, so the dialog offers no order instead.
   const asksAboutOrder =
     isLibraryFile &&
     !orderAnswered &&
     projectId == null &&
     projectLineId == null &&
     hasPermission('orders:read') &&
+    canFileFuturePrint(hasPermission) &&
     (mode === 'reprint' || mode === 'add-to-queue');
   // The plate the dialog asks about: the FIRST ticked one, else the plate the
   // auto-select effect is about to tick (the same rule that effect uses), else
@@ -2183,6 +2199,7 @@ export function PrintModal({
                 ...swapPayload,
                 selected_macro_ids: selectedMacroIds,
                 quantity: copies,
+                ...(inheritedOrder != null ? { keep_order: keepOrder } : {}),
               });
             }
           } else if (mode === 'edit-queue-item' && progressCounter === 1) {
@@ -2863,6 +2880,30 @@ export function PrintModal({
             {/* Which order this print counts against. Below the plate picker
                 because the answer depends on the plate — a different plate
                 yields different parts and so answers to a different line. */}
+            {inheritedOrder != null && (
+              <div className="space-y-1 text-sm" data-testid="inherited-order">
+                <p className="text-bambu-gray-light">
+                  {t('orderFiling.inherited', { name: inheritedOrder.project_name ?? `#${inheritedOrder.project_id}` })}
+                </p>
+                <label className="flex items-center gap-2 text-white">
+                  <input
+                    type="checkbox"
+                    checked={!keepOrder}
+                    disabled={!mayKeepOrder}
+                    onChange={(e) => setPrintWithoutOrder(e.target.checked)}
+                  />
+                  {t('orderFiling.withoutOrder')}
+                </label>
+                {!mayKeepOrder && (
+                  <p className="text-amber-300">
+                    {(inheritedOrder.project_status ?? 'active') !== 'active'
+                      ? t('orderFiling.withoutOrderClosed')
+                      : t('orderFiling.withoutOrderNoRight')}
+                  </p>
+                )}
+              </div>
+            )}
+
             {asksAboutOrder && (offerNewOrder || (orderCandidates?.length ?? 0) > 0) && (
               <OrderFilingField
                 value={orderFiling}

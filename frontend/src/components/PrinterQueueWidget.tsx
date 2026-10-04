@@ -43,7 +43,7 @@ export function PrinterQueueWidget({ printerId, printerModel, printerState, awai
 
   // The other answer to a full plate — see services/plate_hold on the backend.
   const repeatPrintMutation = useMutation({
-    mutationFn: () => api.repeatPrint(printerId, plateDefects.body()),
+    mutationFn: () => api.repeatPrint(printerId, plateDefects.repeatBody()),
     onSuccess: (result) => {
       showToast(t('queue.repeatPrintSuccess'), 'success');
       plateDefects.afterAnswer(result.ledger_refused_parts);
@@ -122,7 +122,7 @@ export function PrinterQueueWidget({ printerId, printerModel, printerState, awai
                 ) : (
                   <RotateCcw className="w-4 h-4" />
                 )}
-                {t('queue.repeatPrint')}
+                {plateDefects.repeatWithoutOrder ? t('orderFiling.repeatWithoutOrder') : t('queue.repeatPrint')}
               </button>
             )}
             <button

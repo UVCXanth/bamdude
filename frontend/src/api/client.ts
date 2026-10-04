@@ -1415,6 +1415,10 @@ export interface WaitingPrint {
   /** Opaque generation of the durable plate-clear gate, when this is a new hold. */
   gate_token: string | null;
   parts: ArchivePart[];
+  /** The order a «Repeat» files the new print under — the held row's — and whether it is
+   *  open (WS-13 E13 R11). Absent on an older server. */
+  repeat_order_code?: string | null;
+  repeat_order_open?: boolean | null;
 }
 
 export interface Archive {
@@ -1425,6 +1429,8 @@ export interface Archive {
    *  print is bound to the order but to no line — the order's "other prints". */
   project_line_id: number | null;
   project_name: string | null;
+  /** The order's status — a reprint inherits it only while it is open (WS-13 E13 ARC-08). */
+  project_status?: string | null;
   /** The library file this print was dispatched from (m014). NULL for an
    *  external print or one whose source was never matched into the library —
    *  a print card can only link to `/archives?file=<id>` when it is set. */
@@ -7860,6 +7866,8 @@ export interface PlateAnswerBody {
   expected_archive_id?: number;
   expected_gate_token?: string;
   defects?: DefectsWriteBody;
+  /** «Repeat without order»: the explicit choice, made before sending (WS-13 E13 R11). */
+  without_order?: boolean;
 }
 
 export interface ForecastListParams {
@@ -10635,6 +10643,8 @@ export const api = {
       swap_macro_events?: string[] | null;
       selected_macro_ids?: number[] | null;
       quantity?: number;
+      /** `false` prints it without the archive's order — an explicit choice (WS-13 E13 ARC-08). */
+      keep_order?: boolean;
     }
   ) =>
     request<BackgroundDispatchResponse>(
@@ -11206,8 +11216,11 @@ export const api = {
     request<{ shifted: number; block_size: number }>(`/queue/${id}/bump`, { method: 'POST' }),
   bumpQueueItemBottom: (id: number) =>
     request<{ shifted: number; block_size: number }>(`/queue/${id}/bump-bottom`, { method: 'POST' }),
-  cloneQueueItem: (id: number, scope: 'single' | 'batch' = 'single') =>
-    request<PrintQueueItem>(`/queue/${id}/clone?scope=${scope}`, { method: 'POST' }),
+  /** `keepOrder: false` clones without the source's order — an explicit choice (WS-13 E13 Q-02). */
+  cloneQueueItem: (id: number, scope: 'single' | 'batch' = 'single', keepOrder = true) =>
+    request<PrintQueueItem>(`/queue/${id}/clone?scope=${scope}${keepOrder ? '' : '&keep_order=false'}`, {
+      method: 'POST',
+    }),
   skipQueueItem: (id: number) =>
     request<{ status: string; item_id: number }>(`/queue/${id}/skip`, { method: 'POST' }),
   unskipQueueItem: (id: number) =>
@@ -11242,9 +11255,9 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
-  cloneBatch: (batchId: string, scope: 'one' | 'batch' = 'batch') =>
+  cloneBatch: (batchId: string, scope: 'one' | 'batch' = 'batch', keepOrder = true) =>
     request<{ cloned: number; scope: string; source_batch_id?: string; new_batch_id?: string; new_item_id?: number }>(
-      `/queue/batch/${batchId}/clone?scope=${scope}`,
+      `/queue/batch/${batchId}/clone?scope=${scope}${keepOrder ? '' : '&keep_order=false'}`,
       { method: 'POST' }
     ),
   reorderQueue: (items: { id: number; position: number }[]) =>

@@ -760,4 +760,8 @@ class WaitingPrintOut(BaseModel):
     quantity: int
     defective_count: int
     gate_token: str | None = None
+    # The order a «Repeat» would file the new print under — the held ROW's — and whether
+    # it is still open (WS-13 E13 R11): the card offers «Repeat without order» from it.
+    repeat_order_code: str | None = None
+    repeat_order_open: bool | None = None
     parts: list[ArchivePartRow] = []

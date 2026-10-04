@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import type { PlateAnswerBody, WaitingPrint } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
+import { keepsOrderOnCopy } from '../utils/workshopRights';
 import { invalidateQueueViews, invalidateOrderViews } from '../utils/queryInvalidation';
 
 /**
@@ -32,6 +34,11 @@ export interface PlateDefects {
   setFlat: (next: number) => void;
   /** The request names the displayed run even when no defect counter was touched. */
   body: () => PlateAnswerBody | undefined;
+  /** «Repeat» goes without the held row's order: the caller may not file work under it, or
+   *  it is closed (WS-13 E13 R11). The button says so before anything is sent. */
+  repeatWithoutOrder: boolean;
+  /** `body()` for «Repeat», carrying `without_order` when the repeat goes without the order. */
+  repeatBody: () => PlateAnswerBody | undefined;
   /** After a successful answer: refresh everything the defects may have moved, close the row. */
   afterAnswer: (ledgerRefused?: number) => void;
   /** After a refused answer: the server rolled the defects back, so stop showing what was typed. */
@@ -42,6 +49,7 @@ export function usePlateDefects(printerId: number, enabled: boolean): PlateDefec
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const { hasPermission } = useAuth();
   const [open, setOpen] = useState(false);
   const [values, setValues] = useState<Record<number, number>>({});
   const [flat, setFlatState] = useState(0);
@@ -88,6 +96,13 @@ export function usePlateDefects(printerId: number, enabled: boolean): PlateDefec
       : { expected_archive_id, expected_gate_token, defects: { defective_count: flat } };
   };
 
+  const repeatWithoutOrder =
+    !!waiting?.repeat_order_code && !keepsOrderOnCopy(1, hasPermission, waiting.repeat_order_open !== false);
+  const repeatBody = (): PlateAnswerBody | undefined => {
+    const answer = body();
+    return repeatWithoutOrder ? { ...(answer ?? {}), without_order: true } : answer;
+  };
+
   const afterAnswer = (ledgerRefused?: number) => {
     invalidateQueueViews(queryClient);
     queryClient.invalidateQueries({ queryKey: ['printerStatus', printerId] });
@@ -131,6 +146,8 @@ export function usePlateDefects(printerId: number, enabled: boolean): PlateDefec
       setTouched(true);
     },
     body,
+    repeatWithoutOrder,
+    repeatBody,
     afterAnswer,
     afterFailedAnswer,
   };

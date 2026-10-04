@@ -2830,7 +2830,7 @@ const PrinterCard = memo(function PrinterCard({
   // clearPlate does — the backend releases it too, and leaving it set would keep
   // the pair on screen after the job has already gone back into the queue.
   const repeatPrintMutation = useMutation({
-    mutationFn: () => api.repeatPrint(printer.id, plateDefects.body()),
+    mutationFn: () => api.repeatPrint(printer.id, plateDefects.repeatBody()),
     onSuccess: (result) => {
       showToast(t('queue.repeatPrintSuccess'));
       queryClient.setQueryData(['printerStatus', printer.id], (old: PrinterStatus | undefined) =>
@@ -3369,14 +3369,20 @@ const PrinterCard = memo(function PrinterCard({
           onClick={() => repeatPrintMutation.mutate()}
           disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate')}
           className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-300 dark:border-yellow-400/40 text-yellow-700 dark:text-yellow-400 hover:bg-yellow-500/30 transition-colors text-xs font-medium disabled:opacity-50"
-          title={!hasPermission('printers:clear_plate') ? t('printers.permission.noControl') : t('queue.repeatPrint')}
+          title={
+            !hasPermission('printers:clear_plate')
+              ? t('printers.permission.noControl')
+              : plateDefects.repeatWithoutOrder
+                ? t('orderFiling.repeatWithoutOrder')
+                : t('queue.repeatPrint')
+          }
         >
           {repeatPrintMutation.isPending ? (
             <Loader2 className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] animate-spin" />
           ) : (
             <RotateCcw className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
           )}
-          {t('queue.repeatPrint')}
+          {plateDefects.repeatWithoutOrder ? t('orderFiling.repeatWithoutOrder') : t('queue.repeatPrint')}
         </button>
       )}
       <button

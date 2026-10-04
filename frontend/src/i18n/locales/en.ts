@@ -6476,6 +6476,13 @@ export default {
     stillNeeds_other: 'still needs {{count}} prints',
     satisfied: 'already covered',
     loading: 'Checking which order needs this…',
+    // WS-13 E13 R11 / O10: a copy of work under an order keeps it only with the filing right.
+    inherited: 'Order: {{name}}',
+    withoutOrder: 'Print without order',
+    withoutOrderNoRight: 'Filing new work under this order needs the right to change orders — this print goes without it.',
+    withoutOrderClosed: 'This order is closed — this print goes without it.',
+    repeatWithoutOrder: 'Repeat without order',
+    copySuffix: ' — without order',
   },
 
   // Projects section, customers face. The customer page borrows the order

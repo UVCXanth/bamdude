@@ -3331,6 +3331,13 @@ async def get_waiting_print(
     if archive is None:
         raise HTTPException(404, "No finished print is waiting on this printer")
     rows = await archive_parts.load_rows(db, archive.id)
+    from backend.app.models.project import Project
+    from backend.app.services.entity_codes import code_for
+    from backend.app.services.order_filing import CLOSED_STATUSES
+    from backend.app.services.plate_hold import waiting_row
+
+    held = await waiting_row(db, printer_id)
+    order = await db.get(Project, held.project_id) if held is not None and held.project_id is not None else None
     return WaitingPrintOut(
         archive_id=archive.id,
         print_name=archive.print_name or archive.filename,
@@ -3339,6 +3346,8 @@ async def get_waiting_print(
         defective_count=int(archive.defective_count or 0),
         gate_token=(await db.get(Printer, printer_id)).awaiting_plate_clear_token,
         parts=[ArchivePartRow.from_row(r) for r in rows],
+        repeat_order_code=code_for("order", order.id) if order is not None else None,
+        repeat_order_open=order.status not in CLOSED_STATUSES if order is not None else None,
     )
 
 

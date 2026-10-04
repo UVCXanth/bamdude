@@ -507,6 +507,17 @@ describe('OrderPrints', () => {
       expect(await menuOf(1)).toEqual(['Defects…']);
     });
 
+    // WS-13 E13 O21: the filing right alone files and unfiles ANY print, an ownerless one too —
+    // without the right to change orders, so with no defects entry.
+    it('the filing clerk files and unfiles every print, and records no defects', async () => {
+      auth.granted = new Set(['orders:read', 'orders:file_prints']);
+      vi.spyOn(api, 'getProjectArchives').mockResolvedValue(three as never);
+      render(<OrderPrints order={lineOrder([1, 2, 3])} canEdit={false} />);
+      await screen.findByText('mine.3mf');
+      expect(await menuOf(2)).toEqual(['File under line…', 'Remove from order']);
+      expect(await menuOf(3)).toEqual(['File under line…', 'Remove from order']);
+    });
+
     it('offers no menu on a print it may not move that has no defects to record', async () => {
       auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'archives:update_own']);
       vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
@@ -661,6 +672,8 @@ describe('OrderPrints', () => {
   });
 
   it('offers no menu at all without the permission', async () => {
+    // A reader of the order: neither the order's right nor the filing right (WS-13 E13 O21).
+    auth.granted = new Set(['orders:read', 'archives:update_all']);
     vi.spyOn(api, 'getProjectArchives').mockResolvedValue(rows([1]) as never);
     render(<OrderPrints order={lineOrder([1])} canEdit={false} />);
     await screen.findByTestId('prints-line-10');

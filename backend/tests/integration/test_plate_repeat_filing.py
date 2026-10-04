@@ -233,3 +233,28 @@ async def test_telegram_says_why_a_repeat_under_an_order_is_refused():
     text = callback.answer.await_args.args[0]
     assert callback.answer.await_args.kwargs.get("show_alert") is True
     assert "order" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_the_waiting_print_names_the_order_a_repeat_would_file_under(committing_client, db_session, held):
+    """The card offers «Repeat without order» from this (WS-13 E13 T17): the ROW's order —
+    what a repeat files under — and whether it is still open."""
+    with _finished_printer():
+        r = await committing_client.get(f"/api/v1/printers/{held['printer']}/waiting-print")
+    assert r.status_code == 200, r.text
+    assert r.json()["repeat_order_code"] == f"OR-{held['order']:04d}"
+    assert r.json()["repeat_order_open"] is True
+    order = await db_session.get(Project, held["order"])
+    order.status = "cancelled"
+    await db_session.commit()
+    with _finished_printer():
+        closed = await committing_client.get(f"/api/v1/printers/{held['printer']}/waiting-print")
+    assert closed.json()["repeat_order_open"] is False
+
+
+@pytest.mark.asyncio
+async def test_an_archive_says_whether_its_order_is_open(committing_client, db_session, held):
+    """A reprint inherits the archive's order (ARC-08); the print dialog reads its status."""
+    r = await committing_client.get(f"/api/v1/archives/{held['archive']}")
+    assert r.status_code == 200, r.text
+    assert r.json()["project_status"] == "active"

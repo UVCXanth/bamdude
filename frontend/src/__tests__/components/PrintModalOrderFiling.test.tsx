@@ -165,7 +165,7 @@ function serveCandidates(byPlate: Record<number, OrderCandidate[]>, seen?: numbe
 
 beforeEach(() => {
   vi.restoreAllMocks();
-  auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read', 'orders:create', 'products:create', 'customers:create', 'printers:control']);
+  auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read', 'orders:create', 'orders:update', 'products:create', 'customers:create', 'printers:control']);
   invalidatedCandidates.mockClear();
   server.use(
     http.get('/api/v1/printers/', () => HttpResponse.json(mockPrinters)),
@@ -1076,5 +1076,88 @@ describe('a batch proposes a new order for itself (Decision 6)', () => {
     await waitFor(() => expect(queued).toHaveBeenCalled());
     expect(created).not.toHaveBeenCalled();
     expect(queued.mock.calls[0][0].project_id).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WS-13 E13 T17: proposing and sending an order is the filing right for future work (Fф:
+// orders:update or orders:file_prints); a reprint inherits the archive's order only with it
+// and only while the order is open — otherwise the dialog says, before sending, that the
+// print goes without it, and sends `keep_order: false`.
+// ---------------------------------------------------------------------------
+
+describe('the filing right for future work', () => {
+  it('a reader who may not file work is offered no order and asks for none', async () => {
+    auth.granted = new Set(['orders:read', 'printers:control']);
+    const seen: number[] = [];
+    serveCandidates({ 0: [candidate()] }, seen);
+    render(<PrintModal mode="add-to-queue" libraryFileId={5} archiveName="lamp.gcode.3mf" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText('X1 Carbon')).toBeInTheDocument());
+    expect(screen.queryByLabelText('Order')).not.toBeInTheDocument();
+    expect(seen).toEqual([]);
+  });
+});
+
+describe('an order a reprint would inherit', () => {
+  function serveArchive(over: Record<string, unknown> = {}) {
+    server.use(
+      http.get('/api/v1/archives/:id', () =>
+        HttpResponse.json({
+          id: 1,
+          filename: 'benchy.3mf',
+          print_name: 'Benchy',
+          project_id: 4,
+          project_line_id: 9,
+          project_name: 'Kickstarter batch',
+          project_status: 'active',
+          sliced_for_model: null,
+          ...over,
+        }),
+      ),
+    );
+  }
+
+  async function reprint() {
+    const sent = vi.spyOn(api, 'reprintArchive').mockResolvedValue({ status: 'dispatched' } as never);
+    const user = userEvent.setup();
+    render(<PrintModal mode="reprint" archiveId={1} archiveName="Benchy" onClose={() => {}} />);
+    const without = (await screen.findByRole('checkbox', { name: /print without order/i })) as HTMLInputElement;
+    return { sent, user, without };
+  }
+
+  async function submit(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByText('X1 Carbon'));
+    await user.click(screen.getByRole('button', { name: /^print$/i }));
+  }
+
+  it('the filing right reprints under the order, and may choose to print without it', async () => {
+    serveArchive();
+    const { sent, user, without } = await reprint();
+    expect(screen.getByText('Order: Kickstarter batch')).toBeInTheDocument();
+    expect(without).not.toBeChecked();
+    expect(without).toBeEnabled();
+    await submit(user);
+    await waitFor(() => expect(sent).toHaveBeenCalledWith(1, 1, expect.objectContaining({ keep_order: true })));
+  });
+
+  it('without the filing right the dialog says so before sending, and sends without the order', async () => {
+    auth.granted = new Set(['orders:read', 'printers:control']);
+    serveArchive();
+    const { sent, user, without } = await reprint();
+    expect(without).toBeChecked();
+    expect(without).toBeDisabled();
+    expect(screen.getByText(/needs the right to change orders/i)).toBeInTheDocument();
+    await submit(user);
+    await waitFor(() => expect(sent).toHaveBeenCalledWith(1, 1, expect.objectContaining({ keep_order: false })));
+  });
+
+  it('a closed order is not inherited', async () => {
+    serveArchive({ project_status: 'completed' });
+    const { sent, user, without } = await reprint();
+    expect(without).toBeChecked();
+    expect(without).toBeDisabled();
+    expect(screen.getByText(/this order is closed/i)).toBeInTheDocument();
+    await submit(user);
+    await waitFor(() => expect(sent).toHaveBeenCalledWith(1, 1, expect.objectContaining({ keep_order: false })));
   });
 });

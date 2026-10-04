@@ -6573,6 +6573,13 @@ export default {
     stillNeeds_other: 'потрібно ще {{count}} друку',
     satisfied: 'вже покрито',
     loading: 'Перевіряю, якому замовленню це потрібно…',
+    // WS-13 E13 R11 / O10: копія роботи під замовленням зберігає його лише з правом прив’язки.
+    inherited: 'Замовлення: {{name}}',
+    withoutOrder: 'Друкувати без замовлення',
+    withoutOrderNoRight: 'Щоб прив’язати нову роботу до цього замовлення, потрібне право змінювати замовлення, — цей друк піде без нього.',
+    withoutOrderClosed: 'Замовлення закрите — цей друк піде без нього.',
+    repeatWithoutOrder: 'Повторити без замовлення',
+    copySuffix: ' — без замовлення',
   },
 
   // Projects section, customers face. The customer page borrows the order
