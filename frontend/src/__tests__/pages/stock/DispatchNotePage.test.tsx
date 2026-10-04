@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Route, Routes } from 'react-router';
+import { Link, Route, Routes } from 'react-router';
 import { render } from '../../utils';
 import { ApiError, api } from '../../../api/client';
 import { formatDateTime } from '../../../utils/date';
@@ -180,6 +180,32 @@ describe('DispatchNotePage', () => {
       const controls = screen.getByTestId('dispatch-note-controls');
       expect(await within(controls).findByText('Could not refresh')).toBeInTheDocument();
       expect(screen.getByTestId('dispatch-note-sheet')).toBeInTheDocument();
+    });
+
+    // Codex E12-V01: the page stays mounted from one note to the next — the waybill draft of
+    // the first is never sent to the second.
+    it('a warm move to another note leaves the previous draft behind', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } });
+      const other = { ...note, id: 43, code: 'DN-0043', waybill: null };
+      client.setQueryData(['dispatch-note', 42], note);
+      client.setQueryData(['dispatch-note', 43], other);
+      vi.spyOn(api, 'getDispatchNote').mockImplementation(async (id: number) => (id === 43 ? other : note));
+      const update = vi.spyOn(api, 'updateStockIssue').mockResolvedValue(other as never);
+      window.history.pushState({}, '', '/stock/dispatch-notes/42');
+      render(
+        <QueryClientProvider client={client}>
+          <Link to="/stock/dispatch-notes/43">Next note</Link>
+          <Routes>
+            <Route path="/stock/dispatch-notes/:id" element={<DispatchNotePage />} />
+          </Routes>
+        </QueryClientProvider>,
+      );
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit the waybill' }));
+      fireEvent.change(screen.getByLabelText('Waybill no.'), { target: { value: 'FOR-NOTE-42' } });
+      fireEvent.click(screen.getByRole('link', { name: 'Next note' }));
+      await screen.findByRole('heading', { level: 1, name: 'Dispatch note DN-0043' });
+      expect(screen.queryByLabelText('Waybill no.')).toBeNull();
+      expect(update).not.toHaveBeenCalled();
     });
 
     it('a deleted order and customer are named, not linked', async () => {

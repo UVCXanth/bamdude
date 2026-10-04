@@ -91,11 +91,19 @@ function TabJournal() {
   const journal = useStockJournalPage(params);
   const list = useStockJournalProducts(book);
 
-  // The product goes only on a confirmed «not in this book» (R05).
-  const listed = list.isSuccess && !list.isPlaceholderData ? list.data : undefined;
+  // Each book is read NOW (Codex E12-V03): a list cached from an earlier visit names the
+  // options, but the product goes only on «not in this book» from an answer read after the
+  // switch — never while that read is on its way, never from a failed one (R05).
   useEffect(() => {
-    if (productId != null && listed && !listed.some((p) => p.id === productId)) setExtra('product', '');
-  }, [productId, listed, setExtra]);
+    void list.refetch({ cancelRefetch: false });
+    // The book is the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [book]);
+  const listed = list.isSuccess && !list.isPlaceholderData ? list.data : undefined;
+  const confirmed = listed && list.isFetchedAfterMount && !list.isFetching ? listed : undefined;
+  useEffect(() => {
+    if (productId != null && confirmed && !confirmed.some((p) => p.id === productId)) setExtra('product', '');
+  }, [productId, confirmed, setExtra]);
 
   const meta = journal.data?.meta;
   useEffect(() => {

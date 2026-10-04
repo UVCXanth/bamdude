@@ -225,6 +225,76 @@ describe('WaybillEditor (J03, R08)', () => {
     expect(screen.getByText('Waybill 3000')).toBeInTheDocument();
   });
 
+  // Codex E12-V02: Cancel and Escape in the frame of the send cannot close the editor under
+  // its PATCH — a refusal must find the text and say why; a retry is possible.
+  it.each([
+    ['Save → Cancel', () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    }],
+    ['Enter → Escape', () => {
+      fireEvent.keyDown(field(), { key: 'Enter' });
+      fireEvent.keyDown(field(), { key: 'Escape' });
+    }],
+  ])('%s in the send frame keeps the editor, the text and the refusal (Codex V02)', async (_name, press) => {
+    const sent = deferred<StockIssueRow>();
+    update.mockReturnValueOnce(sent.promise).mockResolvedValue(row({ waybill: '2045' }));
+    render(<WaybillEditor noteId={1} waybill={null} canEdit />);
+    fireEvent.click(pencil());
+    fireEvent.change(field(), { target: { value: '2045' } });
+    act(() => press());
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    await act(async () => sent.reject(new ApiError('Waybill refused', 422)));
+    expect(field()).toHaveValue('2045');
+    expect(screen.getByRole('alert')).toHaveTextContent('Waybill refused');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(2));
+  });
+
+  // Codex E12-V01: the editor's session belongs to its note — a draft, a saved value and a
+  // refusal never cross to another note, and a late answer of the old one changes nothing.
+  describe('the session belongs to its note (Codex V01)', () => {
+    it("a saved waybill is not shown for the next note", async () => {
+      update.mockResolvedValue(row({ waybill: '2045' }));
+      const { rerender } = render(<WaybillEditor noteId={1} waybill={null} canEdit />);
+      fireEvent.click(pencil());
+      fireEvent.change(field(), { target: { value: '2045' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await screen.findByText('Waybill 2045');
+      rerender(<WaybillEditor noteId={2} waybill={null} canEdit />);
+      expect(screen.getByText('No waybill')).toBeInTheDocument();
+    });
+
+    it('a draft does not follow to the next note, which opens with its own value', () => {
+      const { rerender } = render(<WaybillEditor noteId={1} waybill={null} canEdit />);
+      fireEvent.click(pencil());
+      fireEvent.change(field(), { target: { value: 'FOR-NOTE-ONE' } });
+      rerender(<WaybillEditor noteId={2} waybill="7000" canEdit />);
+      expect(screen.queryByLabelText('Waybill no.')).toBeNull();
+      fireEvent.click(pencil());
+      expect(field()).toHaveValue('7000');
+    });
+
+    it.each([
+      ['answer', (d: ReturnType<typeof deferred<StockIssueRow>>) => d.resolve(row({ waybill: '2045' }))],
+      ['refusal', (d: ReturnType<typeof deferred<StockIssueRow>>) => d.reject(new ApiError('Waybill refused', 422))],
+    ])('a late %s for the previous note changes nothing on the next one', async (_name, settle) => {
+      const sent = deferred<StockIssueRow>();
+      update.mockReturnValue(sent.promise);
+      const { rerender } = render(<WaybillEditor noteId={1} waybill={null} canEdit />);
+      fireEvent.click(pencil());
+      fireEvent.change(field(), { target: { value: '2045' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(update).toHaveBeenCalledWith(1, { waybill: '2045' }));
+      rerender(<WaybillEditor noteId={2} waybill="7000" canEdit />);
+      await act(async () => settle(sent));
+      expect(screen.getByText('Waybill 7000')).toBeInTheDocument();
+      expect(screen.queryByLabelText('Waybill no.')).toBeNull();
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(update).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('an emptied field sends null', async () => {
     render(<WaybillEditor noteId={1} waybill="2045" canEdit />);
     fireEvent.click(pencil());

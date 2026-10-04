@@ -31,8 +31,10 @@ export function useDispatchNotes(params: DispatchNotesParams, enabled = true) {
  *  one light read under the notes' key, so an issue refreshes it. Unknown — while it is read or
  *  after a failure — is `undefined`, never a zero. */
 export function useDispatchNotesCount(): number | undefined {
-  const { data, isPlaceholderData } = useDispatchNotes({ page: 1, per_page: 1 });
-  return data && !isPlaceholderData ? data.meta.total : undefined;
+  const { data, isPlaceholderData, isError } = useDispatchNotes({ page: 1, per_page: 1 });
+  // A failed re-read leaves the last answer in the cache, but the number is no longer known
+  // (B03, Codex E12-V04): the tab shows none until a read answers again.
+  return data && !isPlaceholderData && !isError ? data.meta.total : undefined;
 }
 
 /** One dispatch note — the document page (rule 19). */

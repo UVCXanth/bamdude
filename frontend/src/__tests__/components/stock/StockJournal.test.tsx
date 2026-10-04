@@ -7,6 +7,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api, STOCK_ITEM_KINDS, STOCK_REASONS } from '../../../api/client';
 import en from '../../../i18n/locales/en';
@@ -197,6 +198,57 @@ describe('StockJournal', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
       await waitFor(() => expect(screen.queryByText('Could not load the products')).toBeNull());
       expect(window.location.search).toContain('product=1');
+    });
+
+    // Codex E12-V03: a list cached from an earlier visit names the options but cannot drop the
+    // product — only the answer read after the switch can, and only one without it.
+    describe('a book with a cached list (Codex V03)', () => {
+      const switchToFinished = async (cached: { stale: boolean }, read: Promise<StockJournalProduct[]>) => {
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } });
+        client.setQueryData(['stock-journal-products', 'finished'], [], cached.stale ? { updatedAt: Date.now() - 120_000 } : undefined);
+        products.mockImplementation(async (book: string) => (book === 'finished' ? read : [pipe]));
+        window.history.pushState({}, '', '/stock?tab=journal&product=1');
+        render(
+          <QueryClientProvider client={client}>
+            <StockJournal />
+          </QueryClientProvider>,
+        );
+        await waitFor(() => expect(productSelect().value).toBe('1'));
+        fireEvent.change(screen.getByLabelText('Ledger'), { target: { value: 'finished' } });
+        await waitFor(() => expect(products).toHaveBeenCalledWith('finished'));
+      };
+      const productInUrl = () => new URLSearchParams(window.location.search).get('product');
+
+      it.each([{ stale: true }, { stale: false }])('the read on its way keeps the product (cache stale: $stale)', async (cached) => {
+        await switchToFinished(cached, new Promise(() => {}));
+        await act(async () => {});
+        expect(productInUrl()).toBe('1');
+        expect(productSelect().value).toBe('1');
+      });
+
+      it('a read that failed keeps the product', async () => {
+        const read = deferred<StockJournalProduct[]>();
+        await switchToFinished({ stale: true }, read.promise);
+        await act(async () => read.reject(new Error('HTTP 500')));
+        expect(await screen.findByText('Could not load the products')).toBeInTheDocument();
+        expect(productInUrl()).toBe('1');
+      });
+
+      it('an answer that has the product keeps it', async () => {
+        const read = deferred<StockJournalProduct[]>();
+        await switchToFinished({ stale: true }, read.promise);
+        await act(async () => read.resolve([pipe]));
+        await waitFor(() => expect(screen.queryByText('Reading the products…')).toBeNull());
+        expect(productInUrl()).toBe('1');
+      });
+
+      it('only an answer without the product drops it', async () => {
+        const read = deferred<StockJournalProduct[]>();
+        await switchToFinished({ stale: true }, read.promise);
+        expect(productInUrl()).toBe('1');
+        await act(async () => read.resolve([]));
+        await waitFor(() => expect(productInUrl()).toBeNull());
+      });
     });
 
     it("A → B → A quickly: B's late answer never writes the address (R05)", async () => {

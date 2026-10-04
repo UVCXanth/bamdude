@@ -21,9 +21,20 @@ const ICON_BTN = 'p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-da
  * in the system language with the text kept and the cursor in it; a success refreshes the
  * lists and the document, closes the editor and gives the focus to the pencil — and
  * `onSaved` hands the pencil to a watch for the row leaving (a search by the old waybill).
- * Escape (`useInnerEscape`) and «Cancel» close the editor only.
+ * Escape (`useInnerEscape`) and «Cancel» close the editor only — and never while a save is on
+ * its way: they ask the same synchronous `sent` the press took (Codex E12-V02), so a refusal
+ * always finds its text and says why.
+ *
+ * The session — draft, saved value, refusal, request — belongs to ONE note (Codex E12-V01):
+ * another note (the document page stays mounted from one note to the next) starts a new
+ * session, and the old request's answer has no session left to write into. A re-read of the
+ * SAME note still never overwrites the draft.
  */
-export function WaybillEditor({
+export function WaybillEditor(props: Parameters<typeof WaybillSession>[0]) {
+  return <WaybillSession key={props.noteId} {...props} />;
+}
+
+function WaybillSession({
   noteId,
   waybill,
   canEdit,
@@ -87,6 +98,8 @@ export function WaybillEditor({
   }, [editing, after]);
 
   const close = () => {
+    // Under a save nothing closes the editor — not even in the frame of the press (V02).
+    if (sent.current) return;
     setDraft(null);
     setError(null);
     setAfter('pencil');

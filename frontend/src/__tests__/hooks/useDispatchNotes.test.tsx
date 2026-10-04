@@ -6,12 +6,12 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { api } from '../../api/client';
 import type { DispatchNotesParams } from '../../api/client';
-import { useDispatchNotes } from '../../hooks/useDispatchNotes';
+import { useDispatchNotes, useDispatchNotesCount } from '../../hooks/useDispatchNotes';
 
 const answer = (id: number) => ({ items: [{ id }], meta: { total: 1, current_page: 1, per_page: 24, last_page: 1 } }) as never;
 
@@ -21,6 +21,37 @@ function makeWrapper() {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   };
 }
+
+// Codex E12-V04 (B03): a count whose re-read failed is unknown — no number in the tab — until
+// a read answers again; a true zero stays a zero.
+describe('useDispatchNotesCount', () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it('a failed re-read hides the count; the next answer brings the new one', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const page = (total: number) => ({ items: [], meta: { total, current_page: 1, per_page: 1, last_page: Math.max(total, 1) } }) as never;
+    const get = vi.spyOn(api, 'getDispatchNotes').mockResolvedValueOnce(page(9));
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    const { result } = renderHook(() => useDispatchNotesCount(), { wrapper });
+    await waitFor(() => expect(result.current).toBe(9));
+    get.mockRejectedValueOnce(new Error('HTTP 500'));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['dispatch-notes'] });
+    });
+    await waitFor(() => expect(result.current).toBeUndefined());
+    get.mockResolvedValueOnce(page(10));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['dispatch-notes'] });
+    });
+    await waitFor(() => expect(result.current).toBe(10));
+  });
+
+  it('a true zero stays a zero', async () => {
+    vi.spyOn(api, 'getDispatchNotes').mockResolvedValue({ items: [], meta: { total: 0, current_page: 1, per_page: 1, last_page: 1 } } as never);
+    const { result } = renderHook(() => useDispatchNotesCount(), { wrapper: makeWrapper() });
+    await waitFor(() => expect(result.current).toBe(0));
+  });
+});
 
 describe('useDispatchNotes', () => {
   beforeEach(() => vi.restoreAllMocks());
