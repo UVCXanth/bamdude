@@ -852,7 +852,11 @@ async (page, selftest = null) => {
     hold = true;
     await p.getByLabel('Книга').selectOption('parts');
     await p.waitForTimeout(1500);
-    const held = { value: await p.getByLabel('Виріб').inputValue(), url: await urlOf(p) };
+    const held = {
+      value: await p.getByLabel('Виріб').inputValue(),
+      name: await p.getByLabel('Виріб').evaluate((s) => s.selectedOptions[0]?.textContent.trim()),
+      url: await urlOf(p),
+    };
     const file = await shoot(p, 'journal-st2-cached');
     hold = false;
     await p.waitForTimeout(1500);
@@ -862,7 +866,7 @@ async (page, selftest = null) => {
       env: { viewport: [1440, 900] },
       recipe: { url: `/stock?tab=journal&book=parts → «Готові вироби» → product ${finishedOnly.id} → «Вільні деталі»`, fixture: ['GET /stock/journal/products?book=parts held on the second visit, then the stand'] },
       measured: { chosen, held, after, errors },
-      pass: chosen.includes(`product=${finishedOnly.id}`) && held.value === String(finishedOnly.id) &&
+      pass: chosen.includes(`product=${finishedOnly.id}`) && held.value === String(finishedOnly.id) && held.name === finishedOnly.name &&
         held.url.includes(`product=${finishedOnly.id}`) && after.value === '' && !after.url.includes('product=') && errors.length === 0,
       screenshots: [file],
     };
