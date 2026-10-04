@@ -49,6 +49,32 @@ def _request() -> Request:
     return Request({"type": "http", "method": "POST", "path": "/", "headers": []})
 
 
+class _AllowEverything:
+    """The request's credentials for a door called directly: every right is held (WS-13 E13 §O).
+
+    These tests read the SQL a door sends; who may open it is the rights tests' question."""
+
+    async def check(self, _gate):
+        return None, True
+
+    async def allows(self, _gate) -> bool:
+        return True
+
+
+ALLOW = _AllowEverything()
+
+
+@pytest.fixture(autouse=True)
+def _every_file_visible(monkeypatch):
+    """The order-from-files doors ask the library who may see a file (WS-13 E13 B07); a door
+    called directly has no request credentials, so here every file is visible."""
+
+    async def _visible(_request, _db, _user):
+        return lambda _file: True
+
+    monkeypatch.setattr(routes, "_library_visible", _visible)
+
+
 def first_touches(log, *, exempt=()) -> list[str]:
     """Tables of LOCK_CLASS in the order the door first locked or wrote them."""
     order: list[str] = []
@@ -116,7 +142,8 @@ async def _record(db, call):
 async def test_a_quantity_change_locks_the_position_before_the_line(db_session):
     order, line = await _order(db_session)
     log = await _record(
-        db_session, lambda: routes.update_line(order.id, line.id, ProjectLineUpdate(quantity=2), db_session, None)
+        db_session,
+        lambda: routes.update_line(order.id, line.id, ProjectLineUpdate(quantity=2), db_session, None, creds=ALLOW),
     )
     assert "stock_items" in first_touches(log)
     assert_class_order(log)
@@ -126,7 +153,10 @@ async def test_a_quantity_change_locks_the_position_before_the_line(db_session):
 async def test_a_new_ready_units_number_locks_the_position_before_the_line(db_session):
     order, line = await _order(db_session)
     log = await _record(
-        db_session, lambda: routes.update_line(order.id, line.id, ProjectLineUpdate(from_finished=1), db_session, None)
+        db_session,
+        lambda: routes.update_line(
+            order.id, line.id, ProjectLineUpdate(from_finished=1), db_session, None, creds=ALLOW
+        ),
     )
     assert "stock_items" in first_touches(log)
     assert_class_order(log)
@@ -165,7 +195,9 @@ async def test_deleting_an_order_locks_positions_then_lines(db_session):
 async def test_an_issue_locks_the_order_row_before_positions_and_lines(db_session):
     order, line = await _order(db_session)
     data = FulfilmentIn(lines=[FulfilmentLineIn(line_id=line.id, issue=1)])
-    log = await _record(db_session, lambda: routes.fulfil_order(order.id, data, _request(), db_session, None))
+    log = await _record(
+        db_session, lambda: routes.fulfil_order(order.id, data, _request(), db_session, None, creds=ALLOW)
+    )
     assert_gate_first(log)
     assert first_touches(log)[:2] == ["products", "projects"]
     assert_class_order(log)
@@ -175,7 +207,9 @@ async def test_an_issue_locks_the_order_row_before_positions_and_lines(db_sessio
 async def test_a_write_off_locks_the_order_row_before_positions_and_lines(db_session):
     order, line = await _order(db_session)
     data = FulfilmentIn(lines=[FulfilmentLineIn(line_id=line.id, write_off=1)], write_off_note="Broken on the shelf")
-    log = await _record(db_session, lambda: routes.fulfil_order(order.id, data, _request(), db_session, None))
+    log = await _record(
+        db_session, lambda: routes.fulfil_order(order.id, data, _request(), db_session, None, creds=ALLOW)
+    )
     assert_gate_first(log)
     assert first_touches(log)[:2] == ["products", "projects"]
     assert_class_order(log)
@@ -185,7 +219,9 @@ async def test_a_write_off_locks_the_order_row_before_positions_and_lines(db_ses
 async def test_completing_through_the_issue_dialog_locks_the_order_row_first(db_session):
     order, line = await _order(db_session, quantity=3, reserved=3)
     data = FulfilmentIn(lines=[FulfilmentLineIn(line_id=line.id, issue=3)], complete=True)
-    log = await _record(db_session, lambda: routes.fulfil_order(order.id, data, _request(), db_session, None))
+    log = await _record(
+        db_session, lambda: routes.fulfil_order(order.id, data, _request(), db_session, None, creds=ALLOW)
+    )
     assert_gate_first(log)
     assert first_touches(log)[:2] == ["products", "projects"]
     assert_class_order(log)
@@ -209,7 +245,7 @@ async def test_creating_an_order_with_lines_takes_the_gates_before_inserting_it(
     db_session.add(lamp)
     await db_session.commit()
     data = ProjectCreate(name="Gate order", lines=[ProjectLineCreate(product_id=lamp.id, quantity=2)])
-    log = await _record(db_session, lambda: routes.create_project(data, db_session, None))
+    log = await _record(db_session, lambda: routes.create_project(data, db_session, None, creds=ALLOW))
     assert_gate_first(log)
 
 
@@ -220,7 +256,9 @@ async def test_adding_a_line_takes_the_gate_before_inserting_it(db_session):
     order, line = await _order(db_session)
     log = await _record(
         db_session,
-        lambda: routes.add_line(order.id, ProjectLineCreate(product_id=line.product_id, quantity=1), db_session, None),
+        lambda: routes.add_line(
+            order.id, ProjectLineCreate(product_id=line.product_id, quantity=1), db_session, None, creds=ALLOW
+        ),
     )
     assert_gate_first(log)
     assert_class_order(log)
@@ -274,7 +312,7 @@ async def test_a_receipt_that_creates_a_position_takes_the_gate_first(db_session
     db_session.add(lamp)
     await db_session.commit()
     data = StockMoveIn(kind="receipt", product_id=lamp.id, qty=2)
-    log = await _record(db_session, lambda: stock_routes.move_stock(data, _request(), db_session, None))
+    log = await _record(db_session, lambda: stock_routes.move_stock(data, _request(), db_session, None, creds=ALLOW))
     assert_gate_first(log)
 
 
@@ -298,7 +336,7 @@ async def test_deleting_a_product_takes_the_gate_first(db_session):
     lamp = Product(name="Doomed lamp")
     db_session.add(lamp)
     await db_session.commit()
-    log = await _record(db_session, lambda: product_routes.delete_product(lamp.id, db_session, None))
+    log = await _record(db_session, lambda: product_routes.delete_product(lamp.id, db_session, None, creds=ALLOW))
     assert_gate_first(log)
 
 
@@ -340,7 +378,9 @@ async def test_an_order_from_a_plate_prepares_its_product_then_takes_the_gates(d
 
     f = await _plate_file(db_session)
     data = PlatesOrderIn(kind="plates", library_file_id=f.id, plates=[PlateCopiesIn(plate_index=1, copies=2)])
-    log = await _record(db_session, lambda: routes.create_project_from_files(data, db_session, None))
+    log = await _record(
+        db_session, lambda: routes.create_project_from_files(data, _request(), db_session, None, creds=ALLOW)
+    )
     first_order = next(i for i, (kind, table, _nw) in enumerate(log) if (kind, table) == ("INSERT", "projects"))
     before = log[:first_order]
     assert {table for _kind, table, _nw in before} <= _PREP_TABLES, before
@@ -375,7 +415,7 @@ async def test_a_plate_product_seeds_its_own_parts_not_the_catalogue_products(db
     before = set(await db_session.scalars(select(ProductPart.name_key).where(ProductPart.product_id == catalogue.id)))
 
     data = PlatesOrderIn(kind="plates", library_file_id=f.id, plates=[PlateCopiesIn(plate_index=1, copies=1)])
-    await routes.create_project_from_files(data, db_session, None)
+    await routes.create_project_from_files(data, _request(), db_session, None, creds=ALLOW)
     await db_session.commit()
 
     after = set(await db_session.scalars(select(ProductPart.name_key).where(ProductPart.product_id == catalogue.id)))
@@ -389,7 +429,9 @@ async def test_a_job_order_locks_its_files_prepares_its_product_then_takes_the_g
 
     f = await _plate_file(db_session)
     data = JobOrderIn(kind="job", name="Job", file_ids=[f.id], targets={"flask": 2})
-    log = await _record(db_session, lambda: routes.create_project_from_files(data, db_session, None))
+    log = await _record(
+        db_session, lambda: routes.create_project_from_files(data, _request(), db_session, None, creds=ALLOW)
+    )
     first_order = next(i for i, (kind, table, _nw) in enumerate(log) if (kind, table) == ("INSERT", "projects"))
     before = log[:first_order]
     assert {table for _kind, table, _nw in before} <= _PREP_TABLES, before
