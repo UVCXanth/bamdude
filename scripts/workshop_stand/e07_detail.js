@@ -258,7 +258,7 @@ async (page, selftest = null) => {
   const groups = await read('/groups/');
   const groupList = Array.isArray(groups) ? groups : (groups.items ?? []);
   const adminPerms = (groupList.find((g) => g.name === 'Administrators') ?? { permissions: [] }).permissions;
-  const READER = { is_admin: false, role: 'user', permissions: adminPerms.filter((perm) => perm === 'projects:read' || !perm.startsWith('projects:')) };
+  const READER = { is_admin: false, role: 'user', permissions: adminPerms.filter((perm) => perm.endsWith(':read') || !/^(orders|products|customers|stock):/.test(perm)) };
   const PREP = O['243'];
   const DONE = O['245'];
   const CUSTOMER = (job.customers ?? {})['1'];

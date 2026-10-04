@@ -1390,7 +1390,7 @@ async (page, selftest = null) => {
   // could not see it). Editor and reader; a picture, a photo and a document.
   for (const [id, me] of [
     ['attachments@390-editor', null],
-    ['attachments@390-reader', { is_admin: false, role: 'user', permissions: without('projects:update') }],
+    ['attachments@390-reader', { is_admin: false, role: 'user', permissions: without('orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'orders:file_prints') }],
   ]) {
     await scenario(id, ['E4-G04', 'V02'], async () => {
       const files = [
@@ -1441,7 +1441,7 @@ async (page, selftest = null) => {
       return {
         recipe: {
           url: '/projects/{order:241}', viewport: 390, actions: ['tab «Вкладення»'],
-          fixture: ['GET /projects/{order:241} → three attachments: PNG, JPG, PDF', ...(reader ? ['GET /auth/me → without projects:update'] : [])],
+          fixture: ['GET /projects/{order:241} → three attachments: PNG, JPG, PDF', ...(reader ? ['GET /auth/me → without the Workshop’s update rights'] : [])],
         },
         measured: { rows, docOverflow, errors },
         pass: rows.length === 3 && rows.every((row, i) => row.actions.length === expected[i]) &&

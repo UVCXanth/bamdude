@@ -986,7 +986,7 @@ async (page, selftest = null) => {
   await scenario('reader@1440', ['E13-G02'], async () => {
     const groups = await read('/groups/');
     const adminPerms = (Array.isArray(groups) ? groups : groups.items).find((g) => g.name === 'Administrators').permissions;
-    const WRITES = ['projects:create', 'projects:update', 'projects:delete'];
+    const WRITES = ['orders:create', 'products:create', 'customers:create', 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'orders:delete', 'products:delete', 'customers:delete', 'orders:file_prints'];
     const READER = { is_admin: false, role: 'user', permissions: adminPerms.filter((perm) => !WRITES.includes(perm)) };
     const { ctx, p, errors } = await open(1440, { me: READER });
     await goto(p, '/products');
@@ -1012,7 +1012,7 @@ async (page, selftest = null) => {
       env: { viewport: [1440, 900] },
       recipe: {
         url: '/products → /products/{product:1}',
-        fixture: ['/auth/me: the Administrators’ permissions without projects:create / update / delete'],
+        fixture: ['/auth/me: the Administrators’ permissions without the Workshop’s writes'],
         actions: ['look for every write door', 'Tab forty times through the product page'],
       },
       measured: { list, detail, stops, errors },

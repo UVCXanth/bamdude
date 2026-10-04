@@ -278,7 +278,14 @@ async (page, selftest = null) => {
   const groupList = Array.isArray(groups) ? groups : list(groups?.items);
   const adminPerms = groupList.find((g) => g.name === 'Administrators')?.permissions ?? [];
   const without = (...drop) => adminPerms.filter((perm) => !drop.includes(perm));
-  const WRITES = ['projects:create', 'projects:update', 'projects:delete'];
+  // The Workshop's rights (WS-13 E13 §O, m194): each old `projects:*` right is the set of new ones
+  // its gates became — the images T14 mapped by — so a role named by the old right keeps its doors.
+  const IMG = {
+    create: ['orders:create', 'products:create', 'customers:create'],
+    update: ['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust'],
+    delete: ['orders:delete', 'products:delete', 'customers:delete'],
+  };
+  const WRITES = [...IMG.create, ...IMG.update, ...IMG.delete, 'orders:file_prints'];
   const READER = { is_admin: false, role: 'user', permissions: without(...WRITES) };
   // A user of the runner's own for the ownership cases — no stand row has this id.
   const ME_ID = 9001;
@@ -414,7 +421,7 @@ async (page, selftest = null) => {
     const out = {};
     // (a) `update_own` and an ownerless print: no way in, and the menu says why.
     {
-      const { ctx, p } = await open(1440, { storage: GRID, me: asUser(without('archives:update_all')) });
+      const { ctx, p } = await open(1440, { storage: GRID, me: asUser(without('archives:update_all', 'orders:file_prints')) });
       await goto(p, '/archives');
       const id = await firstArchiveId(p);
       const menu = await openArchiveMenu(p, id);
@@ -424,7 +431,7 @@ async (page, selftest = null) => {
     }
     // (b) No right to change orders.
     {
-      const { ctx, p } = await open(1440, { storage: GRID, me: asUser(without('projects:update')) });
+      const { ctx, p } = await open(1440, { storage: GRID, me: asUser(without('orders:update', 'orders:file_prints')) });
       await goto(p, '/archives');
       const id = await firstArchiveId(p);
       const menu = await openArchiveMenu(p, id);
@@ -452,7 +459,7 @@ async (page, selftest = null) => {
     await ctx.close();
     return {
       env: { viewport: [1440, 900] },
-      recipe: { url: '/archives → a card’s menu', fixture: ['/auth/me: update_own only', '/auth/me: without projects:update', 'POST add-archives → 403'] },
+      recipe: { url: '/archives → a card’s menu', fixture: ['/auth/me: update_own only, without orders:file_prints', '/auth/me: without orders:update and orders:file_prints', 'POST add-archives → 403'] },
       measured: { ...out, writes: writes.length, errors },
       pass: out.own.disabled && out.own.title === 'У вас немає дозволу оновлювати архіви' &&
         out.orders.disabled && out.orders.title === 'Щоб додати друк до замовлення, потрібне право змінювати замовлення' &&
@@ -624,7 +631,7 @@ async (page, selftest = null) => {
     const owners = [ME_ID, 7, null];
     const three = [];
     const { ctx, p, errors } = await open(1440, {
-      me: asUser(without('archives:update_all')),
+      me: asUser(without('archives:update_all', 'orders:file_prints')),
       rewrite: [[new RegExp(`/api/v1/projects/${O241}/archives`), (json) => list(json).map((a, i) => {
         if (i >= 3) return a;
         if (three.length < 3) three.push(a.id);
@@ -650,7 +657,7 @@ async (page, selftest = null) => {
     await ctx.close();
     return {
       env: { viewport: [1440, 900] },
-      recipe: { url: '/projects/{order:241}?section=prints', fixture: ['/auth/me: archives:update_own, user 9001', 'the first three prints: own, another’s, nobody’s'] },
+      recipe: { url: '/projects/{order:241}?section=prints', fixture: ['/auth/me: archives:update_own without orders:file_prints, user 9001', 'the first three prints: own, another’s, nobody’s'] },
       measured: { menus, errors },
       pass: !!menus[0] && menus[0].includes('Прибрати із замовлення') && menus[0].includes('Призначити до позиції…') &&
         [menus[1], menus[2]].every((m) => m === null || (!m.includes('Прибрати із замовлення') && !m.includes('Призначити до позиції…'))) &&
@@ -665,7 +672,7 @@ async (page, selftest = null) => {
 
   await scenario('link-products-rights', ['E13-B06', 'E13-B01'], async () => {
     const out = {};
-    for (const [who, me] of [['library', asUser(without('projects:update'))], ['both', null]]) {
+    for (const [who, me] of [['library', asUser(without('products:update'))], ['both', null]]) {
       const { ctx, p } = await open(1440, { me, storage: { 'library-view-mode': 'grid' } });
       await goto(p, `/files?folder=${linkedFile.folder_id}`);
       await p.getByText(linkedFile.filename, { exact: true }).first().waitFor({ timeout: 8000 });
@@ -678,7 +685,7 @@ async (page, selftest = null) => {
     }
     return {
       env: { viewport: [1440, 900] },
-      recipe: { url: '/files?folder={a folder with a linked file}', fixture: ['/auth/me: the library right without projects:update', 'the stand’s administrator'] },
+      recipe: { url: '/files?folder={a folder with a linked file}', fixture: ['/auth/me: the library right without products:update', 'the stand’s administrator'] },
       measured: { file: linkedFile.id, library: out.library, both: out.both },
       pass: out.library.linkButtons === 0 && out.library.badgeIsButton === false && out.both.badgeIsButton === true,
       screenshots: out.files ?? [],
@@ -688,7 +695,7 @@ async (page, selftest = null) => {
   await scenario('file-move-links', ['E13-B01', 'E13-B06'], async () => {
     const writes = [];
     const { ctx, p, errors } = await open(1440, {
-      me: asUser(without('projects:update')),
+      me: asUser(without('products:update')),
       storage: { 'library-view-mode': 'grid' },
       writes: [recorder(writes, /\/api\/v1\/library\/files\/move$/)],
     });
@@ -706,7 +713,7 @@ async (page, selftest = null) => {
     await ctx.close();
     return {
       env: { viewport: [1440, 900] },
-      recipe: { url: '/files?folder={the linked file’s folder}', fixture: ['/auth/me: the library right without projects:update'], actions: ['select the linked file', '«Перемістити»'] },
+      recipe: { url: '/files?folder={the linked file’s folder}', fixture: ['/auth/me: the library right without products:update'], actions: ['select the linked file', '«Перемістити»'] },
       measured: { file: linkedFile.id, locked, hint, moveDisabled, writes: writes.length, errors },
       pass: locked >= 1 && hint === 1 && writes.length === 0 && errors.length === 0,
       screenshots: files,
@@ -906,7 +913,7 @@ async (page, selftest = null) => {
     await ctx.close();
     return {
       env: { viewport: [1440, 900] },
-      recipe: { url: '/files?folder={the four-plate file’s folder}', fixture: [TAGGED_NOTE, PLATES_NOTE, '/auth/me: without projects:create / update / delete'] },
+      recipe: { url: '/files?folder={the four-plate file’s folder}', fixture: [TAGGED_NOTE, PLATES_NOTE, '/auth/me: without the Workshop’s writes'] },
       measured: { entry, galleryEntry, errors },
       pass: entry === 0 && galleryEntry === 0 && errors.length === 0,
       screenshots: [],
@@ -1298,9 +1305,9 @@ async (page, selftest = null) => {
     const LIBRARY_READS = ['library:read_all', 'library:read_own', 'library:read'];
     const SETS = {
       reader: without(...WRITES),
-      create: without('projects:update', 'projects:delete'),
-      update: without('projects:create', 'projects:delete'),
-      delete: without('projects:create', 'projects:update'),
+      create: without(...IMG.update, ...IMG.delete, 'orders:file_prints'),
+      update: without(...IMG.create, ...IMG.delete),
+      delete: without(...IMG.create, ...IMG.update, 'orders:file_prints'),
       noLibrary: without(...LIBRARY_READS),
     };
     const EXPECTED = {
@@ -1363,7 +1370,7 @@ async (page, selftest = null) => {
 
   await scenario('customer-create-gate', ['E13-G01'], async () => {
     const out = {};
-    for (const [who, permissions] of [['editor', without('projects:create')], ['creator', adminPerms]]) {
+    for (const [who, permissions] of [['editor', without(...IMG.create)], ['creator', adminPerms]]) {
       const { ctx, p } = await open(1440, { me: asUser(permissions) });
       await goto(p, `/projects/${O244}`);
       const d = await editOrder(p);
@@ -1375,7 +1382,7 @@ async (page, selftest = null) => {
     }
     return {
       env: { viewport: [1440, 900] },
-      recipe: { url: '/projects/{order:244} → «Редагувати»', fixture: ['/auth/me without projects:create', '/auth/me with it'] },
+      recipe: { url: '/projects/{order:244} → «Редагувати»', fixture: ['/auth/me without orders:create / products:create / customers:create', '/auth/me with them'] },
       measured: { editor: out.editor, creator: out.creator },
       pass: out.editor === false && out.creator === true,
       screenshots: out.files ?? [],
@@ -1386,12 +1393,12 @@ async (page, selftest = null) => {
     // One writer dialog of each section; each answer is the boundary's sentence in the system
     // language, and every status the spec names appears: 403, 404, 409, 422.
     const SAYS = {
-      order: { status: 403, detail: 'Немає потрібних дозволів: projects:update' },
+      order: { status: 403, detail: 'Немає потрібних дозволів: orders:update' },
       product: { status: 409, detail: 'Інший виріб уже має цей артикул' },
       customer: { status: 404, detail: 'Клієнта не знайдено' },
       stock: { status: 422, detail: 'Вкажіть позицію складу або виріб' },
       archives: { status: 403, detail: UK.ownArchives },
-      library: { status: 403, detail: 'Немає потрібних дозволів: projects:update' },
+      library: { status: 403, detail: 'Немає потрібних дозволів: products:update' },
     };
     const out = {};
     const files = [];
@@ -1622,9 +1629,9 @@ async (page, selftest = null) => {
       out.errors = errors;
       await ctx.close();
     }
-    // 2. Without projects:create the batch is offered no new order.
+    // 2. Without orders:create the batch is offered no new order.
     {
-      const { ctx, p } = await open(1440, { storage: FILES_GRID, rewrite: [TAGGED, PLATES, IDLE], me: asUser(without('projects:create')), writes: [...PREVIEWS] });
+      const { ctx, p } = await open(1440, { storage: FILES_GRID, rewrite: [TAGGED, PLATES, IDLE], me: asUser(without('orders:create')), writes: [...PREVIEWS] });
       await goto(p, filesOfDif);
       await difMenu(p, 'Друк');
       const d = p.getByRole('dialog', { name: 'Друкувати' });
@@ -1679,7 +1686,7 @@ async (page, selftest = null) => {
       recipe: {
         url: '/files?folder={dif01_p1s} → the card’s «Друк» / «Запланувати»',
         actions: ['two printers ticked (a batch)', `the order field: ${pick ? candidateLabel(pick) : '—'}`, 'submit', '«Запланувати» → «Авто-розподіл», plate 1 alone, model ' + difModel],
-        fixture: [TAGGED_NOTE, PLATES_NOTE, IDLE_NOTE, PREVIEWS_NOTE, 'POST /library/files/{id}/print and POST /auto-queue/ answered here', '/auth/me without projects:create (the second run)'],
+        fixture: [TAGGED_NOTE, PLATES_NOTE, IDLE_NOTE, PREVIEWS_NOTE, 'POST /library/files/{id}/print and POST /auto-queue/ answered here', '/auth/me without orders:create (the second run)'],
       },
       measured: { expected, apart, single: out.single, batch: out.batch, batchNoCreate: out.batchNoCreate, auto: out.auto, autoPlates: out.autoPlates, models: out.models, shown: out.shown, twice: twice.length, submitLabel: out.submitLabel, sent: out.sent, autoSent: out.autoSent, errors: [...(out.errors ?? []), ...(out.autoErrors ?? [])] },
       pass: twice.length >= 2 && apart && same(out.single, expected) && same(out.batch, ['Без замовлення', NEW_ORDER, ...expected.slice(1)])
@@ -2282,7 +2289,7 @@ async (page, selftest = null) => {
     await ctx.close();
     return {
       env: { viewport: [1440, 900] },
-      recipe: { url: REP_URL, fixture: ['/auth/me: the Administrators’ permissions without projects:create / update / delete'] },
+      recipe: { url: REP_URL, fixture: ['/auth/me: the Administrators’ permissions without the Workshop’s writes'] },
       measured: { rows, errors },
       pass: sweepOk(rows) && errors.length === 0,
       screenshots: files,

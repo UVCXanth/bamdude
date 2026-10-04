@@ -256,7 +256,7 @@ async (page, selftest = null) => {
   const groups = await read('/groups/');
   const groupList = Array.isArray(groups) ? groups : (groups.items ?? []);
   const adminPerms = (groupList.find((g) => g.name === 'Administrators') ?? { permissions: [] }).permissions;
-  const READER = { is_admin: false, role: 'user', permissions: adminPerms.filter((perm) => perm === 'projects:read' || !perm.startsWith('projects:')) };
+  const READER = { is_admin: false, role: 'user', permissions: adminPerms.filter((perm) => perm.endsWith(':read') || !/^(orders|products|customers|stock):/.test(perm)) };
   // An editor without the library (R02, K9): every projects permission, no library read.
   const NO_LIBRARY = { is_admin: false, role: 'user', permissions: adminPerms.filter((perm) => !perm.startsWith('library:')) };
 
@@ -397,7 +397,7 @@ async (page, selftest = null) => {
     const file = await shoot(p, 'header-reader@1440');
     await ctx.close();
     return {
-      recipe: { url: '/products/{product:1}', fixture: ['GET /auth/me: a reader — projects:read only (merged)'] },
+      recipe: { url: '/products/{product:1}', fixture: ['GET /auth/me: a reader — the Workshop’s reads only (merged)'] },
       measured: { buttons, items, catalogBoxDisabled: box1, errors },
       pass: !buttons.includes('Редагувати') && !buttons.includes('До замовлення') && JSON.stringify(items) === JSON.stringify(['Експорт ZIP']) && box1 && errors.length === 0,
       screenshots: [file],
@@ -1332,7 +1332,7 @@ async (page, selftest = null) => {
     await ctx.close();
     const all = [...header, ...tabs, ...pictures, ...done];
     return {
-      recipe: { url: '/products/{product:1}', viewport: 390, actions: ['«⋮» open and closed (an editor, a reader)', '«Редагувати склад»'], fixture: ['GET /auth/me: a reader — projects:read only (merged), for the reader’s «⋮»'] },
+      recipe: { url: '/products/{product:1}', viewport: 390, actions: ['«⋮» open and closed (an editor, a reader)', '«Редагувати склад»'], fixture: ['GET /auth/me: a reader — the Workshop’s reads only (merged), for the reader’s «⋮»'] },
       measured: { misses: all.filter((h) => !h.hits).map((h) => h.what), overflow, menu, readerMenu, errors },
       pass: all.length > 0 && all.every((h) => h.hits) && overflow <= 0 && menu.inside && readerMenu.inside && errors.length === 0,
       screenshots: [file, menu.file, readerMenu.file],

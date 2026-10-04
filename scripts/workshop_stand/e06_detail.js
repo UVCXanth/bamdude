@@ -259,7 +259,7 @@ async (page, selftest = null) => {
   const groups = await read('/groups/');
   const groupList = Array.isArray(groups) ? groups : (groups.items ?? []);
   const adminPerms = (groupList.find((g) => g.name === 'Administrators') ?? { permissions: [] }).permissions;
-  const READER = { is_admin: false, role: 'user', permissions: adminPerms.filter((perm) => perm === 'projects:read' || !perm.startsWith('projects:')) };
+  const READER = { is_admin: false, role: 'user', permissions: adminPerms.filter((perm) => perm.endsWith(':read') || !/^(orders|products|customers|stock):/.test(perm)) };
   const C = O['245'];
   const D = O['246'];
   const E = O['247'];
@@ -494,7 +494,7 @@ async (page, selftest = null) => {
     const answers = [
       { __status: 409, json: { detail: 'Це замовлення саме зараз змінюють — спробуйте ще раз' } },
       { __status: 422, json: { detail: 'Контакт 3 не належить замовнику цього замовлення' } },
-      { __status: 403, json: { detail: 'Немає дозволу: projects:update' } },
+      { __status: 403, json: { detail: 'Немає дозволу: orders:update' } },
     ];
     const { ctx, p, errors } = await open(1440, { writes: [recorder(sentPatches, new RegExp(`/api/v1/projects/${A}$`), (_e, n) => answers[n - 1] ?? {})] });
     await p.goto(detail(A), { waitUntil: 'networkidle' });

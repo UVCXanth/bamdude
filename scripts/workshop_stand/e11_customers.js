@@ -742,9 +742,9 @@ async (page, selftest = null) => {
       out.failedGone = await d.getByText('(більше немає)').count();
       await ctx.close();
     }
-    // Somebody without projects:update is not offered to manage the reference.
+    // Somebody without customers:update is not offered to manage the reference.
     {
-      const { ctx, p } = await open(1440, { me: { is_admin: false, role: 'user', permissions: without('projects:update') } });
+      const { ctx, p } = await open(1440, { me: { is_admin: false, role: 'user', permissions: without('customers:update') } });
       await goto(p, '/customers');
       await p.getByRole('button', { name: 'Новий замовник' }).click();
       const d = dialogOf(p, 'Новий замовник');
@@ -754,7 +754,7 @@ async (page, selftest = null) => {
     }
     return {
       env: { viewport: [1440, 900] },
-      recipe: { url: '/customers/{customer:1} → «Редагувати»', fixture: ['GET /delivery-methods without the chosen one', 'GET /delivery-methods 500', '/auth/me without projects:update'] },
+      recipe: { url: '/customers/{customer:1} → «Редагувати»', fixture: ['GET /delivery-methods without the chosen one', 'GET /delivery-methods 500', '/auth/me without customers:update'] },
       measured: out,
       pass: out.gone === `${methodName} (більше немає)` && out.hint === 1 && sameLine(out.labelTops) && out.heldWithContacts === true &&
         JSON.stringify(out.nameOnly) === JSON.stringify({ name: `${NAME1} 2` }) &&

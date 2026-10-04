@@ -1273,9 +1273,9 @@ async (page, selftest = null) => {
       return { toOrder: items.some((i) => /До замовлення/.test(i)), errors };
     };
     const hidden = await menuHas({ rewrite: [[/\/api\/v1\/products\/?\?/, (pg) => ({ ...pg, items: (pg.items ?? []).map((it) => ({ ...it, is_active: false })) })]] });
-    const reader = await menuHas({ me: { is_admin: false, role: 'user', permissions: without('projects:update') } });
+    const reader = await menuHas({ me: { is_admin: false, role: 'user', permissions: without('orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'orders:file_prints') } });
     return {
-      recipe: { url: `/products?q=${productP.sku || productP.code}`, fixture: ['GET /products/?… → the row hidden (is_active false)', 'GET /auth/me → without projects:update'] },
+      recipe: { url: `/products?q=${productP.sku || productP.code}`, fixture: ['GET /products/?… → the row hidden (is_active false)', 'GET /auth/me → without the Workshop’s update rights'] },
       measured: { hidden, reader },
       pass: !hidden.toOrder && !reader.toOrder && hidden.errors.length === 0 && reader.errors.length === 0,
     };

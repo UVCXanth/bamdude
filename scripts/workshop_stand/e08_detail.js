@@ -253,7 +253,7 @@ async (page, selftest = null) => {
   const groups = await read('/groups/');
   const groupList = Array.isArray(groups) ? groups : (groups.items ?? []);
   const adminPerms = (groupList.find((g) => g.name === 'Administrators') ?? { permissions: [] }).permissions;
-  const READER = { is_admin: false, role: 'user', permissions: adminPerms.filter((perm) => perm === 'projects:read' || !perm.startsWith('projects:')) };
+  const READER = { is_admin: false, role: 'user', permissions: adminPerms.filter((perm) => perm.endsWith(':read') || !/^(orders|products|customers|stock):/.test(perm)) };
   // Every row as the server sends it (the hidden and the one-off included) — the cell scenarios
   // show exactly these rows, chosen, never made up.
   const all = await read('/products/?page=1&all=true&include_adhoc=true&sort_by=name-asc');
@@ -456,7 +456,7 @@ async (page, selftest = null) => {
     const file = await shoot(p, 'header-reader@1440');
     await ctx.close();
     return {
-      recipe: { url: '/products', fixture: ['GET /auth/me: a reader — projects:read only (merged)'], actions: ['open the first row menu'] },
+      recipe: { url: '/products', fixture: ['GET /auth/me: a reader — the Workshop’s reads only (merged)'], actions: ['open the first row menu'] },
       measured: { buttons, manage, items, errors },
       pass: buttons.length === 2 && manage === 0 && items.length === 1 && items[0].text === 'Експорт ZIP' && errors.length === 0,
       screenshots: [file],

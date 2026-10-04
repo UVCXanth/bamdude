@@ -274,7 +274,7 @@ async (page, selftest = null) => {
   const groupList = Array.isArray(groups) ? groups : list(groups.items);
   const adminPerms = groupList.find((g) => g.name === 'Administrators')?.permissions ?? [];
   const without = (...drop) => adminPerms.filter((perm) => !drop.includes(perm));
-  const READER = { is_admin: false, role: 'user', permissions: without('projects:update', 'projects:create', 'projects:delete') };
+  const READER = { is_admin: false, role: 'user', permissions: without(...['orders:create', 'products:create', 'customers:create', 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'orders:delete', 'products:delete', 'customers:delete', 'orders:file_prints']) };
   const NAME1 = item1.product?.name ?? '';
   const CODE1 = item1.code ?? '';
   const MANUAL1 = list(item1.reservations).filter((r) => r.project_line_id == null).reduce((s, r) => s + r.qty, 0);
