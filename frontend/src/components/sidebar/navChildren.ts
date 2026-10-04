@@ -1,3 +1,5 @@
+import type { Permission } from '../../api/client';
+
 /** A badge a sidebar child may carry; the number comes from `useWorkshopBadges`. */
 export type NavBadgeKind = 'activeOrders' | 'draftProducts' | 'stockBelowMin';
 
@@ -12,6 +14,8 @@ export interface NavChild {
   labelKey: string;
   match: RegExp;
   badge?: NavBadgeKind;
+  /** The read that shows this entry (WS-13 E13 O13) — each child by its own domain's read. */
+  permission?: Permission;
 }
 
 /** The child the current path belongs to, or null outside the section. */

@@ -126,7 +126,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function PermissionRoute({ permission, children }: { permission: string; children: React.ReactNode }) {
+function PermissionRoute({ permission, children }: { permission: string | string[]; children: React.ReactNode }) {
   // Permission-gated route: any user holding the given permission can enter,
   // not just admins. Individual components below this guard apply their own
   // per-action permission checks (e.g. SettingsPage tabs each consult their
@@ -151,7 +151,9 @@ function PermissionRoute({ permission, children }: { permission: string; childre
     return <Navigate to="/login" replace state={{ from: location }} />;
   }
 
-  if (!hasPermission(permission as Parameters<typeof hasPermission>[0])) {
+  // A list is any of them — a page several domains read (the dispatch note, WS-13 E13 O25).
+  const required = (Array.isArray(permission) ? permission : [permission]) as Parameters<typeof hasPermission>[0][];
+  if (!required.some((p) => hasPermission(p))) {
     return <Navigate to="/" replace />;
   }
 
@@ -266,15 +268,20 @@ function App() {
                   <Route path="stats" element={<StatsPage />} />
                   <Route path="profiles" element={<ProfilesPage />} />
                   <Route path="maintenance" element={<MaintenancePage />} />
-                  <Route path="projects" element={<OrdersPage />} />
-                  <Route path="projects/:id" element={<OrderPage />} />
-                  <Route path="products" element={<ProductsPage />} />
-                  <Route path="products/:id" element={<ProductPage />} />
-                  <Route path="customers" element={<CustomersPage />} />
-                  <Route path="customers/:id" element={<CustomerPage />} />
-                  <Route path="stock" element={<StockPage />} />
-                  <Route path="stock/:id" element={<StockItemPage />} />
-                  <Route path="stock/dispatch-notes/:id" element={<DispatchNotePage />} />
+                  {/* The Workshop by its four reads (WS-13 E13 O13); a dispatch note by any of
+                      the three domains it belongs to — the server decides the rest (O25). */}
+                  <Route path="projects" element={<PermissionRoute permission="orders:read"><OrdersPage /></PermissionRoute>} />
+                  <Route path="projects/:id" element={<PermissionRoute permission="orders:read"><OrderPage /></PermissionRoute>} />
+                  <Route path="products" element={<PermissionRoute permission="products:read"><ProductsPage /></PermissionRoute>} />
+                  <Route path="products/:id" element={<PermissionRoute permission="products:read"><ProductPage /></PermissionRoute>} />
+                  <Route path="customers" element={<PermissionRoute permission="customers:read"><CustomersPage /></PermissionRoute>} />
+                  <Route path="customers/:id" element={<PermissionRoute permission="customers:read"><CustomerPage /></PermissionRoute>} />
+                  <Route path="stock" element={<PermissionRoute permission="stock:read"><StockPage /></PermissionRoute>} />
+                  <Route path="stock/:id" element={<PermissionRoute permission="stock:read"><StockItemPage /></PermissionRoute>} />
+                  <Route
+                    path="stock/dispatch-notes/:id"
+                    element={<PermissionRoute permission={['stock:read', 'orders:read', 'customers:read']}><DispatchNotePage /></PermissionRoute>}
+                  />
                   <Route path="inventory" element={<InventoryPage />} />
                   <Route path="files" element={<FileManagerPage />} />
                   <Route path="files/trash" element={<LibraryTrashPage />} />

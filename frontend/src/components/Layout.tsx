@@ -69,10 +69,10 @@ export const defaultNavItems: NavItem[] = [
   { id: 'stats', to: '/stats', icon: BarChart3, labelKey: 'nav.stats', group: 'operations' },
   // Workshop — what to print
   { id: 'projects', to: '/projects', icon: FolderKanban, labelKey: 'nav.projects', group: 'workshop', children: [
-    { id: 'orders', to: '/projects', labelKey: 'projects.tabs.orders', match: /^\/projects(\/|$)/, badge: 'activeOrders' },
-    { id: 'products', to: '/products', labelKey: 'projects.tabs.products', match: /^\/products(\/|$)/, badge: 'draftProducts' },
-    { id: 'customers', to: '/customers', labelKey: 'projects.tabs.customers', match: /^\/customers(\/|$)/ },
-    { id: 'stock', to: '/stock', labelKey: 'projects.tabs.stock', match: /^\/stock(\/|$)/, badge: 'stockBelowMin' },
+    { id: 'orders', to: '/projects', labelKey: 'projects.tabs.orders', match: /^\/projects(\/|$)/, badge: 'activeOrders', permission: 'orders:read' },
+    { id: 'products', to: '/products', labelKey: 'projects.tabs.products', match: /^\/products(\/|$)/, badge: 'draftProducts', permission: 'products:read' },
+    { id: 'customers', to: '/customers', labelKey: 'projects.tabs.customers', match: /^\/customers(\/|$)/, permission: 'customers:read' },
+    { id: 'stock', to: '/stock', labelKey: 'projects.tabs.stock', match: /^\/stock(\/|$)/, badge: 'stockBelowMin', permission: 'stock:read' },
   ] },
   { id: 'files', to: '/files', icon: FolderOpen, labelKey: 'nav.files', group: 'workshop' },
   { id: 'makerworld', to: '/makerworld', icon: MakerWorldIcon, labelKey: 'nav.makerworld', group: 'workshop' },
@@ -354,11 +354,13 @@ export function Layout() {
   const inboxVisible = !authEnabled || hasPermission('notifications:inbox');
   const { data: unreadCount = 0 } = useInboxUnreadCount(inboxVisible);
 
-  // The Projects section's badges — asked only when its entry is shown (the
-  // same test `isHidden` applies, `navPermissions.projects`). A failed count
-  // reads as 0: a hint, not data, so the badge just stays away.
-  const canSeeProjects = !authEnabled || hasPermission('orders:read');
-  const { data: navBadges } = useWorkshopBadges(canSeeProjects);
+  // The Workshop's badges — asked only by someone who reads one of their domains
+  // (orders, products, stock: the server's own gate; customers carry no badge). A
+  // masked figure arrives as null and, like a failed count, shows no badge: a hint,
+  // not data (WS-13 E13 O12).
+  const canSeeWorkshopBadges =
+    !authEnabled || hasPermission('orders:read') || hasPermission('products:read') || hasPermission('stock:read');
+  const { data: navBadges } = useWorkshopBadges(canSeeWorkshopBadges);
   const workshopBadges = {
     activeOrders: navBadges?.active_orders ?? 0,
     draftProducts: navBadges?.draft_products ?? 0,
@@ -1071,7 +1073,16 @@ export function Layout() {
                     <Fragment key={id}>
                       {groupHeader}
                       <NavParentItem
-                        item={{ id, icon: navItem.icon, labelKey: navItem.labelKey, children: navItem.children }}
+                        item={{
+                          id,
+                          icon: navItem.icon,
+                          labelKey: navItem.labelKey,
+                          // Each entry by its own read (WS-13 E13 O13): the section shows with any
+                          // of them, and inside it only what the caller may open.
+                          children: navItem.children.filter(
+                            (child) => !authEnabled || !child.permission || hasPermission(child.permission),
+                          ),
+                        }}
                         expanded={showText}
                         showGrip={sidebarExpanded && !isSidebarCompact}
                         badges={workshopBadges}
