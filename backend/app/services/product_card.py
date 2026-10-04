@@ -751,7 +751,7 @@ def _write_export(
     return name, manifest
 
 
-async def export_zip(db: AsyncSession, product: Any) -> ExportArchive:
+async def export_zip(db: AsyncSession, product: Any, *, visible=None) -> ExportArchive:
     """The product as a ZIP on disk, and the names to offer it under.
 
     The archive is a temp file the CALLER deletes — see :class:`ExportArchive`.
@@ -766,6 +766,10 @@ async def export_zip(db: AsyncSession, product: Any) -> ExportArchive:
     """
     specs: list[_FileSpec] = []
     for row in await _files_to_export(db, product):
+        # A file the reader may not see in the library is not the export's to hand over
+        # (WS-13 E13 CAT-05) — left out like a file whose bytes are gone, plates included.
+        if visible is not None and not visible(row):
+            continue
         path = resolve_disk_path(row)
         if path is None:
             logger.info("Export of product %s skips file %s: its bytes are gone", product.id, row.id)

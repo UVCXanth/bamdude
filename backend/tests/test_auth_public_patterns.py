@@ -78,7 +78,7 @@ _GATE_DEPENDENCY: dict[str, tuple[str, ...]] = {
     "monitor-token": ("kiosk_access",),
     # Two factories, one gate: a resource with an ownership rule takes the
     # ownership form, one without takes the permission form.
-    "media-token": ("require_media_ownership_permission", "require_media_permission"),
+    "media-token": ("require_media_ownership_permission", "require_media_permission", "require_media_any_permission"),
 }
 _DEPENDENCY_GATES = frozenset(_GATE_DEPENDENCY)
 _HANDLER_GATES = frozenset({"slicer-token", "pre-auth", "nonce"})

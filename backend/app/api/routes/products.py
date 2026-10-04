@@ -37,17 +37,28 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 from backend.app.api.routes._workshop_rights import (
     WorkshopView,
     bind_workshop_credentials,
+    ensure_consequence,
     read_required,
     workshop_view,
 )
 from backend.app.api.routes.library import file_name_visible, library_file_name_visible
-from backend.app.core.auth import RequirePermission, library_name_scope, require_media_permission
+from backend.app.core.auth import (
+    RequestCredentials,
+    RequirePermission,
+    library_name_scope,
+    request_credentials,
+    require_media_any_permission,
+    require_media_permission,
+    require_ownership_permission,
+    require_permission,
+)
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.i18n.api_errors import json_error
-from backend.app.models.finished_stock import StockItem, StockItemChoice
+from backend.app.models.finished_stock import StockItem, StockItemChoice, StockItemMovement
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.line_config import ProjectLineChoice
+from backend.app.models.part_stock import ProductPartStockMovement
 from backend.app.models.product import (
     FACET_KINDS,
     Product,
@@ -62,7 +73,7 @@ from backend.app.models.product import (
 from backend.app.models.product_category import ProductCategory
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
 from backend.app.models.project import Project
-from backend.app.models.project_line import ProjectLine, ProjectProcurement
+from backend.app.models.project_line import ProjectLine, ProjectLinePartStock, ProjectProcurement
 from backend.app.models.user import User
 from backend.app.schemas.farm_forecast import EstimateReasonOut
 from backend.app.schemas.listing import (
@@ -527,6 +538,29 @@ async def _full_response(db: AsyncSession, product: Product, *, reload_links: bo
         created_at=created_at,
         updated_at=updated_at,
     )
+
+
+# A product door that links or unlinks a library file or folder asks what the library side
+# asks (WS-13 E13 CAT-15): the library's own update right — over each file, ``update_own``
+# only the caller's own; a folder has no owner, so ``update_all``.
+_library_update = require_ownership_permission(Permission.LIBRARY_UPDATE_ALL, Permission.LIBRARY_UPDATE_OWN)
+_library_update_all = require_permission(Permission.LIBRARY_UPDATE_ALL)
+
+
+async def _ensure_may_link_files(
+    db: AsyncSession, creds: RequestCredentials, file_ids: set[int], *, adding: set[int]
+) -> None:
+    """Every file this door links or unlinks: it exists — and one taking a NEW link is outside
+    the trash (404 as a missing one) — and the caller may change it in the library."""
+    if not file_ids:
+        return
+    files = {f.id: f for f in (await db.execute(select(LibraryFile).where(LibraryFile.id.in_(file_ids)))).scalars()}
+    missing = sorted(fid for fid in file_ids if fid not in files or (fid in adding and files[fid].deleted_at))
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Library files not found: {missing}")
+    user, can_modify_all = await creds.check(_library_update)
+    if not can_modify_all and any(user is None or f.created_by_id != user.id for f in files.values()):
+        raise HTTPException(status_code=403, detail="You can only update your own files")
 
 
 async def _file_product_ids(db: AsyncSession, file_id: int) -> set[int]:
@@ -1312,7 +1346,10 @@ async def import_product(
 
 @router.get("/{product_id}/export")
 async def export_product(
-    product_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PRODUCTS_READ)
+    product_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.PRODUCTS_READ),
 ):
     """The product as a ZIP: ``product.json``, its files, its attachments.
 
@@ -1321,7 +1358,8 @@ async def export_product(
     deleting it here would serve an empty download. Starlette runs the task once
     the response has been sent.
     """
-    archive = await export_zip(db, await _get(db, product_id))
+    scope = await library_name_scope(request, db, user)
+    archive = await export_zip(db, await _get(db, product_id), visible=lambda f: file_name_visible(f, user, scope))
     return FileResponse(
         archive.path,
         media_type="application/zip",
@@ -1357,12 +1395,26 @@ async def update_product(
 
 @router.delete("/{product_id}")
 async def delete_product(
-    product_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PRODUCTS_DELETE)
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PRODUCTS_DELETE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     product = await _get(db, product_id)
     await product_gate.product_gate(db, [product.id])
     if await _lines_count(db, product_id):
         raise HTTPException(status_code=409, detail="Product is used by an order line; remove the lines first")
+    # The free parts' ledger and the empty finished positions' history go with the product:
+    # a correction of the stock's books (WS-13 E13 O24), asked behind the gate, before a write.
+    part_ids = select(ProductPart.id).where(ProductPart.product_id == product.id)
+    item_ids = select(StockItem.id).where(StockItem.product_id == product.id)
+    if await db.scalar(
+        select(
+            exists().where(ProductPartStockMovement.product_part_id.in_(part_ids))
+            | exists().where(StockItemMovement.item_id.in_(item_ids))
+        )
+    ):
+        await ensure_consequence(creds, Permission.STOCK_ADJUST)
     try:
         await product_delete.delete_product(db, product)
     except finished_stock.FinishedStockError as e:
@@ -1444,7 +1496,8 @@ async def duplicate_product(
     product_id: int,
     data: ProductDuplicate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PRODUCTS_CREATE),
+    _: User | None = RequirePermission(Permission.PRODUCTS_CREATE, Permission.PRODUCTS_READ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Composition, aliases, links, pictures and documents: a copy, never a move.
 
@@ -1496,11 +1549,27 @@ async def duplicate_product(
     # for every file the copy ends up linked to, from the file's own metadata —
     # copying them here as well only avoided ``uq_product_plates_file_plate``
     # because autoflush happened to run before the sync read them.
+    # The copy's links are library writes: made only as far as the caller may link in the
+    # library (WS-13 E13 CAT-08) — the rest are left behind and the answer says so.
+    try:
+        link_user, link_all = await creds.check(_library_update)
+    except HTTPException as refused:
+        if refused.status_code != 403:
+            raise
+        link_user, link_all = None, None
+    links_skipped = False
     for f in list(source.library_files):
+        if link_all is None or not (link_all or (link_user is not None and f.created_by_id == link_user.id)):
+            links_skipped = True
+            continue
         await sync_product_for_file(
             db, library_file_id=f.id, product_ids=sorted(await _file_product_ids(db, f.id) | {copy.id})
         )
-    for folder in list(source.library_folders):
+    folders = list(source.library_folders)
+    if folders and not await creds.allows(_library_update_all):
+        links_skipped = True
+        folders = []
+    for folder in folders:
         await _apply_folder(db, folder.id, await _folder_product_ids(db, folder.id) | {copy.id})
 
     # Read the JSON column into plain dicts HERE, on the loop, before the thread
@@ -1513,7 +1582,8 @@ async def duplicate_product(
         source.cover_image_filename,
     )
     await db.flush()
-    return await _response(db, copy, reload_links=True)
+    response = await _response(db, copy, reload_links=True)
+    return response.model_copy(update={"links_skipped": links_skipped})
 
 
 # ---------- parts ----------
@@ -1707,6 +1777,7 @@ async def delete_part(
     part_id: int,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     product = await _get(db, product_id)
     # The gate, then everything the deletion rewrites or removes, without waiting
@@ -1718,6 +1789,18 @@ async def delete_part(
         raise _busy(e) from e
     product = await _get(db, product_id, fresh=True)  # the part as it stands behind the gate
     part = await _part(db, product, part_id)
+    # What the delete destroys beyond the catalog asks that domain's right too (WS-13 E13
+    # O24), behind the locks and before a write: the part's shelf history and balance; an
+    # order's acquisitions of it and a parts line's counters.
+    if await db.scalar(select(exists().where(ProductPartStockMovement.product_part_id == part_id))):
+        await ensure_consequence(creds, Permission.STOCK_ADJUST)
+    if await db.scalar(
+        select(
+            exists().where(ProjectProcurement.product_part_id == part_id)
+            | exists().where(ProjectLinePartStock.part_id == part_id)
+        )
+    ):
+        await ensure_consequence(creds, Permission.ORDERS_UPDATE)
     # ``project_procurement.product_part_id`` is ON DELETE CASCADE, which
     # PostgreSQL honours and SQLite does not — this codebase never sets
     # ``PRAGMA foreign_keys = ON``. Left behind, the row counts acquisitions
@@ -1743,6 +1826,7 @@ async def merge_part(
     data: ProductPartMerge,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     product = await _get(db, product_id)
     await product_gate.product_gate(db, [product.id])
@@ -1756,6 +1840,9 @@ async def merge_part(
     target, source = await _part(db, product, part_id), await _part(db, product, data.source_part_id)
     if target is source:
         raise HTTPException(status_code=400, detail="A part cannot be merged into itself")
+    # The orders' acquisitions of the source are dropped, not carried (WS-13 E13 O24).
+    if await db.scalar(select(exists().where(ProjectProcurement.product_part_id == source.id))):
+        await ensure_consequence(creds, Permission.ORDERS_UPDATE)
     if target.ignored and not source.ignored and await line_config.part_in_use(db, source.id):
         # A line would come to want a part marked «не рахувати» (final review M6).
         raise HTTPException(
@@ -2342,17 +2429,12 @@ async def set_files(
     data: FileLinkRequest,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     product = await _get(db, product_id)
     wanted = set(data.library_file_ids)
-    found = (
-        set((await db.execute(select(LibraryFile.id).where(LibraryFile.id.in_(wanted)))).scalars().all())
-        if wanted
-        else set()
-    )
-    if wanted - found:
-        raise HTTPException(status_code=404, detail=f"Library files not found: {sorted(wanted - found)}")
     current = {f.id for f in product.library_files}
+    await _ensure_may_link_files(db, creds, current ^ wanted, adding=wanted - current)
     # Only the files whose membership actually changes are touched, and each is
     # re-synced against its OWN full product set — never against this product
     # alone, which would evict every co-owner from the pivot.
@@ -2369,8 +2451,10 @@ async def unlink_file(
     file_id: int,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     product = await _get(db, product_id)
+    await _ensure_may_link_files(db, creds, {file_id}, adding=set())
     desired = await _file_product_ids(db, file_id) - {product_id}
     await sync_product_for_file(db, library_file_id=file_id, product_ids=sorted(desired))
     return await _response(db, product, reload_links=True)
@@ -2382,9 +2466,12 @@ async def set_folders(
     data: FolderLinkRequest,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     product = await _get(db, product_id)
     wanted = set(data.library_folder_ids)
+    if wanted ^ {f.id for f in product.library_folders}:
+        await creds.check(_library_update_all)
     found = (
         set((await db.execute(select(LibraryFolder.id).where(LibraryFolder.id.in_(wanted)))).scalars().all())
         if wanted
@@ -2406,8 +2493,10 @@ async def unlink_folder(
     folder_id: int,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     product = await _get(db, product_id)
+    await creds.check(_library_update_all)
     await _apply_folder(db, folder_id, await _folder_product_ids(db, folder_id) - {product_id})
     return await _response(db, product, reload_links=True)
 
@@ -2438,8 +2527,9 @@ async def _linked_file(db: AsyncSession, product: Product, file_id: int) -> Libr
 async def reread_card(
     product_id: int,
     file_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
+    user: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     """Read the card out of a linked file again.
 
@@ -2450,6 +2540,10 @@ async def reread_card(
     """
     product = await _get(db, product_id)
     file = await _linked_file(db, product, file_id)
+    # Its pictures and documents become attachments any reader of the product downloads:
+    # only a file the caller may see in the library (WS-13 E13 CAT-16) — 404 as an unlinked one.
+    if not file_name_visible(file, user, await library_name_scope(request, db, user)):
+        raise HTTPException(status_code=404, detail="That file is not linked to this product")
     notes = await fill_from_file(db, product, file, replace_3mf_attachments=True)
     await db.flush()
     return RereadResponse(product=await _response(db, product), notes=notes)
@@ -2757,7 +2851,7 @@ async def set_product_cover_image(
 async def get_product_cover_image(
     product_id: int,
     db: AsyncSession = Depends(get_db),
-    _=Depends(require_media_permission(Permission.PRODUCTS_READ)),
+    _=Depends(require_media_any_permission(Permission.PRODUCTS_READ, Permission.ORDERS_READ, Permission.STOCK_READ)),
 ):
     """The effective cover — the explicit column, else the first picture.
 

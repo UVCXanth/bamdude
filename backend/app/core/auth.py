@@ -2331,6 +2331,32 @@ def require_media_permission(*permissions: str | Permission):
     return media_checker
 
 
+def require_media_any_permission(*permissions: str | Permission):
+    """:func:`require_media_permission` for a picture that is a LABEL in several domains — a
+    product's cover in its catalog card, an order line and a stock row (WS-13 E13 CAT-18):
+    the token's user, or the headers, need ANY of *permissions*."""
+    perm_strings = [p.value if isinstance(p, Permission) else p for p in permissions]
+    header_checker = require_any_permission(*permissions)
+
+    async def media_checker(
+        request: Request,
+        token: str | None = None,
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
+        x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    ) -> User | None:
+        if token:
+            authority = await _media_token_authority(token)
+            if not authority.has_any(*perm_strings):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Missing any of the required permissions: {', '.join(perm_strings)}",
+                )
+            return authority.user
+        return await header_checker(request=request, credentials=credentials, x_api_key=x_api_key)
+
+    return media_checker
+
+
 def require_media_ownership_permission(all_permission: str | Permission, own_permission: str | Permission):
     """Media-route dependency for an ownership-scoped resource (audit D9 a2).
 

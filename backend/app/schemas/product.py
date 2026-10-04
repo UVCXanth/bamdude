@@ -670,6 +670,9 @@ class ProductResponse(ProductListItem):
     #: and DISTINCT orders with a line of this product, whatever their status.
     documents_count: int = 0
     orders_count: int | None = 0
+    #: A copy made without the library's right to link left the source's files and folders
+    #: behind (WS-13 E13 CAT-08); only a duplicate's answer sets it.
+    links_skipped: bool = False
     created_at: datetime
     updated_at: datetime
 
