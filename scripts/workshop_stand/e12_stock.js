@@ -270,7 +270,7 @@ async (page, selftest = null) => {
   const READER = { is_admin: false, role: 'user', permissions: without('projects:update', 'projects:create', 'projects:delete') };
   const NAME1 = item1.product?.name ?? '';
   const CODE1 = item1.code ?? '';
-  const MANUAL1 = list(item1.reservations).filter((r) => r.project_id == null).reduce((s, r) => s + r.qty, 0);
+  const MANUAL1 = list(item1.reservations).filter((r) => r.project_line_id == null).reduce((s, r) => s + r.qty, 0);
   const tail = list(product16.variant_groups)[0] ?? { id: 0, name: '', default_option_id: 0, options: [] };
   const STANDARD16 = tail.default_option_id;
   const OTHER16 = tail.options.find((o) => o.id !== STANDARD16)?.id ?? 0;
@@ -833,6 +833,41 @@ async (page, selftest = null) => {
     };
   });
 
+  await scenario('journal-st2-cached', ['E12-E02', 'E12-R05'], async () => {
+    // Codex E12-V03: a book visited before keeps its product list in the cache. Back on that
+    // book the cached list names the options, but the product goes only on the answer read now.
+    let hold = false;
+    const { ctx, p, errors } = await open(1440, { gets: [[ST2, async (url) => {
+      if (/book=parts/.test(url)) {
+        while (hold) await new Promise((r) => setTimeout(r, 100));
+      }
+      return null;
+    }]] });
+    await goto(p, '/stock?tab=journal&book=parts');
+    await p.getByLabel('Книга').selectOption('finished');
+    await p.waitForTimeout(1200);
+    await p.getByLabel('Виріб').selectOption(String(finishedOnly.id));
+    await p.waitForTimeout(800);
+    const chosen = await urlOf(p);
+    hold = true;
+    await p.getByLabel('Книга').selectOption('parts');
+    await p.waitForTimeout(1500);
+    const held = { value: await p.getByLabel('Виріб').inputValue(), url: await urlOf(p) };
+    const file = await shoot(p, 'journal-st2-cached');
+    hold = false;
+    await p.waitForTimeout(1500);
+    const after = { value: await p.getByLabel('Виріб').inputValue(), url: await urlOf(p) };
+    await ctx.close();
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: { url: `/stock?tab=journal&book=parts → «Готові вироби» → product ${finishedOnly.id} → «Вільні деталі»`, fixture: ['GET /stock/journal/products?book=parts held on the second visit, then the stand'] },
+      measured: { chosen, held, after, errors },
+      pass: chosen.includes(`product=${finishedOnly.id}`) && held.value === String(finishedOnly.id) &&
+        held.url.includes(`product=${finishedOnly.id}`) && after.value === '' && !after.url.includes('product=') && errors.length === 0,
+      screenshots: [file],
+    };
+  });
+
   // ---------------------------------------------------------------- the position (F)
   await scenario('position@1440', ['E12-F01', 'E12-F02', 'E12-F03', 'E12-F04', 'E12-F05'], async () => {
     const { ctx, p, errors } = await open(1440);
@@ -1348,6 +1383,42 @@ async (page, selftest = null) => {
     };
   });
 
+  await scenario('notes-count-failed', ['E12-B03'], async () => {
+    // Codex E12-V04: a count that answered, then failed to re-read, is unknown — the tab shows no
+    // number until a read answers again. A waybill save is what reads the notes' key again.
+    let fail = false;
+    const writes = [];
+    const { ctx, p, errors } = await open(1440, {
+      gets: [[NOTES, (url) => (COUNT(url) && fail ? { fail: 500 } : null)]],
+      writes: [recorder(writes, /\/api\/v1\/stock-issues\/\d+$/)],
+    });
+    await goto(p, '/stock?tab=notes');
+    const tab = p.getByRole('tab', { name: /^Накладні/ });
+    const save = async (value) => {
+      const row = p.locator('[data-testid^="note-"]:not([data-testid$="-lines"])').first();
+      await row.getByRole('button', { name: 'Змінити ТТН' }).click();
+      await row.getByLabel('ТТН', { exact: true }).fill(value);
+      await row.getByLabel('ТТН', { exact: true }).press('Enter');
+      await p.waitForTimeout(3000);
+    };
+    const before = await textOf(tab);
+    fail = true;
+    await save('C1');
+    const failed = await textOf(tab);
+    const file = await shoot(p, 'notes-count-failed');
+    fail = false;
+    await save('C2');
+    const after = await textOf(tab);
+    await ctx.close();
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: { url: '/stock?tab=notes → a waybill saved twice', fixture: ['GET /stock-issues?per_page=1 500 after the first answer, then the stand', 'PATCH answered by the runner'] },
+      measured: { before, failed, after, writes: writes.length, errors: errors.filter((e) => !/500/.test(e)) },
+      pass: before === `Накладні (${notesCount})` && failed === 'Накладні' && after === `Накладні (${notesCount})` && writes.length === 2,
+      screenshots: [file],
+    };
+  });
+
   await scenario('waybill-cycle', ['E12-J03', 'E12-R08'], async () => {
     const out = {};
     // Enter and a click under one request — one PATCH; Escape under it does nothing.
@@ -1423,6 +1494,77 @@ async (page, selftest = null) => {
         out.stillOpen === 1 && out.focusAfter === 'Змінити ТТН' && out.refusal.text === 'Номер ТТН — не довше 24 символів' &&
         out.refusal.kept === 'X1' && out.refusal.focus === 'ТТН' && out.retryClosed === 0 &&
         out.left.rows === 0 && out.left.focus === 'H1' && out.errors.length === 0,
+      screenshots: [out.file],
+    };
+  });
+
+  await scenario('waybill-note-switch', ['E12-J03', 'E12-R08'], async () => {
+    // Codex E12-V01: the note page stays mounted from one note to the next. A draft typed on the
+    // first is not carried to the second, and a save still on its way for the first changes
+    // nothing there when it answers.
+    const out = {};
+    const other = list(notesPage.items).find((n) => n.id !== N1) ?? { id: 0, code: '', waybill: null };
+    const toOther = (p) => p.evaluate((id) => {
+      history.pushState({}, '', `/stock/dispatch-notes/${id}`);
+      dispatchEvent(new PopStateEvent('popstate'));
+    }, other.id);
+    const arrived = (p) => p.getByRole('heading', { level: 1, name: new RegExp(other.code) }).waitFor({ timeout: 8000 });
+    {
+      const writes = [];
+      const { ctx, p, errors } = await open(1440, { writes: [recorder(writes, /\/api\/v1\/stock-issues\/\d+$/)] });
+      await goto(p, `/stock/dispatch-notes/${N1}`);
+      const controls = p.getByTestId('dispatch-note-controls');
+      await controls.getByRole('button', { name: 'Змінити ТТН' }).click();
+      await controls.getByLabel('ТТН', { exact: true }).fill('FOR-NOTE-ONE');
+      await toOther(p);
+      await arrived(p);
+      await p.waitForTimeout(600);
+      out.draft = {
+        open: await controls.getByLabel('ТТН', { exact: true }).count(),
+        carried: (await textOf(controls)).includes('FOR-NOTE-ONE'),
+      };
+      out.file = await shoot(p, 'waybill-note-switch');
+      await controls.getByRole('button', { name: 'Змінити ТТН' }).click();
+      out.draft.opened = await controls.getByLabel('ТТН', { exact: true }).inputValue();
+      out.draft.writes = writes.length;
+      out.draft.errors = errors;
+      await ctx.close();
+    }
+    {
+      let release = () => {};
+      const gate = new Promise((r) => { release = r; });
+      const writes = [];
+      const { ctx, p, errors } = await open(1440, { writes: [recorder(writes, /\/api\/v1\/stock-issues\/\d+$/, async () => {
+        await gate;
+        return { __status: 422, json: { detail: 'Номер ТТН — не довше 24 символів' } };
+      })] });
+      await goto(p, `/stock/dispatch-notes/${N1}`);
+      const controls = p.getByTestId('dispatch-note-controls');
+      await controls.getByRole('button', { name: 'Змінити ТТН' }).click();
+      await controls.getByLabel('ТТН', { exact: true }).fill('LATE-ONE');
+      await controls.getByLabel('ТТН', { exact: true }).press('Enter');
+      await p.waitForTimeout(300);
+      await toOther(p);
+      await arrived(p);
+      release();
+      await p.waitForTimeout(1500);
+      out.late = {
+        writes: writes.map((w) => w.path),
+        alert: await controls.getByRole('alert').count(),
+        open: await controls.getByLabel('ТТН', { exact: true }).count(),
+        carried: (await textOf(controls)).includes('LATE-ONE'),
+        errors,
+      };
+      await ctx.close();
+    }
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: { url: `/stock/dispatch-notes/${N1} → history to ${other.code} (the page stays mounted)`, fixture: ['PATCH answered by the runner', 'PATCH held, then 422'] },
+      measured: { other: other.code, ...out, file: undefined },
+      pass: other.id > 0 && out.draft.open === 0 && !out.draft.carried && out.draft.opened === (other.waybill ?? '') &&
+        out.draft.writes === 0 && out.draft.errors.length === 0 &&
+        out.late.writes.length === 1 && out.late.writes[0].endsWith(`/stock-issues/${N1}`) && out.late.alert === 0 &&
+        out.late.open === 0 && !out.late.carried,
       screenshots: [out.file],
     };
   });
