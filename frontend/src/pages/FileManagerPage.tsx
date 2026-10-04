@@ -10,6 +10,7 @@ import {
   // native listener below, and importing React's under the same name would
   // silently retype it.
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router';
@@ -111,6 +112,8 @@ import { QueueSequencer } from '../components/QueueSequencer';
 import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
 import { LinkToProductsModal } from '../components/products/LinkToProductsModal';
 import { invalidateProductFiles, invalidateQueueViews } from '../utils/queryInvalidation';
+import { canLinkFile, canLinkFolder, moveChangesProducts } from '../utils/workshopRights';
+import { writableFolders } from '../utils/folderTree';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
 type SortDirection = 'asc' | 'desc';
@@ -405,21 +408,36 @@ function RenameModal({ type, currentName, onClose, onSave, isLoading, t }: Renam
 // Move Files Modal
 interface MoveFilesModalProps {
   folders: LibraryFolderTree[];
-  selectedFiles: number[];
+  /** The files being moved — their products decide which folders a move may reach. */
+  files: LibraryFileListItem[];
   currentFolderId: number | null;
+  /** `projects:update`: a move that changes a file's products needs it (WS-13 E13 B01). */
+  canChangeProducts: boolean;
   onClose: () => void;
   onMove: (folderId: number | null) => void;
   isLoading: boolean;
   t: TFunction;
 }
 
-function MoveFilesModal({ folders, selectedFiles, currentFolderId, onClose, onMove, isLoading, t }: MoveFilesModalProps) {
+function MoveFilesModal({ folders, files, currentFolderId, canChangeProducts, onClose, onMove, isLoading, t }: MoveFilesModalProps) {
   const [targetFolder, setTargetFolder] = useState<number | null>(null);
+  // A move replaces each file's products with the folder's (the root has none), so a
+  // folder that would change them is not offered without the right to change orders —
+  // the server refuses it anyway, and the dialog says why rather than failing after.
+  const productsOf = (folderId: number | null) =>
+    folderId == null
+      ? []
+      : (writableFolders(folders).find((row) => row.folder.id === folderId)?.folder.products ?? []).map((p) => p.id);
+  const locked = (folderId: number | null) =>
+    !canChangeProducts && moveChangesProducts(files, productsOf(folderId));
+  const anyLocked = [null, ...writableFolders(folders).map((row) => row.folder.id)].some(
+    (id) => id !== currentFolderId && locked(id),
+  );
 
   return (
     <Modal
       onClose={onClose}
-      title={t('fileManager.moveFiles', { count: selectedFiles.length })}
+      title={t('fileManager.moveFiles', { count: files.length })}
       size="sm"
     >
       <div className="p-4 space-y-4">
@@ -430,17 +448,43 @@ function MoveFilesModal({ folders, selectedFiles, currentFolderId, onClose, onMo
           rootLabel={t('fileManager.rootNoFolder')}
           disabledId={currentFolderId}
           disabledLabel={t('fileManager.current')}
+          locked={locked}
+          lockedLabel={t('fileManager.moveChangesProducts')}
         />
+        {anyLocked && <p className="text-xs text-bambu-gray">{t('fileManager.moveChangesProductsHint')}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
             {t('common.cancel')}
           </Button>
-          <Button onClick={() => onMove(targetFolder)} disabled={isLoading}>
+          <Button onClick={() => onMove(targetFolder)} disabled={isLoading || locked(targetFolder)}>
             {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : t('common.move')}
           </Button>
         </div>
       </div>
     </Modal>
+  );
+}
+
+/**
+ * A file's or folder's product links: a button that manages them where the caller may
+ * link (WS-13 E13 B06), the same mark read-only where not — the links stay visible.
+ */
+function LinkedMark({ onManage, className, manageClassName, title, children }: {
+  onManage?: (e: ReactMouseEvent) => void;
+  className: string;
+  /** The hover look, only on the button. */
+  manageClassName: string;
+  title: string;
+  children: ReactNode;
+}) {
+  return onManage ? (
+    <button onClick={onManage} className={`${className} ${manageClassName}`} title={title}>
+      {children}
+    </button>
+  ) : (
+    <span className={className} title={title}>
+      {children}
+    </span>
   );
 }
 
@@ -484,6 +528,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
   const linkedTo = folder.products;
   const isLinked = linkedTo.length > 0;
   const isExternal = folder.is_external;
+  const canLink = canLinkFolder(hasPermission);
   // The row has no room for a date column — the order icon → name → lock →
   // link → count → menu is deliberate and keeps every row's right edge aligned.
   // So the sort key lives in the name's tooltip, where it explains why a folder
@@ -535,9 +580,10 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
             row's right edge stays vertically aligned regardless of whether
             the folder is linked, external, or empty. */}
         {isLinked ? (
-          <button
-            onClick={(e) => { e.stopPropagation(); onLink(folder); }}
-            className="flex-shrink-0 flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400 hover:bg-blue-200 dark:hover:bg-blue-500/30 transition-colors"
+          <LinkedMark
+            onManage={canLink ? (e) => { e.stopPropagation(); onLink(folder); } : undefined}
+            className="flex-shrink-0 flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400"
+            manageClassName="hover:bg-blue-200 dark:hover:bg-blue-500/30 transition-colors"
             title={linkedTo.map(p => p.name).join(', ')}
           >
             <Link2 className="w-3 h-3" />
@@ -545,8 +591,8 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
             {linkedTo.length > 1 && (
               <span className="text-[10px] font-semibold">×{linkedTo.length}</span>
             )}
-          </button>
-        ) : !isExternal ? (
+          </LinkedMark>
+        ) : !isExternal && canLink ? (
           <button
             onClick={(e) => { e.stopPropagation(); onLink(folder); }}
             className="flex-shrink-0 p-1 rounded hover:bg-bambu-dark-tertiary"
@@ -584,11 +630,17 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
                 </button>
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('library:update_all') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                    canLink ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                   }`}
-                  onClick={() => { if (hasPermission('library:update_all')) { onLink(folder); setShowActions(false); } }}
-                  disabled={!hasPermission('library:update_all')}
-                  title={!hasPermission('library:update_all') ? t('fileManager.noPermissionLinkFolder') : undefined}
+                  onClick={() => { if (canLink) { onLink(folder); setShowActions(false); } }}
+                  disabled={!canLink}
+                  title={
+                    !hasPermission('library:update_all')
+                      ? t('fileManager.noPermissionLinkFolder')
+                      : !canLink
+                        ? t('fileManager.noPermissionLinkProducts')
+                        : undefined
+                  }
                 >
                   <Link2 className="w-3.5 h-3.5" />
                   {isLinked ? t('fileManager.changeLink') : t('fileManager.linkTo')}
@@ -972,6 +1024,7 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
   // ⚠️ The two modes need different permissions: slicing through the sidecar
   // writes a new library file, while opening in a desktop slicer is a download.
   const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
+  const canLink = canLinkFile(hasPermission, canModify, file.created_by_id);
   const [showActions, setShowActions] = useState(false);
   // Portal-rendered dropdown — the card root has `overflow-hidden` for the
   // thumbnail crop, which clips an absolute-positioned menu against the card
@@ -1102,18 +1155,21 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
         {onLink && (
           <div className="absolute bottom-2 right-2" onClick={(e) => e.stopPropagation()}>
             {file.product_ids.length > 0 ? (
-              <button
-                onClick={() => onLink(file)}
-                className="rounded-md bg-blue-500/85 backdrop-blur text-white hover:bg-blue-500 transition-colors flex items-center gap-1 px-1.5 py-1"
-                title={t('fileManager.linkedToNProducts', { count: file.product_ids.length })}
+              <LinkedMark
+                onManage={canLink ? () => onLink(file) : undefined}
+                className="rounded-md bg-blue-500/85 backdrop-blur text-white flex items-center gap-1 px-1.5 py-1"
+                manageClassName="hover:bg-blue-500 transition-colors"
+                title={t(canLink ? 'fileManager.linkedToNProducts' : 'fileManager.linkedToNProductsReadOnly', {
+                  count: file.product_ids.length,
+                })}
               >
                 <Link2 className="w-5 h-5" />
                 <Briefcase className="w-4 h-4" />
                 {file.product_ids.length > 1 && (
                   <span className="text-[10px] font-semibold">×{file.product_ids.length}</span>
                 )}
-              </button>
-            ) : canModify('library', 'update', file.created_by_id) ? (
+              </LinkedMark>
+            ) : canLink ? (
               <button
                 onClick={() => onLink(file)}
                 className="rounded-md bg-bambu-dark/80 backdrop-blur text-bambu-gray hover:text-bambu-green hover:bg-bambu-dark transition-colors flex items-center p-1 can-hover:opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
@@ -3572,10 +3628,18 @@ export function FileManagerPage() {
                       )}
                       {/* Product link / unlink — sits with the other inline actions */}
                       {file.product_ids.length > 0 ? (
-                        <button
-                          onClick={() => setLinkFile(file)}
-                          className="p-1.5 rounded bg-blue-500/20 hover:bg-blue-500/30 flex items-center gap-1 transition-colors"
-                          title={t('fileManager.linkedToNProducts', { count: file.product_ids.length })}
+                        <LinkedMark
+                          onManage={
+                            canLinkFile(hasPermission, canModify, file.created_by_id) ? () => setLinkFile(file) : undefined
+                          }
+                          className="p-1.5 rounded bg-blue-500/20 flex items-center gap-1"
+                          manageClassName="hover:bg-blue-500/30 transition-colors"
+                          title={t(
+                            canLinkFile(hasPermission, canModify, file.created_by_id)
+                              ? 'fileManager.linkedToNProducts'
+                              : 'fileManager.linkedToNProductsReadOnly',
+                            { count: file.product_ids.length },
+                          )}
                         >
                           <Link2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                           <Briefcase className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
@@ -3584,8 +3648,8 @@ export function FileManagerPage() {
                               ×{file.product_ids.length}
                             </span>
                           )}
-                        </button>
-                      ) : canModify('library', 'update', file.created_by_id) ? (
+                        </LinkedMark>
+                      ) : canLinkFile(hasPermission, canModify, file.created_by_id) ? (
                         <button
                           onClick={() => setLinkFile(file)}
                           className="p-1.5 rounded transition-colors hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green"
@@ -3780,8 +3844,9 @@ export function FileManagerPage() {
       {showMoveModal && folders && (
         <MoveFilesModal
           folders={folders}
-          selectedFiles={selectedFiles}
+          files={(files ?? []).filter((f) => selectedFiles.includes(f.id))}
           currentFolderId={selectedFolderId}
+          canChangeProducts={hasPermission('projects:update')}
           onClose={() => setShowMoveModal(false)}
           onMove={(folderId) => moveFilesMutation.mutate({ fileIds: selectedFiles, folderId })}
           isLoading={moveFilesMutation.isPending}
@@ -3794,8 +3859,9 @@ export function FileManagerPage() {
       {moveFile && folders && (
         <MoveFilesModal
           folders={folders}
-          selectedFiles={[moveFile.id]}
+          files={[moveFile]}
           currentFolderId={selectedFolderId}
+          canChangeProducts={hasPermission('projects:update')}
           onClose={() => setMoveFile(null)}
           onMove={(folderId) => {
             moveFilesMutation.mutate({ fileIds: [moveFile.id], folderId });

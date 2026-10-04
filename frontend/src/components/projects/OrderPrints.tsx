@@ -435,7 +435,9 @@ function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: Arch
   const lineName = lines.find((line) => line.id === archive.project_line_id)?.product_name;
   const completed = archive.status === 'completed';
   // R03: the server checks the ARCHIVE's owner on this write — offered only where it
-  // would be allowed (admin / `update_all` any print; `update_own` its own only).
+  // would be allowed (admin / `update_all` any print; `update_own` its own only). Taking
+  // the print out of the order rewrites the archive too (WS-13 E13 B03/B06), so it asks
+  // the same; the defects are the order's own contract and stay with `canEdit`.
   const canAssign = canEdit && canModify('archives', 'update', archive.created_by_id);
   const where = [
     (archive.plate_index ?? 0) > 0 ? t('orders.prints.plate', { n: archive.plate_index }) : null,
@@ -522,7 +524,7 @@ function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: Arch
         </small>
       </div>
 
-      {canEdit && (
+      {canEdit && (completed || canAssign) && (
         <div className="flex-shrink-0">
           <CardActionMenu
             label={t('orders.prints.actions')}
@@ -551,18 +553,20 @@ function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: Arch
                     {t('orders.prints.fileUnderLine')}
                   </CardActionMenuItem>
                 )}
-                {(completed || canAssign) && (
-                  <div role="separator" className="my-1 border-t border-bambu-dark-tertiary" />
+                {canAssign && (
+                  <>
+                    <div role="separator" className="my-1 border-t border-bambu-dark-tertiary" />
+                    <CardActionMenuItem
+                      danger
+                      onSelect={() => {
+                        close();
+                        setDialog('remove');
+                      }}
+                    >
+                      {t('orders.prints.removeFromOrder')}
+                    </CardActionMenuItem>
+                  </>
                 )}
-                <CardActionMenuItem
-                  danger
-                  onSelect={() => {
-                    close();
-                    setDialog('remove');
-                  }}
-                >
-                  {t('orders.prints.removeFromOrder')}
-                </CardActionMenuItem>
               </>
             )}
           </CardActionMenu>

@@ -468,6 +468,44 @@ describe('OrderPrints', () => {
       expect(await offers(2)).toBe(true);
       expect(await offers(3)).toBe(true);
     });
+
+    // WS-13 E13 B06 (R06): taking a print out of the order rewrites the archive, so it
+    // follows the same rule as filing it — and the defects, the order's own contract,
+    // stay where they were.
+    const menuOf = async (id: number) => {
+      const menu = await openMenu(id);
+      const items = within(menu).queryAllByRole('menuitem').map((item) => item.textContent);
+      fireEvent.keyDown(menu, { key: 'Escape' });
+      return items;
+    };
+
+    it('takes only an own print out of the order with «update own», and keeps the defects on every card', async () => {
+      auth.granted = new Set(['projects:update', 'archives:update_own']);
+      vi.spyOn(api, 'getProjectArchives').mockResolvedValue(three as never);
+      render(<OrderPrints order={lineOrder([1, 2, 3])} canEdit />);
+      await screen.findByText('mine.3mf');
+      expect(await menuOf(1)).toEqual(['Defects…', 'File under line…', 'Remove from order']);
+      expect(await menuOf(2)).toEqual(['Defects…']);
+      expect(await menuOf(3)).toEqual(['Defects…']);
+    });
+
+    it('takes no print out of the order without an archive right', async () => {
+      auth.granted = new Set(['projects:update']);
+      vi.spyOn(api, 'getProjectArchives').mockResolvedValue(three as never);
+      render(<OrderPrints order={lineOrder([1, 2, 3])} canEdit />);
+      await screen.findByText('mine.3mf');
+      expect(await menuOf(1)).toEqual(['Defects…']);
+    });
+
+    it('offers no menu on a print it may not move that has no defects to record', async () => {
+      auth.granted = new Set(['projects:update', 'archives:update_own']);
+      vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
+        { id: 2, filename: 'theirs.3mf', status: 'printing', project_line_id: 10, created_by_id: 8 },
+      ] as never);
+      render(<OrderPrints order={lineOrder([2])} canEdit />);
+      await screen.findByText('theirs.3mf');
+      expect(screen.queryByTestId('print-menu-2')).not.toBeInTheDocument();
+    });
   });
 
   it('asks before a print leaves the order, naming it and what happens to it', async () => {

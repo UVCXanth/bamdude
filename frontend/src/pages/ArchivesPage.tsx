@@ -102,6 +102,7 @@ import { CompareArchivesModal } from '../components/CompareArchivesModal';
 import { TagManagementModal } from '../components/TagManagementModal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { canFileArchive } from '../utils/workshopRights';
 import { formatFileSize } from '../utils/file';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
@@ -671,8 +672,13 @@ function ArchiveCard({
       label: t('archives.menu.addToOrder'),
       icon: <FolderKanban className="w-4 h-4" />,
       onClick: () => setShowAddToOrder(true),
-      disabled: !canModify('archives', 'update', archive.created_by_id),
-      title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
+      // WS-13 E13 B06: filing rewrites the archive AND the order, as the server asks.
+      disabled: !canFileArchive(hasPermission, canModify, archive.created_by_id),
+      title: !hasPermission('projects:update')
+        ? t('archives.permission.noFileUnderOrder')
+        : !canModify('archives', 'update', archive.created_by_id)
+          ? t('archives.permission.noUpdateArchives')
+          : undefined,
     },
     {
       label: isSelected ? t('archives.menu.deselect') : t('archives.menu.select'),
@@ -2052,8 +2058,13 @@ function ArchiveListRow({
       label: t('archives.menu.addToOrder'),
       icon: <FolderKanban className="w-4 h-4" />,
       onClick: () => setShowAddToOrder(true),
-      disabled: !canModify('archives', 'update', archive.created_by_id),
-      title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
+      // WS-13 E13 B06: filing rewrites the archive AND the order, as the server asks.
+      disabled: !canFileArchive(hasPermission, canModify, archive.created_by_id),
+      title: !hasPermission('projects:update')
+        ? t('archives.permission.noFileUnderOrder')
+        : !canModify('archives', 'update', archive.created_by_id)
+          ? t('archives.permission.noUpdateArchives')
+          : undefined,
     },
     {
       label: isSelected ? t('archives.menu.deselect') : t('archives.menu.select'),
@@ -2735,7 +2746,7 @@ export function ArchivesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const { hasAnyPermission, hasPermission } = useAuth();
+  const { hasAnyPermission, hasPermission, canModify } = useAuth();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const [search, setSearch] = useState('');
@@ -3145,6 +3156,21 @@ export function ArchivesPage() {
   const uniqueTags = filterOptions?.tags || [];
 
   const selectionMode = isSelectionMode || selectedIds.size > 0;
+  // The bulk «Order» asks every selected print, as the server does (WS-13 E13 B06). A
+  // selected print not on this page has no owner to read, so it counts as ownerless —
+  // only `update_all` moves it.
+  const canFileSelection =
+    hasPermission('projects:update') &&
+    Array.from(selectedIds).every((id) =>
+      canModify('archives', 'update', archives?.find((a) => a.id === id)?.created_by_id ?? null),
+    );
+  const fileSelectionTitle = canFileSelection
+    ? undefined
+    : !hasPermission('projects:update')
+      ? t('archives.permission.noFileUnderOrder')
+      : hasAnyPermission('archives:update_own', 'archives:update_all')
+        ? t('archives.permission.notAllSelected')
+        : t('archives.permission.noUpdateArchives');
 
   const toggleSelect = (id: number) => {
     setSelectedIds((prev) => {
@@ -3287,8 +3313,8 @@ export function ArchivesPage() {
             variant="secondary"
             size="sm"
             onClick={() => setShowBatchProject(true)}
-            disabled={!hasAnyPermission('archives:update_own', 'archives:update_all')}
-            title={!hasAnyPermission('archives:update_own', 'archives:update_all') ? t('archives.permission.noUpdateArchives') : undefined}
+            disabled={!canFileSelection}
+            title={fileSelectionTitle}
           >
             <FolderKanban className="w-4 h-4" />
             {t('archives.page.order')}

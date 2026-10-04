@@ -1477,7 +1477,9 @@ export default {
       noUploadFiles: 'You do not have permission to upload files',
       noDownload: 'You do not have permission to download archives',
       noCopyLink: 'You do not have permission to copy download links',
-      noDelete: 'You do not have permission to delete this archive'
+      noDelete: 'You do not have permission to delete this archive',
+      noFileUnderOrder: 'Filing a print under an order needs the right to change orders',
+      notAllSelected: 'Some of the selected prints are not yours to change'
     },
     saveToLibrary: {
       title: 'Save to library',
@@ -5222,6 +5224,9 @@ export default {
     linkFileDescription: 'Link "{{name}}" to one or more products so it shows up on their pages.',
     linkToProducts: 'Link to products',
     linkedToNProducts: 'Linked to {{count}} product(s) (click to manage)',
+    linkedToNProductsReadOnly: 'Linked to {{count}} product(s)',
+    moveChangesProducts: 'changes products',
+    moveChangesProductsHint: 'A folder marked «changes products» would change which products these files belong to — that needs the right to change orders.',
     noProductsSelected: 'No products selected - saving will unlink the file from every product.',
     removeFromProduct: 'Remove from {{name}}',
     noProductsFound: 'No products found',
@@ -5332,6 +5337,7 @@ export default {
     deleting: 'Deleting...',
     noPermissionRenameFolder: 'You do not have permission to rename folders',
     noPermissionLinkFolder: 'You do not have permission to link folders',
+    noPermissionLinkProducts: 'Linking to products needs the right to change orders',
     noPermissionDeleteFolder: 'You do not have permission to delete folders',
     onlyEmptyFolders: 'You can only delete empty folders',
     noPermissionPrint: 'You do not have permission to print',

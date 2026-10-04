@@ -25,6 +25,9 @@ export interface FolderTreePickerProps {
   /** Rendered greyed-out and unselectable, with `disabledLabel` beside it. */
   disabledId?: number | null;
   disabledLabel?: string;
+  /** Entries a caller may not choose for a reason of its own — greyed out with `lockedLabel`. */
+  locked?: (folderId: number | null) => boolean;
+  lockedLabel?: string;
   includeReadOnly?: boolean;
   className?: string;
 }
@@ -36,6 +39,8 @@ export function FolderTreePicker({
   rootLabel,
   disabledId = undefined,
   disabledLabel,
+  locked,
+  lockedLabel,
   includeReadOnly = false,
   className = 'max-h-64',
 }: FolderTreePickerProps) {
@@ -49,29 +54,32 @@ export function FolderTreePicker({
     id: number | null,
     name: string,
     depth: number,
-    disabled: boolean,
-  ) => (
-    <button
-      key={id ?? 'root'}
-      type="button"
-      onClick={() => !disabled && onChange(id)}
-      disabled={disabled}
-      className={`w-full text-left px-3 py-2 rounded transition-colors flex items-center gap-2 ${
-        value === id
-          ? 'bg-bambu-green/20 text-bambu-green'
-          : disabled
-            ? 'opacity-50 cursor-not-allowed text-bambu-gray'
-            : 'hover:bg-bambu-dark text-white'
-      }`}
-      style={{ paddingLeft: `${12 + depth * 16}px` }}
-    >
-      <FolderOpen className="w-4 h-4 shrink-0" />
-      <span className="truncate">{name}</span>
-      {disabled && disabledLabel && (
-        <span className="text-xs text-bambu-gray ml-auto shrink-0">({disabledLabel})</span>
-      )}
-    </button>
-  );
+    current: boolean,
+  ) => {
+    const lockedHere = !current && (locked?.(id) ?? false);
+    const disabled = current || lockedHere;
+    const label = current ? disabledLabel : lockedHere ? lockedLabel : undefined;
+    return (
+      <button
+        key={id ?? 'root'}
+        type="button"
+        onClick={() => !disabled && onChange(id)}
+        disabled={disabled}
+        className={`w-full text-left px-3 py-2 rounded transition-colors flex items-center gap-2 ${
+          value === id
+            ? 'bg-bambu-green/20 text-bambu-green'
+            : disabled
+              ? 'opacity-50 cursor-not-allowed text-bambu-gray'
+              : 'hover:bg-bambu-dark text-white'
+        }`}
+        style={{ paddingLeft: `${12 + depth * 16}px` }}
+      >
+        <FolderOpen className="w-4 h-4 shrink-0" />
+        <span className="truncate">{name}</span>
+        {label && <span className="text-xs text-bambu-gray ml-auto shrink-0">({label})</span>}
+      </button>
+    );
+  };
 
   return (
     <div className={`${className} overflow-y-auto space-y-1`}>

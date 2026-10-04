@@ -147,7 +147,7 @@ function OrderForm({
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { showToast } = useToast();
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
   // The customers the picker already reads — same key, one cache — carry their contacts.
   const { data: customers = [] } = useQuery({ queryKey: ['customers'], queryFn: api.getCustomers });
@@ -382,7 +382,9 @@ function OrderForm({
                 setContactChoice(undefined);
               }}
               disabled={pending}
-              allowCreate
+              // A new customer is created by `POST /customers`, which asks `projects:create`
+              // (WS-13 E13 G01) — an editor of orders without it is not offered one.
+              allowCreate={hasPermission('projects:create')}
             />
           </WorkshopField>
 
