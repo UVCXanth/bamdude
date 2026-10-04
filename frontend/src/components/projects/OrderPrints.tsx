@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
@@ -352,13 +352,23 @@ function AssignLineDialog({ archive, order, onClose }: { archive: Archive; order
 
   // The order's own command (WS-13 E13 V01): `add-archives` with the line moves the print
   // between this order's lines (journaled as a re-line) under the Workshop's filing right.
+  // One synchronous flag for the send and every way out (WS-13 E13 V02): a second press in
+  // the same frame sends nothing, and the dialog does not close under the held request.
+  const sent = useRef(false);
+  const leave = () => {
+    if (sent.current) return;
+    onClose();
+  };
   const save = useMutation({
     mutationFn: () => api.addArchivesToOrder(order.id, [archive.id], lineId),
     onSuccess: () => {
       invalidateOrderViews(queryClient, { orderId: order.id });
       onClose();
     },
-    onError: (e: Error) => setError(e.message),
+    onError: (e: Error) => {
+      sent.current = false;
+      setError(e.message);
+    },
   });
 
   // The line's configuration as every other view names it (`lineConfigLabel`), with
@@ -376,14 +386,16 @@ function AssignLineDialog({ archive, order, onClose }: { archive: Archive; order
       size="md"
       pending={save.isPending}
       error={error ?? undefined}
-      onClose={onClose}
+      onClose={leave}
       footer={
         <>
-          <Button variant="secondary" onClick={onClose} disabled={save.isPending}>
+          <Button variant="secondary" onClick={leave} disabled={save.isPending}>
             {t('orders.prints.assign.cancel')}
           </Button>
           <Button
             onClick={() => {
+              if (sent.current) return;
+              sent.current = true;
               setError(null);
               save.mutate();
             }}

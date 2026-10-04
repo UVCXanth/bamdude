@@ -85,10 +85,17 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
   });
 
   const pending = assign.isPending || remove.isPending;
+  // Every way out asks the same flag the sends set, synchronously (WS-13 E13 V02): Cancel,
+  // Escape or the × pressed in the frame of a send — before `pending` reaches the markup —
+  // close nothing while its request is held. A success closes from `done`, a refusal frees it.
+  const leave = () => {
+    if (sent.current) return;
+    onClose();
+  };
 
   return (
     <Modal
-      onClose={onClose}
+      onClose={leave}
       title={single ? t('archives.menu.addToOrder') : t('archives.bulk.assignOrder.title')}
       icon={<FolderKanban className="w-5 h-5 text-bambu-green" />}
       size="lg"
@@ -157,7 +164,7 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
           </Button>
         )}
         <div className="ml-auto flex gap-3">
-          <Button variant="secondary" onClick={onClose} disabled={pending}>
+          <Button variant="secondary" onClick={leave} disabled={pending}>
             {t('common.cancel')}
           </Button>
           <Button

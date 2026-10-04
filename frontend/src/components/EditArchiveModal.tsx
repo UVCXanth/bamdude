@@ -228,6 +228,15 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
     setTags(newTags);
   };
 
+  // One synchronous flag for the save and for every way out (WS-13 E13 V02): a second press
+  // in the same frame sends nothing, and Cancel, Escape or the × close nothing while the PATCH
+  // is held. A refusal frees it for a retry; a success closes from here.
+  const sent = useRef(false);
+  const leave = () => {
+    if (sent.current) return;
+    onClose();
+  };
+
   const updateMutation = useMutation({
     mutationFn: (data: Parameters<typeof api.updateArchive>[1]) =>
       api.updateArchive(archive.id, data),
@@ -242,7 +251,10 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
     },
     // A refusal (403 rights, 409 a print its order received) stays here, in the
     // server's words — the edit is not lost (WS-13 E13 D03).
-    onError: (e: Error) => setSaveError(e.message),
+    onError: (e: Error) => {
+      sent.current = false;
+      setSaveError(e.message);
+    },
   });
 
   /**
@@ -312,6 +324,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (sent.current) return;
     // Build update data
     const updateData: Parameters<typeof api.updateArchive>[1] = {
       print_name: printName || undefined,
@@ -365,11 +378,18 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
       updateData.error_message = null;
     }
 
+    sent.current = true;
     updateMutation.mutate(updateData);
   };
 
   return (
-    <Modal onClose={onClose} title={t('editArchive.title')} size="md" bodyClassName="flex flex-col">
+    <Modal
+      onClose={leave}
+      closeDisabled={updateMutation.isPending}
+      title={t('editArchive.title')}
+      size="md"
+      bodyClassName="flex flex-col"
+    >
       {/* Form */}
       <form onSubmit={handleSubmit} className="p-4 space-y-4 overflow-y-auto flex-1">
         {/* Print Name */}
@@ -731,7 +751,8 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
           <Button
             type="button"
             variant="secondary"
-            onClick={onClose}
+            onClick={leave}
+            disabled={updateMutation.isPending}
             className="flex-1"
           >
             {t('common.cancel')}
