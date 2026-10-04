@@ -149,6 +149,33 @@ describe('CustomerPage', () => {
     });
   });
 
+  // WS-13 E13 O19: the orders are the orders' — a customers reader without their read is shown
+  // no list it cannot load (GET /projects/ answers it 403) and asks for none.
+  it('a customers reader without the orders’ read gets no orders list and asks for none', async () => {
+    server.use(
+      http.get('/api/v1/auth/me', () =>
+        HttpResponse.json({
+          id: 3,
+          username: 'contacts',
+          role: 'user',
+          is_active: true,
+          is_admin: false,
+          groups: [],
+          permissions: ['customers:read'],
+          created_at: '2024-01-01T00:00:00Z',
+        }),
+      ),
+    );
+    vi.spyOn(api, 'getCustomer').mockResolvedValue({ ...customer, figures: null } as never);
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);
+    mountAt();
+    await screen.findByRole('heading', { level: 1, name: 'ACME' });
+    await waitFor(() => expect(api.getDispatchNotes).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByTestId('customer-orders-head')).toBeNull();
+    expect(get).not.toHaveBeenCalled();
+  });
+
   it("shows three tiles and one server page of the customer's orders", async () => {
     vi.spyOn(api, 'getCustomer').mockResolvedValue(customer as never);
     const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage as never);

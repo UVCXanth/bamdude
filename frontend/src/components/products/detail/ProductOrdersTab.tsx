@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../../api/client';
@@ -11,6 +10,7 @@ import { OrderCoverage } from '../../projects/orderRow/OrderCoverage';
 import { StageBadge } from '../../projects/StageBadge';
 import { LoadFailedNote } from '../../workshop/LoadFailedNote';
 import { RefreshFailedNote } from '../../workshop/RefreshFailedNote';
+import { SectionLink } from '../../workshop/SectionLink';
 
 const PER_PAGE = 24;
 const HEAD = 'px-3 py-2 text-left text-xs font-normal text-bambu-gray';
@@ -98,9 +98,9 @@ export function ProductOrdersTab({ product }: { product: Pick<Product, 'id' | 'u
                   {items.map((o) => (
                     <tr key={o.id} data-testid={`product-order-${o.id}`} className="border-b border-bambu-dark-tertiary align-top last:border-0">
                       <td className="min-w-[12rem] px-3 py-2.5">
-                        <Link to={`/projects/${o.id}`} className="font-medium text-bambu-green hover:underline wrap-anywhere">
+                        <SectionLink to={`/projects/${o.id}`} className="font-medium text-bambu-green hover:underline wrap-anywhere">
                           {`${o.code} · ${o.name}`}
-                        </Link>
+                        </SectionLink>
                         <small className="block text-xs text-bambu-gray">{o.customer_name ?? t('orders.list.noCustomer')}</small>
                       </td>
                       <td className="px-3 py-2.5">

@@ -344,7 +344,8 @@ describe('PlanBlock', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     printModal.props = null;
-    auth.granted = new Set(['orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'queue:create', 'printers:control']);
+    // The product's files are a link only for whoever may open the product (WS-13 E13 O19).
+    auth.granted = new Set(['orders:update', 'products:read', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'queue:create', 'printers:control']);
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(plan);
     vi.spyOn(api, 'getProductPlates').mockResolvedValue(plates);
     // The currency is the test's choice, not `formatMoney`'s USD fallback —

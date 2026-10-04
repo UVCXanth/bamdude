@@ -101,10 +101,11 @@ describe('StockProductsTable', () => {
     expect(onSortChange).toHaveBeenCalledWith('reserved-desc');
   });
 
-  it('the product links to its page, with its SKU and its marks', () => {
+  it('the product links to its page, with its SKU and its marks', async () => {
     renderTable();
     const lamp = screen.getByTestId('stock-row-1');
-    expect(within(lamp).getByRole('link', { name: 'Lamp' })).toHaveAttribute('href', '/products/1');
+    // A link into the catalog waits for the signed-in user's rights (WS-13 E13 O19).
+    expect(await within(lamp).findByRole('link', { name: 'Lamp' })).toHaveAttribute('href', '/products/1');
     expect(within(lamp).getByText('LMP-1')).toHaveClass('font-mono');
     const bracket = screen.getByTestId('stock-row-3');
     expect(within(bracket).getByText('not in the catalog')).toBeInTheDocument();
@@ -128,17 +129,19 @@ describe('StockProductsTable', () => {
     expect(screen.queryByText(/the numbers do not add up/)).toBeNull();
   });
 
-  it("parts on the shelf are the server's sum; each reservation is its order's code and kits, linked — or a dash", () => {
+  it("parts on the shelf are the server's sum; each reservation is its order's code and kits, linked — or a dash", async () => {
     renderTable();
     expect(screen.getByTestId('stock-shelf-1')).toHaveTextContent('9');
     const reserved = screen.getByTestId('stock-reserved-1');
-    expect(within(reserved).getByRole('link', { name: 'OR-0042' })).toHaveAttribute('href', '/projects/42');
+    expect(await within(reserved).findByRole('link', { name: 'OR-0042' })).toHaveAttribute('href', '/projects/42');
     expect(reserved).toHaveTextContent('OR-0042 · 2');
     expect(screen.getByTestId('stock-reserved-2')).toHaveTextContent('—');
   });
 
-  it('«Assemble» opens for the product even when the standard makes nothing (R01)', () => {
+  it('«Assemble» opens for the product even when the standard makes nothing (R01)', async () => {
     const { onAssemble, onAdjust } = renderTable();
+    // «Adjust» waits for the signed-in user's `stock:adjust` (WS-13 E13 O06).
+    await within(screen.getByTestId('stock-row-2')).findByRole('button', { name: 'Adjust' });
     const row2 = screen.getByTestId('stock-row-2');
     const assemble = within(row2).getByRole('button', { name: 'Assemble' });
     expect(assemble).toBeEnabled();

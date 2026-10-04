@@ -109,7 +109,7 @@ describe('FileManagerPage — links to products ask the right to change orders (
     expect(screen.getByTitle('Lamp').tagName).not.toBe('BUTTON');
     const item = await openFolderMenu('Loose folder');
     expect(item).toBeDisabled();
-    expect(item).toHaveAttribute('title', 'Linking to products needs the right to change orders');
+    expect(item).toHaveAttribute('title', 'Linking to products needs the right to change products');
   });
 
   it('offers it with the right to change orders too', async () => {

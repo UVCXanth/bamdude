@@ -124,10 +124,12 @@ describe('FinishedGoodsTable', () => {
     expect(screen.queryByRole('button', { name: /^Code/ })).toBeNull();
   });
 
-  it("the menu in the mockup's order, «Stocktake» after the location and a line before «Open position»", () => {
+  it("the menu in the mockup's order, «Stocktake» after the location and a line before «Open position»", async () => {
     const { onAction } = renderTable();
     fireEvent.click(screen.getByTestId('finished-3-menu'));
     const panel = screen.getByTestId('finished-3-menu-panel');
+    // The corrections wait for the signed-in user's `stock:adjust` (WS-13 E13 O06).
+    await within(panel).findByRole('menuitem', { name: 'Stocktake' });
     expect(within(panel).getAllByRole('menuitem').map((m) => m.textContent?.trim())).toEqual([
       'Receipt',
       'Assemble from parts',

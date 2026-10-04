@@ -108,10 +108,13 @@ export function CustomerPage() {
     page,
     ...(perPage === -1 ? { all: true } : { per_page: perPage }),
   };
+  // The orders are the orders' (WS-13 E13 O19): without their read there is no list to load —
+  // the server would answer it 403 — and the section is not drawn.
+  const readsOrders = hasPermission('orders:read');
   const ordersQuery = useQuery({
     queryKey: ['projects', orderParams],
     queryFn: () => api.getOrdersPaged(orderParams),
-    enabled: Number.isFinite(id),
+    enabled: Number.isFinite(id) && readsOrders,
     // The previous page stays on screen while the next one loads — but only
     // THIS customer's: another customer's orders, even dimmed, would be a lie.
     placeholderData: (previous, previousQuery) =>
@@ -262,6 +265,7 @@ export function CustomerPage() {
             </StatTile>
           </StatTiles>
 
+          {readsOrders && (
           <section className="space-y-3">
             <div data-testid="customer-orders-head" className="flex items-center justify-between gap-3 flex-wrap">
               <h2 className="text-lg font-medium text-white">{t('customers.page.orders')}</h2>
@@ -309,6 +313,7 @@ export function CustomerPage() {
               )}
             </WorkshopTabPanel>
           </section>
+          )}
 
           {/* Keyed by its owner: another customer starts on its first page (E09). */}
           <DispatchNotesSection

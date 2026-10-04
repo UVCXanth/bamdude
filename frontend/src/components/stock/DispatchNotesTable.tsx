@@ -10,6 +10,7 @@ import type { DateFormat, TimeFormat } from '../../utils/date';
 import { WorkshopPanel, WorkshopTableScroll } from '../workshop/WorkshopPanel';
 import { WaybillEditor } from './WaybillEditor';
 import { useUiPreferences } from '../../hooks/useUiPreferences';
+import { SectionLink } from '../workshop/SectionLink';
 
 /**
  * Dispatch notes — one table for the stock tab, an order's «Issues» and a customer's
@@ -97,9 +98,9 @@ export function DispatchNotesTable({
                   {!hideCustomer && (
                     <td className="p-2">
                       {note.customer_id != null ? (
-                        <Link to={`/customers/${note.customer_id}`} className="hover:underline">
+                        <SectionLink to={`/customers/${note.customer_id}`} className="hover:underline">
                           {note.customer_name}
-                        </Link>
+                        </SectionLink>
                       ) : (
                         note.customer_name
                       )}
@@ -109,9 +110,9 @@ export function DispatchNotesTable({
                   {!hideOrder && (
                     <td className="p-2 whitespace-nowrap">
                       {note.project_id != null && note.order_code ? (
-                        <Link to={`/projects/${note.project_id}`} className="hover:underline">
+                        <SectionLink to={`/projects/${note.project_id}`} className="hover:underline">
                           {note.order_code}
-                        </Link>
+                        </SectionLink>
                       ) : (
                         <small className="text-xs text-bambu-gray">{note.order_code ?? t('stock.notes.noOrder')}</small>
                       )}

@@ -96,7 +96,7 @@ describe('ArchivesPage — who may file a print under an order (E13 B06)', () =>
     await waitFor(() => expect(cardOf(1)).not.toBeNull());
     const item = await addToOrderItem(1);
     expect(item).toBeDisabled();
-    expect(item).toHaveAttribute('title', 'Filing a print under an order needs the right to change orders');
+    expect(item).toHaveAttribute('title', 'Filing a print under an order needs the right to change orders or to file prints');
   });
 
   it('files any print with «update all» and the right to change orders', async () => {
@@ -119,6 +119,25 @@ describe('ArchivesPage — who may file a print under an order (E13 B06)', () =>
     fireEvent.click(within(await menuOf(3)).getByRole('button', { name: 'Select' }));
     fireEvent.click(cardOf(2));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Order' })).not.toBeDisabled());
+  });
+
+  // A filing clerk (WS-13 E13 V03): «file prints» alone — no «change orders», no «update all».
+  // The entry is offered for another's and an ownerless print, and an offered entry carries no
+  // refusal: its tooltip said «needs the right to change orders» over a button that worked.
+  it.each(['grid', 'list'])('offers a filing clerk any print in the %s view, without a refusal on it', async (view) => {
+    localStorage.setItem('archiveViewMode', view);
+    auth.granted = new Set([...auth.granted, 'archives:update_own', 'orders:file_prints']);
+    render(<ArchivesPage />);
+    await waitFor(() => expect(cardOf(3)).not.toBeNull());
+    for (const id of [2, 3]) {
+      if (view === 'grid') await menuOf(id);
+      else fireEvent.contextMenu(cardOf(id));
+      const item = await screen.findByRole('button', { name: 'Add to order' });
+      expect(item).not.toBeDisabled();
+      expect(item).toHaveAttribute('title', 'Add to order'); // the label, not a reason
+      fireEvent.keyDown(document, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Add to order' })).toBeNull());
+    }
   });
 
   it('asks the bulk action of every selected print', async () => {

@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router';
 import { AlertTriangle } from 'lucide-react';
 import type { PlanPartCount } from '../../api/client';
+import { SectionLink } from '../workshop/SectionLink';
 
 interface PlanUnsatisfiableProps {
   lineId: number;
@@ -42,9 +42,9 @@ export function PlanUnsatisfiable({ lineId, productId, material, part, notSliced
           count: part.count,
           material: material ?? t('orders.plan.anyMaterial'),
         })}{' '}
-        <Link to={`/products/${productId}#files`} className="underline">
+        <SectionLink to={`/products/${productId}#files`} className="underline">
           {t('orders.plan.linkFile')}
-        </Link>
+        </SectionLink>
         {notSliced.length > 0 && ` · ${t('orders.plan.notSlicedInline', { files: notSliced.join(', ') })}`}
       </span>
       <button

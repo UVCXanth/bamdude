@@ -1,7 +1,6 @@
 import { useId, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router';
 import { ClipboardList, Loader2 } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Order, PartsPreview } from '../../api/client';
@@ -14,6 +13,7 @@ import { canFileFuturePrint } from '../../utils/workshopRights';
 import { useOrderDetail } from '../../hooks/useOrderDetail';
 import { useForgetOnUnmount } from '../../hooks/useForgetOnUnmount';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
+import { SectionLink } from '../workshop/SectionLink';
 
 interface PlanFromFilesModalProps {
   fileIds: number[];
@@ -256,9 +256,9 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
           )}
           <p className="text-xs text-bambu-gray">{t('orders.fromFiles.hoursNote')}</p>
           <div className="flex justify-between items-center gap-2 flex-wrap">
-            <Link to={`/projects/${orderId}`} className="text-sm text-bambu-green hover:underline" onClick={onClose}>
+            <SectionLink to={`/projects/${orderId}`} className="text-sm text-bambu-green hover:underline" onClick={onClose}>
               {t('orders.fromFiles.openOrder')}
-            </Link>
+            </SectionLink>
             <div className="flex gap-2">
               {enqueued ? (
                 <Button onClick={() => finish('queued')}>{t('orders.fromFiles.close')}</Button>

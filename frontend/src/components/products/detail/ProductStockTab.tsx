@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { Plus } from 'lucide-react';
 import type { Product } from '../../../api/client';
@@ -13,6 +12,7 @@ import { LoadFailedNote } from '../../workshop/LoadFailedNote';
 import { RefreshFailedNote } from '../../workshop/RefreshFailedNote';
 import { ProductStock } from '../ProductStock';
 import { ProductJournal } from './ProductJournal';
+import { SectionLink } from '../../workshop/SectionLink';
 
 const HEAD = 'font-normal p-2 text-left';
 
@@ -59,9 +59,9 @@ function FinishedPositions({ productId, canEdit }: { productId: number; canEdit:
                 {items.map((item) => (
                   <tr key={item.id} data-testid={`stock-position-${item.id}`} className="border-t border-bambu-dark-tertiary text-white">
                     <td className="p-2">
-                      <Link to={`/stock/${item.id}`} className="text-bambu-green hover:underline wrap-anywhere">
+                      <SectionLink to={`/stock/${item.id}`} className="text-bambu-green hover:underline wrap-anywhere">
                         {lineConfigLabel(item.configuration, 'product', t) || item.code}
-                      </Link>
+                      </SectionLink>
                     </td>
                     <td className="p-2 text-bambu-gray-light">{item.location || '—'}</td>
                     <td className="p-2 tabular-nums">{item.on_hand}</td>

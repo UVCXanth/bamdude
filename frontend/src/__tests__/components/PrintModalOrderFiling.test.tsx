@@ -1146,7 +1146,7 @@ describe('an order a reprint would inherit', () => {
     const { sent, user, without } = await reprint();
     expect(without).toBeChecked();
     expect(without).toBeDisabled();
-    expect(screen.getByText(/needs the right to change orders/i)).toBeInTheDocument();
+    expect(screen.getByText(/needs the right to change orders or to file prints/i)).toBeInTheDocument();
     await submit(user);
     await waitFor(() => expect(sent).toHaveBeenCalledWith(1, 1, expect.objectContaining({ keep_order: false })));
   });

@@ -94,23 +94,24 @@ describe('DispatchNotesTable (J01)', () => {
     expect(within(screen.getByTestId('note-4')).getByText('No waybill')).toBeInTheDocument();
   });
 
-  it('the recipient: the customer linked, the person under it when there is one', () => {
+  it('the recipient: the customer linked, the person under it when there is one', async () => {
     table([row({ id: 3 }), row({ id: 4, recipient_name: null, customer_id: null })]);
     const three = screen.getByTestId('note-3');
-    expect(within(three).getByRole('link', { name: 'ACME' })).toHaveAttribute('href', '/customers/2');
+    // A link into another section waits for the signed-in user's rights (WS-13 E13 O19).
+    expect(await within(three).findByRole('link', { name: 'ACME' })).toHaveAttribute('href', '/customers/2');
     expect(within(three).getByText('Ivan')).toBeInTheDocument();
     const four = screen.getByTestId('note-4');
     expect(within(four).queryByRole('link', { name: 'ACME' })).toBeNull();
     expect(within(four).queryByText('Ivan')).toBeNull();
   });
 
-  it('the order: linked, a deleted one by its code, or «without an order»', () => {
+  it('the order: linked, a deleted one by its code, or «without an order»', async () => {
     table([
       row({ id: 3 }),
       row({ id: 4, project_id: null, order_code: 'OR-0009' }),
       row({ id: 5, project_id: null, order_code: null }),
     ]);
-    expect(within(screen.getByTestId('note-3')).getByRole('link', { name: 'OR-0005' })).toHaveAttribute('href', '/projects/5');
+    expect(await within(screen.getByTestId('note-3')).findByRole('link', { name: 'OR-0005' })).toHaveAttribute('href', '/projects/5');
     expect(within(screen.getByTestId('note-4')).getByText('OR-0009')).toBeInTheDocument();
     expect(within(screen.getByTestId('note-4')).queryByRole('link', { name: 'OR-0009' })).toBeNull();
     expect(within(screen.getByTestId('note-5')).getByText('without an order')).toBeInTheDocument();

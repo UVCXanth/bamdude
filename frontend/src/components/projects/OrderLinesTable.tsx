@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { Link } from 'react-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight, Clock, ListPlus, Package, Play } from 'lucide-react';
@@ -19,6 +18,7 @@ import { CONFIG_ACCENT_CLASS, isNonStandardConfiguration, lineConfigLabel } from
 import { configBlockedReason } from './lineGates';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 import { WorkshopTableScroll } from '../workshop/WorkshopPanel';
+import { SectionLink } from '../workshop/SectionLink';
 
 const HEAD = 'font-normal text-xs text-bambu-gray px-3 py-2 whitespace-nowrap';
 const CELL = 'px-3 py-2.5 align-top';
@@ -191,9 +191,9 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2 }: OrderLines
                         )}
                       </span>
                       <div className="min-w-0">
-                        <Link to={`/products/${line.product_id}`} className="font-medium text-white hover:underline">
+                        <SectionLink to={`/products/${line.product_id}`} className="font-medium text-white hover:underline">
                           {line.product_name}
-                        </Link>
+                        </SectionLink>
                         {(line.product_origin ?? 'catalog') !== 'catalog' && (
                           <span className="ml-1.5 inline-flex items-center rounded px-2 py-0.5 text-xs font-medium whitespace-nowrap bg-gray-200 dark:bg-gray-500/20 text-gray-600 dark:text-gray-400">
                             {t('orders.lines.oneOff')}

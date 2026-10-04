@@ -1475,7 +1475,7 @@ export default {
       noDownload: 'You do not have permission to download archives',
       noCopyLink: 'You do not have permission to copy download links',
       noDelete: 'You do not have permission to delete this archive',
-      noFileUnderOrder: 'Filing a print under an order needs the right to change orders',
+      noFileUnderOrder: 'Filing a print under an order needs the right to change orders or to file prints',
       notAllSelected: 'Some of the selected prints are not yours to change'
     },
     saveToLibrary: {
@@ -5338,7 +5338,7 @@ export default {
     deleting: 'Deleting...',
     noPermissionRenameFolder: 'You do not have permission to rename folders',
     noPermissionLinkFolder: 'You do not have permission to link folders',
-    noPermissionLinkProducts: 'Linking to products needs the right to change orders',
+    noPermissionLinkProducts: 'Linking to products needs the right to change products',
     noPermissionDeleteFolder: 'You do not have permission to delete folders',
     onlyEmptyFolders: 'You can only delete empty folders',
     noPermissionPrint: 'You do not have permission to print',
@@ -6479,7 +6479,7 @@ export default {
     // WS-13 E13 R11 / O10: a copy of work under an order keeps it only with the filing right.
     inherited: 'Order: {{name}}',
     withoutOrder: 'Print without order',
-    withoutOrderNoRight: 'Filing new work under this order needs the right to change orders — this print goes without it.',
+    withoutOrderNoRight: 'Filing new work under this order needs the right to change orders or to file prints — this print goes without it.',
     withoutOrderClosed: 'This order is closed — this print goes without it.',
     repeatWithoutOrder: 'Repeat without order',
     copySuffix: ' — without order',

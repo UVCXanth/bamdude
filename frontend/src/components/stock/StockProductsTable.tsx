@@ -1,12 +1,13 @@
 import { Fragment, useId, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
+import { useAuth } from '../../contexts/AuthContext';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { StockListItem } from '../../api/client';
 import { Button } from '../Button';
 import { SortableHeader } from '../SortableHeader';
 import { WorkshopPanel, WorkshopTableScroll } from '../workshop/WorkshopPanel';
+import { SectionLink } from '../workshop/SectionLink';
 
 interface StockProductsTableProps {
   products: StockListItem[];
@@ -43,6 +44,8 @@ const MARK = 'ml-2 text-xs text-bambu-gray';
  */
 export function StockProductsTable({ products, canEdit, onAdjust, onAssemble, sort, onSortChange, footer }: StockProductsTableProps) {
   const { t } = useTranslation();
+  // A hand correction of the free parts is `stock:adjust` (WS-13 E13 O06); assembling moves goods.
+  const canAdjust = useAuth().hasPermission('stock:adjust');
   const uid = useId();
   const [open, setOpen] = useState<Set<number>>(() => new Set());
   const withOptions = products.some((p) => p.kits_by_option.length > 0);
@@ -89,9 +92,9 @@ export function StockProductsTable({ products, canEdit, onAdjust, onAssemble, so
                       </button>
                     </td>
                     <td className="p-2">
-                      <Link to={`/products/${p.id}`} className="text-white hover:underline">
+                      <SectionLink to={`/products/${p.id}`} className="text-white hover:underline">
                         {p.name}
-                      </Link>
+                      </SectionLink>
                       {!p.is_active && <span className={MARK}>{t('stock.page.notInCatalog')}</span>}
                       {oneOff && <span className={MARK}>{t('stock.page.oneOff')}</span>}
                       {p.sku && <small className="block text-xs text-bambu-gray font-mono">{p.sku}</small>}
@@ -116,9 +119,9 @@ export function StockProductsTable({ products, canEdit, onAdjust, onAssemble, so
                       ) : (
                         p.reservations.map((r) => (
                           <span key={r.line_id} className="block whitespace-nowrap">
-                            <Link to={`/projects/${r.order_id}`} title={r.order_name} className="text-bambu-green hover:underline">
+                            <SectionLink to={`/projects/${r.order_id}`} title={r.order_name} className="text-bambu-green hover:underline">
                               {r.order_code}
-                            </Link>
+                            </SectionLink>
                             {` · ${r.kits}`}
                           </span>
                         ))
@@ -128,9 +131,11 @@ export function StockProductsTable({ products, canEdit, onAdjust, onAssemble, so
                       {canEdit && (
                         <>
                           <div className="flex justify-end gap-2">
-                            <Button size="sm" variant="ghost" onClick={() => onAdjust(p)}>
-                              {t('stock.adjust.open')}
-                            </Button>
+                            {canAdjust && (
+                              <Button size="sm" variant="ghost" onClick={() => onAdjust(p)}>
+                                {t('stock.adjust.open')}
+                              </Button>
+                            )}
                             <Button
                               size="sm"
                               variant="ghost"

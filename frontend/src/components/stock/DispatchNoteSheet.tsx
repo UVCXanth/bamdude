@@ -1,8 +1,8 @@
-import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import type { DispatchNote, DispatchNoteLine } from '../../api/client';
 import { parseUTCDate } from '../../utils/date';
+import { SectionLink } from '../workshop/SectionLink';
 
 const CELL = 'border border-gray-400 px-2 py-1.5';
 
@@ -119,9 +119,9 @@ export function DispatchNoteSheet({ note }: { note: DispatchNote }) {
                   t('stock.notes.partOf', { part: line.part_name, product: line.product_name })
                 ) : line.product_id != null ? (
                   // A way to the product on screen (spec rule 3); on paper it is just the name.
-                  <Link to={`/products/${line.product_id}`} className="hover:underline print:no-underline">
+                  <SectionLink to={`/products/${line.product_id}`} className="hover:underline print:no-underline">
                     {line.product_name}
-                  </Link>
+                  </SectionLink>
                 ) : (
                   line.product_name
                 )}

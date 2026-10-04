@@ -669,13 +669,15 @@ function ArchiveCard({
       label: t('archives.menu.addToOrder'),
       icon: <FolderKanban className="w-4 h-4" />,
       onClick: () => setShowAddToOrder(true),
-      // WS-13 E13 B06: filing rewrites the archive AND the order, as the server asks.
+      // WS-13 E13 B06: filing rewrites the archive AND the order, as the server asks. The
+      // reason is said only on a refused entry — a filing clerk's «file prints» needs neither
+      // «change orders» nor the archive's own right (V03).
       disabled: !canFileArchive(hasPermission, canModify, archive.created_by_id),
-      title: !hasPermission('orders:update')
-        ? t('archives.permission.noFileUnderOrder')
-        : !canModify('archives', 'update', archive.created_by_id)
-          ? t('archives.permission.noUpdateArchives')
-          : undefined,
+      title: canFileArchive(hasPermission, canModify, archive.created_by_id)
+        ? undefined
+        : !hasPermission('orders:update')
+          ? t('archives.permission.noFileUnderOrder')
+          : t('archives.permission.noUpdateArchives'),
     },
     {
       label: isSelected ? t('archives.menu.deselect') : t('archives.menu.select'),
@@ -2069,13 +2071,15 @@ function ArchiveListRow({
       label: t('archives.menu.addToOrder'),
       icon: <FolderKanban className="w-4 h-4" />,
       onClick: () => setShowAddToOrder(true),
-      // WS-13 E13 B06: filing rewrites the archive AND the order, as the server asks.
+      // WS-13 E13 B06: filing rewrites the archive AND the order, as the server asks. The
+      // reason is said only on a refused entry — a filing clerk's «file prints» needs neither
+      // «change orders» nor the archive's own right (V03).
       disabled: !canFileArchive(hasPermission, canModify, archive.created_by_id),
-      title: !hasPermission('orders:update')
-        ? t('archives.permission.noFileUnderOrder')
-        : !canModify('archives', 'update', archive.created_by_id)
-          ? t('archives.permission.noUpdateArchives')
-          : undefined,
+      title: canFileArchive(hasPermission, canModify, archive.created_by_id)
+        ? undefined
+        : !hasPermission('orders:update')
+          ? t('archives.permission.noFileUnderOrder')
+          : t('archives.permission.noUpdateArchives'),
     },
     {
       label: isSelected ? t('archives.menu.deselect') : t('archives.menu.select'),

@@ -23,6 +23,7 @@ import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { WorkshopPanel, WorkshopTableScroll } from '../workshop/WorkshopPanel';
 import { StockTableSkeleton } from './StockTableSkeleton';
 import { useUiPreferences } from '../../hooks/useUiPreferences';
+import { SectionLink } from '../workshop/SectionLink';
 
 const BOOKS: StockJournalBook[] = ['both', 'finished', 'parts'];
 const SORTS = ['date-desc', 'date-asc'] as const;
@@ -459,9 +460,9 @@ function JournalProduct({ row }: { row: StockJournalRow }) {
   }
   if (row.product_id != null) {
     return (
-      <Link to={`/products/${row.product_id}`} className={link}>
+      <SectionLink to={`/products/${row.product_id}`} className={link}>
         {name}
-      </Link>
+      </SectionLink>
     );
   }
   return <span>{name}</span>;
@@ -528,9 +529,9 @@ function JournalContext({ row }: { row: StockJournalRow }) {
   const note = row.note ? (row.book === 'parts' && isNoteToken(row.note) ? t(`stock.note.${row.note}`) : row.note) : null;
   const bits = [
     row.project ? (
-      <Link key="order" to={`/projects/${row.project.id}`} className="text-bambu-green hover:underline">
+      <SectionLink key="order" to={`/projects/${row.project.id}`} className="text-bambu-green hover:underline">
         {row.project.code}
-      </Link>
+      </SectionLink>
     ) : null,
     row.issue ? (
       <Link key="dispatch-note" to={`/stock/dispatch-notes/${row.issue.id}`} className="text-bambu-green hover:underline">

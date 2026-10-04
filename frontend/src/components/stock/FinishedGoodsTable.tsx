@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
+import { useAuth } from '../../contexts/AuthContext';
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -55,6 +56,9 @@ const TONE_CLASS: Record<Tone, string> = {
  */
 export function FinishedGoodsTable({ items, sort, onSortChange, canEdit, onAction, footer }: FinishedGoodsTableProps) {
   const { t } = useTranslation();
+  // Correcting the books — a count, a location, a minimum — is `stock:adjust`; moving goods is
+  // `stock:move` (WS-13 E13 O06). The server refuses the one without the other.
+  const canAdjust = useAuth().hasPermission('stock:adjust');
 
   const menuItem = (
     kind: FinishedAction,
@@ -206,8 +210,8 @@ export function FinishedGoodsTable({ items, sort, onSortChange, canEdit, onActio
                                 close,
                                 item.on_hand <= 0 ? t('stock.finished.disabled.issue') : undefined,
                               )}
-                              {menuItem('params', item, <MapPin className="w-4 h-4" />, close)}
-                              {menuItem('stocktake', item, <ClipboardCheck className="w-4 h-4" />, close)}
+                              {canAdjust && menuItem('params', item, <MapPin className="w-4 h-4" />, close)}
+                              {canAdjust && menuItem('stocktake', item, <ClipboardCheck className="w-4 h-4" />, close)}
                               <div role="separator" className="my-1 border-t border-bambu-dark-tertiary" />
                             </>
                           )}

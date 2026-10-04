@@ -17,6 +17,8 @@ import { LoadFailedNote } from '../../components/workshop/LoadFailedNote';
 import { RefreshFailedNote } from '../../components/workshop/RefreshFailedNote';
 import { WorkshopPanel } from '../../components/workshop/WorkshopPanel';
 import { useStockItem } from '../../hooks/useFinishedStock';
+import { SectionLink } from '../../components/workshop/SectionLink';
+import { useCanOpen } from '../../hooks/useCanOpen';
 
 /** The mockup's `.m-stockgrid`: two cards side by side, one column at 1100 and below (E12 F04).
  *  ⚠️ `max-[1101px]`: Tailwind 4 writes `max-*` as `width < N`. */
@@ -88,6 +90,11 @@ function PositionView({ item, refreshFailed, onRetry }: { item: StockItemDetail;
   const navigate = useNavigate();
   const { hasPermission } = useAuth();
   const canEdit = hasPermission('stock:move');
+  // A count is a correction of the books — `stock:adjust` (WS-13 E13 O06).
+  const canAdjust = hasPermission('stock:adjust');
+  // The product is the catalog's: a storekeeper without its read gets no way there (O19).
+  const productPath = `/products/${item.product.id}`;
+  const canOpenProduct = useCanOpen()(productPath);
   const heading = useRef<HTMLHeadingElement>(null);
   const [dialog, setDialog] = useState<StockDialogState>(null);
   const caption = lineConfigLabel(item.configuration, 'product', t);
@@ -128,9 +135,9 @@ function PositionView({ item, refreshFailed, onRetry }: { item: StockItemDetail;
             {' · '}
             {t('stock.item.location', { location: item.location ?? t('stock.finished.noLocation') })}
           </p>
-          <Link to={`/products/${item.product.id}`} className="text-sm text-bambu-green hover:underline">
+          <SectionLink to={`/products/${item.product.id}`} className="text-sm text-bambu-green hover:underline">
             {t('stock.item.openProduct')}
-          </Link>
+          </SectionLink>
         </div>
         <div className="flex items-center gap-2">
           {canEdit && (
@@ -139,30 +146,34 @@ function PositionView({ item, refreshFailed, onRetry }: { item: StockItemDetail;
               {t('stock.finished.action.receipt')}
             </Button>
           )}
-          <CardActionMenu label={t('common.actions')} testId="item-menu" width={220}>
-            {(close) => (
-              <>
-                {canEdit && (
-                  <CardActionMenuItem
-                    onSelect={() => {
-                      setDialog({ kind: 'stocktake', item });
-                      close();
-                    }}
-                  >
-                    {t('stock.finished.action.stocktake')}
-                  </CardActionMenuItem>
-                )}
-                <CardActionMenuItem
-                  onSelect={() => {
-                    close();
-                    navigate(`/products/${item.product.id}`);
-                  }}
-                >
-                  {t('stock.item.openProduct')}
-                </CardActionMenuItem>
-              </>
-            )}
-          </CardActionMenu>
+          {(canAdjust || canOpenProduct) && (
+            <CardActionMenu label={t('common.actions')} testId="item-menu" width={220}>
+              {(close) => (
+                <>
+                  {canAdjust && (
+                    <CardActionMenuItem
+                      onSelect={() => {
+                        setDialog({ kind: 'stocktake', item });
+                        close();
+                      }}
+                    >
+                      {t('stock.finished.action.stocktake')}
+                    </CardActionMenuItem>
+                  )}
+                  {canOpenProduct && (
+                    <CardActionMenuItem
+                      onSelect={() => {
+                        close();
+                        navigate(productPath);
+                      }}
+                    >
+                      {t('stock.item.openProduct')}
+                    </CardActionMenuItem>
+                  )}
+                </>
+              )}
+            </CardActionMenu>
+          )}
         </div>
       </header>
 
@@ -196,7 +207,7 @@ function PositionView({ item, refreshFailed, onRetry }: { item: StockItemDetail;
         />
       </StatTiles>
 
-      <ActionsPanel item={item} canEdit={canEdit} onDialog={setDialog} />
+      <ActionsPanel item={item} canEdit={canEdit} canAdjust={canAdjust} onDialog={setDialog} />
 
       <div data-testid="item-cards" className={CARDS}>
         <WorkshopPanel title={t('stock.item.reservations')} headingLevel={3} data-testid="item-reservations">
@@ -208,9 +219,9 @@ function PositionView({ item, refreshFailed, onRetry }: { item: StockItemDetail;
                 <li key={r.project_line_id ?? 'none'}>
                   {r.project_id != null && r.project_code ? (
                     <>
-                      <Link to={`/projects/${r.project_id}`} className="text-bambu-green hover:underline">
+                      <SectionLink to={`/projects/${r.project_id}`} className="text-bambu-green hover:underline">
                         {r.project_code}
-                      </Link>
+                      </SectionLink>
                       {/* The order's name beside its code, as the mockup has it (F6 D2). */}
                       {r.project_name && <span>{` · ${r.project_name}`}</span>}
                       <span className="tabular-nums">{` — ${t('stock.item.qty', { n: r.qty })}`}</span>
@@ -255,10 +266,10 @@ function PositionView({ item, refreshFailed, onRetry }: { item: StockItemDetail;
           <p className="mt-3 text-xs text-bambu-gray">
             {t('stock.item.canAssemble', { n: item.can_assemble })}
             {' · '}
-            <Link to={`/products/${item.product.id}`} className="inline-flex items-center gap-1 text-bambu-green hover:underline">
+            <SectionLink to={`/products/${item.product.id}`} className="inline-flex items-center gap-1 text-bambu-green hover:underline">
               {t('stock.item.productCard')}
               <ExternalLink className="w-3.5 h-3.5" aria-hidden />
-            </Link>
+            </SectionLink>
           </p>
         </WorkshopPanel>
       </div>
@@ -292,10 +303,13 @@ function PartRow({ partId, label, shelf, short }: { partId: number; label: strin
 function ActionsPanel({
   item,
   canEdit,
+  canAdjust,
   onDialog,
 }: {
   item: StockItemDetail;
   canEdit: boolean;
+  /** «Location and minimum» corrects the position — `stock:adjust` (WS-13 E13 O06). */
+  canAdjust: boolean;
   onDialog: (dialog: StockDialogState) => void;
 }) {
   const { t } = useTranslation();
@@ -343,7 +357,7 @@ function ActionsPanel({
             ? t('stock.item.issueAllHeld')
             : undefined,
     },
-    { kind: 'params', label: t('stock.finished.action.params') },
+    ...(canAdjust ? [{ kind: 'params' as const, label: t('stock.finished.action.params') }] : []),
   ];
   const disabled = actions.filter((a) => a.reason);
 

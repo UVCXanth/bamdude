@@ -150,7 +150,9 @@ function FulfilmentForm({
   const { t } = useTranslation();
   const qc = useQueryClient();
   const { showToast } = useToast();
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
+  // A write-off corrects the books — `stock:adjust` (WS-13 E13 O06); the server asks it.
+  const canWriteOff = hasPermission('stock:adjust');
   const writeOffId = useId();
   const root = useRef<HTMLDivElement>(null);
 
@@ -339,17 +341,19 @@ function FulfilmentForm({
           {query.isError && reread === 'idle' && <RefreshFailedNote onRetry={() => void query.refetch()} />}
           {!error && trimmedNote}
 
-          <div className="flex justify-end">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={toggleWriteOff}
-              aria-expanded={writeOffOpen}
-              aria-controls={`${writeOffId}-table ${writeOffId}`}
-            >
-              {t('orders.fulfil.writeOffToggle')}
-            </Button>
-          </div>
+          {canWriteOff && (
+            <div className="flex justify-end">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={toggleWriteOff}
+                aria-expanded={writeOffOpen}
+                aria-controls={`${writeOffId}-table ${writeOffId}`}
+              >
+                {t('orders.fulfil.writeOffToggle')}
+              </Button>
+            </div>
+          )}
 
           <WorkshopTableScroll label={t('orders.fulfil.title')}>
             <table id={`${writeOffId}-table`} className="w-full text-sm">

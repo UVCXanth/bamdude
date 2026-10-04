@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useAuth } from '../../contexts/AuthContext';
 import { Loader2 } from 'lucide-react';
 import { useProductStock } from '../../hooks/useProductStock';
 import { Button } from '../Button';
@@ -44,6 +45,8 @@ const KV = 'grid grid-cols-[1fr_auto] gap-x-3.5 gap-y-1.5 text-sm text-bambu-gra
  */
 export function ProductStock({ productId, productName, canEdit, hasVariants = false }: ProductStockProps) {
   const { t } = useTranslation();
+  // A hand correction of the shelf is `stock:adjust` (WS-13 E13 O06); assembling moves goods.
+  const canAdjust = useAuth().hasPermission('stock:adjust');
   const [adjusting, setAdjusting] = useState(false);
   const [assembling, setAssembling] = useState(false);
 
@@ -170,7 +173,7 @@ export function ProductStock({ productId, productName, canEdit, hasVariants = fa
     <section className="space-y-3 rounded-xl border border-bambu-dark-tertiary px-4 py-3.5" data-testid="product-stock">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <h3 className="text-base font-semibold text-white">{t('products.detail.stockTab.parts')}</h3>
-        {canEdit && balances.length > 0 && (
+        {canEdit && canAdjust && balances.length > 0 && (
           <Button size="sm" variant="ghost" onClick={() => setAdjusting(true)}>
             {t('stock.adjust.open')}
           </Button>

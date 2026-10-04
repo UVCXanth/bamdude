@@ -16,6 +16,7 @@ import { OrderActionMenu } from './orderActions/OrderActionMenu';
 import { toOrderRef } from './orderActions/orderRef';
 import type { OrderActions, RunExtra } from './orderActions/useOrderActions';
 import { useUiPreferences } from '../../hooks/useUiPreferences';
+import { SectionLink } from '../workshop/SectionLink';
 
 interface OrderHeaderProps {
   order: Order;
@@ -91,13 +92,13 @@ export function OrderHeader({
 
           <div data-testid="order-facts" className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-bambu-gray-light">
             {order.customer_id != null ? (
-              <Link
+              <SectionLink
                 data-fact="customer"
                 to={`/customers/${order.customer_id}`}
                 className="font-medium text-white hover:underline"
               >
                 {order.customer_name}
-              </Link>
+              </SectionLink>
             ) : (
               <span data-fact="customer" className="text-bambu-gray">
                 {t('orders.header.noCustomer')}

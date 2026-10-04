@@ -1,6 +1,6 @@
 import { Fragment } from 'react';
 import type { ReactNode } from 'react';
-import { Link, useParams } from 'react-router';
+import { Link, useNavigate, useParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Printer } from 'lucide-react';
 import { ApiError } from '../../api/client';
@@ -15,6 +15,7 @@ import { RefreshFailedNote } from '../../components/workshop/RefreshFailedNote';
 import { WorkshopPanel, WorkshopTableScroll } from '../../components/workshop/WorkshopPanel';
 import { useDispatchNote } from '../../hooks/useDispatchNotes';
 import { useUiPreferences } from '../../hooks/useUiPreferences';
+import { SectionLink } from '../../components/workshop/SectionLink';
 
 /**
  * `/stock/dispatch-notes/:id` — the note (spec workshop-dispatch-notes, rule 19; WS-13 E12
@@ -27,12 +28,28 @@ export function DispatchNotePage() {
   const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const { hasPermission } = useAuth();
+  const navigate = useNavigate();
   const { data: note, error, isFetching, refetch } = useDispatchNote(Number(id));
   // The server sends naive UTC; the app's formatter reads it as such and follows the settings.
   const { data: settings } = useUiPreferences();
   const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;
   const dateFormat = (settings?.date_format ?? 'system') as DateFormat;
   const valid = Number.isInteger(Number(id)) && Number(id) > 0;
+  // The note opens for an order's or a customer's reader too (O25): the stock's notes are a way
+  // back only for a stock reader; anyone else goes back where they came from (WS-13 E13 O19).
+  const wayBack = hasPermission('stock:read') ? (
+    <Link to="/stock?tab=notes" className="text-sm text-bambu-green hover:underline">
+      {t('stock.dispatchNote.backToNotes')}
+    </Link>
+  ) : (
+    <button
+      type="button"
+      className="text-sm text-bambu-green hover:underline"
+      onClick={() => (window.history.length > 1 ? navigate(-1) : navigate('/'))}
+    >
+      {t('common.back')}
+    </button>
+  );
 
   if (!note) {
     // Only a 404 is «not found»; any other failure says it could not load (final review M4).
@@ -42,9 +59,7 @@ export function DispatchNotePage() {
         <div className="workshop p-4">
           <WorkshopPanel>
             <p className="mb-2 text-base font-semibold text-white">{t('stock.dispatchNote.restricted')}</p>
-            <Link to="/stock?tab=notes" className="text-sm text-bambu-green hover:underline">
-              {t('stock.dispatchNote.backToNotes')}
-            </Link>
+            {wayBack}
           </WorkshopPanel>
         </div>
       );
@@ -54,9 +69,7 @@ export function DispatchNotePage() {
         <div className="workshop p-4">
           <WorkshopPanel>
             <p className="mb-2 text-base font-semibold text-white">{t('stock.dispatchNote.notFound')}</p>
-            <Link to="/stock?tab=notes" className="text-sm text-bambu-green hover:underline">
-              {t('stock.dispatchNote.backToNotes')}
-            </Link>
+            {wayBack}
           </WorkshopPanel>
         </div>
       );
@@ -86,9 +99,9 @@ export function DispatchNotePage() {
   if (note.order_code) {
     subtitle.push(
       note.project_id != null ? (
-        <Link key="order" to={`/projects/${note.project_id}`} className="text-bambu-green hover:underline">
+        <SectionLink key="order" to={`/projects/${note.project_id}`} className="text-bambu-green hover:underline">
           {note.order_code}
-        </Link>
+        </SectionLink>
       ) : (
         <span key="order">{note.order_code}</span>
       ),
@@ -98,9 +111,9 @@ export function DispatchNotePage() {
   if (note.customer_name) {
     subtitle.push(
       note.customer_id != null ? (
-        <Link key="customer" to={`/customers/${note.customer_id}`} className="text-bambu-green hover:underline">
+        <SectionLink key="customer" to={`/customers/${note.customer_id}`} className="text-bambu-green hover:underline">
           {note.customer_name}
-        </Link>
+        </SectionLink>
       ) : (
         <span key="customer">{note.customer_name}</span>
       ),
@@ -111,13 +124,13 @@ export function DispatchNotePage() {
     <div className="workshop p-4 print:p-0">
       <div data-testid="dispatch-note-controls" className="print:hidden mb-4 space-y-2">
         <nav className="flex items-center gap-1 text-sm text-bambu-gray">
-          <Link to="/stock" className="hover:text-white transition-colors">
+          <SectionLink to="/stock" className="hover:text-white transition-colors">
             {t('stock.page.title')}
-          </Link>
+          </SectionLink>
           <ChevronRight className="w-4 h-4" />
-          <Link to="/stock?tab=notes" className="hover:text-white transition-colors">
+          <SectionLink to="/stock?tab=notes" className="hover:text-white transition-colors">
             {t('stock.tabs.notes')}
-          </Link>
+          </SectionLink>
           <ChevronRight className="w-4 h-4" />
           <span className="text-white">{note.code}</span>
         </nav>
