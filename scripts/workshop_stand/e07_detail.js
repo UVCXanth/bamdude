@@ -81,6 +81,10 @@ async (page, selftest = null) => {
     if (!state) return;
     state.closing = true;
     live.delete(ctx);
+    // ⚠️ Nothing reaches the stand while a context closes (WS-13 E13): a page can still be
+    // mid-sequence, and with its own routes taken off its next write went to the stand
+    // unanswered. A context-level route that aborts every request goes in FIRST.
+    try { await ctx.route(/.*/, (route) => route.abort().catch(() => {})); } catch { /* already gone */ }
     for (const p of state.pages) {
       try { await p.unrouteAll({ behavior: 'ignoreErrors' }); } catch { /* already gone */ }
     }

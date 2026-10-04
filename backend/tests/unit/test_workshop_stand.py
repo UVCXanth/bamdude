@@ -686,13 +686,20 @@ def _e04_done(run: dict) -> dict:
 
 
 def _e04_closed_in_order(run: dict) -> None:
-    """Every context the runner opened is unrouted and then closed — nothing is left open."""
+    """Every context the runner opened is unrouted and then closed — nothing is left open.
+
+    And nothing a page still sends while it closes reaches the stand (WS-13 E13): the context's
+    abort-everything route goes in BEFORE the page's own routes come off. In the other order a
+    dialog half-way through its writes (one per plate) sent the rest to the stand unanswered."""
     made = [e.split(".")[0] for e in run["log"] if e.endswith(".new")]
     assert made
     for ctx in made:
         closed = run["log"].index(f"{ctx}.close")
         if f"{ctx}.route" in run["log"]:
-            assert run["log"].index(f"{ctx}.unrouteAll") < closed
+            unrouted = run["log"].index(f"{ctx}.unrouteAll")
+            assert unrouted < closed
+            assert f"{ctx}.contextRoute" in run["log"], f"{ctx} closed without aborting what its page still sends"
+            assert run["log"].index(f"{ctx}.contextRoute") < unrouted
     # The routes are the page's: a context closed with them still in place is the leak's origin.
     assert not [e for e in run["log"] if e.endswith(".closedWithRoutes")]
 
@@ -2064,4 +2071,145 @@ def test_an_e12_job_names_the_positions_products_notes_and_customer():
         "products": {"1": 1, "16": 16},
         "notes": {"90000": 1},
         "customers": {"1": 21},
+    }
+
+
+# ---- WS-13 E13 acceptance runner (e13_acceptance.js): E4's harness around E13's scenarios ----
+
+import e13_evidence  # noqa: E402
+
+_E13_RUNNER = Path(__file__).resolve().parents[3] / "scripts" / "workshop_stand" / "e13_acceptance.js"
+
+
+def test_e13_a_failed_preparation_read_ends_the_run_incomplete_and_names_no_secret():
+    run = _e04_run("e13_prep_read_throws", _E13_RUNNER)
+
+    records = _e04_records(run)
+    assert [r["id"] for r in records] == ["runner"]
+    assert records[0]["error"] == {
+        "code": "read_network",
+        "stage": "prepare",
+        "name": "RunnerFailure",
+        "at": "/projects/2",
+    }
+    assert _e04_done(run)["incomplete"] is True
+
+
+def test_e13_a_real_scenario_that_throws_fails_safely_and_closes_its_context():
+    run = _e04_run("e13_real_scenario_throws", _E13_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["id"] == "archives-assign@1440" and rec["pass"] is False
+    assert rec["error"] == {"code": "error", "stage": "archives-assign@1440", "name": "Error"}
+    assert _e04_done(run)["incomplete"] is False
+    _e04_closed_in_order(run)
+
+
+@pytest.mark.parametrize("case", ["route_fails_live", "scenario_reports_the_token", "open_outside_a_scenario"])
+def test_e13_keeps_the_e04_guards(case):
+    run = _e04_run(case, _E13_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is False
+    if case != "scenario_reports_the_token":  # that one opens no context
+        _e04_closed_in_order(run)
+
+
+def test_e13_a_record_carrying_the_media_token_is_replaced_by_a_failure():
+    run = _e04_run("scenario_reports_the_media_token", _E13_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["error"] == {"code": "secret_in_record", "stage": "echo"}
+    assert "mq7-media-marker-fake" not in json.dumps(run["posts"])
+
+
+def test_e13_a_get_is_answered_by_its_turn():
+    run = _e04_run("gets_by_turn", _E13_RUNNER)
+
+    (rec,) = _e04_records(run)
+    assert rec["pass"] is True
+    answered = [e for e in run["log"] if e.startswith("fulfill.")]
+    assert answered == ['fulfill.500.{"detail":"e13 runner"}', 'fulfill.200.{"n":1,"seen":2}']
+    _e04_closed_in_order(run)
+
+
+def test_e13_the_runner_declares_exactly_the_scenarios_the_manifest_expects():
+    run = _e04_run("declared", _E13_RUNNER)
+
+    assert _e04_records(run) == []
+    assert _e04_done(run)["declared"] == list(e13_evidence.DETAIL_SCENARIOS)
+
+
+def test_e13_a_full_run_is_judged_against_the_e13_scenarios():
+    ids = list(e13_evidence.DETAIL_SCENARIOS)
+    done = {"count": len(ids), "incomplete": False, "declared": ids}
+    records = [{"id": i} for i in ids]
+
+    verdict = e04_evidence.run_completeness(
+        finished=True, done=done, records=records, only="", expected=e13_evidence.DETAIL_SCENARIOS
+    )
+    assert verdict["complete"] is True
+    assert (
+        e04_evidence.run_completeness(
+            finished=True, done=done, records=records, only="", expected=e12_evidence.DETAIL_SCENARIOS
+        )["complete"]
+        is False
+    )
+
+
+def test_the_e13_pairs_add_the_changed_order_tabs_on_a_copy_of_the_plan():
+    base = json.loads((Path(e13_evidence.HERE) / "capture_plan.json").read_text(encoding="utf-8"))
+    before = json.dumps(base, sort_keys=True)
+
+    plan, only, stage = e13_evidence.pairs_plan(base, run="")
+    assert stage == "e13-acceptance-pairs"
+    assert plan["widths"] == {"wide": [1440, 1024], "narrow": [390]}
+    assert only == [r["id"] for r in e13_evidence.e13_recipes()]
+    assert set(only) <= {s["id"] for s in plan["surfaces"]}
+    assert json.dumps(base, sort_keys=True) == before
+
+
+def test_every_e13_pair_shows_one_order_on_both_sides_with_plain_fixtures():
+    # J07: the order tabs E13 and later stages changed (prints B06, issues after E12, files —
+    # the attachments' confirmation). As E4's: both sides show the same order, and a fixture is a
+    # GET rewrite of that order on the app side, never a write.
+    shapes = {}
+    for recipe in e13_evidence.e13_recipes():
+        shapes[recipe["id"]] = (recipe["measure"], recipe["widths"])
+        kind, number = recipe["pair"].split(":")
+        assert kind == "order", recipe["id"]
+        assert recipe["mockup"]["route"] == f"#/orders/{number}", recipe["id"]
+        assert recipe["app"]["route"] == f"/projects/{{order:{number}}}", recipe["id"]
+        assert capture_serve.side_rewrites("mockup", recipe["mockup"], str) == []
+        for rewrite in capture_serve.side_rewrites(
+            "app", recipe["app"], lambda r, n=number: r.replace(f"{{order:{n}}}", "1")
+        ):
+            assert rewrite["path"].startswith("/api/v1/projects/1"), recipe["id"]
+    assert shapes == {
+        "e13-tab-prints": ("order-detail", "all"),
+        "e13-tab-issues": ("order-detail", "wide"),
+        "e13-tab-files": ("order-detail", "wide"),
+    }
+
+
+def test_an_e13_job_names_the_mockup_entities():
+    mapping = {
+        **{f"order:{n}": {"id": i} for n, i in (("244", 34), ("245", 35), ("241", 31), ("229", 30), ("251", 41))},
+        "product:1": {"id": 1},
+        "customer:1": {"id": 1},
+        "fin:1": {"id": 5},
+        "doc:90000": {"id": 1},
+        "file:clm01_lbl_p1s.gcode.3mf": {"id": 88},
+        "file:dif01_p1s.gcode.3mf": {"id": 1},
+        "archive:3593": {"id": 595},
+    }
+
+    assert e13_evidence.job_entities(mapping) == {
+        "orders": {"244": 34, "245": 35, "241": 31, "229": 30, "251": 41},
+        "products": {"1": 1},
+        "customers": {"1": 1},
+        "positions": {"1": 5},
+        "notes": {"90000": 1},
+        "files": {"clm01_lbl_p1s.gcode.3mf": 88, "dif01_p1s.gcode.3mf": 1},
+        "archives": {"3593": 595},
     }

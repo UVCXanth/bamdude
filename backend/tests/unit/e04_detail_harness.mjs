@@ -59,6 +59,9 @@ const page = (c) => {
             for (let k = 0; k < (c.fires ?? 0); k += 1) await fire(handlers);
           },
         }),
+        // A context-level route: the abort-everything route a closing context takes before its pages'
+        // routes come off (E13), so nothing a page still sends reaches the stand.
+        route: async () => { log.push(`${id}.contextRoute`); },
         // A context-level unroute would leave the page's routes in place — logged apart so a test sees which ran.
         unrouteAll: async () => { log.push(`${id}.contextUnrouteAll`); },
         close: async () => { log.push(`${id}.close`); if (handlers.length) log.push(`${id}.closedWithRoutes`); },
@@ -118,6 +121,9 @@ const CASES = {
   // …and through E12's runner (e12_stock.js), whose first read is position 1.
   e12_real_scenario_throws: [{ only: 'page@1440', gotoFails: true }],
   e12_prep_read_throws: [{ readFails: /^\/stock\/items\/1$/, readFailsWith: 'throw' }],
+  // …and through E13's runner (e13_acceptance.js), whose first read is order 244 (here id 2).
+  e13_real_scenario_throws: [{ only: 'archives-assign@1440', gotoFails: true }],
+  e13_prep_read_throws: [{ readFails: /^\/projects\/2$/, readFailsWith: 'throw' }],
   // E6: a GET answered by its turn — failed the first time, rewritten the second.
   gets_by_turn: [{ fires: 2 }, async ({ scenario, open }) => {
     let n = 0;
