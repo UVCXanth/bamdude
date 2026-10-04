@@ -132,7 +132,9 @@ export function OrdersPage() {
     // The old page stays on screen while the next one loads — no skeleton flash.
     placeholderData: keepPreviousData,
   });
-  const { data: customers = [] } = useQuery({ queryKey: ['customers'], queryFn: api.getCustomers });
+  // The customer filter names customers from their option list — an orders reader filters
+  // without the customers' directory, which is personal data (WS-13 E13 O19).
+  const { data: customers = [] } = useQuery({ queryKey: ['customer-options'], queryFn: api.getCustomerOptions });
   const { data: assignees = [] } = useQuery({ queryKey: ['order-assignees'], queryFn: api.getOrderAssignees });
   // A delete (ours or someone else's) can leave us past the last page. Only an
   // answer for THIS view may clamp: the previous page's, still on screen while

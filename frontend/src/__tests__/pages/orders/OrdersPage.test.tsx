@@ -67,7 +67,7 @@ describe('OrdersPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     localStorage.clear();
-    vi.spyOn(api, 'getCustomers').mockResolvedValue([{ id: 1, name: 'ACME', figures: {} }] as never);
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue([{ id: 1, code: 'CU-0001', name: 'ACME' }]);
     vi.spyOn(api, 'getOrdersFilament').mockResolvedValue(EMPTY_FARM);
     vi.spyOn(api, 'getOrdersSummary').mockResolvedValue({ active: 4, overdue: 1, urgent: 2, printing: 3, queued: 7, remaining: 12, all_covered: 1, qc: 0 });
     vi.spyOn(api, 'getOrderAssignees').mockResolvedValue([]);
@@ -765,7 +765,10 @@ describe('OrdersPage', () => {
       vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
       window.history.pushState({}, '', '/projects');
       const { unmount } = render(<OrdersPage />);
-      expect(await screen.findByRole('combobox', { name: 'Customer' })).toBeInTheDocument();
+      const filter = await screen.findByRole('combobox', { name: 'Customer' });
+      // The filter names customers from their option list — an orders reader without the
+      // customers' directory filters too (WS-13 E13 O19).
+      expect(await within(filter).findByRole('option', { name: 'ACME' })).toBeInTheDocument();
       expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Search: name, code, customer, tag…');
       expect(screen.queryByTestId('orders-statusless-hint')).not.toBeInTheDocument();
       unmount();
