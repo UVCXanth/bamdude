@@ -24,7 +24,7 @@ export const pipeDetail: StockItemDetail = {
   min_qty: 10,
   below_min: true,
   short_by: 7,
-  reservations: [{ project_line_id: null, project_id: null, project_code: null, qty: 2 }],
+  reservations: [{ project_line_id: null, project_id: null, project_code: null, project_name: null, qty: 2 }],
   siblings: [
     {
       id: 7,

@@ -21,15 +21,15 @@ const r03: StockItemDetail = {
   reserved: 6,
   available: 6,
   reservations: [
-    { project_line_id: null, project_id: null, project_code: null, qty: 4 },
-    { project_line_id: 3, project_id: 42, project_code: 'OR-0042', qty: 2 },
+    { project_line_id: null, project_id: null, project_code: null, project_name: null, qty: 4 },
+    { project_line_id: 3, project_id: 42, project_code: 'OR-0042', project_name: 'Order for Ivan', qty: 2 },
   ],
 };
 const noManual: StockItemDetail = {
   ...r03,
   reserved: 2,
   available: 10,
-  reservations: [{ project_line_id: 3, project_id: 42, project_code: 'OR-0042', qty: 2 }],
+  reservations: [{ project_line_id: 3, project_id: 42, project_code: 'OR-0042', project_name: 'Order for Ivan', qty: 2 }],
 };
 const found = (item = pipeItem): StockLookup => ({ item, configuration: pipeItem.configuration, can_assemble: 0, parts: [] });
 const none: StockLookup = { item: null, configuration: pipeItem.configuration, can_assemble: 0, parts: [] };
@@ -263,7 +263,7 @@ describe('StockMoveDialog', () => {
       ...r03,
       reserved: 4,
       available: 8,
-      reservations: [{ project_line_id: 7, project_id: null, project_code: null, qty: 4 }],
+      reservations: [{ project_line_id: 7, project_id: null, project_code: null, project_name: null, qty: 4 }],
     });
     render(<StockMoveDialog kind="release" item={pipeItem} onClose={() => {}} />);
     await waitFor(() => expect(limit()).toHaveTextContent('No more than 0'));
@@ -627,6 +627,61 @@ describe('StockMoveDialog', () => {
       await waitFor(() => expect(getItem).toHaveBeenCalled());
       await waitFor(() => expect(limit()).toHaveTextContent('You can reserve 6 (available)'));
       expect(limit()).not.toHaveTextContent('10');
+    });
+
+    // F6 D1 (owner, 2026-10-04): a re-read of the SAME position keeps the numbers this dialog
+    // already read on screen, dimmed — never as the limit: the primary waits for the answer.
+    it('a re-read of the same position keeps its last numbers on screen, dimmed, and the primary waits (F6 D1)', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const again = deferred<StockItemDetail>();
+      getItem.mockResolvedValueOnce(r03).mockReturnValueOnce(again.promise as never);
+      render(
+        <QueryClientProvider client={client}>
+          <StockMoveDialog kind="reserve" item={pipeItem} onClose={() => {}} />
+        </QueryClientProvider>,
+      );
+      await waitFor(() => expect(limit()).toHaveTextContent('You can reserve 6 (available)'));
+      await waitFor(() => expect(submit()).toBeEnabled());
+      act(() => {
+        void client.invalidateQueries({ queryKey: ['stock-item'] });
+      });
+      await waitFor(() => expect(submit()).toBeDisabled());
+      expect(limit()).toHaveTextContent('You can reserve 6 (available)');
+      expect(limit()).toHaveAttribute('data-stale', 'true');
+      const header = screen.getByTestId('stock-position-header');
+      expect(header).toHaveTextContent('On hand 12 · reserved 6 · available 6');
+      expect(header).toHaveAttribute('data-stale', 'true');
+      await act(async () => again.resolve({ ...r03, reserved: 7, available: 5 }));
+      await waitFor(() => expect(limit()).toHaveTextContent('You can reserve 5 (available)'));
+      expect(limit()).not.toHaveAttribute('data-stale');
+      expect(screen.getByTestId('stock-position-header')).not.toHaveAttribute('data-stale');
+      expect(submit()).toBeEnabled();
+    });
+
+    it('from the header, a re-read of the same configuration keeps its position line, dimmed (F6 D1)', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const again = deferred<StockLookup>();
+      vi.spyOn(api, 'lookupStockItem')
+        .mockResolvedValueOnce(found())
+        .mockReturnValueOnce(again.promise as never)
+        .mockResolvedValue(found());
+      render(
+        <QueryClientProvider client={client}>
+          <StockMoveDialog kind="receipt" onClose={() => {}} />
+        </QueryClientProvider>,
+      );
+      fireEvent.click(await screen.findByRole('button', { name: 'PR-0001 · Pipe' }));
+      await waitFor(() => expect(screen.getByTestId('stock-lookup')).toHaveTextContent('Position SK-0005'));
+      await waitFor(() => expect(submit()).toBeEnabled());
+      act(() => {
+        void client.invalidateQueries({ queryKey: ['stock-lookup'] });
+      });
+      await waitFor(() => expect(submit()).toBeDisabled());
+      expect(screen.getByTestId('stock-lookup')).toHaveTextContent('Position SK-0005');
+      expect(screen.getByTestId('stock-lookup')).toHaveAttribute('data-stale', 'true');
+      await act(async () => again.resolve(found()));
+      await waitFor(() => expect(screen.getByTestId('stock-lookup')).not.toHaveAttribute('data-stale'));
+      await waitFor(() => expect(submit()).toBeEnabled());
     });
 
     it('another configuration on its way: «reading…», and the primary waits — the old answer proves nothing', async () => {

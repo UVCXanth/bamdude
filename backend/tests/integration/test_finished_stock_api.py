@@ -164,7 +164,9 @@ async def test_the_summary_is_the_farm(committing_client, farm):
 async def test_a_position_page(committing_client, farm):
     standard, angled, _lamp = await _positions(committing_client, farm)
     body = (await committing_client.get(f"/api/v1/stock/items/{angled['id']}")).json()
-    assert body["reservations"] == [{"project_line_id": None, "project_id": None, "project_code": None, "qty": 2}]
+    assert body["reservations"] == [
+        {"project_line_id": None, "project_id": None, "project_code": None, "project_name": None, "qty": 2}
+    ]
     assert [s["id"] for s in body["siblings"]] == [standard["id"]]
     assert {p["name"]: (p["per"], p["on_shelf"]) for p in body["parts"]} == {"flask": (1, 4), "angled": (1, 1)}
     assert body["can_assemble"] == 1

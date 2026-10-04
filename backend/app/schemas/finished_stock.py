@@ -100,6 +100,8 @@ class StockReservationOut(BaseModel):
     project_line_id: int | None = None
     project_id: int | None = None
     project_code: str | None = None
+    # WS-13 E12 F6 (A02): «OR-… · name — N pcs» on the position page.
+    project_name: str | None = None
     qty: int
 
 

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.finished_stock import StockItem, StockItemMovement
 from backend.app.models.product import Product, ProductPart
+from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.schemas.finished_stock import (
     StockItemDetail,
@@ -168,18 +169,28 @@ async def item_detail(db: AsyncSession, item: StockItem) -> StockItemDetail:
         )
     ).all()
     line_ids = [line_id for line_id, qty in groups if line_id is not None and qty]
+    # The order of each line, with its name for the position page (WS-13 E12 F6, A02); an order
+    # that is gone leaves the line its id and no name.
     orders = (
-        dict(
-            (await db.execute(select(ProjectLine.id, ProjectLine.project_id).where(ProjectLine.id.in_(line_ids)))).all()
-        )
+        {
+            line_id: (project_id, name)
+            for line_id, project_id, name in (
+                await db.execute(
+                    select(ProjectLine.id, ProjectLine.project_id, Project.name)
+                    .outerjoin(Project, Project.id == ProjectLine.project_id)
+                    .where(ProjectLine.id.in_(line_ids))
+                )
+            ).all()
+        }
         if line_ids
         else {}
     )
     reservations = [
         StockReservationOut(
             project_line_id=line_id,
-            project_id=orders.get(line_id),
-            project_code=code_for("order", orders[line_id]) if line_id in orders else None,
+            project_id=orders[line_id][0] if line_id in orders else None,
+            project_code=code_for("order", orders[line_id][0]) if line_id in orders else None,
+            project_name=orders[line_id][1] if line_id in orders else None,
             qty=int(qty),
         )
         for line_id, qty in sorted(groups, key=lambda g: (g[0] is not None, g[0] or 0))

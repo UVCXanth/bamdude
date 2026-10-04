@@ -108,8 +108,24 @@ export function StockMoveDialog({
 
   // ---- which position: fixed, or the server's answer for a configuration (G02, G08)
   const options = Object.values(choices);
-  const { groupsReady, lookup, lookupCurrent, lookupOwn, positionId, detail, detailCurrent, figures, shownFigures, reread, rereading } =
-    useStockTarget({ item, productId, options });
+  const {
+    groupsReady,
+    lookup,
+    lookupCurrent,
+    lookupOwn,
+    lookupShown,
+    positionId,
+    detail,
+    detailCurrent,
+    figures,
+    shownFigures,
+    reread,
+    rereading,
+  } = useStockTarget({ item, productId, options });
+  // F6 D1: the last answer of the same key, kept on screen dimmed while it is read again.
+  const figuresStale = figures == null && shownFigures != null;
+  const lookupStale = !lookupCurrent && lookupShown != null;
+  const shownManual = shownFigures ? manualReserved(shownFigures.reservations) : undefined;
   const manual = figures ? manualReserved(figures.reservations) : undefined;
 
   // ---- the customer's contacts, for the recipient (G05, G08)
@@ -275,11 +291,22 @@ export function StockMoveDialog({
   const readFailed =
     (positionId != null && detail.isError && !detail.isFetching) ||
     (item == null && groupsReady && lookup.isError && !lookup.isFetching);
+  // While the same position is read again its last limit stays on the line, dimmed (F6 D1) —
+  // shown, never judged by: `over` and the primary still ask the current answer.
+  let shownLimit: number | null | undefined = limitValue;
+  if (limitValue === undefined && figuresStale) {
+    if (kind === 'reserve') shownLimit = shownFigures?.available;
+    else if (kind === 'release') shownLimit = shownManual;
+    else if (kind === 'issue') shownLimit = fromReserve ? shownManual : shownFigures?.available;
+  }
+  const limitStale = limitValue === undefined && shownLimit != null;
+  const shownOver = shownLimit != null && qtyValid && qtyValue > shownLimit;
   let limitText: string | undefined;
   if (!qtyValid && kind !== 'stocktake') limitText = t('stock.move.qtyInvalid');
-  else if (limitValue === undefined) limitText = readFailed ? undefined : t('stock.move.reading');
-  else if (limitValue !== null) limitText = over ? t('stock.move.overLimit', { n: limitValue }) : t(`stock.move.limit.${limitKey}`, { n: limitValue });
-  const showFromReserve = kind === 'issue' && ((manual ?? 0) > 0 || fromReserve);
+  else if (shownLimit === undefined) limitText = readFailed ? undefined : t('stock.move.reading');
+  else if (shownLimit !== null)
+    limitText = shownOver ? t('stock.move.overLimit', { n: shownLimit }) : t(`stock.move.limit.${limitKey}`, { n: shownLimit });
+  const showFromReserve = kind === 'issue' && ((manual ?? shownManual ?? 0) > 0 || fromReserve);
   const positionNotes =
     positionId != null && detail.isError && !detail.isFetching ? (
       detail.data ? (
@@ -327,7 +354,7 @@ export function StockMoveDialog({
         <WorkshopFormGrid>
           {item ? (
             <div className="col-span-full space-y-2" data-testid="stock-move-position">
-              <StockPositionHeader item={item} figures={shownFigures ?? null} />
+              <StockPositionHeader item={item} figures={shownFigures ?? null} stale={figuresStale} />
               {positionNotes}
             </div>
           ) : (
@@ -349,9 +376,10 @@ export function StockMoveDialog({
                 ) : (
                   <>
                     <StockLookupNote
-                      lookup={lookupOwn}
+                      lookup={lookupShown ?? lookupOwn}
                       creates={kind === 'receipt' || kind === 'stocktake'}
-                      reading={!lookupCurrent && !(lookup.isError && lookupOwn)}
+                      reading={!lookupCurrent && !lookupShown && !(lookup.isError && lookupOwn)}
+                      stale={lookupStale}
                       noPositionId={ids.noPosition}
                     />
                     {lookup.isError && lookupOwn && !lookup.isFetching && (
@@ -376,7 +404,9 @@ export function StockMoveDialog({
               hint={
                 <span className="space-x-2">
                   {shownFigures && (
-                    <span>{t('stock.move.now', { onHand: shownFigures.on_hand, reserved: shownFigures.reserved })}</span>
+                    <span className={figuresStale ? 'opacity-60' : undefined} data-stale={figuresStale || undefined}>
+                      {t('stock.move.now', { onHand: shownFigures.on_hand, reserved: shownFigures.reserved })}
+                    </span>
                   )}
                   {countedTyped && !countedValid && (
                     <span id={ids.countedInvalid} className="text-status-warning">
@@ -411,7 +441,11 @@ export function StockMoveDialog({
               htmlFor={ids.qty}
               hint={
                 limitText !== undefined ? (
-                  <span data-testid="stock-move-limit" className={over || !qtyValid ? 'text-status-warning' : undefined}>
+                  <span
+                    data-testid="stock-move-limit"
+                    data-stale={limitStale || undefined}
+                    className={`${shownOver || !qtyValid ? 'text-status-warning' : ''} ${limitStale ? 'opacity-60' : ''}`.trim() || undefined}
+                  >
                     {limitText}
                   </span>
                 ) : undefined

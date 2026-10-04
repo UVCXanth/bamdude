@@ -21,9 +21,12 @@ export function isCurrent(q: UseQueryResult<unknown>): boolean {
  * the product's groups, then asks `lookup` — every new key read now, since the app keeps a
  * query fresh for a minute and a cached answer is not this dialog's — and, once the lookup
  * names a position, that position is read too (its reservations live only there). Only a
- * current answer gives a number: `figures` and `lookupCurrent` say so; `shownFigures` keeps
- * the old numbers beside a failed re-read, never as a limit. After a refusal `reread()` asks
- * both again and nothing is judged until they answer.
+ * current answer gives a number: `figures` and `lookupCurrent` say so. What is SHOWN —
+ * `shownFigures`, `lookupShown` — is the current answer, or the last answer of the SAME key
+ * this dialog has read, kept on screen dimmed while that key is read again or after its re-read
+ * failed (owner, F6 D1) — never as a limit. A cache from before the opening and another key's
+ * answer show nothing («reading…»). After a refusal `reread()` asks both again and nothing is
+ * judged until they answer.
  */
 export function useStockTarget({
   item,
@@ -48,6 +51,8 @@ export function useStockTarget({
   }, [lookupKey]);
   const lookupCurrent = groupsReady && isCurrent(lookup) && !rereading;
   const lookupOwn = lookup.data && !lookup.isPlaceholderData ? lookup.data : undefined;
+  // F6 D1: this key's answer, once read in this dialog, stays on screen while it is read again.
+  const lookupShown = lookupCurrent || (groupsReady && lookup.isFetchedAfterMount) ? lookupOwn : undefined;
 
   const positionId = item?.id ?? lookupOwn?.item?.id;
   const detail = useStockItem(positionId ?? 0);
@@ -58,7 +63,8 @@ export function useStockTarget({
   }, [positionId]);
   const detailCurrent = positionId != null && isCurrent(detail) && !rereading;
   const figures = detailCurrent ? detail.data : undefined;
-  const shownFigures = figures ?? (detail.isError && !detail.isFetching ? detail.data : undefined);
+  const shownFigures =
+    figures ?? (positionId != null && detail.isFetchedAfterMount && !detail.isPlaceholderData ? detail.data : undefined);
 
   const reread = () => {
     setRereading(true);
@@ -74,6 +80,7 @@ export function useStockTarget({
     lookup,
     lookupCurrent,
     lookupOwn,
+    lookupShown,
     positionId,
     detail,
     detailCurrent,

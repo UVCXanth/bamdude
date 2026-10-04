@@ -198,7 +198,7 @@ describe('StockItemPage', () => {
         on_hand: 4,
         reserved: 4,
         available: 0,
-        reservations: [{ project_line_id: 3, project_id: 42, project_code: 'OR-0042', qty: 4 }],
+        reservations: [{ project_line_id: 3, project_id: 42, project_code: 'OR-0042', project_name: 'Order for Ivan', qty: 4 }],
       });
       renderPage();
       const panel = await screen.findByTestId('item-actions');
@@ -231,15 +231,16 @@ describe('StockItemPage', () => {
       const withOrder: StockItemDetail = {
         ...pipeDetail,
         reservations: [
-          { project_line_id: 3, project_id: 42, project_code: 'OR-0042', qty: 1 },
-          { project_line_id: null, project_id: null, project_code: null, qty: 2 },
+          { project_line_id: 3, project_id: 42, project_code: 'OR-0042', project_name: 'Hall lights', qty: 1 },
+          { project_line_id: null, project_id: null, project_code: null, project_name: null, qty: 2 },
         ],
       };
       getItem.mockResolvedValue(withOrder);
       renderPage();
       const card = await screen.findByTestId('item-reservations');
       expect(within(card).getByRole('link', { name: 'OR-0042' })).toHaveAttribute('href', '/projects/42');
-      expect(card).toHaveTextContent('OR-0042 — 1 pcs');
+      // WS-13 E12 F6 D2: the order's name beside its code, as the mockup has it.
+      expect(card).toHaveTextContent('OR-0042 · Hall lights — 1 pcs');
       expect(card).toHaveTextContent('Without an order — 2 pcs');
     });
 

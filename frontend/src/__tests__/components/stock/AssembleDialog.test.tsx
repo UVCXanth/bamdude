@@ -85,6 +85,35 @@ describe('AssembleDialog', () => {
       expect(noteField).toHaveFocus();
     });
 
+    // F6 D1 (owner, 2026-10-04): a re-read of the same position keeps the kit, the limit and the
+    // position on screen, dimmed; the primary waits for the answer.
+    it('a re-read of the same position keeps the parts and the limit on screen, dimmed, and waits (F6 D1)', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const again = deferred<StockItemDetail>();
+      vi.spyOn(api, 'getStockItem')
+        .mockResolvedValueOnce({ ...pipeDetail, can_assemble: 3 })
+        .mockReturnValueOnce(again.promise as never);
+      render(
+        <QueryClientProvider client={client}>
+          <AssembleDialog item={pipeItem} onClose={() => {}} />
+        </QueryClientProvider>,
+      );
+      await waitFor(() => expect(screen.getByText('up to 3')).toBeInTheDocument());
+      await waitFor(() => expect(submit()).toBeEnabled());
+      act(() => {
+        void client.invalidateQueries({ queryKey: ['stock-item'] });
+      });
+      await waitFor(() => expect(submit()).toBeDisabled());
+      expect(screen.getByTestId('assemble-limit')).toHaveTextContent('up to 3');
+      expect(screen.getByTestId('assemble-limit')).toHaveAttribute('data-stale', 'true');
+      expect(screen.getByTestId('assemble-parts')).toHaveAttribute('data-stale', 'true');
+      expect(screen.getByTestId('assemble-position')).toHaveTextContent('now 5 pcs');
+      await act(async () => again.resolve({ ...pipeDetail, can_assemble: 2 }));
+      await waitFor(() => expect(screen.getByTestId('assemble-limit')).toHaveTextContent('up to 2'));
+      expect(screen.getByTestId('assemble-limit')).not.toHaveAttribute('data-stale');
+      expect(screen.getByTestId('assemble-parts')).not.toHaveAttribute('data-stale');
+    });
+
     // Final review M3: after a failed re-read nothing is being read — no «reading…».
     it('a re-read that failed after a refusal says so, with no «reading…» left', async () => {
       vi.spyOn(api, 'getStockItem')

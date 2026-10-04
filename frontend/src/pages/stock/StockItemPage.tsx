@@ -211,6 +211,8 @@ function PositionView({ item, refreshFailed, onRetry }: { item: StockItemDetail;
                       <Link to={`/projects/${r.project_id}`} className="text-bambu-green hover:underline">
                         {r.project_code}
                       </Link>
+                      {/* The order's name beside its code, as the mockup has it (F6 D2). */}
+                      {r.project_name && <span>{` · ${r.project_name}`}</span>}
                       <span className="tabular-nums">{` — ${t('stock.item.qty', { n: r.qty })}`}</span>
                     </>
                   ) : (

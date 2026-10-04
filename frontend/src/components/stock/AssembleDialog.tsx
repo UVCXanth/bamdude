@@ -58,29 +58,36 @@ export function AssembleDialog({
   const [note, setNote] = useState('');
 
   const options = Object.values(choices);
-  const { product, groupsReady, lookup, lookupCurrent, lookupOwn, detail, figures, reread, rereading } = useStockTarget({
-    item,
-    productId,
-    options,
-  });
+  const { product, groupsReady, lookup, lookupCurrent, lookupOwn, lookupShown, detail, figures, shownFigures, reread, rereading } =
+    useStockTarget({
+      item,
+      productId,
+      options,
+    });
   // What the shelf answers for the chosen configuration — a current read only.
   const source = item ? figures : lookupCurrent ? lookupOwn : undefined;
-  const parts = source?.parts ?? [];
+  // What is SHOWN: the current answer, or — while the same key is read again — the last one this
+  // dialog read, dimmed (F6 D1); the primary never judges by it.
+  const shown = item ? shownFigures : lookupShown;
+  const stale = source == null && shown != null;
+  const parts = shown?.parts ?? [];
   const canAssemble = source?.can_assemble;
+  const shownCan = shown?.can_assemble;
   const oneOff = item == null && product.data != null && product.data.origin !== 'catalog';
 
   const count = Number(qty);
   const countValid = qty.trim() !== '' && Number.isInteger(count) && count >= 1;
   const over = canAssemble != null && countValid && count > canAssemble;
+  const shownOver = shownCan != null && countValid && count > shownCan;
 
   // The position this assembly grows: the fixed one, or the lookup's (none yet — a new one).
   const target: { code: string; configuration: LineConfiguration; onHand: number } | null | undefined = item
-    ? figures
-      ? { code: item.code, configuration: item.configuration, onHand: figures.on_hand }
+    ? shownFigures
+      ? { code: item.code, configuration: item.configuration, onHand: shownFigures.on_hand }
       : undefined
-    : lookupCurrent && lookupOwn
-      ? lookupOwn.item
-        ? { code: lookupOwn.item.code, configuration: lookupOwn.configuration, onHand: lookupOwn.item.on_hand }
+    : lookupShown
+      ? lookupShown.item
+        ? { code: lookupShown.item.code, configuration: lookupShown.configuration, onHand: lookupShown.item.on_hand }
         : null
       : undefined;
 
@@ -154,9 +161,9 @@ export function AssembleDialog({
 
   let limitText: string;
   if (!countValid) limitText = t('stock.move.qtyInvalid');
-  else if (canAssemble == null) limitText = readFailed ? '' : t('stock.move.reading');
-  else if (over) limitText = t('stock.move.overLimit', { n: canAssemble });
-  else limitText = t('stock.assemble.upTo', { n: canAssemble });
+  else if (shownCan == null) limitText = readFailed ? '' : t('stock.move.reading');
+  else if (shownOver) limitText = t('stock.move.overLimit', { n: shownCan });
+  else limitText = t('stock.assemble.upTo', { n: shownCan });
 
   const readNote =
     readQuery && readQuery.isError && !readQuery.isFetching ? (
@@ -234,7 +241,11 @@ export function AssembleDialog({
             label={t('stock.assemble.qty')}
             htmlFor={ids.qty}
             hint={
-              <span data-testid="assemble-limit" className={over || !countValid ? 'text-status-warning' : undefined}>
+              <span
+                data-testid="assemble-limit"
+                data-stale={(stale && shownCan != null) || undefined}
+                className={`${shownOver || !countValid ? 'text-status-warning' : ''} ${stale ? 'opacity-60' : ''}`.trim() || undefined}
+              >
                 {limitText}
               </span>
             }
@@ -243,7 +254,7 @@ export function AssembleDialog({
               id={ids.qty}
               type="number"
               min={1}
-              max={canAssemble || undefined}
+              max={shownCan || undefined}
               value={qty}
               onChange={(e) => setQty(e.target.value)}
               aria-describedby={`${ids.qty}-hint`}
@@ -262,7 +273,11 @@ export function AssembleDialog({
             />
           </WorkshopField>
           {!(target === undefined && readFailed) && (
-            <p data-testid="assemble-position" className="col-span-full rounded-lg bg-bambu-dark px-3 py-2 text-sm text-bambu-gray-light">
+            <p
+              data-testid="assemble-position"
+              data-stale={stale || undefined}
+              className={`col-span-full rounded-lg bg-bambu-dark px-3 py-2 text-sm text-bambu-gray-light ${stale ? 'opacity-60' : ''}`}
+            >
               {target === undefined
                 ? t('stock.move.reading')
                 : target === null
@@ -273,11 +288,16 @@ export function AssembleDialog({
           {readNote && <div className="col-span-full">{readNote}</div>}
         </WorkshopFormGrid>
 
-        {source &&
+        {shown &&
           (parts.length === 0 ? (
             <p className="mb-2 text-sm text-bambu-gray">{t('stock.assemble.noParts')}</p>
           ) : (
-            <table className="mb-2 w-full text-sm">
+            <table
+              data-testid="assemble-parts"
+              data-stale={stale || undefined}
+              aria-busy={stale || undefined}
+              className={`mb-2 w-full text-sm ${stale ? 'opacity-60' : ''}`}
+            >
               <thead>
                 <tr className="text-xs text-bambu-gray text-left">
                   <th className="font-normal p-1">{t('stock.part')}</th>

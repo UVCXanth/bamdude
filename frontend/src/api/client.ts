@@ -3716,6 +3716,8 @@ export interface StockReservationGroup {
   project_line_id: number | null;
   project_id: number | null;
   project_code: string | null;
+  /** The order's name (WS-13 E12 F6): «OR-… · name — N pcs». */
+  project_name: string | null;
   qty: number;
 }
 

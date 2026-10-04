@@ -101,6 +101,20 @@ async def _held(db, line):
 
 
 @pytest.mark.asyncio
+async def test_the_position_page_names_the_order_that_holds_a_reservation(db_session, shelf):
+    """WS-13 E12 F6 D2 (A02): a reservation of an order line carries the order's name beside its
+    code — «OR-… · name — N pcs» on the position page."""
+    from backend.app.services import finished_stock_views
+
+    await finished_stock.reserve_for_line(db_session, shelf["line"], 2)
+    detail = await finished_stock_views.item_detail(db_session, shelf["item"])
+    order = shelf["order"]
+    assert [(r.project_id, r.project_code, r.project_name, r.qty) for r in detail.reservations] == [
+        (order.id, f"OR-{order.id:04d}", "O", 2)
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_line_takes_what_is_free_up_to_its_quantity(db_session, shelf):
     got = await finished_stock.reserve_for_line(db_session, shelf["line"], 9)
     assert got == 4  # quantity 4, 5 free

@@ -129,12 +129,15 @@ export function StockLookupNote({
   lookup,
   creates,
   reading = false,
+  stale = false,
   noPositionId,
 }: {
   lookup: StockLookup | undefined;
   creates: boolean;
   /** The answer on screen is not the current one (another configuration on its way). */
   reading?: boolean;
+  /** The same configuration is read again: its last answer stays, dimmed (F6 D1). */
+  stale?: boolean;
   /** The «no position» line's id — the primary names it as its reason (G02). */
   noPositionId?: string;
 }) {
@@ -149,7 +152,12 @@ export function StockLookupNote({
   if (!lookup) return null;
   const caption = lineConfigLabel(lookup.configuration, 'product', t);
   return (
-    <div className="col-span-full rounded-lg bg-bambu-dark px-3 py-2 text-sm" data-testid="stock-lookup">
+    <div
+      className={`col-span-full rounded-lg bg-bambu-dark px-3 py-2 text-sm ${stale ? 'opacity-60' : ''}`}
+      data-testid="stock-lookup"
+      data-stale={stale || undefined}
+      aria-busy={stale || undefined}
+    >
       {caption && <p className="text-bambu-gray">{caption}</p>}
       {lookup.item ? (
         <p className="text-white">
@@ -183,20 +191,28 @@ interface PositionFigures {
 export function StockPositionHeader({
   item,
   figures,
+  stale = false,
 }: {
   item: { code: string; product: { name: string }; configuration: LineConfiguration };
   figures: PositionFigures | null;
+  /** The position is read again: its last numbers stay, dimmed (F6 D1). */
+  stale?: boolean;
 }) {
   const { t } = useTranslation();
   const caption = lineConfigLabel(item.configuration, 'product', t);
   const shown = figures;
   return (
-    <div data-testid="stock-position-header" className="rounded-lg bg-bambu-dark px-3 py-2 text-sm">
+    <div
+      data-testid="stock-position-header"
+      data-stale={stale || undefined}
+      aria-busy={stale || undefined}
+      className="rounded-lg bg-bambu-dark px-3 py-2 text-sm"
+    >
       <p className="text-white">
         {item.product.name} <span className="text-bambu-gray">{item.code}</span>
       </p>
       {caption && <p className="text-bambu-gray">{caption}</p>}
-      <p className="text-bambu-gray">
+      <p className={`text-bambu-gray ${stale ? 'opacity-60' : ''}`}>
         {shown
           ? t('stock.move.figures', { onHand: shown.on_hand, reserved: shown.reserved, available: shown.available })
           : '…'}
