@@ -9,7 +9,7 @@ import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { Routes, Route } from 'react-router';
 import { QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { render } from '../../utils';
-import { api } from '../../../api/client';
+import { api, ApiError } from '../../../api/client';
 import type { Permission } from '../../../api/client';
 import { OrderPage } from '../../../pages/orders/OrderPage';
 import { createAppQueryClient } from '../../../utils/appQueryClient';
@@ -338,6 +338,23 @@ describe('OrderPage', () => {
     expect(await screen.findByText(/could not load this order/i)).toBeInTheDocument();
     expect(screen.getByText(/gateway timeout/i)).toBeInTheDocument();
     expect(screen.queryByText(/order not found/i)).not.toBeInTheDocument();
+  });
+
+  it('says an order that does not exist is not found, under the crumbs back to the list', async () => {
+    // WS-13 E13 H05: a link to a deleted order is a 404 — «not found», not the red «could not
+    // load»; the crumbs above it are the way back.
+    vi.spyOn(api, 'getOrder').mockRejectedValue(new ApiError('Order not found', 404));
+
+    window.history.pushState({}, '', '/projects/1');
+    render(
+      <Routes>
+        <Route path="/projects/:id" element={<OrderPage />} />
+      </Routes>,
+    );
+
+    expect(await screen.findByText('Order not found')).toBeInTheDocument();
+    expect(screen.queryByText(/could not load this order/i)).not.toBeInTheDocument();
+    expect(screen.getAllByRole('link').some((a) => a.getAttribute('href') === '/projects')).toBe(true);
   });
 
   it('keeps the rendered order when a background refetch fails', async () => {

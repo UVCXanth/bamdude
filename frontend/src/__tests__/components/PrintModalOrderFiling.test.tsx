@@ -85,6 +85,8 @@ const candidate = (over: Partial<OrderCandidate> = {}): OrderCandidate => ({
   deadline: null,
   created_at: '2026-09-01T10:14:02',
   line_material: null,
+  line_mode: 'product',
+  line_configuration: { choices: [], changed_parts: [] },
   ...over,
 });
 

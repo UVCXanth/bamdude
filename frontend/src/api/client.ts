@@ -2513,6 +2513,10 @@ export interface OrderCandidate {
    *  appear several times — every line whose product holds this plate and whose
    *  material accepts it is offered — so this is what tells two of them apart. */
   line_material: string | null;
+  /** What tells two lines apart when the material cannot — lines of one product in one
+   *  material whose kits differ (WS-13 E13 H01): names only, captioned by `lineConfigLabel`. */
+  line_mode: LineMode;
+  line_configuration: LineConfiguration;
 }
 
 export interface PlanEnqueueItem {

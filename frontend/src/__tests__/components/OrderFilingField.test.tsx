@@ -28,6 +28,8 @@ const candidate = (over: Partial<OrderCandidate> = {}): OrderCandidate => ({
   deadline: null,
   created_at: '2026-09-01T10:14:02',
   line_material: null,
+  line_mode: 'product',
+  line_configuration: { choices: [], changed_parts: [] },
   ...over,
 });
 
@@ -75,6 +77,34 @@ describe('OrderFilingField', () => {
       // A line with no material takes any plate; the label says nothing extra
       // rather than the word "none".
       'OR-0004 · Kickstarter batch — Desk Lamp · still needs 5 prints',
+    ]);
+  });
+
+  it('names each line’s configuration, so lines of one product and one material read apart', () => {
+    // WS-13 E13 H01 — the mockup’s OR-0034: three lines of one product in one
+    // material that differ by their kit. The material alone made three identical
+    // options; the configuration is what the operator chooses between.
+    const choice = (option_name: string, is_default: boolean) => ({
+      group_id: 1, group_name: 'Base', option_id: is_default ? 1 : 2, option_name, is_default,
+    });
+    render(
+      <OrderFilingField
+        value={{ kind: 'none' }}
+        onChange={vi.fn()}
+        candidates={[
+          candidate({ line_material: 'PETG', line_configuration: { choices: [choice('square', false)], changed_parts: [] } }),
+          candidate({ project_line_id: 10, line_material: 'PETG', line_configuration: { choices: [choice('round', true)], changed_parts: [] } }),
+          candidate({ project_line_id: 11, line_material: 'PETG', line_mode: 'parts' }),
+        ]}
+      />,
+    );
+
+    const options = screen.getAllByRole('option').map((o) => o.textContent);
+    expect(options).toEqual([
+      'Without an order',
+      'OR-0004 · Kickstarter batch — Desk Lamp · Base: square · PETG · still needs 5 prints',
+      'OR-0004 · Kickstarter batch — Desk Lamp · standard · PETG · still needs 5 prints',
+      'OR-0004 · Kickstarter batch — Desk Lamp · parts only · PETG · still needs 5 prints',
     ]);
   });
 

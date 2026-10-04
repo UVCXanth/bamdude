@@ -42,8 +42,16 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
-from backend.app.schemas.project import PROJECT_PRIORITIES
-from backend.app.services.line_composition import Composition, composition, compositions_for_lines
+from backend.app.schemas.project import PROJECT_PRIORITIES, LineConfigurationOut
+from backend.app.services.configuration_views import configuration_out, groups_by_product
+from backend.app.services.line_composition import (
+    Composition,
+    LineConfig,
+    composition,
+    compositions_for_lines,
+    default_options,
+    load_line_configs,
+)
 from backend.app.services.order_metrics import line_accepts_materials
 from backend.app.services.product_composition import (
     PlateRecipe,
@@ -85,6 +93,11 @@ class OrderCandidate:
     plate the dialog offers both, and the material is the only thing that tells
     them apart on screen. ``None`` is an ordinary value — a line with no
     material takes every plate.
+
+    ``line_mode`` and ``line_configuration`` are what tells two lines apart when
+    the material cannot (WS-13 E13 H01): lines of one product in one material
+    that differ by their kit — the shape an order line answers with, names only;
+    the dialog composes the caption in the reader's language.
     """
 
     project_id: int
@@ -97,6 +110,8 @@ class OrderCandidate:
     deadline: datetime | None
     created_at: datetime
     line_material: str | None = None
+    line_mode: str = "product"
+    line_configuration: LineConfigurationOut = field(default_factory=LineConfigurationOut)
 
 
 def accepting_lines(lines: list[ProjectLine], product_id: int, materials: set[str]) -> list[ProjectLine]:
@@ -339,6 +354,24 @@ async def order_candidates(db: AsyncSession, file: LibraryFile, plate_index: int
     }
     matched = [m for m in matched if m[1].id in kept]
 
+    # What tells two lines of one product apart when the material cannot: each
+    # line's configuration, named as an order line names it — three statements.
+    matched_lines = [line for _project, line, _pid in matched]
+    line_configs = await load_line_configs(db, [line.id for line in matched_lines])
+    matched_products = {pid for _project, _line, pid in matched}
+    variant_groups = await groups_by_product(db, matched_products)
+    standards = await default_options(db, matched_products)
+    configurations = {
+        line.id: configuration_out(
+            variant_groups.get(pid, []),
+            parts_of.get(pid, []),
+            line_configs.get(line.id, LineConfig()),
+            standards.get(pid, {}),
+            line.mode,
+        )
+        for _project, line, pid in matched
+    }
+
     plans = await plan_for_orders(db, sorted({project.id for project, _line, _pid in matched}))
     outstanding_by_line: dict[int, dict[int, int]] = {
         lp.line_id: lp.outstanding_before for plan in plans.values() for lp in plan.lines
@@ -356,6 +389,8 @@ async def order_candidates(db: AsyncSession, file: LibraryFile, plate_index: int
             deadline=project.due_date,
             created_at=project.created_at,
             line_material=line.material,
+            line_mode=line.mode,
+            line_configuration=configurations[line.id],
         )
         for project, line, product_id in matched
     ]

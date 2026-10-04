@@ -11,7 +11,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { render } from '../../utils';
 import { server } from '../../mocks/server';
-import { api } from '../../../api/client';
+import { api, ApiError } from '../../../api/client';
 import { CustomerPage } from '../../../pages/customers/CustomerPage';
 import { createAppQueryClient } from '../../../utils/appQueryClient';
 import { ORDER_ROW_DEFAULTS } from '../../wireDefaults';
@@ -354,6 +354,19 @@ describe('CustomerPage', () => {
     expect(await screen.findByText(/could not load this customer/i)).toBeInTheDocument();
     expect(screen.getByText(/gateway timeout/i)).toBeInTheDocument();
     expect(screen.queryByText(/customer not found/i)).not.toBeInTheDocument();
+  });
+
+  it('says a customer that does not exist is not found, with the way back to the list', async () => {
+    // WS-13 E13 H05: a link to a deleted customer is a 404 — «not found», as a product and a
+    // stock position say it, never the red «could not load», and never a dead end.
+    vi.spyOn(api, 'getCustomer').mockRejectedValue(new ApiError('Customer not found', 404));
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(emptyPage as never);
+
+    mountAt();
+
+    expect(await screen.findByText('Customer not found')).toBeInTheDocument();
+    expect(screen.queryByText(/could not load this customer/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'To customers' })).toHaveAttribute('href', '/customers');
   });
 
   it('keeps the rendered customer when a background refetch fails', async () => {

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ClipboardList } from 'lucide-react';
 import type { OrderCandidate } from '../api/client';
 import { Select } from './Select';
+import { lineConfigLabel } from './projects/lineConfigLabel';
 
 /** Which order a print is filed under: none, a NEW order for this batch, or an existing order's line. */
 export type OrderFilingValue =
@@ -43,7 +44,11 @@ const optionValue = (c: OrderCandidate) => `${c.project_id}:${c.project_line_id}
  * a reason to hide the choice from the person who can answer it. The line's
  * material is appended when it has one, because otherwise the two options read
  * identically. It is DATA, not a translated label: there is no i18n key here,
- * the same way the order and product names beside it have none.
+ * the same way the order and product names beside it have none. Where the
+ * material cannot tell them apart — lines of one product in one material whose
+ * kits differ — the line's configuration does (WS-13 E13 H01), captioned as an
+ * order line is (`lineConfigLabel`: the options that differ, «standard», «parts
+ * only»).
  *
  * ⚠️ **«New order for this batch» (`offerNewOrder`) is a THIRD kind, not a
  * fourth candidate.** It carries no ids yet — the order is created only on
@@ -80,15 +85,18 @@ export function OrderFilingField({ value, onChange, candidates, loading, offerNe
       >
         <option value="">{t('orderFiling.none')}</option>
         {offerNewOrder && <option value="new">{t('orderFiling.newOrder')}</option>}
-        {list.map((c) => (
+        {list.map((c) => {
+          const kit = lineConfigLabel(c.line_configuration, c.line_mode, t);
+          return (
           <option key={optionValue(c)} value={optionValue(c)}>
-            {`${c.project_code} · ${c.project_name} — ${c.product_name}${c.line_material ? ` · ${c.line_material}` : ''} · ${
+            {`${c.project_code} · ${c.project_name} — ${c.product_name}${kit ? ` · ${kit}` : ''}${c.line_material ? ` · ${c.line_material}` : ''} · ${
               c.outstanding_prints > 0
                 ? t('orderFiling.stillNeeds', { count: c.outstanding_prints })
                 : t('orderFiling.satisfied')
             }`}
           </option>
-        ))}
+          );
+        })}
       </Select>
     </div>
   );

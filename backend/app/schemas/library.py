@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.filament_routing import FilamentRoutingChoices
+from backend.app.schemas.project import LineConfigurationOut
 from backend.app.schemas.timelapse import TimelapseStorage
 
 
@@ -630,6 +631,10 @@ class OrderCandidateOut(BaseModel):
     the operator is the one who may answer — so the label needs something that
     tells two lines of the same order apart. ``None`` means the line takes any
     material; the dialog then shows nothing extra rather than the word "none".
+
+    ``line_mode`` and ``line_configuration`` tell apart what the material cannot —
+    lines of one product in one material whose kits differ (WS-13 E13 H01): the
+    same names an order line answers with; the dialog composes the caption.
     """
 
     project_id: int
@@ -643,3 +648,5 @@ class OrderCandidateOut(BaseModel):
     deadline: datetime | None = None
     created_at: datetime
     line_material: str | None = None
+    line_mode: str = "product"
+    line_configuration: LineConfigurationOut = Field(default_factory=LineConfigurationOut)

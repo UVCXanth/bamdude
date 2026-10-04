@@ -6614,6 +6614,7 @@ export default {
         nothingOrdered: 'nothing ordered',
       },
       notFound: 'Customer not found',
+      toList: 'To customers',
       loadFailed: 'Could not load this customer:',
     },
     confirm: {

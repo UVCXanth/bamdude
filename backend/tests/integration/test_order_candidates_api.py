@@ -24,6 +24,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product, ProductPart, ProductPlate
+from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
@@ -285,6 +286,43 @@ async def test_the_material_rules_a_line_out_and_every_survivor_is_its_own_candi
         (twins, twin_lines[0]),
         (twins, twin_lines[1]),
     ]
+
+
+@pytest.mark.asyncio
+async def test_two_lines_of_one_order_carry_the_configuration_that_tells_them_apart(
+    committing_client, db_session, lamp
+):
+    """WS-13 E13 H01: one order offered for two lines of ONE product and ONE material —
+    the mockup's OR-0034, whose lines differ only by their kit. The material cannot tell
+    them apart, so each candidate carries its line's mode and configuration (the shape an
+    order line answers with); the dialog composes the caption in the reader's language.
+    A parts line says so by its mode."""
+    product_id, file_id = lamp["product"].id, lamp["file"].id
+    group = ProductVariantGroup(product_id=product_id, name="Base")
+    db_session.add(group)
+    await db_session.flush()
+    round_ = ProductVariantOption(group_id=group.id, name="round", position=0)
+    square = ProductVariantOption(group_id=group.id, name="square", position=1)
+    db_session.add_all([round_, square])
+    await db_session.flush()
+    group.default_option_id = round_.id
+    await db_session.commit()
+    _order_id, lines = await _order(
+        committing_client,
+        product_id,
+        2,
+        lines=[
+            {"product_id": product_id, "quantity": 2, "material": "PETG"},
+            {"product_id": product_id, "quantity": 2, "material": "PETG", "choices": {str(group.id): square.id}},
+        ],
+    )
+    rows = {r["project_line_id"]: r for r in await _candidates(committing_client, file_id)}
+    assert [rows[line_id]["line_mode"] for line_id in lines] == ["product", "product"]
+    assert [
+        [(c["group_name"], c["option_name"], c["is_default"]) for c in rows[line_id]["line_configuration"]["choices"]]
+        for line_id in lines
+    ] == [[("Base", "round", True)], [("Base", "square", False)]]
+    assert [rows[line_id]["line_configuration"]["changed_parts"] for line_id in lines] == [[], []]
 
 
 @pytest.mark.asyncio

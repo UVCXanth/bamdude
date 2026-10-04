@@ -4437,6 +4437,8 @@ async def get_library_file_order_candidates(
             deadline=c.deadline,
             created_at=c.created_at,
             line_material=c.line_material,
+            line_mode=c.line_mode,
+            line_configuration=c.line_configuration,
         )
         # The file itself, not its id: the visibility check above has just read
         # the row, and the service would otherwise SELECT it a second time.

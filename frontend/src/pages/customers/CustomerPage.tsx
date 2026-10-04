@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Loader2, Pencil, Plus } from 'lucide-react';
-import { api } from '../../api/client';
+import { api, ApiError } from '../../api/client';
 import type { ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { ProgressBar } from '../../components/projects/ProgressBar';
@@ -139,12 +139,20 @@ export function CustomerPage() {
   // cache still holds; and with no data, a failed fetch is not a customer
   // somebody removed.
   if (!customer) {
-    return isError ? (
+    // A 404 is a customer that is not there: «not found» and the way back to the list
+    // (WS-13 E13 H05), as a product and a stock position say it; any other failure could not load it.
+    const missing = !isError || (error instanceof ApiError && error.status === 404);
+    return missing ? (
+      <div className="p-4 space-y-2 text-sm">
+        <p className="text-bambu-gray">{t('customers.page.notFound')}</p>
+        <Link to="/customers" className="text-bambu-green hover:underline">
+          {t('customers.page.toList')}
+        </Link>
+      </div>
+    ) : (
       <div className="p-4 text-sm text-red-500">
         {t('customers.page.loadFailed')} {(error as Error)?.message}
       </div>
-    ) : (
-      <div className="p-4 text-bambu-gray text-sm">{t('customers.page.notFound')}</div>
     );
   }
 

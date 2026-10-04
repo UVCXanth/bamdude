@@ -131,10 +131,13 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
         )}
       </div>
 
-      <div className="flex flex-wrap gap-3 p-4 border-t border-bambu-dark-tertiary">
+      {/* The way out of the order on the left, the two answers on the right — three equal
+          buttons do not fit the dialog's width and pushed «Assign» onto a row of its own. */}
+      <div className="flex flex-wrap items-center justify-end gap-3 p-4 border-t border-bambu-dark-tertiary">
         {canRemove && (
           <Button
             variant="danger"
+            className="mr-auto"
             onClick={() => {
               if (sent.current) return;
               sent.current = true;
@@ -146,7 +149,7 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
             {t('archives.menu.removeFromOrder')}
           </Button>
         )}
-        <Button variant="secondary" onClick={onClose} className="flex-1" disabled={pending}>
+        <Button variant="secondary" onClick={onClose} disabled={pending}>
           {t('common.cancel')}
         </Button>
         <Button
@@ -155,7 +158,6 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
             sent.current = true;
             assign.mutate(orderId);
           }}
-          className="flex-1"
           disabled={orderId == null || pending}
         >
           {assign.isPending && <Loader2 className="w-4 h-4 animate-spin" />}

@@ -3,7 +3,7 @@ import { Link } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Loader2 } from 'lucide-react';
-import { api } from '../../api/client';
+import { api, ApiError } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { OrderHeader } from './OrderHeader';
 import { OrderStageStepper } from './OrderStageStepper';
@@ -165,15 +165,18 @@ export function OrderView({
   // refetch blipped. With no data the two cases still read apart: a fetch that
   // FAILED is not an order that was deleted.
   if (!order) {
+    // A 404 is an order that is not there (deleted, or a wrong link): «not found», under the
+    // crumbs back to the list — as a product and a stock position say it (WS-13 E13 H05).
+    const missing = !isError || (error instanceof ApiError && error.status === 404);
     return (
       <div className={embedded ? '' : 'p-4'}>
         {crumbs}
-        {isError ? (
+        {missing ? (
+          <div className="text-bambu-gray text-sm">{t('orders.page.notFound')}</div>
+        ) : (
           <div className="text-sm text-red-600 dark:text-red-500">
             {t('orders.page.loadFailed')} {(error as Error)?.message}
           </div>
-        ) : (
-          <div className="text-bambu-gray text-sm">{t('orders.page.notFound')}</div>
         )}
       </div>
     );
