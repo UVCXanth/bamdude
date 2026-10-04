@@ -28,7 +28,15 @@ from backend.app.api.routes.auto_queue import _to_response as auto_queue_row_res
 from backend.app.api.routes.library import file_name_visible
 from backend.app.api.routes.print_queue import _enrich_response as queue_row_response, queue_item_load_options
 from backend.app.core.api_key_scope import key_printer_scope
-from backend.app.core.auth import RequirePermission, acting_user, library_name_scope, require_media_permission
+from backend.app.core.auth import (
+    RequestCredentials,
+    RequirePermission,
+    acting_user,
+    library_name_scope,
+    request_credentials,
+    require_media_permission,
+    require_ownership_permission,
+)
 from backend.app.core.config import settings
 from backend.app.core.database import LOCK_NOT_AVAILABLE, get_db, sqlstate
 from backend.app.core.permissions import Permission
@@ -2263,50 +2271,80 @@ async def list_project_archives(
     return [archive_to_response(a) for a in archives]
 
 
+# Filing a print under an order, or taking it out, rewrites the archive as well
+# (WS-13 E13 B03): beside ``projects:update`` it asks the archive's own update right
+# through the canonical ownership gate, called with the request's credentials.
+_archives_update = require_ownership_permission(Permission.ARCHIVES_UPDATE_ALL, Permission.ARCHIVES_UPDATE_OWN)
+
+
+async def _ensure_may_move_archives(creds: RequestCredentials, archives: list[PrintArchive]) -> None:
+    """``archives:update_all`` moves any print, ``archives:update_own`` only the caller's
+    own — an ownerless print only ``all``. One print out of reach refuses the whole
+    batch, before anything is written."""
+    user, can_modify_all = await creds.check(_archives_update)
+    if can_modify_all:
+        return
+    if any(user is None or archive.created_by_id != user.id for archive in archives):
+        raise HTTPException(status_code=403, detail="You can only update your own archives")
+
+
 @router.post("/{project_id}/add-archives")
 async def add_archives_to_project(
     project_id: int,
     data: BatchAddArchives,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """File existing prints under this order, optionally under one of its lines."""
     await _get_project(db, project_id)  # 404s an order that is not there
     if data.project_line_id is not None:
         await _get_line(db, project_id, data.project_line_id)
+    archives = [archive for archive_id in data.archive_ids if (archive := await db.get(PrintArchive, archive_id))]
+    await _ensure_may_move_archives(creds, archives)
+    # A print taken from another order leaves it by that order's rules — the same
+    # judge as the two other exits (WS-13 E13 B05), asked of every order a print
+    # leaves before the first print moves, so a refusal moves nothing.
+    leaving: dict[int, list[int]] = {}
+    for archive in archives:
+        if archive.project_id is not None and archive.project_id != project_id:
+            leaving.setdefault(archive.project_id, []).append(archive.id)
+    for old_project, ids in leaving.items():
+        try:
+            await order_fulfilment.ensure_prints_can_leave(db, old_project, ids)
+        except order_fulfilment.FulfilmentError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from e
     updated = 0
     # The journal (spec workshop-order-stage, rule 17): filed here, and taken
     # out of whichever order held them before.
     filed: list[int] = []
     left: dict[int, list[int]] = {}
-    for archive_id in data.archive_ids:
-        archive = await db.get(PrintArchive, archive_id)
-        if archive:
-            # Same rule as the archive editor's project change (pass 8,
-            # Decision 3): a print that was free stock stops being free stock
-            # the moment an order counts it. Read before the assignment, which
-            # is where ``project_id`` stops being what it was.
-            was_unfiled = archive.project_id is None
-            if archive.project_id != project_id:
-                filed.append(archive.id)
-                if archive.project_id is not None:
-                    left.setdefault(archive.project_id, []).append(archive.id)
-            archive.project_id = project_id
-            archive.project_line_id = data.project_line_id
-            if was_unfiled:
-                try:
-                    await part_stock.reverse_unfiled_print(db, archive, note=part_stock.NOTE_FILED_UNDER_ORDER)
-                except part_stock.PartStockError as e:
-                    # The stock has already gone out to someone. Filing the
-                    # print is still right — the ledger keeps the truth and the
-                    # operator corrects it by hand from the product page.
-                    logger.warning(
-                        "Archive %s filed under order %s but its free-stock credit could not be reversed: %s",
-                        archive.id,
-                        project_id,
-                        e,
-                    )
-            updated += 1
+    for archive in archives:
+        # Same rule as the archive editor's project change (pass 8,
+        # Decision 3): a print that was free stock stops being free stock
+        # the moment an order counts it. Read before the assignment, which
+        # is where ``project_id`` stops being what it was.
+        was_unfiled = archive.project_id is None
+        if archive.project_id != project_id:
+            filed.append(archive.id)
+            if archive.project_id is not None:
+                left.setdefault(archive.project_id, []).append(archive.id)
+        archive.project_id = project_id
+        archive.project_line_id = data.project_line_id
+        if was_unfiled:
+            try:
+                await part_stock.reverse_unfiled_print(db, archive, note=part_stock.NOTE_FILED_UNDER_ORDER)
+            except part_stock.PartStockError as e:
+                # The stock has already gone out to someone. Filing the
+                # print is still right — the ledger keeps the truth and the
+                # operator corrects it by hand from the product page.
+                logger.warning(
+                    "Archive %s filed under order %s but its free-stock credit could not be reversed: %s",
+                    archive.id,
+                    project_id,
+                    e,
+                )
+        updated += 1
     for old_project, ids in left.items():
         await order_journal.record(
             db, old_project, "prints_unfiled", {"count": len(ids), "archive_ids": ids}, actor=current_user
@@ -2324,20 +2362,26 @@ async def remove_archives_from_project(
     data: BatchAddArchives,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Unfile prints from this order — the line goes with the order, never alone."""
+    in_order = {
+        archive.id: archive
+        for archive in (
+            await db.execute(
+                select(PrintArchive).where(PrintArchive.id.in_(data.archive_ids), PrintArchive.project_id == project_id)
+            )
+        ).scalars()
+    }
+    await _ensure_may_move_archives(creds, list(in_order.values()))
     try:
         await order_fulfilment.ensure_prints_can_leave(db, project_id, data.archive_ids)
     except order_fulfilment.FulfilmentError as e:
         raise HTTPException(status_code=e.status, detail=str(e)) from e
     updated = 0
     removed: list[int] = []
-    for archive_id in data.archive_ids:
-        archive = (
-            await db.execute(
-                select(PrintArchive).where(PrintArchive.id == archive_id, PrintArchive.project_id == project_id)
-            )
-        ).scalar_one_or_none()
+    for archive_id in dict.fromkeys(data.archive_ids):
+        archive = in_order.get(archive_id)
         if archive:
             archive.project_id = None
             archive.project_line_id = None

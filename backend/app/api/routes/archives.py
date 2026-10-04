@@ -14,9 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import case_folding
 from backend.app.core.auth import (
+    RequestCredentials,
     RequirePermission,
+    request_credentials,
     require_media_ownership_permission,
     require_ownership_permission,
+    require_permission,
 )
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
@@ -1057,6 +1060,11 @@ async def find_similar_archives(
         raise HTTPException(404, str(e))
 
 
+# Moving a print to another order or line is the order desk's business as well
+# (WS-13 E13 B04), asked through the canonical gate with the request's credentials.
+_projects_update = require_permission(Permission.PROJECTS_UPDATE)
+
+
 @router.patch("/{archive_id}", response_model=ArchiveResponse)
 async def update_archive(
     archive_id: int,
@@ -1068,10 +1076,11 @@ async def update_archive(
             Permission.ARCHIVES_UPDATE_OWN,
         )
     ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Serialize archive facts before the editor reads their current values."""
     async with archive_write_scope(db, archive_id):
-        return await _update_archive_locked(archive_id, update_data, db, auth_result)
+        return await _update_archive_locked(archive_id, update_data, db, auth_result, creds)
 
 
 async def _cost_follows_typed_grams(
@@ -1099,6 +1108,7 @@ async def _update_archive_locked(
     update_data: ArchiveUpdate,
     db: AsyncSession,
     auth_result: tuple[User | None, bool],
+    creds: RequestCredentials,
 ):
     """Update archive metadata (tags, notes, cost, filament grams, is_favorite, project_id)."""
     from sqlalchemy.orm import selectinload
@@ -1120,6 +1130,16 @@ async def _update_archive_locked(
     if not can_modify_all:
         if archive.created_by_id != user.id:
             raise HTTPException(403, "You can only update your own archives")
+
+    # Only a binding that actually changes asks ``projects:update`` (WS-13 E13 B04):
+    # the editor sends the order and the line with every save. The gate reads the
+    # credentials the dependency above already resolved for this request, so it
+    # writes nothing under the write scope.
+    fields = update_data.model_fields_set
+    if ("project_id" in fields and update_data.project_id != archive.project_id) or (
+        "project_line_id" in fields and update_data.project_line_id != archive.project_line_id
+    ):
+        await creds.check(_projects_update)
 
     # Filed under an order for the first time: whatever this print put on the
     # free-stock shelf has to come back off it, because the order's own figures
