@@ -250,10 +250,12 @@ describe('AddToOrderDialog — choosing the order (WS-13 E5 G02)', () => {
     expect(await screen.findByText('Nothing found')).toBeInTheDocument();
   });
 
-  it('says when the server has more than it shows', async () => {
+  it('pages through when the server has more than one page (E13 D01a)', async () => {
     const items = Array.from({ length: 20 }, (_v, i) => ({ id: 10 + i, code: `OR-00${10 + i}`, name: `O${i}`, customer_name: null }));
-    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage(items, 43) as never);
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(ordersPage(items, 43) as never);
     open();
-    expect(await screen.findByText('Showing 20 of 43 — refine the search')).toBeInTheDocument();
+    expect(await screen.findByText('Page 1 of 3')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith({ status: 'active', page: 2, per_page: 20 }));
   });
 });

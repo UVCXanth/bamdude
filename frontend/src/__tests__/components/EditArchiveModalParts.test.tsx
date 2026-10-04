@@ -89,7 +89,7 @@ describe('per-part defective entry', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     server.use(
-      http.get('/api/v1/projects/', () => HttpResponse.json([])),
+      http.get('/api/v1/projects/', () => HttpResponse.json({ items: [], meta: { total: 0, current_page: 1, per_page: 20, last_page: 1 } })),
       http.get('/api/v1/archives/tags', () => HttpResponse.json([])),
       // The detail fetch the modal fires when its prop carries no parts (the
       // list shape). Default: still no parts — individual tests override.

@@ -76,8 +76,12 @@ describe('EditArchiveModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     server.use(
+      // The order picker asks for a page of active orders (WS-13 E13 D01).
       http.get('/api/v1/projects/', () => {
-        return HttpResponse.json(mockProjects);
+        return HttpResponse.json({
+          items: mockProjects,
+          meta: { total: mockProjects.length, current_page: 1, per_page: 20, last_page: 1 },
+        });
       }),
       http.get('/api/v1/archives/tags', () => {
         return HttpResponse.json([

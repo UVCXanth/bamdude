@@ -9,9 +9,9 @@ import { Modal } from './Modal';
 import { DefectsFields } from './DefectsFields';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
-import { OrderPicker } from './pickers/OrderPicker';
+import { OrderChoice } from './pickers/OrderChoice';
 import { OrderLinePicker } from './pickers/OrderLinePicker';
-import { invalidateOrderViews } from '../utils/queryInvalidation';
+import { invalidateOrderViews, invalidateProductCatalog } from '../utils/queryInvalidation';
 import { Select } from './Select';
 
 // Keys for failure reasons - translated at render time. The backend stores
@@ -83,6 +83,10 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   // the order changes — the server rejects (400) a line belonging to another
   // order, so the mismatch must never be submittable from here.
   const [projectLineId, setProjectLineId] = useState<number | null>(archive.project_line_id ?? null);
+  // WS-13 E13 B06: the order and the line move only with the right to change orders;
+  // without it they are shown, not offered (the server asks it of a changed binding).
+  const canChangeOrder = hasPermission('projects:update');
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [notes, setNotes] = useState(archive.notes || '');
   const [tags, setTags] = useState(archive.tags || '');
   // Failure reason is stored as a camelCase key (`filamentRunout`); m186 folded
@@ -222,6 +226,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   const updateMutation = useMutation({
     mutationFn: (data: Parameters<typeof api.updateArchive>[1]) =>
       api.updateArchive(archive.id, data),
+    onMutate: () => setSaveError(null),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
       // Re-filing a print moves it between orders and between customers, so
@@ -230,6 +235,9 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
       invalidateOrderViews(queryClient);
       onClose();
     },
+    // A refusal (403 rights, 409 a print its order received) stays here, in the
+    // server's words — the edit is not lost (WS-13 E13 D03).
+    onError: (e: Error) => setSaveError(e.message),
   });
 
   /**
@@ -255,7 +263,8 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
       queryClient.invalidateQueries({ queryKey: ['archive-detail', archive.id] });
       queryClient.invalidateQueries({ queryKey: ['product-stock'] });
       queryClient.invalidateQueries({ queryKey: ['product'] });
-      queryClient.invalidateQueries({ queryKey: ['products'] });
+      // The catalog's figures through their one helper (WS-13 E13 D04).
+      invalidateProductCatalog(queryClient);
       if (moved.length === 0) {
         showToast(t('stock.archive.nothing'), 'info');
         return;
@@ -302,13 +311,19 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
     const updateData: Parameters<typeof api.updateArchive>[1] = {
       print_name: printName || undefined,
       printer_id: printerId,
-      project_id: projectId,
-      project_line_id: projectLineId,
       notes: notes || undefined,
       tags: tags || undefined,
       quantity: quantity,
       external_url: externalUrl || null,
     };
+
+    // The binding goes only when it changed, and then whole (WS-13 E13 D02): a save of
+    // another field never writes the order or the line, so a picker that has not read
+    // — or could not — cannot clear a binding nobody touched.
+    if (projectId !== (archive.project_id ?? null) || projectLineId !== (archive.project_line_id ?? null)) {
+      updateData.project_id = projectId;
+      updateData.project_line_id = projectLineId;
+    }
 
     if (filamentGrams !== initialFilamentGrams) {
       const grams = Number(filamentGrams.replace(',', '.'));
@@ -387,13 +402,16 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
             <FolderKanban className="w-4 h-4 inline mr-1" />
             {t('editArchive.order')}
           </label>
-          <OrderPicker
+          <OrderChoice
             id="edit-archive-order"
+            stacked
+            allowNone
             value={projectId}
             onChange={(next) => {
-              setProjectId(next);
+              setProjectId(next?.id ?? null);
               setProjectLineId(null);
             }}
+            disabled={!canChangeOrder}
           />
         </div>
 
@@ -408,6 +426,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
             orderId={projectId}
             value={projectLineId}
             onChange={setProjectLineId}
+            disabled={!canChangeOrder}
           />
         </div>
 
@@ -694,6 +713,12 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
           </div>
           <p className="text-xs text-bambu-gray">{t('editArchive.photosHelp')}</p>
         </div>
+
+        {saveError && (
+          <p role="alert" className="text-sm text-red-600 dark:text-red-400 [overflow-wrap:anywhere]">
+            {saveError}
+          </p>
+        )}
 
         {/* Actions */}
         <div className="flex gap-3 pt-2">

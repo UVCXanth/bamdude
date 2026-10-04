@@ -55,7 +55,7 @@ describe('EditArchiveModal · count into stock', () => {
     vi.restoreAllMocks();
     auth.granted = null;
     server.use(
-      http.get('/api/v1/projects/', () => HttpResponse.json([])),
+      http.get('/api/v1/projects/', () => HttpResponse.json({ items: [], meta: { total: 0, current_page: 1, per_page: 20, last_page: 1 } })),
       http.get('/api/v1/archives/tags', () => HttpResponse.json([])),
       http.get('/api/v1/printers/', () => HttpResponse.json([])),
     );

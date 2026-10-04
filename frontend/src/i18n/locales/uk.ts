@@ -1456,11 +1456,7 @@ export default {
       edit: 'Редагувати',
       goToOrder: 'Перейти до {{name}}',
       addToOrder: 'Додати до замовлення',
-      searchOrders: 'Пошук замовлень…',
       removeFromOrder: 'Прибрати із замовлення',
-      loading: 'Завантаження...',
-      noOrdersAvailable: 'Замовлень немає',
-      noLine: 'Без рядка',
       select: 'Вибрати',
       deselect: 'Зняти вибір',
       delete: 'Видалити'
@@ -5438,8 +5434,12 @@ export default {
   // Shared pickers (order, order line, product, customer) — pass-2 redesign.
   pickers: {
     noOrder: 'Без замовлення',
-    noLine: 'Без рядка',
+    noLine: 'Без позиції',
     chooseOrderFirst: 'Спершу оберіть замовлення',
+    orderUnread: 'Обране замовлення',
+    linesLoading: 'Читаємо позиції…',
+    linesFailed: 'Не вдалося прочитати позиції замовлення',
+    lineUnread: 'Обрана позиція',
     noProduct: 'Без виробу',
     searchProducts: 'Пошук виробів…',
     newProduct: 'Новий виріб',
@@ -5605,7 +5605,6 @@ export default {
       orderFailed: 'Не вдалося прочитати замовлення',
       noActiveOrders: 'Активних замовлень немає',
       noOrdersFound: 'Нічого не знайдено',
-      shownOf: 'Показано {{shown}} з {{total}} — уточніть пошук',
       adding: 'Додаю…',
       nothing: 'Нічого не обрано',
       inactive: 'Замовлення не активне — склад під нього не береться, усе піде в друк.',

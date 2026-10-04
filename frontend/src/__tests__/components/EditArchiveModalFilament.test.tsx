@@ -59,7 +59,7 @@ describe('EditArchiveModal — filament used', () => {
   beforeEach(() => {
     sent = [];
     server.use(
-      http.get('/api/v1/projects/', () => HttpResponse.json([])),
+      http.get('/api/v1/projects/', () => HttpResponse.json({ items: [], meta: { total: 0, current_page: 1, per_page: 20, last_page: 1 } })),
       http.get('/api/v1/archives/tags', () => HttpResponse.json([])),
       http.patch('/api/v1/archives/:id', async ({ request }) => {
         const body = (await request.json()) as Record<string, unknown>;

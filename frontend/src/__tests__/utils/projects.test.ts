@@ -1,46 +1,16 @@
 /**
- * Which orders and products may be offered for binding.
+ * Which products may be offered for binding.
  *
  * ⚠️ **The trap this is mostly here to pin:** a row already bound must stay on
- * the list even when it is closed or out of the catalog. Hiding it renders the
- * field as "nothing chosen", and the next save writes that emptiness back — the
- * filter would quietly destroy the binding it was meant to tidy around.
- *
- * ⚠️ **`completed` is NOT offered.** An order has three statuses — `active`,
- * `completed`, `cancelled` — and only the first is open work. A reprint for a
- * closed order is filed by reopening it, not by quietly adding to a finished
- * ledger.
+ * the list even when it is out of the catalog. Hiding it renders the field as
+ * "nothing chosen", and the next save writes that emptiness back — the filter
+ * would quietly destroy the binding it was meant to tidy around. (Orders follow
+ * the same rule on the server side of `OrderChoice`: active orders are searched,
+ * the bound one keeps its own label — WS-13 E13 D01.)
  */
 
 import { describe, it, expect } from 'vitest';
-import { selectableProjects, selectableProducts } from '../../utils/projects';
-
-const ACTIVE = { id: 1, status: 'active' };
-const COMPLETED = { id: 2, status: 'completed' };
-const CANCELLED = { id: 3, status: 'cancelled' };
-const ALL = [ACTIVE, COMPLETED, CANCELLED];
-
-describe('selectableProjects', () => {
-  it('offers active orders only', () => {
-    expect(selectableProjects(ALL)).toEqual([ACTIVE]);
-  });
-
-  it('keeps a closed order that is already bound', () => {
-    expect(selectableProjects(ALL, [2])).toEqual([ACTIVE, COMPLETED]);
-    // The multi-select dialogs hold the current binding as a Set.
-    expect(selectableProjects(ALL, new Set([3]))).toEqual([ACTIVE, CANCELLED]);
-  });
-
-  it('does not resurrect an unbound closed order', () => {
-    expect(selectableProjects(ALL, [1])).toEqual([ACTIVE]);
-  });
-
-  it('tolerates empty input and rows without a status', () => {
-    expect(selectableProjects(undefined)).toEqual([]);
-    expect(selectableProjects(null)).toEqual([]);
-    expect(selectableProjects([{ id: 9 }])).toEqual([]);
-  });
-});
+import { selectableProducts } from '../../utils/projects';
 
 describe('selectableProducts', () => {
   const IN = { id: 1, is_active: true };

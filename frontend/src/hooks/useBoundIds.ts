@@ -3,7 +3,7 @@ import { useState } from 'react';
 /**
  * The ids a picker ARRIVED bound to, frozen at mount.
  *
- * `selectableProducts` (and `selectableProjects`) keep a retired row on offer
+ * `selectableProducts` keeps a retired row on offer
  * only because something is bound to it. The set that decides that must not be
  * the LIVE selection: unticking a chip for an inactive product removed it from
  * the live set, which removed the chip itself, and the operator could not

@@ -6,72 +6,100 @@ import { api } from '../../api/client';
 import { Button } from '../Button';
 import { Modal } from '../Modal';
 import { useToast } from '../../contexts/ToastContext';
-import { OrderPicker } from '../pickers/OrderPicker';
+import { OrderChoice } from '../pickers/OrderChoice';
 import { OrderLinePicker } from '../pickers/OrderLinePicker';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 
 interface BatchAssignOrderModalProps {
   archiveIds: number[];
+  /** One print's current order and line (its card or row): the dialog opens on
+   *  them and offers to take the print out of its order. */
+  bound?: { orderId: number | null; lineId: number | null };
   onClose: () => void;
   onDone?: () => void;
 }
 
 /**
- * File a selection of archives under one order, optionally under one line.
+ * File archives under one order, optionally under one line — a selection from the
+ * archives page, or one print from its card or row.
  *
  * Replaces `BatchProjectModal`, which hardcoded its English and hand-rolled a
- * project list beside the shared rule. The pickers are the same two the
- * archive editor uses, so "which orders may be offered" is answered in one
- * place — and changing the order clears the line here for the same reason it
- * does there: the server refuses a line from another order.
+ * project list beside the shared rule, and the per-print `AddToOrderMenu`, which
+ * read every order and searched them in the browser. The pickers are the same two
+ * the archive editor uses (WS-13 E13 D03): the server searches the ACTIVE orders,
+ * and a print's own order stays visible whatever its status. Changing the order
+ * clears the line for the same reason it does there: the server refuses a line
+ * from another order. A refusal (403 rights, 409 a print its order received —
+ * B03, B05) stays in the dialog in the server's words; nothing was filed.
  */
-export function BatchAssignOrderModal({ archiveIds, onClose, onDone }: BatchAssignOrderModalProps) {
+export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: BatchAssignOrderModalProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
-  const [orderId, setOrderId] = useState<number | null>(null);
-  const [lineId, setLineId] = useState<number | null>(null);
+  const [orderId, setOrderId] = useState<number | null>(bound?.orderId ?? null);
+  const [lineId, setLineId] = useState<number | null>(bound?.lineId ?? null);
+  const [error, setError] = useState<string | null>(null);
+  const single = archiveIds.length === 1;
+  const canRemove = single && bound?.orderId != null;
+
+  const done = () => {
+    queryClient.invalidateQueries({ queryKey: ['archives'] });
+    // Prefixes, not the picked order alone — a selection can be pulled out
+    // of several other orders, and several customers, in one go. The set
+    // itself is decided in `utils/queryInvalidation.ts`.
+    invalidateOrderViews(queryClient);
+    showToast(t('archives.toast.orderUpdated'));
+    onDone?.();
+    onClose();
+  };
 
   const assign = useMutation({
     mutationFn: (target: number) => api.addArchivesToOrder(target, archiveIds, lineId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['archives'] });
-      // Prefixes, not the picked order alone — a selection can be pulled out
-      // of several other orders, and several customers, in one go. The set
-      // itself is decided in `utils/queryInvalidation.ts`.
-      invalidateOrderViews(queryClient);
-      showToast(t('archives.toast.orderUpdated'));
-      onDone?.();
-      onClose();
-    },
-    onError: (e: Error) => showToast(e.message, 'error'),
+    onMutate: () => setError(null),
+    onSuccess: done,
+    onError: (e: Error) => setError(e.message),
   });
+
+  const remove = useMutation({
+    // Not `addArchivesToOrder` — there is no order to add to. Clearing the line
+    // alongside is not optional: a line without its order is a row the server
+    // would refuse on the next edit.
+    mutationFn: () => api.updateArchive(archiveIds[0], { project_id: null, project_line_id: null }),
+    onMutate: () => setError(null),
+    onSuccess: done,
+    onError: (e: Error) => setError(e.message),
+  });
+
+  const pending = assign.isPending || remove.isPending;
 
   return (
     <Modal
       onClose={onClose}
-      title={t('archives.bulk.assignOrder.title')}
+      title={single ? t('archives.menu.addToOrder') : t('archives.bulk.assignOrder.title')}
       icon={<FolderKanban className="w-5 h-5 text-bambu-green" />}
       size="md"
-      closeDisabled={assign.isPending}
+      closeDisabled={pending}
     >
       <div className="p-4 space-y-4">
-        <p className="text-sm text-bambu-gray">
-          {t('archives.bulk.assignOrder.description', { count: archiveIds.length })}
-        </p>
+        {!single && (
+          <p className="text-sm text-bambu-gray">
+            {t('archives.bulk.assignOrder.description', { count: archiveIds.length })}
+          </p>
+        )}
 
         <div>
           <label htmlFor="batch-assign-order" className="block text-sm text-bambu-gray mb-1">
             {t('archives.bulk.assignOrder.order')}
           </label>
-          <OrderPicker
+          <OrderChoice
             id="batch-assign-order"
+            stacked
             value={orderId}
             onChange={(next) => {
-              setOrderId(next);
+              setOrderId(next?.id ?? null);
               setLineId(null);
             }}
-            disabled={assign.isPending}
+            disabled={pending}
           />
         </div>
 
@@ -84,19 +112,31 @@ export function BatchAssignOrderModal({ archiveIds, onClose, onDone }: BatchAssi
             orderId={orderId}
             value={lineId}
             onChange={setLineId}
-            disabled={assign.isPending}
+            disabled={pending}
           />
         </div>
+
+        {error && (
+          <p role="alert" className="text-sm text-red-600 dark:text-red-400 [overflow-wrap:anywhere]">
+            {error}
+          </p>
+        )}
       </div>
 
-      <div className="flex gap-3 p-4 border-t border-bambu-dark-tertiary">
-        <Button variant="secondary" onClick={onClose} className="flex-1" disabled={assign.isPending}>
+      <div className="flex flex-wrap gap-3 p-4 border-t border-bambu-dark-tertiary">
+        {canRemove && (
+          <Button variant="danger" onClick={() => remove.mutate()} disabled={pending}>
+            {remove.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+            {t('archives.menu.removeFromOrder')}
+          </Button>
+        )}
+        <Button variant="secondary" onClick={onClose} className="flex-1" disabled={pending}>
           {t('common.cancel')}
         </Button>
         <Button
           onClick={() => orderId != null && assign.mutate(orderId)}
           className="flex-1"
-          disabled={orderId == null || assign.isPending}
+          disabled={orderId == null || pending}
         >
           {assign.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
           {t('archives.bulk.assignOrder.assign')}

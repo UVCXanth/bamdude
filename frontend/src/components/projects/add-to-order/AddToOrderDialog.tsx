@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../../api/client';
 import type { BatchLine } from '../../../api/client';
 import { useToast } from '../../../contexts/ToastContext';
-import { useSearchBox } from '../../../hooks/useSearchBox';
 import { useStockSuggest } from '../../../hooks/useStockSuggest';
 import { invalidateOrderViews } from '../../../utils/queryInvalidation';
 import { Button } from '../../Button';
-import { Select } from '../../Select';
+import { OrderChoice } from '../../pickers/OrderChoice';
+import type { ChosenOrder } from '../../pickers/OrderChoice';
 import { WorkshopDialog } from '../../workshop/WorkshopDialog';
 import { WorkshopTabPanel, WorkshopTabs } from '../../workshop/WorkshopTabs';
 import { PartsTab } from './PartsTab';
@@ -32,7 +32,6 @@ import { useTabScroll } from './useTabScroll';
 
 type Tab = 'products' | 'parts' | 'plate';
 const TABS: Tab[] = ['products', 'parts', 'plate'];
-const ORDER_PAGE = 20;
 
 /** The order the dialog adds to, as its caller knows it. */
 export interface AddTarget {
@@ -80,7 +79,7 @@ export function AddToOrderDialog({
   const anchor = useRef<HTMLDivElement>(null);
   const [tab, setTab] = useState<Tab>('products');
   const [visited, setVisited] = useState<Set<Tab>>(() => new Set(['products']));
-  const [chosen, setChosen] = useState<{ id: number; code: string; name: string } | null>(null);
+  const [chosen, setChosen] = useState<ChosenOrder | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [products, setProducts] = useState<ProductPicks>(() =>
     preselectProduct ? new Map([[preselectProduct.id, newProductPick()]]) : new Map(),
@@ -223,7 +222,8 @@ export function AddToOrderDialog({
       <div ref={anchor} className="space-y-3">
         {!order && (
           <fieldset disabled={pending} className="m-0 min-w-0 border-0 p-0">
-            <OrderChoice value={chosen} onChange={setChosen} />
+            {/* Which ACTIVE order (spec rule 25; WS-13 E5 G02, E13 D01) — the shared choice. */}
+            <OrderChoice value={chosen?.id ?? null} onChange={setChosen} label={t('orders.add.toOrder')} />
           </fieldset>
         )}
         <WorkshopTabs
@@ -260,84 +260,5 @@ export function AddToOrderDialog({
         </fieldset>
       </div>
     </WorkshopDialog>
-  );
-}
-
-type ChosenOrder = { id: number; code: string; name: string };
-
-/**
- * Which active order to add to (spec rule 25; WS-13 E5 G02) — a server search by
- * code, name and customer, one page of 20. A chosen order a new search no longer
- * lists stays chosen, under its own label.
- */
-function OrderChoice({ value, onChange }: { value: ChosenOrder | null; onChange: (order: ChosenOrder | null) => void }) {
-  const { t } = useTranslation();
-  const [q, setQ] = useState('');
-  const setQuery = useCallback((next: string) => setQ(next), []);
-  const { typed, setTyped } = useSearchBox(q, setQuery);
-  // The chosen order's label, kept for when a new search no longer lists it.
-  const [chosenLabel, setChosenLabel] = useState('');
-  const params = { status: 'active' as const, ...(q ? { q } : {}), page: 1, per_page: ORDER_PAGE };
-  const { data, isPending, isError, refetch } = useQuery({
-    queryKey: ['orders', 'add-to-order', params],
-    queryFn: () => api.getOrdersPaged(params),
-  });
-  const orders = data?.items ?? [];
-  const label = (o: { code: string; name: string; customer_name: string | null }) =>
-    `${o.code} · ${o.name} · ${o.customer_name ?? t('orders.add.noCustomer')}`;
-  const total = data?.meta.total ?? 0;
-  return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-      <span className="text-sm text-bambu-gray">{t('orders.add.toOrder')}</span>
-      <input
-        type="search"
-        value={typed}
-        onChange={(e) => setTyped(e.target.value)}
-        placeholder={t('orders.add.findOrder')}
-        aria-label={t('orders.add.findOrder')}
-        className="min-h-[44px] rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-sm text-white focus:border-bambu-green focus:outline-none md:min-h-0"
-      />
-      <Select
-        aria-label={t('orders.add.order')}
-        value={value == null ? '' : String(value.id)}
-        disabled={isPending}
-        onChange={(e) => {
-          const id = e.target.value ? Number(e.target.value) : null;
-          const found = orders.find((o) => o.id === id);
-          if (found) {
-            setChosenLabel(label(found));
-            onChange({ id: found.id, code: found.code, name: found.name });
-          } else if (id == null) {
-            onChange(null);
-          }
-        }}
-        className="min-w-64"
-      >
-        <option value="">{t('orders.add.chooseOrder')}</option>
-        {/* A chosen order a new search no longer lists still shows as chosen. */}
-        {value != null && !orders.some((o) => o.id === value.id) && (
-          <option value={String(value.id)}>{chosenLabel}</option>
-        )}
-        {orders.map((o) => (
-          <option key={o.id} value={String(o.id)}>
-            {label(o)}
-          </option>
-        ))}
-      </Select>
-      {isPending ? (
-        <span className="text-sm text-bambu-gray">{t('orders.add.orderLoading')}</span>
-      ) : isError ? (
-        <span className="flex items-center gap-2 text-sm text-amber-700 dark:text-amber-400">
-          {t('orders.add.orderFailed')}
-          <Button size="sm" variant="ghost" onClick={() => refetch()}>
-            {t('common.retry')}
-          </Button>
-        </span>
-      ) : orders.length === 0 ? (
-        <span className="text-sm text-bambu-gray">{q ? t('orders.add.noOrdersFound') : t('orders.add.noActiveOrders')}</span>
-      ) : total > orders.length ? (
-        <span className="text-sm text-bambu-gray">{t('orders.add.shownOf', { shown: orders.length, total })}</span>
-      ) : null}
-    </div>
   );
 }

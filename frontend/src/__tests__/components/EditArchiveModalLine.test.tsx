@@ -41,10 +41,13 @@ describe('EditArchiveModal — order and line', () => {
   });
 
   it('offers the lines of the chosen order and resets the line when the order changes', async () => {
-    vi.spyOn(api, 'getOrders').mockResolvedValue([
-      { id: 1, name: 'A', status: 'active' },
-      { id: 2, name: 'B', status: 'active' },
-    ] as never);
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue({
+      items: [
+        { id: 1, code: 'OR-0001', name: 'A', status: 'active', customer_name: null },
+        { id: 2, code: 'OR-0002', name: 'B', status: 'active', customer_name: null },
+      ],
+      meta: { total: 2, current_page: 1, per_page: 20, last_page: 1 },
+    } as never);
     vi.spyOn(api, 'getOrder').mockImplementation(
       async (id: number) =>
         ({
@@ -61,10 +64,11 @@ describe('EditArchiveModal — order and line', () => {
 
     expect(await screen.findByRole('option', { name: 'Flask × 2' })).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText(/order/i), { target: { value: '2' } });
+    await screen.findByRole('option', { name: 'OR-0002 · B · no customer' });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Order' }), { target: { value: '2' } });
 
     expect(await screen.findByRole('option', { name: 'Lid × 1' })).toBeInTheDocument();
-    expect((screen.getByLabelText(/line/i) as HTMLSelectElement).value).toBe('');
+    expect((screen.getByRole('combobox', { name: 'Line' }) as HTMLSelectElement).value).toBe('');
 
     fireEvent.click(screen.getByRole('button', { name: /save/i }));
 
@@ -73,8 +77,11 @@ describe('EditArchiveModal — order and line', () => {
     );
   });
 
-  it('keeps the bound line when nothing is touched', async () => {
-    vi.spyOn(api, 'getOrders').mockResolvedValue([{ id: 1, name: 'A', status: 'active' }] as never);
+  it('keeps the bound line when nothing is touched — and sends no binding at all (E13 D02)', async () => {
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue({
+      items: [{ id: 1, code: 'OR-0001', name: 'A', status: 'active', customer_name: null }],
+      meta: { total: 1, current_page: 1, per_page: 20, last_page: 1 },
+    } as never);
     vi.spyOn(api, 'getOrder').mockResolvedValue({
       id: 1,
       lines: [{ id: 10, product_name: 'Flask', quantity: 2, material: null }],
@@ -84,10 +91,12 @@ describe('EditArchiveModal — order and line', () => {
     render(<EditArchiveModal archive={archive as never} onClose={() => {}} />);
 
     expect(await screen.findByRole('option', { name: 'Flask × 2' })).toBeInTheDocument();
+    expect((screen.getByRole('combobox', { name: 'Line' }) as HTMLSelectElement).value).toBe('10');
     fireEvent.click(screen.getByRole('button', { name: /save/i }));
 
-    await waitFor(() =>
-      expect(patch).toHaveBeenCalledWith(7, expect.objectContaining({ project_id: 1, project_line_id: 10 })),
-    );
+    await waitFor(() => expect(patch).toHaveBeenCalled());
+    const body = patch.mock.calls[0][1] as Record<string, unknown>;
+    expect('project_id' in body).toBe(false);
+    expect('project_line_id' in body).toBe(false);
   });
 });

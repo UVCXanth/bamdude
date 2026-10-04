@@ -90,7 +90,6 @@ import { SaveArchiveToLibraryModal } from '../components/SaveArchiveToLibraryMod
 import { ContextMenu, type ContextMenuItem } from '../components/ContextMenu';
 import { BatchTagModal } from '../components/BatchTagModal';
 import { BatchAssignOrderModal } from '../components/projects/BatchAssignOrderModal';
-import { AddToOrderMenu } from '../components/projects/AddToOrderMenu';
 import { CalendarView } from '../components/CalendarView';
 import { QRCodeModal } from '../components/QRCodeModal';
 import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
@@ -1527,7 +1526,11 @@ function ArchiveCard({
       )}
 
       {showAddToOrder && (
-        <AddToOrderMenu archive={archive} onDone={() => setShowAddToOrder(false)} />
+        <BatchAssignOrderModal
+          archiveIds={[archive.id]}
+          bound={{ orderId: archive.project_id ?? null, lineId: archive.project_line_id ?? null }}
+          onClose={() => setShowAddToOrder(false)}
+        />
       )}
 
       {showSchedule && (
@@ -2659,7 +2662,11 @@ function ArchiveListRow({
       )}
 
       {showAddToOrder && (
-        <AddToOrderMenu archive={archive} onDone={() => setShowAddToOrder(false)} />
+        <BatchAssignOrderModal
+          archiveIds={[archive.id]}
+          bound={{ orderId: archive.project_id ?? null, lineId: archive.project_line_id ?? null }}
+          onClose={() => setShowAddToOrder(false)}
+        />
       )}
 
       {/* Schedule Modal */}
