@@ -86,6 +86,7 @@ DETAIL_SCENARIOS = (
     "dialog-config-switch",
     "dialog-refusal-reread",
     "dialog-reread-dimmed",
+    "dialog-first-read-failed",
     "move-sync@1440",
     "params@1440",
     "assemble@1440",

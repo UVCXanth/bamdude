@@ -1307,6 +1307,41 @@ async (page, selftest = null) => {
     };
   });
 
+  await scenario('dialog-first-read-failed', ['E12-G08', 'E12-R04'], async () => {
+    // Codex E12-V05: the position page has read the position, so it is in the cache before the
+    // dialog opens; the dialog's own first read fails. Nothing of that cache is shown — «…», no
+    // limit, «could not read» with a retry, the primary waits; the retry's answer is shown.
+    let armed = false;
+    let failed = false;
+    const { ctx, p, errors } = await open(1440, { gets: [[ITEM(P1), () => {
+      if (armed && !failed) { failed = true; return { fail: 500 }; }
+      return null;
+    }]] });
+    await goto(p, `/stock/${P1}`);
+    armed = true;
+    await p.getByTestId('item-actions').getByRole('button', { name: 'Резервувати' }).click();
+    const d = dialogOf(p, 'Резервування');
+    await d.getByText('Не вдалося прочитати позицію').waitFor({ timeout: 8000 });
+    const atFailure = {
+      header: await textOf(d.getByTestId('stock-position-header')),
+      limit: await d.getByTestId('stock-move-limit').count(),
+      disabled: await d.getByTestId('stock-move-submit').isDisabled(),
+    };
+    const file = await shoot(p, 'dialog-first-read-failed');
+    await d.getByTestId('stock-move-position').getByRole('button', { name: 'Спробувати знову' }).click();
+    await d.getByTestId('stock-move-limit').filter({ hasText: /можна зарезервувати/ }).waitFor({ timeout: 8000 });
+    const after = { header: await textOf(d.getByTestId('stock-position-header')) };
+    await ctx.close();
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: { url: '/stock/{fin:1} → «Резервувати»', fixture: ['GET /stock/items/{fin:1}: the page reads it; the dialog\'s first read 500, then the stand'] },
+      measured: { failed, atFailure, after, errors },
+      pass: failed && !/Залишок/.test(atFailure.header) && atFailure.header.includes('…') && atFailure.limit === 0 && atFailure.disabled &&
+        after.header.includes(`Залишок ${item1.on_hand}`) && errors.length === 0,
+      screenshots: [file],
+    };
+  });
+
   await scenario('move-sync@1440', ['E12-G07'], async () => {
     let release = () => {};
     const gate = new Promise((r) => { release = r; });
