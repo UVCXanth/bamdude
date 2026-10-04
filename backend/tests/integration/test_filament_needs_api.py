@@ -142,6 +142,27 @@ async def test_need_per_key_with_the_line_colour_and_the_shelf_beside(db_session
 
 
 @pytest.mark.asyncio
+async def test_the_shelf_of_a_material_is_the_inventorys_own_figure(db_session, shelf):
+    """WS-13 E13 H04: «є» on an order is what the Filament page says the shelf holds.
+
+    Two readers compute it — the needs (``filament_needs.load_stock``, in Python) and the
+    inventory's stats bar (``inventory_service.inventory_stats``, in SQL) — so they are held
+    together here over the same spools: a live one, an archived one (no stock) and one used
+    past its label (clamped to zero, never negative). The stand the browser run stands on
+    holds no spools, so its «0 g» against an empty inventory cannot show this."""
+    from backend.app.services import inventory_service
+
+    db_session.add(Spool(material="PETG", color_name="Black", label_weight=500, weight_used=650))
+    await db_session.commit()
+    pid, _ = await _order(db_session, shelf["product"].id, 5, colour="black")
+    needs = (await filament_needs.needs_of_orders(db_session, [pid]))[pid]
+    stats = await inventory_service.inventory_stats(db_session)
+    inventory = {m["material"].upper(): m["remaining_g"] for m in stats["by_material"]}
+    assert {r.material: r.have_type_g for r in needs.rows} == {"PETG": inventory["PETG"], "PLA": inventory["PLA"]}
+    assert inventory == {"PETG": 1800.0, "PLA": 400.0}
+
+
+@pytest.mark.asyncio
 async def test_a_nameless_spool_counts_by_hex_through_the_catalogue(db_session, shelf):
     pid, _ = await _order(db_session, shelf["product"].id, 1, colour="white", material="PLA")
     out = await filament_needs.needs_of_orders(db_session, [pid])

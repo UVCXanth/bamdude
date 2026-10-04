@@ -400,3 +400,69 @@ async def test_refiling_an_archive_keeps_a_line_that_still_belongs(async_client:
     r = await async_client.patch(f"/api/v1/archives/{archive.id}", json={"project_id": project.id})
     assert r.status_code == 200, r.text
     assert r.json()["project_line_id"] == line.id
+
+
+# WS-13 E13 H03 — the line stays on a queued row through the queue's own operations. The
+# browser run proves what the client SENDS (an edit names no line, a reorder names nothing, a
+# copy names the source's line); these pin what the server KEEPS.
+
+
+async def _queued(async_client, project, line, printer, linked_file) -> int:
+    r = await async_client.post(
+        "/api/v1/queue/",
+        json={
+            "queue_id": printer.queue_id,
+            "library_file_id": linked_file.id,
+            "project_id": project.id,
+            "project_line_id": line.id,
+        },
+    )
+    assert r.status_code in (200, 201), r.text
+    return r.json()["id"]
+
+
+async def _line_of(db_session, item_id: int) -> tuple[int | None, int | None]:
+    # Columns, not the instance: the route wrote through its own session.
+    row = (
+        await db_session.execute(
+            select(PrintQueueItem.project_id, PrintQueueItem.project_line_id).where(PrintQueueItem.id == item_id)
+        )
+    ).one()
+    return row.project_id, row.project_line_id
+
+
+@pytest.mark.asyncio
+async def test_a_queued_rows_line_survives_a_clone(
+    async_client, db_session, order_line, printer_with_queue, linked_file
+):
+    project, line = order_line
+    item_id = await _queued(async_client, project, line, printer_with_queue, linked_file)
+    r = await async_client.post(f"/api/v1/queue/{item_id}/clone")
+    assert r.status_code == 200, r.text
+    clone_id = r.json()["id"]
+    assert clone_id != item_id
+    assert await _line_of(db_session, clone_id) == (project.id, line.id)
+
+
+@pytest.mark.asyncio
+async def test_a_queued_rows_line_survives_an_edit_that_does_not_name_it(
+    async_client, db_session, order_line, printer_with_queue, linked_file
+):
+    project, line = order_line
+    item_id = await _queued(async_client, project, line, printer_with_queue, linked_file)
+    r = await async_client.patch(f"/api/v1/queue/{item_id}", json={"manual_start": True})
+    assert r.status_code == 200, r.text
+    assert await _line_of(db_session, item_id) == (project.id, line.id)
+
+
+@pytest.mark.asyncio
+async def test_a_queued_rows_line_survives_a_reorder(
+    async_client, db_session, order_line, printer_with_queue, linked_file
+):
+    project, line = order_line
+    first = await _queued(async_client, project, line, printer_with_queue, linked_file)
+    second = await _queued(async_client, project, line, printer_with_queue, linked_file)
+    r = await async_client.post(f"/api/v1/queue/{first}/reorder?direction=down")
+    assert r.status_code == 200, r.text
+    assert await _line_of(db_session, first) == (project.id, line.id)
+    assert await _line_of(db_session, second) == (project.id, line.id)
