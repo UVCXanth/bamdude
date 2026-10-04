@@ -5,6 +5,7 @@ import logging
 import os
 import secrets
 import weakref
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Literal
@@ -2489,3 +2490,33 @@ def require_ownership_permission(
             )
 
     return checker
+
+
+@dataclass(frozen=True)
+class RequestCredentials:
+    """The request's own credentials, for a route that asks a SECOND gate only in
+    some cases — a library write that changes a file's product links needs
+    ``projects:update`` too (WS-13 E13 B02).
+
+    :meth:`check` calls a checker a ``require_*`` factory returned, with these
+    credentials, exactly as ``Depends`` would (``routes/monitor.py`` does it by
+    hand): the second gate is the canonical one — an API key answers for its scope
+    AND its owner by either header, a JWT for its user, and a refusal is the gate's
+    own 403. Build the checker once, at module level.
+    """
+
+    request: Request
+    credentials: HTTPAuthorizationCredentials | None
+    x_api_key: str | None
+
+    async def check(self, gate: Callable[..., Awaitable[Any]]) -> Any:
+        return await gate(request=self.request, credentials=self.credentials, x_api_key=self.x_api_key)
+
+
+async def request_credentials(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
+    x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+) -> RequestCredentials:
+    """Dependency: the request's credentials as a :class:`RequestCredentials`."""
+    return RequestCredentials(request, credentials, x_api_key)

@@ -25,7 +25,7 @@ from sqlalchemy.orm import selectinload
 # Aliased: a private name imported into a module this size could be shadowed
 # by a local helper of the same name without anyone noticing.
 from backend.app.api.routes.auto_queue import _to_response as auto_queue_row_response, auto_queue_item_load_options
-from backend.app.api.routes.library import _library_file_visible as library_file_visible, file_name_visible
+from backend.app.api.routes.library import file_name_visible
 from backend.app.api.routes.print_queue import _enrich_response as queue_row_response, queue_item_load_options
 from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequirePermission, acting_user, library_name_scope, require_media_permission
@@ -1127,13 +1127,14 @@ async def create_project(
     # An order created WITH its lines takes the same road as a line added later
     # (spec workshop-add-to-order, rule 12) — configuration, stock and journal —
     # so the same dialog never means something else on the path that creates most lines.
-    await _intake(db, project, [_spec_of(line) for line in data.lines], current_user)
+    await _intake(db, project, [_spec_of(line) for line in data.lines], current_user, _no_library_file)
     return await _response(db, project.id)
 
 
 @router.post("/from-files", response_model=ProjectResponse)
 async def create_project_from_files(
     data: OrderFromFilesRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.PROJECTS_CREATE),
 ):
@@ -1143,8 +1144,8 @@ async def create_project_from_files(
     ``kind``: ``job`` (the wizard, targets per part), ``catalog`` (the wizard
     over the one catalogue product linking every file), ``plates`` (the print
     dialog, copies per plate). The files are the caller's to name — the library's
-    own ownership gate (:func:`_library_visible`)."""
-    visible = _library_visible(current_user)
+    library's own reading rule (:func:`_library_visible`)."""
+    visible = await _library_visible(request, db, current_user)
     try:
         if data.kind == "job":
             project = await order_from_files.create_job_order(
@@ -1743,18 +1744,32 @@ def _spec_of(data: ProjectLineCreate) -> BatchProductLineIn | BatchPartsLineIn:
     )
 
 
-def _library_visible(user: User | None) -> Callable[[LibraryFile], bool]:
-    """The library's own ownership gate for an order route that names library files
-    (owner, 2026-09-27): a caller who sees only its own files may use only those, and
-    another user's file is the same 404 the library answers. API keys have no row
-    identity and see all, as the library's own routes decide."""
-    can_read_all = user is None or user.has_permission(Permission.LIBRARY_READ_ALL.value)
-    return lambda f: library_file_visible(f, user, can_read_all)
+async def _library_visible(request: Request, db: AsyncSession, user: User | None) -> Callable[[LibraryFile], bool]:
+    """The library's own reading rule for an order route that names library files
+    (WS-13 E13 B07): ``library_name_scope`` + ``file_name_visible``, as everywhere a
+    file's name is shown. A JWT with ``library:read_own`` uses only its own files,
+    without a library read right no file at all, its own included; an API key by
+    its library scope and its owner's rights. Another user's file is the same 404
+    as a missing one."""
+    scope = await library_name_scope(request, db, user)
+    return lambda f: file_name_visible(f, user, scope)
 
 
-async def _intake(db: AsyncSession, project: Project, specs, actor: User | None) -> list[line_intake.Intake]:
+def _no_library_file(_file: LibraryFile) -> bool:
+    """For a route whose lines cannot name a library file (a catalog product's
+    line): fail closed, so it never needs the library's rights."""
+    return False
+
+
+async def _intake(
+    db: AsyncSession,
+    project: Project,
+    specs,
+    actor: User | None,
+    visible: Callable[[LibraryFile], bool],
+) -> list[line_intake.Intake]:
     try:
-        return await line_intake.add_lines(db, project, specs, actor=actor, visible=_library_visible(actor))
+        return await line_intake.add_lines(db, project, specs, actor=actor, visible=visible)
     except line_intake.LineIntakeError as e:
         raise HTTPException(status_code=e.status, detail=str(e)) from e
     except (part_stock.PartStockError, finished_stock.FinishedStockError) as e:
@@ -1765,6 +1780,7 @@ async def _intake(db: AsyncSession, project: Project, specs, actor: User | None)
 async def add_lines_batch(
     project_id: int,
     data: BatchLinesIn,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
 ):
@@ -1773,7 +1789,7 @@ async def add_lines_batch(
     Any refused line refuses the whole batch. The stock is taken as far as the shelf
     goes; ``results`` says what each line asked and got."""
     project = await _get_project(db, project_id)
-    intakes = await _intake(db, project, data.lines, current_user)
+    intakes = await _intake(db, project, data.lines, current_user, await _library_visible(request, db, current_user))
     return BatchLinesOut(
         order=await _response(db, project.id),
         results=[
@@ -1798,7 +1814,7 @@ async def add_line(
 ):
     project = await _get_project(db, project_id)
     _check_line_create(data)
-    await _intake(db, project, [_spec_of(data)], current_user)
+    await _intake(db, project, [_spec_of(data)], current_user, _no_library_file)
     return await _response(db, project.id)
 
 

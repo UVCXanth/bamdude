@@ -24,6 +24,8 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
 from backend.app.core.auth import (
+    RequestCredentials,
+    request_credentials,
     require_media_ownership_permission,
     require_ownership_permission,
     require_permission,
@@ -271,6 +273,26 @@ def _mtime_to_utc(st_mtime: float) -> datetime:
     and wrongly against everything else in the same column.
     """
     return datetime.fromtimestamp(st_mtime, tz=timezone.utc).replace(tzinfo=None)
+
+
+# Linking a file or a folder to a product is the order desk's business as well
+# (WS-13 E13 B01): beside the library right, a write that changes the links asks
+# ``projects:update`` through the canonical gate, before anything is written.
+_projects_update = require_permission(Permission.PROJECTS_UPDATE)
+
+
+async def _product_ids_of_files(db: AsyncSession, file_ids: list[int]) -> dict[int, set[int]]:
+    """Each file's current product links, read off the pivot in one query."""
+    links: dict[int, set[int]] = {file_id: set() for file_id in file_ids}
+    if file_ids:
+        rows = await db.execute(
+            select(product_files.c.library_file_id, product_files.c.product_id).where(
+                product_files.c.library_file_id.in_(file_ids)
+            )
+        )
+        for file_id, product_id in rows:
+            links[file_id].add(product_id)
+    return links
 
 
 async def _resolve_products_for_assign(db: AsyncSession, product_ids: list[int]) -> list[Product]:
@@ -1086,8 +1108,13 @@ async def create_folder(
     data: FolderCreate,
     db: AsyncSession = Depends(get_db),
     _: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Create a new folder."""
+    # A folder born linked to products asks ``projects:update`` too (WS-13 E13 B01) —
+    # first, because inside an external parent the directory is made on the share.
+    if data.product_ids:
+        await creds.check(_projects_update)
     # Verify parent exists if specified
     if data.parent_id is not None:
         parent_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == data.parent_id))
@@ -1312,6 +1339,7 @@ async def update_folder(
     data: FolderUpdate,
     db: AsyncSession = Depends(get_db),
     _: User | None = Depends(require_permission(Permission.LIBRARY_UPDATE_ALL)),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Update a folder.
 
@@ -1327,6 +1355,11 @@ async def update_folder(
 
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
+
+    # An explicit product list — ``[]`` included — asks ``projects:update`` too
+    # (WS-13 E13 B01), before any field is written.
+    if data.product_ids is not None:
+        await creds.check(_projects_update)
 
     if data.name is not None:
         folder.name = data.name
@@ -1523,9 +1556,12 @@ async def unlink_folder_from_product(
     product_id: int,
     db: AsyncSession = Depends(get_db),
     _: User | None = Depends(require_permission(Permission.LIBRARY_UPDATE_ALL)),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Remove the (folder, product) pivot row. Idempotent: 404 only when
-    the folder doesn't exist; missing pivot is treated as already-gone."""
+    the folder doesn't exist; missing pivot is treated as already-gone.
+    Unlinking always asks ``projects:update`` too (WS-13 E13 B01)."""
+    await creds.check(_projects_update)
     result = await db.execute(
         select(LibraryFolder).options(selectinload(LibraryFolder.products)).where(LibraryFolder.id == folder_id)
     )
@@ -1554,10 +1590,13 @@ async def unlink_file_from_product(
             Permission.LIBRARY_UPDATE_OWN,
         )
     ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Remove the (file, product) pivot row. Idempotent: missing pivot
-    treated as already-gone."""
+    treated as already-gone. Unlinking always asks ``projects:update`` too
+    (WS-13 E13 B01)."""
     user, can_modify_all = auth_result
+    await creds.check(_projects_update)
 
     result = await db.execute(
         select(LibraryFile).options(selectinload(LibraryFile.products)).where(LibraryFile.id == file_id)
@@ -5256,6 +5295,7 @@ async def update_file(
             Permission.LIBRARY_UPDATE_OWN,
         )
     ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Update a file's metadata."""
     user, can_modify_all = auth_result
@@ -5273,6 +5313,36 @@ async def update_file(
         if file.created_by_id != user.id:
             raise HTTPException(status_code=403, detail="You can only update your own files")
 
+    # Verify the target folder exists; a move inherits its product list, so moving
+    # a file into a product-linked folder backfills the file→product pivot, and
+    # moving it into an unlinked folder clears it (replace semantics).
+    target_folder: LibraryFolder | None = None
+    if data.folder_id:
+        folder_result = await db.execute(
+            select(LibraryFolder)
+            .options(selectinload(LibraryFolder.products))
+            .where(LibraryFolder.id == data.folder_id)
+        )
+        target_folder = folder_result.scalar_one_or_none()
+        if not target_folder:
+            raise HTTPException(status_code=404, detail="Folder not found")
+
+    # The product list this PUT ends with, decided before anything is written: a
+    # change of links asks ``projects:update`` too (WS-13 E13 B01) — always for an
+    # explicit list, for a move only when the target's set differs from the file's
+    # — and a refusal leaves the file as it was. ``None`` = links untouched.
+    desired_product_ids: list[int] | None = None
+    if data.product_ids is not None:
+        # Explicit product_ids override wins over the folder-inherited list.
+        await creds.check(_projects_update)
+        desired_product_ids = [p.id for p in await _resolve_products_for_assign(db, data.product_ids)]
+    elif data.folder_id is not None:
+        # Moving to root (``0``) clears product links — root has no folder, so
+        # nothing to inherit from.
+        desired_product_ids = [p.id for p in target_folder.products] if target_folder else []
+        if set(desired_product_ids) != {p.id for p in file.products}:
+            await creds.check(_projects_update)
+
     if data.filename is not None:
         # Reject the full FAT32/exFAT-illegal set (Bambu-Studio parity), not just
         # path separators — otherwise names like ``L|R.3mf`` flow through to FTP
@@ -5286,39 +5356,8 @@ async def update_file(
         # No print_name to keep in sync — library files display by filename,
         # and _without_print_name strips the embedded 3MF Title on import (#1489).
 
-    # Track whether the product list changed in this PUT so the sync at the
-    # end fires exactly once, on the final list.
-    products_touched = False
-    desired_product_ids: list[int] = []
-
     if data.folder_id is not None:
-        if data.folder_id == 0:
-            file.folder_id = None
-            # Moving to root clears product links — root has no folder,
-            # so nothing to inherit from.
-            desired_product_ids = []
-            products_touched = True
-        else:
-            # Verify folder exists; inherit its product list so moving a file
-            # into a product-linked folder backfills the file→product pivot,
-            # and moving it into an unlinked folder clears it (replace
-            # semantics).
-            folder_result = await db.execute(
-                select(LibraryFolder)
-                .options(selectinload(LibraryFolder.products))
-                .where(LibraryFolder.id == data.folder_id)
-            )
-            target_folder = folder_result.scalar_one_or_none()
-            if not target_folder:
-                raise HTTPException(status_code=404, detail="Folder not found")
-            file.folder_id = data.folder_id
-            desired_product_ids = [p.id for p in target_folder.products]
-            products_touched = True
-
-    # Explicit product_ids override wins over the folder-inherited list.
-    if data.product_ids is not None:
-        desired_product_ids = [p.id for p in await _resolve_products_for_assign(db, data.product_ids)]
-        products_touched = True
+        file.folder_id = data.folder_id or None
 
     if data.notes is not None:
         file.notes = data.notes if data.notes else None
@@ -5327,7 +5366,7 @@ async def update_file(
     # plates both, so the collection is never assigned here. The refresh puts
     # the in-session collection back in step with what the sync just wrote —
     # without it the re-fetch below reads the identity map's stale copy.
-    if products_touched:
+    if desired_product_ids is not None:
         await sync_product_for_file(db, library_file_id=file.id, product_ids=desired_product_ids)
         await db.refresh(file, ["products"])
 
@@ -5656,6 +5695,7 @@ async def move_files(
             Permission.LIBRARY_UPDATE_OWN,
         )
     ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Move multiple files to a folder.
 
@@ -5691,6 +5731,32 @@ async def move_files(
 
     target_product_ids = [p.id for p in target_product_rows]
     target_is_external = target_folder is not None and target_folder.is_external
+
+    # A move replaces each file's product links with the target's, so a batch in
+    # which any file the loop below would move ends with a different set asks
+    # ``projects:update`` too (WS-13 E13 B01) — before the first file moves, so a
+    # refusal moves nothing. The two skips decided up front (not the owner, a
+    # read-only source) are left out; a later byte-move skip is not foreseen, so
+    # its file may ask for a change that then does not happen — a refusal errs
+    # on the safe side.
+    candidates = (
+        (
+            await db.execute(
+                select(LibraryFile).options(selectinload(LibraryFile.folder)).where(LibraryFile.id.in_(data.file_ids))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    moving = [
+        f.id
+        for f in candidates
+        if (can_modify_all or f.created_by_id == user.id)
+        and not (f.is_external and f.folder is not None and f.folder.external_readonly)
+    ]
+    current_links = await _product_ids_of_files(db, moving)
+    if any(links != set(target_product_ids) for links in current_links.values()):
+        await creds.check(_projects_update)
 
     moved = 0
     skipped = 0
