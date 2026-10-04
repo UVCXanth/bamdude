@@ -71,13 +71,16 @@ describe('BatchAssignOrderModal', () => {
     expect(screen.getByRole('button', { name: 'Remove from order' })).not.toBeDisabled();
   });
 
-  it('takes one print out of its order', async () => {
-    const patch = vi.spyOn(api, 'updateArchive').mockResolvedValue({} as never);
+  // V01: the order's own command, which asks the Workshop's filing right — never the archive editor.
+  it('takes one print out of its order through the order', async () => {
+    const remove = vi.spyOn(api, 'removeArchivesFromProject').mockResolvedValue({} as never);
+    const patch = vi.spyOn(api, 'updateArchive');
     const onClose = vi.fn();
     render(<BatchAssignOrderModal archiveIds={[3]} bound={{ orderId: 5, lineId: null }} onClose={onClose} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Remove from order' }));
-    await waitFor(() => expect(patch).toHaveBeenCalledWith(3, { project_id: null, project_line_id: null }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(5, [3]));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(patch).not.toHaveBeenCalled();
   });
 
   // WS-13 E13 T9 (the acceptance frame): «Cancel» and «Assign» are one group, so when the

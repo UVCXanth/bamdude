@@ -9,7 +9,7 @@ import type { TimelineEvent } from '../../api/client';
 export const ORDER_JOURNAL_KINDS = [
   'order_created', 'status_changed', 'fields_changed', 'responsible_changed', 'stage_changed',
   'line_added', 'line_changed', 'line_removed', 'line_configured',
-  'prints_filed', 'prints_unfiled', 'defects_recorded',
+  'prints_filed', 'prints_unfiled', 'prints_relined', 'print_trashed', 'print_restored', 'defects_recorded',
   'queue_items_filed', 'plan_enqueued', 'line_rebalanced',
   'surplus_banked', 'procurement_updated',
   'kits_assembled', 'goods_received', 'goods_issued', 'stock_taken', 'goods_written_off', 'goods_stocked',
@@ -125,6 +125,15 @@ export function journalText(event: TimelineEvent, t: TFunction): string | null {
       if (kits > 0) bits.push(t('orders.timeline.stock.kits', { count: kits }));
       return bits.join(', ');
     }
+    case 'prints_relined':
+      // The line a print went to — «other prints» when it left every line (WS-13 E13 O08).
+      return t('orders.timeline.events.prints_relined', {
+        count: Number(m.count) || 0,
+        line: m.line_id == null ? t('orders.prints.otherPrints') : named(m.product),
+      });
+    case 'print_trashed':
+    case 'print_restored':
+      return t(`orders.timeline.events.${event.event_type}`, { name: named(m.name) });
     case 'line_configured':
       return t('orders.timeline.events.line_configured', { product: named(m.product), config: configText(m.to, t) });
     case 'cover_changed':

@@ -44,6 +44,9 @@ DEVIATIONS: dict[str, str] = {
         "the preview writes nothing and is a read (orders:read at the gate); the change itself asks "
         "orders:update inside, and stock:move when the line holds stock (ORD-17)"
     ),
+    # F(print) = orders:file_prints OR (orders:update AND the archive's own right), asked per print (O21).
+    "POST /api/v1/projects/{project_id}/add-archives": "either half of F(print) at the gate; F per print inside",
+    "POST /api/v1/projects/{project_id}/remove-archives": "either half of F(print) at the gate; F per print inside",
 }
 
 

@@ -151,7 +151,9 @@ class TestTheWorkshopsOwnRightFilesAnyPrint:
     """Owner's ruling 2026-10-04 (E13 final review #1): a print from the printer's screen or a
     slicer has no owner, so ``archives:update_own`` never reaches it — and the default Operators
     hold only that. ``orders:file_prints`` files and unfiles ANY print under an order without
-    ``archives:update_all`` (which would also open other people's photos and files)."""
+    ``archives:update_all`` (which would also open other people's photos and files). Since the
+    Workshop's own rights (§O, O21) it needs no ``orders:update`` beside it — the filing clerk's
+    doors are pinned in ``test_workshop_filing_doors``."""
 
     @pytest.mark.asyncio
     async def test_the_right_files_and_unfiles_ownerless_and_others_prints(self, committing_client, db_session, desk):
@@ -163,13 +165,6 @@ class TestTheWorkshopsOwnRightFilesAnyPrint:
         assert (await _order_of(db_session, desk["theirs"]))[0] == desk["a"]
         r = await _remove(committing_client, desk["a"], ids, "ar_filer")
         assert r.status_code == 200, r.text
-        assert await _order_of(db_session, desk["ownerless"]) == (None, None)
-
-    @pytest.mark.asyncio
-    async def test_the_right_still_needs_projects_update(self, committing_client, db_session, desk):
-        await _user(db_session, "ar_filer_ro", [Permission.ORDERS_FILE_PRINTS.value])
-        r = await _add(committing_client, desk["a"], [desk["ownerless"]], "ar_filer_ro")
-        assert r.status_code == 403, r.text
         assert await _order_of(db_session, desk["ownerless"]) == (None, None)
 
     @pytest.mark.asyncio

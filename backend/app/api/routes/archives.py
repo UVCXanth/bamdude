@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.api.routes._workshop_rights import ensure_may_file, ensure_may_file_future
 from backend.app.core import case_folding
 from backend.app.core.auth import (
     RequestCredentials,
@@ -1060,11 +1061,6 @@ async def find_similar_archives(
         raise HTTPException(404, str(e))
 
 
-# Moving a print to another order or line is the order desk's business as well
-# (WS-13 E13 B04), asked through the canonical gate with the request's credentials.
-_orders_update = require_permission(Permission.ORDERS_UPDATE)
-
-
 @router.patch("/{archive_id}", response_model=ArchiveResponse)
 async def update_archive(
     archive_id: int,
@@ -1131,15 +1127,22 @@ async def _update_archive_locked(
         if archive.created_by_id != user.id:
             raise HTTPException(403, "You can only update your own archives")
 
-    # Only a binding that actually changes asks ``orders:update`` (WS-13 E13 B04):
-    # the editor sends the order and the line with every save. The gate reads the
-    # credentials the dependency above already resolved for this request, so it
-    # writes nothing under the write scope.
+    # Only a binding that actually changes asks more (WS-13 E13 O09): the editor sends
+    # the order and the line with every save. Beside the archive's own right (the route's
+    # gate) ``orders:update`` or ``orders:file_prints`` is ``F(print)``; the order it goes
+    # to must exist (404) and be open (409 ``order_closed``) — a line change inside a
+    # closed order is a new link too. Taking the print out of an order is C1's, below.
+    # Everything here is asked before the first write: a mixed request is atomic.
     fields = update_data.model_fields_set
     if ("project_id" in fields and update_data.project_id != archive.project_id) or (
         "project_line_id" in fields and update_data.project_line_id != archive.project_line_id
     ):
-        await creds.check(_orders_update)
+        await ensure_may_file_future(creds)
+        target_project = update_data.project_id if "project_id" in fields else archive.project_id
+        if target_project is not None:
+            from backend.app.services import order_filing
+
+            await order_filing.resolve_link(db, target_project, None)
 
     # Filed under an order for the first time: whatever this print put on the
     # free-stock shelf has to come back off it, because the order's own figures
@@ -1159,16 +1162,18 @@ async def _update_archive_locked(
         and archive.project_id is not None
         and update_data.project_id is None
     )
-    # For the order journal below — which order held the print before this edit.
+    # For the order journal below — which order held the print, on which line, before this edit.
     project_before = archive.project_id
+    line_before = archive.project_line_id
     # A print whose output the order received onto its shelf stays with the order —
-    # un-filing it, or moving it to another order, would count those parts twice
+    # un-filing it, moving it to another order, or taking it out of ``completed`` (which
+    # takes it out of the order's coverage, WS-13 E13 O09) would count those parts twice
     # (spec workshop-order-issue; final review C1). Checked before anything is written.
-    if (
-        project_before is not None
-        and "project_id" in update_data.model_fields_set
-        and update_data.project_id != project_before
-    ):
+    moves_away = "project_id" in update_data.model_fields_set and update_data.project_id != project_before
+    leaves_completed = (
+        "status" in update_data.model_fields_set and archive.status == "completed" and update_data.status != "completed"
+    )
+    if project_before is not None and (moves_away or leaves_completed):
         from backend.app.services import order_fulfilment
 
         try:
@@ -1218,6 +1223,18 @@ async def _update_archive_locked(
             await order_journal.record(db, project_before, "prints_unfiled", moved, actor=user)
         if archive.project_id is not None:
             await order_journal.record(db, archive.project_id, "prints_filed", moved, actor=user)
+    elif archive.project_id is not None and archive.project_line_id != line_before:
+        # Another line of the same order — journaled as ``add-archives`` journals it (O08).
+        from backend.app.api.routes.projects import _relined_payload
+        from backend.app.services import order_journal
+
+        await order_journal.record(
+            db,
+            archive.project_id,
+            "prints_relined",
+            await _relined_payload(db, [archive.id], archive.project_line_id),
+            actor=user,
+        )
 
     if "filament_used_grams" in update_data.model_fields_set and "cost" not in update_data.model_fields_set:
         await _cost_follows_typed_grams(db, archive, previous_grams, previous_cost)
@@ -1278,11 +1295,16 @@ async def _update_archive_locked(
     return archive_to_response(archive)
 
 
+_archives_read_all = require_permission(Permission.ARCHIVES_READ_ALL)
+_archives_read_own = require_permission(Permission.ARCHIVES_READ_OWN)
+
+
 @router.post("/{archive_id}/count-into-stock", response_model=list[StockMovedOut])
 async def count_archive_into_stock(
     archive_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.STOCK_ADJUST),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Count an old order-less print into the product's free stock by hand.
 
@@ -1303,8 +1325,12 @@ async def count_archive_into_stock(
     finished nothing good, or its plate may belong to no product.
     """
     archive = (await db.execute(PrintArchive.active().where(PrintArchive.id == archive_id))).scalar_one_or_none()
-    if archive is None:
+    # Vouching for a print the caller may see (WS-13 E13 ARC-06): the archive section's own
+    # read, as every archive door asks it — someone else's print is the same 404 as a missing one.
+    reads_all = await creds.allows(_archives_read_all)
+    if not reads_all and not await creds.allows(_archives_read_own):
         raise HTTPException(404, "Archive not found")
+    archive = _ensure_archive_visible(archive, current_user, reads_all)
     if archive.project_id is not None:
         raise HTTPException(409, "This print is filed under an order — its parts are counted there")
     if await part_stock.unfiled_credit_net(db, archive.id) > 0:
@@ -1497,16 +1523,18 @@ async def delete_archive(
             Permission.ARCHIVES_DELETE_OWN,
         )
     ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Trash an archive only after serializing its mutable archive facts."""
     async with archive_write_scope(db, archive_id):
-        return await _delete_archive_locked(archive_id, db, auth_result)
+        return await _delete_archive_locked(archive_id, db, auth_result, creds)
 
 
 async def _delete_archive_locked(
     archive_id: int,
     db: AsyncSession,
     auth_result: tuple[User | None, bool],
+    creds: RequestCredentials,
 ):
     """Soft-delete an archive (moves to the archive trash bin).
 
@@ -1547,8 +1575,26 @@ async def _delete_archive_locked(
             f"printing. Stop the print first, then retry.",
         )
 
+    # The trash takes a filed print out of its order's coverage (WS-13 E13 ARC-07): it
+    # asks ``F(print)`` and C1 — a print whose output the order received stays — and is
+    # journaled. Asked under the row lock, before the first write.
+    if archive.project_id is not None:
+        from backend.app.services import order_fulfilment, order_journal
+
+        await ensure_may_file(creds, [archive])
+        try:
+            await order_fulfilment.ensure_prints_can_leave(db, archive.project_id, [archive.id])
+        except order_fulfilment.FulfilmentError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from e
+        await order_journal.record(db, archive.project_id, "print_trashed", _print_snapshot(archive), actor=user)
+
     await archive_purge_service.move_to_trash(db, archive)
     return {"status": "trashed", "trashed": True, "id": archive.id}
+
+
+def _print_snapshot(archive: PrintArchive) -> dict:
+    """A print in the order journal: its id and its name as it was (the row may go)."""
+    return {"archive_id": archive.id, "name": archive.print_name or archive.filename}
 
 
 @router.get("/{archive_id}/download")

@@ -28,6 +28,7 @@ from backend.app.api.routes._workshop_rights import (
     bind_workshop_credentials,
     ensure,
     ensure_coded,
+    ensure_may_file,
     workshop_view,
 )
 from backend.app.api.routes.auto_queue import _to_response as auto_queue_row_response, auto_queue_item_load_options
@@ -42,7 +43,6 @@ from backend.app.core.auth import (
     library_name_scope,
     request_credentials,
     require_media_permission,
-    require_ownership_permission,
     require_permission,
 )
 from backend.app.core.config import settings
@@ -158,6 +158,7 @@ from backend.app.services import (
     finished_stock_views,
     line_config,
     line_intake,
+    order_filing,
     order_from_files,
     order_fulfilment,
     order_journal,
@@ -2375,10 +2376,6 @@ async def list_project_archives(
     return out
 
 
-# Filing a print under an order, or taking it out, rewrites the archive as well
-# (WS-13 E13 B03): beside ``orders:update`` it asks the archive's own update right
-# through the canonical ownership gate, called with the request's credentials.
-_archives_update = require_ownership_permission(Permission.ARCHIVES_UPDATE_ALL, Permission.ARCHIVES_UPDATE_OWN)
 # The archive and queue sections' own reads, asked of an order's rows (WS-13 E13 O12).
 _archives_read_all = require_permission(Permission.ARCHIVES_READ_ALL)
 _archives_read_own = require_permission(Permission.ARCHIVES_READ_OWN)
@@ -2424,45 +2421,22 @@ async def _owner_reads(creds: RequestCredentials, all_gate, own_gate):
     return False, await creds.allows(own_gate)
 
 
-_file_prints = require_permission(Permission.ORDERS_FILE_PRINTS)
-
-
-async def _ensure_may_move_archives(creds: RequestCredentials, archives: list[PrintArchive]) -> None:
-    """``orders:file_prints`` — the Workshop's own right (m193, m194) — files any print; else
-    ``archives:update_all`` moves any print, ``archives:update_own`` only the caller's
-    own — an ownerless print only ``all``. One print out of reach refuses the whole
-    batch, before anything is written.
-
-    ⚠️ The Workshop right exists because a print from the printer's screen or a slicer
-    has no owner: ``update_own`` never reaches it, and ``update_all`` would also open
-    everybody's photos, sources and 3D files (upstream security #5)."""
-    try:
-        await creds.check(_file_prints)
-        return
-    except HTTPException as refused:
-        if refused.status_code != 403:
-            raise
-    user, can_modify_all = await creds.check(_archives_update)
-    if can_modify_all:
-        return
-    if any(user is None or archive.created_by_id != user.id for archive in archives):
-        raise HTTPException(status_code=403, detail="You can only update your own archives")
-
-
 @router.post("/{project_id}/add-archives")
 async def add_archives_to_project(
     project_id: int,
     data: BatchAddArchives,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
+    # ``F(print)`` is asked below, per print (WS-13 E13 O21): the gate lets in either half of it.
+    current_user: User | None = RequireAnyPermission(Permission.ORDERS_UPDATE, Permission.ORDERS_FILE_PRINTS),
     creds: RequestCredentials = Depends(request_credentials),
 ):
-    """File existing prints under this order, optionally under one of its lines."""
+    """File existing prints under this order, optionally under one of its lines — or move them
+    to another line of it. ``F(print)`` for every print, an open order (409 ``order_closed``),
+    and C1 for every order a print leaves; all before the first print moves."""
     await _get_project(db, project_id)  # 404s an order that is not there
-    if data.project_line_id is not None:
-        await _get_line(db, project_id, data.project_line_id)
     archives = [archive for archive_id in data.archive_ids if (archive := await db.get(PrintArchive, archive_id))]
-    await _ensure_may_move_archives(creds, archives)
+    await ensure_may_file(creds, archives)
+    await order_filing.resolve_link(db, project_id, data.project_line_id)
     # A print taken from another order leaves it by that order's rules — the same
     # judge as the two other exits (WS-13 E13 B05), asked of every order a print
     # leaves before the first print moves, so a refusal moves nothing.
@@ -2479,6 +2453,7 @@ async def add_archives_to_project(
     # The journal (spec workshop-order-stage, rule 17): filed here, and taken
     # out of whichever order held them before.
     filed: list[int] = []
+    relined: list[int] = []
     left: dict[int, list[int]] = {}
     for archive in archives:
         # Same rule as the archive editor's project change (pass 8,
@@ -2490,6 +2465,9 @@ async def add_archives_to_project(
             filed.append(archive.id)
             if archive.project_id is not None:
                 left.setdefault(archive.project_id, []).append(archive.id)
+        elif archive.project_line_id != data.project_line_id:
+            # Another line of the same order: the order's coverage moves between its lines.
+            relined.append(archive.id)
         archive.project_id = project_id
         archive.project_line_id = data.project_line_id
         if was_unfiled:
@@ -2514,7 +2492,28 @@ async def add_archives_to_project(
         await order_journal.record(
             db, project_id, "prints_filed", {"count": len(filed), "archive_ids": filed}, actor=current_user
         )
+    if relined:
+        await order_journal.record(
+            db,
+            project_id,
+            "prints_relined",
+            await _relined_payload(db, relined, data.project_line_id),
+            actor=current_user,
+        )
     return {"message": f"Added {updated} archives to project"}
+
+
+async def _relined_payload(db: AsyncSession, archive_ids: list[int], line_id: int | None) -> dict:
+    """``prints_relined``: which prints, and the line they went to with its product's name as a
+    snapshot (``None`` — the order's other prints, or a product since deleted)."""
+    line = await db.get(ProjectLine, line_id) if line_id is not None else None
+    product = await db.get(Product, line.product_id) if line is not None and line.product_id is not None else None
+    return {
+        "count": len(archive_ids),
+        "archive_ids": archive_ids,
+        "line_id": line_id,
+        "product": product.name if product is not None else None,
+    }
 
 
 @router.post("/{project_id}/remove-archives")
@@ -2522,10 +2521,11 @@ async def remove_archives_from_project(
     project_id: int,
     data: BatchAddArchives,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
+    current_user: User | None = RequireAnyPermission(Permission.ORDERS_UPDATE, Permission.ORDERS_FILE_PRINTS),
     creds: RequestCredentials = Depends(request_credentials),
 ):
-    """Unfile prints from this order — the line goes with the order, never alone."""
+    """Unfile prints from this order — the line goes with the order, never alone. ``F(print)``
+    and C1; a closed order still lets a print go (it is not a new link)."""
     in_order = {
         archive.id: archive
         for archive in (
@@ -2534,7 +2534,7 @@ async def remove_archives_from_project(
             )
         ).scalars()
     }
-    await _ensure_may_move_archives(creds, list(in_order.values()))
+    await ensure_may_file(creds, list(in_order.values()))
     try:
         await order_fulfilment.ensure_prints_can_leave(db, project_id, data.archive_ids)
     except order_fulfilment.FulfilmentError as e:

@@ -19,7 +19,12 @@ from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException
 
-from backend.app.core.auth import RequestCredentials, request_credentials, require_permission
+from backend.app.core.auth import (
+    RequestCredentials,
+    request_credentials,
+    require_ownership_permission,
+    require_permission,
+)
 from backend.app.core.permissions import Permission
 
 # One checker per right, built once (``RequestCredentials.check`` contract).
@@ -43,6 +48,14 @@ GATES = {
         Permission.STOCK_MOVE,
         Permission.STOCK_ADJUST,
     )
+}
+
+# The archive's own update right — the other half of ``F(print)``.
+_ARCHIVES_UPDATE = require_ownership_permission(Permission.ARCHIVES_UPDATE_ALL, Permission.ARCHIVES_UPDATE_OWN)
+
+FILING_FORBIDDEN = {
+    "error": "filing_forbidden",
+    "message": "Filing work under an order needs orders:update or orders:file_prints",
 }
 
 _CREDS: ContextVar[RequestCredentials | None] = ContextVar("workshop_credentials", default=None)
@@ -126,6 +139,39 @@ async def ensure_consequence(creds: RequestCredentials, permission: Permission) 
                 "message": f"Missing required permissions: {permission.value}",
             },
         ) from refused
+
+
+async def ensure_may_file(creds: RequestCredentials, archives) -> None:
+    """``F(print)`` for every print of a batch, before anything is written (WS-13 E13 O21).
+
+    ``orders:file_prints`` files and unfiles ANY print — a print from the printer's screen or a
+    slicer has no owner, and ``archives:update_all`` would also open everybody's photos and
+    files. Otherwise ``orders:update`` AND the archive's own update right: ``update_all`` any
+    print, ``update_own`` only the caller's own; an ownerless print only ``all``. One print out
+    of reach refuses the whole batch."""
+    if await creds.allows(GATES[Permission.ORDERS_FILE_PRINTS]):
+        return
+    await creds.check(GATES[Permission.ORDERS_UPDATE])
+    user, can_modify_all = await creds.check(_ARCHIVES_UPDATE)
+    if can_modify_all:
+        return
+    if any(user is None or archive.created_by_id != user.id for archive in archives):
+        raise HTTPException(status_code=403, detail="You can only update your own archives")
+
+
+async def may_file_future(creds: RequestCredentials) -> bool:
+    """``Fф`` — work this request creates may be filed under an order: ``orders:file_prints`` or
+    ``orders:update`` (the work is nobody's yet; its creator becomes its owner). Beside an
+    archive's own update right (the archive editor), the same pair is ``F(print)``."""
+    return await creds.allows(GATES[Permission.ORDERS_FILE_PRINTS]) or await creds.allows(
+        GATES[Permission.ORDERS_UPDATE]
+    )
+
+
+async def ensure_may_file_future(creds: RequestCredentials) -> None:
+    """:func:`may_file_future`, or 403 ``filing_forbidden``."""
+    if not await may_file_future(creds):
+        raise HTTPException(status_code=403, detail=FILING_FORBIDDEN)
 
 
 def read_required(domain: str) -> HTTPException:

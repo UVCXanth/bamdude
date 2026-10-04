@@ -382,7 +382,8 @@ describe('OrderPrints', () => {
     vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
       { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: null, plate_index: 3 },
     ] as never);
-    const update = vi.spyOn(api, 'updateArchive').mockResolvedValue({} as never);
+    const add = vi.spyOn(api, 'addArchivesToOrder').mockResolvedValue({} as never);
+    const patch = vi.spyOn(api, 'updateArchive');
     const order = {
       id: 1,
       other_archive_ids: [1],
@@ -422,13 +423,22 @@ describe('OrderPrints', () => {
     expect(submit).toBeDisabled();
     fireEvent.change(select, { target: { value: '10' } });
     fireEvent.click(submit);
-    // ⚠️ `project_id` travels with the line — a bare line change is a 400.
-    await waitFor(() => expect(update).toHaveBeenCalledWith(1, { project_id: 1, project_line_id: 10 }));
+    // V01: the order's command with the line — not the archive editor.
+    await waitFor(() => expect(add).toHaveBeenCalledWith(1, [1], 10));
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it.each(['completed', 'cancelled'])('offers no line change in a %s order, only leaving it', async (status) => {
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue(rows([1], null) as never);
+    render(<OrderPrints order={{ ...lineOrder([]), other_archive_ids: [1], status } as Order} canEdit />);
+    const menu = await openMenu(1);
+    expect(within(menu).queryByRole('menuitem', { name: /file under/i })).not.toBeInTheDocument();
+    expect(within(menu).getByRole('menuitem', { name: /remove from order/i })).toBeInTheDocument();
   });
 
   it('shows a refusal of the filing above the dialog’s footer', async () => {
     vi.spyOn(api, 'getProjectArchives').mockResolvedValue(rows([1], null) as never);
-    vi.spyOn(api, 'updateArchive').mockRejectedValue(new Error('That line belongs to another order'));
+    vi.spyOn(api, 'addArchivesToOrder').mockRejectedValue(new Error('That line belongs to another order'));
     render(<OrderPrints order={{ ...lineOrder([]), other_archive_ids: [1] } as Order} canEdit />);
     fireEvent.click(within(await openMenu(1)).getByRole('menuitem', { name: /file under/i }));
     const dialog = await screen.findByRole('dialog', { name: 'File under a line' });

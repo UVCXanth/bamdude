@@ -24,7 +24,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermission, require_ownership_permission
+from backend.app.api.routes._workshop_rights import ensure_may_file
+from backend.app.core.auth import (
+    RequestCredentials,
+    RequirePermission,
+    request_credentials,
+    require_ownership_permission,
+)
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
@@ -142,9 +148,18 @@ async def restore_archive_from_trash(
             Permission.ARCHIVES_DELETE_OWN,
         )
     ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
+    """Bring a print back. A filed print returns into its order's coverage, so it asks
+    ``F(print)`` and is journaled (WS-13 E13 ARC-07)."""
     user, can_modify_all = auth_result
     archive = await _load_trashed_archive(db, archive_id, user, can_modify_all)
+    if archive.project_id is not None:
+        from backend.app.api.routes.archives import _print_snapshot
+        from backend.app.services import order_journal
+
+        await ensure_may_file(creds, [archive])
+        await order_journal.record(db, archive.project_id, "print_restored", _print_snapshot(archive), actor=user)
     await archive_purge_service.restore(db, archive)
     return {"status": "success", "id": archive.id}
 

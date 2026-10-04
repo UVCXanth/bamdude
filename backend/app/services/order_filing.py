@@ -19,6 +19,12 @@ Three answers live here, and they are the same rule asked three ways:
 * :func:`order_candidates` — what the dialogs offer, ranked, each candidate
   carrying how many prints of this plate its line still needs.
 
+And one check every door that makes a NEW link of work to an order asks
+(WS-13 E13 O21): :func:`resolve_link` — the order exists, the line belongs to it,
+a line alone names its order, and the order is open. Rights are not asked here:
+they are the route's (``_workshop_rights``), so a tick, a promotion or a scheduled
+rebalance that carries an existing link is never re-checked (O11).
+
 ⚠️ **Nothing here asks about a printer.** Choosing the order a print belongs to
 is a question about parts, exactly as planning is; routing is not dispatching.
 
@@ -34,6 +40,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -67,6 +74,9 @@ from backend.app.services.product_composition import (
 #: "closed" is a judgement about each word in it that a fourth status would have
 #: to be asked afresh. Keep the two in step by hand when the vocabulary grows.
 CLOSED_STATUSES = ("completed", "cancelled")
+
+#: A new link to a closed order — the machine code the dialogs react to (WS-13 E13 O21).
+ORDER_CLOSED = {"error": "order_closed", "message": "This order is closed — nothing new is filed under it"}
 
 
 @dataclass
@@ -515,6 +525,35 @@ async def line_filer(
     )
 
 
+async def resolve_link(
+    db: AsyncSession, project_id: int | None, project_line_id: int | None
+) -> tuple[int | None, int | None]:
+    """``(order, line)`` a NEW link of work names — checked, or refused (WS-13 E13 O21).
+
+    The order named must exist (404); a line named must be a line of it (404), and a
+    line named alone names its order. The order must be open: nothing new is filed
+    under a completed or cancelled order (409 ``order_closed``). Taking work OUT of a
+    closed order is not a new link and is not asked here — that is C1's
+    (``order_fulfilment.ensure_prints_can_leave``). ``(None, None)`` when nothing is named.
+    """
+    project = None
+    if project_id is not None:
+        project = await db.get(Project, project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+    if project_line_id is not None:
+        line = await db.get(ProjectLine, project_line_id)
+        if line is None or (project_id is not None and line.project_id != project_id):
+            raise HTTPException(status_code=404, detail="Order line not found in this project")
+        project_id = line.project_id
+        project = project or await db.get(Project, project_id)
+    if project is None:
+        return None, None
+    if project.status in CLOSED_STATUSES:
+        raise HTTPException(status_code=409, detail=ORDER_CLOSED)
+    return project_id, project_line_id
+
+
 async def resolve_line_id(
     db: AsyncSession,
     *,
@@ -541,6 +580,7 @@ async def resolve_line_id(
 __all__ = [
     "CLOSED_STATUSES",
     "LineFiler",
+    "ORDER_CLOSED",
     "OrderCandidate",
     "accepting_lines",
     "line_filer",
@@ -548,4 +588,5 @@ __all__ = [
     "lines_counting_plate",
     "order_candidates",
     "resolve_line_id",
+    "resolve_link",
 ]

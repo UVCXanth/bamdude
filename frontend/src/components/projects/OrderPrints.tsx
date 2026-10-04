@@ -349,11 +349,10 @@ function AssignLineDialog({ archive, order, onClose }: { archive: Archive; order
   const [lineId, setLineId] = useState<number | null>(archive.project_line_id ?? null);
   const [error, setError] = useState<string | null>(null);
 
-  // ⚠️ `project_id` travels with the line: the server rejects (400) a line that
-  // belongs to another order, and a bare line change on an archive whose order is
-  // being re-stated is exactly that case.
+  // The order's own command (WS-13 E13 V01): `add-archives` with the line moves the print
+  // between this order's lines (journaled as a re-line) under the Workshop's filing right.
   const save = useMutation({
-    mutationFn: () => api.updateArchive(archive.id, { project_id: order.id, project_line_id: lineId }),
+    mutationFn: () => api.addArchivesToOrder(order.id, [archive.id], lineId),
     onSuccess: () => {
       invalidateOrderViews(queryClient, { orderId: order.id });
       onClose();
@@ -438,6 +437,9 @@ function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: Arch
   // the print out of the order rewrites the archive too (WS-13 E13 B03/B06), so it asks
   // the same; the defects are the order's own contract and stay with `canEdit`.
   const canAssign = canEdit && canFileArchive(hasPermission, canModify, archive.created_by_id);
+  // Nothing new is filed under a closed order (409 `order_closed`) — a line change included;
+  // a print may still leave it.
+  const orderOpen = order.status !== 'completed' && order.status !== 'cancelled';
   const where = [
     (archive.plate_index ?? 0) > 0 ? t('orders.prints.plate', { n: archive.plate_index }) : null,
     printerName ?? null,
@@ -543,7 +545,7 @@ function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: Arch
                     {t('orders.prints.defects.action')}
                   </CardActionMenuItem>
                 )}
-                {canAssign && (
+                {canAssign && orderOpen && (
                   <CardActionMenuItem
                     onSelect={() => {
                       close();

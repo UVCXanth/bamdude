@@ -75,10 +75,10 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
   });
 
   const remove = useMutation({
-    // Not `addArchivesToOrder` — there is no order to add to. Clearing the line
-    // alongside is not optional: a line without its order is a row the server
-    // would refuse on the next edit.
-    mutationFn: () => api.updateArchive(archiveIds[0], { project_id: null, project_line_id: null }),
+    // The order's own command (WS-13 E13 V01), not the archive editor: it asks the
+    // Workshop's filing right, which reaches a print the caller does not own. The line
+    // leaves with the order. Offered only for one print with an order (`canRemove`).
+    mutationFn: () => api.removeArchivesFromProject(bound?.orderId as number, archiveIds),
     onMutate: () => setError(null),
     onSuccess: done,
     onError: refused,

@@ -26,6 +26,7 @@ from backend.app.core.config import settings as app_settings
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.local_preset import LocalPreset
+from backend.app.models.project import Project
 from backend.app.models.settings import Settings as SettingsModel
 from backend.app.services import slicer_api as slicer_api_module
 from backend.app.services.slice_dispatch import slice_dispatch
@@ -543,8 +544,13 @@ class TestSliceArchive:
         archive_dir.mkdir(parents=True, exist_ok=True)
         src_3mf = archive_dir / "Cube.3mf"
         src_3mf.write_bytes(_make_3mf_with_settings())
+        # Filed under an order: the re-sliced file is not a print of it (WS-13 E13 ARC-09).
+        order = Project(name="Re-slice order")
+        db_session.add(order)
+        await db_session.flush()
         archive = PrintArchive(
             printer_id=1,
+            project_id=order.id,
             filename="Cube.3mf",
             file_path=str(src_3mf.relative_to(slice_test_setup["tmp_path"])),
             file_size=src_3mf.stat().st_size,
@@ -595,6 +601,7 @@ class TestSliceArchive:
 
         created = await db_session.get(PrintArchive, result["archive_id"])
         assert created.extra_data["source_provenance"] == "keep me"
+        assert created.project_id is None
         assert (
             not {"dispatch_intent", "bamdude_terminal_acceptance", "bamdude_terminal_effects"}
             & created.extra_data.keys()

@@ -34,6 +34,25 @@ describe('the order journal · stock of a line', () => {
   });
 });
 
+describe('the order journal · prints of the order (WS-13 E13 O08, ARC-07)', () => {
+  it('names the line a print moved to, and «other prints» for none', () => {
+    expect(journalText(event('prints_relined', { count: 2, archive_ids: [1, 2], line_id: 5, product: 'Lamp' }), t)).toBe(
+      'Prints moved to Lamp: 2',
+    );
+    expect(journalText(event('prints_relined', { count: 1, archive_ids: [1], line_id: null, product: null }), t)).toBe(
+      'Prints moved to Other prints: 1',
+    );
+  });
+
+  it('names the print that went to the trash and came back', () => {
+    expect(journalText(event('print_trashed', { archive_id: 3, name: 'Cube' }), t)).toBe('Print moved to the trash: Cube');
+    const uk = i18n.getFixedT('uk');
+    expect(journalText(event('print_restored', { archive_id: 3, name: 'Cube' }), uk)).toBe(
+      'Друк відновлено з кошика: Cube',
+    );
+  });
+});
+
 describe('the order journal · stock and issue', () => {
   it('says what was assembled, received, issued and taken', () => {
     expect(journalText(event('kits_assembled', { line_id: 1, product: 'Pipe', units: 3 }), t)).toBe(

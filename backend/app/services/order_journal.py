@@ -17,7 +17,7 @@ from backend.app.models.user import User
 EVENT_KINDS: tuple[str, ...] = (
     "order_created", "status_changed", "fields_changed", "responsible_changed", "stage_changed",
     "line_added", "line_changed", "line_removed", "line_configured",
-    "prints_filed", "prints_unfiled", "defects_recorded",
+    "prints_filed", "prints_unfiled", "prints_relined", "print_trashed", "print_restored", "defects_recorded",
     "queue_items_filed", "plan_enqueued", "line_rebalanced",
     "surplus_banked", "procurement_updated",
     "kits_assembled", "goods_received", "goods_issued", "stock_taken", "goods_written_off", "goods_stocked",
@@ -37,6 +37,9 @@ TITLES: dict[str, str] = {
     "line_configured": "Line configuration changed",
     "prints_filed": "Prints filed under the order",
     "prints_unfiled": "Prints taken out of the order",
+    "prints_relined": "Prints moved to another line of the order",
+    "print_trashed": "Print moved to the trash",
+    "print_restored": "Print restored from the trash",
     "defects_recorded": "Defects recorded",
     "queue_items_filed": "Queue jobs filed under the order",
     "plan_enqueued": "Plan sent to the queue",

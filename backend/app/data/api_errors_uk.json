@@ -497,6 +497,8 @@
   "Missing permission: {} or {}": "Немає дозволу: {} або {}",
   "Missing required permissions: {}": "Немає потрібних дозволів: {}",
   "Missing required permissions: {}:read": "Немає потрібних дозволів: {}:read",
+  "Filing work under an order needs orders:update or orders:file_prints": "Прив’язати роботу до замовлення можна з правом orders:update або orders:file_prints",
+  "This order is closed — nothing new is filed under it": "Замовлення закрите — до нього нічого нового не прив’язується",
   "Opening a dispatch note needs the customers' read or the stock's move right": "Відкрити накладну можна з правом читання замовників або переміщення складу",
   "Missing spool tag (tray_uuid or tag_uid)": "Немає тегу котушки (tray_uuid або tag_uid)",
   "Mode must be 'print_queue', 'file_manager', or 'proxy'": "Режим має бути «print_queue», «file_manager» або «proxy»",

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -52,6 +53,11 @@ class ArchiveBase(BaseModel):
     external_url: str | None = None
 
 
+#: What a print's status may be set to by hand — the words the backend itself writes
+#: (WS-13 E13 O09). The legacy ``archived`` is no longer produced anywhere.
+ArchiveStatus = Literal["printing", "completed", "failed", "aborted", "cancelled", "stopped"]
+
+
 class ArchiveUpdate(ArchiveBase):
     # Bounded where it is written, not on the base the responses share: it feeds
     # order totals, and a negative would subtract from them (upstream 30e530a8).
@@ -61,8 +67,9 @@ class ArchiveUpdate(ArchiveBase):
     project_id: int | None = None
     # The order line this print is for; validated against ``project_id``.
     project_line_id: int | None = None
-    # Allow changing status (e.g., clearing failed flag)
-    status: str | None = None
+    # Allow changing status (e.g., clearing failed flag) — within the closed set; an explicit
+    # null is refused below (the column is NOT NULL).
+    status: ArchiveStatus | None = None
     # Per-part defect write (m158). Not a column on PrintArchive — the route
     # applies it to PrintArchivePart rows and derives defective_count from
     # them; it must never reach the generic setattr loop.
@@ -74,6 +81,12 @@ class ArchiveUpdate(ArchiveBase):
     # because it feeds those totals: a negative would subtract, and 100 kg is
     # far past any single print.
     filament_used_grams: float | None = Field(None, ge=0, le=100_000)
+
+    @model_validator(mode="after")
+    def _status_is_never_null(self):
+        if "status" in self.model_fields_set and self.status is None:
+            raise ValueError("status cannot be null")
+        return self
 
 
 class ArchiveDuplicate(BaseModel):

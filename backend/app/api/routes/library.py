@@ -3163,8 +3163,8 @@ async def slice_and_persist_as_archive(
     job_id: int | None = None,
 ):
     """Slice a model and save the result as a new ``PrintArchive`` row,
-    inheriting printer / project / makerworld metadata from the source
-    archive. Always exports as a ``.gcode.3mf`` so the existing thumbnail
+    inheriting printer / makerworld metadata from the source archive —
+    never its order. Always exports as a ``.gcode.3mf`` so the existing thumbnail
     and plates infrastructure works on the new archive."""
     import copy
     from types import SimpleNamespace
@@ -3179,7 +3179,6 @@ async def slice_and_persist_as_archive(
             for name in (
                 "id",
                 "printer_id",
-                "project_id",
                 "file_path",
                 "extra_data",
                 "filament_type",
@@ -3313,9 +3312,10 @@ async def slice_and_persist_as_archive(
     new_printer_id = None if is_cross_model_reslice else source_archive.printer_id
     sliced_hash = await preview_disk(lambda: hashlib.sha256(result.content).hexdigest())
 
+    # ⚠️ Never the source's order (WS-13 E13 ARC-09): this row is a sliced file, not a
+    # print — under an order it would add its time and grams to the order's figures.
     new_archive = PrintArchive(
         printer_id=new_printer_id,
-        project_id=source_archive.project_id,
         filename=out_filename,
         file_path=str(out_path.relative_to(app_settings.base_dir)),
         file_size=len(result.content),
