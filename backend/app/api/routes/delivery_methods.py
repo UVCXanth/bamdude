@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.routes._workshop_rights import bind_workshop_credentials
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequireAnyPermission, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.customer import CustomerContact, DeliveryMethod, delivery_method_key
@@ -62,7 +62,16 @@ async def _get_or_404(db: AsyncSession, method_id: int) -> DeliveryMethod:
 @router.get("", response_model=list[DeliveryMethodOut])
 @router.get("/", response_model=list[DeliveryMethodOut])
 async def list_delivery_methods(
-    db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.CUSTOMERS_READ)
+    db: AsyncSession = Depends(get_db),
+    # A directory without personal data, read by the contact editors and both issue
+    # dialogs — so their writers read it too (WS-13 E13 R12).
+    _: User | None = RequireAnyPermission(
+        Permission.CUSTOMERS_READ,
+        Permission.CUSTOMERS_CREATE,
+        Permission.CUSTOMERS_UPDATE,
+        Permission.ORDERS_UPDATE,
+        Permission.STOCK_MOVE,
+    ),
 ):
     return await _listing(db)
 

@@ -36,6 +36,9 @@ WORKSHOP = set().union(*IMAGES.values())
 # Route → why its gate is not an image of its old one (each added by a later commit, WS-13 E13 T15).
 DEVIATIONS: dict[str, str] = {
     "POST /api/v1/projects/{project_id}/duplicate": "copying an order reads the source: orders:read beside orders:create",
+    # A directory without personal data the contact editors and both issue dialogs read (R12).
+    "GET /api/v1/delivery-methods": "any of the customers' reads and writes, orders:update or stock:move",
+    "GET /api/v1/delivery-methods/": "any of the customers' reads and writes, orders:update or stock:move",
     "PUT /api/v1/projects/{project_id}/lines/{line_id}/configuration": (
         "the preview writes nothing and is a read (orders:read at the gate); the change itself asks "
         "orders:update inside, and stock:move when the line holds stock (ORD-17)"

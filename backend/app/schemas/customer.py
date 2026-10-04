@@ -158,6 +158,24 @@ class CustomerContactOut(BaseModel):
     orders_count: int | None
 
 
+class CustomerOption(BaseModel):
+    """``GET /customers/options`` — a customer as a picker names it (WS-13 E13 O12)."""
+
+    id: int
+    code: str
+    name: str
+
+
+class ContactOption(BaseModel):
+    """``GET /customers/{id}/contact-options`` — who may receive an order: what the order
+    itself shows of its contact, never the phone or the address (WS-13 E13 O12)."""
+
+    id: int
+    code: str
+    name: str | None
+    role: str | None
+
+
 class CustomerResponse(BaseModel):
     id: int
     code: str

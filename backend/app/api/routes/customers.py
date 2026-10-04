@@ -9,26 +9,30 @@ from sqlalchemy.orm import selectinload
 from backend.app.api.routes._workshop_rights import (
     WorkshopView,
     bind_workshop_credentials,
+    ensure_consequence,
     read_required,
     workshop_view,
 )
-from backend.app.core.auth import RequirePermission
-from backend.app.core.database import get_db
+from backend.app.core.auth import RequestCredentials, RequireAnyPermission, RequirePermission, request_credentials
+from backend.app.core.database import get_db, take_write_lock
 from backend.app.core.permissions import Permission
 from backend.app.models.customer import CONTACT_DATA_FIELDS, Customer, CustomerContact, DeliveryMethod
 from backend.app.models.project import Project
 from backend.app.models.user import User
 from backend.app.schemas.customer import (
+    ContactOption,
     CustomerContactIn,
     CustomerContactOut,
     CustomerCreate,
     CustomerFigures,
     CustomerKind,
     CustomerListFigures,
+    CustomerOption,
     CustomerResponse,
     CustomerUpdate,
 )
 from backend.app.schemas.listing import CustomerListPage, CustomersSummary
+from backend.app.schemas.project import RecipientOut
 from backend.app.services import finished_stock, stock_issues
 from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.list_paging import (
@@ -356,6 +360,36 @@ async def create_customer(
     return await _response(db, customer.id)
 
 
+# Whoever needs a customer's NAME — an order form, the orders filter, a stock issue — and
+# not the directory (WS-13 E13 O12, CUS-03 / CUS-10).
+_NAMES_A_CUSTOMER = (
+    Permission.CUSTOMERS_READ,
+    Permission.ORDERS_READ,
+    Permission.ORDERS_CREATE,
+    Permission.ORDERS_UPDATE,
+    Permission.STOCK_MOVE,
+)
+
+
+@router.get("/options", response_model=list[CustomerOption])
+async def customer_options(
+    q: str | None = Query(None, description="Name or CU code"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequireAnyPermission(*_NAMES_A_CUSTOMER),
+):
+    """Every customer as a picker names it — id, code, name; nothing of the directory.
+    Declared above ``/{customer_id}``."""
+    query = select(Customer.id, Customer.name)
+    if q and q.strip():
+        matches = [Customer.name.ilike(f"%{q.strip()}%")]
+        customer_id = id_from_query("customer", q.strip())
+        if customer_id is not None:
+            matches.append(Customer.id == customer_id)
+        query = query.where(or_(*matches))
+    rows = (await db.execute(query.order_by(Customer.name, Customer.id))).all()
+    return [CustomerOption(id=row.id, code=code_for("customer", row.id), name=row.name) for row in rows]
+
+
 @router.get("/summary", response_model=CustomersSummary)
 async def customers_summary(
     db: AsyncSession = Depends(get_db),
@@ -373,6 +407,44 @@ async def customers_summary(
         with_active=sum(1 for f in figures if f.active > 0) if orders else None,
         active_orders=sum(f.active for f in figures) if orders else None,
         total_price=round(sum(f.total_price for f in figures), 2) if orders else None,
+    )
+
+
+@router.get("/{customer_id}/contact-options", response_model=list[ContactOption])
+async def contact_options(
+    customer_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequireAnyPermission(*_NAMES_A_CUSTOMER),
+):
+    """A customer's contacts as an order form picks one: name and role (WS-13 E13 R12)."""
+    if await db.get(Customer, customer_id) is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    rows = (
+        await db.execute(
+            select(CustomerContact)
+            .where(CustomerContact.customer_id == customer_id)
+            .order_by(CustomerContact.position, CustomerContact.id)
+        )
+    ).scalars()
+    return [ContactOption(id=c.id, code=code_for("contact", c.id), name=c.name, role=c.role) for c in rows]
+
+
+@router.get("/{customer_id}/recipient", response_model=RecipientOut)
+async def customer_recipient(
+    customer_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequireAnyPermission(Permission.CUSTOMERS_READ, Permission.STOCK_MOVE),
+):
+    """Who receives a manual issue by default — the main contact's name, phone and
+    delivery: for whoever keeps the contacts or ships the goods (WS-13 E13 O25)."""
+    if await db.get(Customer, customer_id) is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    recipient = await stock_issues.default_recipient(db, project=None, customer_id=customer_id)
+    return RecipientOut(
+        name=recipient.name,
+        phone=recipient.phone,
+        delivery_method=recipient.delivery_method,
+        delivery_details=recipient.delivery_details,
     )
 
 
@@ -410,12 +482,23 @@ async def delete_customer(
     customer_id: int,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.CUSTOMERS_DELETE),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
-    # A plain ``get``, not ``_get_or_404``: that one loads the contacts, and the
-    # ORM would then try to null out the very rows deleted below.
-    customer = await db.get(Customer, customer_id)
+    # A plain read, not ``_get_or_404``: that one loads the contacts, and the
+    # ORM would then try to null out the very rows deleted below. Locked: an order
+    # created for this customer meanwhile waits (its foreign key takes the row on
+    # PostgreSQL; ``take_write_lock`` is SQLite's writer).
+    await take_write_lock(db, Customer.__table__, customer_id)
+    customer = (await db.execute(select(Customer).where(Customer.id == customer_id).with_for_update())).scalar()
     if customer is None:
         raise HTTPException(status_code=404, detail="Customer not found")
+    # Its ACTIVE orders lose their customer and would close to stock instead of being
+    # issued — an orders consequence, asked before anything is written (WS-13 E13 O24).
+    active = await db.scalar(
+        select(func.count(Project.id)).where(Project.customer_id == customer_id, Project.status == "active")
+    )
+    if active:
+        await ensure_consequence(creds, Permission.ORDERS_UPDATE)
     # SQLite runs no FK actions: every order's pointer at the customer and at its
     # contacts, and the contacts themselves, go in code (the CASCADE / SET NULL
     # are PostgreSQL's backstop).

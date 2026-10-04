@@ -110,6 +110,24 @@ async def ensure_coded(creds: RequestCredentials, permission: Permission, code: 
         ) from refused
 
 
+async def ensure_consequence(creds: RequestCredentials, permission: Permission) -> None:
+    """A delete whose consequence reaches another domain asks that domain's right too (O24):
+    a 403 naming the right, so the dialog can say which consequence is out of reach."""
+    try:
+        await creds.check(GATES[permission])
+    except HTTPException as refused:
+        if refused.status_code != 403:
+            raise
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "consequence_right_required",
+                "right": permission.value,
+                "message": f"Missing required permissions: {permission.value}",
+            },
+        ) from refused
+
+
 def read_required(domain: str) -> HTTPException:
     """A filter or sort on a field the caller may not see — refused, never silently ignored (O12)."""
     return HTTPException(
