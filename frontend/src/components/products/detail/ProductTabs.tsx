@@ -1,6 +1,7 @@
 import { useId, useRef, useState, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { Product } from '../../../api/client';
+import { useAuth } from '../../../contexts/AuthContext';
 import { useSectionScrollMemory } from '../../../hooks/useSectionScrollMemory';
 import { PRODUCT_SECTIONS, type ProductSection } from '../../../pages/products/productSections';
 import { WorkshopTabPanel, WorkshopTabs } from '../../workshop/WorkshopTabs';
@@ -38,7 +39,7 @@ function countOf(product: Product, section: ProductSection): number | undefined 
  */
 export function ProductTabs({
   product,
-  section,
+  section: asked,
   onSection,
   headingRef,
   onReread,
@@ -52,6 +53,13 @@ export function ProductTabs({
   onReread: () => void;
 }) {
   const { t } = useTranslation();
+  const { hasPermission } = useAuth();
+  // The stock's and the orders' tabs are their reads' (WS-13 E13 O19): without the read each
+  // would only answer 403, so it is not offered, and an address naming it shows the composition.
+  const sections = PRODUCT_SECTIONS.filter(
+    (value) => (value !== 'stock' || hasPermission('stock:read')) && (value !== 'orders' || hasPermission('orders:read')),
+  );
+  const section: ProductSection = sections.includes(asked) ? asked : 'composition';
   const idBase = useId();
   const strip = useRef<HTMLDivElement>(null);
   const [visited, setVisited] = useState<ReadonlySet<ProductSection>>(() => new Set([section]));
@@ -85,7 +93,7 @@ export function ProductTabs({
           idBase={idBase}
           ariaLabel={t('products.detail.tabs.label')}
           value={section}
-          items={PRODUCT_SECTIONS.map((value) => ({
+          items={sections.map((value) => ({
             value,
             label: t(`products.detail.tabs.${value}`),
             count: countOf(product, value),
@@ -95,7 +103,7 @@ export function ProductTabs({
           panels="all"
         />
       </div>
-      {PRODUCT_SECTIONS.map((value) => (
+      {sections.map((value) => (
         <WorkshopTabPanel key={value} idBase={idBase} value={value} hidden={value !== section} className="pt-4">
           {visited.has(value) && body(value)}
         </WorkshopTabPanel>

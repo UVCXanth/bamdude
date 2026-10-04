@@ -583,6 +583,21 @@ describe('ProductPage', () => {
       expect(screen.getByText(/printed for orders/i)).toBeInTheDocument();
     });
 
+    // WS-13 E13 O19: the stock's and the orders' tabs are their reads' — a catalog editor
+    // without them is shown neither (each would only answer 403), and an address that names
+    // one opens the composition.
+    it('a catalog editor without the stock’s and the orders’ reads gets neither tab and asks neither', async () => {
+      auth.granted = new Set(['products:read', 'products:update']);
+      mountAt('/products/1?tab=stock');
+      expect(await screen.findByRole('tab', { name: 'Composition (2)', selected: true })).toBeInTheDocument();
+      expect(screen.queryByRole('tab', { name: /^Stock/ })).toBeNull();
+      expect(screen.queryByRole('tab', { name: /^Orders/ })).toBeNull();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(api.getStockItems).not.toHaveBeenCalled();
+      expect(api.getProductStock).not.toHaveBeenCalled();
+      expect(api.getOrdersPaged).not.toHaveBeenCalled();
+    });
+
     it('an unknown tab reads as the composition and the address is not rewritten', async () => {
       mountAt('/products/1?tab=nonsense');
       expect(await screen.findByRole('tab', { name: 'Composition (2)', selected: true })).toBeInTheDocument();
