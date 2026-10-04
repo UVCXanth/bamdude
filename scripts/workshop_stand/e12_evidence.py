@@ -47,7 +47,7 @@ STAGE = "e12-stock"
 # configuration; position 2 — the next one, for a position switch. Product 1 — the position's own;
 # product 16 — a product with a variant group (the kits by option). Note 90000 — DN-0001. Customer
 # 1 — the issue's.
-POSITIONS = ("1", "2")
+POSITIONS = ("1", "2", "4")
 PRODUCTS = ("1", "16")
 NOTES = ("90000",)
 CUSTOMERS = ("1",)
@@ -78,12 +78,14 @@ DETAIL_SCENARIOS = (
     "position-panel-states@1440",
     "position-states@1440",
     "position-journal-filters",
+    "position-order-reservation",
     "move-receipt@1440",
     "move-stocktake@1440",
     "move-issue@1440",
     "issue-manual-reserve",
     "dialog-config-switch",
     "dialog-refusal-reread",
+    "dialog-reread-dimmed",
     "move-sync@1440",
     "params@1440",
     "assemble@1440",

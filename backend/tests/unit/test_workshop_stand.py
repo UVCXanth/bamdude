@@ -2051,6 +2051,7 @@ def test_an_e12_job_names_the_positions_products_notes_and_customer():
     mapping = {
         "fin:1": {"id": 5},
         "fin:2": {"id": 6},
+        "fin:4": {"id": 1},
         "fin:9": {"id": 9},
         "product:1": {"id": 1},
         "product:16": {"id": 16},
@@ -2059,7 +2060,7 @@ def test_an_e12_job_names_the_positions_products_notes_and_customer():
     }
 
     assert e12_evidence.job_entities(mapping) == {
-        "positions": {"1": 5, "2": 6},
+        "positions": {"1": 5, "2": 6, "4": 1},
         "products": {"1": 1, "16": 16},
         "notes": {"90000": 1},
         "customers": {"1": 21},

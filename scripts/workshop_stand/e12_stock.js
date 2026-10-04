@@ -248,6 +248,8 @@ async (page, selftest = null) => {
   const PR = job.products ?? {};
   const P1 = P['1'] ?? 1;
   const P2 = P['2'] ?? 2;
+  // Position 4 (SK-0001) is held by an order line — the F6 D2 reservation row.
+  const P4 = P['4'] ?? 0;
   const PR1 = PR['1'] ?? 1;
   const PR16 = PR['16'] ?? 16;
   const N1 = (job.notes ?? {})['90000'] ?? 1;
@@ -255,6 +257,7 @@ async (page, selftest = null) => {
   // Every read is taken as it comes: a field the answer lacks is a scenario's failure, not the preparation's.
   const list = (v) => (Array.isArray(v) ? v : []);
   const item1 = await read(`/stock/items/${P1}`);
+  const item4 = await read(`/stock/items/${P4}`);
   const notesCount = (await read('/stock-issues/?page=1&per_page=1')).meta?.total ?? 0;
   const note1 = await read(`/stock-issues/${N1}`);
   const notesPage = await read('/stock-issues/?sort_by=created-desc&page=1&per_page=24');
@@ -1015,6 +1018,27 @@ async (page, selftest = null) => {
   });
 
   // ---------------------------------------------------------------- the moves (G)
+  await scenario('position-order-reservation', ['E12-F04'], async () => {
+    // F6 D2 (owner, 2026-10-04): an order's reservation names its order — «OR-… · name — N шт.».
+    const held = list(item4.reservations).find((r) => r.project_id != null) ?? {};
+    const expected = `${held.project_code} · ${held.project_name} — ${held.qty} шт.`;
+    const { ctx, p, errors } = await open(1440);
+    await goto(p, `/stock/${P4}`);
+    const card = p.getByTestId('item-reservations');
+    const text = await textOf(card);
+    const link = await card.getByRole('link', { name: held.project_code ?? '' }).count();
+    await card.scrollIntoViewIfNeeded();
+    const file = await shoot(p, 'position-order-reservation');
+    await ctx.close();
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: { url: '/stock/{fin:4}', fixture: ['the stand: SK-0001 held by an order line'] },
+      measured: { expected, text, link, errors },
+      pass: !!held.project_name && text.includes(expected) && link === 1 && errors.length === 0,
+      screenshots: [file],
+    };
+  });
+
   await scenario('move-receipt@1440', ['E12-G01', 'E12-G02', 'E12-G06', 'E12-G07'], async () => {
     const writes = [];
     const { ctx, p, errors } = await open(1440, { writes: [recorder(writes, MOVES, () => MOVED)] });
@@ -1230,6 +1254,55 @@ async (page, selftest = null) => {
       // The re-read left the draft (2) over the new limit (1): the primary waits, the cursor is in the quantity.
       pass: slot.includes('Доступно лише 1') && focus === 'Кількість, шт.' && after.limit === 'Не більше 1' &&
         after.qty === String(item1.available) && after.note === 'hold' && failedReread && writes.length === 2 && errors.length === 0,
+      screenshots: [file],
+    };
+  });
+
+  await scenario('dialog-reread-dimmed', ['E12-G08', 'E12-R04'], async () => {
+    // F6 D1 (owner, 2026-10-04): while the same position is read again after a refusal, its last
+    // numbers stay on screen dimmed — the header and the limit — and the primary waits; the
+    // answer lifts the dimming.
+    let hold = false;
+    const writes = [];
+    const { ctx, p, errors } = await open(1440, {
+      gets: [[ITEM(P1), async () => {
+        while (hold) await new Promise((r) => setTimeout(r, 100));
+        return null;
+      }]],
+      writes: [recorder(writes, MOVES, () => ({ __status: 409, json: { detail: 'Доступно лише 1' } }))],
+    });
+    await goto(p, `/stock/${P1}`);
+    await p.getByTestId('item-actions').getByRole('button', { name: 'Резервувати' }).click();
+    const d = dialogOf(p, 'Резервування');
+    await d.getByTestId('stock-move-limit').filter({ hasText: /можна зарезервувати/ }).waitFor({ timeout: 8000 });
+    const before = (await d.getByTestId('stock-move-limit').textContent()).trim();
+    hold = true;
+    await d.getByTestId('stock-move-submit').click();
+    await d.getByRole('alert').waitFor({ timeout: 8000 });
+    await p.waitForTimeout(800);
+    const limit = d.getByTestId('stock-move-limit');
+    const header = d.getByTestId('stock-position-header');
+    const held = {
+      limit: (await limit.textContent()).trim(),
+      limitStale: await limit.getAttribute('data-stale'),
+      limitOpacity: await limit.evaluate((el) => getComputedStyle(el).opacity),
+      header: await textOf(header),
+      headerStale: await header.getAttribute('data-stale'),
+      reading: await d.getByText('читаємо…').count(),
+      disabled: await d.getByTestId('stock-move-submit').isDisabled(),
+    };
+    const file = await shoot(p, 'dialog-reread-dimmed');
+    hold = false;
+    await p.waitForTimeout(1500);
+    const after = { limitStale: await limit.getAttribute('data-stale'), headerStale: await header.getAttribute('data-stale') };
+    await ctx.close();
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: { url: '/stock/{fin:1} → «Резервувати» → a refusal', fixture: ['POST /stock/moves 409', 'GET /stock/items/{fin:1} held after the refusal, then the stand'] },
+      measured: { before, held, after, writes: writes.length, errors },
+      pass: /можна зарезервувати/.test(before) && held.limit === before && held.limitStale === 'true' && held.limitOpacity === '0.6' &&
+        held.headerStale === 'true' && held.header.includes(`Залишок ${item1.on_hand}`) && held.reading === 0 && held.disabled &&
+        after.limitStale === null && after.headerStale === null && writes.length === 1 && errors.length === 0,
       screenshots: [file],
     };
   });
