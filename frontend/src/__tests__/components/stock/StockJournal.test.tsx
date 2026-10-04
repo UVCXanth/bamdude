@@ -207,6 +207,8 @@ describe('StockJournal', () => {
         const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } });
         client.setQueryData(['stock-journal-products', 'finished'], [], cached.stale ? { updatedAt: Date.now() - 120_000 } : undefined);
         products.mockImplementation(async (book: string) => (book === 'finished' ? read : [pipe]));
+        // The new book has no rows of the product: its name can come only from what was seen before.
+        get.mockImplementation(async (params: { book: string }) => (params.book === 'finished' ? answer([]) : answer([issue, shelf])));
         window.history.pushState({}, '', '/stock?tab=journal&product=1');
         render(
           <QueryClientProvider client={client}>
@@ -224,6 +226,8 @@ describe('StockJournal', () => {
         await act(async () => {});
         expect(productInUrl()).toBe('1');
         expect(productSelect().value).toBe('1');
+        // Named as it was known — from the list of the book it was chosen in (R05).
+        expect(productSelect().selectedOptions[0]).toHaveTextContent('Pipe');
       });
 
       it('a read that failed keeps the product', async () => {

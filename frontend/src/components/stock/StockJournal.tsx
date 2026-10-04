@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, STOCK_ITEM_KINDS, STOCK_REASONS } from '../../api/client';
-import type { StockJournalBook, StockJournalRow } from '../../api/client';
+import type { StockJournalBook, StockJournalProduct, StockJournalRow } from '../../api/client';
 import { useStockJournalPage, useStockJournalProducts } from '../../hooks/useFinishedStock';
 import type { StockJournalPageParams } from '../../hooks/useFinishedStock';
 import { useListUrlState } from '../../hooks/useListUrlState';
@@ -90,6 +90,7 @@ function TabJournal() {
   };
   const journal = useStockJournalPage(params);
   const list = useStockJournalProducts(book);
+  const queryClient = useQueryClient();
 
   // Each book is read NOW (Codex E12-V03): a list cached from an earlier visit names the
   // options, but the product goes only on «not in this book» from an answer read after the
@@ -113,6 +114,12 @@ function TabJournal() {
   const rows = journal.data?.items ?? [];
   const nameOf = (id: number) =>
     list.data?.find((p) => p.id === id)?.name ??
+    // The list of the book it was chosen in (R05): a book shown from its own cache has no
+    // placeholder of the previous one to name it by (Codex E12-V03).
+    queryClient
+      .getQueriesData<StockJournalProduct[]>({ queryKey: ['stock-journal-products'] })
+      .flatMap(([, seen]) => seen ?? [])
+      .find((p) => p.id === id)?.name ??
     rows.find((r) => r.product_id === id)?.product_name ??
     t('stock.journal.productN', { id });
   const options = listed ?? [];
