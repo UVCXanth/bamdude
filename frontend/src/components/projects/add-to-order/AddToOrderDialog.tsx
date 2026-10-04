@@ -26,7 +26,7 @@ import {
   shownForLines,
   suggestItems,
 } from './addToOrderState';
-import type { PartPicks, PlatePick, ProductPicks, Shown } from './addToOrderState';
+import type { PartPicks, PlateFile, PlatePick, ProductPicks, Shown } from './addToOrderState';
 import { usePlatesOf } from './platesQuery';
 import { useTabScroll } from './useTabScroll';
 
@@ -52,6 +52,9 @@ export interface AddTarget {
  * asks which ACTIVE order first, opens on that product — searched for by its
  * code, so it is on the page to edit (final review I4) — and after the batch
  * goes to the order the batch was added to (the mockup's `add-go`, E5 K4).
+ * Opened from the file manager (`preselectPlate`, WS-13 E13 C02) it asks the same,
+ * on «One-off from a file» with that file — and from the plate gallery its plate —
+ * already picked, one copy.
  *
  * ⚠️ A tab mounts on its first visit and stays mounted, hidden: its search,
  * filters, page and sideways scroll live with its DOM, and a tab nobody opened
@@ -65,10 +68,12 @@ export interface AddTarget {
 export function AddToOrderDialog({
   order,
   preselectProduct,
+  preselectPlate,
   onClose,
 }: {
   order?: AddTarget;
   preselectProduct?: { id: number; code: string };
+  preselectPlate?: { file: PlateFile; plateIndex: number | null };
   onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -77,15 +82,17 @@ export function AddToOrderDialog({
   const { showToast } = useToast();
   const idBase = useId();
   const anchor = useRef<HTMLDivElement>(null);
-  const [tab, setTab] = useState<Tab>('products');
-  const [visited, setVisited] = useState<Set<Tab>>(() => new Set(['products']));
+  const [tab, setTab] = useState<Tab>(preselectPlate ? 'plate' : 'products');
+  const [visited, setVisited] = useState<Set<Tab>>(() => new Set([preselectPlate ? 'plate' : 'products']));
   const [chosen, setChosen] = useState<ChosenOrder | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [products, setProducts] = useState<ProductPicks>(() =>
     preselectProduct ? new Map([[preselectProduct.id, newProductPick()]]) : new Map(),
   );
   const [parts, setParts] = useState<PartPicks>(() => new Map());
-  const [plate, setPlate] = useState<PlatePick>(null);
+  const [plate, setPlate] = useState<PlatePick>(() =>
+    preselectPlate ? { file: preselectPlate.file, plateIndex: preselectPlate.plateIndex, copies: 1 } : null,
+  );
   // E5-V01: a chosen plate a SUCCESSFUL answer no longer has is no longer chosen — the file and
   // the copies stay, and its return chooses nothing. Settled while rendering, so no batch,
   // summary or button ever carries it; a failed re-read is not an empty answer.

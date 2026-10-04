@@ -5245,6 +5245,7 @@ export default {
     linkFile: 'Прив\'язати файл',
     linkFileDescription: 'Прив\'язати "{{name}}" до одного або кількох виробів - файл з\'явиться на їхніх сторінках.',
     linkToProducts: 'Прив\'язати до виробів',
+    addToOrder: 'Додати в замовлення…',
     linkedToNProducts: 'Прив\'язано до {{count}} виробу/виробів (клік щоб керувати)',
     linkedToNProductsReadOnly: 'Прив\'язано до {{count}} виробу/виробів',
     moveChangesProducts: 'змінює вироби',

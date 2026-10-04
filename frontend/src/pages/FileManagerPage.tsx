@@ -63,6 +63,7 @@ import {
   ExternalLink,
   Tag as TagIcon,
   ClipboardList,
+  FolderKanban,
 } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type {
@@ -111,6 +112,8 @@ import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsP
 import { QueueSequencer } from '../components/QueueSequencer';
 import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
 import { LinkToProductsModal } from '../components/products/LinkToProductsModal';
+import { AddToOrderDialog } from '../components/projects/add-to-order/AddToOrderDialog';
+import { plateFileOf } from '../components/projects/add-to-order/addToOrderState';
 import { invalidateProductFiles, invalidateQueueViews } from '../utils/queryInvalidation';
 import { canLinkFile, canLinkFolder, moveChangesProducts } from '../utils/workshopRights';
 import { writableFolders } from '../utils/folderTree';
@@ -732,6 +735,8 @@ interface FileCardProps {
   onLink?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
   onPlateGallery?: (file: LibraryFileListItem, plateIndex?: number) => void;
+  /** «Add to order…» on this file (WS-13 E13 C01). */
+  onAddToOrder?: (file: LibraryFileListItem) => void;
   /** Open the model card — what the 3MF says about itself. ⚠️ `.3mf` only:
    *  there is no card to read in an STL, and an entry that always answers
    *  "nothing here" is worse than no entry. */
@@ -798,13 +803,14 @@ function offersSliceEntry(
   return desktopSlicerAccepts(file.file_type, desktopSlicer ?? 'bambu_studio');
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onAddToOrder, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
   canModify: (resource: 'queue' | 'archives' | 'library', action: 'update' | 'delete' | 'reprint', createdById: number | null | undefined) => boolean;
   onPrint: (f: LibraryFileListItem) => void;
   onSchedule: (f: LibraryFileListItem) => void;
+  onAddToOrder?: (f: LibraryFileListItem) => void;
   onSlice?: (f: LibraryFileListItem) => void;
   onOpenInSlicer?: (f: LibraryFileListItem) => void;
   useSlicerApi?: boolean;
@@ -841,7 +847,12 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
 
   return (
     <div onClick={(e) => e.stopPropagation()}>
-      <button ref={triggerRef} onClick={() => setOpen(!open)} className="p-1.5 rounded hover:bg-bambu-dark transition-colors">
+      <button
+        ref={triggerRef}
+        onClick={() => setOpen(!open)}
+        aria-label={t('fileManager.fileActions')}
+        className="p-1.5 rounded hover:bg-bambu-dark transition-colors"
+      >
         <MoreVertical className="w-4 h-4 text-bambu-gray" />
       </button>
       {open && createPortal(
@@ -879,6 +890,21 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                   <Clock className="w-3.5 h-3.5" />
                   {t('fileManager.schedulePrint')}
                 </button>
+              </>
+            )}
+            {/* WS-13 E13 C01: a one-off line from this file in an existing order — on a
+                file the server can plan, and only with the right to change orders. */}
+            {onAddToOrder && file.plan_eligible && hasPermission('projects:update') && (
+              <>
+                <div role="separator" className="my-1 border-t border-bambu-dark-tertiary" />
+                <button
+                  className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                  onClick={() => { onAddToOrder(file); closeMenu(); }}
+                >
+                  <FolderKanban className="w-3.5 h-3.5" />
+                  {t('fileManager.addToOrder')}
+                </button>
+                <div role="separator" className="my-1 border-t border-bambu-dark-tertiary" />
               </>
             )}
             {/* ⚠️ The entry is no longer gated on the sidecar being enabled.
@@ -1020,7 +1046,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onRename, onLink, onGenerateThumbnail, onPlateGallery, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onRename, onLink, onGenerateThumbnail, onPlateGallery, onAddToOrder, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   // ⚠️ The two modes need different permissions: slicing through the sidecar
   // writes a new library file, while opening in a desktop slicer is a download.
   const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
@@ -1344,6 +1370,20 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
                   {t('fileManager.schedulePrint')}
                 </button>
               )}
+              {/* WS-13 E13 C01 — see the list row's menu. */}
+              {onAddToOrder && file.plan_eligible && hasPermission('projects:update') && (
+                <>
+                  <div role="separator" className="my-1 border-t border-bambu-dark-tertiary" />
+                  <button
+                    className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                    onClick={() => { onAddToOrder(file); closeActions(); }}
+                  >
+                    <FolderKanban className="w-3.5 h-3.5" />
+                    {t('fileManager.addToOrder')}
+                  </button>
+                  <div role="separator" className="my-1 border-t border-bambu-dark-tertiary" />
+                </>
+              )}
               {/* See the note on the sibling menu above: not gated on the
                   sidecar, and the two modes need different permissions. */}
               {offersSliceEntry(file, useSlicerApi, desktopSlicer) && (onSlice || onOpenInSlicer) && (
@@ -1533,7 +1573,7 @@ export function FileManagerPage() {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { hasPermission, hasAnyPermission, canModify, authEnabled } = useAuth();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
 
   // Read folder ID from URL query parameter
@@ -1547,7 +1587,14 @@ export function FileManagerPage() {
   // combined view across every linked external folder (#1621). Per-folder
   // selection bypasses this (selectedFolderId !== null disables the filter).
   const [topLevelView, setTopLevelView] = useState<'internal' | 'external'>('internal');
-  const [selectedFiles, setSelectedFiles] = useState<number[]>([]);
+  // The selection the address names — written there when «Add to order…» leaves for
+  // an order, so Back lands on the same place (WS-13 E13 C03).
+  const [selectedFiles, setSelectedFiles] = useState<number[]>(() =>
+    (searchParams.get('selected') ?? '')
+      .split(',')
+      .map(Number)
+      .filter((id) => Number.isInteger(id) && id > 0),
+  );
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
   const [showExternalFolderModal, setShowExternalFolderModal] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
@@ -1584,6 +1631,10 @@ export function FileManagerPage() {
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
   const [viewerFile, setViewerFile] = useState<LibraryFileListItem | null>(null);
   // Per-plate gallery modal — opened from list-mode "plates" button. Null when closed.
+  // «Add to order…» (WS-13 E13 C): the file — and the gallery's plate — the dialog opens on.
+  const [addToOrderTarget, setAddToOrderTarget] = useState<{ file: LibraryFileListItem; plateIndex: number | null } | null>(
+    null,
+  );
   const [galleryTarget, setGalleryTarget] = useState<{ file: LibraryFileListItem; plateIndex?: number } | null>(
     null,
   );
@@ -1710,7 +1761,11 @@ export function FileManagerPage() {
   });
   // Paging (task 2, 2026-08-29 server-driven-lists) — same PaginationBar the
   // Archives list uses. `-1` means "all" (PaginationBar's own convention).
-  const [page, setPage] = useState(1);
+  // The page the address names (WS-13 E13 C03), else the first.
+  const [page, setPage] = useState(() => {
+    const fromUrl = Number(searchParams.get('page'));
+    return Number.isInteger(fromUrl) && fromUrl > 1 ? fromUrl : 1;
+  });
   const [perPage, setPerPage] = useState(() => {
     const saved = localStorage.getItem('library-per-page');
     return saved ? Number(saved) : 50;
@@ -2460,6 +2515,18 @@ export function FileManagerPage() {
 
   // The card, wired exactly once: the grid maps over this, and the list's popup
   // renders it for one file - so the popup can never drift from the grid.
+  // «Add to order…» (WS-13 E13 C03): the manager's place — folder, page, selection — goes
+  // into the address before the dialog opens, because the dialog leaves for the order
+  // the batch went to and Back from there must land here again.
+  const openAddToOrder = (file: LibraryFileListItem, plateIndex: number | null = null) => {
+    const place = new URLSearchParams();
+    if (selectedFolderId != null) place.set('folder', String(selectedFolderId));
+    place.set('page', String(page));
+    if (selectedFiles.length > 0) place.set('selected', selectedFiles.join(','));
+    setSearchParams(place, { replace: true });
+    setAddToOrderTarget({ file, plateIndex });
+  };
+
   const renderFileCard = (file: LibraryFileListItem) => (
     <FileCard
       key={file.id}
@@ -2485,6 +2552,7 @@ export function FileManagerPage() {
       onLink={setLinkFile}
       onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
       onPlateGallery={(f, plateIndex) => setGalleryTarget({ file: f, plateIndex })}
+      onAddToOrder={openAddToOrder}
       onMove={setMoveFile}
       onTags={(f, anchor) => setTagsPopover({ file: f, anchor })}
       onTagClick={toggleTagFilter}
@@ -3714,6 +3782,7 @@ export function FileManagerPage() {
                         canModify={canModify}
                         onPrint={setPrintFile}
                         onSchedule={scheduleOne}
+                        onAddToOrder={openAddToOrder}
                         onSlice={setSliceFile}
                         onOpenInSlicer={handleOpenInSlicer}
                         useSlicerApi={settings?.use_slicer_api ?? false}
@@ -3792,6 +3861,17 @@ export function FileManagerPage() {
           filename={galleryTarget.file.print_name || galleryTarget.file.filename}
           initialPlateIndex={galleryTarget.plateIndex}
           onClose={() => setGalleryTarget(null)}
+          onAddToOrder={
+            galleryTarget.file.plan_eligible && hasPermission('projects:update')
+              ? (plateIndex) => openAddToOrder(galleryTarget.file, plateIndex)
+              : undefined
+          }
+        />
+      )}
+      {addToOrderTarget && (
+        <AddToOrderDialog
+          preselectPlate={{ file: plateFileOf(addToOrderTarget.file), plateIndex: addToOrderTarget.plateIndex }}
+          onClose={() => setAddToOrderTarget(null)}
         />
       )}
       {/* The list's card popup (spec 6). The card opens its own dialogs -

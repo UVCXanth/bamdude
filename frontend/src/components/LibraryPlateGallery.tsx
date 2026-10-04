@@ -1,17 +1,21 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { Layers, Clock, Weight, Box, Loader2 } from 'lucide-react';
+import { Layers, Clock, Weight, Box, Loader2, FolderKanban } from 'lucide-react';
 import { api, withMediaToken } from '../api/client';
 import type { PlateMetadata } from '../types/plates';
 import { resolveSpoolColorName } from '../utils/colors';
 import { formatDuration } from '../utils/date';
+import { Button } from './Button';
 import { Modal } from './Modal';
 
 interface Props {
   fileId: number;
   /** Open on this plate index rather than the first one (spec 5). */
   initialPlateIndex?: number;
+  /** «Add to order…» for the plate on show (WS-13 E13 C01) — given only where the
+   *  caller may, on a file the server can plan. */
+  onAddToOrder?: (plateIndex: number) => void;
 }
 
 /**
@@ -26,7 +30,7 @@ interface Props {
 // Internal-only — LibraryPlateGalleryModal below is the single consumer
 // (kept as a separate component so the modal frame can wrap the gallery
 // without forcing every caller to deal with focus/escape handling).
-function LibraryPlateGallery({ fileId, initialPlateIndex }: Props) {
+function LibraryPlateGallery({ fileId, initialPlateIndex, onAddToOrder }: Props) {
   const { t } = useTranslation();
   const { data, isLoading } = useQuery({
     queryKey: ['library-file-plates', fileId],
@@ -160,6 +164,15 @@ function LibraryPlateGallery({ fileId, initialPlateIndex }: Props) {
               ))}
             </div>
           )}
+
+          {onAddToOrder && (
+            <div className="flex justify-end">
+              <Button size="sm" variant="secondary" onClick={() => onAddToOrder(active.index)}>
+                <FolderKanban className="w-4 h-4" />
+                {t('fileManager.addToOrder')}
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -171,10 +184,11 @@ interface ModalProps {
   filename: string;
   onClose: () => void;
   initialPlateIndex?: number;
+  onAddToOrder?: (plateIndex: number) => void;
 }
 
 /** Full-screen modal wrapping ``LibraryPlateGallery`` for list-mode rows. */
-export function LibraryPlateGalleryModal({ fileId, filename, onClose, initialPlateIndex }: ModalProps) {
+export function LibraryPlateGalleryModal({ fileId, filename, onClose, initialPlateIndex, onAddToOrder }: ModalProps) {
   const { t } = useTranslation();
   const headingId = useId();
 
@@ -190,7 +204,7 @@ export function LibraryPlateGalleryModal({ fileId, filename, onClose, initialPla
       size="3xl"
     >
       <div className="p-4">
-        <LibraryPlateGallery fileId={fileId} initialPlateIndex={initialPlateIndex} />
+        <LibraryPlateGallery fileId={fileId} initialPlateIndex={initialPlateIndex} onAddToOrder={onAddToOrder} />
       </div>
     </Modal>
   );

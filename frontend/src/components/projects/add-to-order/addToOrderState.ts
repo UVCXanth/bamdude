@@ -1,4 +1,4 @@
-import type { BatchLine, BatchLinesResult, StockSuggestion, StockSuggestItem } from '../../../api/client';
+import type { BatchLine, BatchLinesResult, LibraryFileListItem, StockSuggestion, StockSuggestItem } from '../../../api/client';
 
 /**
  * The picks of the «Add to order» dialog (spec workshop-add-to-order, rules
@@ -41,6 +41,20 @@ export interface PlateFile {
   /** The server's «this TYPE can be planned» (E5 H02). */
   planEligible: boolean;
   slicedForModel: string | null;
+}
+
+/** What the dialog keeps of a library file — the same snapshot from the tab's own list and
+ *  from the file manager's «Add to order…» (WS-13 E13 C02). */
+export function plateFileOf(file: LibraryFileListItem): PlateFile {
+  return {
+    id: file.id,
+    filename: file.filename,
+    folderId: file.folder_id,
+    fileType: file.file_type,
+    fileTags: file.file_tags ?? [],
+    planEligible: file.plan_eligible ?? false,
+    slicedForModel: file.sliced_for_model ?? null,
+  };
 }
 
 /** The one-off tab's pick: the file stays picked while its plate is not chosen yet. */

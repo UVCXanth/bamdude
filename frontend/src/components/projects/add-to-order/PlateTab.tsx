@@ -16,8 +16,8 @@ import { PaginationBar } from '../../PaginationBar';
 import { RefreshFailedNote } from '../../workshop/RefreshFailedNote';
 import { WorkshopField, WorkshopFormGrid } from '../../workshop/WorkshopFormGrid';
 import { MODEL_CHIP } from '../chips';
-import { MAX_LINE_QTY } from './addToOrderState';
-import type { PlateFile, PlatePick } from './addToOrderState';
+import { MAX_LINE_QTY, plateFileOf } from './addToOrderState';
+import type { PlatePick } from './addToOrderState';
 import { CountInput } from './CountInput';
 import { platesReadable, usePlatesOf } from './platesQuery';
 import { LoadingRows } from './LoadingRows';
@@ -47,18 +47,6 @@ export function PlateTab({ pick, onPickChange }: { pick: PlatePick; onPickChange
     return <p className="text-sm text-bambu-gray">{t('orders.add.plate.noAccess')}</p>;
   }
   return <LibraryPlatePicker pick={pick} onPickChange={onPickChange} />;
-}
-
-function snapshot(file: LibraryFileListItem): PlateFile {
-  return {
-    id: file.id,
-    filename: file.filename,
-    folderId: file.folder_id,
-    fileType: file.file_type,
-    fileTags: file.file_tags ?? [],
-    planEligible: file.plan_eligible ?? false,
-    slicedForModel: file.sliced_for_model ?? null,
-  };
 }
 
 /** `folder id → name` over the whole tree. */
@@ -130,7 +118,7 @@ function LibraryPlatePicker({ pick, onPickChange }: { pick: PlatePick; onPickCha
                   // clicked again changes nothing (review M4).
                   onPick={() => {
                     if (pick?.file.id === file.id) return;
-                    onPickChange({ file: snapshot(file), plateIndex: null, copies: pick?.copies ?? 1 });
+                    onPickChange({ file: plateFileOf(file), plateIndex: null, copies: pick?.copies ?? 1 });
                   }}
                 />
               </li>

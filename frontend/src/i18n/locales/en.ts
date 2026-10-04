@@ -5219,6 +5219,7 @@ export default {
     linkFile: 'Link File',
     linkFileDescription: 'Link "{{name}}" to one or more products so it shows up on their pages.',
     linkToProducts: 'Link to products',
+    addToOrder: 'Add to order…',
     linkedToNProducts: 'Linked to {{count}} product(s) (click to manage)',
     linkedToNProductsReadOnly: 'Linked to {{count}} product(s)',
     moveChangesProducts: 'changes products',
