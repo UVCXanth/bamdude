@@ -1786,6 +1786,8 @@ async (page, selftest = null) => {
     await p.getByRole('heading', { level: 1 }).waitFor({ timeout: 8000 });
     const item = {
       productLinks: await p.locator('a[href^="/products/"]').count(),
+      // An action without the read is not shown — not a dead phrase (T19).
+      deadActions: await p.getByText(/^(Відкрити виріб|картка виробу)$/).count(),
       params: await p.getByTestId('item-actions').getByRole('button', { name: 'Комірка й мінімум' }).count(),
       menu: await p.getByTestId('item-menu').count(),
     };
@@ -1801,7 +1803,7 @@ async (page, selftest = null) => {
       measured: { sent: writes.map((w) => `${w.method} ${w.path}`), body: writes[0]?.body ?? null, menu, adjust, item, foreign: foreign.slice(0, 8), errors },
       pass: writes.length === 1 && writes[0].method === 'POST' && writes[0].body?.kind === 'receipt' && writes[0].body?.product_id === PR1 &&
         menu.includes('Надходження') && !menu.includes('Інвентаризація') && !menu.includes('Комірка й мінімум') &&
-        adjust === 0 && item.productLinks === 0 && item.params === 0 && item.menu === 0 && foreign.length === 0 && errors.length === 0,
+        adjust === 0 && item.productLinks === 0 && item.deadActions === 0 && item.params === 0 && item.menu === 0 && foreign.length === 0 && errors.length === 0,
       screenshots: files,
     };
   });
