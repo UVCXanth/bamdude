@@ -16,12 +16,31 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[3] / "install" / "update.sh"
-BASH = shutil.which("bash")
+
+
+def _usable_bash() -> str | None:
+    candidates = [shutil.which("bash")]
+    if sys.platform == "win32" and (git := shutil.which("git")):
+        candidates.append(str(Path(git).resolve().parent.parent / "bin" / "bash.exe"))
+    for candidate in candidates:
+        if not candidate or not Path(candidate).is_file():
+            continue
+        try:
+            result = subprocess.run([candidate, "-c", "true"], capture_output=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            return candidate
+    return None
+
+
+BASH = _usable_bash()
 
 pytestmark = pytest.mark.skipif(BASH is None, reason="bash is not available")
 
