@@ -31,8 +31,7 @@ describe('getLocations', () => {
 
     const got = (await api.getLocations()).map((l) => l.name);
 
-    // Which script comes first is the viewer's locale's call (the rule passes
-    // no locale on purpose); the order WITHIN each one is not.
+    // The Ukrainian collation is stable even on English-locale CI hosts.
     expect(got.filter((n) => /^[A-Za-z]/.test(n))).toEqual(['Drybox 1', 'Drybox 2', 'Drybox 10']);
     expect(got.filter((n) => !/^[A-Za-z]/.test(n))).toEqual([
       'Ангар',

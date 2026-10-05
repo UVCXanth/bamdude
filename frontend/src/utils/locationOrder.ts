@@ -6,11 +6,13 @@
  * *before* А, and every lowercase name lands after every uppercase one. On a
  * farm with places called "Ірпінь" and "Ангар" that reads as no order at all.
  *
- * `numeric` is here for the farm that numbers its halls: without it "Цех 10"
- * sorts before "Цех 2".
+ * Pin the collation to Ukrainian so І sorts before Ї on every host, including
+ * English-locale CI and browsers. `numeric` also puts "Цех 2" before "Цех 10".
  */
+const locationCollator = new Intl.Collator('uk', { sensitivity: 'base', numeric: true });
+
 export function compareLocationNames(a: string, b: string): number {
-  return a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true });
+  return locationCollator.compare(a, b);
 }
 
 /** The same rule for whatever carries a name — a location row, a printer, a queue. */
