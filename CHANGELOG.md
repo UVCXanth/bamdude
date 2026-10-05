@@ -134,7 +134,7 @@
 
 ### Fixed
 
-- **Clear plate can answer its cancelled or failed print.** A run-bound plate-clear gate now reads its exact terminal queue row instead of searching only completed rows. Cancelling a print no longer strands the gate with a missing completion card; stale cards remain refused, the archive keeps its cancellation/failure status, and clearing the plate does not resume the paused queue.
+- **Clear plate can answer its cancelled or failed print.** A run-bound plate-clear gate now reads its exact terminal queue row instead of searching only completed rows, or its own terminal archive when the queue row has been removed. Cancelling a print no longer strands the gate with a missing completion card; stale cards remain refused, the archive keeps its cancellation/failure status, and clearing the plate does not resume the paused queue. Repeat still requires the original queue row.
 
 - **Live printer updates no longer redraw the whole dashboard when its list does not depend on status.** Individual cards still receive live updates, and sorting by status or ETA and filtering by status remain reactive. Stable card properties also avoid unnecessary redraws when the page updates. Adapted from [PR #55](https://github.com/kainpl/bamdude/pull/55) by [@dimonalek](https://github.com/dimonalek), preserving the shared farm polling and queue readers.
 

@@ -140,9 +140,14 @@ async def answer_by_clearing(
     from backend.app.services.queue_counters import detach_print_queue_refs, update_queue_counters
 
     row = await waiting_row(db, printer_id)
-    _require_expected_archive(row, expected_archive_id)
     if row is None:
+        # Queue cleanup can remove a terminal row while its durable plate gate
+        # remains. Clear may still answer that exact archive; Repeat needs a row.
+        archive = await waiting_archive(db, printer_id)
+        if expected_archive_id is not None and (archive is None or archive.id != expected_archive_id):
+            raise StalePlateAnswer("This completion card is no longer current for this printer")
         return 0
+    _require_expected_archive(row, expected_archive_id)
     # Clear the physical question, not the failed predecessor's history.
     # The existing previous-success gate must still see failed/cancelled rows;
     # only successful completions take the established auto-cleanup path.
@@ -389,9 +394,25 @@ async def waiting_archive(db: AsyncSession, printer_id: int) -> PrintArchive | N
     still accepted a defect write.
     """
     row = await waiting_row(db, printer_id)
-    if row is None or row.archive_id is None:
-        return None
-    archive = await db.get(PrintArchive, row.archive_id)
+    if row is None:
+        printer = await db.get(Printer, printer_id)
+        if printer is None or not printer.awaiting_plate_clear or printer.awaiting_plate_clear_archive_id is None:
+            return None
+        archive = await db.get(PrintArchive, printer.awaiting_plate_clear_archive_id)
+        if (
+            archive is None
+            or archive.printer_id != printer_id
+            or archive.status not in ("completed", "cancelled", "failed")
+        ):
+            return None
+        # Do not reinterpret an in-flight queue row as an answerable completion.
+        existing = await db.scalar(select(PrintQueueItem.id).where(PrintQueueItem.archive_id == archive.id))
+        if existing is not None:
+            return None
+    else:
+        if row.archive_id is None:
+            return None
+        archive = await db.get(PrintArchive, row.archive_id)
     if archive is None or archive.deleted_at is not None:
         return None
     return archive

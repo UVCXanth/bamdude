@@ -113,3 +113,59 @@ async def test_owned_running_row_does_not_offer_a_plate_answer(async_client, pri
     await db_session.commit()
     response = await async_client.get(f"/api/v1/printers/{printer.id}/waiting-print")
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["completed", "cancelled", "failed"])
+async def test_owned_archive_can_clear_after_queue_row_removed(async_client, printer_factory, db_session, status):
+    printer = await printer_factory()
+    archive, row = await _finished_flat(db_session, printer, 1)
+    archive.status = status
+    printer.awaiting_plate_clear = True
+    printer.awaiting_plate_clear_archive_id = archive.id
+    printer.awaiting_plate_clear_token = "removed-row-owner"
+    queue = await db_session.get(PrinterQueue, row.queue_id)
+    queue.status = "paused"
+    pending = PrintQueueItem(queue_id=queue.id, status="pending", manual_start=False, library_file_id=1)
+    db_session.add(pending)
+    await db_session.delete(row)
+    await db_session.commit()
+    pid, aid, qid, pending_id = printer.id, archive.id, queue.id, pending.id
+
+    response = await async_client.get(f"/api/v1/printers/{pid}/waiting-print")
+    assert response.status_code == 200, response.text
+    assert response.json()["archive_id"] == aid
+    body = {"expected_archive_id": aid, "expected_gate_token": "removed-row-owner"}
+    with _finished_printer():
+        response = await async_client.post(f"/api/v1/printers/{pid}/repeat-print", json=body)
+        assert response.status_code == 409
+        response = await async_client.post(f"/api/v1/printers/{pid}/clear-plate", json=body)
+    assert response.status_code == 200, response.text
+    db_session.expire_all()
+    assert not (await db_session.get(Printer, pid)).awaiting_plate_clear
+    assert (await db_session.get(PrintArchive, aid)).status == status
+    assert (await db_session.get(PrinterQueue, qid)).status == "paused"
+    assert (await db_session.get(PrintQueueItem, pending_id)).status == "pending"
+    receipt = await db_session.scalar(select(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == aid))
+    assert receipt.plate_action == "clear" and receipt.assessment is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["foreign", "deleted", "running", "unarmed"])
+async def test_removed_row_does_not_guess_invalid_owner(async_client, printer_factory, db_session, invalid):
+    printer = await printer_factory()
+    archive, row = await _finished_flat(db_session, printer, 1)
+    printer.awaiting_plate_clear = invalid != "unarmed"
+    printer.awaiting_plate_clear_archive_id = archive.id
+    printer.awaiting_plate_clear_token = "invalid-owner"
+    if invalid == "foreign":
+        other = await printer_factory()
+        archive.printer_id = other.id
+    elif invalid == "deleted":
+        archive.deleted_at = datetime.now(timezone.utc)
+    elif invalid == "running":
+        archive.status = "printing"
+    await db_session.delete(row)
+    await db_session.commit()
+    response = await async_client.get(f"/api/v1/printers/{printer.id}/waiting-print")
+    assert response.status_code == 404
