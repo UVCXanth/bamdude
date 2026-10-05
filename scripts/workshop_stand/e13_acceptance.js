@@ -301,6 +301,8 @@ async (page, selftest = null) => {
     customersReader: ['customers:read'],
     // Edits the catalog; no contacts, orders or stock (O19).
     catalogEditor: ['products:read', 'products:update', 'library:read_all'],
+    // O05: orders, the catalog's and the customers' reads and customers:create — no stock at all.
+    orderManager: ['orders:read', 'orders:create', 'orders:update', 'orders:delete', 'orders:file_prints', 'products:read', 'customers:read', 'customers:create'],
   };
   // What the boundary answers in the system language (api_errors_uk.json) — the runner answers
   // writes itself, so it says a refusal the way the server would.
@@ -1944,6 +1946,47 @@ async (page, selftest = null) => {
         const tabs = seen[`/products/${PR1}?tab=stock`].tabs;
         return tabs.length > 0 && !tabs.some((t) => /^(Залишки|Замовлення)/.test(t)); // «Склад виробу» is the composition
       })() && foreign.length === 0 && errors.length === 0,
+      screenshots: [file],
+    };
+  });
+
+  await scenario('order-manager', ['E13-O19', 'E13-O06', 'E13-O05'], async () => {
+    // The O05 order manager: orders, the catalog's and the customers' reads, no stock. The order
+    // page offers it no issue, no bank, no «take from stock»; a line it adds takes nothing from
+    // the shelf; it asks no shelf figure (final review #1).
+    const writes = [];
+    const { ctx, p, errors, requests } = await open(1440, {
+      me: asUser(ROLE.orderManager),
+      writes: [recorder(writes, new RegExp(`/api/v1/projects/${O244}/lines/batch$`), () => ({ order: order244, results: [{ line_id: 0, asked_finished: 0, got_finished: 0, asked_kits: 0, got_kits: 0 }] }))],
+    });
+    await goto(p, `/projects/${O244}`);
+    await p.getByRole('heading', { level: 1 }).first().waitFor({ timeout: 8000 });
+    await p.waitForTimeout(800);
+    const page = {
+      issue: await p.getByTestId('order-fulfilment').count(),
+      bank: await p.getByTestId('order-bank-surplus').count(),
+      take: await p.getByTestId('take-stock').count(),
+    };
+    await p.getByRole('button', { name: 'Додати в замовлення', exact: true }).click();
+    const row = p.getByTestId(`add-product-${PR1}`);
+    await row.waitFor({ timeout: 8000 });
+    await row.getByRole('checkbox').click();
+    await p.getByRole('button', { name: 'Додати позиції (1)', exact: true }).click();
+    await p.waitForTimeout(1200);
+    const file = await shoot(p, 'order-manager-order');
+    await ctx.close();
+    const shelfReads = requests.filter((r) => /\/stock-offers|\/stock\/suggest|\/products\/\d+\/stock\b|\/stock\/items/.test(r));
+    const foreign = foreignOf(requests, ['orders', 'products', 'customers']);
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: {
+        url: `/projects/{order:244} → «Додати в замовлення» → product 1 → «Додати позиції (1)»`,
+        fixture: ['/auth/me: ' + ROLE.orderManager.join(', ') + ' (user 9001)', 'POST lines/batch answered here'],
+      },
+      measured: { page, sent: writes.map((w) => ({ method: w.method, path: w.path, body: w.body })), shelfReads: shelfReads.slice(0, 6), foreign: foreign.slice(0, 6), errors },
+      pass: page.issue === 0 && page.bank === 0 && page.take === 0 && writes.length === 1 &&
+        same(writes[0].body?.lines?.[0]?.stock, { from_finished: 0, from_kits: 0 }) &&
+        shelfReads.length === 0 && foreign.length === 0 && errors.length === 0,
       screenshots: [file],
     };
   });
