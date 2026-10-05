@@ -141,6 +141,30 @@ async def _seed() -> dict:
 
 
 async def _product_roundtrip() -> dict:
+    """The round trip below with the library's file service running, as the app starts it.
+
+    Since the shared library-file preparation (2026-09-28) an upload — and the import's
+    ingest is one — goes through the local worker; the in-process tests get a test adapter
+    from ``conftest``, this subprocess gets the real worker behind its broker, started and
+    stopped around the scenario (the lifespan's own order: broker, then the runtime).
+    """
+    from backend.app.core.config import settings
+    from backend.app.services.library_file_runtime import start_library_file_runtime, stop_library_file_runtime
+    from backend.app.services.local_worker_broker import start_local_worker_broker, stop_local_worker_broker
+
+    base = Path(settings.base_dir)
+    await start_local_worker_broker(base)
+    try:
+        await start_library_file_runtime(base)
+        try:
+            return await _product_roundtrip_body()
+        finally:
+            await stop_library_file_runtime()
+    finally:
+        await stop_local_worker_broker()
+
+
+async def _product_roundtrip_body() -> dict:
     """Export a product and import it back — against PostgreSQL, not a mock.
 
     The round trip is covered on SQLite by
