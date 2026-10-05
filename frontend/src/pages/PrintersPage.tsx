@@ -10,6 +10,9 @@ import { PrinterTagChip } from '../components/PrinterTagChip';
 import { UsageProjection } from '../components/UsageProjection';
 import { farmPollInterval, farmQueryResumeOptions, farmRead, farmReadRetry, farmReadRetryDelay, farmStatusPollInterval } from '../api/farmReadBudget';
 import { CardSizeSwitch } from '../components/CardSizeSwitch';
+import { ListViewToggle } from '../components/ListViewToggle';
+import { parsePrintersPageView, type PrintersPageView } from '../hooks/usePersistedState';
+import { shownView } from '../utils/viewModes';
 import { readStoredCardSize } from '../utils/cardSize';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { formatFileSize } from '../utils/file';
@@ -9269,11 +9272,11 @@ export function PrintersPage() {
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   // Page view: 'cards' = printer cards (default), 'camwall' = camera overview.
   // `view=camwall` preserves the wall behind an M-card opened from /camwall.
-  const [pageView, setPageView] = useState<'cards' | 'camwall'>(() => {
-    return searchParams.get('view') === 'camwall' || localStorage.getItem('printerPageView') === 'camwall'
+  const [pageView, setPageView] = useState<PrintersPageView>(() =>
+    searchParams.get('view') === 'camwall'
       ? 'camwall'
-      : 'cards';
-  });
+      : (parsePrintersPageView(localStorage.getItem('printerPageView') ?? '') ?? 'cards')
+  );
   const [camWallSnapshotSec, setCamWallSnapshotSec] = useState<number>(() => {
     const saved = parseInt(localStorage.getItem('camWallSnapshotSec') || '', 10);
     return Number.isFinite(saved) && saved > 0 ? saved : 8;
@@ -9324,7 +9327,9 @@ export function PrintersPage() {
   const [statusCacheVersion, setStatusCacheVersion] = useState(0);
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const { hasPermission } = useAuth();
+  const { hasPermission, loading: authLoading } = useAuth();
+  const displayedPageView = shownView(pageView, (mode) =>
+    mode !== 'camwall' || (!authLoading && hasPermission('camera:view')), 'cards');
 
   // Bulk printer selection
   const [selectedPrinterIds, setSelectedPrinterIds] = useState<Set<number>>(new Set());
@@ -10067,7 +10072,7 @@ export function PrintersPage() {
 
   // A fleet view owns one active-row read per status. A filtered single card
   // keeps scoped reads so it does not transfer an entire large farm's rows.
-  const ownsFarmQueueRows = pageView === 'cards' && !monitorTarget && sortedPrinters.length >= 5;
+  const ownsFarmQueueRows = displayedPageView === 'cards' && !monitorTarget && sortedPrinters.length >= 5;
   const { data: farmPendingRows } = usePendingQueueItems(ownsFarmQueueRows);
   const { data: farmPrintingRows } = usePrintingQueueItems(ownsFarmQueueRows);
 
@@ -10287,40 +10292,18 @@ export function PrintersPage() {
         </button>
       </div>
 
-      {/* Page view toggle: Cards / Cam Wall (#451) */}
-      <div className={`flex h-8 items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary ${inMenu ? 'w-full' : ''}`}>
-        <button
-          type="button"
-          onClick={() => {
-            setPageView('cards');
-            localStorage.setItem('printerPageView', 'cards');
-          }}
-          className={`flex h-full items-center gap-1 rounded-l-lg px-2 text-xs font-medium transition-colors ${inMenu ? 'flex-1 justify-center' : ''} ${
-            pageView === 'cards' ? 'bg-bambu-green text-white' : 'text-white hover:bg-bambu-dark-tertiary'
-          }`}
-          title={t('printers.pageView.cards')}
-          aria-pressed={pageView === 'cards'}
-        >
-          <LayoutGrid className="w-3.5 h-3.5" />
-          {inMenu && <span>{t('printers.pageView.cards')}</span>}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setPageView('camwall');
-            localStorage.setItem('printerPageView', 'camwall');
-          }}
-          className={`flex h-full items-center gap-1 rounded-r-lg px-2 text-xs font-medium transition-colors ${inMenu ? 'flex-1 justify-center' : ''} ${
-            pageView === 'camwall' ? 'bg-bambu-green text-white' : 'text-white hover:bg-bambu-dark-tertiary'
-          }`}
-          title={t('printers.pageView.camWall')}
-          aria-pressed={pageView === 'camwall'}
-          disabled={!hasPermission('camera:view')}
-        >
-          <MonitorPlay className="w-3.5 h-3.5" />
-          {inMenu && <span>{t('printers.pageView.camWall')}</span>}
-        </button>
-      </div>
+      <ListViewToggle
+        value={displayedPageView}
+        inMenu={inMenu}
+        onChange={(mode) => {
+          setPageView(mode);
+          localStorage.setItem('printerPageView', mode);
+        }}
+        options={[
+          { value: 'cards', icon: LayoutGrid, label: t('printers.pageView.cards') },
+          { value: 'camwall', icon: MonitorPlay, label: t('printers.pageView.camWall'), disabled: authLoading || !hasPermission('camera:view'), hint: t('printers.permission.noCamera') },
+        ]}
+      />
 
       {/* Card size selector */}
       <CardSizeSwitch
@@ -10329,7 +10312,7 @@ export function PrintersPage() {
           setCardSize(size);
           localStorage.setItem('printerCardSize', String(size));
         }}
-        disabled={pageView === 'camwall'}
+        disabled={displayedPageView === 'camwall'}
         fullWidth={inMenu}
       />
     </>
@@ -10562,7 +10545,7 @@ export function PrintersPage() {
             <p className="text-bambu-gray">{t('printers.noSearchResults')}</p>
           </CardContent>
         </Card>
-      ) : pageView === 'camwall' && !monitorTarget ? (
+      ) : displayedPageView === 'camwall' && !monitorTarget ? (
         <CameraWall
           printers={sortedPrinters}
           cameras={wallCameras}

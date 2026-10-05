@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CardSizeSwitch } from '../CardSizeSwitch';
+import { ListViewToggle } from '../ListViewToggle';
 import {
   Search, X, ArrowUpNarrowWide, ArrowDownWideNarrow,
   LayoutGrid, List, Activity, Filter, SlidersHorizontal,
@@ -228,60 +229,12 @@ export function QueueToolbar({
           </button>
         </div>
 
-        {inMenu ? (
-          /* In overflow popover — stack as separate full-width buttons so
-             "Картки / Список / Таймлайн" labels fit without horizontal cropping. */
-          <div className="flex flex-col gap-1 w-full">
-            {VIEW_BUTTONS.map(({ mode, labelKey, icon: Icon }) => {
-              const isSelected = viewMode === mode;
-              const label = t(labelKey);
-              return (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => onViewModeChange(mode)}
-                  className={`h-8 px-2 rounded-lg border text-sm font-medium transition-colors flex items-center gap-2 ${
-                    isSelected
-                      ? 'bg-bambu-green border-bambu-green text-white'
-                      : 'bg-bambu-dark border-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary'
-                  }`}
-                >
-                  <Icon className="w-3.5 h-3.5" />
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          /* Inline — horizontal segmented control. */
-          <div className="flex h-8 items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-            {VIEW_BUTTONS.map(({ mode, labelKey, icon: Icon }, index) => {
-              const isSelected = viewMode === mode;
-              const label = t(labelKey);
-              return (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => onViewModeChange(mode)}
-                  className={`h-full px-3 text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
-                    index === 0 ? 'rounded-l-lg' : ''
-                  } ${
-                    index === VIEW_BUTTONS.length - 1 ? 'rounded-r-lg' : ''
-                  } ${
-                    isSelected
-                      ? 'bg-bambu-green text-white'
-                      : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
-                  }`}
-                  title={label}
-                  aria-label={label}
-                >
-                  <Icon className="w-3.5 h-3.5" />
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-        )}
+        <ListViewToggle
+          value={viewMode}
+          onChange={onViewModeChange}
+          inMenu={inMenu}
+          options={VIEW_BUTTONS.map(({ mode, labelKey, icon }) => ({ value: mode, icon, label: t(labelKey) }))}
+        />
 
         {/* Card size — only the cards view has a grid to size, so the list
             and timeline views do not show the control at all. */}

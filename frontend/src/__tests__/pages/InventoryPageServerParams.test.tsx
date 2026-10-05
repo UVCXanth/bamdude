@@ -599,6 +599,9 @@ describe('InventoryPage — the Forecast tab renders server-computed rows', () =
 
     // The guard falls back to the (Spoolman-fed) table view…
     await waitFor(() => expect(screen.getAllByLabelText('Select this spool').length).toBe(2));
+    expect(screen.getByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Columns' })).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem('bamdude-inventory-filters') ?? '{}').viewMode).toBe('forecast');
     // …the panel never rendered. ⚠️ The marker is a PANEL-ONLY control, not
     // the joined "brand material colour" label: the Spoolman table's own
     // display_name column composes the very same string, so that assertion

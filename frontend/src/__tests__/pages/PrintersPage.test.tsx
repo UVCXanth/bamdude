@@ -129,6 +129,25 @@ describe('PrintersPage', () => {
     localStorage.removeItem('printerCardSize');
   });
 
+  it('keeps a saved camera wall preference without showing it to a reader without camera rights', async () => {
+    localStorage.setItem('printerPageView', 'camwall');
+    server.use(http.get('/api/v1/auth/me', () => HttpResponse.json({
+      id: 9, username: 'reader', role: 'viewer', is_active: true, is_admin: false,
+      groups: [], permissions: ['printers:read'], created_at: '2024-01-01T00:00:00Z',
+    })));
+    const view = render(<PrintersPage />);
+    try {
+      await userEvent.click(screen.getByRole('button', { name: 'View' }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Cards' })).toHaveAttribute('aria-pressed', 'true'));
+      expect(screen.getByRole('button', { name: 'Cam wall' })).toBeDisabled();
+      expect(localStorage.getItem('printerPageView')).toBe('camwall');
+      expect(screen.getByRole('group', { name: 'Card size' }).querySelector('button')).not.toBeDisabled();
+    } finally {
+      view.unmount();
+      localStorage.removeItem('printerPageView');
+    }
+  });
+
   it('restores only the last saved camera and switches the single popup to another card', async () => {
     // Seeded WITHOUT `kind`: that is what an install saved before a camera could
     // stand on its own, and such a row must still read as a printer's camera.

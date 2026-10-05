@@ -28,6 +28,7 @@ import { invalidateSpoolViews } from '../utils/queryInvalidation';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { LoadingBlock } from './LoadingBlock';
+import { ListViewToggle } from './ListViewToggle';
 import { Modal } from './Modal';
 import { PaginationBar } from './PaginationBar';
 import { Select } from './Select';
@@ -710,25 +711,14 @@ function UsageChart({ series: served, days: maxDays, onDaysChange }: {
 
   return (
     <div className="bg-bambu-dark-secondary rounded-lg overflow-hidden border border-bambu-dark-tertiary p-4">
-      <div className="flex items-center gap-2 mb-4">
+      <div className="flex flex-wrap items-center gap-2 mb-4">
         <TrendingDown className="w-4 h-4 text-bambu-green" />
         <h3 className="text-sm font-semibold text-white">{title}</h3>
         <span className="text-xs text-bambu-gray ml-1 hidden sm:inline">{subtitle}</span>
-        <div className="flex items-center bg-bambu-dark-tertiary rounded-lg p-0.5">
-          {(['projection', 'usage'] as const).map((value) => (
-            <button
-              key={value}
-              type="button"
-              aria-pressed={mode === value}
-              onClick={() => setMode(value)}
-              className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                mode === value ? 'bg-bambu-dark-secondary text-white shadow' : 'text-bambu-gray hover:text-white'
-              }`}
-            >
-              {value === 'projection' ? t('forecast.stockForecast') : t('forecast.actualUsage')}
-            </button>
-          ))}
-        </div>
+        <ListViewToggle value={mode} onChange={setMode} label={t('forecast.chartView')} options={[
+          { value: 'projection', icon: TrendingDown, label: t('forecast.stockForecast') },
+          { value: 'usage', icon: BarChart2, label: t('forecast.actualUsage') },
+        ]} />
         <div className="ml-auto flex items-center bg-bambu-dark-tertiary rounded-lg p-0.5">
           {CHART_TIMEFRAMES.map((tf) => (
             <button
@@ -1537,32 +1527,22 @@ function ShoppingListPanel({
     <div className="bg-bambu-dark-secondary rounded-lg overflow-hidden border border-bambu-dark-tertiary">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-bambu-dark-tertiary bg-bambu-dark-tertiary/30">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <ShoppingCart className="w-4 h-4 text-bambu-green" />
           <h3 className="text-sm font-semibold text-white">{t('forecast.shoppingList')}</h3>
           <span className="text-xs text-bambu-gray">{t('forecast.shoppingListItems', { count: items.length })}</span>
           {/* View toggle */}
           {items.length > 0 && (
-            <div className="flex bg-bambu-dark-tertiary rounded-md p-0.5 ml-1">
-              <button
-                onClick={() => setView('list')}
-                className={`flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded transition-colors ${view === 'list' ? 'bg-bambu-dark-secondary text-white shadow' : 'text-bambu-gray hover:text-white'}`}
-              >
-                <Package className="w-3 h-3" />
-                {t('forecast.listView')}
-              </button>
-              <button
-                onClick={() => setView('logistics')}
-                className={`flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded transition-colors ${view === 'logistics' ? 'bg-bambu-dark-secondary text-white shadow' : 'text-bambu-gray hover:text-white'}`}
-              >
-                <BarChart2 className="w-3 h-3" />
-                {t('forecast.logisticsView')}
-                {breakAlerts.length > 0 && (
-                  <span className="w-3.5 h-3.5 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">
-                    {breakAlerts.length}
-                  </span>
-                )}
-              </button>
+            <div className="flex items-center gap-1 ml-1">
+              <ListViewToggle value={view} onChange={setView} label={t('forecast.shoppingView')} options={[
+                { value: 'list', icon: Package, label: t('forecast.listView') },
+                { value: 'logistics', icon: BarChart2, label: t('forecast.logisticsView') },
+              ]} />
+              {breakAlerts.length > 0 && (
+                <span className="w-3.5 h-3.5 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center" aria-label={String(breakAlerts.length)}>
+                  {breakAlerts.length}
+                </span>
+              )}
             </div>
           )}
         </div>

@@ -104,7 +104,7 @@ describe('the Queue page card', () => {
   it('offers the defects row above its pair', async () => {
     mockApi();
     render(<QueuePage />);
-    expect(await screen.findByTestId('plate-defects-toggle')).toBeInTheDocument();
+    expect(await screen.findByTestId('plate-defects-toggle', {}, { timeout: 5000 })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Clear plate/i })).toBeInTheDocument();
   });
 

@@ -5473,7 +5473,7 @@ export default {
 
   // Projects section, orders face — the whole vocabulary of the redesign.
   list: {
-    view: { label: 'Вигляд', cards: 'Картки', table: 'Таблиця' },
+    view: { label: 'Вигляд', cards: 'Картки', table: 'Таблиця', list: 'Список', calendar: 'Календар' },
     search: { clear: 'Очистити пошук' },
     tabs: { countLoading: 'кількість завантажується' },
     empty: { noMatch: 'Нічого не збігається з пошуком або фільтрами.', reset: 'Скинути' },
@@ -11229,6 +11229,8 @@ export default {
     usageChartTitle: 'Фактичне споживання - Топ-5 матеріалів',
     stockForecast: 'Прогноз запасу',
     actualUsage: 'Фактичне споживання',
+    chartView: 'Вигляд графіка',
+    shoppingView: 'Вигляд покупок',
     dashedLinesROP: 'Пунктир = точки повторного замовлення',
     usageChartHint: 'Витрачено грамів за день',
     noUsageInPeriod: 'За цей період споживання не записано.',

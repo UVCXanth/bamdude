@@ -21,6 +21,7 @@ import { StaggerBanner } from '../components/Queue/StaggerBanner';
 import { QueueTimelineView } from '../components/Queue/QueueTimelineView';
 import { AutoQueuePanel } from '../components/Queue/AutoQueuePanel';
 import { QueueToolbar } from '../components/Queue/QueueToolbar';
+import { parseQueueView, type QueueView } from '../hooks/usePersistedState';
 import { readStoredCardSize } from '../utils/cardSize';
 import { PrintModal } from '../components/PrintModal';
 import { OpenMonitorButton } from '../features/monitor/OpenMonitorButton';
@@ -30,7 +31,7 @@ import { WindowVirtualGrid } from '../components/WindowVirtualGrid';
 import { useMountedPrinterPriority } from '../hooks/useMountedPrinterPriority';
 import { useProgressiveListLength } from '../hooks/useProgressiveListLength';
 
-type ViewMode = 'expanded' | 'all' | 'timeline';
+type ViewMode = QueueView;
 
 // 1 = S … 4 = XL. Columns only — every card is the same card at every size.
 const QUEUE_GRID_CLASSES: Record<number, string> = {
@@ -55,8 +56,6 @@ function queueGridColumnCount(cardSize: number, viewportWidth: number): number {
   }
 }
 
-const VALID_VIEW_MODES: ViewMode[] = ['expanded', 'all', 'timeline'];
-
 export function QueuePage() {
   useMountedPrinterPriority('queues');
   const { t } = useTranslation();
@@ -66,12 +65,10 @@ export function QueuePage() {
 
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     const fromUrl = searchParams.get('view');
-    if (fromUrl === 'compact') return 'expanded';
-    if (fromUrl && VALID_VIEW_MODES.includes(fromUrl as ViewMode)) return fromUrl as ViewMode;
+    const urlView = fromUrl ? parseQueueView(fromUrl) : undefined;
+    if (urlView) return urlView;
     const saved = localStorage.getItem('queueViewMode');
-    if (saved === 'compact') return 'expanded';
-    if (saved && VALID_VIEW_MODES.includes(saved as ViewMode)) return saved as ViewMode;
-    return 'expanded';
+    return saved ? (parseQueueView(saved) ?? 'expanded') : 'expanded';
   });
 
   const [editingItem, setEditingItem] = useState<PrintQueueItem | null>(null);

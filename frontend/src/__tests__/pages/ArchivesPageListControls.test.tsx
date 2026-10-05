@@ -118,7 +118,7 @@ describe('archives pagination', () => {
     mockArchives({ current_page: 1, per_page: 24, total: 2, last_page: 1 });
     render(<ArchivesPage />);
     await screen.findByText('Benchy');
-    await userEvent.click(screen.getByRole('button', { name: /list view/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'List' }));
 
     await userEvent.click(await screen.findByRole('button', { name: /^Name/ }));
     await waitFor(() => expect(lastQuery?.get('sort_by')).toBe('name-asc'));
@@ -133,7 +133,7 @@ describe('archives pagination', () => {
     mockArchives({ current_page: 1, per_page: 24, total: 2, last_page: 1 });
     render(<ArchivesPage />);
     await screen.findByText('Benchy');
-    await userEvent.click(screen.getByRole('button', { name: /list view/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'List' }));
 
     await userEvent.click(await screen.findByRole('button', { name: /^Size/ }));
     await waitFor(() => expect(lastQuery?.get('sort_by')).toBe('size-desc'));

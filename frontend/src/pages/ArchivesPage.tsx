@@ -91,6 +91,8 @@ import { ContextMenu, type ContextMenuItem } from '../components/ContextMenu';
 import { BatchTagModal } from '../components/BatchTagModal';
 import { BatchAssignOrderModal } from '../components/projects/BatchAssignOrderModal';
 import { CalendarView } from '../components/CalendarView';
+import { ListViewToggle } from '../components/ListViewToggle';
+import { usePersistedState, parseArchivesView, type ArchivesView } from '../hooks/usePersistedState';
 import { QRCodeModal } from '../components/QRCodeModal';
 import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
 import { SkipObjectsIcon } from '../components/SkipObjectsModal';
@@ -2758,7 +2760,7 @@ function ArchiveListRow({
  *  way you sort — see ``_MEASURED_SORTS`` in services/archive.py. */
 type SortField = 'date' | 'name' | 'size' | 'printer' | 'cost' | 'energy' | 'filament' | 'duration';
 type SortOption = `${SortField}-asc` | `${SortField}-desc`;
-type ViewMode = 'grid' | 'list' | 'calendar';
+type ViewMode = ArchivesView;
 type Collection = 'all' | 'recent' | 'this-week' | 'this-month' | 'favorites' | 'printed' | 'failed' | 'duplicates';
 
 // `printed` is a server-side filter in backend/app/services/archive.py.
@@ -2850,9 +2852,7 @@ export function ArchivesPage() {
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
   const [showBatchTag, setShowBatchTag] = useState(false);
   const [showBatchProject, setShowBatchProject] = useState(false);
-  const [viewMode, setViewMode] = useState<ViewMode>(() =>
-    (localStorage.getItem('archiveViewMode') as ViewMode) || 'grid'
-  );
+  const [viewMode, setViewMode] = usePersistedState<ViewMode>('archiveViewMode', 'grid', parseArchivesView);
   const [sortBy, setSortBy] = useState<SortOption>(() =>
     (localStorage.getItem('archiveSortBy') as SortOption) || 'date-desc'
   );
@@ -3156,10 +3156,6 @@ export function ArchivesPage() {
   }, [filterKind]);
 
   useEffect(() => {
-    localStorage.setItem('archiveViewMode', viewMode);
-  }, [viewMode]);
-
-  useEffect(() => {
     localStorage.setItem('archiveSortBy', sortBy);
   }, [sortBy]);
 
@@ -3393,42 +3389,11 @@ export function ArchivesPage() {
               in one PaginationBar under the rows. */}
         </div>
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-          {/* View mode toggle - matches PrintersPage card-size selector style */}
-          <div className="flex items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-            <button
-              onClick={() => setViewMode('grid')}
-              className={`px-2 py-1.5 transition-colors rounded-l-lg ${
-                viewMode === 'grid'
-                  ? 'bg-bambu-green text-white'
-                  : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
-              }`}
-              title={t('archives.gridView')}
-            >
-              <LayoutGrid className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => setViewMode('list')}
-              className={`px-2 py-1.5 transition-colors ${
-                viewMode === 'list'
-                  ? 'bg-bambu-green text-white'
-                  : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
-              }`}
-              title={t('archives.listView')}
-            >
-              <List className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => setViewMode('calendar')}
-              className={`px-2 py-1.5 transition-colors rounded-r-lg ${
-                viewMode === 'calendar'
-                  ? 'bg-bambu-green text-white'
-                  : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
-              }`}
-              title={t('archives.calendarView')}
-            >
-              <CalendarDays className="w-4 h-4" />
-            </button>
-          </div>
+          <ListViewToggle value={viewMode} onChange={setViewMode} options={[
+            { value: 'grid', icon: LayoutGrid, label: t('list.view.cards') },
+            { value: 'list', icon: List, label: t('list.view.list') },
+            { value: 'calendar', icon: CalendarDays, label: t('list.view.calendar') },
+          ]} />
 
           <div className="w-px h-6 bg-bambu-dark-tertiary" />
 

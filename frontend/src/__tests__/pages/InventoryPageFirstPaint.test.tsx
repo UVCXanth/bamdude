@@ -20,6 +20,7 @@ import { render } from '../utils';
 import InventoryPageRouter from '../../pages/InventoryPage';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
+import { DEFAULT_FILTERS, FILTERS_KEY } from '../../utils/inventoryFilters';
 
 const baseSpool = {
   subtype: null,
@@ -158,6 +159,34 @@ describe('InventoryPage first paint', () => {
     holdList = false;
     spools = DEFAULT_SPOOLS;
     localStorage.clear();
+  });
+
+  it('shows the table without overwriting a saved forecast preference when access is absent', async () => {
+    localStorage.setItem(FILTERS_KEY, JSON.stringify({ ...DEFAULT_FILTERS, viewMode: 'forecast' }));
+    setupHandlers();
+    server.use(http.get('/api/v1/auth/me', () => HttpResponse.json({
+      id: 9,
+      username: 'inventory-reader',
+      role: 'viewer',
+      is_active: true,
+      is_admin: false,
+      groups: [],
+      permissions: ['inventory:read'],
+      created_at: '2024-01-01T00:00:00Z',
+    })));
+    render(<InventoryPageRouter />);
+
+    const table = await screen.findByRole('button', { name: 'Table' });
+    await waitFor(() => expect(table).toHaveAttribute('aria-pressed', 'true'));
+    expect(screen.getByRole('button', { name: 'Forecast' })).toBeDisabled();
+    expect(screen.queryByText('Shopping List')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: 'PETG' } });
+    await waitFor(() => {
+      const saved = JSON.parse(localStorage.getItem(FILTERS_KEY) ?? '{}');
+      expect(saved.search).toBe('PETG');
+      expect(saved.viewMode).toBe('forecast');
+    });
   });
 
   it('shows the farm summary while the first page of spools is still loading', async () => {

@@ -5438,7 +5438,7 @@ export default {
 
   // Projects section, orders face — the whole vocabulary of the redesign.
   list: {
-    view: { label: 'View', cards: 'Cards', table: 'Table' },
+    view: { label: 'View', cards: 'Cards', table: 'Table', list: 'List', calendar: 'Calendar' },
     search: { clear: 'Clear search' },
     tabs: { countLoading: 'count is loading' },
     empty: { noMatch: 'Nothing matches your search or filters.', reset: 'Reset' },
@@ -11069,6 +11069,8 @@ export default {
     usageChartTitle: 'Actual Usage - Top 5 Materials',
     stockForecast: 'Stock forecast',
     actualUsage: 'Actual usage',
+    chartView: 'Chart view',
+    shoppingView: 'Shopping view',
     dashedLinesROP: 'Dashed lines = reorder points',
     usageChartHint: 'Grams used per day',
     noUsageInPeriod: 'No recorded consumption in this period.',

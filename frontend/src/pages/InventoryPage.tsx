@@ -13,6 +13,8 @@ import {
   TrendingUp, Lock, Sparkles, Upload, Download, MapPin, History,
 } from 'lucide-react';
 import { ForecastPanel } from '../components/ForecastPanel';
+import { ListViewToggle } from '../components/ListViewToggle';
+import { shownView } from '../utils/viewModes';
 import { SpoolUsageHistoryPanel } from '../components/SpoolUsageHistoryPanel';
 import { api, ApiError } from '../api/client';
 import type {
@@ -1072,6 +1074,12 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, colorFacetGroups,
       categoryFilter, spoolFilter, storageLocationFilter, stockFilter, assignedFilter, debouncedSearch]);
 
+  const displayedView = shownView(viewMode, (mode) => {
+    if (mode === 'forecast') return canViewForecast;
+    if (mode === 'history') return spoolmanModeReady && !spoolmanMode;
+    return true;
+  }, 'table');
+
   const listParams = useMemo((): SpoolListParams => ({
     ...filterParams,
     ...(serverSortBy ? { sort_by: serverSortBy } : {}),
@@ -1079,8 +1087,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     ...(pageSize === -1 ? { all: true } : { per_page: pageSize }),
     // The cards view renders per-profile chips (the T1 projection gap) — the
     // opt-in fills `k_profiles` on each row; the table needs only the count.
-    ...(viewMode === 'cards' ? { include_k_profiles: true } : {}),
-  }), [filterParams, serverSortBy, effectivePageIndex, pageSize, viewMode]);
+    ...(displayedView === 'cards' ? { include_k_profiles: true } : {}),
+  }), [filterParams, serverSortBy, effectivePageIndex, pageSize, displayedView]);
 
   // The Forecast tab renders <ForecastPanel/> INSTEAD of the list (:2630), so
   // the list's own feed buys nothing there — and it does not merely idle: it
@@ -1096,7 +1104,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   //
   // The condition mirrors the render branch EXACTLY: a `canViewForecast` of
   // false falls back to the table, which does need the feed.
-  const forecastViewActive = viewMode === 'forecast' && canViewForecast;
+  const forecastViewActive = displayedView === 'forecast';
   // ⚠️ And the verdict is NOT in on the first tick — `canViewForecast` reads
   // false while auth and the Spoolman mode are still resolving. Fetching the
   // list "just in case" during that window is not a saved millisecond, it is
@@ -1111,7 +1119,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // make that a full-table download every 30 s under a tab that never reads it.
   // Gated on Spoolman mode for the same reason the forecast is: those rows are
   // OUR ledger, and there is none to show when Spoolman owns the inventory.
-  const historyViewActive = viewMode === 'history' && !spoolmanMode;
+  const historyViewActive = displayedView === 'history';
   const historyVerdictPending = viewMode === 'history' && !spoolmanModeReady;
   const listFeedSuppressed =
     forecastViewActive || forecastVerdictPending || historyViewActive || historyVerdictPending;
@@ -2238,6 +2246,14 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             <p className="text-sm text-bambu-gray">{t('inventory.noSpools').split('.')[0] ? '' : ''}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <ListViewToggle value={displayedView} onChange={setViewMode} options={[
+            { value: 'table', icon: TableProperties, label: t('inventory.table') },
+            { value: 'cards', icon: LayoutGrid, label: t('inventory.cards') },
+            ...(!spoolmanMode && spoolmanModeReady ? [
+              { value: 'history' as const, icon: History, label: t('inventory.usageHistoryTab') },
+              { value: 'forecast' as const, icon: canViewForecast ? TrendingUp : Lock, label: t('forecast.title'), disabled: !canViewForecast, hint: t('forecast.noReadAccess') },
+            ] : []),
+          ]} />
           {/* Bulk edit — internal inventory only (not Spoolman mode). Opens a
               modal that lets the user pick which of the filtered spools to edit
               and which fields to change. */}
@@ -2465,7 +2481,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
 
         <div className="flex items-center gap-2">
           {/* Columns button (table view only) */}
-          {viewMode === 'table' && (
+          {displayedView === 'table' && (
             <button
               onClick={() => setShowColumnModal(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-bambu-gray border border-bambu-dark-tertiary rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
@@ -2491,64 +2507,6 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             <span className="hidden sm:inline">{t('inventory.groupSimilar')}</span>
           </button>
           )}
-          {/* Table / Cards toggle */}
-          <div className="flex bg-bambu-dark-primary border border-bambu-dark-tertiary rounded-lg overflow-hidden">
-            <button
-              onClick={() => setViewMode('table')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-colors ${
-                viewMode === 'table'
-                  ? 'bg-bambu-green text-white'
-                  : 'text-bambu-gray hover:bg-bambu-dark-tertiary'
-              }`}
-            >
-              <TableProperties className="w-4 h-4" />
-              <span className="hidden sm:inline">{t('inventory.table')}</span>
-            </button>
-            <button
-              onClick={() => setViewMode('cards')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-colors ${
-                viewMode === 'cards'
-                  ? 'bg-bambu-green text-white'
-                  : 'text-bambu-gray hover:bg-bambu-dark-tertiary'
-              }`}
-            >
-              <LayoutGrid className="w-4 h-4" />
-              <span className="hidden sm:inline">{t('inventory.cards')}</span>
-            </button>
-            {/* History — the farm's whole filament ledger (2026-09-01). Hidden
-                in Spoolman mode: those rows are OUR table, and showing an
-                empty one under a Spoolman UI would read as "nothing was ever
-                printed" rather than "this is kept elsewhere". */}
-            {!spoolmanMode && (
-              <button
-                onClick={() => setViewMode('history')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-colors ${
-                  viewMode === 'history'
-                    ? 'bg-bambu-green text-white'
-                    : 'text-bambu-gray hover:bg-bambu-dark-tertiary'
-                }`}
-              >
-                <History className="w-4 h-4" />
-                <span className="hidden sm:inline">{t('inventory.usageHistoryTab')}</span>
-              </button>
-            )}
-            {/* Forecast tab — gated on perm + non-Spoolman mode (upstream #1184) */}
-            {!spoolmanMode && (
-              <button
-                onClick={() => canViewForecast && setViewMode('forecast')}
-                disabled={!canViewForecast}
-                title={canViewForecast ? undefined : t('forecast.noReadAccess')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                  viewMode === 'forecast'
-                    ? 'bg-bambu-green text-white'
-                    : 'text-bambu-gray hover:bg-bambu-dark-tertiary'
-                }`}
-              >
-                {canViewForecast ? <TrendingUp className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
-                <span className="hidden sm:inline">{t('forecast.title')}</span>
-              </button>
-            )}
-          </div>
         </div>
       </div>
 
@@ -2862,10 +2820,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       {listLoading ? (
         <SpoolTableSkeleton
           rows={skeletonRows}
-          view={viewMode === 'cards' ? 'cards' : 'table'}
+          view={displayedView === 'cards' ? 'cards' : 'table'}
           columns={renderColumns.length}
         />
-      ) : viewMode === 'forecast' && canViewForecast ? (
+      ) : forecastViewActive ? (
         /* Forecast view (upstream #1184). Since the forecast-server-side
            rewrite (task 4) the panel renders SERVER-computed rows — it is
            mounted, and therefore fetching /inventory/forecast, only while
@@ -2884,7 +2842,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           onClearSearch={() => { setSearch(''); resetPage(); }}
           onOpenSpool={openSpoolById}
         />
-      ) : viewMode === 'cards' ? (
+      ) : displayedView === 'cards' ? (
         /* Cards view */
         pagedItems.length > 0 ? (
           <>

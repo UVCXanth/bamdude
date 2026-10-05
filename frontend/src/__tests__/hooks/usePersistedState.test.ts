@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { renderHook } from '@testing-library/react';
-import { CARDS_TABLE_MODES, listViewParser, parseListView } from '../../hooks/usePersistedState';
+import { CARDS_TABLE_MODES, listViewParser, parseListView, parseArchivesView, parseLibraryView, parseQueueView, parsePrintersPageView } from '../../hooks/usePersistedState';
 import { useCardsTableViews } from '../../hooks/useCardsTableViews';
 
 describe('the cards/table modes have one list', () => {
@@ -9,6 +9,18 @@ describe('the cards/table modes have one list', () => {
     expect(result.current.map((o) => o.value)).toEqual([...CARDS_TABLE_MODES]);
     for (const mode of CARDS_TABLE_MODES) expect(parseListView(mode)).toBe(mode);
   });
+});
+
+it('accepts the existing page modes and legacy compact without accepting garbage', () => {
+  expect(parseArchivesView('calendar')).toBe('calendar');
+  expect(parseArchivesView('broken')).toBeUndefined();
+  expect(parseLibraryView('list')).toBe('list');
+  expect(parseLibraryView('broken')).toBeUndefined();
+  expect(parseQueueView('compact')).toBe('expanded');
+  expect(parseQueueView('timeline')).toBe('timeline');
+  expect(parseQueueView('broken')).toBeUndefined();
+  expect(parsePrintersPageView('camwall')).toBe('camwall');
+  expect(parsePrintersPageView('broken')).toBeUndefined();
 });
 
 describe('listViewParser', () => {

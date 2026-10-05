@@ -415,7 +415,7 @@ describe('FileManagerPage', () => {
       render(<FileManagerPage />);
 
       await waitFor(() => {
-        expect(screen.getByTitle('Grid view')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Cards' })).toBeInTheDocument();
       });
     });
 
@@ -423,7 +423,7 @@ describe('FileManagerPage', () => {
       render(<FileManagerPage />);
 
       await waitFor(() => {
-        expect(screen.getByTitle('List view')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'List' })).toBeInTheDocument();
       });
     });
 
@@ -437,17 +437,19 @@ describe('FileManagerPage', () => {
       });
 
       // Both view mode buttons should be present and clickable
-      const gridButton = screen.getByTitle('Grid view');
-      const listButton = screen.getByTitle('List view');
+      const gridButton = screen.getByRole('button', { name: 'Cards' });
+      const listButton = screen.getByRole('button', { name: 'List' });
 
       expect(gridButton).toBeInTheDocument();
       expect(listButton).toBeInTheDocument();
 
       // Click list view button - verify no errors occur
       await user.click(listButton);
+      expect(listButton).toHaveAttribute('aria-pressed', 'true');
 
       // Clicking grid button should also work
       await user.click(gridButton);
+      expect(gridButton).toHaveAttribute('aria-pressed', 'true');
 
       // Verify files are still displayed after toggling
       expect(screen.getByText('Benchy')).toBeInTheDocument();

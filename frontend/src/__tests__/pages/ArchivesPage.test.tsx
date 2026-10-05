@@ -219,7 +219,7 @@ describe('ArchivesPage', () => {
       render(<ArchivesPage />);
 
       await waitFor(() => {
-        expect(screen.getByTitle(/grid/i)).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Cards' })).toHaveAttribute('aria-pressed', 'true');
       });
     });
 
@@ -227,7 +227,7 @@ describe('ArchivesPage', () => {
       render(<ArchivesPage />);
 
       await waitFor(() => {
-        expect(screen.getByTitle(/list/i)).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'List' })).toHaveAttribute('aria-pressed', 'false');
       });
     });
   });

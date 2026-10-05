@@ -22,7 +22,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { screen, waitFor, fireEvent } from '@testing-library/react';
+import { screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { render } from '../utils';
 import { ForecastPanel } from '../../components/ForecastPanel';
 import { http, HttpResponse, delay } from 'msw';
@@ -371,9 +371,12 @@ describe('ForecastPanel — a renderer of server-computed rows', () => {
     render(<ForecastPanel />);
 
     expect(await screen.findByText('Projected Stock - Top 5 Materials')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Actual usage' }));
+    const chartView = screen.getByRole('group', { name: 'Chart view' });
+    expect(within(chartView).getByRole('button', { name: 'Stock forecast' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(within(chartView).getByRole('button', { name: 'Actual usage' }));
 
     expect(screen.getByText('Actual Usage - Top 5 Materials')).toBeInTheDocument();
+    expect(within(chartView).getByRole('button', { name: 'Actual usage' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByText('Grams used per day')).toBeInTheDocument();
     expect(screen.queryByText('Dashed lines = reorder points')).toBeNull();
   });
@@ -437,6 +440,10 @@ describe('ForecastPanel — a renderer of server-computed rows', () => {
     await waitFor(() => expect(screen.getByText('Shopping List')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Shopping List'));
     await waitFor(() => expect(screen.getByText('CSV')).toBeInTheDocument());
+    const shoppingView = screen.getByRole('group', { name: 'Shopping view' });
+    expect(within(shoppingView).getByRole('button', { name: 'List' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(within(shoppingView).getByRole('button', { name: 'Logistics' }));
+    expect(within(shoppingView).getByRole('button', { name: 'Logistics' })).toHaveAttribute('aria-pressed', 'true');
     fireEvent.click(screen.getByText('CSV'));
     await waitFor(() => expect(csvRequests).toBe(1));
     await waitFor(() => expect(anchorClick).toHaveBeenCalledTimes(1));

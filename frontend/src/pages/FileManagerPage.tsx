@@ -77,6 +77,8 @@ import type {
 } from '../api/client';
 import { useLibraryScanProgress, type LibraryScanState } from '../hooks/useLibraryScanProgress';
 import { Button } from '../components/Button';
+import { ListViewToggle } from '../components/ListViewToggle';
+import { usePersistedState, parseLibraryView, type LibraryView } from '../hooks/usePersistedState';
 import { Select } from '../components/Select';
 import { Modal } from '../components/Modal';
 import { PaginationBar } from '../components/PaginationBar';
@@ -1657,9 +1659,7 @@ export function FileManagerPage() {
   const [showBulkTagsModal, setShowBulkTagsModal] = useState(false);
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
 
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>(() => {
-    return (localStorage.getItem('library-view-mode') as 'grid' | 'list') || 'grid';
-  });
+  const [viewMode, setViewMode] = usePersistedState<LibraryView>('library-view-mode', 'grid', parseLibraryView);
   const [wrapFolderNames, setWrapFolderNames] = useState(() => {
     return localStorage.getItem('library-wrap-folders') === 'true';
   });
@@ -2467,11 +2467,6 @@ export function FileManagerPage() {
 
   const isDeleting = deleteFolderMutation.isPending || deleteFileMutation.isPending || bulkDeleteMutation.isPending;
 
-  const handleViewModeChange = (mode: 'grid' | 'list') => {
-    setViewMode(mode);
-    localStorage.setItem('library-view-mode', mode);
-  };
-
   const isLoading = foldersLoading || filesLoading;
 
   // Find the selected folder in the tree to check external status
@@ -2581,31 +2576,10 @@ export function FileManagerPage() {
           </div>
         </div>
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-          {/* View mode toggle - style matches PrintersPage card-size selector */}
-          <div className="flex items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-            <button
-              onClick={() => handleViewModeChange('grid')}
-              className={`px-2 py-2 transition-colors rounded-l-lg ${
-                viewMode === 'grid'
-                  ? 'bg-bambu-green text-white'
-                  : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
-              }`}
-              title={t('fileManager.gridView')}
-            >
-              <LayoutGrid className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => handleViewModeChange('list')}
-              className={`px-2 py-2 transition-colors rounded-r-lg ${
-                viewMode === 'list'
-                  ? 'bg-bambu-green text-white'
-                  : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
-              }`}
-              title={t('fileManager.listView')}
-            >
-              <List className="w-4 h-4" />
-            </button>
-          </div>
+          <ListViewToggle value={viewMode} onChange={setViewMode} options={[
+            { value: 'grid', icon: LayoutGrid, label: t('list.view.cards') },
+            { value: 'list', icon: List, label: t('list.view.list') },
+          ]} />
 
           <div className="w-px h-6 bg-bambu-dark-tertiary" />
 

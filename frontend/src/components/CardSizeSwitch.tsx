@@ -26,7 +26,7 @@ export function CardSizeSwitch({ value, onChange, disabled = false, fullWidth = 
   const { t } = useTranslation();
   return (
     <div
-      className={`flex h-8 items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary ${disabled ? 'opacity-40 pointer-events-none' : ''} ${fullWidth ? 'w-full' : ''}`}
+      className={`flex h-8 items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary ${fullWidth ? 'w-full' : ''}`}
       role="group"
       aria-label={t('printers.cardSize.groupLabel')}
     >
@@ -37,16 +37,17 @@ export function CardSizeSwitch({ value, onChange, disabled = false, fullWidth = 
           <button
             key={label}
             type="button"
+            disabled={disabled}
             onClick={() => onChange(size)}
             aria-pressed={isSelected}
-            className={`h-full px-2 text-xs font-medium transition-colors ${fullWidth ? 'flex-1' : ''} ${
+            className={`h-full px-2 text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white disabled:opacity-40 disabled:cursor-not-allowed ${fullWidth ? 'flex-1' : ''} ${
               index === 0 ? 'rounded-l-lg' : ''
             } ${
               index === CARD_SIZE_LABELS.length - 1 ? 'rounded-r-lg' : ''
             } ${
               isSelected
                 ? 'bg-bambu-green text-white'
-                : 'text-white hover:bg-bambu-dark-tertiary'
+                : 'text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary'
             }`}
             title={t(TITLE_KEYS[index])}
           >
