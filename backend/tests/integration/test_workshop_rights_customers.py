@@ -95,3 +95,81 @@ async def test_a_customer_without_active_orders_needs_only_the_delete(committing
     await _user(db_session, "cu_plain_deleter", ["customers:read", "customers:delete"])
     done = await committing_client.delete(f"/api/v1/customers/{acme['id']}", headers=_jwt("cu_plain_deleter"))
     assert done.status_code == 200, done.text
+
+
+@pytest.mark.asyncio
+async def test_an_order_clerk_makes_a_customer_with_a_contact_and_a_delivery_and_orders_for_it(
+    committing_client, db_session
+):
+    """O19: ``orders:read`` + ``orders:create`` + ``customers:create``, no ``customers:read`` — the
+    whole path the order form takes: the delivery list, a customer with its contact and method,
+    the contact's name to pick, the saved order. The directory itself stays closed."""
+    method = await committing_client.post("/api/v1/delivery-methods/", json={"name": "Courier Clerk"})
+    assert method.status_code == 200, method.text
+    method_id = method.json()["id"]
+    await _user(db_session, "cu_clerk", ["orders:read", "orders:create", "customers:create"])
+    clerk = _jwt("cu_clerk")
+
+    listed = await committing_client.get("/api/v1/delivery-methods/", headers=clerk)
+    assert listed.status_code == 200, listed.text
+    assert method_id in [m["id"] for m in listed.json()]
+    made = await committing_client.post(
+        "/api/v1/customers/",
+        json={
+            "name": "Clerk Made",
+            "contacts": [
+                {"name": "Bo", "phone": "+380509998877", "delivery_method_id": method_id, "delivery_details": "Lviv, 2"}
+            ],
+        },
+        headers=clerk,
+    )
+    assert made.status_code == 200, made.text
+    customer_id = made.json()["id"]
+    options = await committing_client.get(f"/api/v1/customers/{customer_id}/contact-options", headers=clerk)
+    assert options.status_code == 200, options.text
+    [contact] = options.json()
+    assert contact["name"] == "Bo"
+    order = await committing_client.post(
+        "/api/v1/projects/",
+        json={"name": "Clerk order", "customer_id": customer_id, "contact_id": contact["id"]},
+        headers=clerk,
+    )
+    assert order.status_code == 200, order.text
+    assert (order.json()["customer_id"], order.json()["contact_id"]) == (customer_id, contact["id"])
+
+    stored = (await committing_client.get(f"/api/v1/customers/{customer_id}")).json()
+    assert [(c["name"], c["delivery_method_id"], c["delivery_details"]) for c in stored["contacts"]] == [
+        ("Bo", method_id, "Lviv, 2")
+    ]
+    assert (await committing_client.get("/api/v1/customers/", headers=clerk)).status_code == 403
+    assert (await committing_client.get(f"/api/v1/customers/{customer_id}", headers=clerk)).status_code == 403
+    refused = await committing_client.post("/api/v1/delivery-methods/", json={"name": "Not mine"}, headers=clerk)
+    assert refused.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_the_delivery_directory_is_the_customer_editors(committing_client, db_session):
+    """O19: ``customers:update`` keeps the delivery directory; ``customers:create`` only picks from it."""
+    await _user(db_session, "cu_editor", ["customers:read", "customers:update"])
+    await _user(db_session, "cu_adder", ["customers:read", "customers:create"])
+    editor, adder = _jwt("cu_editor"), _jwt("cu_adder")
+
+    made = await committing_client.post("/api/v1/delivery-methods/", json={"name": "Pickup Rights"}, headers=editor)
+    assert made.status_code == 200, made.text
+    method_id = made.json()["id"]
+    renamed = await committing_client.patch(
+        f"/api/v1/delivery-methods/{method_id}", json={"name": "Pickup point"}, headers=editor
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["name"] == "Pickup point"
+
+    assert (await committing_client.get("/api/v1/delivery-methods/", headers=adder)).status_code == 200
+    assert (
+        await committing_client.post("/api/v1/delivery-methods/", json={"name": "Adder's"}, headers=adder)
+    ).status_code == 403
+    assert (
+        await committing_client.patch(f"/api/v1/delivery-methods/{method_id}", json={"name": "X"}, headers=adder)
+    ).status_code == 403
+    assert (await committing_client.delete(f"/api/v1/delivery-methods/{method_id}", headers=adder)).status_code == 403
+    gone = await committing_client.delete(f"/api/v1/delivery-methods/{method_id}", headers=editor)
+    assert gone.status_code == 200, gone.text

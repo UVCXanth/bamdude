@@ -168,6 +168,26 @@ async def test_repeat_without_order_unfiles_only_the_row(committing_client, db_s
 
 
 @pytest.mark.asyncio
+async def test_the_plate_operators_repeat_without_order_is_one_print_however_often_it_is_sent(
+    committing_client, db_session, held
+):
+    """O19 / R11: a duplicate of the operator's answer — the same card pressed again, or a second
+    card that still thought the repeat kept the order — returns the first repeat's row and
+    files nothing: one receipt, the row pending without the order."""
+    await _user(db_session, "pr_plate_twice", ["printers:clear_plate"])
+    first = await _repeat(committing_client, held, "pr_plate_twice", without_order=True)
+    assert first.status_code == 200, first.text
+    again = await _repeat(committing_client, held, "pr_plate_twice", without_order=True)
+    assert again.status_code == 200, again.text
+    stale = await _repeat(committing_client, held, "pr_plate_twice")
+    assert stale.status_code == 200, stale.text
+    assert first.json()["item_id"] == again.json()["item_id"] == stale.json()["item_id"] == held["row"]
+    state = await _state(db_session, held)
+    assert state["receipts"] == 1
+    assert state["row"] == ("pending", None, None)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("perms", "may_file"),
     [
