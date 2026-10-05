@@ -159,12 +159,12 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate, id }: C
   };
 
   if (creating) {
+    // ⚠️ `stopPropagation` on the row is the point: the modals this picker lives in close
+    // themselves on a `window` keydown, so an unguarded Escape here — in the field or on one
+    // of its buttons — would throw away the whole order the user was editing instead of
+    // stepping back out of the create field. (Above the JSX: inside it, a `//` line is text.)
     return (
       <>
-      // ⚠️ `stopPropagation` is the point: the modals this picker lives in close themselves
-      // on a `window` keydown, so an unguarded Escape here — in the field or on one of its
-      // buttons — would throw away the whole order the user was editing instead of
-      // stepping back out of the create field.
       <div
         onKeyDown={(e) => {
           if (e.key !== 'Escape') return;

@@ -27,6 +27,16 @@ const customers = [
 describe('CustomerPicker', () => {
   beforeEach(() => vi.restoreAllMocks());
 
+  // WS-13 E13 V07: a code comment once sat inside the create row's JSX and was drawn as text.
+  it('the create row says nothing but its field and its buttons', async () => {
+    vi.spyOn(api, 'getCustomerOptions').mockResolvedValue(customers as never);
+    const { container } = render(<CustomerPicker value={null} onChange={() => {}} allowCreate />);
+    const select = await screen.findByRole('combobox');
+    fireEvent.change(select, { target: { value: screen.getByRole('option', { name: /new customer/i }).getAttribute('value') } });
+    await screen.findByPlaceholderText('Customer name');
+    expect(container.textContent?.trim()).toBe('CreateAdd contact and delivery…');
+  });
+
   it('a created customer is chosen and shown at once — even when the list cannot be read again', async () => {
     vi.spyOn(api, 'getCustomerOptions').mockResolvedValueOnce(customers as never).mockRejectedValue(new Error('HTTP 500'));
     vi.spyOn(api, 'createCustomer').mockResolvedValue({ ...customers[0], id: 9, code: 'CU-0009', name: 'Gamma' } as never);
