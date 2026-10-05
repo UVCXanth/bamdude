@@ -846,6 +846,18 @@ async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime
     latencies, gaps, memory, disks, ws_latencies, baseline = [], [], [], [], [], []
     cpu = {}
     started = time.perf_counter()
+
+    def disk_bytes():
+        total = 0
+        for path in local_runtime.root.rglob("*"):
+            try:
+                if path.is_file():
+                    total += path.stat().st_size
+            except FileNotFoundError:
+                # Workers publish and remove .part files while this diagnostic samples.
+                continue
+        return total
+
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         for _ in range(10):
             before = time.perf_counter()
@@ -882,9 +894,7 @@ async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime
                         current = times.user + times.system
                         first, _ = cpu.get(p.pid, (current if p.pid == process.pid else 0, current))
                         cpu[p.pid] = (first, current)
-                    disks.append(
-                        await disk(lambda: sum(p.stat().st_size for p in local_runtime.root.rglob("*") if p.is_file()))
-                    )
+                    disks.append(await disk(disk_bytes))
                 except psutil.NoSuchProcess:
                     pass
                 previous = before
