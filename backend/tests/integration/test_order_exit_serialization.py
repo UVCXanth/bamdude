@@ -147,21 +147,23 @@ EXITS = {
     "add": lambda c, order, other, a: c.post(f"/api/v1/projects/{other}/add-archives", json={"archive_ids": [a]}),
 }
 # (the door that takes its first lock and stops there, the one that comes next, the order
-# the print ends in — "order", "other", None, or "any" where only the answers are pinned)
+# the print ends in — "order", "other" or None — and the second door's answer)
 CROSSINGS = [
-    ("remove", "patch", None),
-    ("patch", "remove", None),
-    ("remove", "trash", None),
-    ("trash", "remove", None),
-    ("add", "patch", None),
-    ("patch", "add", "other"),
-    ("add", "trash", "other"),
-    ("trash", "add", "any"),
+    ("remove", "patch", None, 200),
+    ("patch", "remove", None, 200),
+    ("remove", "trash", None, 200),
+    ("trash", "remove", None, 200),
+    ("add", "patch", None, 200),
+    ("patch", "add", "other", 200),
+    ("add", "trash", "other", 200),
+    # The trash won: the batch reads the print in the trash under its lock and files
+    # nothing (WS-13 E13 V08) — the print keeps the order the trash left it with.
+    ("trash", "add", "order", 409),
 ]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("first", "second", "final"), CROSSINGS)
+@pytest.mark.parametrize(("first", "second", "final", "second_status"), CROSSINGS)
 async def test_two_exits_of_one_print_both_end(
     committing_client,
     db_session,
@@ -169,7 +171,8 @@ async def test_two_exits_of_one_print_both_end(
     monkeypatch,
     first,
     second,
-    final,  # noqa: F811
+    final,
+    second_status,  # noqa: F811
 ):
     order, _line, other, printed = await _setup(committing_client, db_session, catalog)
     inside, go = asyncio.Event(), asyncio.Event()
@@ -190,7 +193,6 @@ async def test_two_exits_of_one_print_both_end(
     answered_a, answered_b = await asyncio.wait_for(asyncio.gather(a, b), 30)
 
     assert answered_a.status_code == 200, answered_a.text
-    assert answered_b.status_code == 200, answered_b.text
-    if final != "any":
-        expected = {"order": order, "other": other, None: None}[final]
-        assert (await _order_of(db_session, printed.id))[0] == expected
+    assert answered_b.status_code == second_status, answered_b.text
+    expected = {"order": order, "other": other, None: None}[final]
+    assert (await _order_of(db_session, printed.id))[0] == expected

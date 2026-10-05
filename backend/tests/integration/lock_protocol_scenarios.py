@@ -1267,7 +1267,8 @@ async def scenario_print_exits() -> dict:
     and receiving do. Each crossing stops A right after its first order lock; B starts and
     must WAIT on that order — never take the print first and meet A coming the other way
     (before the fix: the editor held the print, remove-archives the order, and PostgreSQL
-    broke the cycle with a deadlock)."""
+    broke the cycle with a deadlock). A batch that finds the print in the trash files nothing
+    (WS-13 E13 V08)."""
     from backend.app.api.routes import archives as archive_routes, projects as project_routes
     from backend.app.core.database import async_session
     from backend.app.models.archive import PrintArchive

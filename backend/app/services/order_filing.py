@@ -82,6 +82,13 @@ FILING_FORBIDDEN = {
     "error": "filing_forbidden",
     "message": "Filing work under an order needs orders:update or orders:file_prints",
 }
+#: A print in the trash filed under an order (WS-13 E13 V08): it covers no order — the order's
+#: figures and prints read live archives only — so filing it would only take its parts off the
+#: free shelf. A restore comes first; nothing is restored behind the operator's back.
+PRINT_IN_TRASH = {
+    "error": "print_in_trash",
+    "message": "This print is in the trash — restore it before filing it under an order",
+}
 
 
 @dataclass

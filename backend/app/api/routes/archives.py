@@ -1185,6 +1185,10 @@ async def _update_archive_locked(
         if target_project is not None:
             from backend.app.services import order_filing
 
+            # The batch door's rule (WS-13 E13 V08): a print in the trash is not filed —
+            # read under the print's lock, before anything is written.
+            if archive.deleted_at is not None:
+                raise HTTPException(409, detail=order_filing.PRINT_IN_TRASH)
             await order_filing.resolve_link(db, target_project, None)
 
     # Filed under an order for the first time: whatever this print put on the

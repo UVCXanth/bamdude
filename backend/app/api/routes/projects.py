@@ -2465,6 +2465,10 @@ async def add_archives_to_project(
     archives = [fresh[archive.id] for archive in archives if archive.id in fresh]
     if any(archive.project_id not in locked and archive.project_id is not None for archive in archives):
         raise HTTPException(status_code=409, detail=order_fulfilment.ORDER_CHANGED)
+    # A print in the trash, as it stands under its own lock, refuses the whole batch before
+    # any print, shelf or journal row moves (WS-13 E13 V08) — never filed, never skipped.
+    if any(archive.deleted_at is not None for archive in archives):
+        raise HTTPException(status_code=409, detail=order_filing.PRINT_IN_TRASH)
     await order_filing.resolve_link(db, project_id, data.project_line_id)
     # A print taken from another order leaves it by that order's rules — the same
     # judge as the two other exits (WS-13 E13 B05), asked of every order a print

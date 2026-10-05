@@ -703,7 +703,11 @@ class TestLockProtocol:
         moved = r["add_then_trash"]
         assert moved["b"] == "ok" or moved["b"].startswith("http:409:"), moved
         assert moved["project"] == r["other"], moved
-        assert r["trash_then_add"]["b"] == "ok" and r["trash_then_add"]["trashed"], r
+        # The trash won: the batch, under the print's lock, finds it in the trash and files
+        # nothing (WS-13 E13 V08) — both ended (no deadlock), the print keeps its order.
+        won = r["trash_then_add"]
+        assert won["b"].startswith("http:409:") and "print_in_trash" in won["b"], won
+        assert won["trashed"] and won["project"] == r["order"], won
 
 
 class TestStockJournalPages:
