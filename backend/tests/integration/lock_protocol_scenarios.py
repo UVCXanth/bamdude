@@ -1257,3 +1257,66 @@ async def scenario_option_delete_first() -> dict:
 
 SCENARIOS["bound_part_first"] = scenario_bound_part_first
 SCENARIOS["option_delete_first"] = scenario_option_delete_first
+
+
+# ---------- print_exits · WS-13 E13 V04 — a print's exits against each other ----------
+
+
+async def scenario_print_exits() -> dict:
+    """The archive editor and the trash lock the order and then the print, as the batch exits
+    and receiving do. Each crossing stops A right after its first order lock; B starts and
+    must WAIT on that order — never take the print first and meet A coming the other way
+    (before the fix: the editor held the print, remove-archives the order, and PostgreSQL
+    broke the cycle with a deadlock)."""
+    from backend.app.api.routes import archives as archive_routes, projects as project_routes
+    from backend.app.core.database import async_session
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.project import Project
+    from backend.app.schemas.archive import ArchiveUpdate
+    from backend.app.schemas.project import BatchAddArchives
+
+    s = await shop(customer=False, group=False, line_quantity=1)
+    async with async_session() as db:
+        other = Project(name="Protocol destination", status="active")
+        db.add(other)
+        await db.commit()
+        other_id = other.id
+    admin = (None, True)
+
+    async def a_print() -> int:
+        async with async_session() as db:
+            archive = PrintArchive(
+                project_id=s["order"], filename="exit", file_path="", file_size=0, status="completed", quantity=1
+            )
+            db.add(archive)
+            await db.commit()
+            return archive.id
+
+    doors = {
+        "patch": lambda a: (
+            lambda db: archive_routes.update_archive(a, ArchiveUpdate(project_id=None), db, admin, _allow())
+        ),
+        "trash": lambda a: lambda db: archive_routes.delete_archive(a, db, admin, _allow()),
+        "remove": lambda a: (
+            lambda db: project_routes.remove_archives_from_project(
+                s["order"], BatchAddArchives(archive_ids=[a]), db, None, _allow()
+            )
+        ),
+        "add": lambda a: (
+            lambda db: project_routes.add_archives_to_project(
+                other_id, BatchAddArchives(archive_ids=[a]), db, None, _allow()
+            )
+        ),
+    }
+    out: dict[str, dict] = {"order": s["order"], "other": other_id}
+    for first, second in (("remove", "patch"), ("patch", "remove"), ("add", "trash"), ("trash", "add")):
+        archive_id = await a_print()
+        result = await duel(doors[first](archive_id), doors[second](archive_id), a_on="lock_order")
+        async with async_session() as db:
+            row = await db.get(PrintArchive, archive_id)
+            result.update(project=row.project_id, trashed=row.deleted_at is not None)
+        out[f"{first}_then_{second}"] = result
+    return out
+
+
+SCENARIOS["print_exits"] = scenario_print_exits

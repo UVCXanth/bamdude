@@ -685,6 +685,26 @@ class TestLockProtocol:
         assert r["b"].startswith("http:422:"), r
         assert not r["option_exists"] and r["part"] is None, r
 
+    def test_a_prints_exits_lock_the_order_before_the_print(self, tmp_path_factory):
+        """WS-13 E13 V04 (Codex round 2): the archive editor and the trash take the order and
+        then the print, as add-/remove-archives do — B waits on the order A holds; no
+        crossing ends in a deadlock, and the print ends where the later door put it."""
+        r = _protocol(tmp_path_factory, "print_exits")
+        for crossing in ("remove_then_patch", "patch_then_remove", "add_then_trash", "trash_then_add"):
+            c = r[crossing]
+            assert c["which"] == "waiting", (crossing, c)
+            _no_crash(c["a"])
+            _no_crash(c["b"])
+            assert c["a"] == "ok", (crossing, c)
+        assert r["remove_then_patch"]["b"] == "ok" and r["remove_then_patch"]["project"] is None, r
+        assert r["patch_then_remove"]["b"] == "ok" and r["patch_then_remove"]["project"] is None, r
+        # The trash read the print's order before its lock; the batch moved it meanwhile —
+        # «changed, try again», never the print trashed out of an order it did not lock.
+        moved = r["add_then_trash"]
+        assert moved["b"] == "ok" or moved["b"].startswith("http:409:"), moved
+        assert moved["project"] == r["other"], moved
+        assert r["trash_then_add"]["b"] == "ok" and r["trash_then_add"]["trashed"], r
+
 
 class TestStockJournalPages:
     """WS-13 E1 T9 / ST1: the journal's numbered pages on a real PostgreSQL."""
