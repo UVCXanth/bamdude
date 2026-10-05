@@ -126,6 +126,10 @@ async def test_five_external_p1p_project_jobs_produce_five_safe_commands(
     from backend.app.services.bambu_mqtt import BambuMQTTClient
     from backend.app.services.printer_manager import printer_manager
 
+    # Pytest workers reuse this manager across tests, while fixture databases
+    # reuse printer IDs. A previous test's run binding must not own these IDs.
+    monkeypatch.setattr(printer_manager, "_print_run_bindings", {})
+
     path = write_routing_3mf(
         tmp_path / "black-petg.gcode.3mf",
         {
