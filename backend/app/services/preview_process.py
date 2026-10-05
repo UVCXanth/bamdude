@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -98,9 +99,12 @@ class PreviewProcess:
         if self.containment:
             self.containment.close()
         if os.name != "nt":
-            # The group can outlive its leader (guardian crash). It is the
-            # owned session we created, not a PID adopted from a marker.
-            kill_owned_group(process.pid)
+            # The guardian kills its whole session on EOF, including itself.
+            # Once that SIGKILL exit and the observed children are reaped, a
+            # second killpg can address a recycled group ID (EPERM on macOS).
+            # A normally exited or crashed guardian still needs the backstop.
+            if process.returncode != -signal.SIGKILL or not descendants_reaped(children):
+                kill_owned_group(process.pid)
         if not descendants_reaped(children):
             raise PreviewError("unavailable")  # no replacement while ownership is uncertain
         if hasattr(self, "reader"):

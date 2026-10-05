@@ -1,6 +1,8 @@
 """No retired generation is ever deleted by staging diagnostics."""
 
+import io
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -12,6 +14,32 @@ import pytest
 from backend.app.services import worker_staging
 from backend.app.services.preview_process import PreviewProcess
 from backend.app.services.worker_containment import WorkerContainment
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups only")
+def test_reaped_guardian_group_is_not_signaled_again(monkeypatch):
+    """A second killpg after the guardian's EOF kill may target a reused ID."""
+    import backend.app.services.preview_process as preview_process
+
+    class ReapedGuardian:
+        pid = 1234
+        returncode = -signal.SIGKILL
+        stdin = io.BytesIO()
+        stdout = None
+
+        def poll(self):
+            return self.returncode
+
+    owner = PreviewProcess.__new__(PreviewProcess)
+    owner.process = ReapedGuardian()
+    owner.containment = None
+    monkeypatch.setattr(preview_process, "descendants", lambda _pid: [])
+    monkeypatch.setattr(
+        preview_process,
+        "kill_owned_group",
+        lambda _pid: (_ for _ in ()).throw(PermissionError("recycled group ID")),
+    )
+    owner.stop()
 
 
 def test_runtime_specific_skeletons_and_payloads(tmp_path):
