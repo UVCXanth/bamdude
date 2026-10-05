@@ -79,6 +79,14 @@ beforeEach(() => {
 });
 
 describe('a storekeeper without the catalog’s read (WS-13 E13 O19)', () => {
+  it('the free parts’ «Adjust» needs the catalog’s read too — its dialog reads the product’s shelf', () => {
+    auth.granted = new Set(['stock:read', 'stock:move', 'stock:adjust']);
+    render(
+      <StockProductsTable products={[partsRow]} canEdit onAdjust={() => {}} onAssemble={() => {}} sort="kits-desc" onSortChange={() => {}} />,
+    );
+    expect(screen.queryByRole('button', { name: 'Adjust' })).toBeNull();
+  });
+
   it('the position page offers no way into the product — no link and no dead «Open the product»', async () => {
     auth.granted = new Set(['stock:read', 'stock:move']);
     vi.spyOn(api, 'getStockItem').mockResolvedValue(pipeDetail);

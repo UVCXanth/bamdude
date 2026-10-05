@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import type { Order, ProjectLine, ProjectLineUpdate, StockSuggestItem } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+import { useAuth } from '../../contexts/AuthContext';
+import { canReadStock, canTakeStock } from '../../utils/workshopRights';
 import { useProductDetail } from '../../hooks/useProductDetail';
 import { useProductStock } from '../../hooks/useProductStock';
 import { useConfigurationKits } from '../../hooks/useConfigurationKits';
@@ -159,14 +161,20 @@ export function LineEditDialog({ order, line, onClose, onConfigure }: LineEditDi
   const blocked = configBlockedReason(order, line, t);
 
   const product = useProductDetail(line.product_id);
+  // The shelf's figures are the stock's read, taking from it the stock's move (WS-13 E13 O06):
+  // without them the dialog asks no figure and offers no stock field — a lower quantity still
+  // gives the line's kits back (O23).
+  const { hasPermission } = useAuth();
+  const readsStock = canReadStock(hasPermission);
+  const takes = readsStock && canTakeStock(hasPermission);
   // The shelf of the product. A configured line holds its own kit, not the product's
   // standard one — its kits are asked of the configuration.
   const config = line.configuration;
   const nonStandard =
     config != null && (config.choices.some((c) => !c.is_default) || config.changed_parts.length > 0);
-  const stockQuery = useProductStock(partsMode ? null : line.product_id);
+  const stockQuery = useProductStock(partsMode || !readsStock ? null : line.product_id);
   const kitsQuery = useConfigurationKits(
-    partsMode ? null : line.product_id,
+    partsMode || !readsStock ? null : line.product_id,
     nonStandard && config
       ? {
           options: config.choices.map((c) => c.option_id),
@@ -182,7 +190,7 @@ export function LineEditDialog({ order, line, onClose, onConfigure }: LineEditDi
   const suggest = useQuery({
     queryKey: ['stock-suggest', 'line', line.id, line.config_key],
     queryFn: () => api.suggestStock([suggestItemFor(line, line.quantity)]),
-    enabled: takesFinished,
+    enabled: takesFinished && readsStock,
   });
   const freeFinished = suggest.data?.items?.[0]?.finished_free;
   // While a figure is unknown the ceiling is what the line itself holds — the box never
@@ -364,7 +372,7 @@ export function LineEditDialog({ order, line, onClose, onConfigure }: LineEditDi
                 />
               </WorkshopField>
               <div aria-hidden className="max-[761px]:hidden" />
-              {moved ? (
+              {!takes ? null : moved ? (
                 <MovedKits line={line} draft={draft} setDraft={setDraft} />
               ) : (
                 <>

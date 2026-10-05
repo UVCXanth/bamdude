@@ -108,6 +108,26 @@ describe('«Repeat» of a print under an order', () => {
     expect(sent).toMatchObject({ without_order: true });
   });
 
+  // Final review: until the plate's run is read, whether the repeat keeps its order is unknown —
+  // a press then went without `without_order` and came back 403 for a caller without Fф.
+  it('«Repeat» waits until the plate’s run is read', async () => {
+    auth.granted = new Set(['printers:clear_plate', 'queue:read_all']);
+    let answer: () => void = () => {};
+    server.use(
+      http.get('/api/v1/printers/:id/waiting-print', async () => {
+        await new Promise<void>((resolve) => {
+          answer = resolve;
+        });
+        return HttpResponse.json(waiting());
+      }),
+    );
+    render(<PrinterQueueWidget printerId={1} printerState="FINISH" awaitingPlateClear={true} />);
+    const button = await screen.findByRole('button', { name: /^Repeat print$/ });
+    expect(button).toBeDisabled();
+    answer();
+    expect(await screen.findByRole('button', { name: /Repeat without order/ })).toBeEnabled();
+  });
+
   it('a closed order is not inherited, whatever the rights', async () => {
     auth.granted = new Set(['printers:clear_plate', 'queue:read_all', 'orders:update']);
     serveWaiting({ repeat_order_open: false });

@@ -73,6 +73,21 @@ export function withoutWriteOffs(state: FulfilmentState, draft: Draft): Draft {
   return out;
 }
 
+/**
+ * Nothing typed: a caller without the stock's move may not receive, issue or write off — it only
+ * completes an order whose goods are already out, a consequence of the order's own right (WS-13
+ * E13 O23).
+ */
+export function emptyDraft(state: FulfilmentState): Draft {
+  const out: Draft = {};
+  for (const line of state.lines) {
+    const parts: Record<number, PartDraft> = {};
+    for (const part of line.parts) parts[part.part_id] = { receive: 0, writeOff: 0, issue: 0 };
+    out[line.line_id] = { assemble: 0, receive: 0, writeOff: 0, issue: 0, parts };
+  }
+  return out;
+}
+
 export function draftFrom(state: FulfilmentState, mode: FulfilmentMode): Draft {
   const issuing = mode === 'all' && !state.closes_to_stock;
   const out: Draft = {};

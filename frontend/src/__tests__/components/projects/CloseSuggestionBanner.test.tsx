@@ -20,11 +20,12 @@ const state: FulfilmentState = {
 };
 
 describe('CloseSuggestionBanner', () => {
-  it('offers to receive, to issue and to close — each through the issue dialog', () => {
+  it('offers to receive, to issue and to close — each through the issue dialog', async () => {
     const onFulfil = vi.fn();
     render(<CloseSuggestionBanner order={order} state={state} onFulfil={onFulfil} />);
     expect(screen.getByText('Issued 4 of 10 · on the shelf for the order 6')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Receive into stock (3)…' }));
+    // Receiving and issuing wait for the signed-in user's stock move (WS-13 E13 O06).
+    fireEvent.click(await screen.findByRole('button', { name: 'Receive into stock (3)…' }));
     expect(onFulfil).toHaveBeenLastCalledWith('receive', false);
     fireEvent.click(screen.getByRole('button', { name: 'Issue to the customer (9)…' }));
     expect(onFulfil).toHaveBeenLastCalledWith('all', false);
@@ -69,13 +70,15 @@ describe('CloseSuggestionBanner · an order without a customer', () => {
 describe('CloseSuggestionBanner · one primary action (WS-13 E3 D04)', () => {
   const primaries = () => screen.getAllByRole('button').filter((b) => b.dataset.emphasis === 'primary');
 
-  it('leads with receiving while there are prints to receive', () => {
+  it('leads with receiving while there are prints to receive', async () => {
     render(<CloseSuggestionBanner order={order} state={state} onFulfil={() => {}} />);
+    await screen.findByTestId('close-suggestion-receive');
     expect(primaries().map((b) => b.dataset.testid)).toEqual(['close-suggestion-receive']);
   });
 
-  it('leads with issuing once nothing is left to receive', () => {
+  it('leads with issuing once nothing is left to receive', async () => {
     render(<CloseSuggestionBanner order={order} state={{ ...state, can_receive: 0 }} onFulfil={() => {}} />);
+    await screen.findByTestId('close-suggestion-issue');
     expect(primaries().map((b) => b.dataset.testid)).toEqual(['close-suggestion-issue']);
   });
 

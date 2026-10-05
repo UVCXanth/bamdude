@@ -80,9 +80,11 @@ describe('ProductsTable', () => {
     expect(within(cells[5]).getByTestId('product-8-row-menu')).toBeInTheDocument();
   });
 
-  it('D02 three headers sort: the name A→Z first, the composition and the stock largest first', () => {
+  it('D02 three headers sort: the name A→Z first, the composition and the stock largest first', async () => {
     const onSortChange = vi.fn();
     render(<Table onSortChange={onSortChange} />);
+    // The stock header sorts once the signed-in user's stock read is known (WS-13 E13 O12).
+    await screen.findByRole('button', { name: /Stock/ });
     expect(TABLE_SORT_KEYS).toEqual(['name', 'printed_parts', 'finished']);
     fireEvent.click(screen.getByRole('button', { name: /Composition/ }));
     expect(onSortChange).toHaveBeenLastCalledWith('printed_parts-desc');

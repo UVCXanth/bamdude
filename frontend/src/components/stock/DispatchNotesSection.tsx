@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useAuth } from '../../contexts/AuthContext';
 import type { DispatchNotesParams } from '../../api/client';
 import { useDispatchNotes } from '../../hooks/useDispatchNotes';
 import { listState } from '../../utils/listState';
@@ -37,6 +38,10 @@ export function DispatchNotesSection({
   caption?: string;
 }) {
   const { t } = useTranslation();
+  // The waybill is the stock's (`PATCH /stock-issues` asks `stock:move`, WS-13 E13 O25),
+  // whatever the page that shows the notes may edit.
+  const { hasPermission } = useAuth();
+  const editable = canEdit && hasPermission('stock:move');
   const heading = useRef<HTMLHeadingElement>(null);
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(PER_PAGE);
@@ -63,7 +68,7 @@ export function DispatchNotesSection({
         setPerPage(n);
         setPage(1);
       }}
-      canEdit={canEdit}
+      canEdit={editable}
       hideCustomer={customerId != null}
       hideOrder={projectId != null}
       fallbackRef={inTab ? undefined : heading}

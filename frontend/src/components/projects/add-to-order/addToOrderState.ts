@@ -167,9 +167,12 @@ export function partUnits(picks: PartPicks): number {
 }
 
 /** The plate line, once a plate is chosen; stock is kits only, picked by the server (rule 11). */
-export function plateLines(pick: PlatePick): BatchLine[] {
+export function plateLines(pick: PlatePick, takesStock = true): BatchLine[] {
   if (!pick || pick.plateIndex == null) return [];
-  return [{ kind: 'plate', library_file_id: pick.file.id, plate_index: pick.plateIndex, copies: pick.copies }];
+  const line = { kind: 'plate' as const, library_file_id: pick.file.id, plate_index: pick.plateIndex, copies: pick.copies };
+  // A plate's one-off product is reused per file and plate — its shelf may hold goods, and the
+  // server's `auto` takes them; without the stock's move the line takes nothing (WS-13 E13 O06).
+  return [takesStock ? line : { ...line, stock: { from_finished: 0, from_kits: 0 } }];
 }
 
 /** A line whose shelf gave less than was asked — the shelf moved (rule 23). */

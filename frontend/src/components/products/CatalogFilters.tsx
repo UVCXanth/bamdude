@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useAuth } from '../../contexts/AuthContext';
 import type { ProductFacets } from '../../api/client';
 import { getColorName } from '../../utils/colors';
 import { Button } from '../Button';
@@ -49,6 +50,10 @@ export function CatalogFilters({
   onReset?: () => void;
 }) {
   const { t } = useTranslation();
+  // The stock filter and the one-off toggle ask other domains' reads (WS-13 E13 O12).
+  const { hasPermission } = useAuth();
+  const readsStock = hasPermission('stock:read');
+  const readsOrders = hasPermission('orders:read');
 
   const choice = (
     key: 'material' | 'color' | 'model',
@@ -100,6 +105,7 @@ export function CatalogFilters({
         <option value="ready">{t('products.catalog.readyToPrint')}</option>
         <option value="draft">{t('products.status.draft')}</option>
       </Select>
+      {readsStock && (
       <Select
         aria-label={t('products.catalog.stock')}
         value={values.stock}
@@ -111,6 +117,7 @@ export function CatalogFilters({
         <option value="kits">{t('products.catalog.stockKits')}</option>
         <option value="low">{t('products.catalog.stockLow')}</option>
       </Select>
+      )}
       <label className="inline-flex items-center gap-2 text-sm text-bambu-gray cursor-pointer whitespace-nowrap">
         <input
           type="checkbox"
@@ -120,6 +127,7 @@ export function CatalogFilters({
         />
         {t('products.catalog.hidden')}
       </label>
+      {readsOrders && (
       <label className="inline-flex items-center gap-2 text-sm text-bambu-gray cursor-pointer whitespace-nowrap">
         <input
           type="checkbox"
@@ -129,6 +137,7 @@ export function CatalogFilters({
         />
         {t('products.catalog.adhoc')}
       </label>
+      )}
       {onReset && (
         <Button variant="ghost" onClick={onReset}>
           {t('list.empty.reset')}

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
+import { useAuth } from '../../../contexts/AuthContext';
+import { canReadStock, canTakeStock } from '../../../utils/workshopRights';
 import { api } from '../../../api/client';
 import type { BatchLine } from '../../../api/client';
 import { useToast } from '../../../contexts/ToastContext';
@@ -119,7 +121,10 @@ export function AddToOrderDialog({
 
   const target = order ?? chosen;
   // A chosen order came from the active list; a given one says what it is.
-  const takesStock = order ? order.active : true;
+  // …and only with the stock's move and read: without them the lines take nothing and no
+  // proposal is asked (WS-13 E13 O06 — «UI шле stock: none»).
+  const { hasPermission } = useAuth();
+  const takesStock = (order ? order.active : true) && canTakeStock(hasPermission) && canReadStock(hasPermission);
   const items = useMemo(() => suggestItems(products), [products]);
   // Only proposals that answer what each row asks NOW reach the rows and the batch (E5 R02).
   const { current, status, refreshFailed, retry } = useStockSuggest(items, takesStock);
@@ -128,7 +133,9 @@ export function AddToOrderDialog({
   // refused line adds nothing (spec rule 11).
   const productBatch = productLines(products, current, takesStock);
   const partsBatch = partsLines(parts);
-  const plateBatch = plateLines(plate);
+  // A plate shows no proposal — the server's `auto` takes what its one-off product holds, which
+  // is the stock's move alone (WS-13 E13 O06).
+  const plateBatch = plateLines(plate, (order ? order.active : true) && canTakeStock(hasPermission));
   const lines: BatchLine[] = [...productBatch, ...partsBatch, ...plateBatch];
 
   const add = useMutation({

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ExternalLink, PackageCheck, PackagePlus, Pencil } from 'lucide-react';
 import type { Order } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
+import { canIssue } from '../../utils/workshopRights';
 import { formatMoney } from '../../utils/currency';
 import { formatCalendarDate, formatDateOnly } from '../../utils/date';
 import { isOverdue } from '../../utils/orderDates';
@@ -205,7 +206,7 @@ export function OrderHeader({
             {t('orders.header.edit')}
           </Button>
         )}
-        {canUpdate && active && fulfilment && (
+        {canIssue(hasPermission) && active && fulfilment && (
           <Button
             variant={fulfilment.primary ? 'primary' : 'secondary'}
             size="sm"
@@ -216,7 +217,7 @@ export function OrderHeader({
             {t('orders.header.fulfil')}
           </Button>
         )}
-        {canUpdate && bankable > 0 && (
+        {canIssue(hasPermission) && bankable > 0 && (
           <Button
             variant="secondary"
             size="sm"

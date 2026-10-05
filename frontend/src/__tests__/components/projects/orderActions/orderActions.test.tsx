@@ -66,7 +66,7 @@ const row = (over: Partial<OrderListItem> = {}): OrderListItem => ({
   ...over,
 });
 
-const ALL = { update: true, create: true, remove: true };
+const ALL = { update: true, create: true, remove: true, issue: true };
 
 describe('orderMenuItems', () => {
   it('offers an active order every action, in the agreed order', () => {
@@ -101,11 +101,11 @@ describe('orderMenuItems', () => {
   });
 
   it('gives a reader no menu at all — «open» alone is not a menu (R06)', () => {
-    expect(orderMenuItems(toOrderRef(row()), { update: false, create: false, remove: false }, 'list')).toEqual([]);
+    expect(orderMenuItems(toOrderRef(row()), { update: false, create: false, remove: false, issue: false }, 'list')).toEqual([]);
   });
 
   it('keeps «open» and the separator beside a lone delete', () => {
-    expect(orderMenuItems(toOrderRef(row()), { update: false, create: false, remove: true }, 'list')).toEqual([
+    expect(orderMenuItems(toOrderRef(row()), { update: false, create: false, remove: true, issue: false }, 'list')).toEqual([
       { action: 'open' },
       { action: 'delete', danger: true, separatorBefore: true },
     ]);

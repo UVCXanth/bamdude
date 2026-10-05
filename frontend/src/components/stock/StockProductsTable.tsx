@@ -45,7 +45,9 @@ const MARK = 'ml-2 text-xs text-bambu-gray';
 export function StockProductsTable({ products, canEdit, onAdjust, onAssemble, sort, onSortChange, footer }: StockProductsTableProps) {
   const { t } = useTranslation();
   // A hand correction of the free parts is `stock:adjust` (WS-13 E13 O06); assembling moves goods.
-  const canAdjust = useAuth().hasPermission('stock:adjust');
+  // Its dialog reads the product's shelf (`/products/{id}/stock`), the catalog's read too.
+  const { hasPermission } = useAuth();
+  const canAdjust = hasPermission('stock:adjust') && hasPermission('products:read');
   const uid = useId();
   const [open, setOpen] = useState<Set<number>>(() => new Set());
   const withOptions = products.some((p) => p.kits_by_option.length > 0);

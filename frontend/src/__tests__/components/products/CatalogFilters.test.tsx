@@ -16,8 +16,10 @@ describe('CatalogFilters', () => {
   beforeEach(() => setColorCatalog({ ff0000: 'Red' }));
   afterEach(() => __resetColorCatalogForTests());
 
-  it('C03 draws the mockup row: five named selects and two checkboxes', () => {
+  it('C03 draws the mockup row: five named selects and two checkboxes', async () => {
     render(<CatalogFilters values={none} onChange={vi.fn()} facets={facets} facetsFailed={false} onRetryFacets={vi.fn()} />);
+    // The stock and one-off filters wait for the signed-in user's reads (WS-13 E13 O12).
+    await screen.findByLabelText('Stock');
     expect(optionsOf('Material')).toEqual(['All materials', 'PETG', 'PLA']);
     expect(optionsOf('Colour')).toEqual(['All colours', 'Red']);
     expect(optionsOf('Printer model')).toEqual(['Any printer', 'Sliced for P1S', 'Sliced for X1C', 'Not sliced']);
@@ -27,9 +29,10 @@ describe('CatalogFilters', () => {
     expect(screen.getByRole('checkbox', { name: 'one-off' })).not.toBeChecked();
   });
 
-  it('C03 reports each choice by its URL key', () => {
+  it('C03 reports each choice by its URL key', async () => {
     const onChange = vi.fn();
     render(<CatalogFilters values={none} onChange={onChange} facets={facets} facetsFailed={false} onRetryFacets={vi.fn()} />);
+    await screen.findByLabelText('Stock');
     fireEvent.change(screen.getByLabelText('Printer model'), { target: { value: 'none' } });
     expect(onChange).toHaveBeenLastCalledWith('model', 'none');
     fireEvent.change(screen.getByLabelText('Stock'), { target: { value: 'low' } });

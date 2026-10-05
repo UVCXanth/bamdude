@@ -8,6 +8,7 @@ import { api } from '../api/client';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { useAuth } from '../contexts/AuthContext';
+import { canFileArchive } from '../utils/workshopRights';
 import { useToast } from '../contexts/ToastContext';
 import { formatFileSize } from '../utils/file';
 import { parseUTCDate } from '../utils/date';
@@ -37,7 +38,11 @@ export function ArchiveTrashPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const { hasPermission } = useAuth();
+  const { hasPermission, canModify } = useAuth();
+  // Restoring a print filed under an order brings its coverage back — the server asks F(print)
+  // (WS-13 E13 ARC-07); the trash keeps the link, so the item says whether it has one.
+  const mayRestore = (item: { project_id: number | null; created_by_id: number | null }) =>
+    item.project_id == null || canFileArchive(hasPermission, canModify, item.created_by_id);
   const [pending, setPending] = useState<PendingAction>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
 
@@ -126,6 +131,8 @@ export function ArchiveTrashPage() {
   });
 
   const items = useMemo(() => trashQuery.data?.items ?? [], [trashQuery.data?.items]);
+  // A selection with a filed print the caller may not restore is not restored at all (ARC-07).
+  const selectionRestorable = items.every((item) => !selected.has(item.id) || mayRestore(item));
   const retentionDays = trashQuery.data?.retention_days ?? 30;
   const totalBytes = useMemo(
     () => items.reduce((sum, i) => sum + (i.file_size ?? 0), 0),
@@ -246,7 +253,8 @@ export function ArchiveTrashPage() {
                 <Button
                   variant="secondary"
                   onClick={() => bulkRestoreMutation.mutate(Array.from(selected))}
-                  disabled={bulkRestoreMutation.isPending}
+                  disabled={bulkRestoreMutation.isPending || !selectionRestorable}
+                  title={selectionRestorable ? undefined : t('archives.permission.noUnfileToRestore')}
                 >
                   <RotateCcw className="w-4 h-4 mr-1" />
                   {t('archiveTrash.bulkRestore')}
@@ -350,7 +358,8 @@ export function ArchiveTrashPage() {
                     <td className="px-3 py-2 text-right whitespace-nowrap">
                       <button
                         onClick={() => restoreMutation.mutate(item.id)}
-                        disabled={restoreMutation.isPending}
+                        disabled={restoreMutation.isPending || !mayRestore(item)}
+                        title={mayRestore(item) ? undefined : t('archives.permission.noUnfileToRestore')}
                         className="inline-flex items-center gap-1 px-2 py-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
                       >
                         <RotateCcw className="w-3.5 h-3.5" />

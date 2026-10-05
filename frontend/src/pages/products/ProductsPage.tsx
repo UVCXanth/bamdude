@@ -52,6 +52,13 @@ import { splitSortBy } from '../../utils/listSort';
  * of the read said (`listState`: a skeleton, a failed key as an alert with its retry,
  * a failed re-read as a note) — never «no products» for «could not ask».
  */
+/** A stock or order sort without its read is the default sort (WS-13 E13 O12). */
+function sortAllowed(sort: string, readsStock: boolean, readsOrders: boolean) {
+  const key = sort.split('-')[0];
+  if ((!readsStock && (key === 'finished' || key === 'kits')) || (!readsOrders && key === 'orders')) return 'name-asc';
+  return sort;
+}
+
 export function ProductsPage() {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -66,10 +73,14 @@ export function ProductsPage() {
   // WS-13 E8 C04 (R01): the URL keeps its old values. `catalog=0` was always «the hidden
   // ones too» — now the «hidden» box; anything else is the default. A readiness or stock
   // the closed sets do not know is no filter, and opening such a link rewrites nothing.
+  // A filter or sort on another domain's figures is that domain's read — the server refuses it
+  // (WS-13 E13 O12); an address carrying one is read as the default, never sent.
+  const readsStock = hasPermission('stock:read');
+  const readsOrders = hasPermission('orders:read');
   const hidden = extra.catalog === '0';
-  const adhoc = extra.adhoc === '1';
+  const adhoc = readsOrders && extra.adhoc === '1';
   const status = catalogStatus(extra.status);
-  const stock = catalogStock(extra.stock);
+  const stock = readsStock ? catalogStock(extra.stock) : '';
   const filters: CatalogFilterValues = {
     material: extra.material,
     color: extra.color,
@@ -122,7 +133,7 @@ export function ProductsPage() {
     ...(extra.model === 'none' ? { sliced: false } : extra.model ? { model: extra.model } : {}),
     ...(status ? { status } : {}),
     ...(stock ? { stock: stock === 'low' ? ('below_min' as const) : stock } : {}),
-    sort_by: sort,
+    sort_by: sortAllowed(sort, readsStock, readsOrders),
     page,
     ...(perPage === -1 ? { all: true } : { per_page: perPage }),
   };
@@ -181,9 +192,13 @@ export function ProductsPage() {
     { key: 'printed_parts', label: t('products.sort.printedParts'), descFirst: true },
     { key: 'parts', label: t('products.sort.parts'), descFirst: true },
     { key: 'plates', label: t('products.sort.plates'), descFirst: true },
-    { key: 'finished', label: t('products.sort.finished'), descFirst: true },
-    { key: 'kits', label: t('products.sort.kits'), descFirst: true },
-    { key: 'orders', label: t('products.sort.orders'), descFirst: true },
+    ...(readsStock
+      ? [
+          { key: 'finished', label: t('products.sort.finished'), descFirst: true },
+          { key: 'kits', label: t('products.sort.kits'), descFirst: true },
+        ]
+      : []),
+    ...(readsOrders ? [{ key: 'orders', label: t('products.sort.orders'), descFirst: true }] : []),
     { key: 'sku', label: t('products.sort.sku') },
     { key: 'category', label: t('products.sort.category') },
     { key: 'status', label: t('products.sort.status') },

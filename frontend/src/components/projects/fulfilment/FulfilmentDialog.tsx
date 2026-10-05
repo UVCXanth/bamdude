@@ -7,6 +7,7 @@ import { useAuth } from '../../../contexts/AuthContext';
 import { useToast } from '../../../contexts/ToastContext';
 import { fulfilmentQuery, useFulfilment } from '../../../hooks/useFulfilment';
 import { invalidateOrderViews } from '../../../utils/queryInvalidation';
+import { canTakeStock, canWriteOff } from '../../../utils/workshopRights';
 import { Button } from '../../Button';
 import { DispatchNoteCreated } from '../../stock/DispatchNoteCreated';
 import { WorkshopDialog } from '../../workshop/WorkshopDialog';
@@ -23,6 +24,7 @@ import {
   completesOrder,
   doneAfter,
   draftFrom,
+  emptyDraft,
   issueCeiling,
   partsColumnState,
   partsColumnTotal,
@@ -151,13 +153,16 @@ function FulfilmentForm({
   const qc = useQueryClient();
   const { showToast } = useToast();
   const { user, hasPermission } = useAuth();
-  // A write-off corrects the books — `stock:adjust` (WS-13 E13 O06); the server asks it.
-  const canWriteOff = hasPermission('stock:adjust');
+  // Receiving and issuing move the shelf — `stock:move`; a write-off corrects the books —
+  // `stock:adjust` too (WS-13 E13 O06). Without the move the dialog only completes (O23).
+  const canMove = canTakeStock(hasPermission);
+  const mayWriteOff = canWriteOff(hasPermission);
+  const startDraft = (s: FulfilmentState) => (canMove ? draftFrom(s, mode) : emptyDraft(s));
   const writeOffId = useId();
   const root = useRef<HTMLDivElement>(null);
 
   // The STORED draft (R04): each new state trims it, as a record — never re-derived.
-  const [typed, setTyped] = useState<Draft>(() => draftFrom(state, mode));
+  const [typed, setTyped] = useState<Draft>(() => startDraft(state));
   const [seen, setSeen] = useState(state);
   const [trimmed, setTrimmed] = useState(false);
   if (state !== seen) {
@@ -176,7 +181,7 @@ function FulfilmentForm({
   // The close mark is set ONCE, on the first state (R09): asked by a «done» door, or — in
   // the full mode — when the first batch closes the order. Later reads never re-tick it.
   const [closeAsked, setCloseAsked] = useState(
-    () => completeAsked || (mode === 'all' && completesOrder(state, draftFrom(state, mode))),
+    () => completeAsked || (mode === 'all' && completesOrder(state, startDraft(state))),
   );
   const [error, setError] = useState<string | null>(null);
   // After a refusal: the state read again — `reading` until an answer that came after it.
@@ -341,7 +346,7 @@ function FulfilmentForm({
           {query.isError && reread === 'idle' && <RefreshFailedNote onRetry={() => void query.refetch()} />}
           {!error && trimmedNote}
 
-          {canWriteOff && (
+          {mayWriteOff && (
             <div className="flex justify-end">
               <Button
                 variant="secondary"
@@ -355,6 +360,9 @@ function FulfilmentForm({
             </div>
           )}
 
+          {!canMove && <p className="text-sm text-bambu-gray">{t('orders.fulfil.noMoveRight')}</p>}
+          {/* Without the stock's move the numbers are read, never typed (WS-13 E13 O06). */}
+          <fieldset disabled={!canMove} className="min-w-0 border-0 m-0 p-0">
           <WorkshopTableScroll label={t('orders.fulfil.title')}>
             <table id={`${writeOffId}-table`} className="w-full text-sm">
               <thead>
@@ -395,6 +403,7 @@ function FulfilmentForm({
               </tbody>
             </table>
           </WorkshopTableScroll>
+          </fieldset>
 
           <div id={writeOffId}>
             {writeOffOpen && (

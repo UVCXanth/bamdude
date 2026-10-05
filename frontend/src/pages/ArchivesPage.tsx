@@ -690,8 +690,16 @@ function ArchiveCard({
       icon: <Trash2 className="w-4 h-4" />,
       onClick: () => setShowDeleteConfirm(true),
       danger: true,
-      disabled: !canModify('archives', 'delete', archive.created_by_id),
-      title: !canModify('archives', 'delete', archive.created_by_id) ? t('archives.permission.noDelete') : undefined,
+      // A print filed under an order takes its coverage with it — the server asks F(print)
+      // too (WS-13 E13 ARC-07).
+      disabled:
+        !canModify('archives', 'delete', archive.created_by_id) ||
+        (archive.project_id != null && !canFileArchive(hasPermission, canModify, archive.created_by_id)),
+      title: !canModify('archives', 'delete', archive.created_by_id)
+        ? t('archives.permission.noDelete')
+        : archive.project_id != null && !canFileArchive(hasPermission, canModify, archive.created_by_id)
+          ? t('archives.permission.noUnfileToDelete')
+          : undefined,
     },
   ];
 
@@ -2092,8 +2100,16 @@ function ArchiveListRow({
       icon: <Trash2 className="w-4 h-4" />,
       onClick: () => setShowDeleteConfirm(true),
       danger: true,
-      disabled: !canModify('archives', 'delete', archive.created_by_id),
-      title: !canModify('archives', 'delete', archive.created_by_id) ? t('archives.permission.noDelete') : undefined,
+      // A print filed under an order takes its coverage with it — the server asks F(print)
+      // too (WS-13 E13 ARC-07).
+      disabled:
+        !canModify('archives', 'delete', archive.created_by_id) ||
+        (archive.project_id != null && !canFileArchive(hasPermission, canModify, archive.created_by_id)),
+      title: !canModify('archives', 'delete', archive.created_by_id)
+        ? t('archives.permission.noDelete')
+        : archive.project_id != null && !canFileArchive(hasPermission, canModify, archive.created_by_id)
+          ? t('archives.permission.noUnfileToDelete')
+          : undefined,
     },
   ];
 

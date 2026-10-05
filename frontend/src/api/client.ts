@@ -2257,8 +2257,9 @@ export interface ProjectsNavBadges {
   active_orders: number | null;
   /** Active catalog products still in draft (spec workshop-product-catalog, rule 18). */
   draft_products: number | null;
-  /** Finished-goods positions whose free quantity is under their minimum (spec workshop-finished-goods, rule 22). */
-  stock_below_min?: number;
+  /** Finished-goods positions whose free quantity is under their minimum (spec workshop-finished-goods,
+   *  rule 22); null without the stock's read (WS-13 E13 O12). */
+  stock_below_min?: number | null;
 }
 /** One category of the catalog's panel — how many products it holds under the list's filters. */
 export interface ProductCategoryCount {
@@ -3411,6 +3412,8 @@ export type BatchLine =
       library_file_id: number;
       plate_index: number;
       copies: number;
+      /** Omitted — the server's proposal (`auto`), which asks `stock:move` (WS-13 E13 O06). */
+      stock?: 'auto' | { from_finished: number; from_kits: number };
       material?: string | null;
       color?: string | null;
       note?: string | null;
@@ -6016,6 +6019,8 @@ export interface PrintQueueItem {
   /** The order's name, so a surface can say where the row is filed without a
    *  second request (the copy-queue dialog). Null under no order. */
   project_name?: string | null;
+  /** Whether that order is open — a clone keeps it only then (WS-13 E13 R11). */
+  project_status?: string | null;
   waiting_reason: string | null;
   archive_id: number | null;
   library_file_id: number | null;

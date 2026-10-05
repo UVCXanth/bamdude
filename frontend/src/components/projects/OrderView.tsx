@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { ChevronRight, Loader2 } from 'lucide-react';
 import { api, ApiError } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
+import { canFileFuturePrint } from '../../utils/workshopRights';
 import { OrderHeader } from './OrderHeader';
 import { OrderStageStepper } from './OrderStageStepper';
 import { CloseSuggestionBanner } from './CloseSuggestionBanner';
@@ -210,7 +211,8 @@ export function OrderView({
         return (
           <PlanBlock
             order={order}
-            canEdit={canEdit}
+            // The plan files new work under the order — Fф, not only `orders:update` (WS-13 E13 O21).
+            canEdit={canFileFuturePrint(hasPermission)}
             onDraftChanged={setPlanDraftChanged}
             onEnqueued={onPlanSent}
           />

@@ -733,15 +733,26 @@ describe('PlanBlock', () => {
     expect(screen.queryByTestId('plan-row-10-100-printer')).not.toBeInTheDocument();
   });
 
-  it('hides every queue action from a reader, and keeps the printer', async () => {
+  // WS-13 E13 O21 (final review #4): every door of the plan files new work under the order —
+  // Fф, `orders:update` or `orders:file_prints` — beside the queue's or the printer's own right.
+  // A printer operator who only reads orders sends nothing the server would refuse.
+  it('offers a reader of orders neither the queue nor the printer, however much it may print', async () => {
+    auth.granted = new Set(['orders:read', 'products:read', 'queue:create', 'printers:control']);
     render(<PlanBlock order={order} canEdit={false} />);
 
     expect(await screen.findByTestId('plan-row-10-100')).toBeInTheDocument();
     expect(screen.queryByTestId('plan-enqueue-all')).not.toBeInTheDocument();
     expect(screen.queryByTestId('plan-row-10-100-queue')).not.toBeInTheDocument();
-    // ⚠️ `canEdit` is the ORDER's own gate (a closed order, a read-only view)
-    // and it does not speak for the printers. Somebody holding
-    // `printers:control` may still send a plate to a machine.
+    expect(screen.queryByTestId('plan-row-10-100-printer')).not.toBeInTheDocument();
+  });
+
+  it('offers a filing clerk the queue and the printer without the right to change orders', async () => {
+    auth.granted = new Set(['orders:read', 'orders:file_prints', 'products:read', 'queue:create', 'printers:control']);
+    // The order page passes Fф as the plan's `canEdit` (OrderView).
+    render(<PlanBlock order={order} canEdit />);
+
+    expect(await screen.findByTestId('plan-row-10-100-queue')).toBeInTheDocument();
+    expect(screen.getByTestId('plan-enqueue-all')).toBeInTheDocument();
     expect(screen.getByTestId('plan-row-10-100-printer')).toBeInTheDocument();
   });
 

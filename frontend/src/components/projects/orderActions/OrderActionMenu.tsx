@@ -14,6 +14,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '../../../contexts/AuthContext';
+import { canIssue } from '../../../utils/workshopRights';
 import { CardActionMenu, CardActionMenuItem } from '../../CardActionMenu';
 import { orderMenuItems, type OrderAction } from './orderMenu';
 import type { OrderRef } from './orderRef';
@@ -58,6 +59,7 @@ export function OrderActionMenu({
       update: hasPermission('orders:update'),
       create: hasPermission('orders:create'),
       remove: hasPermission('orders:delete'),
+      issue: canIssue(hasPermission),
     },
     context,
   );

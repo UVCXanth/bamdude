@@ -39,6 +39,9 @@ export interface PlateDefects {
   repeatWithoutOrder: boolean;
   /** `body()` for «Repeat», carrying `without_order` when the repeat goes without the order. */
   repeatBody: () => PlateAnswerBody | undefined;
+  /** The run on the plate has been read (or could not be): until then whether «Repeat» keeps
+   *  the order is unknown, and the button waits (WS-13 E13 final review). */
+  repeatReady: boolean;
   /** After a successful answer: refresh everything the defects may have moved, close the row. */
   afterAnswer: (ledgerRefused?: number) => void;
   /** After a refused answer: the server rolled the defects back, so stop showing what was typed. */
@@ -55,7 +58,7 @@ export function usePlateDefects(printerId: number, enabled: boolean): PlateDefec
   const [flat, setFlatState] = useState(0);
   const [touched, setTouched] = useState(false);
 
-  const { data: waiting } = useQuery({
+  const { data: waiting, isFetched: waitingRead } = useQuery({
     queryKey: ['waiting-print', printerId],
     queryFn: () => api.getWaitingPrint(printerId),
     enabled,
@@ -130,6 +133,7 @@ export function usePlateDefects(printerId: number, enabled: boolean): PlateDefec
 
   return {
     waiting,
+    repeatReady: !enabled || waitingRead,
     gradable,
     open,
     toggle: () => setOpen((o) => !o),

@@ -105,6 +105,16 @@ describe('EditArchiveModal — the print’s order', () => {
     expect('project_line_id' in body).toBe(false);
   });
 
+  // WS-13 E13 final review: the server files the edited print with Fф (`orders:update` or
+  // `orders:file_prints`) beside the archive's own right — the filing clerk edits the order too.
+  it('lets a filing clerk change the order without the right to change orders', async () => {
+    auth.granted = new Set(['archives:update_all', 'orders:file_prints']);
+    render(<EditArchiveModal archive={archive as never} onClose={() => {}} />);
+    const order = screen.getByRole('combobox', { name: 'Order' }) as HTMLSelectElement;
+    await waitFor(() => expect(order.selectedOptions[0]).toHaveTextContent('OR-0001 · Alpha'));
+    await waitFor(() => expect(order).not.toBeDisabled());
+  });
+
   it('shows the order and the line read-only without the right to change orders', async () => {
     auth.granted = new Set(['archives:update_all']);
     render(<EditArchiveModal archive={archive as never} onClose={() => {}} />);

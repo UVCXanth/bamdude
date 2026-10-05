@@ -61,6 +61,10 @@ export const ORDER_VIEW_KEYS = [
   'order-filament', 'orders-filament', // spec 2026-09-07: the need moves with the plan
   'customers', // the customer tiles are computed from these orders
   'customer', // and one customer's page with them — the prefix, see above
+  // WS-13 E13: the pickers read the customers and a customer's contacts through their own
+  // projections; a customer or contact saved moves them as it moves the directory.
+  'customer-options',
+  'customer-contact-options',
   // pass 7: the orders a print dialog offers, and how many prints each still
   // needs. It IS an order view — the number comes from the plan engine — and it
   // is mounted only while such a dialog is open, so the prefix costs nothing
@@ -258,6 +262,9 @@ export const PRODUCT_CATALOG_KEYS: readonly (readonly string[])[] = [
   ['projects', 'nav-badges'],
   ['product-facets'],
   ['product-categories'],
+  // The stock dialogs' own projection of the catalog (WS-13 E13 STK-10): a name, an option.
+  ['stock-catalog'],
+  ['stock-product'],
 ];
 
 export function invalidateProductCatalog(qc: QueryClient): void {

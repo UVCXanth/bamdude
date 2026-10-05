@@ -24,6 +24,8 @@ export interface OrderMenuRights {
   update: boolean;
   create: boolean;
   remove: boolean;
+  /** `orders:update` + `stock:move` — issuing and banking move the shelf (WS-13 E13 O06). */
+  issue: boolean;
 }
 
 /**
@@ -45,8 +47,8 @@ export function orderMenuItems(
   const items: OrderMenuItem[] = [];
   if (can.update) items.push({ action: 'edit' });
   if (can.create) items.push({ action: 'duplicate' });
-  if (can.update && active) items.push({ action: 'fulfil' });
-  if (can.update && order.bankable_surplus > 0) items.push({ action: 'bank' });
+  if (can.issue && active) items.push({ action: 'fulfil' });
+  if (can.issue && order.bankable_surplus > 0) items.push({ action: 'bank' });
   if (can.update && active) items.push({ action: 'complete' }, { action: 'cancel' });
   if (can.update && !active) items.push({ action: 'reopen' });
   if (can.update && context === 'detail') items.push({ action: 'cover' });

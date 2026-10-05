@@ -902,7 +902,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
                 {status?.repeat_available !== false && (
                   <button
                     onClick={() => repeatPrintMutation.mutate()}
-                    disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate')}
+                    disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate') || !queueDefects.repeatReady}
                     className="flex-1 py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
                   >
                     {repeatPrintMutation.isPending ? (
@@ -958,6 +958,8 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
             <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
               <SortableContext items={renderedItems.map(i => i.id)} strategy={verticalListSortingStrategy}>
             {renderedItems.map((item: PrintQueueItem) => {
+              // A clone keeps the row's order only while it is open (WS-13 E13 R11).
+              const orderOpen = (item.project_status ?? 'active') === 'active';
               // Detect if this item is part of an active batch (≥2 pending siblings).
               const batchSize = item.batch_id
                 ? pending.filter(p => p.batch_id === item.batch_id).length
@@ -993,9 +995,9 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
                   onBump={() => bumpMutation.mutate(item.id)}
                   onBumpBottom={() => bumpBottomMutation.mutate(item.id)}
                   onClone={(scope) =>
-                    cloneMutation.mutate({ id: item.id, scope, keepOrder: keepsOrderOnCopy(item.project_id, hasPermission) })
+                    cloneMutation.mutate({ id: item.id, scope, keepOrder: keepsOrderOnCopy(item.project_id, hasPermission, orderOpen) })
                   }
-                  cloneWithoutOrder={!keepsOrderOnCopy(item.project_id, hasPermission)}
+                  cloneWithoutOrder={!keepsOrderOnCopy(item.project_id, hasPermission, orderOpen)}
                   onSkip={() => skipMutation.mutate(item.id)}
                   onToggleManualStart={() => toggleManualStartMutation.mutate(item.id)}
                   onEdit={onEditItem ? () => onEditItem(item) : undefined}
@@ -1007,7 +1009,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
                       ? () =>
                           cloneBatchMutation.mutate({
                             batchId: item.batch_id!,
-                            keepOrder: keepsOrderOnCopy(item.project_id, hasPermission),
+                            keepOrder: keepsOrderOnCopy(item.project_id, hasPermission, orderOpen),
                           })
                       : undefined
                   }

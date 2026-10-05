@@ -1,5 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Trans, useTranslation } from 'react-i18next';
+import { useAuth } from '../../contexts/AuthContext';
+import { canReadStock, canTakeStock } from '../../utils/workshopRights';
 import { PackageCheck } from 'lucide-react';
 import { api } from '../../api/client';
 import type { ProjectLine, StockOffer, TakeStockResult } from '../../api/client';
@@ -25,7 +27,11 @@ export function TakeStockBanner({ orderId, lines = [] }: { orderId: number; line
   const { t } = useTranslation();
   const qc = useQueryClient();
   const { showToast } = useToast();
-  const { data: offers = [] } = useStockOffers(orderId);
+  // Taking is the stock's move, the offers its read (WS-13 E13 O06): without both, no banner
+  // and no request the server would refuse.
+  const { hasPermission } = useAuth();
+  const allowed = canTakeStock(hasPermission) && canReadStock(hasPermission);
+  const { data: offers = [] } = useStockOffers(orderId, allowed);
   const configOf = (lineId: number) => {
     const line = lines.find((l) => l.id === lineId);
     return line ? lineConfigLabel(line.configuration, line.mode, t) : '';

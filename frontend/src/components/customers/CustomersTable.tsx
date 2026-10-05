@@ -68,21 +68,31 @@ export function CustomersTable({ customers, actions, sort, onSortChange, footer 
               <SortableHeader sortKey="name" label={t('customers.table.name')} sort={sort} onSort={onSortChange} />
               {plain(t('customers.table.contact'))}
               {plain(t('customers.table.delivery'))}
-              <SortableHeader
-                sortKey="orders"
-                label={t('customers.table.orders')}
-                sort={sort}
-                onSort={onSortChange}
-                descFirst
-              />
-              <SortableHeader
-                sortKey="total_price"
-                label={t('customers.table.totalPrice')}
-                sort={sort}
-                onSort={onSortChange}
-                descFirst
-                align="right"
-              />
+              {/* Order counts and money sort only for the orders' reader (WS-13 E13 O12). */}
+              {hasPermission('orders:read') ? (
+                <>
+                  <SortableHeader
+                    sortKey="orders"
+                    label={t('customers.table.orders')}
+                    sort={sort}
+                    onSort={onSortChange}
+                    descFirst
+                  />
+                  <SortableHeader
+                    sortKey="total_price"
+                    label={t('customers.table.totalPrice')}
+                    sort={sort}
+                    onSort={onSortChange}
+                    descFirst
+                    align="right"
+                  />
+                </>
+              ) : (
+                <>
+                  {plain(t('customers.table.orders'))}
+                  <th className="font-normal text-right">{t('customers.table.totalPrice')}</th>
+                </>
+              )}
               {hasActions && (
                 <th className="w-[1%]">
                   <span className="sr-only">{t('common.actions')}</span>

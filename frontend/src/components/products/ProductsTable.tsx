@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
+import { useAuth } from '../../contexts/AuthContext';
 import type { ProductListItem } from '../../api/client';
 import { SortableHeader } from '../SortableHeader';
 import { WorkshopPanel, WorkshopTableScroll } from '../workshop/WorkshopPanel';
@@ -46,6 +47,8 @@ export function ProductsTable({
   footer?: ReactNode;
 }) {
   const { t } = useTranslation();
+  // The stock's figures sort only for whoever reads them (WS-13 E13 O12).
+  const readsStock = useAuth().hasPermission('stock:read');
   const plain = (label: string) => <th className="font-normal text-left">{label}</th>;
 
   return (
@@ -70,7 +73,11 @@ export function ProductsTable({
               />
               {plain(t('products.table.printers'))}
               {plain(t('products.table.materialColour'))}
-              <SortableHeader sortKey="finished" label={t('products.table.stock')} sort={sort} onSort={onSortChange} descFirst />
+              {readsStock ? (
+                <SortableHeader sortKey="finished" label={t('products.table.stock')} sort={sort} onSort={onSortChange} descFirst />
+              ) : (
+                plain(t('products.table.stock'))
+              )}
               <th className="w-[1%]" aria-label={t('common.actions')}>
                 <span className="sr-only">{t('common.actions')}</span>
               </th>

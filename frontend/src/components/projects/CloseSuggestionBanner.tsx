@@ -1,4 +1,6 @@
 import { useTranslation } from 'react-i18next';
+import { useAuth } from '../../contexts/AuthContext';
+import { canIssue as mayIssue } from '../../utils/workshopRights';
 import type { FulfilmentState, Order } from '../../api/client';
 import type { FulfilmentMode } from './fulfilment/fulfilmentState';
 import { Button } from '../Button';
@@ -32,15 +34,18 @@ interface CloseSuggestionBannerProps {
  */
 export function CloseSuggestionBanner({ order, state, onFulfil }: CloseSuggestionBannerProps) {
   const { t } = useTranslation();
+  // Receiving and issuing move the shelf (WS-13 E13 O06); completing is the order's own (O23).
+  const { hasPermission } = useAuth();
+  const moves = mayIssue(hasPermission);
 
   // A closed order has nothing to suggest: `completed` is already there, and
   // `cancelled` is a decision this banner must not quietly undo.
   if (!order.figures.all_printed || order.status !== 'active') return null;
 
   const toStock = Boolean(state?.closes_to_stock);
-  const canReceive = Boolean(state && state.can_receive > 0);
+  const canReceive = Boolean(moves && state && state.can_receive > 0);
   // No customer: nothing is issued — the order closes to stock (followups, rule 39).
-  const canIssue = Boolean(state && !toStock && state.can_issue > 0);
+  const canIssue = Boolean(moves && state && !toStock && state.can_issue > 0);
   // No lead until the issue state has come — the emphasis would jump when it does.
   const lead = !state ? null : canReceive ? 'receive' : canIssue ? 'issue' : 'complete';
   const emphasis = (which: 'receive' | 'issue' | 'complete') => (lead === which ? 'primary' : 'secondary');

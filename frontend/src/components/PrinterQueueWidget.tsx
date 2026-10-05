@@ -114,7 +114,7 @@ export function PrinterQueueWidget({ printerId, printerModel, printerState, awai
             {repeatAvailable !== false && (
               <button
                 onClick={() => repeatPrintMutation.mutate()}
-                disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate')}
+                disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate') || !plateDefects.repeatReady}
                 className="flex-1 py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
               >
                 {repeatPrintMutation.isPending ? (

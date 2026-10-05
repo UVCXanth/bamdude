@@ -5,6 +5,7 @@ import { AlertTriangle, Loader2, Send } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Order, PlanEnqueueItem, PlanRow as PlanRowData } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
+import { canFileFuturePrint } from '../../utils/workshopRights';
 import { useToast } from '../../contexts/ToastContext';
 import { formatMoney } from '../../utils/currency';
 import { formatDuration } from '../../utils/date';
@@ -198,11 +199,15 @@ export function PlanBlock({
     });
   }, [plan]);
 
-  // The endpoint demands `orders:update` AND `queue:create`; a user missing
-  // either never sees the button rather than being handed a 403 on click.
-  const canQueue = canEdit && hasPermission('queue:create');
-  const canPrint = hasPermission('printers:control');
-  const canRebalance = canEdit && hasPermission('orders:update') && hasPermission('queue:update_all');
+  // Every door of the plan files new work under the order — Fф, `orders:update` or
+  // `orders:file_prints` (WS-13 E13 O21) — beside the queue's or the printer's own right; a
+  // user missing either never sees the button rather than being handed a 403 on click.
+  // `canEdit` is the caller's say for the view (Fф on the order page and the plan-from-files
+  // dialog); the printer asks Fф itself — a read-only view still prints for whoever may file.
+  const filesFuture = canFileFuturePrint(hasPermission);
+  const canQueue = canEdit && filesFuture && hasPermission('queue:create');
+  const canPrint = filesFuture && hasPermission('printers:control');
+  const canRebalance = canEdit && filesFuture && hasPermission('queue:update_all');
 
   const invalidate = useCallback(() => {
     invalidateOrderViews(queryClient, { orderId: order.id });

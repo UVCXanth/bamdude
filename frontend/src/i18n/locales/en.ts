@@ -1475,6 +1475,8 @@ export default {
       noDownload: 'You do not have permission to download archives',
       noCopyLink: 'You do not have permission to copy download links',
       noDelete: 'You do not have permission to delete this archive',
+      noUnfileToDelete: 'This print is filed under an order — deleting it needs the right to change orders or to file prints',
+      noUnfileToRestore: 'This print is filed under an order — restoring it needs the right to change orders or to file prints',
       noFileUnderOrder: 'Filing a print under an order needs the right to change orders or to file prints',
       notAllSelected: 'Some of the selected prints are not yours to change'
     },
@@ -5458,6 +5460,7 @@ export default {
     // WS-13 E6 §E: «Stock & issue» in the mockup's words, with the app's additions (E03–E06).
     fulfil: {
       title: 'Stock & issue',
+      noMoveRight: 'Receiving, issuing and writing off need the right to move stock — here the order can only be completed once its goods are out.',
       subtitleNoCustomer: 'without customer',
       columns: {
         line: 'Line / configuration',

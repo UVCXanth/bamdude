@@ -8,6 +8,7 @@ import { Button } from './Button';
 import { Modal } from './Modal';
 import { DefectsFields } from './DefectsFields';
 import { useAuth } from '../contexts/AuthContext';
+import { canFileFuturePrint } from '../utils/workshopRights';
 import { useToast } from '../contexts/ToastContext';
 import { OrderChoice } from './pickers/OrderChoice';
 import { OrderLinePicker } from './pickers/OrderLinePicker';
@@ -88,9 +89,11 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   // closed order, so its line stays as it is.
   const chosenOrder = useOrderDetail(projectId);
   const chosenOrderClosed = chosenOrder.data != null && chosenOrder.data.status !== 'active';
-  // WS-13 E13 B06: the order and the line move only with the right to change orders;
-  // without it they are shown, not offered (the server asks it of a changed binding).
-  const canChangeOrder = hasPermission('orders:update');
+  // WS-13 E13 B06 / O21: the order and the line move with the right to file the print — the
+  // dialog is opened with the archive's own right, so Fф (`orders:update` or
+  // `orders:file_prints`) is what the server asks of a changed binding; without it they are
+  // shown, not offered.
+  const canChangeOrder = canFileFuturePrint(hasPermission);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [notes, setNotes] = useState(archive.notes || '');
   const [tags, setTags] = useState(archive.tags || '');

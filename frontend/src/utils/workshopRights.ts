@@ -48,6 +48,33 @@ export function canFileFuturePrint(hasPermission: HasPermission) {
 }
 
 /**
+ * Taking from the shelf for an order — explicit numbers, `auto`, «Take from stock» (WS-13 E13
+ * O06, O23): `stock:move`. Without it a line is added taking nothing (`stock: none`).
+ */
+export function canTakeStock(hasPermission: HasPermission) {
+  return hasPermission('stock:move');
+}
+
+/** The shelf's figures — offers, proposals, a line's free kits — are the stock's read. */
+export function canReadStock(hasPermission: HasPermission) {
+  return hasPermission('stock:read');
+}
+
+/**
+ * Issuing an order's goods, receiving its prints, banking its surplus: `orders:update` +
+ * `stock:move` (O06). Completing an order whose goods are out is neither — a consequence of the
+ * order's own right (O23).
+ */
+export function canIssue(hasPermission: HasPermission) {
+  return hasPermission('orders:update') && hasPermission('stock:move');
+}
+
+/** A write-off in the issue dialog corrects the books: issuing + `stock:adjust` (O06). */
+export function canWriteOff(hasPermission: HasPermission) {
+  return canIssue(hasPermission) && hasPermission('stock:adjust');
+}
+
+/**
  * Does a copy of work under an order — a reprint, a clone, a plate's «Repeat» — keep the order?
  * Only for whoever may file work under it, and only while it is open; anybody else gets the
  * explicit «without order» before sending (WS-13 E13 R11, O10). Nothing to inherit keeps nothing.

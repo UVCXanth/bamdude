@@ -12,6 +12,7 @@ import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
 import { ArchivesPage } from '../../pages/ArchivesPage';
+import { ArchiveTrashPage } from '../../pages/ArchiveTrashPage';
 import type { Permission } from '../../api/client';
 
 const auth = vi.hoisted(() => ({ granted: new Set<string>(), userId: 5 }));
@@ -194,5 +195,73 @@ describe('ArchivesPage — the order a print belongs to', () => {
     await waitFor(() => expect(cardOf(7)).not.toBeNull());
     expect(within(cardOf(7)).getByText('Kickstarter batch').closest('a')).toBeNull();
     expect(ordersAsked).toBe(0);
+  });
+});
+
+// WS-13 E13 ARC-07 (final review #4): trashing or restoring a print filed under an order changes
+// the order's coverage — the server asks F(print) for it, so the doors ask it too.
+describe('a filed print leaves or comes back only with the filing right', () => {
+  const filedOwn = { ...archive(9, 'Filed', 5), project_id: 4, project_name: 'Batch' };
+
+  beforeEach(() => {
+    localStorage.clear();
+    server.use(
+      http.get('/api/v1/archives/', () =>
+        HttpResponse.json({ data: [filedOwn], meta: { current_page: 1, per_page: 50, total: 1, last_page: 1 } }),
+      ),
+      http.get('/api/v1/printers/', () => HttpResponse.json([])),
+      http.get('/api/v1/archives/tags', () => HttpResponse.json([])),
+      http.get('/api/v1/archives/trash', () =>
+        HttpResponse.json({
+          items: [
+            {
+              id: 9,
+              filename: 'Filed.gcode.3mf',
+              print_name: 'Filed',
+              file_size: 1,
+              thumbnail_path: null,
+              printer_id: null,
+              project_id: 4,
+              status: 'completed',
+              created_by_id: 5,
+              created_by_username: 'me',
+              deleted_at: '2026-10-01T09:00:00Z',
+              auto_purge_at: '2026-11-01T09:00:00Z',
+            },
+          ],
+          total: 1,
+          retention_days: 30,
+        }),
+      ),
+      http.get('/api/v1/archives/trash/settings', () => HttpResponse.json({ retention_days: 30 })),
+    );
+  });
+
+  it('the archive menu offers no «Delete» of a filed print without it, and says why', async () => {
+    auth.granted = new Set(['archives:read_all', 'archives:delete_own', 'orders:read']);
+    render(<ArchivesPage />);
+    await waitFor(() => expect(cardOf(9)).not.toBeNull());
+    const item = within(await menuOf(9)).getByRole('button', { name: 'Delete' });
+    expect(item).toBeDisabled();
+    expect(item).toHaveAttribute('title', 'This print is filed under an order — deleting it needs the right to change orders or to file prints');
+  });
+
+  it('the archive menu offers it with the filing right', async () => {
+    auth.granted = new Set(['archives:read_all', 'archives:delete_own', 'orders:read', 'orders:file_prints']);
+    render(<ArchivesPage />);
+    await waitFor(() => expect(cardOf(9)).not.toBeNull());
+    expect(within(await menuOf(9)).getByRole('button', { name: 'Delete' })).not.toBeDisabled();
+  });
+
+  it('the trash restores a filed print only with it', async () => {
+    auth.granted = new Set(['archives:read_all', 'archives:delete_own', 'archives:update_own', 'orders:read']);
+    render(<ArchiveTrashPage />);
+    const restore = await screen.findByRole('button', { name: 'Restore' });
+    expect(restore).toBeDisabled();
+    expect(restore).toHaveAttribute('title', 'This print is filed under an order — restoring it needs the right to change orders or to file prints');
+    fireEvent.click(screen.getAllByRole('checkbox').at(-1) as HTMLElement);
+    const bulk = await screen.findByRole('button', { name: 'Restore selected' });
+    expect(bulk).toBeDisabled();
+    expect(bulk).toHaveAttribute('title', 'This print is filed under an order — restoring it needs the right to change orders or to file prints');
   });
 });

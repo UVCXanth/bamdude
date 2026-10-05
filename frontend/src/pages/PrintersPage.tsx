@@ -3367,7 +3367,7 @@ const PrinterCard = memo(function PrinterCard({
         <button
           type="button"
           onClick={() => repeatPrintMutation.mutate()}
-          disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate')}
+          disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate') || !plateDefects.repeatReady}
           className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-300 dark:border-yellow-400/40 text-yellow-700 dark:text-yellow-400 hover:bg-yellow-500/30 transition-colors text-xs font-medium disabled:opacity-50"
           title={
             !hasPermission('printers:clear_plate')

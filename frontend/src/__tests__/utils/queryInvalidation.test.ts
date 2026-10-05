@@ -20,6 +20,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { QueryClient } from '@tanstack/react-query';
 import {
   ORDER_VIEW_KEYS,
+  PRODUCT_CATALOG_KEYS,
   PRODUCT_FILE_KEYS,
   STOCK_KEYS,
   invalidateAfterDelete,
@@ -131,6 +132,9 @@ describe('invalidateOrderViews', () => {
       'orders-filament',
       'customers',
       'customer',
+      // WS-13 E13: the pickers' own reads of the customers and a customer's contacts.
+      'customer-options',
+      'customer-contact-options',
       'order-candidates',
       'product-stock',
       'product',
@@ -152,6 +156,10 @@ describe('invalidateOrderViews', () => {
       'dispatch-notes',
       'dispatch-note',
     ]);
+  });
+
+  it('a catalog edit refreshes the stock dialogs’ own projection of the catalog (WS-13 E13 STK-10)', () => {
+    expect(PRODUCT_CATALOG_KEYS).toEqual(expect.arrayContaining([['stock-catalog'], ['stock-product']]));
   });
 
   it('a stock movement refreshes the catalog cards and the sidebar badge too', () => {

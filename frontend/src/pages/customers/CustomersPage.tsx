@@ -29,6 +29,8 @@ import { answeredEmpty, listState } from '../../utils/listState';
 import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 const SHOW = ['all', 'active', 'regular'] as const;
+/** The sorts that are order counts and money — the orders' read (WS-13 E13 O12). */
+const ORDER_SORT_KEYS = new Set(['orders', 'active', 'completed', 'cancelled', 'total_price']);
 type Show = (typeof SHOW)[number];
 /** The keys a table header sorts by (B06); the others are named above the table. */
 const HEADER_SORT = new Set(['name', 'orders', 'total_price']);
@@ -52,8 +54,14 @@ export function CustomersPage() {
   const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
     defaults: { sort: 'name-asc', extra: { show: 'all' } },
   });
+  // Order counts and money are the orders' (WS-13 E13 O12): without their read the «with
+  // active orders» tab and those sorts are not offered, and an address carrying them is read
+  // as the default — the server would refuse them.
+  const readsOrders = hasPermission('orders:read');
+  const shows = SHOW.filter((key) => key !== 'active' || readsOrders);
   // An unknown `?show=` is «All»; the address is left as it is (B03).
-  const show: Show = (SHOW as readonly string[]).includes(extra.show) ? (extra.show as Show) : 'all';
+  const show: Show = (shows as readonly string[]).includes(extra.show) ? (extra.show as Show) : 'all';
+  const sortBy = !readsOrders && ORDER_SORT_KEYS.has(sort.split('-')[0]) ? 'name-asc' : sort;
   const { typed, setTyped, forget } = useSearchBox(q, setQ);
   const [view, setView] = usePersistedState<ListView>('bamdude-customers-view', 'table', parseListView);
   const views = useCardsTableViews();
@@ -65,7 +73,7 @@ export function CustomersPage() {
     ...(q ? { q } : {}),
     ...(show === 'active' ? { with_active: true } : {}),
     ...(show === 'regular' ? { kind: 'regular' as const } : {}),
-    sort_by: sort,
+    sort_by: sortBy,
     page,
     ...(perPage === -1 ? { all: true } : { per_page: perPage }),
   };
@@ -101,8 +109,8 @@ export function CustomersPage() {
     { key: 'completed', label: t('customers.table.completed'), descFirst: true },
     { key: 'cancelled', label: t('customers.table.cancelled'), descFirst: true },
     { key: 'total_price', label: t('customers.table.totalPrice'), descFirst: true },
-  ];
-  const [sortKey, sortDir] = sort.split('-');
+  ].filter((o) => readsOrders || !ORDER_SORT_KEYS.has(o.key));
+  const [sortKey, sortDir] = sortBy.split('-');
   // A key the table has no header for is still the server's sort: named above the table,
   // with a way to take it off (B06, as E8-D03). An unknown key is the server's default.
   const headerless =
@@ -146,7 +154,7 @@ export function CustomersPage() {
           idBase={tabsId}
           ariaLabel={t('customers.list.filter.label')}
           value={show}
-          items={SHOW.map((key) => ({ value: key, label: t(`customers.list.filter.${key}`) }))}
+          items={shows.map((key) => ({ value: key, label: t(`customers.list.filter.${key}`) }))}
           onChange={(key) => setExtra('show', key)}
         />
         <ListSearchBox
@@ -168,7 +176,7 @@ export function CustomersPage() {
             </span>
           )}
           {/* A table sorts from its headers; the cards need a control of their own. */}
-          {view === 'cards' && <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />}
+          {view === 'cards' && <ListSortControl sort={sortBy} options={sortOptions} onChange={setSort} />}
         </div>
       </div>
 
@@ -212,7 +220,7 @@ export function CustomersPage() {
               <CustomersTable
                 customers={customers}
                 actions={actions}
-                sort={sort}
+                sort={sortBy}
                 onSortChange={setSort}
                 footer={pageBar('card')}
               />
