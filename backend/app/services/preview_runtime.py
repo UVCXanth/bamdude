@@ -59,6 +59,7 @@ class PreviewRuntime:
         self.waiters = 0
         self.slot = asyncio.Lock()
         self.active_task = None
+        self.result_handed_off = False
         self.monitor = None
         self.restarts = []
         self.circuit_until = 0.0
@@ -294,7 +295,8 @@ class PreviewRuntime:
             self._unavailable("broker_disconnected")
         if self.active_task:
             self.dependency_lost = True
-            self.active_task.cancel()
+            if not self.result_handed_off:
+                self.active_task.cancel()
 
     async def _retire(self):
         self.ready = False
@@ -351,7 +353,8 @@ class PreviewRuntime:
             self.ready = False
             if self.active_task:
                 self.dependency_lost = True
-                self.active_task.cancel()
+                if not self.result_handed_off:
+                    self.active_task.cancel()
                 continue
             if self.slot.locked() or self.uncertain:
                 continue
@@ -430,6 +433,7 @@ class PreviewRuntime:
                 if not self.ready or self.closed or self.epoch != admitted_epoch:
                     raise PreviewError("unavailable")
                 self.active_task = asyncio.current_task()
+                self.result_handed_off = False
                 self.dependency_lost = False
                 # A previous denied cleanup must not accumulate unbounded
                 # staging across attempts. No other attempt owns this slot.
@@ -585,6 +589,7 @@ class PreviewRuntime:
                         self.uncertain = True
             if canceled:
                 raise asyncio.CancelledError
+            self.result_handed_off = True
             yield result  # main validates/publishes while permit and staging still owned
         finally:
 
@@ -593,6 +598,7 @@ class PreviewRuntime:
                     await cleanup()
                 finally:
                     self.active_task = None
+                    self.result_handed_off = False
                     if not self.uncertain:
                         self.slot.release()
 

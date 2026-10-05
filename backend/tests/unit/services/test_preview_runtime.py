@@ -556,6 +556,9 @@ async def test_broker_loss_preserves_received_checkpoint(local_runtime, tmp_path
         # Fast renderers can otherwise leave the context and delete the
         # checkpoint between two polls in stop_after_checkpoint().
         await stopper
+        # Ensure the loss callback also runs while the caller still owns the
+        # yielded files; callback scheduling varies across platforms.
+        await local_runtime.disconnected()
         assert "checkpoint" in result.files
         with zipfile.ZipFile(result.files["checkpoint"]) as archive:
             assert archive.read("Metadata/plate_1.png").startswith(b"\x89PNG")
