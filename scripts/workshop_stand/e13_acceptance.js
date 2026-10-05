@@ -349,6 +349,13 @@ async (page, selftest = null) => {
   });
   // The archives page as cards: a card by its archive, its menu, an entry of the menu.
   const GRID = { archiveViewMode: 'grid' };
+  // The archives page's first card filed under the ACTIVE OR-0034, under no line: the stand's
+  // newest print sits in the COMPLETED OR-0030, where the dialog rightly files nothing new —
+  // and it says so only once it has read the order (T19).
+  const FIRST_IN_ACTIVE = [/\/api\/v1\/archives\/?\?/, (json) => ({
+    ...json,
+    data: list(json.data).map((a, i) => (i === 0 ? { ...a, project_id: O244, project_name: order244.name, project_line_id: null, project_status: 'active' } : a)),
+  })];
   const archiveCard = (p, id) => p.locator(`[data-archive-id="${id}"]`).first();
   const openArchiveMenu = async (p, id) => {
     await archiveCard(p, id).hover();
@@ -455,6 +462,7 @@ async (page, selftest = null) => {
     const writes = [];
     const { ctx, p, errors } = await open(1440, {
       storage: GRID,
+      rewrite: [FIRST_IN_ACTIVE],
       writes: [recorder(writes, /\/add-archives$/, () => ({ __status: 403, json: { detail: UK.ownArchives } }))],
     });
     await goto(p, '/archives');
@@ -484,6 +492,7 @@ async (page, selftest = null) => {
     const writes = [];
     const { ctx, p, errors } = await open(1440, {
       storage: GRID,
+      rewrite: [FIRST_IN_ACTIVE],
       writes: [recorder(writes, /\/add-archives$/, () => ({ __status: 409, json: { detail: UK.leave } }))],
     });
     await goto(p, '/archives');
@@ -1619,17 +1628,22 @@ async (page, selftest = null) => {
     const files = [];
     const refusalOf = async (key, p, d, press) => {
       await press();
+      trail.push(`${key}: pressed`);
       const alert = d.getByRole('alert');
       await alert.waitFor({ timeout: 8000 });
       const first = { text: await textOf(alert), open: await d.isVisible() };
       files.push(await shoot(p, `errors-${key}`));
+      trail.push(`${key}: refused`);
       // The refusal frees the button: a second press sends again.
       await press();
       await p.waitForTimeout(700);
       return first;
     };
+    const trail = [];
     const answering = (key, store) => () => ({ __status: SAYS[key].status, json: { detail: SAYS[key].detail } });
+    try {
     // Orders.
+    trail.push('order');
     {
       const writes = [];
       const { ctx, p } = await open(1440, { writes: [recorder(writes, ORDER(O244), answering('order'))] });
@@ -1640,6 +1654,7 @@ async (page, selftest = null) => {
       await ctx.close();
     }
     // Products.
+    trail.push('product');
     {
       const writes = [];
       const { ctx, p } = await open(1440, { writes: [recorder(writes, new RegExp(`/api/v1/products/${PR1}$`), answering('product'))] });
@@ -1652,6 +1667,7 @@ async (page, selftest = null) => {
       await ctx.close();
     }
     // Customers.
+    trail.push('customer');
     {
       const writes = [];
       const { ctx, p } = await open(1440, { writes: [recorder(writes, new RegExp(`/api/v1/customers/${CU1}$`), answering('customer'))] });
@@ -1665,6 +1681,7 @@ async (page, selftest = null) => {
       await ctx.close();
     }
     // Stock.
+    trail.push('stock');
     {
       const writes = [];
       const { ctx, p } = await open(1440, { writes: [recorder(writes, /\/api\/v1\/stock\/moves/, answering('stock'))] });
@@ -1680,9 +1697,10 @@ async (page, selftest = null) => {
       await ctx.close();
     }
     // Archives → order.
+    trail.push('archives');
     {
       const writes = [];
-      const { ctx, p } = await open(1440, { storage: GRID, writes: [recorder(writes, /\/add-archives$/, answering('archives'))] });
+      const { ctx, p } = await open(1440, { storage: GRID, rewrite: [FIRST_IN_ACTIVE], writes: [recorder(writes, /\/add-archives$/, answering('archives'))] });
       await goto(p, '/archives');
       const id = await firstArchiveId(p);
       const menu = await openArchiveMenu(p, id);
@@ -1693,6 +1711,7 @@ async (page, selftest = null) => {
       await ctx.close();
     }
     // The library's links to products.
+    trail.push('library');
     {
       const writes = [];
       const { ctx, p } = await open(1440, { storage: FILES_GRID, rewrite: [TAGGED, PLATES], writes: [recorder(writes, /\/api\/v1\/library\/files\/\d+$/, answering('library'))] });
@@ -1702,6 +1721,9 @@ async (page, selftest = null) => {
       await d.waitFor();
       out.library = { ...(await refusalOf('library', p, d, () => d.getByRole('button', { name: 'Зберегти', exact: true }).click())), sent: writes.length };
       await ctx.close();
+    }
+    } catch (e) {
+      return { pass: false, error: safeError(e, 'errors-sample'), measured: { trail, ...out } };
     }
     const failing = Object.entries(SAYS).filter(([key, say]) => !(out[key] && out[key].text === say.detail && out[key].open && out[key].sent === 2)).map(([key]) => key);
     return {
