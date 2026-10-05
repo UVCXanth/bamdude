@@ -312,6 +312,8 @@ describe('archives → order — BatchAssignOrderModal (403)', () => {
   async function chooseFlasks() {
     await screen.findByRole('option', { name: 'OR-0005 · Flasks · no customer' });
     fireEvent.change(screen.getByRole('combobox', { name: 'Order' }), { target: { value: '5' } });
+    // «Assign» waits until the chosen order is read (WS-13 E13 T19).
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Assign' })).toBeEnabled());
   }
 
   it('says the refusal in its slot, keeps the dialog and the chosen order, and sends again', async () => {

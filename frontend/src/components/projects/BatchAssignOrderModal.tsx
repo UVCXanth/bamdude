@@ -50,6 +50,10 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
   // the line picker reads, so no second request.
   const chosen = useOrderDetail(orderId);
   const closed = chosen.data != null && chosen.data.status !== 'active';
+  // Whether it is open is known only once it is read (WS-13 E13 T19): until then «Assign»
+  // waits — a press into a closed order would only come back 409. A failed read leaves the
+  // question to the server.
+  const unknown = orderId != null && chosen.data == null && !chosen.isError;
 
   const done = () => {
     queryClient.invalidateQueries({ queryKey: ['archives'] });
@@ -169,11 +173,11 @@ export function BatchAssignOrderModal({ archiveIds, bound, onClose, onDone }: Ba
           </Button>
           <Button
             onClick={() => {
-              if (orderId == null || sent.current) return;
+              if (orderId == null || sent.current || closed || unknown) return;
               sent.current = true;
               assign.mutate(orderId);
             }}
-            disabled={orderId == null || pending || closed}
+            disabled={orderId == null || pending || closed || unknown}
             title={closed ? t('archives.bulk.assignOrder.closed') : undefined}
           >
             {assign.isPending && <Loader2 className="w-4 h-4 animate-spin" />}

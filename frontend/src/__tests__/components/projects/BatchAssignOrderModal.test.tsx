@@ -29,6 +29,8 @@ describe('BatchAssignOrderModal', () => {
     render(<BatchAssignOrderModal archiveIds={[3, 4]} onClose={onClose} />);
     await screen.findByRole('option', { name: 'OR-0005 · Flasks · no customer' });
     fireEvent.change(screen.getByRole('combobox', { name: 'Order' }), { target: { value: '5' } });
+    // «Assign» waits until the chosen order is read (WS-13 E13 T19).
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Assign' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Assign' }));
     await waitFor(() => expect(add).toHaveBeenCalledWith(5, [3, 4], null));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
@@ -69,6 +71,29 @@ describe('BatchAssignOrderModal', () => {
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Line' })).toBeDisabled());
     expect(screen.getByRole('button', { name: 'Assign' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Remove from order' })).not.toBeDisabled();
+  });
+
+  // WS-13 E13 T19 (found by the stand): whether the chosen order is open is known only once it
+  // is read — until then «Assign» waits, or a press into a closed order went out and came
+  // back 409. A failed read leaves the server to decide.
+  it('«Assign» waits until the chosen order is read', async () => {
+    let answer!: (order: unknown) => void;
+    vi.spyOn(api, 'getOrder').mockImplementation(() => new Promise((resolve) => { answer = resolve; }) as never);
+    const add = vi.spyOn(api, 'addArchivesToOrder').mockResolvedValue({} as never);
+    render(<BatchAssignOrderModal archiveIds={[3]} bound={{ orderId: 9, lineId: null }} onClose={() => {}} />);
+    const assign = await screen.findByRole('button', { name: 'Assign' });
+    expect(assign).toBeDisabled();
+    fireEvent.click(assign);
+    expect(add).not.toHaveBeenCalled();
+    answer({ id: 9, code: 'OR-0009', name: 'Shipped', status: 'completed', customer_name: null, lines: [] });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Assign' })).toHaveAttribute('title', expect.any(String)));
+    expect(screen.getByRole('button', { name: 'Assign' })).toBeDisabled();
+  });
+
+  it('a chosen order that cannot be read leaves «Assign» to the server', async () => {
+    vi.spyOn(api, 'getOrder').mockRejectedValue(new ApiError('Internal Server Error', 500));
+    render(<BatchAssignOrderModal archiveIds={[3]} bound={{ orderId: 5, lineId: null }} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Assign' })).not.toBeDisabled(), { timeout: 4000 });
   });
 
   // V01: the order's own command, which asks the Workshop's filing right — never the archive editor.
@@ -113,6 +138,8 @@ describe('BatchAssignOrderModal', () => {
     render(<BatchAssignOrderModal archiveIds={[3]} onClose={onClose} />);
     await screen.findByRole('option', { name: 'OR-0005 · Flasks · no customer' });
     fireEvent.change(screen.getByRole('combobox', { name: 'Order' }), { target: { value: '5' } });
+    // «Assign» waits until the chosen order is read (WS-13 E13 T19).
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Assign' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Assign' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'These prints went onto the shelf for the order — they cannot leave it',
