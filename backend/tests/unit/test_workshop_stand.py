@@ -918,7 +918,7 @@ def test_e04_the_job_server_keeps_valid_records_and_always_ends_on_done():
         assert [r["id"] for r in records] == ["a", "b"]
         assert records[1]["error"]["code"] == "secret_in_record"
         assert post("/done", b"{not json") == 400
-        assert finished.is_set() and done == {}
+        assert finished.wait(timeout=5) and done == {}
     finally:
         httpd.shutdown()
 
