@@ -77,12 +77,19 @@ def _as_list(raw) -> list | None:
     return list(raw) if isinstance(raw, list) else None
 
 
+def _is(key, names) -> bool:
+    """Membership for a stored element that may be anything JSON holds (WS-13 E13 V05): only a
+    string can name a right; a dict or a list is not hashable and names none."""
+    return isinstance(key, str) and key in names
+
+
 def _map_custom(perms: list) -> list:
-    """Each old string replaced in place by its image; ``orders:file_prints`` only beside update."""
+    """Each old string replaced in place by its image; ``orders:file_prints`` only beside update.
+    An element that is not a string stays where it was — not a right, not the migration's to drop."""
     keeps_file_prints = _FILE_PRINTS_OLD in perms and "projects:update" in perms
     out: list = []
     for key in perms:
-        if key in _IMAGES:
+        if _is(key, _IMAGES):
             images = _IMAGES[key] + ([_FILE_PRINTS_NEW] if key == "projects:update" and keeps_file_prints else [])
             out.extend(p for p in images if p not in out)
         elif key == _FILE_PRINTS_OLD:
@@ -94,7 +101,7 @@ def _map_custom(perms: list) -> list:
 
 def _set_system(perms: list, defaults: list[str]) -> list:
     """Drop every old and new Workshop string, then the group's default Workshop set."""
-    out = [p for p in perms if p not in _OLD and not (isinstance(p, str) and p in _WORKSHOP_SET)]
+    out = [p for p in perms if not _is(p, _OLD) and not _is(p, _WORKSHOP_SET)]
     return out + [p for p in defaults if p not in out]
 
 
@@ -107,9 +114,14 @@ async def seed(session_factory):
         changed = 0
         for row in rows:
             perms = _as_list(row.permissions)
+            system = row.is_system and row.name in _SYSTEM_DEFAULTS
             if perms is None:
-                continue
-            if row.is_system and row.name in _SYSTEM_DEFAULTS:
+                # A system group without a readable list — NULL, unreadable JSON, not a list — gets
+                # its defaults like an empty list does (WS-13 E13 V05); a custom group is left alone.
+                if not system:
+                    continue
+                perms = []
+            if system:
                 new = _set_system(perms, _SYSTEM_DEFAULTS[row.name])
             else:
                 new = _map_custom(perms)
@@ -123,7 +135,7 @@ async def seed(session_factory):
                 continue
             await db.execute(update(table).where(table.c.id == row.id).values(permissions=new))
             changed += 1
-            old_workshop = sorted(p for p in perms if p in _OLD)
+            old_workshop = sorted(p for p in perms if _is(p, _OLD))
             new_workshop = sorted(p for p in new if isinstance(p, str) and p.startswith(_DOMAINS))
             logger.info("m194: group %r Workshop rights %s → %s", row.name, old_workshop, new_workshop)
         if changed:

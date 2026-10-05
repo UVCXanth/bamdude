@@ -250,3 +250,50 @@ async def test_a_fresh_chain_ends_with_the_defaults(test_engine):
     groups = await _get(factory)
     for name, group in DEFAULT_GROUPS.items():
         assert set(groups[name]) == set(group["permissions"]), name
+
+
+# ---- WS-13 E13 V05 (Codex review): two data states O15 names, both must survive the seed ----
+
+
+@pytest.mark.asyncio
+async def test_a_nested_object_or_list_among_the_rights_neither_stops_the_seed_nor_is_lost(test_engine):
+    """A dict or a list inside the stored list is not a right, but it is not the migration's to
+    drop: the strings around it are mapped, the foreign elements stay where they were."""
+    factory = await _factory(test_engine)
+    await _set(factory, "CustomMalformed", ["projects:read", {"legacy": True}, ["legacy"], "library:read_all"])
+    await _set(factory, "Viewers", ["projects:read", {"odd": 1}], is_system=True)
+
+    await m194.seed(factory)
+
+    groups = await _get(factory)
+    custom = groups["CustomMalformed"]
+    assert {p for p in custom if isinstance(p, str)} == READS | {"library:read_all"}
+    assert {"legacy": True} in custom and ["legacy"] in custom
+    viewers = groups["Viewers"]
+    assert {p for p in viewers if isinstance(p, str)} & WORKSHOP == READS
+    assert {"odd": 1} in viewers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stored", [None, "not json", '{"not": "a list"}'])
+async def test_a_system_group_without_a_readable_list_gets_its_defaults(test_engine, stored):
+    """NULL, unreadable or non-list permissions on a system group: it gets its default Workshop
+    set, as an empty list does; a custom group in the same state is left alone."""
+    from backend.app.models.group import Group
+
+    factory = await _factory(test_engine)
+    await _set(factory, "Operators", ["placeholder"], is_system=True)
+    await _set(factory, "Custom", ["placeholder"])
+    async with factory() as db:
+        for name in ("Operators", "Custom"):
+            await db.execute(update(Group.__table__).where(Group.__table__.c.name == name).values(permissions=stored))
+        await db.commit()
+
+    await m194.seed(factory)
+    once = await _get(factory)
+    await m194.seed(factory)
+
+    assert set(once["Operators"] or []) & WORKSHOP == WORKSHOP
+    assert await _get(factory) == once
+    custom = once["Custom"]
+    assert custom is None or custom == stored or (isinstance(custom, str) and custom == stored)
