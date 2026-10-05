@@ -22,8 +22,9 @@ not a leak.
 import logging
 from contextlib import AsyncExitStack
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
@@ -140,8 +141,18 @@ async def answer_by_clearing(
     from backend.app.services.queue_counters import detach_print_queue_refs, update_queue_counters
 
     row = await waiting_row(db, printer_id)
-    _require_expected_archive(row, expected_archive_id)
     if row is None:
+        # Queue cleanup can remove a terminal row while its durable plate gate
+        # remains. Clear may still answer that exact archive; Repeat needs a row.
+        archive = await waiting_archive(db, printer_id)
+        if expected_archive_id is not None and (archive is None or archive.id != expected_archive_id):
+            raise StalePlateAnswer("This completion card is no longer current for this printer")
+        return 0
+    _require_expected_archive(row, expected_archive_id)
+    # Clear the physical question, not the failed predecessor's history.
+    # The existing previous-success gate must still see failed/cancelled rows;
+    # only successful completions take the established auto-cleanup path.
+    if row.status != "completed":
         return 0
 
     queue_id = row.queue_id
@@ -326,19 +337,39 @@ async def repeat_available(printer_id: int) -> bool:
         return await has_waiting_row(db, printer_id)
 
 
-async def waiting_row(db: AsyncSession, printer_id: int) -> PrintQueueItem | None:
-    """The finished row this printer is waiting to be asked about, if any.
+def waiting_row_predicate() -> ColumnElement[bool]:
+    """Shared held-row eligibility; callers join the queue row to its printer."""
+    return or_(
+        and_(
+            Printer.awaiting_plate_clear_archive_id.is_(None),
+            PrintQueueItem.status == "completed",
+        ),
+        and_(
+            Printer.awaiting_plate_clear.is_(True),
+            PrintQueueItem.archive_id == Printer.awaiting_plate_clear_archive_id,
+            PrintQueueItem.status.in_(("completed", "cancelled", "failed")),
+        ),
+    )
 
-    Newest first: only one can be outstanding, but a farm that ran before this
-    existed may hold older ones, and the operator answers about the last print.
+
+async def waiting_row(db: AsyncSession, printer_id: int) -> PrintQueueItem | None:
+    """The terminal row this printer is waiting to be asked about, if any.
+
+    A run-bound gate selects its exact owner, including a cancelled or failed
+    print: those runs arm the same physical plate question, without becoming
+    successful prints. Never substitute an older completed row for that owner.
+
+    Legacy ownerless gates keep the completed-only, newest-first lookup; an
+    unrelated failed/cancelled history row is not proof of a held plate.
     """
     return (
         (
             await db.execute(
                 select(PrintQueueItem)
                 .join(PrinterQueue, PrintQueueItem.queue_id == PrinterQueue.id)
+                .join(Printer, PrinterQueue.printer_id == Printer.id)
                 .where(PrinterQueue.printer_id == printer_id)
-                .where(PrintQueueItem.status == "completed")
+                .where(waiting_row_predicate())
                 .order_by(PrintQueueItem.completed_at.desc().nullslast(), PrintQueueItem.id.desc())
                 .limit(1)
             )
@@ -367,9 +398,25 @@ async def waiting_archive(db: AsyncSession, printer_id: int) -> PrintArchive | N
     still accepted a defect write.
     """
     row = await waiting_row(db, printer_id)
-    if row is None or row.archive_id is None:
-        return None
-    archive = await db.get(PrintArchive, row.archive_id)
+    if row is None:
+        printer = await db.get(Printer, printer_id)
+        if printer is None or not printer.awaiting_plate_clear or printer.awaiting_plate_clear_archive_id is None:
+            return None
+        archive = await db.get(PrintArchive, printer.awaiting_plate_clear_archive_id)
+        if (
+            archive is None
+            or archive.printer_id != printer_id
+            or archive.status not in ("completed", "cancelled", "failed")
+        ):
+            return None
+        # Do not reinterpret an in-flight queue row as an answerable completion.
+        existing = await db.scalar(select(PrintQueueItem.id).where(PrintQueueItem.archive_id == archive.id))
+        if existing is not None:
+            return None
+    else:
+        if row.archive_id is None:
+            return None
+        archive = await db.get(PrintArchive, row.archive_id)
     if archive is None or archive.deleted_at is not None:
         return None
     return archive

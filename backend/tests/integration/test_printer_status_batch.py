@@ -10,6 +10,50 @@ from backend.app.api.routes.printers import get_printer_status, get_printer_stat
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services.bambu_mqtt import PrinterState
+from backend.tests.integration.test_plate_answers_defects import _finished_flat
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,owned,old_completed,expected",
+    [
+        ("cancelled", True, False, True),
+        ("failed", True, False, True),
+        ("completed", True, True, True),
+        ("printing", True, True, False),
+        (None, True, True, False),
+        (None, True, False, False),
+        ("cancelled", False, False, False),
+        ("failed", False, False, False),
+        ("completed", False, False, True),
+        ("cancelled", False, True, True),
+    ],
+)
+async def test_held_run_repeat_availability_matches_single_and_batch(
+    printer_factory, db_session, status, owned, old_completed, expected
+):
+    printer = await printer_factory()
+    archive, row = await _finished_flat(db_session, printer, 2)
+    archive.status = status or "completed"
+    if status is None:
+        await db_session.delete(row)
+    else:
+        row.status = status
+    printer.awaiting_plate_clear = True
+    printer.awaiting_plate_clear_archive_id = archive.id if owned else None
+    if old_completed:
+        db_session.add(PrintQueueItem(queue_id=row.queue_id, status="completed"))
+    await db_session.commit()
+    state = PrinterState()
+    state.state = "FAILED"
+    state.connected = True
+    with patch("backend.app.api.routes.printers.printer_manager") as pm:
+        pm.get_status.return_value = state
+        pm.is_awaiting_plate_clear.return_value = True
+        single = await get_printer_status(printer.id, None, db_session)
+        batch = await get_printer_status_batch([printer.id], None, db_session)
+    assert single.repeat_available is expected
+    assert batch[printer.id].repeat_available is expected
 
 
 @pytest.mark.asyncio
