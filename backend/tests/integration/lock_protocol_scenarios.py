@@ -214,6 +214,11 @@ def _req():
     return _runner()._plain_request()
 
 
+def _allow():
+    """The runner's everything-allowed credentials (the doors' second rights)."""
+    return _runner().ALLOW
+
+
 # ---------- a · R07, b — the issue dialog creating the first position ----------
 
 
@@ -228,7 +233,7 @@ async def scenario_a() -> dict:
     s = await shop(kits=2)
     data = FulfilmentIn(lines=[FulfilmentLineIn(line_id=s["line"], assemble=1)])
     result = await duel(
-        lambda db: project_routes.fulfil_order(s["order"], data, _req(), db, None),
+        lambda db: project_routes.fulfil_order(s["order"], data, _req(), db, None, creds=_allow()),
         lambda db: product_routes.create_variant_group(
             s["product"], VariantGroupCreate(name="Size", options=["S", "L"]), db, None
         ),
@@ -269,7 +274,7 @@ async def scenario_b() -> dict:
     s = await shop(kits=2)
     data = FulfilmentIn(lines=[FulfilmentLineIn(line_id=s["line"], assemble=1)])
     result = await duel(
-        lambda db: project_routes.fulfil_order(s["order"], data, _req(), db, None),
+        lambda db: project_routes.fulfil_order(s["order"], data, _req(), db, None, creds=_allow()),
         lambda db: product_routes.update_part(
             s["product"], s["base"], ProductPartUpdate(variant_option_id=s["options"]["blue"]), db, None
         ),
@@ -304,7 +309,9 @@ async def scenario_c() -> dict:
         await db.commit()
     result = await duel(
         lambda db: project_routes.update_project(s["order"], ProjectUpdate(status="completed"), _req(), db, None),
-        lambda db: project_routes.fulfil_order(s["order"], FulfilmentIn(complete=True), _req(), db, None),
+        lambda db: project_routes.fulfil_order(
+            s["order"], FulfilmentIn(complete=True), _req(), db, None, creds=_allow()
+        ),
         a_on="lock_order",
     )
     async with async_session() as db:
@@ -330,7 +337,9 @@ async def scenario_d() -> dict:
         other_id = other.id
     result = await duel(
         lambda db: project_routes.duplicate_project(s["order"], ProjectDuplicate(), db, None),
-        lambda db: project_routes.add_line(other_id, ProjectLineCreate(product_id=s["product"], quantity=1), db, None),
+        lambda db: project_routes.add_line(
+            other_id, ProjectLineCreate(product_id=s["product"], quantity=1), db, None, creds=_allow()
+        ),
         a_on="product_gate",
     )
     line_ids = await _ids(ProjectLine, ProjectLine.product_id == s["product"])
@@ -365,7 +374,9 @@ async def scenario_e() -> dict:
         ids = {"product": oneoff.id, "order": order.id, "line": line.id}
     result = await duel(
         lambda db: project_routes.delete_line(ids["order"], ids["line"], _req(), db, None),
-        lambda db: project_routes.configure_line(ids["order"], ids["line"], LineConfigurationIn(), db, None),
+        lambda db: project_routes.configure_line(
+            ids["order"], ids["line"], LineConfigurationIn(), db, None, creds=_allow()
+        ),
         a_on="product_gate",
     )
     return {**result, "product_left": await _count(Product, Product.id == ids["product"])}
@@ -397,7 +408,9 @@ async def scenario_f(recipe: str) -> dict:
         )
 
     choose_blue = LineConfigurationIn(choices={s["group"]: s["options"]["blue"]})
-    r = await pair(add_size, lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None))
+    r = await pair(
+        add_size, lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None, creds=_allow())
+    )
     size = await _group_by_name(s["product"], "Size")
     choices = await _line_choices(s["line"])
     kit_before = await _line_kit(s["line"])
@@ -415,7 +428,7 @@ async def scenario_f(recipe: str) -> dict:
     s = await shop()
     choose_blue = LineConfigurationIn(choices={s["group"]: s["options"]["blue"]})
     r = await pair(
-        lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None),
+        lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None, creds=_allow()),
         lambda db: product_routes.create_variant_group(
             s["product"], VariantGroupCreate(name="Size", options=["S", "L"]), db, None
         ),
@@ -436,7 +449,7 @@ async def scenario_f(recipe: str) -> dict:
             s["product"], VariantGroupCreate(name="Size", options=["S", "L"]), db, None
         ),
         lambda db: project_routes.add_line(
-            s["order"], ProjectLineCreate(product_id=s["product"], quantity=1), db, None
+            s["order"], ProjectLineCreate(product_id=s["product"], quantity=1), db, None, creds=_allow()
         ),
     )
     from backend.app.models.project_line import ProjectLine
@@ -452,7 +465,7 @@ async def scenario_f(recipe: str) -> dict:
     s = await shop()
     choose_blue = LineConfigurationIn(choices={s["group"]: s["options"]["blue"]})
     r = await pair(
-        lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None),
+        lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None, creds=_allow()),
         lambda db: product_routes.delete_variant_option(s["product"], s["group"], s["options"]["blue"], db, None),
     )
     out["choice_then_delete"] = {**r, "line_keeps_blue": (await _line_choices(s["line"])).get(s["group"])}
@@ -460,7 +473,7 @@ async def scenario_f(recipe: str) -> dict:
     choose_blue = LineConfigurationIn(choices={s["group"]: s["options"]["blue"]})
     r = await pair(
         lambda db: product_routes.delete_variant_option(s["product"], s["group"], s["options"]["blue"], db, None),
-        lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None),
+        lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None, creds=_allow()),
     )
     out["delete_then_choice"] = {**r, "dangling": await _dangling_choices()}
     out["options"] = {"blue": s["options"]["blue"]}
@@ -601,9 +614,9 @@ async def scenario_g() -> dict:
     rebind = lambda db: product_routes.update_part(  # noqa: E731
         s["product"], s["shade"], ProductPartUpdate(variant_option_id=s["options"]["blue"]), db, None
     )
-    delete_base = lambda db: product_routes.delete_part(s["product"], s["base"], db, None)  # noqa: E731
+    delete_base = lambda db: product_routes.delete_part(s["product"], s["base"], db, None, creds=_allow())  # noqa: E731
     merge_base_into_shade = lambda db: product_routes.merge_part(  # noqa: E731
-        s["product"], s["shade"], ProductPartMerge(source_part_id=s["base"]), db, None
+        s["product"], s["shade"], ProductPartMerge(source_part_id=s["base"]), db, None, creds=_allow()
     )
 
     for door_name, door in (("add_group", add_group), ("rebind", rebind)):
@@ -655,7 +668,7 @@ async def scenario_g() -> dict:
         await finished_stock.issue(db, position, 1, customer_id=ids["customer"])
         await db.commit()
         doomed_ids = {"product": doomed.id, "part": part.id, "position": position.id}
-    delete_doomed = lambda db: product_routes.delete_product(doomed_ids["product"], db, None)  # noqa: E731
+    delete_doomed = lambda db: product_routes.delete_product(doomed_ids["product"], db, None, creds=_allow())  # noqa: E731
     out["delete_product/stock_items"] = await _busy_case(
         "SELECT id FROM stock_items WHERE id = :id", {"id": doomed_ids["position"]}, delete_doomed
     )
@@ -885,7 +898,7 @@ async def scenario_t2() -> dict:
     revision, draft = await _revision_and_draft(s["product"])
     data = FulfilmentIn(lines=[FulfilmentLineIn(line_id=s["line"], assemble=1)])
     result = await duel(
-        lambda db: project_routes.fulfil_order(s["order"], data, _req(), db, None),
+        lambda db: project_routes.fulfil_order(s["order"], data, _req(), db, None, creds=_allow()),
         _apply_door(s["product"], revision, _with_size(draft)),
         a_on="lock_line",
     )
@@ -896,7 +909,7 @@ async def scenario_t2() -> dict:
     revision, draft = await _revision_and_draft(s["product"])
     choose_blue = LineConfigurationIn(choices={s["group"]: s["options"]["blue"]})
     result = await duel(
-        lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None),
+        lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None, creds=_allow()),
         _apply_door(s["product"], revision, _with_size(draft)),
         a_on="product_gate",
     )

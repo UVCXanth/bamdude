@@ -737,6 +737,21 @@ def _plain_request():
     return Request({"type": "http", "method": "POST", "path": "/", "headers": []})
 
 
+class _AllowEverything:
+    """The request's credentials for a door called directly: every right is held (WS-13 E13 §O).
+
+    These scenarios measure the lock protocol; who may open a door is the rights tests' question."""
+
+    async def check(self, _gate):
+        return None, True
+
+    async def allows(self, _gate) -> bool:
+        return True
+
+
+ALLOW = _AllowEverything()
+
+
 async def _outcome(db, call) -> str:
     """Run one route call in ``db`` and commit: ``ok``, ``http:<status>:<detail>``,
     ``deadlock`` (SQLSTATE 40P01 only) or ``error:<type>:<sqlstate>:<text>``."""
@@ -832,7 +847,9 @@ async def _line_door_deadlock() -> dict:
             try:
                 return await _outcome(
                     db,
-                    lambda: projects_routes.update_line(order_id, line_id, ProjectLineUpdate(quantity=2), db, None),
+                    lambda: projects_routes.update_line(
+                        order_id, line_id, ProjectLineUpdate(quantity=2), db, None, creds=ALLOW
+                    ),
                 )
             finally:
                 trails["a"] = barriers.trail(db)
@@ -846,7 +863,7 @@ async def _line_door_deadlock() -> dict:
             data = FulfilmentIn(lines=[FulfilmentLineIn(line_id=line_id, issue=1)])
             try:
                 return await _outcome(
-                    db, lambda: projects_routes.fulfil_order(order_id, data, _plain_request(), db, None)
+                    db, lambda: projects_routes.fulfil_order(order_id, data, _plain_request(), db, None, creds=ALLOW)
                 )
             finally:
                 trails["b"] = barriers.trail(db)
@@ -924,7 +941,10 @@ async def _line_set_changed() -> dict:
         async with async_session() as db:
             holds["a"] = barriers.hold(db, after=1)
             return await _outcome(
-                db, lambda: projects_routes.update_line(order_id, line_id, ProjectLineUpdate(quantity=4), db, None)
+                db,
+                lambda: projects_routes.update_line(
+                    order_id, line_id, ProjectLineUpdate(quantity=4), db, None, creds=ALLOW
+                ),
             )
 
     try:
