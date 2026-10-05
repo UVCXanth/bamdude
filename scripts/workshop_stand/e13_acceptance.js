@@ -504,6 +504,8 @@ async (page, selftest = null) => {
     const d = dialogOf(p, 'Додати до замовлення');
     await d.waitFor();
     await p.waitForFunction(() => !/Обране замовлення/.test(document.querySelector('#batch-assign-order')?.selectedOptions[0]?.textContent ?? 'Обране замовлення'), null, { timeout: 6000 });
+    // «Прив'язати» waits until the order is read (T19) — and so its full label, the one kept.
+    await p.waitForFunction(() => [...document.querySelectorAll('[role="dialog"] button')].some((b) => b.textContent.trim() === 'Прив\'язати' && !b.disabled), null, { timeout: 6000 });
     const chosen = await shownOf(d.getByLabel('Замовлення', { exact: true }));
     await d.getByRole('button', { name: 'Прив\'язати', exact: true }).click();
     const alert = d.getByRole('alert');
