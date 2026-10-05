@@ -2455,6 +2455,24 @@ async def add_archives_to_project(
     await _get_project(db, project_id)  # 404s an order that is not there
     archives = [archive for archive_id in data.archive_ids if (archive := await db.get(PrintArchive, archive_id))]
     await ensure_may_file(creds, archives)
+    # Every order the prints leave, and this one, locked as receiving locks them before C1 is
+    # read (WS-13 E13 V04); the prints read again behind the locks — one that moved to an
+    # order not locked here meanwhile is the same «changed, try again» as a changed order.
+    locked = {project_id, *(archive.project_id for archive in archives)}
+    await order_fulfilment.lock_orders(db, locked)
+    fresh = {
+        archive.id: archive
+        for archive in (
+            await db.execute(
+                select(PrintArchive)
+                .where(PrintArchive.id.in_([archive.id for archive in archives]))
+                .execution_options(populate_existing=True)
+            )
+        ).scalars()
+    }
+    archives = [fresh[archive.id] for archive in archives if archive.id in fresh]
+    if any(archive.project_id not in locked and archive.project_id is not None for archive in archives):
+        raise HTTPException(status_code=409, detail=order_fulfilment.ORDER_CHANGED)
     await order_filing.resolve_link(db, project_id, data.project_line_id)
     # A print taken from another order leaves it by that order's rules — the same
     # judge as the two other exits (WS-13 E13 B05), asked of every order a print
@@ -2545,11 +2563,15 @@ async def remove_archives_from_project(
 ):
     """Unfile prints from this order — the line goes with the order, never alone. ``F(print)``
     and C1; a closed order still lets a print go (it is not a new link)."""
+    # The order locked as receiving locks it, before its prints and C1 are read (WS-13 E13 V04).
+    await order_fulfilment.lock_orders(db, [project_id])
     in_order = {
         archive.id: archive
         for archive in (
             await db.execute(
-                select(PrintArchive).where(PrintArchive.id.in_(data.archive_ids), PrintArchive.project_id == project_id)
+                select(PrintArchive)
+                .where(PrintArchive.id.in_(data.archive_ids), PrintArchive.project_id == project_id)
+                .execution_options(populate_existing=True)
             )
         ).scalars()
     }

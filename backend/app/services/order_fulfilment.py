@@ -51,6 +51,16 @@ async def lock_order(db: AsyncSession, project_id: int) -> None:
     held.note("projects", project_id, ORDER)
 
 
+async def lock_orders(db: AsyncSession, project_ids) -> None:
+    """The orders a print leaves or joins, locked as receiving locks them (WS-13 E13 V04): the
+    order row, ascending id, BEFORE C1 is read. Receiving takes the same row before it reads
+    what the order's prints made, so an exit and a receipt never both pass on what they each
+    read — whichever comes second reads the other's result. The class-3 lock of the protocol
+    (products → projects → …): a door that holds it takes only higher classes after it."""
+    for project_id in sorted({pid for pid in project_ids if pid is not None}):
+        await lock_order(db, project_id)
+
+
 class FulfilmentError(Exception):
     """A batch the order refuses; ``status`` is the HTTP answer."""
 

@@ -1178,6 +1178,9 @@ async def _update_archive_locked(
     if project_before is not None and (moves_away or leaves_completed):
         from backend.app.services import order_fulfilment
 
+        # The order locked as receiving locks it, before C1 is read (WS-13 E13 V04); the print
+        # itself is held since the editor read it (``archive_write_scope``).
+        await order_fulfilment.lock_orders(db, [project_before])
         try:
             await order_fulfilment.ensure_prints_can_leave(db, project_before, [archive.id])
         except order_fulfilment.FulfilmentError as e:
@@ -1584,6 +1587,8 @@ async def _delete_archive_locked(
         from backend.app.services import order_fulfilment, order_journal
 
         await ensure_may_file(creds, [archive])
+        # The order locked as receiving locks it, before C1 is read (WS-13 E13 V04).
+        await order_fulfilment.lock_orders(db, [archive.project_id])
         try:
             await order_fulfilment.ensure_prints_can_leave(db, archive.project_id, [archive.id])
         except order_fulfilment.FulfilmentError as e:
