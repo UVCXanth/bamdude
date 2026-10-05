@@ -109,7 +109,10 @@ describe('OrdersPage', () => {
     window.history.pushState({}, '', '/projects');
     render(<OrdersPage />);
     const header = await screen.findByTestId('list-page-header');
-    expect(within(header).getByRole('group', { name: 'View' })).toBeInTheDocument();
+    const toggle = within(header).getByRole('group', { name: 'View' });
+    const buttons = within(toggle).getAllByRole('button');
+    expect(buttons[0]).toHaveAccessibleName('Cards');
+    expect(buttons[1]).toHaveAccessibleName('Table');
     expect(within(header).getByRole('heading', { level: 1 })).toBeInTheDocument();
   });
 
@@ -120,29 +123,29 @@ describe('OrdersPage', () => {
     await screen.findByTestId('list-page-header');
     expect(screen.queryByRole('navigation', { name: 'Projects' })).not.toBeInTheDocument();
   });
-  it('falls back to the table when the stored view is not a mode (WS-13 E2 B05)', async () => {
+  it('falls back to cards when the stored view is not a mode', async () => {
     localStorage.setItem('projects.view', 'timeline');
     vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
     window.history.pushState({}, '', '/projects');
     render(<OrdersPage />);
-    expect(await screen.findByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByRole('button', { name: 'Cards' })).toHaveAttribute('aria-pressed', 'true');
   });
-  it('opens as a table sorted by due date when nothing was chosen — the accepted consequence of S03 (WS-13 E2 B05/R03)', async () => {
-    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
-    window.history.pushState({}, '', '/projects');
-    render(<OrdersPage />);
-    expect(await screen.findByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
-    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'due-asc' })));
-    // Nothing was chosen, so nothing is written.
-    expect(localStorage.getItem('projects.view')).toBeNull();
-  });
-  it('keeps a stored cards view, with the cards own default order (WS-13 E2 B05/R03)', async () => {
-    localStorage.setItem('projects.view', 'cards');
+  it('opens as cards when nothing was chosen', async () => {
     const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
     window.history.pushState({}, '', '/projects');
     render(<OrdersPage />);
     expect(await screen.findByRole('button', { name: 'Cards' })).toHaveAttribute('aria-pressed', 'true');
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'updated-desc' })));
+    // Nothing was chosen, so nothing is written.
+    expect(localStorage.getItem('projects.view')).toBeNull();
+  });
+  it('keeps a stored table view and its due-date order', async () => {
+    localStorage.setItem('projects.view', 'table');
+    const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
+    window.history.pushState({}, '', '/projects');
+    render(<OrdersPage />);
+    expect(await screen.findByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'due-asc' })));
   });
   it('an explicit sort in the URL wins over the default of whichever view (WS-13 E2 B05/R03)', async () => {
     const get = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
@@ -150,12 +153,12 @@ describe('OrdersPage', () => {
     render(<OrdersPage />);
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(expect.objectContaining({ sort_by: 'name-asc' })));
   });
-  it('a storage that cannot be read still renders the list, as a table (WS-13 E2 B05)', async () => {
+  it('a storage that cannot be read still renders the list as cards', async () => {
     refuseToRead('projects.view');
     vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([rowA]));
     window.history.pushState({}, '', '/projects');
     render(<OrdersPage />);
-    expect(await screen.findByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByRole('button', { name: 'Cards' })).toHaveAttribute('aria-pressed', 'true');
     expect(await screen.findByText('A')).toBeInTheDocument();
   });
   it('asks the server for one page of the active tab and counts every tab from totals', async () => {
@@ -163,7 +166,7 @@ describe('OrdersPage', () => {
     window.history.pushState({}, '', '/projects');
     render(<OrdersPage />);
     expect(await screen.findByText('A')).toBeInTheDocument();
-    expect(get).toHaveBeenLastCalledWith({ status: 'active', sort_by: 'due-asc', page: 1, per_page: 24 });
+    expect(get).toHaveBeenLastCalledWith({ status: 'active', sort_by: 'updated-desc', page: 1, per_page: 24 });
     // Counts come from the server's totals, not from the rows on this page.
     expect(screen.getByRole('tab', { name: /active/i }).textContent).toContain('1');
     expect(screen.getByRole('tab', { name: /completed/i }).textContent).toContain('5');
@@ -219,7 +222,7 @@ describe('OrdersPage', () => {
     window.history.pushState({}, '', '/projects?tab=completed&customer=1&q=lamp&page=2');
     render(<OrdersPage />);
     await waitFor(() =>
-      expect(get).toHaveBeenLastCalledWith({ status: 'completed', customer_id: 1, q: 'lamp', sort_by: 'due-asc', page: 2, per_page: 24 }),
+      expect(get).toHaveBeenLastCalledWith({ status: 'completed', customer_id: 1, q: 'lamp', sort_by: 'updated-desc', page: 2, per_page: 24 }),
     );
     expect(screen.getByRole('searchbox')).toHaveValue('lamp');
   });
@@ -229,7 +232,7 @@ describe('OrdersPage', () => {
     render(<OrdersPage />);
     await screen.findByText('A');
     fireEvent.click(screen.getByRole('tab', { name: /all/i }));
-    await waitFor(() => expect(get).toHaveBeenLastCalledWith({ sort_by: 'due-asc', page: 1, per_page: 24 }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith({ sort_by: 'updated-desc', page: 1, per_page: 24 }));
     expect(window.location.search).toBe('?tab=all');
     // Exercise the debounce, not the speed of a loaded four-worker host.
     vi.useFakeTimers();
@@ -239,7 +242,7 @@ describe('OrdersPage', () => {
     } finally {
       vi.useRealTimers();
     }
-    await waitFor(() => expect(get).toHaveBeenLastCalledWith({ q: 'gear', sort_by: 'due-asc', page: 1, per_page: 24 }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith({ q: 'gear', sort_by: 'updated-desc', page: 1, per_page: 24 }));
     expect(window.location.search).toContain('q=gear');
   });
   it('filters by customer and groups the page when asked', async () => {
@@ -273,7 +276,7 @@ describe('OrdersPage', () => {
     render(<OrdersPage />);
     expect(await screen.findByText('Nothing matches your search or filters.')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
-    await waitFor(() => expect(get).toHaveBeenLastCalledWith({ status: 'completed', sort_by: 'due-asc', page: 1, per_page: 24 }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith({ status: 'completed', sort_by: 'updated-desc', page: 1, per_page: 24 }));
     expect(window.location.search).toBe('?tab=completed');
   });
   it('«Mine» with nothing of mine is a filter that matched nothing, with Reset — not an empty farm', async () => {

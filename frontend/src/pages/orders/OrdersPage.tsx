@@ -61,9 +61,8 @@ export function OrdersPage() {
   const { t } = useTranslation();
   const { hasPermission, user } = useAuth();
 
-  // Nothing chosen (or nothing readable) → the table (WS-13 E2 B05, S03): its default
-  // order is `due-asc`, so a URL without `sort` sorts by due date for such a reader.
-  const [view, setViewPref] = usePersistedState<OrdersView>(VIEW_STORAGE_KEY, 'table', parseOrdersView);
+  // Open cards until the viewer chooses a mode; an existing preference still wins.
+  const [view, setViewPref] = usePersistedState<OrdersView>(VIEW_STORAGE_KEY, 'cards', parseOrdersView);
   const tabsId = useId();
   const views = useOrdersViews();
   const sortOptions = useOrderSortOptions();

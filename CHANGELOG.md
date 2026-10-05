@@ -151,6 +151,8 @@
 
 ### Fixed
 
+- **Orders opens in Cards when no view has been saved.** Cards now comes before Table in the view switch; an existing saved view is preserved.
+
 - **Card-size buttons now truly disable in views where size has no effect.** Keyboard activation no longer changes the saved size while the camera wall is showing; the previous size returns when cards are shown again. A saved camera-wall view also no longer bypasses the camera permission: the Printers page shows cards until that view is available.
 
 - **The print dialog tells two lines of one order apart.** When an order had several lines of the same product in the same material — kits that differ by a variant, or a parts-only line — the order field offered them as identical options. Each now names its line's configuration («standard», the option that differs, «parts only»), as the order's own line picker does.

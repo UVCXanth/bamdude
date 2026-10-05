@@ -67,7 +67,7 @@ export const parseListView = listViewParser<ListView>(CARDS_TABLE_MODES);
  *  customers stay on `ListView`. */
 export type OrdersView = 'table' | 'cards' | 'kanban' | 'workspace' | 'deadlines';
 
-export const ORDERS_VIEW_MODES: readonly OrdersView[] = ['table', 'cards', 'kanban', 'workspace', 'deadlines'];
+export const ORDERS_VIEW_MODES: readonly OrdersView[] = ['cards', 'table', 'kanban', 'workspace', 'deadlines'];
 
 export const parseOrdersView = listViewParser<OrdersView>(ORDERS_VIEW_MODES);
 
