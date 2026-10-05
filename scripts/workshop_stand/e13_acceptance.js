@@ -2179,6 +2179,11 @@ async (page, selftest = null) => {
     await p.waitForFunction(() => [...document.querySelectorAll('[role="dialog"] select option')].some((o) => o.value === '__new__'), null, { timeout: 8000 });
     await d.getByLabel('Замовник', { exact: true }).selectOption('__new__');
     await d.getByPlaceholder("Ім'я замовника", { exact: true }).fill(MADE.name);
+    // The quick-create row as the operator sees it before the full form: its words are its
+    // field and buttons, never a programmer's note (Codex E13-V07).
+    const quickText = await textOf(d);
+    const quickStray = quickText.includes('stopPropagation') || quickText.includes('// ');
+    files.push(await shoot(p, 'order-clerk-quick-create'));
     await d.getByRole('button', { name: 'Додати контакт і доставку…', exact: true }).click();
     const c = dialogOf(p, 'Новий замовник');
     await c.waitFor({ timeout: 8000 });
@@ -2218,7 +2223,7 @@ async (page, selftest = null) => {
     return {
       env: { viewport: [1440, 900] },
       recipe: {
-        url: '/projects → «Нове замовлення» → name → «Новий замовник…» → «Додати контакт і доставку…» → contact + method → «Зберегти замовника» → «Створити»',
+        url: '/projects → «Нове замовлення» → name → «Новий замовник…» (the quick-create row, framed) → «Додати контакт і доставку…» → contact + method → «Зберегти замовника» → «Створити»',
         fixture: [
           '/auth/me: ' + ROLE.orderClerk.join(', ') + ' (user 9001)',
           `POST /customers answered here as customer ${MADE.code}; GET /customers/options then lists it, /customers/${MADE.id}/contact-options its contact`,
@@ -2229,11 +2234,11 @@ async (page, selftest = null) => {
         ],
       },
       measured: {
-        prefilled, manage, shown, ordersBefore, landed, heading,
+        prefilled, manage, shown, ordersBefore, landed, heading, quickStray,
         sent: writes.map((w) => ({ method: w.method, path: w.path, body: w.body })),
         directory: directory.slice(0, 6), foreign: foreign.slice(0, 6), errors,
       },
-      pass: prefilled === MADE.name && manage === 0 && writes.length === 2 &&
+      pass: !quickStray && prefilled === MADE.name && manage === 0 && writes.length === 2 &&
         customerWrite.method === 'POST' && customerWrite.body?.name === MADE.name &&
         contact.name === CONTACT.name && contact.phone === '+380501234567' && contact.delivery_method_id === method.id &&
         contact.delivery_details === 'Київ, відділення 1' && ordersBefore === 0 &&
