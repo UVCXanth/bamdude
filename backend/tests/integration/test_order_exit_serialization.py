@@ -131,3 +131,66 @@ async def test_an_exit_holding_the_order_leaves_the_receipt_nothing_to_receive(
     # The trash keeps the link (a restore brings it back); every other exit moved it.
     expected = {"remove-archives": None, "patch": None, "add-archives": destination, "trash": order}[action]
     assert stored_order == expected
+
+
+# ---------- two exits of one print against each other (Codex round 2, V04) ----------
+
+# The batch exits lock the order and then the print; the archive editor and the trash now
+# do the same (they used to lock the print first). On SQLite the write lock is the
+# database's one lock, so these pin that every crossing ends, both doors answer and the
+# print ends where the later door put it; the row-lock crossing itself is PostgreSQL's,
+# proven by the lock-protocol scenario ``print_exits`` (K02).
+EXITS = {
+    "patch": lambda c, order, other, a: c.patch(f"/api/v1/archives/{a}", json={"project_id": None}),
+    "trash": lambda c, order, other, a: c.delete(f"/api/v1/archives/{a}"),
+    "remove": lambda c, order, other, a: c.post(f"/api/v1/projects/{order}/remove-archives", json={"archive_ids": [a]}),
+    "add": lambda c, order, other, a: c.post(f"/api/v1/projects/{other}/add-archives", json={"archive_ids": [a]}),
+}
+# (the door that takes its first lock and stops there, the one that comes next, the order
+# the print ends in — "order", "other", None, or "any" where only the answers are pinned)
+CROSSINGS = [
+    ("remove", "patch", None),
+    ("patch", "remove", None),
+    ("remove", "trash", None),
+    ("trash", "remove", None),
+    ("add", "patch", None),
+    ("patch", "add", "other"),
+    ("add", "trash", "other"),
+    ("trash", "add", "any"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("first", "second", "final"), CROSSINGS)
+async def test_two_exits_of_one_print_both_end(
+    committing_client,
+    db_session,
+    catalog,
+    monkeypatch,
+    first,
+    second,
+    final,  # noqa: F811
+):
+    order, _line, other, printed = await _setup(committing_client, db_session, catalog)
+    inside, go = asyncio.Event(), asyncio.Event()
+    original = order_fulfilment.lock_orders
+
+    async def held(db, project_ids):
+        await original(db, project_ids)
+        if not inside.is_set():  # the first door, between its first lock and its second
+            inside.set()
+            await go.wait()
+
+    monkeypatch.setattr(order_fulfilment, "lock_orders", held)
+    a = asyncio.create_task(EXITS[first](committing_client, order, other, printed.id))
+    await asyncio.wait_for(inside.wait(), 10)
+    b = asyncio.create_task(EXITS[second](committing_client, order, other, printed.id))
+    await asyncio.sleep(0.5)
+    go.set()
+    answered_a, answered_b = await asyncio.wait_for(asyncio.gather(a, b), 30)
+
+    assert answered_a.status_code == 200, answered_a.text
+    assert answered_b.status_code == 200, answered_b.text
+    if final != "any":
+        expected = {"order": order, "other": other, None: None}[final]
+        assert (await _order_of(db_session, printed.id))[0] == expected

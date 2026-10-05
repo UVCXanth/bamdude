@@ -44,7 +44,7 @@ from backend.app.schemas.project import StockMovedOut
 from backend.app.services import part_stock
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.archive_defects import DefectsWrite, record_defects
-from backend.app.services.archive_write_scope import archive_write_scope
+from backend.app.services.archive_write_scope import archive_write_scope, locked_print
 from backend.app.services.design_settings import overrides_from_config
 from backend.app.services.filament_requirements import annotate_rack_groups
 from backend.app.services.library_helpers import names_carry_sliced_gcode, sliced_gcode_in_3mf, sliced_gcode_members
@@ -1076,9 +1076,47 @@ async def update_archive(
     ),
     creds: RequestCredentials = Depends(request_credentials),
 ):
-    """Serialize archive facts before the editor reads their current values."""
-    async with archive_write_scope(db, archive_id):
-        return await _update_archive_locked(archive_id, update_data, db, auth_result, creds)
+    """Serialize archive facts before the editor reads their current values.
+
+    A change that can move the print in or out of an order's coverage locks those orders
+    first, then the print (WS-13 E13 V04): the order the batch exits and receiving take
+    first, never after the print."""
+    locked: set[int] | None = None
+    first = None
+    if update_data.model_fields_set & _BINDING_FIELDS:
+        joins = [update_data.project_id] if "project_id" in update_data.model_fields_set else []
+
+        async def first() -> None:
+            nonlocal locked
+            locked = await _lock_exit_orders(db, archive_id, joins)
+
+    async with archive_write_scope(db, archive_id, first=first):
+        return await _update_archive_locked(archive_id, update_data, db, auth_result, creds, locked)
+
+
+# The fields that move a print in or out of an order's coverage (WS-13 E13 O09).
+_BINDING_FIELDS = frozenset({"project_id", "project_line_id", "status"})
+
+
+async def _lock_exit_orders(db: AsyncSession, archive_id: int, joins=()) -> set[int]:
+    """The orders a print's exit touches — the one it is filed under now and any it joins —
+    locked before the print itself (WS-13 E13 V04). Read as the print stands before its own
+    lock; the caller reads it again under that lock and refuses a binding that moved meanwhile
+    to an order not locked here (``_refuse_a_moved_print``)."""
+    from backend.app.services import order_fulfilment
+
+    current = await db.scalar(select(PrintArchive.project_id).where(PrintArchive.id == archive_id))
+    orders = {current, *joins} - {None}
+    await order_fulfilment.lock_orders(db, orders)
+    return orders
+
+
+def _refuse_a_moved_print(archive: PrintArchive, locked: set[int] | None) -> None:
+    """409 «changed, try again» for a print that went to an order this request did not lock."""
+    if locked is not None and archive.project_id is not None and archive.project_id not in locked:
+        from backend.app.services.order_fulfilment import ORDER_CHANGED
+
+        raise HTTPException(409, ORDER_CHANGED)
 
 
 async def _cost_follows_typed_grams(
@@ -1107,22 +1145,25 @@ async def _update_archive_locked(
     db: AsyncSession,
     auth_result: tuple[User | None, bool],
     creds: RequestCredentials,
+    locked: set[int] | None = None,
 ):
     """Update archive metadata (tags, notes, cost, filament grams, is_favorite, project_id)."""
     from sqlalchemy.orm import selectinload
 
     user, can_modify_all = auth_result
 
-    result = await db.execute(
+    archive = await locked_print(
+        db,
+        archive_id,
         select(PrintArchive)
         .options(selectinload(PrintArchive.project), selectinload(PrintArchive.created_by))
         .where(PrintArchive.id == archive_id)
         .with_for_update()
-        .execution_options(populate_existing=True)
+        .execution_options(populate_existing=True),
     )
-    archive = result.scalar_one_or_none()
     if not archive:
         raise HTTPException(404, "Archive not found")
+    _refuse_a_moved_print(archive, locked)
 
     # Ownership check
     if not can_modify_all:
@@ -1178,8 +1219,8 @@ async def _update_archive_locked(
     if project_before is not None and (moves_away or leaves_completed):
         from backend.app.services import order_fulfilment
 
-        # The order locked as receiving locks it, before C1 is read (WS-13 E13 V04); the print
-        # itself is held since the editor read it (``archive_write_scope``).
+        # Held since before the print (``_lock_exit_orders``, WS-13 E13 V04): the order is
+        # locked as receiving locks it, before C1 is read — asked again at no cost.
         await order_fulfilment.lock_orders(db, [project_before])
         try:
             await order_fulfilment.ensure_prints_can_leave(db, project_before, [archive.id])
@@ -1530,9 +1571,16 @@ async def delete_archive(
     ),
     creds: RequestCredentials = Depends(request_credentials),
 ):
-    """Trash an archive only after serializing its mutable archive facts."""
-    async with archive_write_scope(db, archive_id):
-        return await _delete_archive_locked(archive_id, db, auth_result, creds)
+    """Trash an archive only after serializing its mutable archive facts — the order it is
+    filed under locked first, then the print (WS-13 E13 V04)."""
+    locked: set[int] = set()
+
+    async def first() -> None:
+        nonlocal locked
+        locked = await _lock_exit_orders(db, archive_id)
+
+    async with archive_write_scope(db, archive_id, first=first):
+        return await _delete_archive_locked(archive_id, db, auth_result, creds, locked)
 
 
 async def _delete_archive_locked(
@@ -1540,6 +1588,7 @@ async def _delete_archive_locked(
     db: AsyncSession,
     auth_result: tuple[User | None, bool],
     creds: RequestCredentials,
+    locked: set[int] | None = None,
 ):
     """Soft-delete an archive (moves to the archive trash bin).
 
@@ -1555,15 +1604,17 @@ async def _delete_archive_locked(
     user, can_modify_all = auth_result
 
     # Only operate on active archives — re-deleting a trashed row is a no-op.
-    result = await db.execute(
+    archive = await locked_print(
+        db,
+        archive_id,
         PrintArchive.active()
         .where(PrintArchive.id == archive_id)
         .with_for_update()
-        .execution_options(populate_existing=True)
+        .execution_options(populate_existing=True),
     )
-    archive = result.scalar_one_or_none()
     if not archive:
         raise HTTPException(404, "Archive not found")
+    _refuse_a_moved_print(archive, locked)
 
     if not can_modify_all:
         if archive.created_by_id != user.id:
@@ -1587,7 +1638,7 @@ async def _delete_archive_locked(
         from backend.app.services import order_fulfilment, order_journal
 
         await ensure_may_file(creds, [archive])
-        # The order locked as receiving locks it, before C1 is read (WS-13 E13 V04).
+        # Held since before the print (``_lock_exit_orders``, WS-13 E13 V04) — asked again at no cost.
         await order_fulfilment.lock_orders(db, [archive.project_id])
         try:
             await order_fulfilment.ensure_prints_can_leave(db, archive.project_id, [archive.id])

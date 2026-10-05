@@ -12,11 +12,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.lock_ledger import PRINT, before_lock, ledger
 from backend.app.models.archive import PrintArchive
 
 _archive_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -24,7 +26,9 @@ _archive_file_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 @asynccontextmanager
-async def archive_write_scope(db: AsyncSession, archive_id: int):
+async def archive_write_scope(
+    db: AsyncSession, archive_id: int, *, first: Callable[[], Awaitable[object]] | None = None
+):
     """Serialize one archive's short fact mutation until the caller commits.
 
     The local lock closes the in-process SQLite window.  A file-backed SQLite
@@ -38,20 +42,26 @@ async def archive_write_scope(db: AsyncSession, archive_id: int):
     explicit caller-owned transaction already exists, this helper preserves it;
     public archive-fact writers are responsible for taking that transaction
     before their own read.
+
+    ``first`` takes the locks of a LOWER class the caller needs before the print's
+    own (WS-13 E13 V04: the orders a print leaves or joins). It runs after the
+    process lock and SQLite's writer, before PostgreSQL's archive guard and the
+    caller's ``FOR UPDATE``; it may read, and the caller reads the archive again
+    under the guard.
     """
     async with _archive_locks[archive_id]:
         dialect = db.get_bind().dialect.name
+        if dialect == "sqlite" and not db.in_transaction():
+            await db.execute(text("BEGIN IMMEDIATE"))
+        # Otherwise the active transaction may be an explicit caller-owned write
+        # transaction (safe), or a deferred read (unsafe).  SQLAlchemy cannot
+        # distinguish those portably, so the public writers all enter before
+        # reading and tests pin that discipline.
+        if first is not None:
+            await first()
         if dialect == "postgresql":
             # Namespace 182 is reserved for completion/archive fact writers.
             await db.execute(text("SELECT pg_advisory_xact_lock(182, :archive_id)"), {"archive_id": archive_id})
-        elif dialect == "sqlite" and not db.in_transaction():
-            await db.execute(text("BEGIN IMMEDIATE"))
-        elif dialect == "sqlite":
-            # The active transaction may be an explicit caller-owned write
-            # transaction (safe), or a deferred read (unsafe).  SQLAlchemy
-            # cannot distinguish those portably, so the public writers all
-            # enter before reading and tests pin that discipline.
-            pass
         yield
 
 
@@ -74,9 +84,47 @@ async def archive_file_reference_scope(db: AsyncSession, file_path: str):
 
 async def load_active_archive_for_write(db: AsyncSession, archive_id: int) -> PrintArchive | None:
     """Read the current non-trashed archive under :func:`archive_write_scope`."""
-    return await db.scalar(
+    return await locked_print(
+        db,
+        archive_id,
         select(PrintArchive)
         .where(PrintArchive.id == archive_id, PrintArchive.deleted_at.is_(None))
         .with_for_update()
+        .execution_options(populate_existing=True),
+    )
+
+
+async def locked_print(db: AsyncSession, archive_id: int, statement):
+    """Run ``statement`` — one print's ``SELECT … FOR UPDATE`` — as a lock of the protocol's
+    PRINT class (WS-13 E13 V04): the order monitor sees it, so an order or a line taken
+    after it is the programmer's error the monitor names. Returns the one object."""
+    before_lock(db, "print_archives", archive_id, PRINT)
+    found = (await db.execute(statement)).scalar_one_or_none()
+    ledger(db).note("print_archives", archive_id, PRINT)
+    return found
+
+
+async def lock_prints(db: AsyncSession, archive_ids, *, filed_under: int | None = None) -> list[PrintArchive]:
+    """The prints a batch moves, ``FOR UPDATE`` in ascending id, read fresh (WS-13 E13 V04).
+
+    After the orders they leave or join — the class order every exit keeps, so a batch and
+    the archive editor never hold what the other waits for, and two batches never cross
+    over their prints. ``filed_under``: only the prints still filed under that order."""
+    ids = sorted({archive_id for archive_id in archive_ids if archive_id is not None})
+    if not ids:
+        return []
+    for archive_id in ids:
+        before_lock(db, "print_archives", archive_id, PRINT)
+    statement = (
+        select(PrintArchive)
+        .where(PrintArchive.id.in_(ids))
+        .order_by(PrintArchive.id)
+        .with_for_update()
         .execution_options(populate_existing=True)
     )
+    if filed_under is not None:
+        statement = statement.where(PrintArchive.project_id == filed_under)
+    rows = list((await db.execute(statement)).scalars())
+    for archive_id in ids:
+        ledger(db).note("print_archives", archive_id, PRINT)
+    return rows

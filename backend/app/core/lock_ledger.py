@@ -39,8 +39,12 @@ PRODUCT = 2
 ORDER = 3
 POSITION = 4
 LINE = 5
-PART = 6
-PROCUREMENT = 7
+# A print (``print_archives``) — after the order it leaves or joins and that order's lines
+# (WS-13 E13 V04): the exits lock the order before they read C1, as receiving does, and
+# only then the print; a print's writers go on to the parts' ledger after it.
+PRINT = 6
+PART = 7
+PROCUREMENT = 8
 
 _KEY = "lock_ledger"
 
@@ -139,7 +143,7 @@ def ledger(db) -> LockLedger:
 
 # The tables whose rows the protocol locks — a row of one of them INSERTed by this
 # transaction is invisible to every other, so its lock can take part in no cycle.
-_TRACKED = {"library_files", "products", "projects", "stock_items", "project_lines", "product_parts"}
+_TRACKED = {"library_files", "products", "projects", "stock_items", "project_lines", "print_archives", "product_parts"}
 
 
 @event.listens_for(Session, "after_flush")

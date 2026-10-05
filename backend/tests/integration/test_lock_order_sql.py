@@ -40,8 +40,9 @@ LOCK_CLASS = {
     "projects": 3,
     "stock_items": 4,
     "project_lines": 5,
-    "product_parts": 6,
-    "project_procurement": 7,
+    "print_archives": 6,  # WS-13 E13 V04: a print after its order and lines, before the parts
+    "product_parts": 7,
+    "project_procurement": 8,
 }
 
 

@@ -171,7 +171,7 @@ from backend.app.services import (
     stock_offers,
 )
 from backend.app.services.archive_defects import DefectsWrite, record_defects
-from backend.app.services.archive_write_scope import archive_write_scope
+from backend.app.services.archive_write_scope import archive_write_scope, lock_prints
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.app.services.configuration_views import configuration_out, groups_by_product
 from backend.app.services.entity_codes import code_for, id_from_query
@@ -2456,20 +2456,12 @@ async def add_archives_to_project(
     archives = [archive for archive_id in data.archive_ids if (archive := await db.get(PrintArchive, archive_id))]
     await ensure_may_file(creds, archives)
     # Every order the prints leave, and this one, locked as receiving locks them before C1 is
-    # read (WS-13 E13 V04); the prints read again behind the locks — one that moved to an
-    # order not locked here meanwhile is the same «changed, try again» as a changed order.
+    # read; then the prints themselves, ascending, read again behind the locks (WS-13 E13 V04 —
+    # orders before prints, the order the archive editor and the trash keep too). A print that
+    # moved to an order not locked here meanwhile is the same «changed, try again».
     locked = {project_id, *(archive.project_id for archive in archives)}
     await order_fulfilment.lock_orders(db, locked)
-    fresh = {
-        archive.id: archive
-        for archive in (
-            await db.execute(
-                select(PrintArchive)
-                .where(PrintArchive.id.in_([archive.id for archive in archives]))
-                .execution_options(populate_existing=True)
-            )
-        ).scalars()
-    }
+    fresh = {archive.id: archive for archive in await lock_prints(db, [archive.id for archive in archives])}
     archives = [fresh[archive.id] for archive in archives if archive.id in fresh]
     if any(archive.project_id not in locked and archive.project_id is not None for archive in archives):
         raise HTTPException(status_code=409, detail=order_fulfilment.ORDER_CHANGED)
@@ -2563,18 +2555,10 @@ async def remove_archives_from_project(
 ):
     """Unfile prints from this order — the line goes with the order, never alone. ``F(print)``
     and C1; a closed order still lets a print go (it is not a new link)."""
-    # The order locked as receiving locks it, before its prints and C1 are read (WS-13 E13 V04).
+    # The order locked as receiving locks it, then its prints, ascending, before C1 is read
+    # (WS-13 E13 V04 — orders before prints, as every exit keeps).
     await order_fulfilment.lock_orders(db, [project_id])
-    in_order = {
-        archive.id: archive
-        for archive in (
-            await db.execute(
-                select(PrintArchive)
-                .where(PrintArchive.id.in_(data.archive_ids), PrintArchive.project_id == project_id)
-                .execution_options(populate_existing=True)
-            )
-        ).scalars()
-    }
+    in_order = {archive.id: archive for archive in await lock_prints(db, data.archive_ids, filed_under=project_id)}
     await ensure_may_file(creds, list(in_order.values()))
     try:
         await order_fulfilment.ensure_prints_can_leave(db, project_id, data.archive_ids)
