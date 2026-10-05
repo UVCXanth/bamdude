@@ -66,10 +66,11 @@ const waitingPrint = {
 };
 
 function mockApi(pending: unknown[]) {
-  const posted: { clear: unknown | null; repeat: unknown | null; clearCalls: number } = {
+  const posted: { clear: unknown | null; repeat: unknown | null; clearCalls: number; repeatCalls: number } = {
     clear: null,
     repeat: null,
     clearCalls: 0,
+    repeatCalls: 0,
   };
   server.use(
     http.get('/api/v1/printers/', () => HttpResponse.json([printer])),
@@ -84,6 +85,7 @@ function mockApi(pending: unknown[]) {
     }),
     http.post('/api/v1/printers/:id/repeat-print', async ({ request }) => {
       const text = await request.text();
+      posted.repeatCalls += 1;
       posted.repeat = text ? JSON.parse(text) : null;
       return HttpResponse.json({ success: true, item_id: 11, ledger_refused_parts: 0 });
     }),
@@ -142,6 +144,23 @@ describe('the yellow pair (expanded card, queue run dry)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Clear plate/i }));
     await waitFor(() => expect(posted.clearCalls).toBe(1));
     expect(posted.clear).toEqual({ expected_archive_id: 9, expected_gate_token: 'gate-9' });
+  });
+
+  // WS-13 E13 V06: one question, one answer — a double press lands before `isPending`.
+  it('a double press repeats once, and «Clear» after it is not a second answer', async () => {
+    const posted = mockApi([]);
+    render(<PrintersPage />);
+    await waitForCard();
+    await screen.findByTestId('plate-defects-toggle');
+    const repeat = screen.getByRole('button', { name: /Repeat print/i });
+    await waitFor(() => expect(repeat).toBeEnabled());
+    fireEvent.click(repeat);
+    fireEvent.click(repeat);
+    fireEvent.click(screen.getByRole('button', { name: /Clear plate/i }));
+    await waitFor(() => expect(posted.repeatCalls).toBe(1));
+    await new Promise((r) => setTimeout(r, 150));
+    expect(posted.repeatCalls).toBe(1);
+    expect(posted.clearCalls).toBe(0);
   });
 
   it('with a queue the widget draws the only row', async () => {

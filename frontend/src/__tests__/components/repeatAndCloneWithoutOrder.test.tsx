@@ -136,6 +136,88 @@ describe('«Repeat» of a print under an order', () => {
   });
 });
 
+// One question, one answer (WS-13 E13 V06): a double press — or «Clear» right after «Repeat» —
+// lands before the mutation says it is pending; the hook decides it synchronously. The server
+// answers a duplicate with the first repeat's row, but the card said «printing again» twice.
+describe('a plate answer is sent once', () => {
+  let answers: string[];
+
+  beforeEach(() => {
+    answers = [];
+    auth.granted = new Set(['printers:clear_plate', 'queue:read_all']);
+    server.use(
+      http.get('/api/v1/queue/', () => HttpResponse.json([pending()])),
+      http.get('/api/v1/printers/:id/status', () =>
+        HttpResponse.json({ state: 'FINISH', connected: true, awaiting_plate_clear: true, repeat_available: true }),
+      ),
+      http.get('/api/v1/printers/:id/waiting-print', () => HttpResponse.json(waiting())),
+      http.post('/api/v1/printers/:id/repeat-print', async () => {
+        answers.push('repeat');
+        await new Promise((r) => setTimeout(r, 50));
+        return HttpResponse.json({ success: true, item_id: 11, ledger_refused_parts: 0 });
+      }),
+      http.post('/api/v1/printers/:id/clear-plate', async () => {
+        answers.push('clear');
+        await new Promise((r) => setTimeout(r, 50));
+        return HttpResponse.json({ success: true, ledger_refused_parts: 0 });
+      }),
+    );
+  });
+
+  async function pair() {
+    const repeat = await screen.findByRole('button', { name: /Repeat without order/ });
+    await waitFor(() => expect(repeat).toBeEnabled());
+    return { repeat, clear: screen.getByRole('button', { name: /Clear/ }) };
+  }
+
+  it('the queue widget: a double press repeats once', async () => {
+    render(<PrinterQueueWidget printerId={1} printerState="FINISH" awaitingPlateClear={true} />);
+    const { repeat } = await pair();
+    fireEvent.click(repeat);
+    fireEvent.click(repeat);
+    await waitFor(() => expect(answers).toEqual(['repeat']));
+    await new Promise((r) => setTimeout(r, 150));
+    expect(answers).toEqual(['repeat']);
+  });
+
+  it('the queue widget: «Clear» right after «Repeat» is not a second answer', async () => {
+    render(<PrinterQueueWidget printerId={1} printerState="FINISH" awaitingPlateClear={true} />);
+    const { repeat, clear } = await pair();
+    fireEvent.click(repeat);
+    fireEvent.click(clear);
+    await new Promise((r) => setTimeout(r, 150));
+    expect(answers).toEqual(['repeat']);
+  });
+
+  it('the queue page card: a double press repeats once', async () => {
+    const queue = { id: 1, printer_id: 1, printer_name: 'A1-01', printer_model: 'A1', status: 'idle', is_paused: false,
+      auto_distribute_eligible: true, last_activity_at: null, current_item_id: null, pending_count: 1, completed_count: 0,
+      failed_count: 0, cancelled_count: 0, skipped_count: 0, total_count: 1, created_at: '', updated_at: '' } as PrinterQueue;
+    render(<QueueCard queue={queue} onEditItem={vi.fn()} />);
+    const { repeat } = await pair();
+    fireEvent.click(repeat);
+    fireEvent.click(repeat);
+    await new Promise((r) => setTimeout(r, 150));
+    expect(answers).toEqual(['repeat']);
+  });
+
+  it('a refused answer frees the pair for the next press', async () => {
+    server.use(
+      http.post('/api/v1/printers/:id/repeat-print', () => {
+        answers.push('repeat');
+        return HttpResponse.json({ detail: 'busy' }, { status: 409 });
+      }),
+    );
+    render(<PrinterQueueWidget printerId={1} printerState="FINISH" awaitingPlateClear={true} />);
+    const { repeat } = await pair();
+    fireEvent.click(repeat);
+    await waitFor(() => expect(answers).toEqual(['repeat']));
+    await waitFor(() => expect(repeat).toBeEnabled());
+    fireEvent.click(repeat);
+    await waitFor(() => expect(answers).toEqual(['repeat', 'repeat']));
+  });
+});
+
 describe('«Clone» of a queue row under an order', () => {
   const queue: PrinterQueue = {
     id: 1,

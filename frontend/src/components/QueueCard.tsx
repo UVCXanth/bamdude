@@ -901,7 +901,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
               <div className="flex gap-2">
                 {status?.repeat_available !== false && (
                   <button
-                    onClick={() => repeatPrintMutation.mutate()}
+                    onClick={() => queueDefects.answer(() => repeatPrintMutation.mutate())}
                     disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate') || !queueDefects.repeatReady}
                     className="flex-1 py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
                   >
@@ -914,7 +914,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
                   </button>
                 )}
                 <button
-                  onClick={() => clearPlateMutation.mutate()}
+                  onClick={() => queueDefects.answer(() => clearPlateMutation.mutate())}
                   disabled={clearPlateMutation.isPending || !hasPermission('printers:clear_plate')}
                   className="flex-1 py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
                 >

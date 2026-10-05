@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
@@ -42,6 +42,10 @@ export interface PlateDefects {
   /** The run on the plate has been read (or could not be): until then whether «Repeat» keeps
    *  the order is unknown, and the button waits (WS-13 E13 final review). */
   repeatReady: boolean;
+  /** Sends one answer — «Clear» or «Repeat» — unless one is already on its way: decided
+   *  synchronously, because a double press lands before the mutation says it is pending
+   *  (WS-13 E13 V06). `afterAnswer` / `afterFailedAnswer` free it. */
+  answer: (send: () => void) => void;
   /** After a successful answer: refresh everything the defects may have moved, close the row. */
   afterAnswer: (ledgerRefused?: number) => void;
   /** After a refused answer: the server rolled the defects back, so stop showing what was typed. */
@@ -106,7 +110,17 @@ export function usePlateDefects(printerId: number, enabled: boolean): PlateDefec
     return repeatWithoutOrder ? { ...(answer ?? {}), without_order: true } : answer;
   };
 
+  // One question, one answer: the server takes a duplicate as the first answer, but the card
+  // would say «printing again» twice, and a «Clear» behind a «Repeat» is refused as stale.
+  const answering = useRef(false);
+  const answer = (send: () => void) => {
+    if (answering.current) return;
+    answering.current = true;
+    send();
+  };
+
   const afterAnswer = (ledgerRefused?: number) => {
+    answering.current = false;
     invalidateQueueViews(queryClient);
     queryClient.invalidateQueries({ queryKey: ['printerStatus', printerId] });
     queryClient.invalidateQueries({ queryKey: ['waiting-print', printerId] });
@@ -128,6 +142,7 @@ export function usePlateDefects(printerId: number, enabled: boolean): PlateDefec
     }
   };
   const afterFailedAnswer = () => {
+    answering.current = false;
     queryClient.invalidateQueries({ queryKey: ['waiting-print', printerId] });
   };
 
@@ -152,6 +167,7 @@ export function usePlateDefects(printerId: number, enabled: boolean): PlateDefec
     body,
     repeatWithoutOrder,
     repeatBody,
+    answer,
     afterAnswer,
     afterFailedAnswer,
   };

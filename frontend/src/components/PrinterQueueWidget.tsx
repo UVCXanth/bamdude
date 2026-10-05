@@ -113,7 +113,7 @@ export function PrinterQueueWidget({ printerId, printerModel, printerState, awai
           <div className="flex gap-2">
             {repeatAvailable !== false && (
               <button
-                onClick={() => repeatPrintMutation.mutate()}
+                onClick={() => plateDefects.answer(() => repeatPrintMutation.mutate())}
                 disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate') || !plateDefects.repeatReady}
                 className="flex-1 py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
               >
@@ -126,7 +126,7 @@ export function PrinterQueueWidget({ printerId, printerModel, printerState, awai
               </button>
             )}
             <button
-              onClick={() => clearPlateMutation.mutate()}
+              onClick={() => plateDefects.answer(() => clearPlateMutation.mutate())}
               disabled={clearPlateMutation.isPending || !hasPermission('printers:clear_plate')}
               className="flex-1 py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
             >
