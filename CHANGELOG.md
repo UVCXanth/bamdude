@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-## [0.7.0] - 2026-10-05
+## [0.7.0] - 2026-10-06
 
 Images: `ghcr.io/kainpl/bamdude:0.7.0` / `kainpl/bamdude:0.7.0` (`:latest` tracks this release).
 
