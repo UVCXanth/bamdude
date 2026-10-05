@@ -27,5 +27,13 @@ def kill_owned_group(pid: int) -> bool:
 
 
 def descendants_reaped(children: list[psutil.Process], *, timeout: float = 5) -> bool:
-    _, alive = psutil.wait_procs(children, timeout=timeout)
-    return not alive
+    def stopped(process: psutil.Process) -> bool:
+        try:
+            # A container without an init may leave an orphaned child as a
+            # zombie. It has exited and cannot run, even if PID 1 never waits.
+            return process.status() == psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return True
+
+    _, alive = psutil.wait_procs([child for child in children if not stopped(child)], timeout=timeout)
+    return all(stopped(child) for child in alive)
