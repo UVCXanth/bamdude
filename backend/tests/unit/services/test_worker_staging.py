@@ -23,11 +23,15 @@ def test_reaped_guardian_group_is_not_signaled_again(monkeypatch):
 
     class ReapedGuardian:
         pid = 1234
-        returncode = -signal.SIGKILL
+        returncode = None
         stdin = io.BytesIO()
         stdout = None
 
         def poll(self):
+            return self.returncode
+
+        def wait(self, **_kwargs):
+            self.returncode = -signal.SIGKILL
             return self.returncode
 
     owner = PreviewProcess.__new__(PreviewProcess)
@@ -40,6 +44,29 @@ def test_reaped_guardian_group_is_not_signaled_again(monkeypatch):
         lambda _pid: (_ for _ in ()).throw(PermissionError("recycled group ID")),
     )
     owner.stop()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups only")
+def test_externally_killed_guardian_still_kills_its_group(monkeypatch):
+    import backend.app.services.preview_process as preview_process
+
+    class CrashedGuardian:
+        pid = 1234
+        returncode = -signal.SIGKILL
+        stdin = io.BytesIO()
+        stdout = None
+
+        def poll(self):
+            return self.returncode
+
+    owner = PreviewProcess.__new__(PreviewProcess)
+    owner.process = CrashedGuardian()
+    owner.containment = None
+    signaled = []
+    monkeypatch.setattr(preview_process, "descendants", lambda _pid: [])
+    monkeypatch.setattr(preview_process, "kill_owned_group", lambda pid: signaled.append(pid))
+    owner.stop()
+    assert signaled == [1234]
 
 
 def test_runtime_specific_skeletons_and_payloads(tmp_path):

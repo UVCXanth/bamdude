@@ -83,6 +83,7 @@ class PreviewProcess:
     def stop(self):
         process = self.process
         children = descendants(process.pid)
+        guardian_was_running = process.poll() is None
         if process.stdin:
             process.stdin.close()  # EOF guardian kills even detached grandchildren
         if process.poll() is None:
@@ -103,7 +104,7 @@ class PreviewProcess:
             # Once that SIGKILL exit and the observed children are reaped, a
             # second killpg can address a recycled group ID (EPERM on macOS).
             # A normally exited or crashed guardian still needs the backstop.
-            if process.returncode != -signal.SIGKILL or not descendants_reaped(children):
+            if not (guardian_was_running and process.returncode == -signal.SIGKILL and descendants_reaped(children)):
                 kill_owned_group(process.pid)
         if not descendants_reaped(children):
             raise PreviewError("unavailable")  # no replacement while ownership is uncertain
