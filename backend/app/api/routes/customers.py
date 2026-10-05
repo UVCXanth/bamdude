@@ -257,8 +257,9 @@ async def list_customers(
     paged = page is not None
     key, direction, computed = resolve_sort(_CUSTOMER_SORT, sort_by)
     view = await workshop_view()
-    # The computed keys are order counts and money (WS-13 E13 O12).
-    if computed and not view.orders:
+    # The computed keys are order counts and money, and «with active orders» filters by them
+    # (WS-13 E13 O12).
+    if (computed or with_active) and not view.orders:
         raise read_required("orders")
     query = _customers_query()
     if not paged:
@@ -381,7 +382,8 @@ async def customer_options(
     Declared above ``/{customer_id}``."""
     query = select(Customer.id, Customer.name)
     if q and q.strip():
-        matches = [Customer.name.ilike(f"%{q.strip()}%")]
+        # A `%` or `_` the person typed is a letter, never a pattern.
+        matches = [Customer.name.ilike(like_contains(q.strip()), escape="\\")]
         customer_id = id_from_query("customer", q.strip())
         if customer_id is not None:
             matches.append(Customer.id == customer_id)

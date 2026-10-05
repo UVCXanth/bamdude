@@ -476,8 +476,9 @@ async def stock_catalog(
     else:
         query = select(Product).where(Product.origin == ProductOrigin.CATALOG.value)
     if q and q.strip():
-        needle = f"%{q.strip()}%"
-        query = query.where(or_(Product.name.ilike(needle), Product.sku.ilike(needle)))
+        # A `%` or `_` the person typed is a letter, never a pattern.
+        needle = like_contains(q.strip())
+        query = query.where(or_(Product.name.ilike(needle, escape="\\"), Product.sku.ilike(needle, escape="\\")))
     products = (await db.execute(query.order_by(Product.name, Product.id))).scalars().all()
     groups: dict[int, list[ProductVariantGroup]] = {}
     if products:

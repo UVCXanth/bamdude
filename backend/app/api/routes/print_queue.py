@@ -268,6 +268,7 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
     # the copy-queue dialog reads from do load it.
     if item.project_id is not None and "project" not in sa_inspect(item).unloaded:
         response.project_name = item.project.name if item.project else None
+        response.project_status = item.project.status if item.project else None
     if item.archive:
         # Soft-deleted (trashed) archive: the row survives but its files are
         # gone from disk. Suppress the archive-derived surface so we never

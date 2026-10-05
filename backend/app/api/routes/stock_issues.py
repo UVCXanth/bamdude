@@ -128,9 +128,13 @@ async def get_dispatch_note(
     details, so it opens only for whoever keeps the contacts or ships (WS-13 E13 O25) — never
     printed masked as if whole."""
     issue = await db.get(StockIssue, issue_id)
-    if issue is None:
-        raise HTTPException(status_code=404, detail="Dispatch note not found")
     view = await workshop_view()
+    if issue is None:
+        # A missing note answers a caller outside the stock as a note out of its reach does —
+        # the id tells it nothing (WS-13 E13 O25).
+        if not view.stock:
+            raise read_required("stock")
+        raise HTTPException(status_code=404, detail="Dispatch note not found")
     in_context = (
         view.stock
         or (issue.project_id is not None and view.orders)

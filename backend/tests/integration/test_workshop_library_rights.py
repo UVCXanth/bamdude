@@ -380,7 +380,14 @@ class TestOrderFileIntake:
 
     @staticmethod
     def _plate(file_id: int) -> dict:
-        return {"kind": "plate", "library_file_id": file_id, "plate_index": 1, "copies": 1}
+        # Taking nothing from the shelf, as a client without ``stock:move`` sends it (O06).
+        return {
+            "kind": "plate",
+            "library_file_id": file_id,
+            "plate_index": 1,
+            "copies": 1,
+            "stock": {"from_finished": 0, "from_kits": 0},
+        }
 
     @pytest.mark.asyncio
     async def test_without_the_library_right_not_even_ones_own_file(self, async_client: AsyncClient, files):

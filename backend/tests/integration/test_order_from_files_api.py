@@ -468,7 +468,9 @@ async def test_a_plate_line_honours_the_library_ownership_read_split(async_clien
     url = f"/api/v1/projects/{order.id}/lines/batch"
 
     def line(file_id):
-        return {"lines": [{"kind": "plate", "library_file_id": file_id, "plate_index": 1, "copies": 1}]}
+        # Taking nothing from the shelf — the caller has no ``stock:move`` (WS-13 E13 O06).
+        none = {"from_finished": 0, "from_kits": 0}
+        return {"lines": [{"kind": "plate", "library_file_id": file_id, "plate_index": 1, "copies": 1, "stock": none}]}
 
     r = await async_client.post(url, json=line(foreign.id), headers=headers)
     assert r.status_code == 404, r.text

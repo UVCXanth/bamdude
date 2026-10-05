@@ -1580,13 +1580,24 @@ async def fulfil_order(
     data: FulfilmentIn,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE, Permission.STOCK_MOVE),
+    current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
     creds: RequestCredentials = Depends(request_credentials),
 ):
     """One «Виконати» of the issue dialog: assemble, receive and issue, one issue for the
     whole batch, and — asked and everything issued — the order completed. A number above
-    what the order allows is refused with its sentence and nothing is written. A write-off
-    corrects the books, so it asks ``stock:adjust`` too (WS-13 E13 O06)."""
+    what the order allows is refused with its sentence and nothing is written. Moving goods
+    asks ``stock:move``; a write-off corrects the books, so it asks ``stock:adjust`` too; a
+    batch that moves nothing and only completes is the order's own right (WS-13 E13 O06/O23)."""
+    moves = any(
+        line.assemble
+        or line.receive
+        or line.issue
+        or line.write_off
+        or any(part.receive or part.issue or part.write_off for part in line.parts)
+        for line in data.lines
+    )
+    if moves:
+        await ensure(creds, Permission.STOCK_MOVE)
     if any(line.write_off or any(part.write_off for part in line.parts) for line in data.lines):
         await ensure(creds, Permission.STOCK_ADJUST)
     project = await _get_project(db, project_id)
@@ -1821,8 +1832,8 @@ def _no_library_file(_file: LibraryFile) -> bool:
 
 
 def _takes_stock(spec) -> bool:
-    """A product line that asks the shelf — ``auto`` or a number above nothing."""
-    if getattr(spec, "kind", None) != "product":
+    """A product or plate line that asks the shelf — ``auto`` or a number above nothing."""
+    if getattr(spec, "kind", None) not in ("product", "plate"):
         return False
     stock = spec.stock
     return stock == "auto" or stock.from_finished > 0 or stock.from_kits > 0
@@ -2061,10 +2072,12 @@ async def configure_line(
     if not data.dry_run:
         await ensure(creds, Permission.ORDERS_UPDATE)
     line = await _get_line(db, project_id, line_id)
-    # The product's gate before the configuration is read or written (WS-13 E1 BL3 / BL4):
-    # a variant group added meanwhile is then seen, not overwritten.
-    await product_gate(db, [line.product_id])
-    line = await _get_line(db, project_id, line_id, fresh=True)
+    # The product's gate before the configuration is written (WS-13 E1 BL3 / BL4): a variant
+    # group added meanwhile is then seen, not overwritten. A preview writes nothing and is a
+    # reader's — it takes no writer's lock (WS-13 E13 final review).
+    if not data.dry_run:
+        await product_gate(db, [line.product_id])
+        line = await _get_line(db, project_id, line_id, fresh=True)
     # A completed order answers with its own refusal (``line_config``); an active one
     # whose line has moved stock keeps the line's configuration (spec workshop-order-issue, rule 13).
     status = await db.scalar(select(Project.status).where(Project.id == project_id))

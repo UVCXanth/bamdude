@@ -866,6 +866,9 @@ class BatchPlateLineIn(_BatchLineBase):
     library_file_id: int
     plate_index: int = Field(default=0, ge=0)
     copies: int = Field(default=1, ge=1, le=MAX_QTY)
+    # A plate's one-off product is reused per file and plate, so its shelf can hold goods: the
+    # line asks it like a product line (WS-13 E13 O06) — ``auto`` needs ``stock:move``.
+    stock: Literal["auto"] | BatchStockIn = "auto"
 
 
 BatchLine = Annotated[BatchProductLineIn | BatchPartsLineIn | BatchPlateLineIn, Field(discriminator="kind")]

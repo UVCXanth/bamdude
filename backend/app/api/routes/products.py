@@ -289,7 +289,9 @@ async def _part_out(db: AsyncSession, part: ProductPart) -> ProductPartResponse:
     onto the surviving row — a part route that answered ``stock_balance: 0``
     there would be telling the page the shelf had just been emptied.
     """
-    return _with_balance(part, await part_stock.balances(db, part.product_id))
+    out = _with_balance(part, await part_stock.balances(db, part.product_id))
+    # The shelf is the stock's (WS-13 E13 O12): a part route tells it only to the stock's reader.
+    return out if (await workshop_view()).stock else out.model_copy(update={"stock_balance": None})
 
 
 # spec workshop-product-catalog, rules 13–15: the catalog fields travel apart

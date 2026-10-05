@@ -993,6 +993,39 @@ class TestPrintQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_a_queue_row_tells_its_orders_status(
+        self, db_session, printer_factory, archive_factory, queue_item_factory
+    ):
+        """WS-13 E13 final review: a clone keeps a row's order only while it is open — the row says
+        whether it is, or «Clone» of a closed order's row could only come back 409."""
+        from sqlalchemy import select as _select
+
+        from backend.app.api.routes.print_queue import _enrich_response, queue_item_load_options
+        from backend.app.models.print_queue import PrintQueueItem
+        from backend.app.models.project import Project
+
+        _printer, queue = await printer_factory()
+        archive = await archive_factory(print_name="Closed order's print")
+        order = Project(name="Shipped", status="completed")
+        db_session.add(order)
+        await db_session.commit()
+        item = await queue_item_factory(queue_id=queue.id, archive_id=archive.id, status="pending")
+        item.project_id = order.id
+        await db_session.commit()
+        loaded = (
+            await db_session.execute(
+                _select(PrintQueueItem)
+                .options(*queue_item_load_options())
+                .where(PrintQueueItem.id == item.id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
+        resp = _enrich_response(loaded)
+        assert resp.project_name == "Shipped"
+        assert resp.project_status == "completed"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_enrich_response_skips_plate_parse_when_archive_has_no_file_yet(
         self, db_session, printer_factory, archive_factory, queue_item_factory, monkeypatch
     ):

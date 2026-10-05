@@ -186,3 +186,29 @@ async def test_a_products_stock_names_the_order_a_movement_served_only_to_a_read
         (await committing_client.get(f"/api/v1/products/{product}/stock", headers=_jwt("mask_shelf_orders"))).json()
     )
     assert full["order_name"] == "Shelf order"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("header", ["x-api-key", "bearer"])
+async def test_a_mask_follows_an_api_keys_scope_as_well_as_its_owner(
+    committing_client: AsyncClient, db_session, header
+):
+    """An API key reads within its scope AND its owner's rights (WS-13 E13 O12, final review):
+    the owner keeps the contacts, but a key without the projects scope does not — the order it
+    may read shows its contact without the phone."""
+    from backend.tests.integration.test_workshop_library_rights import _key
+
+    desk = await _desk(committing_client)
+    owner = await _user(db_session, f"mask_key_{header}", ["orders:read", "customers:read"])
+    status_only = await _key(db_session, owner, can_read_status=True, can_manage_projects=False)
+    with_projects = await _key(db_session, owner, can_read_status=True, can_manage_projects=True)
+
+    def headers(raw: str) -> dict:
+        return {"X-API-Key": raw} if header == "x-api-key" else {"Authorization": f"Bearer {raw}"}
+
+    url = f"/api/v1/projects/{desk['order']}"
+    plain = await committing_client.get(url, headers=headers(status_only))
+    assert plain.status_code == 200, plain.text
+    assert plain.json()["contact"]["phone"] is None
+    full = await committing_client.get(url, headers=headers(with_projects))
+    assert full.json()["contact"]["phone"] == "+380501112233"

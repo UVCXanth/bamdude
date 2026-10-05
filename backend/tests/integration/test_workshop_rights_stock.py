@@ -129,6 +129,39 @@ async def test_raising_a_lines_kits_asks_move_and_lowering_them_does_not(committ
 
 
 @pytest.mark.asyncio
+async def test_a_plate_line_takes_from_the_shelf_only_with_the_move_right(committing_client, db_session, shelf):
+    """A plate's one-off product is reused per file and plate, so its shelf can hold goods (a
+    customer-less order closed to stock, a banked surplus): a plate line asks the shelf like a
+    product line — ``auto`` by default needs ``stock:move``, ``none`` does not (O06/O23)."""
+    from backend.app.models.library import LibraryFile
+    from backend.tests.integration.test_order_lines_batch import PLATES
+
+    plated = LibraryFile(
+        filename="rights-caps.gcode.3mf",
+        file_path="rights-caps.gcode.3mf",
+        file_size=1,
+        file_type="gcode",
+        file_metadata=PLATES,
+    )
+    db_session.add(plated)
+    await db_session.commit()
+    await db_session.refresh(plated)
+    await _user(db_session, "st_plate", ["orders:read", "orders:update", "library:read_all"])
+    await _user(db_session, "st_plate_move", ["orders:read", "orders:update", "library:read_all", "stock:move"])
+    url = f"/api/v1/projects/{shelf['order']}/lines/batch"
+    plate = {"kind": "plate", "library_file_id": plated.id, "plate_index": 1, "copies": 1}
+
+    refused = await committing_client.post(url, json={"lines": [plate]}, headers=_jwt("st_plate"))
+    assert refused.status_code == 403
+    assert refused.json()["detail"]["error"] == "stock_move_required"
+    none = {**plate, "stock": {"from_finished": 0, "from_kits": 0}}
+    assert (await committing_client.post(url, json={"lines": [none]}, headers=_jwt("st_plate"))).status_code == 200
+    assert (
+        await committing_client.post(url, json={"lines": [plate]}, headers=_jwt("st_plate_move"))
+    ).status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_issuing_asks_move_and_a_write_off_asks_adjust_too(committing_client, db_session, shelf):
     await _user(db_session, "st_issuer", ["orders:read", "orders:update"])
     await _user(db_session, "st_shipper", ["orders:read", "orders:update", "stock:move"])
@@ -140,6 +173,33 @@ async def test_issuing_asks_move_and_a_write_off_asks_adjust_too(committing_clie
     ).status_code == 403
     write_off = {"lines": [{"line_id": shelf["line"], "write_off": 1}], "write_off_note": "cracked"}
     assert (await committing_client.post(url, json=write_off, headers=_jwt("st_shipper"))).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_completing_an_order_whose_goods_are_out_asks_no_stock_right(committing_client, db_session, shelf):
+    """Completing is a consequence of the order's own right (O23): a batch that moves nothing
+    and only completes asks ``orders:update`` alone — the order manager closes an order whose
+    goods are already out; a batch that moves a unit still asks ``stock:move``."""
+    await _user(db_session, "st_closer", ["orders:read", "orders:update"])
+    receipt = await committing_client.post(
+        "/api/v1/stock/moves", json={"kind": "receipt", "product_id": shelf["product"], "qty": 1}
+    )
+    assert receipt.status_code == 200, receipt.text
+    created = await committing_client.post(
+        "/api/v1/projects/",
+        json={"name": "Held order", "lines": [{"product_id": shelf["product"], "quantity": 1, "from_finished": 1}]},
+    )
+    assert created.status_code in (200, 201), created.text
+    order = created.json()["id"]
+    state = (await committing_client.get(f"/api/v1/projects/{order}/fulfilment")).json()
+    assert state["closes_to_stock"] and state["can_complete"], state
+    url = f"/api/v1/projects/{order}/fulfilment"
+
+    moving = {"lines": [{"line_id": created.json()["lines"][0]["id"], "receive": 1}], "complete": True}
+    assert (await committing_client.post(url, json=moving, headers=_jwt("st_closer"))).status_code == 403
+    done = await committing_client.post(url, json={"lines": [], "complete": True}, headers=_jwt("st_closer"))
+    assert done.status_code == 200, done.text
+    assert (await committing_client.get(f"/api/v1/projects/{order}")).json()["status"] == "completed"
 
 
 @pytest.mark.asyncio

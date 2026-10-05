@@ -173,6 +173,9 @@ class PrintQueueItemResponse(BaseModel):
     # another round trip (the copy-queue dialog). None when the row is filed
     # under no order — or when the endpoint did not load the relationship.
     project_name: str | None = None
+    # Whether that order is still open: a clone keeps it only then (WS-13 E13 R11) — the row
+    # says so, or «Clone» of a closed order's row could only be refused.
+    project_status: str | None = None
     waiting_reason: str | None = None
     archive_id: int | None
     library_file_id: int | None
