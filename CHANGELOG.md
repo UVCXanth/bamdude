@@ -134,6 +134,8 @@
 
 ### Fixed
 
+- **Clear plate can answer its cancelled or failed print.** A run-bound plate-clear gate now reads its exact terminal queue row instead of searching only completed rows. Cancelling a print no longer strands the gate with a missing completion card; stale cards remain refused, the archive keeps its cancellation/failure status, and clearing the plate does not resume the paused queue.
+
 - **Live printer updates no longer redraw the whole dashboard when its list does not depend on status.** Individual cards still receive live updates, and sorting by status or ETA and filtering by status remain reactive. Stable card properties also avoid unnecessary redraws when the page updates. Adapted from [PR #55](https://github.com/kainpl/bamdude/pull/55) by [@dimonalek](https://github.com/dimonalek), preserving the shared farm polling and queue readers.
 
 - **Bars meant to stay in view while a page scrolls now do.** The inventory's selection bar, the file manager's folder panel and toolbar and a group's permission headings were meant to stay at the top of the screen but scrolled away with the page; they now stay, below the header on a narrow screen, and a page that scrolls to something stops below the header rather than under it. The Profiles tabs, the user settings tabs and the sidebar order setting no longer make their page wider than a phone.

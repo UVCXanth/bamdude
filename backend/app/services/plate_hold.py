@@ -22,7 +22,7 @@ not a leak.
 import logging
 from contextlib import AsyncExitStack
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.archive import PrintArchive
@@ -142,6 +142,11 @@ async def answer_by_clearing(
     row = await waiting_row(db, printer_id)
     _require_expected_archive(row, expected_archive_id)
     if row is None:
+        return 0
+    # Clear the physical question, not the failed predecessor's history.
+    # The existing previous-success gate must still see failed/cancelled rows;
+    # only successful completions take the established auto-cleanup path.
+    if row.status != "completed":
         return 0
 
     queue_id = row.queue_id
@@ -327,18 +332,35 @@ async def repeat_available(printer_id: int) -> bool:
 
 
 async def waiting_row(db: AsyncSession, printer_id: int) -> PrintQueueItem | None:
-    """The finished row this printer is waiting to be asked about, if any.
+    """The terminal row this printer is waiting to be asked about, if any.
 
-    Newest first: only one can be outstanding, but a farm that ran before this
-    existed may hold older ones, and the operator answers about the last print.
+    A run-bound gate selects its exact owner, including a cancelled or failed
+    print: those runs arm the same physical plate question, without becoming
+    successful prints. Never substitute an older completed row for that owner.
+
+    Legacy ownerless gates keep the completed-only, newest-first lookup; an
+    unrelated failed/cancelled history row is not proof of a held plate.
     """
     return (
         (
             await db.execute(
                 select(PrintQueueItem)
                 .join(PrinterQueue, PrintQueueItem.queue_id == PrinterQueue.id)
+                .join(Printer, PrinterQueue.printer_id == Printer.id)
                 .where(PrinterQueue.printer_id == printer_id)
-                .where(PrintQueueItem.status == "completed")
+                .where(
+                    or_(
+                        and_(
+                            Printer.awaiting_plate_clear_archive_id.is_(None),
+                            PrintQueueItem.status == "completed",
+                        ),
+                        and_(
+                            Printer.awaiting_plate_clear.is_(True),
+                            PrintQueueItem.archive_id == Printer.awaiting_plate_clear_archive_id,
+                            PrintQueueItem.status.in_(("completed", "cancelled", "failed")),
+                        ),
+                    )
+                )
                 .order_by(PrintQueueItem.completed_at.desc().nullslast(), PrintQueueItem.id.desc())
                 .limit(1)
             )
