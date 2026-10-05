@@ -256,7 +256,7 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
           )}
           <p className="text-xs text-bambu-gray">{t('orders.fromFiles.hoursNote')}</p>
           <div className="flex justify-between items-center gap-2 flex-wrap">
-            <SectionLink to={`/projects/${orderId}`} className="text-sm text-bambu-green hover:underline" onClick={onClose}>
+            <SectionLink action to={`/projects/${orderId}`} className="text-sm text-bambu-green hover:underline" onClick={onClose}>
               {t('orders.fromFiles.openOrder')}
             </SectionLink>
             <div className="flex gap-2">

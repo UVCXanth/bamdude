@@ -78,6 +78,24 @@ beforeEach(() => {
   localStorage.clear();
 });
 
+describe('a storekeeper without the catalog’s read (WS-13 E13 O19)', () => {
+  it('the position page offers no way into the product — no link and no dead «Open the product»', async () => {
+    auth.granted = new Set(['stock:read', 'stock:move']);
+    vi.spyOn(api, 'getStockItem').mockResolvedValue(pipeDetail);
+    vi.spyOn(api, 'getStockJournal').mockResolvedValue({ items: [], next_cursor: null, meta: { total: 0, current_page: 1, per_page: 24, last_page: 1 } });
+    window.history.pushState({}, '', '/stock/5');
+    render(
+      <Routes>
+        <Route path="/stock/:id" element={<StockItemPage />} />
+      </Routes>,
+    );
+    await screen.findByRole('heading', { level: 1, name: 'Pipe' });
+    expect(document.querySelector('a[href^="/products/"]')).toBeNull();
+    expect(screen.queryByText('Open the product')).toBeNull();
+    expect(screen.queryByText(/^product card$/i)).toBeNull();
+  });
+});
+
 describe.each(ROLES)('%s', (_who, permissions, adjusts) => {
   beforeEach(() => {
     auth.granted = new Set(permissions);

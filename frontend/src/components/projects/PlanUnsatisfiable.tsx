@@ -42,7 +42,7 @@ export function PlanUnsatisfiable({ lineId, productId, material, part, notSliced
           count: part.count,
           material: material ?? t('orders.plan.anyMaterial'),
         })}{' '}
-        <SectionLink to={`/products/${productId}#files`} className="underline">
+        <SectionLink action to={`/products/${productId}#files`} className="underline">
           {t('orders.plan.linkFile')}
         </SectionLink>
         {notSliced.length > 0 && ` · ${t('orders.plan.notSlicedInline', { files: notSliced.join(', ') })}`}

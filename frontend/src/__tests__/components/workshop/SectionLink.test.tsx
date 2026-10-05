@@ -45,6 +45,13 @@ describe('SectionLink', () => {
     expect(screen.getByText('Lamp')).toBeInTheDocument();
   });
 
+  // An action («Open the product») without the read is no action at all — not a dead phrase.
+  it('an action is not shown to anyone else', () => {
+    auth.granted = new Set(['stock:read']);
+    render(<SectionLink to="/products/1" action>Open the product</SectionLink>);
+    expect(screen.queryByText('Open the product')).toBeNull();
+  });
+
   it('opens a dispatch note for any of its three reads', () => {
     auth.granted = new Set(['customers:read']);
     render(<SectionLink to="/stock/dispatch-notes/9">DN-0009</SectionLink>);

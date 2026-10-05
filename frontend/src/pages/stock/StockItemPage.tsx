@@ -135,7 +135,7 @@ function PositionView({ item, refreshFailed, onRetry }: { item: StockItemDetail;
             {' · '}
             {t('stock.item.location', { location: item.location ?? t('stock.finished.noLocation') })}
           </p>
-          <SectionLink to={`/products/${item.product.id}`} className="text-sm text-bambu-green hover:underline">
+          <SectionLink action to={`/products/${item.product.id}`} className="text-sm text-bambu-green hover:underline">
             {t('stock.item.openProduct')}
           </SectionLink>
         </div>
@@ -265,11 +265,15 @@ function PositionView({ item, refreshFailed, onRetry }: { item: StockItemDetail;
           )}
           <p className="mt-3 text-xs text-bambu-gray">
             {t('stock.item.canAssemble', { n: item.can_assemble })}
-            {' · '}
-            <SectionLink to={`/products/${item.product.id}`} className="inline-flex items-center gap-1 text-bambu-green hover:underline">
-              {t('stock.item.productCard')}
-              <ExternalLink className="w-3.5 h-3.5" aria-hidden />
-            </SectionLink>
+            {canOpenProduct && (
+              <>
+                {' · '}
+                <SectionLink action to={productPath} className="inline-flex items-center gap-1 text-bambu-green hover:underline">
+                  {t('stock.item.productCard')}
+                  <ExternalLink className="w-3.5 h-3.5" aria-hidden />
+                </SectionLink>
+              </>
+            )}
           </p>
         </WorkshopPanel>
       </div>
