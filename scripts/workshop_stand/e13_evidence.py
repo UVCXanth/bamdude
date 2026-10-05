@@ -109,6 +109,9 @@ DETAIL_SCENARIOS = (
     "dispatch-note-readers",
     "catalog-editor",
     "order-manager",
+    "plate-operator",
+    "order-clerk-new-customer",
+    "delivery-directory",
     # H — the outer doors
     "print-modal-library",
     "print-modal-printer",

@@ -303,6 +303,14 @@ async (page, selftest = null) => {
     catalogEditor: ['products:read', 'products:update', 'library:read_all'],
     // O05: orders, the catalog's and the customers' reads and customers:create — no stock at all.
     orderManager: ['orders:read', 'orders:create', 'orders:update', 'orders:delete', 'orders:file_prints', 'products:read', 'customers:read', 'customers:create'],
+    // O19 / R11: answers a full plate; no orders' rights at all.
+    plateOperator: ['printers:read', 'printers:clear_plate', 'queue:read'],
+    // O19: an order for a new customer with its contact and delivery — no directory read.
+    orderClerk: ['orders:read', 'orders:create', 'customers:create'],
+    // O19: keeps the customers and their delivery directory.
+    customersEditor: ['customers:read', 'customers:update'],
+    // O19: makes customers and picks their delivery; never keeps the directory.
+    customersCreator: ['customers:read', 'customers:create'],
   };
   // What the boundary answers in the system language (api_errors_uk.json) — the runner answers
   // writes itself, so it says a refusal the way the server would.
@@ -310,6 +318,7 @@ async (page, selftest = null) => {
     ownArchives: 'Оновлювати можна лише власні архіви',
     leave: 'Ці друки вже оприбутковані на склад під замовлення — прибрати їх із замовлення не можна',
     fileGone: 'Файл бібліотеки не знайдено',
+    filingForbidden: 'Прив’язати роботу до замовлення можна з правом orders:update або orders:file_prints',
   };
   const linesOf = (order) => list(order?.lines);
   // An order's line as the picker names it: «product × quantity · configuration».
@@ -1990,6 +1999,310 @@ async (page, selftest = null) => {
         same(writes[0].body?.lines?.[0]?.stock, { from_finished: 0, from_kits: 0 }) &&
         shelfReads.length === 0 && foreign.length === 0 && errors.length === 0,
       screenshots: [file],
+    };
+  });
+
+  // O19 / R11 — the plate operator without the orders' rights. The stand has no MQTT: the card's
+  // state, the plate gate and the print waiting on it are fixtures, and every write is answered
+  // here as the server answers it — the server's refusal, the unfiled repeat and the duplicate
+  // are proven by test_plate_repeat_filing.py.
+  const plateP = list(await read('/printers/')).find((x) => x.is_active && !x.archived) ?? null;
+  const asIdle = (s) => ({ ...s, connected: true, state: 'IDLE' });
+  const atGate = (s) => ({ ...s, connected: true, state: 'FINISH', awaiting_plate_clear: true, repeat_available: true });
+  // `gate.open` — the plate gate as the server holds it: an accepted answer releases it.
+  const plateRewrites = (pid, gate) => [
+    [/\/api\/v1\/printers\/?(\?.*)?$/, (b) => list(b).map((x) => (x.id === pid ? { ...x, require_plate_clear: true } : x))],
+    [/\/api\/v1\/printers\/(\d+\/status|status\/batch)\/?(\?.*)?$/, (b, url) => {
+      const ours = (st) => (gate.open ? atGate(st) : asIdle(st));
+      if (/status\/batch/.test(url)) return Object.fromEntries(Object.entries(b ?? {}).map(([k, st]) => [k, Number(k) === pid ? ours(st) : asIdle(st)]));
+      return new RegExp(`/printers/${pid}/status`).test(url) ? ours(b) : asIdle(b);
+    }],
+    // No queue behind the gate: the card draws its own pair, not the queue widget's.
+    [/\/api\/v1\/queue\/?\?/, () => []],
+  ];
+  // The run on the plate, filed under an OPEN order (OR-0031): a repeat would be new work under it.
+  const WAITING = {
+    archive_id: A595, print_name: archive595?.print_name ?? 'E13', status: 'completed', quantity: 1, defective_count: 0,
+    gate_token: 'e13-gate', parts: [], repeat_order_code: order241?.code ?? 'OR-0031', repeat_order_open: true,
+  };
+  const PLATE_REPEAT = (pid) => new RegExp(`/api/v1/printers/${pid}/repeat-print$`);
+  const PLATE_CLEAR = (pid) => new RegExp(`/api/v1/printers/${pid}/clear-plate$`);
+
+  await scenario('plate-operator', ['E13-O19', 'E13-R11'], async () => {
+    if (!plateP) return { pass: false, measured: { reason: 'the stand has no active printer' } };
+    const files = [];
+    const waitingRead = new RegExp(`/api/v1/printers/${plateP.id}/waiting-print`);
+    // 1 · The run is read: the card offers only «Повторити без замовлення»; a double press sends
+    //     ONE answer, with the run's receipt key and `without_order`, and the pair goes.
+    const sent = [];
+    const cleared = [];
+    const gate = { open: true };
+    const one = await open(1440, {
+      me: asUser(ROLE.plateOperator),
+      rewrite: plateRewrites(plateP.id, gate),
+      gets: [[waitingRead, () => ({ json: WAITING })]],
+      writes: [
+        recorder(sent, PLATE_REPEAT(plateP.id), () => { gate.open = false; return { success: true, item_id: 99020, ledger_refused_parts: 0 }; }),
+        recorder(cleared, PLATE_CLEAR(plateP.id), () => ({ success: true, ledger_refused_parts: 0 })),
+      ],
+    });
+    await goto(one.p, '/');
+    const unfiled = one.p.getByRole('button', { name: 'Повторити без замовлення', exact: true });
+    await unfiled.waitFor({ timeout: 10000 });
+    await one.p.waitForFunction(() => [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Повторити без замовлення' && !b.disabled), null, { timeout: 8000 });
+    const offered = {
+      withoutOrder: await unfiled.count(),
+      filed: await one.p.getByRole('button', { name: 'Повторити друк', exact: true }).count(),
+      title: await unfiled.first().getAttribute('title'),
+    };
+    files.push(await shoot(one.p, 'plate-operator-card'));
+    await unfiled.first().dblclick();
+    await one.p.waitForTimeout(1500);
+    const after = {
+      pair: await one.p.getByRole('button', { name: 'Повторити без замовлення', exact: true }).count(),
+      toast: await one.p.getByText('Друкуємо ще раз', { exact: true }).count(),
+    };
+    files.push(await shoot(one.p, 'plate-operator-repeated'));
+    const firstForeign = foreignOf(one.requests, []);
+    const firstErrors = one.errors;
+    await one.ctx.close();
+
+    // 2 · The run could not be read: the card cannot tell the row is filed and offers the plain
+    //     repeat; the server refuses new work under the order — said on the card, nothing else sent.
+    const refusedSent = [];
+    const two = await open(1440, {
+      me: asUser(ROLE.plateOperator),
+      rewrite: plateRewrites(plateP.id, { open: true }),
+      gets: [[waitingRead, () => ({ fail: 500 })]],
+      writes: [recorder(refusedSent, PLATE_REPEAT(plateP.id), () => ({ __status: 403, json: { detail: { error: 'filing_forbidden', message: UK.filingForbidden } } }))],
+    });
+    await goto(two.p, '/');
+    const plain = two.p.getByRole('button', { name: 'Повторити друк', exact: true });
+    await plain.waitFor({ timeout: 10000 });
+    await two.p.waitForFunction(() => [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Повторити друк' && !b.disabled), null, { timeout: 8000 });
+    await plain.first().click();
+    await two.p.getByText(UK.filingForbidden, { exact: true }).first().waitFor({ timeout: 8000 }).catch(() => {});
+    const refused = {
+      toast: await two.p.getByText(UK.filingForbidden, { exact: true }).count(),
+      pairStays: await two.p.getByRole('button', { name: 'Повторити друк', exact: true }).count(),
+    };
+    files.push(await shoot(two.p, 'plate-operator-refused'));
+    const secondForeign = foreignOf(two.requests, []);
+    const secondErrors = two.errors;
+    await two.ctx.close();
+
+    const body = sent[0]?.body ?? {};
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: {
+        url: '/ (printers) → the gated card → «Повторити без замовлення» ×2; then the card whose run was not read → «Повторити друк»',
+        fixture: [
+          '/auth/me: ' + ROLE.plateOperator.join(', ') + ' (user 9001)',
+          `GET /printers/ → printer ${plateP.id} require_plate_clear; its status FINISH + awaiting_plate_clear; queue empty (the stand has no MQTT)`,
+          `GET /printers/${plateP.id}/waiting-print → archive ${A595} filed under ${WAITING.repeat_order_code} (open), gate e13-gate; then 500`,
+          'POST repeat-print answered here: 200 with one row; then 403 filing_forbidden in the boundary\'s words',
+          'server proof: test_plate_repeat_filing.py (refusal, without_order, duplicate → one receipt)',
+        ],
+      },
+      measured: {
+        offered, after,
+        sent: sent.map((w) => ({ method: w.method, path: w.path, body: w.body })),
+        cleared: cleared.length,
+        refused, refusedSent: refusedSent.map((w) => ({ method: w.method, path: w.path, body: w.body })),
+        foreign: [...firstForeign, ...secondForeign].slice(0, 6), errors: [...firstErrors, ...secondErrors],
+      },
+      pass: offered.withoutOrder === 1 && offered.filed === 0 && offered.title === 'Повторити без замовлення' &&
+        sent.length === 1 && sent[0].method === 'POST' &&
+        body.without_order === true && body.expected_archive_id === A595 && body.expected_gate_token === 'e13-gate' &&
+        cleared.length === 0 && after.pair === 0 && after.toast === 1 &&
+        refusedSent.length === 1 && refusedSent[0].body?.without_order === undefined &&
+        refusedSent[0].body?.expected_archive_id === undefined && refused.toast >= 1 && refused.pairStays === 1 &&
+        firstForeign.length === 0 && secondForeign.length === 0 && firstErrors.length === 0 && secondErrors.length === 0,
+      screenshots: files,
+    };
+  });
+
+  await scenario('order-clerk-new-customer', ['E13-O19', 'E13-R12'], async () => {
+    // orders:read + orders:create + customers:create, no customers:read: a new order for a new
+    // customer with a contact and its delivery method — from the orders list to the saved order,
+    // reading no directory. The server half: test_workshop_rights_customers.py.
+    const methods = list(await read('/delivery-methods/'));
+    const method = methods[0] ?? { id: 99030, name: 'E13 Курʼєр', position: 0, contacts_count: 0 };
+    const MADE = { id: 99001, code: 'CU-99001', name: 'E13 Клерк' };
+    const CONTACT = { id: 99002, code: 'CT-99002', name: 'Богдан', role: null };
+    let made = false;
+    const writes = [];
+    const files = [];
+    const { ctx, p, errors, requests } = await open(1440, {
+      me: asUser(ROLE.orderClerk),
+      gets: [
+        // The server's lists once the customer exists: in the options, with its one contact.
+        [/\/api\/v1\/customers\/options\/?(\?.*)?$/, () => (made ? { rewrite: (b) => [...list(b), { ...MADE }] } : null)],
+        [new RegExp(`/api/v1/customers/${MADE.id}/contact-options`), () => ({ json: made ? [CONTACT] : [] })],
+        ...(methods.length ? [] : [[/\/api\/v1\/delivery-methods\/?(\?.*)?$/, () => ({ json: [method] })]]),
+      ],
+      writes: [
+        recorder(writes, /\/api\/v1\/customers\/?(\?.*)?$/, (entry) => {
+          made = true;
+          const c = entry.body?.contacts?.[0] ?? {};
+          return {
+            ...MADE, kind: entry.body?.kind ?? 'company', notes: null, created_at: '', updated_at: '', figures: {},
+            contacts: [{ ...CONTACT, phone: c.phone ?? null, email: null, city: null, delivery_method_id: c.delivery_method_id ?? null, delivery_method_name: method.name, delivery_details: c.delivery_details ?? null, note: null, orders_count: 0 }],
+          };
+        }),
+        recorder(writes, /\/api\/v1\/projects\/?(\?.*)?$/, () => order244),
+      ],
+    });
+    await goto(p, '/projects');
+    await p.getByRole('button', { name: 'Нове замовлення', exact: true }).first().click();
+    const d = dialogOf(p, 'Нове замовлення');
+    await d.waitFor({ timeout: 8000 });
+    // The order is named first: saving the customer must not send the order under it.
+    await d.getByLabel('Назва', { exact: true }).fill('E13 Замовлення клерка');
+    await p.waitForFunction(() => [...document.querySelectorAll('[role="dialog"] select option')].some((o) => o.value === '__new__'), null, { timeout: 8000 });
+    await d.getByLabel('Замовник', { exact: true }).selectOption('__new__');
+    await d.getByPlaceholder("Ім'я замовника", { exact: true }).fill(MADE.name);
+    await d.getByRole('button', { name: 'Додати контакт і доставку…', exact: true }).click();
+    const c = dialogOf(p, 'Новий замовник');
+    await c.waitFor({ timeout: 8000 });
+    const prefilled = await c.getByLabel('Назва', { exact: true }).inputValue();
+    await c.getByLabel('Ім’я контакта', { exact: true }).fill(CONTACT.name);
+    await c.getByLabel('Телефон', { exact: true }).fill('+380501234567');
+    await p.waitForFunction((name) => [...document.querySelectorAll('[role="dialog"] select option')].some((o) => o.textContent.trim() === name), method.name, { timeout: 8000 });
+    await c.getByLabel('Спосіб доставки', { exact: true }).selectOption({ label: method.name });
+    await c.getByLabel('Деталі доставки', { exact: true }).fill('Київ, відділення 1');
+    const manage = await c.getByRole('button', { name: 'Керувати способами…', exact: true }).count();
+    files.push(await shoot(p, 'order-clerk-customer-form'));
+    await c.getByRole('button', { name: 'Зберегти замовника', exact: true }).click();
+    await c.waitFor({ state: 'detached', timeout: 8000 });
+    const contactField = d.getByLabel('Контактна особа', { exact: true });
+    await contactField.waitFor({ timeout: 8000 });
+    await p.waitForFunction(() => [...document.querySelectorAll('[role="dialog"] select')].some((s) => s.selectedOptions[0]?.textContent.trim() === 'Богдан'), null, { timeout: 8000 }).catch(() => {});
+    const shown = { customer: await shownOf(d.getByLabel('Замовник', { exact: true })), contact: await shownOf(contactField) };
+    const ordersBefore = writes.filter((w) => /\/projects/.test(w.path)).length;
+    files.push(await shoot(p, 'order-clerk-order-form'));
+    const pathReads = requests.length;
+    await d.getByRole('button', { name: 'Створити', exact: true }).click();
+    await p.waitForURL(new RegExp(`/projects/${O244}$`), { timeout: 8000 }).catch(() => {});
+    await p.waitForTimeout(800);
+    files.push(await shoot(p, 'order-clerk-saved'));
+    const landed = new URL(p.url()).pathname;
+    await ctx.close();
+    // The form's contacts come by name and role (R12); the directory itself is never read.
+    const onPath = requests.slice(0, pathReads);
+    const directory = requests.filter((r) => /^GET \/api\/v1\/customers\/?(\?.*)?$|^GET \/api\/v1\/customers\/\d+\/?(\?.*)?$/.test(r));
+    const foreign = foreignOf(onPath, ['orders']).filter((r) => !/\/customers\/\d+\/contact-options/.test(r));
+    const [customerWrite, orderWrite] = writes;
+    const contact = customerWrite?.body?.contacts?.[0] ?? {};
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: {
+        url: '/projects → «Нове замовлення» → name → «Новий замовник…» → «Додати контакт і доставку…» → contact + method → «Зберегти замовника» → «Створити»',
+        fixture: [
+          '/auth/me: ' + ROLE.orderClerk.join(', ') + ' (user 9001)',
+          `POST /customers answered here as customer ${MADE.code}; GET /customers/options then lists it, /customers/${MADE.id}/contact-options its contact`,
+          `POST /projects answered here with order ${O244}`,
+          methods.length ? `delivery method «${method.name}» read from the stand` : 'GET /delivery-methods answered here (the stand has none)',
+          'server proof: test_workshop_rights_customers.py (the clerk\'s whole path; directory and method writes closed)',
+        ],
+      },
+      measured: {
+        prefilled, manage, shown, ordersBefore, landed,
+        sent: writes.map((w) => ({ method: w.method, path: w.path, body: w.body })),
+        directory: directory.slice(0, 6), foreign: foreign.slice(0, 6), errors,
+      },
+      pass: prefilled === MADE.name && manage === 0 && writes.length === 2 &&
+        customerWrite.method === 'POST' && customerWrite.body?.name === MADE.name &&
+        contact.name === CONTACT.name && contact.phone === '+380501234567' && contact.delivery_method_id === method.id &&
+        contact.delivery_details === 'Київ, відділення 1' && ordersBefore === 0 &&
+        shown.customer === `${MADE.code} · ${MADE.name}` && shown.contact === CONTACT.name &&
+        orderWrite.method === 'POST' && orderWrite.body?.name === 'E13 Замовлення клерка' &&
+        orderWrite.body?.customer_id === MADE.id && orderWrite.body?.contact_id === CONTACT.id &&
+        landed === `/projects/${O244}` && directory.length === 0 && foreign.length === 0 && errors.length === 0,
+      screenshots: files,
+    };
+  });
+
+  await scenario('delivery-directory', ['E13-O19', 'E13-R12'], async () => {
+    // customers:update keeps the delivery directory — opened from a customer's form; one who may
+    // only create customers picks from it and is offered no «Керувати способами…». The server
+    // half: test_workshop_rights_customers.py.
+    const standMethods = list(await read('/delivery-methods/'));
+    const NEW = { id: 99040, name: 'E13 Самовивіз', position: 99, contacts_count: 0 };
+    const RENAMED = 'E13 Самовивіз (центр)';
+    const files = [];
+    let stored = null; // the method as the server would list it now
+    const writes = [];
+    const ed = await open(1440, {
+      me: asUser(ROLE.customersEditor),
+      gets: [[/\/api\/v1\/delivery-methods\/?(\?.*)?$/, () => (stored ? { rewrite: (b) => [...list(b).filter((m) => m.id !== stored.id), stored] } : null)]],
+      writes: [
+        recorder(writes, /\/api\/v1\/delivery-methods\/?(\?.*)?$/, (entry) => { stored = { ...NEW, name: entry.body?.name ?? NEW.name }; return stored; }),
+        recorder(writes, new RegExp(`/api/v1/delivery-methods/${NEW.id}$`), (entry) => { stored = { ...NEW, name: entry.body?.name ?? NEW.name }; return stored; }),
+      ],
+    });
+    await goto(ed.p, `/customers/${CU1}`);
+    await ed.p.getByTestId('customer-header').getByRole('button', { name: 'Редагувати', exact: true }).click();
+    const c = dialogOf(ed.p, 'Редагувати замовника');
+    await c.waitFor({ timeout: 8000 });
+    // A customer without a contact has no method field: the editor adds a row first.
+    if (!(await c.getByRole('button', { name: 'Керувати способами…', exact: true }).count())) {
+      await c.getByRole('button', { name: 'Додати контакт', exact: true }).click();
+    }
+    await c.getByRole('button', { name: 'Керувати способами…', exact: true }).first().click();
+    const m = dialogOf(ed.p, 'Способи доставки');
+    await m.waitFor({ timeout: 8000 });
+    await m.getByLabel('Новий спосіб доставки', { exact: true }).fill(NEW.name);
+    await m.getByRole('button', { name: 'Додати', exact: true }).click();
+    await m.getByRole('button', { name: `Перейменувати «${NEW.name}»`, exact: true }).waitFor({ timeout: 8000 });
+    files.push(await shoot(ed.p, 'delivery-directory-added'));
+    await m.getByRole('button', { name: `Перейменувати «${NEW.name}»`, exact: true }).click();
+    await m.getByLabel('Назва способу доставки', { exact: true }).fill(RENAMED);
+    await m.getByRole('button', { name: 'Зберегти', exact: true }).click();
+    await m.getByRole('button', { name: `Перейменувати «${RENAMED}»`, exact: true }).waitFor({ timeout: 8000 });
+    files.push(await shoot(ed.p, 'delivery-directory-renamed'));
+    await m.getByRole('button', { name: 'Готово', exact: true }).click();
+    await m.waitFor({ state: 'detached', timeout: 8000 });
+    const picks = await optionsOf(c.getByLabel('Спосіб доставки', { exact: true }).first());
+    const editorForeign = foreignOf(ed.requests, ['customers']);
+    const editorErrors = ed.errors;
+    await ed.ctx.close();
+
+    // One who may only create customers: the same form, its methods listed, the directory closed.
+    const cr = await open(1440, { me: asUser(ROLE.customersCreator) });
+    await goto(cr.p, '/customers');
+    await cr.p.getByRole('button', { name: 'Новий замовник', exact: true }).first().click();
+    const n = dialogOf(cr.p, 'Новий замовник');
+    await n.waitFor({ timeout: 8000 });
+    await cr.p.waitForFunction(() => [...document.querySelectorAll('[role="dialog"] select')].some((s) => s.options.length > 1), null, { timeout: 8000 }).catch(() => {});
+    const creator = {
+      manage: await n.getByRole('button', { name: 'Керувати способами…', exact: true }).count(),
+      methods: (await optionsOf(n.getByLabel('Спосіб доставки', { exact: true }).first())).length - 1,
+    };
+    files.push(await shoot(cr.p, 'delivery-directory-creator'));
+    const creatorForeign = foreignOf(cr.requests, ['customers']);
+    const creatorErrors = cr.errors;
+    await cr.ctx.close();
+    return {
+      env: { viewport: [1440, 900] },
+      recipe: {
+        url: `/customers/{customer:1} → «Редагувати» → «Керувати способами…» → add, rename → «Готово»; /customers → «Новий замовник»`,
+        fixture: [
+          '/auth/me: ' + ROLE.customersEditor.join(', ') + '; then ' + ROLE.customersCreator.join(', ') + ' (user 9001)',
+          'POST / PATCH /delivery-methods answered here; GET /delivery-methods then lists the method as written',
+          'server proof: test_workshop_rights_customers.py (customers:update writes the directory, customers:create only reads it)',
+        ],
+      },
+      measured: {
+        sent: writes.map((w) => ({ method: w.method, path: w.path, body: w.body })), picks, creator,
+        foreign: [...editorForeign, ...creatorForeign].slice(0, 6), errors: [...editorErrors, ...creatorErrors],
+      },
+      pass: writes.length === 2 &&
+        writes[0].method === 'POST' && /\/delivery-methods\/?$/.test(writes[0].path) && writes[0].body?.name === NEW.name &&
+        writes[1].method === 'PATCH' && writes[1].path === `/api/v1/delivery-methods/${NEW.id}` && writes[1].body?.name === RENAMED &&
+        picks.includes(RENAMED) && creator.manage === 0 && creator.methods === standMethods.length &&
+        editorForeign.length === 0 && creatorForeign.length === 0 && editorErrors.length === 0 && creatorErrors.length === 0,
+      screenshots: files,
     };
   });
 
