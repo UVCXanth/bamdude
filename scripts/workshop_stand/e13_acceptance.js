@@ -2206,10 +2206,10 @@ async (page, selftest = null) => {
     const pathReads = requests.length;
     await d.getByRole('button', { name: 'Створити', exact: true }).click();
     await p.waitForURL(new RegExp(`/projects/${O244}$`), { timeout: 8000 }).catch(() => {});
-    // The saved order's page, read through — not its loading line.
-    const title = p.getByRole('heading', { level: 1 }).first();
+    // The saved order's page, read through — its own heading, not the loading state's.
+    const title = p.getByRole('heading', { level: 1, name: order244.name });
     await title.waitFor({ timeout: 15000 }).catch(() => {});
-    const heading = (await title.textContent().catch(() => null))?.trim() ?? null;
+    const heading = (await p.getByRole('heading', { level: 1 }).first().textContent().catch(() => null))?.trim() ?? null;
     await p.waitForTimeout(600);
     files.push(await shoot(p, 'order-clerk-saved'));
     const landed = new URL(p.url()).pathname;
