@@ -2030,96 +2030,111 @@ async (page, selftest = null) => {
 
   await scenario('plate-operator', ['E13-O19', 'E13-R11'], async () => {
     if (!plateP) return { pass: false, measured: { reason: 'the stand has no active printer' } };
-    const files = [];
-    const waitingRead = new RegExp(`/api/v1/printers/${plateP.id}/waiting-print`);
-    // 1 · The run is read: the card offers only «Повторити без замовлення»; a double press sends
-    //     ONE answer, with the run's receipt key and `without_order`, and the pair goes.
-    const sent = [];
-    const cleared = [];
-    const gate = { open: true };
-    const one = await open(1440, {
-      me: asUser(ROLE.plateOperator),
-      rewrite: plateRewrites(plateP.id, gate),
-      gets: [[waitingRead, () => ({ json: WAITING })]],
-      writes: [
-        recorder(sent, PLATE_REPEAT(plateP.id), () => { gate.open = false; return { success: true, item_id: 99020, ledger_refused_parts: 0 }; }),
-        recorder(cleared, PLATE_CLEAR(plateP.id), () => ({ success: true, ledger_refused_parts: 0 })),
-      ],
-    });
-    await goto(one.p, '/');
-    const unfiled = one.p.getByRole('button', { name: 'Повторити без замовлення', exact: true });
-    await unfiled.waitFor({ timeout: 10000 });
-    await one.p.waitForFunction(() => [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Повторити без замовлення' && !b.disabled), null, { timeout: 8000 });
-    const offered = {
-      withoutOrder: await unfiled.count(),
-      filed: await one.p.getByRole('button', { name: 'Повторити друк', exact: true }).count(),
-      title: await unfiled.first().getAttribute('title'),
-    };
-    files.push(await shoot(one.p, 'plate-operator-card'));
-    await unfiled.first().dblclick();
-    await one.p.waitForTimeout(1500);
-    const after = {
-      pair: await one.p.getByRole('button', { name: 'Повторити без замовлення', exact: true }).count(),
-      toast: await one.p.getByText('Друкуємо ще раз', { exact: true }).count(),
-    };
-    files.push(await shoot(one.p, 'plate-operator-repeated'));
-    const firstForeign = foreignOf(one.requests, []);
-    const firstErrors = one.errors;
-    await one.ctx.close();
-
-    // 2 · The run could not be read: the card cannot tell the row is filed and offers the plain
-    //     repeat; the server refuses new work under the order — said on the card, nothing else sent.
-    const refusedSent = [];
-    const two = await open(1440, {
-      me: asUser(ROLE.plateOperator),
-      rewrite: plateRewrites(plateP.id, { open: true }),
-      gets: [[waitingRead, () => ({ fail: 500 })]],
-      writes: [recorder(refusedSent, PLATE_REPEAT(plateP.id), () => ({ __status: 403, json: { detail: { error: 'filing_forbidden', message: UK.filingForbidden } } }))],
-    });
-    await goto(two.p, '/');
-    const plain = two.p.getByRole('button', { name: 'Повторити друк', exact: true });
-    await plain.waitFor({ timeout: 10000 });
-    await two.p.waitForFunction(() => [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Повторити друк' && !b.disabled), null, { timeout: 8000 });
-    await plain.first().click();
-    await two.p.getByText(UK.filingForbidden, { exact: true }).first().waitFor({ timeout: 8000 }).catch(() => {});
-    const refused = {
-      toast: await two.p.getByText(UK.filingForbidden, { exact: true }).count(),
-      pairStays: await two.p.getByRole('button', { name: 'Повторити друк', exact: true }).count(),
-    };
-    files.push(await shoot(two.p, 'plate-operator-refused'));
-    const secondForeign = foreignOf(two.requests, []);
-    const secondErrors = two.errors;
-    await two.ctx.close();
-
-    const body = sent[0]?.body ?? {};
-    return {
-      env: { viewport: [1440, 900] },
-      recipe: {
-        url: '/ (printers) → the gated card → «Повторити без замовлення» ×2; then the card whose run was not read → «Повторити друк»',
-        fixture: [
-          '/auth/me: ' + ROLE.plateOperator.join(', ') + ' (user 9001)',
-          `GET /printers/ → printer ${plateP.id} require_plate_clear; its status FINISH + awaiting_plate_clear; queue empty (the stand has no MQTT)`,
-          `GET /printers/${plateP.id}/waiting-print → archive ${A595} filed under ${WAITING.repeat_order_code} (open), gate e13-gate; then 500`,
-          'POST repeat-print answered here: 200 with one row; then 403 filing_forbidden in the boundary\'s words',
-          'server proof: test_plate_repeat_filing.py (refusal, without_order, duplicate → one receipt)',
+    // Where a wait ran out, and what the card had asked by then (a failure names its step).
+    const trail = [];
+    let asked = [];
+    try {
+      const files = [];
+      const waitingRead = new RegExp(`/api/v1/printers/${plateP.id}/waiting-print`);
+      // 1 · The run is read: the card offers only «Повторити без замовлення»; a double press sends
+      //     ONE answer, with the run's receipt key and `without_order`, and the pair goes.
+      const sent = [];
+      const cleared = [];
+      const gate = { open: true };
+      const one = await open(1440, {
+        me: asUser(ROLE.plateOperator),
+        rewrite: plateRewrites(plateP.id, gate),
+        gets: [[waitingRead, () => ({ json: WAITING })]],
+        writes: [
+          recorder(sent, PLATE_REPEAT(plateP.id), () => { gate.open = false; return { success: true, item_id: 99020, ledger_refused_parts: 0 }; }),
+          recorder(cleared, PLATE_CLEAR(plateP.id), () => ({ success: true, ledger_refused_parts: 0 })),
         ],
-      },
-      measured: {
-        offered, after,
-        sent: sent.map((w) => ({ method: w.method, path: w.path, body: w.body })),
-        cleared: cleared.length,
-        refused, refusedSent: refusedSent.map((w) => ({ method: w.method, path: w.path, body: w.body })),
-        foreign: [...firstForeign, ...secondForeign].slice(0, 6), errors: [...firstErrors, ...secondErrors],
-      },
-      pass: offered.withoutOrder === 1 && offered.filed === 0 && offered.title === 'Повторити без замовлення' &&
-        sent.length === 1 && sent[0].method === 'POST' &&
-        body.without_order === true && body.expected_archive_id === A595 && body.expected_gate_token === 'e13-gate' &&
-        cleared.length === 0 && after.pair === 0 && after.toast === 1 &&
-        refusedSent.length === 1 && refusedSent[0].body?.without_order === undefined &&
-        refusedSent[0].body?.expected_archive_id === undefined && refused.toast >= 1 && refused.pairStays === 1 &&
-        firstForeign.length === 0 && secondForeign.length === 0 && firstErrors.length === 0 && secondErrors.length === 0,
-      screenshots: files,
-    };
+      });
+      asked = one.requests;
+      await goto(one.p, '/');
+      trail.push('1: page');
+      const unfiled = one.p.getByRole('button', { name: 'Повторити без замовлення', exact: true });
+      await unfiled.waitFor({ timeout: 20000 });
+      trail.push('1: pair');
+      await one.p.waitForFunction(() => [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Повторити без замовлення' && !b.disabled), null, { timeout: 8000 });
+      const offered = {
+        withoutOrder: await unfiled.count(),
+        filed: await one.p.getByRole('button', { name: 'Повторити друк', exact: true }).count(),
+        title: await unfiled.first().getAttribute('title'),
+      };
+      trail.push('1: enabled');
+      files.push(await shoot(one.p, 'plate-operator-card'));
+      await unfiled.first().dblclick();
+      await one.p.waitForTimeout(1500);
+      const after = {
+        pair: await one.p.getByRole('button', { name: 'Повторити без замовлення', exact: true }).count(),
+        toast: await one.p.getByText('Друкуємо ще раз', { exact: true }).count(),
+      };
+      files.push(await shoot(one.p, 'plate-operator-repeated'));
+      const firstForeign = foreignOf(one.requests, []);
+      const firstErrors = one.errors;
+      await one.ctx.close();
+
+      // 2 · The run could not be read: the card cannot tell the row is filed and offers the plain
+      //     repeat; the server refuses new work under the order — said on the card, nothing else sent.
+      const refusedSent = [];
+      const two = await open(1440, {
+        me: asUser(ROLE.plateOperator),
+        rewrite: plateRewrites(plateP.id, { open: true }),
+        gets: [[waitingRead, () => ({ fail: 500 })]],
+        writes: [recorder(refusedSent, PLATE_REPEAT(plateP.id), () => ({ __status: 403, json: { detail: { error: 'filing_forbidden', message: UK.filingForbidden } } }))],
+      });
+      asked = two.requests;
+      await goto(two.p, '/');
+      trail.push('2: page');
+      const plain = two.p.getByRole('button', { name: 'Повторити друк', exact: true });
+      await plain.waitFor({ timeout: 20000 });
+      trail.push('2: pair');
+      await two.p.waitForFunction(() => [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Повторити друк' && !b.disabled), null, { timeout: 8000 });
+      await plain.first().click();
+      await two.p.getByText(UK.filingForbidden, { exact: true }).first().waitFor({ timeout: 8000 }).catch(() => {});
+      const refused = {
+        toast: await two.p.getByText(UK.filingForbidden, { exact: true }).count(),
+        pairStays: await two.p.getByRole('button', { name: 'Повторити друк', exact: true }).count(),
+      };
+      files.push(await shoot(two.p, 'plate-operator-refused'));
+      const secondForeign = foreignOf(two.requests, []);
+      const secondErrors = two.errors;
+      await two.ctx.close();
+
+      const body = sent[0]?.body ?? {};
+      return {
+        env: { viewport: [1440, 900] },
+        recipe: {
+          url: '/ (printers) → the gated card → «Повторити без замовлення» ×2; then the card whose run was not read → «Повторити друк»',
+          fixture: [
+            '/auth/me: ' + ROLE.plateOperator.join(', ') + ' (user 9001)',
+            `GET /printers/ → printer ${plateP.id} require_plate_clear; its status FINISH + awaiting_plate_clear; queue empty (the stand has no MQTT)`,
+            `GET /printers/${plateP.id}/waiting-print → archive ${A595} filed under ${WAITING.repeat_order_code} (open), gate e13-gate; then 500`,
+            'POST repeat-print answered here: 200 with one row; then 403 filing_forbidden in the boundary\'s words',
+            'server proof: test_plate_repeat_filing.py (refusal, without_order, duplicate → one receipt)',
+          ],
+        },
+        measured: {
+          offered, after,
+          sent: sent.map((w) => ({ method: w.method, path: w.path, body: w.body })),
+          cleared: cleared.length,
+          refused, refusedSent: refusedSent.map((w) => ({ method: w.method, path: w.path, body: w.body })),
+          foreign: [...firstForeign, ...secondForeign].slice(0, 6), errors: [...firstErrors, ...secondErrors],
+        },
+        pass: offered.withoutOrder === 1 && offered.filed === 0 && offered.title === 'Повторити без замовлення' &&
+          sent.length === 1 && sent[0].method === 'POST' &&
+          body.without_order === true && body.expected_archive_id === A595 && body.expected_gate_token === 'e13-gate' &&
+          cleared.length === 0 && after.pair === 0 && after.toast === 1 &&
+          refusedSent.length === 1 && refusedSent[0].body?.without_order === undefined &&
+          refusedSent[0].body?.expected_archive_id === undefined && refused.toast >= 1 && refused.pairStays === 1 &&
+          firstForeign.length === 0 && secondForeign.length === 0 && firstErrors.length === 0 && secondErrors.length === 0,
+        screenshots: files,
+      };
+
+    } catch (e) {
+      return { pass: false, error: safeError(e, 'plate-operator'), measured: { trail, asked: asked.filter((r) => /printers|queue/.test(r)).slice(-8) } };
+    }
   });
 
   await scenario('order-clerk-new-customer', ['E13-O19', 'E13-R12'], async () => {
