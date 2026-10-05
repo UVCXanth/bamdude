@@ -710,6 +710,34 @@ class TestLockProtocol:
         assert won["trashed"] and won["project"] == r["order"], won
 
 
+class TestProductPageReads:
+    """WS-13 E9 A01–A03 on PostgreSQL (E13 K02): the product page's counters, its files and
+    folders, and the orders list's lines of the product — until now proven on SQLite only."""
+
+    @pytest.fixture(scope="class")
+    def result(self, tmp_path_factory) -> dict:
+        url = _pg_url()
+        _wipe(url)
+        return _run("e9_reads", tmp_path_factory.mktemp("pg_e9_reads"), url)
+
+    def test_the_card_counts_documents_and_distinct_orders(self, result):
+        assert result["documents_count"] == 2, result  # the picture is not a document
+        assert result["orders_count"] == 2, result  # two orders hold its lines, one of them twice
+
+    def test_the_files_say_3mf_case_aside_and_whether_their_folder_is_linked(self, result):
+        files = {int(k): v for k, v in result["files"].items()}
+        assert files[result["boxed"]] == {"is_3mf": True, "in_linked_folder": True}, result
+        assert files[result["loose"]] == {"is_3mf": False, "in_linked_folder": False}, result
+        assert [f["folder_id"] for f in result["folders"]] == [result["folder"]], result
+
+    def test_the_orders_list_carries_each_orders_lines_of_the_product(self, result):
+        lines = {int(k): v for k, v in result["product_lines"].items()}
+        first, second, third = result["orders"]
+        assert lines[first] == [["product", 2], ["product", 3]], result
+        assert lines[second] == [["product", 4]], result
+        assert lines.get(third, []) == [], result
+
+
 class TestStockJournalPages:
     """WS-13 E1 T9 / ST1: the journal's numbered pages on a real PostgreSQL."""
 

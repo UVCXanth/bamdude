@@ -140,6 +140,102 @@ async def _seed() -> dict:
     return written
 
 
+async def _e9_reads() -> dict:
+    """WS-13 E9 A01–A03 — the product page's reads — on PostgreSQL (K02).
+
+    A01 ``GET /products/{id}``: ``documents_count`` (attachments that are not pictures) and
+    ``orders_count`` (DISTINCT orders with a line of the product); A03
+    ``GET /products/{id}/files``: ``is_3mf`` (case aside), ``in_linked_folder`` and the linked
+    ``folders``; A02 the orders list with ``product_id``: each order's ``product_lines``. The
+    routes are called as the server calls them, without a request's credentials (the library's
+    names are then «none» — the SQL is what this checks).
+    """
+    from backend.app.api.routes import products as product_routes, projects as project_routes
+    from backend.app.core.database import async_session
+    from backend.app.models.library import LibraryFile, LibraryFolder
+    from backend.app.models.product import Product, product_files, product_folders
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+    from backend.app.services import line_config
+
+    def attachment(category: str, name: str, order: int) -> dict:
+        return {
+            "category": category,
+            "filename": name,
+            "original_name": name,
+            "size": 10,
+            "sort_order": order,
+            "source": "manual",
+            "source_file_id": None,
+            "uploaded_at": "2026-10-05T00:00:00",
+        }
+
+    async with async_session() as db:
+        folder = LibraryFolder(name="E9 folder")
+        db.add(folder)
+        await db.flush()
+        boxed = LibraryFile(
+            filename="Lamp.GCODE.3MF", file_path="library/lamp.3mf", file_size=1, file_type="gcode", folder_id=folder.id
+        )
+        loose = LibraryFile(filename="bracket.stl", file_path="library/bracket.stl", file_size=1, file_type="stl")
+        product = Product(
+            name="E9 lamp",
+            attachments=[
+                attachment("pictures", "shot.png", 0),
+                attachment("bom_docs", "bom.pdf", 1),
+                attachment("other", "notes.txt", 2),
+            ],
+        )
+        db.add_all([boxed, loose, product])
+        await db.flush()
+        await db.execute(
+            product_files.insert(),
+            [{"product_id": product.id, "library_file_id": f.id} for f in (boxed, loose)],
+        )
+        await db.execute(product_folders.insert().values(product_id=product.id, library_folder_id=folder.id))
+        orders = [Project(name=f"E9 order {n}", status="active") for n in range(3)]
+        db.add_all(orders)
+        await db.flush()
+        for order, quantities in zip(orders, ([2, 3], [4], []), strict=True):
+            for sort_order, quantity in enumerate(quantities):
+                line = ProjectLine(
+                    project_id=order.id, product_id=product.id, quantity=quantity, mode="product", sort_order=sort_order
+                )
+                db.add(line)
+                await db.flush()
+                await line_config.seed_line(db, line, choices=None, counts=None)
+        await db.commit()
+        ids = {"product": product.id, "boxed": boxed.id, "loose": loose.id, "folder": folder.id}
+        ids["orders"] = [o.id for o in orders]
+
+    async with async_session() as db:
+        card = await product_routes.get_product(ids["product"], db, None)
+        files = await product_routes.get_product_files(ids["product"], _plain_request(), db, None)
+        listed = await project_routes.list_projects(
+            status=None,
+            customer_id=None,
+            product_id=ids["product"],
+            responsible_id=None,
+            stage=None,
+            q=None,
+            sort_by=None,
+            page=1,
+            per_page=24,
+            all=False,
+            db=db,
+            _=None,
+        )
+    items = listed["items"] if isinstance(listed, dict) else listed.items
+    return {
+        **ids,
+        "documents_count": card.documents_count,
+        "orders_count": card.orders_count,
+        "files": {f.library_file_id: {"is_3mf": f.is_3mf, "in_linked_folder": f.in_linked_folder} for f in files.files},
+        "folders": [{"folder_id": f.folder_id, "name": f.name, "hidden": f.hidden} for f in files.folders],
+        "product_lines": {item.id: [(ref.mode, ref.quantity) for ref in (item.product_lines or [])] for item in items},
+    }
+
+
 async def _product_roundtrip() -> dict:
     """The round trip below with the library's file service running, as the app starts it.
 
@@ -1068,6 +1164,8 @@ async def _main(mode: str) -> dict:
         return {"seeded": await _seed()}
     if mode == "product_roundtrip":
         return await _product_roundtrip()
+    if mode == "e9_reads":
+        return await _e9_reads()
     if mode == "cyrillic_search":
         return await _cyrillic_search()
     if mode == "archive_write_lock":
