@@ -5460,6 +5460,7 @@ export default {
     noCustomer: 'Без замовника',
     newCustomer: 'Новий замовник…',
     newCustomerName: "Ім'я замовника",
+    newCustomerFull: 'Додати контакт і доставку…',
     create: 'Створити',
     cancelCreate: 'Скасувати створення замовника',
     namesakeChoose: 'Обрати його',

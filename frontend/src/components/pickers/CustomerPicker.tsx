@@ -7,6 +7,7 @@ import type { CustomerOption } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Select } from '../Select';
 import { LoadFailedNote } from '../workshop/LoadFailedNote';
+import { CustomerModal } from '../customers/CustomerModal';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
@@ -47,6 +48,8 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate, id }: C
   const [name, setName] = useState('');
   const [warned, setWarned] = useState<{ name: string; message: string; namesake: number | null } | null>(null);
   const [choosing, setChoosing] = useState<Choosing>('idle');
+  // The customer form with its contacts and delivery, over the order form (WS-13 E13 O19).
+  const [fullForm, setFullForm] = useState(false);
   // Customers this picker created — offered even when the list was never read (Codex E11-V03).
   const [created, setCreated] = useState<CustomerOption[]>([]);
   const sent = useRef(false);
@@ -74,22 +77,27 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate, id }: C
     setChoosing('idle');
   };
 
+  /** A customer made here — inline or in the full form — is offered and chosen at once. */
+  const adopt = (made: { id: number; code: string; name: string }) => {
+    // The select shows the new customer at once — not «no customer» until (or unless)
+    // the list is read again — and without calling a list of one the whole list.
+    const option: CustomerOption = { id: made.id, code: made.code, name: made.name };
+    setCreated((known) => (known.some((c) => c.id === made.id) ? known : [...known, option]));
+    queryClient.setQueryData<CustomerOption[]>(['customer-options'], (old) =>
+      old && !old.some((c) => c.id === made.id) ? [...old, option] : old,
+    );
+    queryClient.invalidateQueries({ queryKey: ['customer-options'] });
+    queryClient.invalidateQueries({ queryKey: ['customers'] });
+    onChange(made.id);
+    leave();
+  };
+
   const createMutation = useMutation({
     mutationFn: ({ customerName, knowingly }: { customerName: string; knowingly: boolean }) =>
       api.createCustomer(knowingly ? { name: customerName, allow_duplicate_name: true } : { name: customerName }),
     onSuccess: (made) => {
       sent.current = false;
-      // The select shows the new customer at once — not «no customer» until (or unless)
-      // the list is read again — and without calling a list of one the whole list.
-      const option: CustomerOption = { id: made.id, code: made.code, name: made.name };
-      setCreated((known) => (known.some((c) => c.id === made.id) ? known : [...known, option]));
-      queryClient.setQueryData<CustomerOption[]>(['customer-options'], (old) =>
-        old && !old.some((c) => c.id === made.id) ? [...old, option] : old,
-      );
-      queryClient.invalidateQueries({ queryKey: ['customer-options'] });
-      queryClient.invalidateQueries({ queryKey: ['customers'] });
-      onChange(made.id);
-      leave();
+      adopt(made);
     },
     onError: (e: Error, { customerName }) => {
       sent.current = false;
@@ -152,6 +160,7 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate, id }: C
 
   if (creating) {
     return (
+      <>
       // ⚠️ `stopPropagation` is the point: the modals this picker lives in close themselves
       // on a `window` keydown, so an unguarded Escape here — in the field or on one of its
       // buttons — would throw away the whole order the user was editing instead of
@@ -238,7 +247,33 @@ export function CustomerPicker({ value, onChange, disabled, allowCreate, id }: C
             </div>
           </div>
         )}
+        {/* A contact and its delivery need the whole customer form; `customers:create` takes
+            them in the same POST, without reading the directory (WS-13 E13 O19). */}
+        <button
+          type="button"
+          onClick={() => {
+            if (sent.current || reading.current) return;
+            setFullForm(true);
+          }}
+          disabled={disabled}
+          aria-disabled={busy || undefined}
+          className="mt-1 text-xs text-bambu-green hover:underline aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+        >
+          {t('pickers.newCustomerFull')}
+        </button>
       </div>
+      {/* Beside the row, not inside it: the row's Escape guard must not take the dialog's keys. */}
+      {fullForm && (
+        <CustomerModal
+          initialName={name.trim()}
+          onCreated={(made) => {
+            setFullForm(false);
+            adopt(made);
+          }}
+          onClose={() => setFullForm(false)}
+        />
+      )}
+      </>
     );
   }
 

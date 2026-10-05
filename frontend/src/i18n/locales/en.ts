@@ -5425,6 +5425,7 @@ export default {
     noCustomer: 'No customer',
     newCustomer: 'New customer…',
     newCustomerName: 'Customer name',
+    newCustomerFull: 'Add contact and delivery…',
     create: 'Create',
     cancelCreate: 'Cancel creating customer',
     namesakeChoose: 'Choose it',

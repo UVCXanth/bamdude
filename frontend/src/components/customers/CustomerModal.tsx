@@ -23,6 +23,11 @@ const NAME_MAX = 255;
 
 interface CustomerModalProps {
   customer?: Customer | null;
+  /** A new customer's name as the caller already has it (the order form's picker). */
+  initialName?: string;
+  /** A new customer goes back to the caller instead of opening its page — the order form
+   *  names it, and its user may not read the directory (WS-13 E13 O19). */
+  onCreated?: (saved: Customer) => void;
   onClose: () => void;
 }
 
@@ -52,7 +57,7 @@ const contactsPayload = (drafts: ContactDraft[]) => JSON.stringify(draftsToInput
  * A new customer opens at once (F11); an edit closes with a toast. The saved record reaches
  * every list through `invalidateOrderViews` (`OrderListItem.customer_name` is denormalised).
  */
-export function CustomerModal({ customer, onClose }: CustomerModalProps) {
+export function CustomerModal({ customer, initialName, onCreated, onClose }: CustomerModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -65,7 +70,7 @@ export function CustomerModal({ customer, onClose }: CustomerModalProps) {
   // The session's base: the customer as the dialog opened on it.
   const [base] = useState(() => customer ?? null);
   const [baseContacts] = useState(() => (base ? contactsPayload(base.contacts.map(draftFromContact)) : ''));
-  const [name, setName] = useState(base?.name ?? '');
+  const [name, setName] = useState(base?.name ?? initialName ?? '');
   const [kind, setKind] = useState<CustomerKind>(base?.kind ?? 'company');
   const [drafts, setDrafts] = useState<ContactDraft[]>(() => (base ? base.contacts.map(draftFromContact) : [emptyDraft()]));
   const [notes, setNotes] = useState(base?.notes ?? '');
@@ -93,7 +98,8 @@ export function CustomerModal({ customer, onClose }: CustomerModalProps) {
         return;
       }
       showToast(t('customers.toast.created'));
-      navigate(`/customers/${saved.id}`);
+      if (onCreated) onCreated(saved);
+      else navigate(`/customers/${saved.id}`);
     },
     onError: (e: Error, data) => {
       const asked = (data as { name?: string }).name;
@@ -213,6 +219,9 @@ export function CustomerModal({ customer, onClose }: CustomerModalProps) {
         noValidate
         onSubmit={(e) => {
           e.preventDefault();
+          // A portal's events climb the React tree: opened from the order form, this submit
+          // would reach the order's own form and save the order too.
+          e.stopPropagation();
           submit();
         }}
       >
