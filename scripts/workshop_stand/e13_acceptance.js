@@ -2093,6 +2093,8 @@ async (page, selftest = null) => {
       await two.p.waitForFunction(() => [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Повторити друк' && !b.disabled), null, { timeout: 8000 });
       await plain.first().click();
       await two.p.getByText(UK.filingForbidden, { exact: true }).first().waitFor({ timeout: 8000 }).catch(() => {});
+      // The toast slides in: the frame waits for it to settle.
+      await two.p.waitForTimeout(800);
       const refused = {
         toast: await two.p.getByText(UK.filingForbidden, { exact: true }).count(),
         pairStays: await two.p.getByRole('button', { name: 'Повторити друк', exact: true }).count(),
@@ -2199,7 +2201,11 @@ async (page, selftest = null) => {
     const pathReads = requests.length;
     await d.getByRole('button', { name: 'Створити', exact: true }).click();
     await p.waitForURL(new RegExp(`/projects/${O244}$`), { timeout: 8000 }).catch(() => {});
-    await p.waitForTimeout(800);
+    // The saved order's page, read through — not its loading line.
+    const title = p.getByRole('heading', { level: 1 }).first();
+    await title.waitFor({ timeout: 15000 }).catch(() => {});
+    const heading = (await title.textContent().catch(() => null))?.trim() ?? null;
+    await p.waitForTimeout(600);
     files.push(await shoot(p, 'order-clerk-saved'));
     const landed = new URL(p.url()).pathname;
     await ctx.close();
@@ -2219,10 +2225,11 @@ async (page, selftest = null) => {
           `POST /projects answered here with order ${O244}`,
           methods.length ? `delivery method «${method.name}» read from the stand` : 'GET /delivery-methods answered here (the stand has none)',
           'server proof: test_workshop_rights_customers.py (the clerk\'s whole path; directory and method writes closed)',
+          'reads go with the stand administrator\'s token, so the saved order\'s page shows its contact\'s phone: the O12 mask is the server\'s (test_workshop_read_masks.py: an order\'s contact phone only for customers:read)',
         ],
       },
       measured: {
-        prefilled, manage, shown, ordersBefore, landed,
+        prefilled, manage, shown, ordersBefore, landed, heading,
         sent: writes.map((w) => ({ method: w.method, path: w.path, body: w.body })),
         directory: directory.slice(0, 6), foreign: foreign.slice(0, 6), errors,
       },
@@ -2233,7 +2240,8 @@ async (page, selftest = null) => {
         shown.customer === `${MADE.code} · ${MADE.name}` && shown.contact === CONTACT.name &&
         orderWrite.method === 'POST' && orderWrite.body?.name === 'E13 Замовлення клерка' &&
         orderWrite.body?.customer_id === MADE.id && orderWrite.body?.contact_id === CONTACT.id &&
-        landed === `/projects/${O244}` && directory.length === 0 && foreign.length === 0 && errors.length === 0,
+        landed === `/projects/${O244}` && !!heading && heading.includes(order244.name) &&
+        directory.length === 0 && foreign.length === 0 && errors.length === 0,
       screenshots: files,
     };
   });
