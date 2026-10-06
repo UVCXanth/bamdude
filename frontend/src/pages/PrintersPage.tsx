@@ -1279,31 +1279,74 @@ function ToolbarDropdown<T extends string>({
   options,
   onChange,
   fullWidth = false,
+  inactive = false,
 }: {
   value: T;
   options: ToolbarDropdownOption<T>[];
   onChange: (value: T) => void;
   fullWidth?: boolean;
+  inactive?: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const listId = useId();
   const selectedOption = options.find((option) => option.value === value) ?? options[0];
 
+  useEffect(() => {
+    if (inactive) setIsOpen(false);
+  }, [inactive]);
+
+  useEffect(() => {
+    if (!isOpen || !fullWidth || inactive) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setIsOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || rootRef.current?.contains(event.target as Node)) return;
+      event.stopPropagation();
+      event.preventDefault();
+      setIsOpen(false);
+      buttonRef.current?.focus();
+    };
+    document.addEventListener('mousedown', closeOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [isOpen, fullWidth, inactive]);
+
   return (
-    <div className={`relative ${fullWidth ? 'w-full min-w-0' : ''}`}>
+    <div
+      ref={rootRef}
+      data-toolbar-nested-open={(isOpen && !inactive) || undefined}
+      className={`relative ${fullWidth ? 'w-full min-w-0' : ''}`}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape' || !isOpen) return;
+        event.stopPropagation();
+        event.preventDefault();
+        setIsOpen(false);
+        buttonRef.current?.focus();
+      }}
+    >
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setIsOpen((open) => !open)}
+        aria-expanded={isOpen && !inactive}
+        aria-controls={isOpen && !inactive ? listId : undefined}
         className={`h-8 px-2 rounded-lg border bg-bambu-dark border-bambu-dark-tertiary text-white text-sm font-medium transition-colors hover:bg-bambu-dark-tertiary focus:outline-none focus:border-bambu-green flex items-center justify-between gap-2 ${fullWidth ? 'w-full' : 'min-w-28'}`}
       >
         <span className="truncate">{selectedOption?.label}</span>
         <ChevronDown className={`w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] text-bambu-gray transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
-      {isOpen && (
+      {isOpen && !inactive && (
         <>
           {/* not-a-modal: menu */}
-          <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
-          <div className="absolute left-0 top-full z-20 mt-1 min-w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary py-1 shadow-xl">
+          {!fullWidth && <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />}
+          <div id={listId} className="absolute left-0 top-full z-20 mt-1 min-w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary py-1 shadow-xl">
             {options.map((option) => (
               <button
                 key={option.value}
@@ -1330,18 +1373,51 @@ function ToolbarMenu({
   label,
   icon,
   children,
+  onClose,
 }: {
   label: string;
   icon: React.ReactNode;
-  children: React.ReactNode;
+  children: (close: () => void) => React.ReactNode;
+  onClose?: () => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const panelId = useId();
+  const close = () => {
+    setIsOpen(false);
+    onClose?.();
+    buttonRef.current?.focus();
+  };
 
   return (
-    <div className="relative">
+    <div
+      className="relative"
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape' || !isOpen) return;
+        const nested = panelRef.current?.querySelector<HTMLElement>('[data-toolbar-nested-open="true"]');
+        if (nested) {
+          // A child handles Escape while focused. If focus moved to a sibling,
+          // close that child here before the key reaches document listeners.
+          if (nested.contains(event.target as Node)) return;
+          event.stopPropagation();
+          event.preventDefault();
+          const trigger = nested.querySelector<HTMLButtonElement>('button');
+          trigger?.click();
+          trigger?.focus();
+          return;
+        }
+        event.stopPropagation();
+        event.preventDefault();
+        close();
+      }}
+    >
       <button
+        ref={buttonRef}
         type="button"
-        onClick={() => setIsOpen((open) => !open)}
+        onClick={() => isOpen ? close() : setIsOpen(true)}
+        aria-expanded={isOpen}
+        aria-controls={isOpen ? panelId : undefined}
         className="h-8 w-8 rounded-lg border bg-bambu-dark border-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary transition-colors flex items-center justify-center"
         aria-label={label}
         title={label}
@@ -1352,12 +1428,15 @@ function ToolbarMenu({
       {isOpen && (
         <>
           {/* not-a-modal: menu */}
-          <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
+          <div className="fixed inset-0 z-10" onClick={close} />
           <div
+            ref={panelRef}
+            id={panelId}
+            role="group"
+            aria-label={label}
             className="absolute right-0 top-full z-20 mt-1 min-w-40 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary p-2 shadow-xl"
-            onClick={() => setIsOpen(false)}
           >
-            {children}
+            {children(close)}
           </div>
         </>
       )}
@@ -9257,6 +9336,8 @@ export function PrintersPage() {
     return localStorage.getItem('hideDisconnectedPrinters') === 'true';
   });
   const [showPowerDropdown, setShowPowerDropdown] = useState(false);
+  const powerDropdownRef = useRef<HTMLDivElement>(null);
+  const powerDropdownId = useId();
   const [poweringOn, setPoweringOn] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>(() => {
     // Validated on read, as the status filter is: a cast would take whatever
@@ -9732,6 +9813,30 @@ export function PrintersPage() {
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const expandedToolbarControlsRef = useRef<HTMLDivElement | null>(null);
   const [compactToolbar, setCompactToolbar] = useState(false);
+
+  useEffect(() => {
+    setShowPowerDropdown(false);
+  }, [compactToolbar]);
+
+  useEffect(() => {
+    if (!showPowerDropdown) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (!powerDropdownRef.current?.contains(event.target as Node)) setShowPowerDropdown(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || powerDropdownRef.current?.contains(event.target as Node)) return;
+      event.stopPropagation();
+      event.preventDefault();
+      setShowPowerDropdown(false);
+      powerDropdownRef.current?.querySelector('button')?.focus();
+    };
+    document.addEventListener('mousedown', closeOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [showPowerDropdown]);
 
   const measureToolbar = useCallback(() => {
     const toolbar = toolbarRef.current;
@@ -10216,15 +10321,16 @@ export function PrintersPage() {
   // viewports and grouped under 3 overflow menus on narrow viewports. The
   // ``inMenu`` flag flips per-control styling so dropdowns and buttons go
   // full-width inside the menu but stay compact in the inline ribbon.
-  const renderFilterControls = (inMenu = false) => (
+  const renderFilterControls = (inMenu = false, onComplete?: () => void) => (
     <>
-      <OpenMonitorButton view="printers" sort={sortBy} />
+      <OpenMonitorButton view="printers" sort={sortBy} onOpened={onComplete} />
       {/* Status filter */}
       {printers && printers.length > 0 && (
         <ToolbarDropdown
           value={statusFilter}
           onChange={handleStatusFilterChange}
           fullWidth={inMenu}
+          inactive={!inMenu && compactToolbar}
           options={STATUS_FILTER_OPTIONS.map((option) => ({ value: option.value, label: t(option.labelKey) }))}
         />
       )}
@@ -10235,6 +10341,7 @@ export function PrintersPage() {
           value={locationFilter}
           onChange={handleLocationFilterChange}
           fullWidth={inMenu}
+          inactive={!inMenu && compactToolbar}
           options={[
             { value: 'all', label: t('printers.filter.allLocations') },
             ...availableLocations.map((loc) => ({
@@ -10250,7 +10357,7 @@ export function PrintersPage() {
           the search box and both dropdowns go away, and a lone Tags button
           left standing over "No printers configured yet" filters nothing. */}
       {printers && printers.length > 0 && (tagRows?.tags.length ?? 0) > 0 && (
-        <TagFilterMenu tags={tagRows!.tags} selected={tagFilter} onChange={handleTagFilterChange} fullWidth={inMenu} />
+        <TagFilterMenu tags={tagRows!.tags} selected={tagFilter} onChange={handleTagFilterChange} fullWidth={inMenu} inactive={!inMenu && compactToolbar} />
       )}
 
       <button
@@ -10276,6 +10383,7 @@ export function PrintersPage() {
           value={sortBy}
           onChange={handleSortChange}
           fullWidth={inMenu}
+          inactive={!inMenu && compactToolbar}
           options={SORT_OPTIONS.map((option) => ({ value: option.value, label: t(option.labelKey) }))}
         />
         <button
@@ -10318,7 +10426,7 @@ export function PrintersPage() {
     </>
   );
 
-  const renderActionControls = (inMenu = false) => (
+  const renderActionControls = (inMenu = false, onComplete?: () => void) => (
     <>
       {/* Bulk select — BamDude 2-stage flow: "Select all" → "N selected" + clearSelection.
           Only shown when more than one printer exists (single-printer farms have no use for bulk). */}
@@ -10327,7 +10435,7 @@ export function PrintersPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={clearSelection}
+            onClick={() => { clearSelection(); onComplete?.(); }}
             className={`!h-8 !min-h-8 !bg-bambu-green/20 !border-bambu-green/50 !text-bambu-green ${inMenu ? 'w-full' : ''}`}
           >
             {t('printers.bulk.selected', { count: selectedPrinterIds.size })}
@@ -10336,7 +10444,7 @@ export function PrintersPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => { if (printers) setSelectedPrinterIds(new Set(printers.map((p) => p.id))); }}
+            onClick={() => { if (printers) setSelectedPrinterIds(new Set(printers.map((p) => p.id))); onComplete?.(); }}
             disabled={!hasPermission('printers:control')}
             className={`!h-8 !min-h-8 ${inMenu ? 'w-full' : ''}`}
           >
@@ -10347,22 +10455,35 @@ export function PrintersPage() {
 
       {/* Power dropdown — only shown when offline printers with smart plugs are filtered out */}
       {hideDisconnected && Object.keys(smartPlugByPrinter).length > 0 && (
-        <div className={`relative ${inMenu ? 'w-full' : ''}`}>
+        <div
+          ref={inMenu || !compactToolbar ? powerDropdownRef : undefined}
+          data-toolbar-nested-open={(showPowerDropdown && (inMenu || !compactToolbar)) || undefined}
+          className={`relative ${inMenu ? 'w-full' : ''}`}
+          onKeyDown={(event) => {
+            if (event.key !== 'Escape' || !showPowerDropdown) return;
+            event.stopPropagation();
+            event.preventDefault();
+            setShowPowerDropdown(false);
+            powerDropdownRef.current?.querySelector('button')?.focus();
+          }}
+        >
           <Button
             variant="outline"
             size="sm"
             onClick={() => setShowPowerDropdown(!showPowerDropdown)}
+            aria-expanded={showPowerDropdown && (inMenu || !compactToolbar)}
+            aria-controls={showPowerDropdown && (inMenu || !compactToolbar) ? powerDropdownId : undefined}
             className={`!h-8 !min-h-8 ${inMenu ? 'w-full justify-between' : ''}`}
           >
             <Power className="w-4 h-4" />
             {t('printers.powerOn')}
             <ChevronDown className={`w-3 h-3 transition-transform ${showPowerDropdown ? 'rotate-180' : ''}`} />
           </Button>
-          {showPowerDropdown && (
+          {showPowerDropdown && (inMenu || !compactToolbar) && (
             <>
               {/* not-a-modal: menu */}
-              <div className="fixed inset-0 z-10" onClick={() => setShowPowerDropdown(false)} />
-              <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-bambu-dark-secondary border border-gray-200 dark:border-bambu-dark-tertiary rounded-lg shadow-lg z-20 py-1">
+              {!inMenu && <div className="fixed inset-0 z-10" onClick={() => setShowPowerDropdown(false)} />}
+              <div id={powerDropdownId} className="absolute right-0 mt-2 w-56 bg-white dark:bg-bambu-dark-secondary border border-gray-200 dark:border-bambu-dark-tertiary rounded-lg shadow-lg z-20 py-1">
                 <div className="px-3 py-2 text-xs text-gray-500 dark:text-bambu-gray border-b border-gray-200 dark:border-bambu-dark-tertiary">
                   {t('printers.offlinePrintersWithPlugs')}
                 </div>
@@ -10374,6 +10495,8 @@ export function PrintersPage() {
                     onPowerOn={(plugId) => {
                       setPoweringOn(plugId);
                       powerOnMutation.mutate(plugId);
+                      setShowPowerDropdown(false);
+                      onComplete?.();
                     }}
                     isPowering={poweringOn === smartPlugByPrinter[printer.id]?.id}
                   />
@@ -10390,7 +10513,7 @@ export function PrintersPage() {
       )}
 
       <Button
-        onClick={() => setShowAddModal(true)}
+        onClick={() => { onComplete?.(); setShowAddModal(true); }}
         disabled={!hasPermission('printers:create')}
         title={!hasPermission('printers:create') ? t('printers.permission.noAdd') : undefined}
         className={`!h-8 !min-h-8 px-2 py-0 ${inMenu ? 'w-full' : ''}`}
@@ -10509,13 +10632,13 @@ export function PrintersPage() {
           {compactToolbar && (
             <div className="ml-auto flex items-center justify-end gap-1">
               <ToolbarMenu label={t('printers.toolbar.filters')} icon={<Filter className="w-4 h-4" />}>
-                <div className="flex w-48 flex-col gap-2">{renderFilterControls(true)}</div>
+                {(close) => <div className="flex w-48 flex-col gap-2">{renderFilterControls(true, close)}</div>}
               </ToolbarMenu>
               <ToolbarMenu label={t('printers.toolbar.view')} icon={<SlidersHorizontal className="w-4 h-4" />}>
-                <div className="flex w-48 flex-col gap-2">{renderViewControls(true)}</div>
+                {() => <div className="flex w-48 flex-col gap-2">{renderViewControls(true)}</div>}
               </ToolbarMenu>
-              <ToolbarMenu label={t('printers.toolbar.actions')} icon={<MoreHorizontal className="w-4 h-4" />}>
-                <div className="flex w-48 flex-col gap-2">{renderActionControls(true)}</div>
+              <ToolbarMenu label={t('printers.toolbar.actions')} icon={<MoreHorizontal className="w-4 h-4" />} onClose={() => setShowPowerDropdown(false)}>
+                {(close) => <div className="flex w-48 flex-col gap-2">{renderActionControls(true, close)}</div>}
               </ToolbarMenu>
             </div>
           )}

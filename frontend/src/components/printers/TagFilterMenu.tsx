@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Tag as TagIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { PrinterTag } from '../../api/client';
@@ -9,6 +9,7 @@ interface Props {
   selected: number[];
   onChange: (ids: number[]) => void;
   fullWidth?: boolean;
+  inactive?: boolean;
 }
 
 /**
@@ -17,14 +18,19 @@ interface Props {
  * second word to a search — which is why it is a checkbox list and not a
  * single-value dropdown like the location filter.
  */
-export function TagFilterMenu({ tags, selected, onChange, fullWidth }: Props) {
+export function TagFilterMenu({ tags, selected, onChange, fullWidth, inactive = false }: Props) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
+  const listId = useId();
 
   useEffect(() => {
-    if (!open) return;
+    if (inactive) setOpen(false);
+  }, [inactive]);
+
+  useEffect(() => {
+    if (!open || inactive) return;
     const close = (e: MouseEvent) => {
       if (root.current && !root.current.contains(e.target as Node)) setOpen(false);
     };
@@ -33,6 +39,8 @@ export function TagFilterMenu({ tags, selected, onChange, fullWidth }: Props) {
     // and starts again from the top of the page.
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      e.preventDefault();
       setOpen(false);
       button.current?.focus();
     };
@@ -42,17 +50,29 @@ export function TagFilterMenu({ tags, selected, onChange, fullWidth }: Props) {
       document.removeEventListener('mousedown', close);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [open]);
+  }, [open, inactive]);
 
   const toggle = (id: number) => onChange(selected.includes(id) ? selected.filter((v) => v !== id) : [...selected, id]);
 
   return (
-    <div ref={root} className={`relative ${fullWidth ? 'w-full' : ''}`}>
+    <div
+      ref={root}
+      data-toolbar-nested-open={(open && !inactive) || undefined}
+      className={`relative ${fullWidth ? 'w-full' : ''}`}
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape' || !open) return;
+        e.stopPropagation();
+        e.preventDefault();
+        setOpen(false);
+        button.current?.focus();
+      }}
+    >
       <button
         type="button"
         ref={button}
         onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
+        aria-expanded={open && !inactive}
+        aria-controls={open && !inactive ? listId : undefined}
         aria-haspopup="true"
         className={`h-8 px-2 rounded-lg border text-sm font-medium transition-colors inline-flex items-center gap-1.5 ${fullWidth ? 'w-full' : ''} ${
           selected.length > 0
@@ -64,8 +84,8 @@ export function TagFilterMenu({ tags, selected, onChange, fullWidth }: Props) {
         {t('printers.filter.tags')}
         {selected.length > 0 && <span className="text-xs opacity-90">({selected.length})</span>}
       </button>
-      {open && (
-        <div role="group" aria-label={t('printers.filter.tags')} className="absolute z-20 mt-1 min-w-[12rem] p-2 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary shadow-lg space-y-1">
+      {open && !inactive && (
+        <div id={listId} role="group" aria-label={t('printers.filter.tags')} className="absolute z-20 mt-1 min-w-[12rem] p-2 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary shadow-lg space-y-1">
           {tags.map((tag) => (
             <label key={tag.id} className="flex items-center gap-2 text-sm text-white cursor-pointer">
               <input type="checkbox" checked={selected.includes(tag.id)} onChange={() => toggle(tag.id)} aria-label={tag.name} />
