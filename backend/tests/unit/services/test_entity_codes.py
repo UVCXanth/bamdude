@@ -17,7 +17,7 @@ def test_every_prefix_is_two_latin_capitals_and_none_repeats():
     assert all(len(p) == 2 and p.isascii() and p.isalpha() and p.isupper() for p in values)
 
 
-@pytest.mark.parametrize("text", ["OR-0042", "or42", "Or 42", "0042", "42", " OR-42 ", "or-00042"])
+@pytest.mark.parametrize("text", ["OR-0042", "or42", "Or 42", "0042", "42", " OR-42 ", "or-00042", "- 42"])
 def test_a_search_reads_its_own_code_in_any_spelling(text):
     assert id_from_query("order", text) == 42
 
@@ -33,3 +33,9 @@ def test_a_required_prefix_refuses_the_bare_number():
     assert id_from_query("contact", "12", require_prefix=True) is None
     assert id_from_query("contact", "ct-12", require_prefix=True) == 12
     assert id_from_query("contact", "CU-12", require_prefix=True) is None
+
+
+def test_long_or_malformed_searches_do_not_stall_or_raise():
+    assert id_from_query("order", "OR" + " " * 100_000 + "x") is None
+    assert id_from_query("order", "9" * 100_000) is None
+    assert id_from_query("order", "0" * 100_000 + "42") == 42

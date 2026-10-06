@@ -21,14 +21,14 @@ WORKDIR /app
 
 # Install system dependencies
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
     curl \
     ffmpeg \
     gnupg \
     gosu \
     iproute2 \
     libcap2-bin \
-    openssh-client \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -52,7 +52,10 @@ RUN curl -fsSL https://pkgs.tailscale.com/stable/debian/trixie.noarmor.gpg \
 # which depends on ambient capability support in the container runtime.
 RUN setcap cap_net_bind_service=+ep "$(readlink -f /usr/local/bin/python3)"
 
-# Install Python dependencies with cache mount.
+# Install Python dependencies with cache mount. The runtime container is
+# updated by replacing the image; pip itself is build-only, so remove it from
+# this same layer after installation. Its vendored Python packages otherwise
+# remain in the final image even after the app's copies have been patched.
 # pip is upgraded to >=26.1 first to close CVE-2026-6357 — the python:3.12-slim
 # base image ships pip 25.0.1, which runs its self-update check after installing
 # wheels, so a hostile wheel could hijack stdlib imports during install. Upgrade
@@ -63,7 +66,8 @@ RUN setcap cap_net_bind_service=+ep "$(readlink -f /usr/local/bin/python3)"
 COPY requirements.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --root-user-action=ignore --upgrade 'pip>=26.1.2' \
- && pip install --root-user-action=ignore -r requirements.txt
+ && pip install --root-user-action=ignore -r requirements.txt \
+ && pip uninstall --yes pip
 
 # Copy backend
 COPY backend/ ./backend/

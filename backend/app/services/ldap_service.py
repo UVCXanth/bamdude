@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass
 
 from ldap3 import ALL, SUBTREE, Connection, Server, Tls
+from ldap3.utils.conv import escape_filter_chars
 
 logger = logging.getLogger(__name__)
 
@@ -444,13 +445,4 @@ def test_ldap_connection(config: LDAPConfig) -> tuple[bool, str]:
 
 def _ldap_escape(value: str) -> str:
     """Escape special characters in LDAP search filter values (RFC 4515)."""
-    replacements = {
-        "\\": "\\5c",
-        "*": "\\2a",
-        "(": "\\28",
-        ")": "\\29",
-        "\x00": "\\00",
-    }
-    for char, escaped in replacements.items():
-        value = value.replace(char, escaped)
-    return value
+    return escape_filter_chars(value)

@@ -14,7 +14,8 @@ import re
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from xml.etree import ElementTree
+
+from defusedxml import ElementTree
 
 from backend.app.services.library_helpers import SLICED_GCODE_META_KEY, detect_file_type, names_carry_sliced_gcode
 

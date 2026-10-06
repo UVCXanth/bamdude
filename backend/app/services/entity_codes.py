@@ -8,8 +8,6 @@ pins that they are two letters and unique. The frontend never builds a code —
 it shows the ``code`` the responses carry.
 """
 
-import re
-
 PREFIXES: dict[str, str] = {
     "customer": "CU",
     "contact": "CT",
@@ -22,7 +20,6 @@ _WIDTH = 4
 # The largest id a search may name. Past it SQLite's parameter binder raises
 # instead of simply finding nothing, so a long digit string must stay text.
 _MAX_ID = 2**31 - 1
-_QUERY = re.compile(r"^\s*([A-Za-z]{2})?\s*-?\s*(\d+)\s*$")
 
 
 def code_for(kind: str, entity_id: int) -> str:
@@ -40,14 +37,22 @@ def id_from_query(kind: str, text: str | None, *, require_prefix: bool = False) 
     """
     if not text:
         return None
-    match = _QUERY.match(text)
-    if match is None:
+    rest = text.strip()
+    prefix = None
+    if len(rest) >= 2 and rest[:2].isascii() and rest[:2].isalpha():
+        prefix, rest = rest[:2], rest[2:].lstrip()
+    if rest.startswith("-"):
+        rest = rest[1:].lstrip()
+    if not rest or not rest.isdecimal():
         return None
-    prefix, digits = match.groups()
     if prefix is None:
         if require_prefix:
             return None
     elif prefix.upper() != PREFIXES[kind]:
         return None
-    value = int(digits)
+    # Avoid Python's large-integer digit limit on arbitrarily long searches.
+    digits = rest.lstrip("0")
+    if len(digits) > len(str(_MAX_ID)):
+        return None
+    value = int(digits) if digits else 0
     return value if 0 < value <= _MAX_ID else None

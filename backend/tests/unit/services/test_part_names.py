@@ -36,6 +36,10 @@ class TestParenClone:
     def test_a_pure_paren_name_is_not_emptied(self):
         assert canonicalize("(2)") == "(2)"
 
+    def test_long_name_without_clone_remains_a_name(self):
+        name = "part " + "x " * 20_000 + "end"
+        assert canonicalize(name) == name
+
 
 class TestSiblingRule:
     def test_extensionless_base_n_folds_beside_its_sibling(self):

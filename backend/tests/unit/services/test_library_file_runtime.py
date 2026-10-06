@@ -7,6 +7,7 @@ import logging
 import zipfile
 
 import pytest
+from defusedxml.common import DefusedXmlException
 
 from backend.app.services.library_file_preparation import EXTRACTION_KEY, prepare_file
 from backend.app.services.library_file_runtime import LibraryFileRuntime
@@ -44,6 +45,17 @@ def test_present_but_broken_metadata_is_not_a_complete_snapshot(tmp_path):
         archive.writestr("Metadata/plate_1.gcode", "G1 X1")
         archive.writestr("Metadata/project_settings.config", "{broken")
     with pytest.raises(ValueError):
+        prepare_file(file, root=tmp_path)
+
+
+def test_preparation_rejects_xml_entities_in_3mf_metadata(tmp_path):
+    file = tmp_path / "entity.3mf"
+    with zipfile.ZipFile(file, "w") as archive:
+        archive.writestr(
+            "Metadata/slice_info.config",
+            '<!DOCTYPE config [<!ENTITY x "expanded">]><config>&x;</config>',
+        )
+    with pytest.raises(DefusedXmlException):
         prepare_file(file, root=tmp_path)
 
 
