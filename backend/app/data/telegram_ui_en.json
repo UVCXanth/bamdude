@@ -164,6 +164,7 @@
     "printing": "Printing",
     "empty": "Queue is empty",
     "item_detail": "Queue Job",
+    "job_fallback": "Job #{id}",
     "file": "File",
     "printer": "Printer",
     "position": "Position",

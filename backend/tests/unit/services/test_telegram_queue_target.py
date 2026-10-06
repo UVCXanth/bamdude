@@ -1,13 +1,7 @@
-"""Which queue a job the bot creates actually lands on.
+"""Telegram queue lookup and positioning.
 
-Both bot scenes used to build the queue item with ``queue_id=printer_id`` and a
-comment asserting the two are the same. They are not: ``PrinterQueue.id`` is an
-autoincrement key and ``printer_id`` is a separate unique column, so they agree
-only while every queue was created in printer order and none was ever deleted.
-
-That is true of a farm that has never removed a machine — which is why this
-survived — and it is guaranteed by nothing. When it breaks it does so silently
-and puts the job on **another printer's** queue.
+The current creator, ``ensure_printer_queue``, enforces queue.id == printer.id.
+The lookup still reads the owning row and returns None if it is absent.
 """
 
 from __future__ import annotations
@@ -41,22 +35,19 @@ async def _printer(db, name: str) -> Printer:
 
 @pytest.mark.asyncio
 async def test_it_finds_the_queue_that_belongs_to_the_printer(db_session, session_factory):
+    from backend.app.services.printer_queues import ensure_printer_queue
+
     printer = await _printer(db_session, "alpha")
-    queue = PrinterQueue(printer_id=printer.id)
-    db_session.add(queue)
+    queue = await ensure_printer_queue(db_session, printer.id)
     await db_session.commit()
 
+    assert queue.id == printer.id
     assert await resolve_queue_id(printer.id) == queue.id
 
 
 @pytest.mark.asyncio
-async def test_it_is_right_even_where_the_ids_have_drifted_apart(db_session, session_factory):
-    """⚠️ The case the old assumption got wrong.
-
-    Two printers, and the queue rows created in the OTHER order — which is what
-    a deleted-and-recreated printer leaves behind. Reading printer_id as the
-    queue id here hands the job to the wrong machine.
-    """
+async def test_lookup_defensively_finds_a_pre_repair_misaligned_row(db_session, session_factory):
+    """A deliberately malformed fixture, outside the current queue invariant."""
     first = await _printer(db_session, "first")
     second = await _printer(db_session, "second")
 
@@ -83,9 +74,7 @@ async def test_a_printer_with_no_queue_answers_none_rather_than_guessing(db_sess
 
 
 def test_the_bot_scenes_no_longer_carry_the_assumption():
-    """A source check, because the assumption is one line and reads as
-    harmless. Both scenes previously wrote ``queue_id=printer_id`` with a
-    comment saying the two are equal."""
+    """The scenes use the resolved queue row, not an unverified printer id."""
     handlers = Path(__file__).resolve().parents[3] / "app" / "services" / "telegram_handlers"
 
     for name in ("library_scene.py", "queue_scene.py"):

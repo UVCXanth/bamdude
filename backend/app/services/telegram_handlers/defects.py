@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Filter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -33,6 +35,7 @@ if TYPE_CHECKING:
     from backend.app.models.telegram_chat import TelegramChat
 
 router = Router()
+logger = logging.getLogger(__name__)
 MAX_BUTTONS = 5
 _TTL = 30 * 60
 _MAX_DRAFTS = 128
@@ -83,6 +86,30 @@ def clear_completion_drafts(provider_ids: set[int] | None = None) -> None:
     for draft in list(_drafts.values()):
         if provider_ids is None or (draft.owner is not None and draft.owner[0] in provider_ids):
             _drop(draft)
+
+
+async def cancel_owner_drafts(message: Message, tg_chat: TelegramChat | None) -> bool:
+    """Cancel an addressed draft, or all of this operator's drafts on /cancel."""
+    owner = _owner(message, tg_chat)
+    if owner is None:
+        return False
+    _prune()
+    prompt_id = _message_id(getattr(message, "reply_to_message", None))
+    if prompt_id is not None:
+        address = _reply_prompts.get((owner, prompt_id))
+        candidates = [_drafts[address[0]]] if address and address[0] in _drafts else []
+    else:
+        candidates = [draft for draft in _drafts.values() if draft.owner == owner]
+    cancelled = False
+    for draft in candidates:
+        async with draft.lock:
+            current = _get(draft.token, owner)
+            if prompt_id is not None and address is not None:
+                current = _get(draft.token, owner, revision=address[1])
+            if current is draft:
+                _drop(draft)
+                cancelled = True
+    return cancelled
 
 
 def _owner(
@@ -184,6 +211,8 @@ class CompletionReply(Filter):
     """
 
     async def __call__(self, message: Message, tg_chat: TelegramChat | None = None) -> bool:
+        if tg_chat is None:
+            return False
         prompt_id = _message_id(getattr(message, "reply_to_message", None))
         owner = _owner(message, tg_chat)
         return isinstance(prompt_id, int) and owner is not None and (owner, prompt_id) in _reply_prompts
@@ -401,10 +430,10 @@ async def _session(callback: CallbackQuery, tg_chat: TelegramChat | None, kind: 
     if draft is None:
         await callback.answer(t(lang, NS, "defects.stale_prompt"), show_alert=True)
         return None
-    if not has_perm(tg_chat, "printers:clear_plate"):
+    if kind != "defc" and not has_perm(tg_chat, "printers:clear_plate"):
         await callback.answer(t(lang, NS, "auth.no_permission"), show_alert=True)
         return None
-    if not chat_allows_printer(tg_chat, draft.printer_id):
+    if kind != "defc" and not chat_allows_printer(tg_chat, draft.printer_id):
         await callback.answer(t(lang, NS, "auth.not_in_scope"), show_alert=True)
         return None
     return lang, draft
@@ -423,6 +452,12 @@ async def cb_defects_value(callback: CallbackQuery, state: FSMContext, tg_chat: 
         await callback.answer(t(lang, NS, "defects.stale_prompt"), show_alert=True)
         return
     async with draft.lock:
+        if (
+            _get(draft.token, _owner(callback.message, tg_chat, callback), revision=int(callback.data.split(":")[2]))
+            is not draft
+        ):
+            await callback.answer(t(lang, NS, "defects.stale_prompt"), show_alert=True)
+            return
         row = next((item for item in draft.rows if item.id == row_id), None)
         maximum = row.quantity if row is not None else draft.quantity
         if (row is None and (draft.rows or row_id != 0)) or not 0 <= value <= maximum:
@@ -466,6 +501,12 @@ async def cb_defects_none(callback: CallbackQuery, state: FSMContext, tg_chat: T
         await callback.answer(t(lang, NS, "defects.stale_prompt"), show_alert=True)
         return
     async with draft.lock:
+        if (
+            _get(draft.token, _owner(callback.message, tg_chat, callback), revision=int(callback.data.split(":")[2]))
+            is not draft
+        ):
+            await callback.answer(t(lang, NS, "defects.stale_prompt"), show_alert=True)
+            return
         index = next((i for i, row in enumerate(draft.rows) if row.id == row_id), None)
         if not draft.rows and row_id == 0:
             draft.flat = 0
@@ -498,12 +539,35 @@ async def cb_defects_other(callback: CallbackQuery, state: FSMContext, tg_chat: 
         return
     maximum = row.quantity if row is not None else draft.quantity
     async with draft.lock:
+        if (
+            _get(draft.token, _owner(callback.message, tg_chat, callback), revision=int(callback.data.split(":")[2]))
+            is not draft
+        ):
+            await callback.answer(t(lang, NS, "defects.stale_prompt"), show_alert=True)
+            return
         prompt = await callback.message.answer(
             escape_md(t(lang, NS, "defects.enter_count", max=maximum)),
             reply_markup=ForceReply(force_reply=True, input_field_placeholder=t(lang, NS, "defects.reply_placeholder")),
         )
         draft.revision += 1
         draft.expires_at = time.monotonic() + _TTL
+        # The old keyboard carries the previous revision. Replace it with a
+        # current cancel button while the separate ForceReply awaits a number.
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text=f"✖ {t(lang, NS, 'defects.btn_cancel')}",
+                                callback_data=f"defc:{draft.token}:{draft.revision}",
+                            )
+                        ]
+                    ]
+                )
+            )
+        except TelegramBadRequest:
+            logger.info("Could not refresh the completion cancel button; /cancel remains available")
         owner = _owner(callback.message, tg_chat, callback)
         prompt_id = _message_id(prompt)
         if owner is not None and prompt_id is not None:
@@ -538,6 +602,18 @@ async def msg_defects_count(message: Message, state: FSMContext, tg_chat: Telegr
         await message.answer(escape_md(t(lang, NS, "defects.invalid", max=maximum)))
         return
     async with draft.lock:
+        if (
+            _get(draft.token, owner, revision=address[1]) is not draft
+            or _reply_prompts.get((owner, reply_id)) != address
+        ):
+            await message.answer(escape_md(t(lang, NS, "defects.stale_prompt")))
+            return
+        if not has_perm(tg_chat, "printers:clear_plate"):
+            await message.answer(escape_md(t(lang, NS, "auth.no_permission")))
+            return
+        if not chat_allows_printer(tg_chat, draft.printer_id):
+            await message.answer(escape_md(t(lang, NS, "auth.not_in_scope")))
+            return
         if row is not None:
             draft.values[row.id] = int(text)
             cursor = draft.rows.index(row) + 1
@@ -566,6 +642,12 @@ async def cb_defects_cancel(callback: CallbackQuery, state: FSMContext, tg_chat:
         return
     lang, draft = found
     async with draft.lock:
+        if (
+            _get(draft.token, _owner(callback.message, tg_chat, callback), revision=int(callback.data.split(":")[2]))
+            is not draft
+        ):
+            await callback.answer(t(lang, NS, "defects.stale_prompt"), show_alert=True)
+            return
         _drop(draft)
         await state.clear()
     await _replace_prompt(callback.message, escape_md(t(lang, NS, "defects.cancelled")))

@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+- **Telegram defect counts now reach the right print.** Replies to a custom count prompt are matched after the bot identifies the chat, and current permissions and printer scope are checked before recording. The cancel button and `/cancel` also clear the operator's live assessment without affecting another operator's draft. Fixes [#64](https://github.com/kainpl/bamdude/issues/64).
+- **Telegram queue screens show job names again.** The printer card, queue list and job detail read the captured source's display name or the legacy archive/library name, with a safe job-number fallback when metadata is unavailable. Fixes [#65](https://github.com/kainpl/bamdude/issues/65).
+
 ## [0.7.0] - 2026-10-06
 
 Images: `ghcr.io/kainpl/bamdude:0.7.0` / `kainpl/bamdude:0.7.0` (`:latest` tracks this release).

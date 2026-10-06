@@ -8,7 +8,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from backend.app.i18n import escape_md, get_language, t
-from backend.app.services.telegram_handlers.common import NS, deny_out_of_scope, has_perm
+from backend.app.services.telegram_handlers.common import NS, deny_out_of_scope, has_perm, queue_item_names
 from backend.app.services.telegram_handlers.pagination import build_page_nav
 
 if TYPE_CHECKING:
@@ -79,6 +79,7 @@ async def render_queue(target, tg_chat: TelegramChat | None = None, offset: int 
             )
         )
         items = list(result.scalars().all())
+        item_names = await queue_item_names(db, items, lang)
 
         # Get printer names
         printer_ids = {i.queue_id for i in items if i.queue_id}
@@ -100,7 +101,7 @@ async def render_queue(target, tg_chat: TelegramChat | None = None, offset: int 
         lines.append("")
         for item in items:
             emoji = QUEUE_STATUS_EMOJIS.get(item.status, "\u2753")
-            fname = escape_md(item.file_name or f"Job \\#{item.id}")
+            fname = escape_md(item_names[item.id])
             printer_label = ""
             if item.queue_id and item.queue_id in printer_names:
                 printer_label = f" → {escape_md(printer_names[item.queue_id])}"
@@ -110,7 +111,7 @@ async def render_queue(target, tg_chat: TelegramChat | None = None, offset: int 
             btns.append(
                 [
                     InlineKeyboardButton(
-                        text=f"{emoji} {item.file_name or f'Job #{item.id}'}",
+                        text=f"{emoji} {item_names[item.id]}",
                         callback_data=f"queue:detail:{item.id}",
                     )
                 ]
@@ -203,6 +204,7 @@ async def cb_queue_detail(
 
         if await deny_out_of_scope(callback, tg_chat, item.queue_id):
             return
+        item_name = (await queue_item_names(db, [item], lang))[item.id]
 
         printer_name = None
         if item.queue_id:
@@ -214,7 +216,7 @@ async def cb_queue_detail(
 
     lines = [
         f"\U0001f4cb *{escape_md(t(lang, NS, 'queue.item_detail'))}*\n",
-        f"\U0001f4c4 {escape_md(t(lang, NS, 'queue.file'))}: *{escape_md(item.file_name or '–')}*",
+        f"\U0001f4c4 {escape_md(t(lang, NS, 'queue.file'))}: *{escape_md(item_name)}*",
     ]
 
     if printer_name:
