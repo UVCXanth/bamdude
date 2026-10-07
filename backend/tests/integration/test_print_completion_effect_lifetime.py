@@ -116,6 +116,11 @@ async def test_actual_completion_backgrounds_run_after_callback(
         assert plugs.on_print_complete.call_args.kwargs["may_run"]()
         notifications.on_print_complete.assert_awaited_once()
         assert not finishing_print_runs(manager, printer.id)
+        await main.on_print_complete(printer.id, {"status": "completed", "subtask_id": "81"})
+        main.ws_manager.send_print_complete.assert_awaited_once()
+        energy.assert_awaited_once()
+        plugs.on_print_complete.assert_awaited_once()
+        notifications.on_print_complete.assert_awaited_once()
         async with factory() as db:
             stored = await db.get(PrintArchive, archive.id)
             assert stored.photos and stored.photos[0].startswith("finish_")

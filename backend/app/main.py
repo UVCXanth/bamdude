@@ -6953,6 +6953,7 @@ async def _on_print_complete_impl(
 
     bound_run = current_print_run(printer_manager, printer_id)
     from backend.app.services.print_run_binding import (
+        accept_unbound_completion,
         print_effect_is_current,
         retire_print_start,
         snapshot_completion_token,
@@ -7031,8 +7032,6 @@ async def _on_print_complete_impl(
         return
 
     if bound_run is None:
-        from backend.app.services.print_run_binding import accept_unbound_completion
-
         if not accept_unbound_completion(printer_manager, effect_token):
             return
 
@@ -7075,6 +7074,9 @@ async def _on_print_complete_impl(
         accepted_queue_item_id = await _accept_bound_terminal_run(printer_id, bound_run, data)
         if accepted_queue_item_id is None:
             return
+        # Keep terminal deduplication after the last consumer releases the
+        # binding. A replay must not enter the now-unbound legacy path.
+        accept_unbound_completion(printer_manager, effect_token)
         analysis_completion["archive_id"] = archive_id
         analysis_completion["run_sequence"] = bound_run.sequence
         from backend.app.services.print_file_analysis import begin_print_file_analysis_finishing
