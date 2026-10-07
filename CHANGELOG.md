@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Order plans can use loose warehouse parts, even without a complete kit.** The existing “Take from stock” action now reserves the missing individual parts and the plan subtracts their actual allocation. Mixed stock/printed receipts consume that reservation without crediting free stock twice; cancellation, quantity reduction and configuration changes return only unused parts. Batch offers share each warehouse balance between order lines.
+
 - **Print-start notifications, finish photos and post-print automation work again.** The first printer event after a queued dispatch now sends the start notification once. Finishing a print keeps its background work alive long enough to save its photo, send the completion message and run the configured auto-off or finish macros. Starting another print permanently cancels the previous print's permission to affect the printer, including delayed plug actions and late camera captures.
 
 - **PostgreSQL diagnostics keep working when a statistics query fails.** Each SQL check is isolated, so a missing `pg_stat_statements` no longer hides the server version, database size and other health data. The PostgreSQL Compose setup now enables query statistics automatically for both new and existing databases; apply the updated Compose files with `docker compose up -d`.

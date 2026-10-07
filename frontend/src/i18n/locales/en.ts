@@ -5456,6 +5456,10 @@ export default {
       action: 'Take from stock',
       taken: 'Taken from stock',
       takenCounts: 'Taken from stock: {{ready}} ready · {{kits}} kits — the print plan shrank',
+      takenPartsCounts: 'Taken from stock: {{ready}} ready · {{kits}} kits · {{parts}} loose parts — the print plan shrank',
+      partCount: '{{part}} × {{count}}',
+      clampedParts: '{{part}}: {{got}} of {{asked}} parts',
+      allocatedParts: '{{count}} allocated from stock',
       clamped: 'The shelf changed: {{detail}}',
     },
     // WS-13 E6 §E: «Stock & issue» in the mockup's words, with the app's additions (E03–E06).
@@ -7350,6 +7354,7 @@ export default {
       surplus_banked: 'Surplus banked',
       unfiled_print: 'Print without an order',
       reserved_for_order: 'Reserved for an order',
+      reserved_parts_for_order: 'Loose parts reserved for an order',
       reservation_released: 'Reservation released',
       manual: 'Hand correction',
       assembled: 'Assembled into products',

@@ -5491,6 +5491,10 @@ export default {
       action: 'Взяти зі складу',
       taken: 'Взято зі складу',
       takenCounts: 'Взято зі складу: {{ready}} готових · {{kits}} компл. — план друку зменшено',
+      takenPartsCounts: 'Взято зі складу: {{ready}} готових · {{kits}} компл. · {{parts}} окремих деталей — план друку зменшено',
+      partCount: '{{part}} × {{count}}',
+      clampedParts: '{{part}}: {{got}} із {{asked}} деталей',
+      allocatedParts: '{{count}} виділено зі складу',
       clamped: 'Склад змінився: {{detail}}',
     },
     // WS-13 E6 §E: «Склад і видача» словами мокапу з доповненнями застосунку (E03–E06).
@@ -7504,6 +7508,7 @@ export default {
       surplus_banked: 'Надлишок списано в залишок',
       unfiled_print: 'Друк без замовлення',
       reserved_for_order: 'Зарезервовано під замовлення',
+      reserved_parts_for_order: 'Окремі деталі зарезервовано під замовлення',
       reservation_released: 'Резерв знято',
       manual: 'Ручна правка',
       assembled: 'Зібрано у вироби',

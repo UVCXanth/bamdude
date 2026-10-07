@@ -147,6 +147,9 @@ class PartFigures:
     #: A parts line's part written off under the order — made again (spec
     #: workshop-order-issue-followups, rule 47); 0 on a product line.
     written_off: int = 0
+    allocated_qty: int = 0
+    #: Stock parts consumed by mixed (printed + stock) receipts, not whole-kit assembly.
+    stock_used_qty: int = 0
 
 
 @dataclass
@@ -192,6 +195,7 @@ class LineFigures:
     # this line, and pending queue rows stamped with this line.
     prints_in_progress: int = 0
     prints_queued: int = 0
+    assembled: int = 0
 
 
 @dataclass
@@ -292,6 +296,8 @@ class OrderContext:
     config_by_line: dict[int, LineConfig] = field(default_factory=dict)
     defaults_by_product: dict[int, dict[int, int]] = field(default_factory=dict)
     queued_unfiled: int = 0
+    reserved_by_line_part: dict[tuple[int, int], int] = field(default_factory=dict)
+    used_by_line_part: dict[tuple[int, int], int] = field(default_factory=dict)
 
 
 def composition_of(ctx: OrderContext, line: ProjectLine) -> Composition:
@@ -466,6 +472,8 @@ async def load_order_context(db: AsyncSession, project_id: int) -> OrderContext 
         procurement_by_part=procurement,
         whole_file_product=whole_file_products,
         reserved_by_line=reads.reserved_units,
+        reserved_by_line_part=reads.reserved_by_part,
+        used_by_line_part=reads.used_by_part,
         banked_by_line_part=reads.banked_by_part,
         written_off_by_line_part=written_off,
         queued_by_line={lid: n for lid, n in queued.items() if lid is not None},
@@ -481,6 +489,8 @@ def _new_line_figures(
     from_stock_units: int = 0,
     banked: Mapping[tuple[int, int], int] | None = None,
     written_off_parts: Mapping[tuple[int, int], int] | None = None,
+    reserved_parts: Mapping[tuple[int, int], int] | None = None,
+    used_parts: Mapping[tuple[int, int], int] | None = None,
 ) -> LineFigures:
     """The line's parts, each with the number of them the ORDER still wants.
 
@@ -517,18 +527,26 @@ def _new_line_figures(
         from_kit_units=from_stock_units + (line.assembled or 0),
         received=(line.received or 0) if line.mode != "parts" else 0,
         written_off=(line.written_off or 0) if line.mode != "parts" else 0,
+        assembled=line.assembled or 0,
     )
     # A written-off unit is made again (spec workshop-order-issue-followups, rule 47).
     to_print = max(0, line.quantity - figs.from_stock_units) + figs.written_off
+    has_part_reservation = any(lid == line.id for lid, _pid in (reserved_parts or {}))
     for part, per in printed:
         again = (written_off_parts or {}).get((line.id, part.id), 0) if line.mode == "parts" else 0
+        allocated = (reserved_parts or {}).get(
+            (line.id, part.id), 0 if has_part_reservation else per * from_stock_units
+        )
+        mixed_used = max(0, (used_parts or {}).get((line.id, part.id), 0) - per * (line.assembled or 0))
         figs.parts.append(
             PartFigures(
                 part_id=part.id,
                 name=part.name,
                 kind=part.kind,
                 per=per,
-                need=per * to_print + again,
+                need=max(0, per * to_print + per * from_stock_units - allocated - mixed_used) + again,
+                allocated_qty=allocated,
+                stock_used_qty=mixed_used,
                 already_banked=(banked or {}).get((line.id, part.id), 0),
                 shelf=has_shelf(part),
                 written_off=again,
@@ -561,7 +579,7 @@ def _finish(figs: LineFigures) -> None:
     for p in figs.parts:
         # A received unit is covered even when its print's defects were recorded after the
         # receipt (final review M3): the plan never asks to print what is on the shelf.
-        p.remaining = max(0, p.need - max(p.usable, p.per * figs.received))
+        p.remaining = max(0, p.need - max(p.usable, p.per * figs.received - p.stock_used_qty))
         # A print that replaces a written-off unit is not surplus (followups, rule 47).
         wanted = p.per + p.written_off if figs.mode == "parts" else p.per * (figs.quantity + figs.written_off)
         p.surplus = max(0, p.usable - wanted)
@@ -577,9 +595,23 @@ def _finish(figs: LineFigures) -> None:
     # a unit the order has, so a fully reserved line reads 100 % with nothing
     # printed. ``units_printed`` stays prints only — the two numbers are shown
     # side by side and must not be one number that quietly means both.
+    kit = [p for p in figs.parts if p.per > 0]
+    mixed_covered = min(
+        (
+            (max(p.usable, p.per * figs.received - p.stock_used_qty) + p.allocated_qty + p.stock_used_qty) // p.per
+            for p in kit
+        ),
+        default=0,
+    )
+    reserved_kits = min((p.allocated_qty // p.per for p in kit), default=0)
     figs.covered_units = min(
         figs.quantity,
-        max(0, max(figs.units_printed, figs.received) + figs.from_stock_units - figs.written_off),
+        max(
+            0,
+            max(mixed_covered, figs.received + reserved_kits) + figs.from_finished + figs.assembled - figs.written_off,
+        )
+        if figs.mode == "product"
+        else max(0, figs.units_printed),
     )
     figs.progress = round(figs.covered_units / figs.quantity, 4) if figs.quantity else 0.0
 
@@ -644,6 +676,8 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
             ctx.reserved_by_line.get(line.id, 0),
             ctx.banked_by_line_part,
             ctx.written_off_by_line_part,
+            ctx.reserved_by_line_part,
+            ctx.used_by_line_part,
         )
         for line in ctx.lines
     }
@@ -1150,6 +1184,8 @@ async def batch_contexts(db: AsyncSession, project_ids: Sequence[int]) -> list[O
                 procurement_by_part=procurement_by_project.get(project.id, {}),
                 whole_file_product=whole_file_products,
                 reserved_by_line={line.id: reserved[line.id] for line in lines if line.id in reserved},
+                reserved_by_line_part={key: net for key, net in reads.reserved_by_part.items() if key[0] in line_ids},
+                used_by_line_part={key: net for key, net in reads.used_by_part.items() if key[0] in line_ids},
                 banked_by_line_part={key: net for key, net in reads.banked_by_part.items() if key[0] in line_ids},
                 written_off_by_line_part={key: n for key, n in written_off_all.items() if key[0] in line_ids},
                 queued_by_line={lid: n for lid, n in queued.items() if lid is not None},

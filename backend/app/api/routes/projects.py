@@ -147,6 +147,7 @@ from backend.app.schemas.project import (
     StockMovedOut,
     StockOfferOut,
     StockPositionRefOut,
+    StockTakenOut,
     TakeStockIn,
     TakeStockOut,
     TimelineEvent,
@@ -403,6 +404,8 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
                     variant=p.part_id in variant_parts,
                     queued=queued.get(line.id, {}).get(p.part_id, 0),
                     bankable=p.bankable,
+                    allocated_qty=p.allocated_qty,
+                    stock_used_qty=p.stock_used_qty,
                 )
                 for p in figs[line.id].parts
             ],
@@ -1671,14 +1674,14 @@ async def take_stock(
     project = await _get_project(db, project_id)
     shown = None
     if data is not None and data.lines is not None:
-        shown = {row.line_id: (row.from_finished, row.kits) for row in data.lines}
+        shown = {row.line_id: (row.from_finished, row.kits, row.parts) for row in data.lines}
     try:
         taken = await stock_offers.take(db, project, shown, actor=await acting_user(request, db, current_user))
     except (stock_offers.StockOfferError, finished_stock.FinishedStockError) as e:
         raise HTTPException(status_code=e.status, detail=str(e)) from e
     except part_stock.PartStockError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
-    return TakeStockOut(order=await _response(db, project.id), results=[LineIntakeOut(**asdict(t)) for t in taken])
+    return TakeStockOut(order=await _response(db, project.id), results=[StockTakenOut(**asdict(t)) for t in taken])
 
 
 @router.delete("/{project_id}")
@@ -2027,6 +2030,8 @@ async def update_line(
         fitted = max(0, line.quantity - finished_stock.covered_units(line))
         if kits > fitted:
             await _reserve(db, line, fitted, current_user)
+        elif data.model_fields_set & {"quantity", "from_finished"}:
+            await part_stock.fit_reservation_for_line(db, line, fitted)
     changes = {name: [before[name], getattr(line, name)] for name in tracked if getattr(line, name) != before[name]}
     stock_after = await part_stock.reserved_units_for_line(db, line)
     if stock_after != stock_before:
@@ -2095,7 +2100,7 @@ async def configure_line(
             raise HTTPException(status_code=e.status, detail=str(e)) from e
     old_key = line.config_key
     finished_before = await finished_stock.held_for_line(db, line.id)
-    if not data.dry_run and (finished_before or await part_stock.reserved_units_for_line(db, line)):
+    if not data.dry_run and (finished_before or await part_stock.reserved_parts_for_line(db, line)):
         await ensure(creds, Permission.STOCK_MOVE)
     try:
         outcome = await line_config.set_configuration(
