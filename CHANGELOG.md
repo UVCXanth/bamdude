@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Printed BOM parts can include a configurable extra percentage.** New order lines snapshot the catalog setting and round additional demand up once across the full line. Extras are planned against printed output, allocated stock and both queue tiers, then received and issued separately from complete units. Existing orders keep their original percentage; zero preserves the existing kit flow.
+
 - **Order plans can use loose warehouse parts, even without a complete kit.** The existing “Take from stock” action now reserves the missing individual parts and the plan subtracts their actual allocation. Mixed stock/printed receipts consume that reservation without crediting free stock twice; cancellation, quantity reduction and configuration changes return only unused parts. Batch offers share each warehouse balance between order lines.
 
 - **Print-start notifications, finish photos and post-print automation work again.** The first printer event after a queued dispatch now sends the start notification once. Finishing a print keeps its background work alive long enough to save its photo, send the completion message and run the configured auto-off or finish macros. Starting another print permanently cancels the previous print's permission to affect the printer, including delayed plug actions and late camera captures.
