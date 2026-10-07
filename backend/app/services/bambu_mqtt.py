@@ -813,7 +813,7 @@ def apply_tray_exist_bits(
 
     Mutates ``units`` in place. Returns the number of slots cleared.
     """
-    if not tray_exist_bits_str:
+    if tray_exist_bits_str is None or tray_exist_bits_str == "":
         return 0
     try:
         if isinstance(tray_exist_bits_str, int):
@@ -821,6 +821,8 @@ def apply_tray_exist_bits(
         else:
             tray_exist_bits = int(tray_exist_bits_str, 16)
     except (ValueError, TypeError):
+        return 0
+    if isinstance(tray_exist_bits_str, bool) or tray_exist_bits < 0:
         return 0
     if tray_exist_bits == 0 and not power_on_flag:
         return 0
@@ -2199,6 +2201,7 @@ class BambuMQTTClient:
         on_usage_event: Callable[[str, str | None, int | None, int], None] | None = None,
         on_lights_report: Callable[[bool], None] | None = None,
         on_kprofile_tables_due: Callable[[list[str]], None] | None = None,
+        on_spool_inserted: Callable[[dict], None] | None = None,
     ):
         self.ip_address = ip_address
         self.serial_number = serial_number
@@ -2208,6 +2211,10 @@ class BambuMQTTClient:
         self.on_print_start = on_print_start
         self.on_print_complete = on_print_complete
         self.on_ams_change = on_ams_change
+        self.on_spool_inserted = on_spool_inserted
+        self._stock_presence_generation = None
+        self._stock_presence: dict[tuple[int, int], bool] = {}
+        self._stock_insertion_sequence = 0
         self.on_layer_change = on_layer_change
         self.on_macro_complete = on_macro_complete
         # Fires with the full skipped-object list whenever it grows, from either
@@ -3145,7 +3152,9 @@ class BambuMQTTClient:
         # Wrap in try/except to prevent breaking the MQTT connection
         if "ams" in payload:
             try:
-                self._handle_ams_data(payload["ams"])
+                self._handle_ams_data(
+                    payload["ams"], presence_is_status=is_printer_status_frame(payload.get("print", payload))
+                )
             except Exception as e:
                 logger.error("[%s] Error handling AMS data: %s", self.serial_number, e)
 
@@ -3307,7 +3316,7 @@ class BambuMQTTClient:
             # Handle AMS data that comes inside print key
             if "ams" in print_data:
                 try:
-                    self._handle_ams_data(print_data["ams"])
+                    self._handle_ams_data(print_data["ams"], presence_is_status=is_printer_status_frame(print_data))
                 except Exception as e:
                     logger.error("[%s] Error handling AMS data from print: %s", self.serial_number, e)
 
@@ -4328,7 +4337,7 @@ class BambuMQTTClient:
         logger.debug("[%s] External spool identity changed, triggering sync callback", self.serial_number)
         self.on_ams_change(self.state.raw_data.get("ams") or [])
 
-    def _handle_ams_data(self, ams_data):
+    def _handle_ams_data(self, ams_data, *, presence_is_status=True):
         """Handle AMS data changes for Spoolman integration.
 
         This is called when we receive top-level AMS data in MQTT messages.
@@ -4700,8 +4709,10 @@ class BambuMQTTClient:
             # P1S/P1P send partial updates without "ams" key - this is valid, not an error
             # We've already processed the status fields above, so just return if no ams list
             if ams_list is None:
-                logger.debug("[%s] AMS partial update (no tray data)", self.serial_number)
-                return
+                if "tray_exist_bits" not in ams_data:
+                    logger.debug("[%s] AMS partial update (no tray data)", self.serial_number)
+                    return
+                ams_list = []  # presence-only pushes still describe physical slot changes
         elif isinstance(ams_data, list):
             ams_list = ams_data
             self._normalize_a2l_am_units(ams_list)
@@ -4857,6 +4868,7 @@ class BambuMQTTClient:
             )
 
         self.state.raw_data["ams"] = merged_ams
+        inserted = self._stock_spool_insertions(merged_ams, ams_data) if presence_is_status else []
 
         # ⚠️ Derived BEFORE the falling-edge detector below, which reads
         # ``dry_status`` to tell a finished cycle from a transient zero. It
@@ -5051,6 +5063,13 @@ class BambuMQTTClient:
                 # may lack fields like 'remain' that the merged state preserves
                 self.on_ams_change(merged_ams)
 
+        # Separate from the content hash: an untagged same-colour refill can
+        # change ONLY the presence bit. Seed each connection, never infer an
+        # insertion from the first snapshot or a cached ``exists`` value.
+        if self.on_spool_inserted:
+            for event in inserted:
+                self.on_spool_inserted(event)
+
         # Upstream #2582: read-back check runs on EVERY AMS push, not just hash
         # changes. The change hash keys on tray_type/tag_uid/remain — NOT
         # tray_info_idx or cali_idx — so an assignment that only swaps the
@@ -5058,6 +5077,47 @@ class BambuMQTTClient:
         # gating the check on it would miss exactly the confirmation we're after.
         if self._pending_assignments:
             self._check_assignment_verifications()
+
+    def _stock_spool_insertions(self, units: list, payload) -> list[dict]:
+        if self._stock_presence_generation != self.state.connection_generation:
+            self._stock_presence_generation = self.state.connection_generation
+            self._stock_presence.clear()
+        if not isinstance(payload, dict):
+            return []
+        # Reuse the canonical firmware bit layout, but never feed cached presence
+        # annotations back into the decision. Invalid/missing bits produce none.
+        fresh = [
+            {"id": u.get("id"), "tray": [{"id": t.get("id")} for t in u.get("tray", []) if isinstance(t, dict)]}
+            for u in units
+            if isinstance(u, dict)
+        ]
+        apply_tray_exist_bits(
+            fresh,
+            payload.get("tray_exist_bits"),
+            power_on_flag=payload.get("power_on_flag", True),
+            annotate_exists=True,
+        )
+        events = []
+        for unit in fresh:
+            for tray in unit["tray"]:
+                present = tray.get("exists")
+                if not isinstance(present, bool):
+                    continue
+                key = (int(unit["id"]), int(tray["id"]))
+                previous = self._stock_presence.get(key)
+                self._stock_presence[key] = present
+                if previous is False and present is True:
+                    self._stock_insertion_sequence += 1
+                    events.append(
+                        {
+                            "ams_id": key[0],
+                            "tray_id": key[1],
+                            "generation": self.state.connection_generation,
+                            "sequence": self._stock_insertion_sequence,
+                            "observed_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                        }
+                    )
+        return events
 
     def register_assignment_verification(
         self,

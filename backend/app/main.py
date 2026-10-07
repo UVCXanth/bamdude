@@ -2293,7 +2293,90 @@ def slot_reported_no_filament(tray_type: str, tray_state: object) -> bool:
     return not (tray_type or "").strip() and tray_state not in _FIRMWARE_EMPTY_STATES
 
 
+_stock_insertion_seen: dict[tuple[int, int, int], tuple[int, int]] = {}
+
+
+async def on_stock_spool_inserted(printer_id: int, event: dict):
+    logger = logging.getLogger(__name__)
+    from sqlalchemy.orm import selectinload
+
+    from backend.app.services.auto_stock_spool import claim_on_insertion
+
+    async with _get_ams_assignment_lock(printer_id):
+        key = (printer_id, event["ams_id"], event["tray_id"])
+        token = (event["generation"], event["sequence"])
+        if token <= _stock_insertion_seen.get(key, (-1, -1)):
+            return
+        _stock_insertion_seen[key] = token
+        try:
+            async with async_session() as db:
+                outcome = await claim_on_insertion(db, printer_id=printer_id, event=event, manager=printer_manager)
+                if outcome["reason"] == "assigned":
+                    from backend.app.api.routes.inventory import apply_spool_to_slot_via_mqtt
+                    from backend.app.models.spool import Spool
+                    from backend.app.services import ams_advertised_overlay as overlay
+
+                    # The replacement has a new identity. A failed publish must
+                    # not leave routing looking through the outgoing spool's mask.
+                    overlay.forget(printer_id, event["ams_id"], event["tray_id"])
+
+                    spool = (
+                        await db.execute(
+                            select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == outcome["spool_id"])
+                        )
+                    ).scalar_one()
+                    # Same publisher/projection as manual assignments. Neither
+                    # queue colour/profile overrides nor the dispatched mapping
+                    # are changed by loading a replacement.
+                    published = False
+                    try:
+                        published = await apply_spool_to_slot_via_mqtt(
+                            db=db,
+                            current_user=None,
+                            spool=spool,
+                            printer_id=printer_id,
+                            ams_id=event["ams_id"],
+                            tray_id=event["tray_id"],
+                        )
+                    except Exception:
+                        logger.exception("Stock assignment configuration failed for printer %s", printer_id)
+                    if not published:
+                        logger.warning(
+                            "Stock spool assigned, but slot configuration was not published for printer %s", printer_id
+                        )
+                        await ws_manager.broadcast({"type": "stock_spool_config_failed", "printer_id": printer_id})
+                    await ws_manager.broadcast(
+                        {
+                            "type": "spool_auto_assigned",
+                            "printer_id": printer_id,
+                            "ams_id": event["ams_id"],
+                            "tray_id": event["tray_id"],
+                            "spool_id": spool.id,
+                        }
+                    )
+                elif outcome["reason"] == "no_full_stock":
+                    await ws_manager.broadcast(
+                        {
+                            "type": "stock_spool_unavailable",
+                            "printer_id": printer_id,
+                            "ams_id": event["ams_id"],
+                            "tray_id": event["tray_id"],
+                        }
+                    )
+        except Exception:
+            logger.exception("Stock insertion assignment failed for printer %s", printer_id)
+
+
 async def on_ams_change(printer_id: int, ams_data: list):
+    # Unlink/replay and insertion assignment must share the same lock. Otherwise
+    # a delayed empty-slot callback could delete the freshly assigned refill.
+    async with _get_ams_assignment_lock(printer_id):
+        state = printer_manager.get_status(printer_id)
+        current = getattr(state, "raw_data", {}).get("ams") if state else None
+        await _on_ams_change(printer_id, current if isinstance(current, list) else ams_data)
+
+
+async def _on_ams_change(printer_id: int, ams_data: list):
     """Handle AMS data changes - sync to Spoolman if enabled and auto mode."""
     logger = logging.getLogger(__name__)
 
@@ -2701,7 +2784,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
     # Postgres. SQLite's WAL serialises writes so the bug stayed latent
     # there. See _ams_assignment_locks comment for details.
     try:
-        async with _get_ams_assignment_lock(printer_id), async_session() as db:
+        async with async_session() as db:
             from backend.app.api.routes.settings import get_setting
             from backend.app.models.spool import Spool as _Spool2
             from backend.app.models.spool_assignment import SpoolAssignment as SA
@@ -10673,6 +10756,7 @@ async def lifespan(app: FastAPI):
     printer_manager.set_print_running_observed_callback(on_print_running_observed)
     printer_manager.set_finish_photo_moment_callback(on_finish_photo_moment)
     printer_manager.set_ams_change_callback(on_ams_change)
+    printer_manager.set_spool_inserted_callback(on_stock_spool_inserted)
 
     # Layer change callback for external camera timelapse
     async def on_layer_change(printer_id: int, layer_num: int, previous_layer: int):

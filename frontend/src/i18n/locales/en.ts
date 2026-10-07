@@ -533,6 +533,20 @@ export default {
       titleOff: 'AMS Filament Backup: Off',
       titleUnknown: 'AMS Filament Backup: Unknown'
     },
+    autoStock: {
+      title: 'Assign a full stock spool on loading',
+      description: 'For this printer, load new full spools from the selected inventory group into any supported AMS slot. BamDude assigns one unused stock spool automatically, including same-slot replacements after runout during a print.',
+      group: 'Inventory filament group',
+      chooseGroup: 'Select a group of full, unassigned spools',
+      available: '{{count}} full in stock',
+      helpTitle: 'How automatic assignment works',
+      help: 'Off by default. This is your declaration that newly loaded untagged spools are full and belong to this group; the printer cannot identify their individual inventory IDs or weigh them. Only fresh local empty → occupied slot reports trigger assignment. Startup, reconnects and repeated reports do not. RFID and manual/pre-assigned spools take priority. A same-slot refill after a confirmed runout keeps the existing old/new consumption split and never resumes the printer automatically. Queue colour/profile overrides and AMS Backup settings stay as configured. Partial spools, different filaments, uncertain insertion signals and external holders require manual assignment. Built-in inventory, solid 1.75 mm filament only. No matching stock means no new spool record is created.',
+      noStock: 'No full, unused, unassigned stock groups are available. Add spools as full with zero usage; tagged, archived or previously used spools are excluded.',
+      loadFailed: 'Could not load inventory groups. Retry before choosing a group.',
+      permission: 'Inventory update permission is required to change automatic assignment.',
+      unavailable: 'No full stock spool is available for the configured group. Assign the loaded spool manually.',
+      configFailed: 'The stock spool is assigned, but its AMS settings were not sent. Check the slot configuration before continuing.',
+    },
     amsCompat: {
       badge: 'AMS sees: {{profile}}',
       firmwareDidNotMerge: 'The firmware did not merge these slots into one backup group. BamDude only changes what the printer is told; the printer decides the grouping (RFID identity and firmware rules still apply).',
