@@ -39,6 +39,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_event_tasks: dict[asyncio.Task, int] = {}
+
+
+async def stop_event_macro_tasks(printer_id: int | None = None) -> None:
+    tasks = {task for task, owner in _event_tasks.items() if printer_id is None or owner == printer_id}
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        _, pending = await asyncio.wait(tasks, timeout=5)
+        for task in pending:
+            task.cancel()
+
+
 # Macro ids already fired for the print currently on each printer.
 # ``{printer_id: {macro_id, ...}}``. Printer id is a safe key for the same
 # reason ``main._active_swap_config`` uses it — one print per printer at a
@@ -52,7 +65,7 @@ def clear_fired_layer_macros(printer_id: int) -> None:
     _fired_layer_macros.pop(printer_id, None)
 
 
-async def _selected_macro_ids(db, printer_id: int) -> set[int]:
+async def _selected_macro_ids(db, printer_id: int, *, archive_id: int | None = None) -> set[int]:
     """The macros the operator ticked for the print now on *printer_id*.
 
     Memory first — it is the only store that exists during the window between
@@ -67,18 +80,21 @@ async def _selected_macro_ids(db, printer_id: int) -> set[int]:
     """
     from backend.app.main import _active_macro_selection
 
-    in_memory = _active_macro_selection.get(printer_id)
+    in_memory = _active_macro_selection.get(printer_id) if archive_id is None else None
     if in_memory is not None:
         return {int(i) for i in in_memory}
 
-    archive = (
-        await db.execute(
-            select(PrintArchive)
-            .where(PrintArchive.printer_id == printer_id, PrintArchive.status == "printing")
-            .order_by(PrintArchive.created_at.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    if archive_id is not None:
+        archive = await db.get(PrintArchive, archive_id)
+    else:
+        archive = (
+            await db.execute(
+                select(PrintArchive)
+                .where(PrintArchive.printer_id == printer_id, PrintArchive.status == "printing")
+                .order_by(PrintArchive.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
     if archive is None or not isinstance(archive.extra_data, dict):
         return set()
     stored = archive.extra_data.get("selected_macro_ids")
@@ -111,8 +127,8 @@ async def _run_one(
 
         # A finish macro can be delayed.  By the time its timer elapses a new
         # print may own the same printer, in which case an action attributed to
-        # the old terminal callback is unsafe.  Start and layer callers omit
-        # this guard; completion supplies its exact run-ownership check.
+        # the old terminal callback is unsafe. Live start and completion
+        # supply their immutable generation guards; layer callers omit it.
         if may_run is not None and not may_run():
             logger.info("[MACRO-TRIGGER] skipping stale macro '%s'", macro.name)
             return
@@ -137,6 +153,8 @@ async def fire_event_macros(
     printer_manager_module,
     *,
     may_run: Callable[[], bool] | None = None,
+    archive_id: int | None = None,
+    selected_macro_ids: tuple[int, ...] | None = None,
 ) -> None:
     """Load matching macros for ``(event, printer)`` and schedule each to run.
 
@@ -167,7 +185,11 @@ async def fire_event_macros(
         # Inside the session on purpose: the selection may have to be read off
         # the archive, which needs a session, and matching without it would
         # dispatch macros this print never asked for.
-        selected = await _selected_macro_ids(db, printer_id)
+        selected = (
+            set(selected_macro_ids)
+            if selected_macro_ids is not None
+            else await _selected_macro_ids(db, printer_id, archive_id=archive_id)
+        )
 
     if may_run is not None and not may_run():
         logger.info("[MACRO-TRIGGER] event=%s printer=%s — ownership changed, skipping", event, printer_id)
@@ -185,7 +207,10 @@ async def fire_event_macros(
         [m.name for m in matched],
     )
     for macro in matched:
-        spawn_background_task(_run_one(macro, client, may_run=may_run), name=f"macro-trigger-{macro.id}")
+        task = spawn_background_task(_run_one(macro, client, may_run=may_run), name=f"macro-trigger-{macro.id}")
+        if isinstance(task, asyncio.Task):
+            _event_tasks[task] = printer_id
+            task.add_done_callback(lambda finished: _event_tasks.pop(finished, None))
 
 
 async def fire_layer_macros(

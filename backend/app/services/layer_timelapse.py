@@ -184,6 +184,7 @@ class TimelapseSession:
             str(output_path),
         ]
 
+        process = None
         try:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -203,12 +204,19 @@ class TimelapseSession:
 
         except TimeoutError:
             logger.error("Timelapse stitching timed out")
-            if process:
-                process.kill()
             return False
         except Exception as e:
             logger.error("Timelapse stitch failed: %s", e)
             return False
+        finally:
+            # Cancellation at shutdown must not leave ffmpeg using a session
+            # whose frames are about to be removed by finish_session.
+            if process is not None and process.returncode is None:
+                try:
+                    process.kill()
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except (ProcessLookupError, TimeoutError):
+                    logger.debug("Timelapse ffmpeg already exited or did not drain in time")
 
     def cleanup(self):
         """Remove temporary frames directory."""
@@ -288,11 +296,23 @@ async def on_print_complete(printer_id: int) -> Path | None:
         Path to stitched video, or None if no session or stitching failed
     """
     session = _active_sessions.pop(printer_id, None)
+    return await finish_session(session)
+
+
+def take_session(printer_id: int, expected: TimelapseSession | None) -> TimelapseSession | None:
+    """Detach only the session observed by this terminal, never its successor."""
+    if expected is not None and _active_sessions.get(printer_id) is expected:
+        return _active_sessions.pop(printer_id)
+    return None
+
+
+async def finish_session(session: TimelapseSession | None) -> Path | None:
+    """Stitch an already detached session; cleanup cannot affect a newer run."""
     if not session:
         return None
 
     if session.frame_count == 0:
-        logger.info("No timelapse frames captured for printer %s", printer_id)
+        logger.info("No timelapse frames captured for session %s", session.session_id)
         session.cleanup()
         return None
 
@@ -308,6 +328,9 @@ async def on_print_complete(printer_id: int) -> Path | None:
         else:
             session.cleanup()
             return None
+    except asyncio.CancelledError:
+        session.cleanup()
+        raise
     except Exception as e:
         logger.error("Timelapse completion failed: %s", e)
         session.cleanup()

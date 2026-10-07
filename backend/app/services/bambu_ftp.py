@@ -1601,6 +1601,8 @@ async def delete_file_async(
     socket_timeout: float | None = None,
     printer_model: str | None = None,
     timeout: float = 60.0,
+    *,
+    may_run: Callable[[], bool] | None = None,
 ) -> DeleteResult:
     """Async wrapper for deleting a file.
 
@@ -1617,9 +1619,13 @@ async def delete_file_async(
     loop = asyncio.get_event_loop()
 
     def _delete() -> DeleteResult:
+        if may_run is not None and not may_run():
+            return DeleteResult.FAILED
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
         if client.connect():
             try:
+                if may_run is not None and not may_run():
+                    return DeleteResult.FAILED
                 return client.delete_file(remote_path)
             finally:
                 client.disconnect()
@@ -1673,14 +1679,20 @@ async def rename_file_async(
     to_path: str,
     socket_timeout: float | None = None,
     printer_model: str | None = None,
+    *,
+    may_run: Callable[[], bool] | None = None,
 ) -> bool | None:
     """Async wrapper for renaming/moving a file. Returns True on success, None if not found, False on error."""
     loop = asyncio.get_event_loop()
 
     def _rename():
+        if may_run is not None and not may_run():
+            return False
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
         if client.connect():
             try:
+                if may_run is not None and not may_run():
+                    return False
                 return client.rename_file(from_path, to_path)
             finally:
                 client.disconnect()
@@ -1735,14 +1747,20 @@ async def upload_bytes_async(
     remote_path: str,
     socket_timeout: float | None = None,
     printer_model: str | None = None,
+    *,
+    may_run: Callable[[], bool] | None = None,
 ) -> bool:
     """Async wrapper for uploading bytes to a file on the printer."""
     loop = asyncio.get_event_loop()
 
     def _upload():
+        if may_run is not None and not may_run():
+            return False
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
         if client.connect():
             try:
+                if may_run is not None and not may_run():
+                    return False
                 return client.upload_bytes(data, remote_path)
             finally:
                 client.disconnect()

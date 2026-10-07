@@ -42,6 +42,7 @@ class PrintRunBinding:
     client_generation: int | None = None
     origin: str = "observed"
     sequence: int = 0
+    effect_generation: int = 0
 
     def matches_device_subtask(self, value: object) -> bool:
         """Reject only a positive, contradictory device identity.
@@ -71,7 +72,174 @@ class PrintStartResolution:
     """Identity evidence available while archive persistence is still running."""
 
     sequence: int
-    subtask_id: str
+    subtask_id: str | None
+    effect_generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class PrintEffectToken:
+    """A run's permission survives resource cleanup, never newer activity."""
+
+    printer_id: int
+    archive_id: int | None
+    generation: int
+
+
+@dataclass(slots=True)
+class PrintStartAdmission:
+    """One live start, independent of prepared/observed binding enrichment."""
+
+    subtask_id: str | None
+    archive_id: int | None
+    generation: int
+    phase: str = "processing"
+
+
+def _effect_generations(manager: PrinterManager) -> dict[int, int]:
+    generations = getattr(manager, "_print_effect_generations", None)
+    if not isinstance(generations, dict):
+        generations = {}
+        manager._print_effect_generations = generations
+    return generations
+
+
+def _advance_activity(manager: PrinterManager, printer_id: int) -> int:
+    # Never reset on discard. Even deletion/reuse of a printer id cannot
+    # authorize a surviving old task: new activity gets a process-unique value.
+    previous = getattr(manager, "_print_effect_sequence", 0)
+    sequence = previous + 1 if isinstance(previous, int) else 1
+    manager._print_effect_sequence = sequence
+    _effect_generations(manager)[printer_id] = sequence
+    return sequence
+
+
+def effect_token_for_run(run: PrintRunBinding) -> PrintEffectToken:
+    return PrintEffectToken(run.printer_id, run.archive_id, run.effect_generation)
+
+
+def print_effect_is_current(manager: PrinterManager, token: PrintEffectToken) -> bool:
+    return bool(
+        getattr(manager, "_print_lifecycle_stopping", False) is not True
+        and token.generation
+        and _effect_generations(manager).get(token.printer_id) == token.generation
+    )
+
+
+def current_print_effect_token(manager: PrinterManager, printer_id: int) -> PrintEffectToken | None:
+    run = _current(manager).get(printer_id)
+    if run is not None:
+        return effect_token_for_run(run)
+    admission = _start_admissions(manager).get(printer_id)
+    if admission is not None:
+        return PrintEffectToken(printer_id, admission.archive_id, admission.generation)
+    finishing = finishing_print_runs(manager, printer_id)
+    if finishing:
+        return effect_token_for_run(max(finishing, key=lambda run: run.effect_generation))
+    return None
+
+
+def _start_admissions(manager: PrinterManager) -> dict[int, PrintStartAdmission]:
+    admissions = getattr(manager, "_print_start_admissions", None)
+    if not isinstance(admissions, dict):
+        admissions = {}
+        manager._print_start_admissions = admissions
+    return admissions
+
+
+def claim_print_start(manager: PrinterManager, printer_id: int, data: dict) -> PrintStartAdmission | None:
+    """Claim before any start effect; concurrent duplicates never claim twice."""
+    if getattr(manager, "_print_lifecycle_stopping", False) is True:
+        return None
+    actual = _normalise_subtask_id(data.get("subtask_id"))
+    run = _current(manager).get(printer_id)
+    previous = _start_admissions(manager).get(printer_id)
+    if previous is not None:
+        same_archive = run is not None and previous.archive_id == run.archive_id
+        no_conflict = not (actual and previous.subtask_id and actual != previous.subtask_id)
+        same_generation = _effect_generations(manager).get(printer_id) == previous.generation
+        if same_generation and no_conflict and (same_archive or run is None):
+            if actual:
+                previous.subtask_id = actual
+            return None
+    begin_print_start_resolution(manager, printer_id, data)
+    resolution = _start_resolutions(manager)[printer_id]
+    admission = PrintStartAdmission(
+        actual,
+        run.archive_id if run is not None and run.matches_device_subtask(actual) else None,
+        resolution.effect_generation,
+    )
+    _start_admissions(manager)[printer_id] = admission
+    return admission
+
+
+def start_admission_is_current(manager: PrinterManager, printer_id: int, admission: PrintStartAdmission) -> bool:
+    return _start_admissions(manager).get(printer_id) is admission and (
+        _effect_generations(manager).get(printer_id) == admission.generation
+    )
+
+
+def finish_print_start(manager: PrinterManager, printer_id: int, admission: PrintStartAdmission) -> None:
+    if admission.phase == "processing":
+        admission.phase = "processed"
+    resolution = _start_resolutions(manager).get(printer_id)
+    if resolution is not None and resolution.effect_generation == admission.generation:
+        end_print_start_resolution(manager, printer_id, resolution.sequence)
+
+
+def retire_print_start(
+    manager: PrinterManager,
+    printer_id: int,
+    archive_id: int | None,
+    *,
+    expected: PrintStartAdmission | None = None,
+) -> None:
+    admission = _start_admissions(manager).get(printer_id)
+    if admission is not None and admission.archive_id == archive_id and (expected is None or admission is expected):
+        _start_admissions(manager).pop(printer_id, None)
+
+
+def snapshot_completion_token(manager: PrinterManager, printer_id: int) -> PrintEffectToken:
+    token = current_print_effect_token(manager, printer_id)
+    if token is not None:
+        return token
+    # Legacy/no-archive live callbacks still receive an immutable fence before
+    # their first await. No archive is fabricated and nothing is replayed.
+    generation = _effect_generations(manager).get(printer_id) or _advance_activity(manager, printer_id)
+    return PrintEffectToken(printer_id, None, generation)
+
+
+def accept_unbound_completion(manager: PrinterManager, token: PrintEffectToken) -> bool:
+    """At most one live terminal for a no-archive generation; never replay it."""
+    if not print_effect_is_current(manager, token):
+        return False
+    accepted = getattr(manager, "_print_terminal_generations", None)
+    if not isinstance(accepted, dict):
+        accepted = {}
+        manager._print_terminal_generations = accepted
+    if accepted.get(token.printer_id) == token.generation:
+        return False
+    accepted[token.printer_id] = token.generation
+    return True
+
+
+def unbound_terminal_matches_start(manager: PrinterManager, printer_id: int, data: dict) -> bool:
+    """An unarchived live start still rejects a contradictory positive ID."""
+    admission = _start_admissions(manager).get(printer_id)
+    if admission is None:
+        return True
+    actual = _normalise_subtask_id(data.get("subtask_id"))
+    return start_admission_is_current(manager, printer_id, admission) and not (
+        actual and admission.subtask_id and actual != admission.subtask_id
+    )
+
+
+def revoke_print_effects(manager: PrinterManager, printer_id: int | None = None) -> None:
+    if printer_id is None:
+        manager._print_lifecycle_stopping = True
+    printers = tuple(_effect_generations(manager)) if printer_id is None else (printer_id,)
+    for key in printers:
+        _advance_activity(manager, key)
+        _start_admissions(manager).pop(key, None)
 
 
 def _normalise_subtask_id(value: object) -> str | None:
@@ -117,11 +285,17 @@ def begin_print_start_resolution(manager: PrinterManager, printer_id: int, data:
     """Mark a start that can safely buffer only its own ID-bearing terminal."""
 
     subtask_id = _normalise_subtask_id(data.get("subtask_id"))
-    if subtask_id is None:
-        return None
+    run = _current(manager).get(printer_id)
+    generation = (
+        run.effect_generation
+        if run is not None and run.matches_device_subtask(subtask_id)
+        else _advance_activity(manager, printer_id)
+    )
     sequence = getattr(manager, "_print_start_resolution_sequence", 0) + 1
     manager._print_start_resolution_sequence = sequence
-    _start_resolutions(manager)[printer_id] = PrintStartResolution(sequence=sequence, subtask_id=subtask_id)
+    _start_resolutions(manager)[printer_id] = PrintStartResolution(
+        sequence=sequence, subtask_id=subtask_id, effect_generation=generation
+    )
     return sequence
 
 
@@ -144,7 +318,7 @@ def defer_matching_terminal_during_start(
 
     resolution = _start_resolutions(manager).get(printer_id)
     terminal_id = _normalise_subtask_id(data.get("subtask_id"))
-    if resolution is None or terminal_id != resolution.subtask_id:
+    if resolution is None or terminal_id is None or terminal_id != resolution.subtask_id:
         return None
     pending_by_sequence = _pending_terminals(manager).setdefault(printer_id, {})
     current = pending_by_sequence.get(resolution.sequence)
@@ -203,7 +377,21 @@ def bind_print_run(
     """
 
     current = _current(manager).get(printer_id)
-    if current is not None and current.archive_id == archive_id:
+    same_attempt = current is not None and not (
+        queue_item_id is not None
+        and current.queue_item_id is not None
+        and queue_item_id != current.queue_item_id
+        or claim_started_at is not None
+        and current.claim_started_at is not None
+        and claim_started_at != current.claim_started_at
+    )
+    if (
+        current is not None
+        and current.archive_id == archive_id
+        and same_attempt
+        and current.matches_device_subtask(observed_subtask_id)
+        and current.matches_device_subtask(expected_submission_id)
+    ):
         updated = replace(
             current,
             queue_item_id=queue_item_id if queue_item_id is not None else current.queue_item_id,
@@ -217,6 +405,13 @@ def bind_print_run(
         return updated
 
     manager._print_run_binding_sequence = getattr(manager, "_print_run_binding_sequence", 0) + 1
+    resolution = _start_resolutions(manager).get(printer_id)
+    generation = (
+        resolution.effect_generation
+        if resolution is not None
+        and (resolution.subtask_id is None or resolution.subtask_id == _normalise_subtask_id(observed_subtask_id))
+        else _advance_activity(manager, printer_id)
+    )
     bound = PrintRunBinding(
         printer_id=printer_id,
         archive_id=archive_id,
@@ -227,8 +422,12 @@ def bind_print_run(
         client_generation=client_generation,
         origin=origin,
         sequence=manager._print_run_binding_sequence,
+        effect_generation=generation,
     )
     _current(manager)[printer_id] = bound
+    admission = _start_admissions(manager).get(printer_id)
+    if admission is not None and admission.generation == generation:
+        admission.archive_id = archive_id
     return bound
 
 
@@ -252,6 +451,12 @@ def bind_prepared_print_run(
 
     current = _current(manager).get(printer_id)
     if current is not None and current.archive_id != archive_id:
+        return None
+    if (
+        current is not None
+        and current.observed_subtask_id
+        and not current.matches_device_subtask(expected_submission_id)
+    ):
         return None
     return bind_print_run(
         manager,
@@ -288,7 +493,8 @@ def completion_effects_are_owned(manager: PrinterManager, printer_id: int, archi
     never a safe completion of A.  A positive current binding *or* a start
     still waiting to persist is therefore a conservative veto.
     """
-    if (printer_id, archive_id) not in _finishing(manager):
+    run = _finishing(manager).get((printer_id, archive_id))
+    if run is None or not print_effect_is_current(manager, effect_token_for_run(run)):
         return False
     if _current(manager).get(printer_id) is not None:
         return False
@@ -308,15 +514,20 @@ def begin_print_run_finishing(manager: PrinterManager, printer_id: int, archive_
     if current is not None and current.archive_id == archive_id:
         _current(manager).pop(printer_id, None)
         _finishing(manager)[key] = current
+        retire_print_start(manager, printer_id, archive_id)
         return current
     return _finishing(manager).get(key)
 
 
-def discard_print_run(manager: PrinterManager, printer_id: int, archive_id: int) -> None:
+def discard_print_run(
+    manager: PrinterManager, printer_id: int, archive_id: int, *, sequence: int | None = None
+) -> None:
     """Release only the named run; a new run on the same printer survives."""
 
     key = (printer_id, archive_id)
-    _finishing(manager).pop(key, None)
+    finishing = _finishing(manager).get(key)
+    if finishing is not None and (sequence is None or finishing.sequence == sequence):
+        _finishing(manager).pop(key, None)
     current = _current(manager).get(printer_id)
-    if current is not None and current.archive_id == archive_id:
+    if current is not None and current.archive_id == archive_id and (sequence is None or current.sequence == sequence):
         _current(manager).pop(printer_id, None)

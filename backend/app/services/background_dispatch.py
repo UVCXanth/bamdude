@@ -15,6 +15,7 @@ import secrets
 import time
 import zipfile
 from collections import deque
+from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -174,7 +175,7 @@ def resolve_dispatch_storage(model: str | None, state) -> tuple[str | None, str 
     return capability["print_target"], capability["reason"]
 
 
-async def delete_internal_by_name(transport, *names: str) -> bool:
+async def delete_internal_by_name(transport, *names: str, may_run: Callable[[], bool] | None = None) -> bool:
     """Delete the first file matching any of ``names`` from internal storage.
 
     ⚠️ **Internal-only, because only internal storage needs a lookup.** Over FTP
@@ -196,8 +197,10 @@ async def delete_internal_by_name(transport, *names: str) -> bool:
         return False
     try:
         for entry in await transport.list_files("/"):
+            if may_run is not None and not may_run():
+                return False
             if entry.name in wanted:
-                await transport.delete(entry.path)
+                await transport.delete(entry.path, **({"may_run": may_run} if may_run is not None else {}))
                 return True
     except Exception as exc:  # noqa: BLE001 — cleanup must never fail its caller
         logger.debug("Internal-storage delete of %s skipped: %s", ", ".join(sorted(wanted)), exc)

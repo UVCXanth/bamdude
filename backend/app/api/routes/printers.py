@@ -856,6 +856,9 @@ async def delete_printer(
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer_queue import PrinterQueue
     from backend.app.services.archive import ArchiveService
+    from backend.app.services.macro_trigger import stop_event_macro_tasks
+    from backend.app.services.print_completion_tasks import stop_print_completion_tasks
+    from backend.app.services.print_run_binding import revoke_print_effects
     from backend.app.services.queue_counters import detach_print_queue_refs
 
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
@@ -863,6 +866,15 @@ async def delete_printer(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
+    revoke_print_effects(printer_manager, printer_id)
+    await stop_print_completion_tasks(printer_id)
+    await stop_event_macro_tasks(printer_id)
+    from backend.app.services.smart_plug_manager import smart_plug_manager
+
+    await smart_plug_manager.stop_auto_off_tasks(printer_id)
+    from backend.app.main import stop_bed_cooldown_tasks
+
+    await stop_bed_cooldown_tasks(printer_id)
     printer_manager.disconnect_printer(printer_id)
     from backend.app.services.print_file_analysis import discard_printer_print_file_analysis
 

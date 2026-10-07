@@ -47,7 +47,14 @@ def _printer():
 
 
 @pytest.fixture(autouse=True)
-def _clear_cache():
+def _clear_cache(monkeypatch):
+    from backend.app.services.print_run_binding import bind_print_run
+    from backend.app.services.printer_manager import PrinterManager
+
+    manager = PrinterManager()
+    for printer_id in (3, 7):
+        bind_print_run(manager, printer_id=printer_id, archive_id=printer_id)
+    monkeypatch.setattr(main_module, "printer_manager", manager)
     _stage22_finish_frames.clear()
     main_module._stage22_finish_in_flight.clear()
     main_module._inprint_frame_bank.clear()
@@ -69,7 +76,7 @@ async def test_caches_buffered_frame(monkeypatch):
     ):
         await on_finish_photo_moment(7, {"trigger": "stage_22", "timelapse_was_active": False})
 
-    assert _stage22_finish_frames.get(7) == b"\xff\xd8BUFFERED"
+    assert _stage22_finish_frames.get(main_module._finish_photo_key(7)) == b"\xff\xd8BUFFERED"
 
 
 async def test_falls_back_to_rtsp_when_no_buffered_frame(monkeypatch):
@@ -86,7 +93,7 @@ async def test_falls_back_to_rtsp_when_no_buffered_frame(monkeypatch):
     ):
         await on_finish_photo_moment(7, {"trigger": "finish_state", "timelapse_was_active": False})
 
-    assert _stage22_finish_frames.get(7) == b"\xff\xd8RTSP"
+    assert _stage22_finish_frames.get(main_module._finish_photo_key(7)) == b"\xff\xd8RTSP"
 
 
 async def test_skips_pre_capture_when_timelapse_active(monkeypatch):
@@ -101,7 +108,7 @@ async def test_skips_pre_capture_when_timelapse_active(monkeypatch):
     ):
         await on_finish_photo_moment(7, {"trigger": "stage_22", "timelapse_was_active": True})
 
-    assert 7 not in _stage22_finish_frames
+    assert main_module._finish_photo_key(7) not in _stage22_finish_frames
     grab.assert_not_awaited()
 
 
@@ -119,7 +126,7 @@ async def test_foreign_finish_edge_does_not_capture_for_the_active_run(monkeypat
 
     conflict.assert_awaited_once()
     capture.assert_not_awaited()
-    assert 7 not in _stage22_finish_frames
+    assert main_module._finish_photo_key(7) not in _stage22_finish_frames
 
 
 @pytest.mark.parametrize("setting, enabled", [(None, False), ("false", False), ("true", True)])
@@ -158,7 +165,7 @@ async def test_snapshot_consumers_require_explicit_opt_in(monkeypatch, setting, 
     ):
         if consumer == "bank":
             await main_module._maybe_bank_inprint_frame(printer.id, 5)
-            result = main_module._inprint_frame_bank.get(printer.id)
+            result = main_module._inprint_frame_bank.get(main_module._finish_photo_key(printer.id))
         else:
             result = await main_module._capture_snapshot_for_notification(
                 printer.id, printer, logging.getLogger(__name__)
@@ -183,4 +190,4 @@ async def test_skips_when_capture_setting_not_explicitly_enabled(monkeypatch, se
     ):
         await on_finish_photo_moment(7, {"trigger": "stage_22", "timelapse_was_active": False})
 
-    assert 7 not in _stage22_finish_frames
+    assert main_module._finish_photo_key(7) not in _stage22_finish_frames

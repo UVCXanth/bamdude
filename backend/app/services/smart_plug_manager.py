@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -40,6 +41,7 @@ class SmartPlugManager:
 
     def __init__(self):
         self._pending_off: dict[int, asyncio.Task] = {}  # plug_id -> task
+        self._pending_off_printers: dict[int, int] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._scheduler_task: asyncio.Task | None = None
         self._snapshot_task: asyncio.Task | None = None
@@ -360,16 +362,20 @@ class SmartPlugManager:
         result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
         return list(result.scalars().all())
 
-    async def on_print_start(self, printer_id: int, db: AsyncSession):
+    async def on_print_start(self, printer_id: int, db: AsyncSession, *, may_run=None):
         """Called when a print starts - turn on plug if configured."""
         plugs = await self._get_plugs_for_printer(printer_id, db)
 
+        if may_run is not None and not may_run():
+            return
         needs_refresh = False
         for plug in plugs:
             if needs_refresh:
                 # Rollback expires instances already loaded in this session.
                 await db.refresh(plug)
                 needs_refresh = False
+            if may_run is not None and not may_run():
+                return
             if not plug.enabled:
                 logger.debug("Smart plug '%s' is disabled, skipping auto-on", plug.name)
                 continue
@@ -389,6 +395,8 @@ class SmartPlugManager:
             logger.info("Print started on printer %s, turning on plug '%s'", printer_id, plug_name)
             try:
                 service = await self.get_service_for_plug(plug, db)
+                if may_run is not None and not may_run():
+                    return
                 success = await service.turn_on(plug)
                 if success:
                     plug.last_state = "ON"
@@ -403,13 +411,19 @@ class SmartPlugManager:
                 needs_refresh = True
                 logger.exception("Failed to turn on plug '%s' for printer %s", plug_name, printer_id)
 
-    async def on_print_complete(self, printer_id: int, status: str, db: AsyncSession):
+    async def on_print_complete(
+        self, printer_id: int, status: str, db: AsyncSession, *, may_run: Callable[[], bool] | None = None
+    ):
         """Called when a print completes - schedule turn off if configured.
 
         Only triggers auto-off on successful completion (status='completed').
         Failed prints keep the printer powered on for user investigation.
         """
         plugs = await self._get_plugs_for_printer(printer_id, db)
+
+        if may_run is not None and not may_run():
+            logger.info("Skipping stale print auto-off after plug lookup for printer %s", printer_id)
+            return
 
         for plug in plugs:
             if not plug.enabled:
@@ -440,9 +454,12 @@ class SmartPlugManager:
                 plug.name,
             )
 
-            self._schedule_off_per_mode(plug, printer_id)
+            if may_run is not None:
+                self._schedule_off_per_mode(plug, printer_id, may_run=may_run)
+            else:
+                self._schedule_off_per_mode(plug, printer_id)
 
-    def _schedule_off_per_mode(self, plug: "SmartPlug", printer_id: int):
+    def _schedule_off_per_mode(self, plug: "SmartPlug", printer_id: int, *, may_run=None):
         """Schedule an auto-off using the plug's configured off strategy.
 
         Honours the per-plug ``off_delay_mode`` — ``time`` waits
@@ -453,12 +470,18 @@ class SmartPlugManager:
         cancels the pending off via :meth:`on_print_start`.
         """
         if plug.off_delay_mode == "temperature":
-            self._schedule_temp_based_off(plug, printer_id, plug.off_temp_threshold)
+            self._schedule_temp_based_off(
+                plug, printer_id, plug.off_temp_threshold, **({"may_run": may_run} if may_run else {})
+            )
         else:
             # Default / "time": also the safe fallback for any unexpected value.
-            self._schedule_delayed_off(plug, printer_id, plug.off_delay_minutes * 60)
+            self._schedule_delayed_off(
+                plug, printer_id, plug.off_delay_minutes * 60, **({"may_run": may_run} if may_run else {})
+            )
 
-    async def schedule_off_after_queue_job(self, printer_id: int, db: AsyncSession):
+    async def schedule_off_after_queue_job(
+        self, printer_id: int, db: AsyncSession, *, may_run: Callable[[], bool] | None = None
+    ):
         """Schedule auto-off for a printer after a queue job that opted in.
 
         The print-queue "auto off after this job" toggle (``auto_off_after``) is
@@ -472,6 +495,8 @@ class SmartPlugManager:
         be cancelled by a re-print (#1890).
         """
         plugs = await self._get_plugs_for_printer(printer_id, db)
+        if may_run is not None and not may_run():
+            return
         for plug in plugs:
             if not plug.enabled:
                 logger.debug("Smart plug '%s' is disabled, skipping queue auto-off", plug.name)
@@ -484,7 +509,7 @@ class SmartPlugManager:
                 printer_id,
                 plug.name,
             )
-            self._schedule_off_per_mode(plug, printer_id)
+            self._schedule_off_per_mode(plug, printer_id, **({"may_run": may_run} if may_run else {}))
 
     async def on_drying_complete(self, printer_id: int, db: AsyncSession):
         """Schedule turn-off for plugs flagged ``auto_off_after_drying`` when
@@ -526,7 +551,7 @@ class SmartPlugManager:
             )
             self._schedule_delayed_off(plug, printer_id, plug.off_delay_after_drying_minutes * 60)
 
-    def _schedule_delayed_off(self, plug: "SmartPlug", printer_id: int, delay_seconds: int):
+    def _schedule_delayed_off(self, plug: "SmartPlug", printer_id: int, delay_seconds: int, *, may_run=None):
         """Schedule turn-off after delay."""
         # Cancel any existing task for this plug
         self._cancel_pending_off(plug.id)
@@ -534,8 +559,6 @@ class SmartPlugManager:
         logger.info("Scheduling turn-off for plug '%s' in %s seconds", plug.name, delay_seconds)
 
         # Mark as pending in database (survives restarts)
-        spawn_background_task(self._mark_auto_off_pending(plug.id, True), name=f"mark-auto-off-pending-{plug.id}")
-
         task = asyncio.create_task(
             self._delayed_off(
                 plug.id,
@@ -546,6 +569,7 @@ class SmartPlugManager:
                 plug.password,
                 printer_id,
                 delay_seconds,
+                may_run=may_run,
                 controls_printer_power=plug.controls_printer_power,
                 rest_off_url=plug.rest_off_url if plug.plug_type == "rest" else None,
                 rest_off_body=plug.rest_off_body if plug.plug_type == "rest" else None,
@@ -554,6 +578,11 @@ class SmartPlugManager:
             )
         )
         self._pending_off[plug.id] = task
+        self._pending_off_printers[plug.id] = printer_id
+        spawn_background_task(
+            self._mark_auto_off_pending(plug.id, True, may_run=lambda: self._pending_off.get(plug.id) is task),
+            name=f"mark-auto-off-pending-{plug.id}",
+        )
 
     async def _delayed_off(
         self,
@@ -566,6 +595,7 @@ class SmartPlugManager:
         printer_id: int,
         delay_seconds: int,
         *,
+        may_run: Callable[[], bool] | None = None,
         # False for an accessory plug — don't blank the printer's state (#2629).
         # Defaults True so a caller that predates the flag keeps today's behaviour.
         controls_printer_power: bool = True,
@@ -577,6 +607,8 @@ class SmartPlugManager:
         """Wait and turn off."""
         try:
             await asyncio.sleep(delay_seconds)
+            if may_run is not None and not may_run():
+                return
 
             # #1890: never cut power while a print is loaded / running. The
             # delay fires unconditionally after N minutes, so if the user
@@ -610,22 +642,29 @@ class SmartPlugManager:
 
             plug_info = PlugInfo()
             service = await self.get_service_for_plug(plug_info)
+            if (may_run is not None and not may_run()) or printer_manager.is_print_active(printer_id):
+                return
             success = await service.turn_off(plug_info)
             logger.info("Turned off plug %s after time delay", plug_id)
 
             # Mark auto_off_executed in database and update printer status
             if success:
-                await self._mark_auto_off_executed(plug_id)
+                if may_run is None:
+                    await self._mark_auto_off_executed(plug_id)
+                else:
+                    await self._mark_auto_off_executed(plug_id, may_run=may_run)
                 # Mark the printer as offline immediately — mains plug only (#2629)
-                if controls_printer_power:
+                if controls_printer_power and (may_run is None or may_run()):
                     printer_manager.mark_printer_offline(printer_id)
 
         except asyncio.CancelledError:
             logger.debug("Delayed turn-off cancelled for plug %s", plug_id)
         finally:
-            self._pending_off.pop(plug_id, None)
+            if self._pending_off.get(plug_id) is asyncio.current_task():
+                self._pending_off.pop(plug_id, None)
+                self._pending_off_printers.pop(plug_id, None)
 
-    def _schedule_temp_based_off(self, plug: "SmartPlug", printer_id: int, temp_threshold: int):
+    def _schedule_temp_based_off(self, plug: "SmartPlug", printer_id: int, temp_threshold: int, *, may_run=None):
         """Monitor temperature and turn off when below threshold."""
         # Cancel any existing task for this plug
         self._cancel_pending_off(plug.id)
@@ -633,8 +672,6 @@ class SmartPlugManager:
         logger.info("Scheduling temperature-based turn-off for plug '%s' (threshold: %s°C)", plug.name, temp_threshold)
 
         # Mark as pending in database (survives restarts)
-        spawn_background_task(self._mark_auto_off_pending(plug.id, True), name=f"mark-auto-off-pending-{plug.id}")
-
         task = asyncio.create_task(
             self._temp_based_off(
                 plug.id,
@@ -645,6 +682,7 @@ class SmartPlugManager:
                 plug.password,
                 printer_id,
                 temp_threshold,
+                may_run=may_run,
                 controls_printer_power=plug.controls_printer_power,
                 rest_off_url=plug.rest_off_url if plug.plug_type == "rest" else None,
                 rest_off_body=plug.rest_off_body if plug.plug_type == "rest" else None,
@@ -653,6 +691,11 @@ class SmartPlugManager:
             )
         )
         self._pending_off[plug.id] = task
+        self._pending_off_printers[plug.id] = printer_id
+        spawn_background_task(
+            self._mark_auto_off_pending(plug.id, True, may_run=lambda: self._pending_off.get(plug.id) is task),
+            name=f"mark-auto-off-pending-{plug.id}",
+        )
 
     async def _temp_based_off(
         self,
@@ -665,6 +708,7 @@ class SmartPlugManager:
         printer_id: int,
         temp_threshold: int,
         *,
+        may_run: Callable[[], bool] | None = None,
         # False for an accessory plug — don't blank the printer's state (#2629).
         controls_printer_power: bool = True,
         rest_off_url: str | None = None,
@@ -682,6 +726,8 @@ class SmartPlugManager:
             elapsed = 0
 
             while elapsed < max_wait:
+                if may_run is not None and not may_run():
+                    return
                 status = printer_manager.get_status(printer_id)
 
                 if status:
@@ -738,6 +784,8 @@ class SmartPlugManager:
 
                         plug_info = PlugInfo()
                         service = await self.get_service_for_plug(plug_info)
+                        if (may_run is not None and not may_run()) or printer_manager.is_print_active(printer_id):
+                            return
                         success = await service.turn_off(plug_info)
                         logger.info(
                             f"Turned off plug {plug_id} after nozzle temp dropped to "
@@ -746,9 +794,12 @@ class SmartPlugManager:
 
                         # Mark auto_off_executed in database and update printer status
                         if success:
-                            await self._mark_auto_off_executed(plug_id)
+                            if may_run is None:
+                                await self._mark_auto_off_executed(plug_id)
+                            else:
+                                await self._mark_auto_off_executed(plug_id, may_run=may_run)
                             # Mark the printer as offline immediately — mains plug only (#2629)
-                            if controls_printer_power:
+                            if controls_printer_power and (may_run is None or may_run()):
                                 printer_manager.mark_printer_offline(printer_id)
 
                         break
@@ -762,9 +813,11 @@ class SmartPlugManager:
         except asyncio.CancelledError:
             logger.debug("Temperature-based turn-off cancelled for plug %s", plug_id)
         finally:
-            self._pending_off.pop(plug_id, None)
+            if self._pending_off.get(plug_id) is asyncio.current_task():
+                self._pending_off.pop(plug_id, None)
+                self._pending_off_printers.pop(plug_id, None)
 
-    async def _mark_auto_off_pending(self, plug_id: int, pending: bool):
+    async def _mark_auto_off_pending(self, plug_id: int, pending: bool, *, may_run=None):
         """Mark a plug as having a pending auto-off (survives restarts)."""
         try:
             from backend.app.core.database import async_session
@@ -773,7 +826,7 @@ class SmartPlugManager:
             async with async_session() as db:
                 result = await db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
                 plug = result.scalar_one_or_none()
-                if plug:
+                if plug and (may_run is None or may_run()):
                     plug.auto_off_pending = pending
                     plug.auto_off_pending_since = datetime.now(timezone.utc) if pending else None
                     await db.commit()
@@ -781,7 +834,7 @@ class SmartPlugManager:
         except Exception as e:
             logger.warning("Failed to update plug %s pending state: %s", plug_id, e)
 
-    async def _mark_auto_off_executed(self, plug_id: int):
+    async def _mark_auto_off_executed(self, plug_id: int, *, may_run=None):
         """Disable auto-off after it was executed (one-shot behavior unless persistent)."""
         try:
             from backend.app.core.database import async_session
@@ -790,7 +843,7 @@ class SmartPlugManager:
             async with async_session() as db:
                 result = await db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
                 plug = result.scalar_one_or_none()
-                if plug:
+                if plug and (may_run is None or may_run()):
                     if not plug.auto_off_persistent:
                         plug.auto_off = False  # Disable auto-off (one-shot behavior)
                     plug.auto_off_executed = False  # Reset the flag
@@ -812,8 +865,25 @@ class SmartPlugManager:
             logger.debug("Cancelling pending turn-off for plug %s", plug_id)
             self._pending_off[plug_id].cancel()
             del self._pending_off[plug_id]
+            self._pending_off_printers.pop(plug_id, None)
             # Clear pending state in database
-            spawn_background_task(self._mark_auto_off_pending(plug_id, False), name=f"mark-auto-off-pending-{plug_id}")
+            spawn_background_task(
+                self._mark_auto_off_pending(plug_id, False, may_run=lambda: plug_id not in self._pending_off),
+                name=f"mark-auto-off-pending-{plug_id}",
+            )
+
+    async def stop_auto_off_tasks(self, printer_id: int | None = None):
+        tasks = {
+            task
+            for plug_id, task in self._pending_off.items()
+            if printer_id is None or self._pending_off_printers.get(plug_id) == printer_id
+        }
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=5)
+            for task in pending:
+                task.cancel()
 
     def cancel_all_pending(self):
         """Cancel all pending turn-off tasks."""

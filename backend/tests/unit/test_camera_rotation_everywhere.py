@@ -25,6 +25,8 @@ from PIL import Image
 from backend.app import main as main_module
 from backend.app.main import _inprint_frame_bank, _stage22_finish_frames, on_finish_photo_moment
 from backend.app.services.camera import apply_camera_rotation, apply_camera_rotation_to_file
+from backend.app.services.print_run_binding import bind_print_run
+from backend.app.services.printer_manager import PrinterManager
 
 _LOG = logging.getLogger(__name__)
 
@@ -156,7 +158,10 @@ def _printer(rotation: int):
 
 
 @pytest.fixture(autouse=True)
-def _clear_state():
+def _clear_state(monkeypatch):
+    manager = PrinterManager()
+    bind_print_run(manager, printer_id=7, archive_id=7)
+    monkeypatch.setattr(main_module, "printer_manager", manager)
     _stage22_finish_frames.clear()
     _inprint_frame_bank.clear()
     yield
@@ -175,7 +180,7 @@ class TestTheFinishPhotoIsRotatedOnce:
         ):
             await on_finish_photo_moment(7, {"trigger": "stage_22", "timelapse_was_active": False})
 
-        assert _size(_stage22_finish_frames[7]) == (480, 640)
+        assert _size(_stage22_finish_frames[main_module._finish_photo_key(7)]) == (480, 640)
 
     async def test_the_banked_frame_is_not_rotated_again(self, monkeypatch) -> None:
         """It was rotated when it was banked — it comes from the snapshot path.
@@ -183,13 +188,13 @@ class TestTheFinishPhotoIsRotatedOnce:
         bookkeeping exists to prevent."""
         monkeypatch.setattr(main_module, "async_session", _session_factory(_printer(90)))
         already_rotated = apply_camera_rotation(_jpeg(640, 480), 90, _LOG)
-        _inprint_frame_bank[7] = already_rotated
+        _inprint_frame_bank[main_module._finish_photo_key(7)] = already_rotated
 
         with patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")):
             await on_finish_photo_moment(7, {"trigger": "finish_state", "timelapse_was_active": False})
 
-        assert _stage22_finish_frames[7] == already_rotated
-        assert _size(_stage22_finish_frames[7]) == (480, 640)
+        assert _stage22_finish_frames[main_module._finish_photo_key(7)] == already_rotated
+        assert _size(_stage22_finish_frames[main_module._finish_photo_key(7)]) == (480, 640)
 
     async def test_an_unrotated_printer_caches_the_frame_as_captured(self, monkeypatch) -> None:
         monkeypatch.setattr(main_module, "async_session", _session_factory(_printer(0)))
@@ -201,7 +206,7 @@ class TestTheFinishPhotoIsRotatedOnce:
         ):
             await on_finish_photo_moment(7, {"trigger": "stage_22", "timelapse_was_active": False})
 
-        assert _stage22_finish_frames[7] == original
+        assert _stage22_finish_frames[main_module._finish_photo_key(7)] == original
 
 
 class TestEverySiteIsWired:
