@@ -20,6 +20,9 @@
 #   COMPOSE_FILE=docker-compose.yml:docker-compose.postgres.yml
 #
 # Then set in .env: POSTGRES_PASSWORD (required) and DATABASE_URL.
+# Query statistics are configured by postgres-stats-init for both new and
+# existing volumes. Apply updates with `docker compose up -d`, not only by
+# replacing the BamDude image. No database reinitialization is required.
 #
 # ⚠️ NETWORKING — read this. The base compose runs BamDude with
 # `network_mode: host` (for printer discovery), and a host-network container is
@@ -37,6 +40,7 @@
 services:
   postgres:
     image: postgres:18
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
     container_name: bamdude-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-bamdude}
@@ -54,20 +58,44 @@ services:
     volumes:
       - bamdude_pgdata:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bamdude} -d ${POSTGRES_DB:-bamdude}"]
+      # TCP excludes the temporary socket-only server used during initdb.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-bamdude} -d ${POSTGRES_DB:-bamdude}"]
       interval: 10s
       timeout: 5s
       retries: 10
     restart: unless-stopped
 
+  postgres-stats-init:
+    image: postgres:18
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-bamdude}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      PGDATABASE: ${POSTGRES_DB:-bamdude}
+      PGCONNECT_TIMEOUT: "10"
+    # An initdb.d script would skip existing volumes. This idempotent job also
+    # verifies the preload by querying the view; failures remain visible.
+    command:
+      - psql
+      - --no-psqlrc
+      - --set=ON_ERROR_STOP=1
+      - --command=CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+      - --command=SELECT count(*) FROM pg_stat_statements;
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   bamdude:
     # DATABASE_URL comes from .env (docker-install.sh writes the platform-correct
-    # host); the database is only ready once PostgreSQL passes its healthcheck.
+    # host); start only after PostgreSQL and its statistics setup are ready.
     environment:
       - DATABASE_URL=${DATABASE_URL}
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-stats-init:
+        condition: service_completed_successfully
 
 volumes:
   bamdude_pgdata:

@@ -280,6 +280,14 @@ jobs:
         run: |
           cd backend
           python -m pytest tests/integration/test_postgres_scenarios.py -v --tb=short
+      - name: Check database-health SQL isolation
+        env:
+          TEST_POSTGRES_URL: postgresql://bamdude:bamdude@localhost:5432/bamdude_ci
+        run: python -m pytest backend/tests/integration/test_db_health_postgres.py -v --tb=short --timeout=60 --timeout-method=thread
+      - name: Check PostgreSQL Compose statistics setup
+        env:
+          TEST_POSTGRES_COMPOSE: "1"
+        run: python -m pytest backend/tests/integration/test_postgres_compose.py -v --tb=short --timeout=300 --timeout-method=thread
 
   # ============================================================================
   # Frontend Checks

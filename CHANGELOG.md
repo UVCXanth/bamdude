@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **PostgreSQL diagnostics keep working when a statistics query fails.** Each SQL check is isolated, so a missing `pg_stat_statements` no longer hides the server version, database size and other health data. The PostgreSQL Compose setup now enables query statistics automatically for both new and existing databases; apply the updated Compose files with `docker compose up -d`.
+
 - **Uploads, folder scans and preview workers recover automatically from overly broad runtime directory permissions.** The bundled NATS manager now restores private permissions on its own service directories before startup, avoiding manual permission repair after a directory was created or copied with broader access.
 
 - **Frontend dependency alerts are resolved.** Updated DOMPurify, brace-expansion and source-map-js to patched releases; the frontend dependency audit now reports no vulnerabilities. Covers [#62](https://github.com/kainpl/bamdude/issues/62) and the updates proposed in [#60](https://github.com/kainpl/bamdude/pull/60) and [#63](https://github.com/kainpl/bamdude/pull/63).
