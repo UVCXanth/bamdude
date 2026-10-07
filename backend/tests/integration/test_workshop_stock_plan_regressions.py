@@ -1,6 +1,7 @@
 """Synthetic workshop planning through stock, rejects and both queue tiers."""
 
 import pytest
+from sqlalchemy import select
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
@@ -236,3 +237,61 @@ async def test_partial_free_stock_is_reserved_and_mixed_receipts_do_not_reprint_
     assert received.status_code == 200, received.text
     assert await plan(committing_client, shop) == ({}, 0)
     assert await part_stock.balances(db_session, shop["a"].product_id) == {a: 0, b: 0}
+
+
+@pytest.mark.asyncio
+async def test_real_plan_enqueues_only_missing_b_and_cancellation_restores_only_b(
+    committing_client, db_session, shop, tmp_path
+):
+    # Same display name is deliberately unhelpful; ownership comes from product/file IDs.
+    path = write_routing_3mf(
+        tmp_path / "b-only.gcode.3mf", {1: [{"id": 1, "type": "PETG", "color": "#000000", "used_g": "1"}]}
+    )
+    file = LibraryFile(
+        filename="synthetic.gcode.3mf",
+        file_path=str(path),
+        file_type="gcode",
+        file_size=1,
+        file_metadata={
+            "plates": [
+                {
+                    "index": 1,
+                    "printable_objects": {"1": "Part B"},
+                    "print_time_seconds": 5,
+                    "filaments": [{"slot_id": 1, "type": "PETG"}],
+                }
+            ]
+        },
+    )
+    db_session.add(file)
+    await db_session.flush()
+    plate = ProductPlate(product_id=shop["a"].product_id, library_file_id=file.id, plate_index=0)
+    db_session.add(plate)
+    other = Product(name="Product B warehouse identity check")
+    db_session.add(other)
+    await db_session.flush()
+    other_a = ProductPart(product_id=other.id, kind="printed", name="Part A", name_key="part a", qty_per_unit=3)
+    db_session.add(other_a)
+    await db_session.flush()
+    await part_stock.move(db_session, part_id=other_a.id, delta=300, reason="manual", note="Synthetic Product B shelf")
+    await db_session.commit()
+    assert (await plan(committing_client, shop))[0] == {shop["a"].id: 30, shop["b"].id: 10}
+    await take_loose_a(committing_client, db_session, shop)
+    body = (await committing_client.get(f"/api/v1/projects/{shop['order']}/plan")).json()
+    [line] = body["lines"]
+    assert [(r["plate_id"], r["count"]) for r in line["rows"]] == [(plate.id, 10)]
+    response = await committing_client.post(
+        f"/api/v1/projects/{shop['order']}/plan/enqueue",
+        json={"items": [{"line_id": shop["line"], "plate_id": plate.id, "count": 10}], "target": {"kind": "auto"}},
+    )
+    assert response.status_code == 200, response.text
+    ids = response.json()["created"][0]["queue_item_ids"]
+    assert len(ids) == 10
+    assert await plan(committing_client, shop) == ({}, 0)
+    queued = (await db_session.execute(select(AutoQueueItem).where(AutoQueueItem.id.in_(ids)))).scalars().all()
+    assert {r.library_file_id for r in queued} == {file.id}
+    for row in queued[:3]:
+        row.status = "cancelled"
+    await db_session.commit()
+    assert (await plan(committing_client, shop))[0] == {shop["b"].id: 3}
+    assert (await part_stock.balances(db_session, other.id))[other_a.id] == 300
