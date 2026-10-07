@@ -2458,8 +2458,21 @@ async def _on_ams_change(printer_id: int, ams_data: list):
             from sqlalchemy.orm import selectinload
 
             from backend.app.api.routes.inventory import _find_tray_in_ams_data, tray_holds_filament
+            from backend.app.api.routes.settings import get_setting
+            from backend.app.models.printer import Printer as _Printer
             from backend.app.models.spool import Spool as _Spool
             from backend.app.models.spool_assignment import SpoolAssignment as SA
+            from backend.app.services.auto_stock_spool import policy_for
+            from backend.app.services.spool_tag_matcher import is_valid_tag
+
+            stock_printer = await db.get(_Printer, printer_id)
+            protect_partial_returns = (
+                stock_printer is not None
+                and stock_printer.is_active
+                and not stock_printer.archived
+                and policy_for(stock_printer).enabled
+                and (await get_setting(db, "spoolman_enabled") or "").lower() != "true"
+            )
 
             result = await db.execute(
                 select(SA)
@@ -2471,6 +2484,13 @@ async def _on_ams_change(printer_id: int, ams_data: list):
             # WS fan-out below can run after the session is released.
             unlinked_slots: list[tuple[int, int]] = []
             for assignment in result.scalars().all():
+                known = assignment.spool
+                partial_return = (
+                    protect_partial_returns
+                    and assignment.ams_id < 254
+                    and known is not None
+                    and ((known.weight_used or 0) > 0 or known.last_used is not None or known.added_full is False)
+                )
                 # External spool assignments (ams_id=255) live in vt_tray, not AMS data
                 if assignment.ams_id == 255:
                     ps = printer_manager.get_status(printer_id)
@@ -2487,15 +2507,18 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                 else:
                     current_tray = _find_tray_in_ams_data(ams_data, assignment.ams_id, assignment.tray_id)
                 if not current_tray:
-                    if printing_now:
-                        # Runout, not a swap — see ``printing_now`` at the top of
-                        # this function. The next idle-time pass unlinks it if
-                        # the user really did take the spool out.
+                    if printing_now or partial_return:
+                        # A running print may have run out. With stock loading
+                        # enabled, keep a known partial spool too: removal alone
+                        # cannot distinguish its return from a full replacement.
                         logger.info(
-                            "Auto-unlink skipped: spool %d AMS%d-T%d - slot empty during a running print (runout?)",
+                            "Auto-unlink skipped: spool %d AMS%d-T%d - empty slot retains known identity "
+                            "(printing=%s partial-return=%s)",
                             assignment.spool_id,
                             assignment.ams_id,
                             assignment.tray_id,
+                            printing_now,
+                            partial_return,
                         )
                         continue
                     logger.info(
@@ -2637,12 +2660,15 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                         # Letting the blank fall through to the fingerprint
                         # compare below turned a runout into "spool changed"
                         # (X2D, 2026-08-23) and the runout row froze spool=None.
-                        if printing_now:
+                        if printing_now or partial_return:
                             logger.info(
-                                "Auto-unlink skipped: spool %d AMS%d-T%d - slot empty during a running print (runout?)",
+                                "Auto-unlink skipped: spool %d AMS%d-T%d - empty slot retains known identity "
+                                "(printing=%s partial-return=%s)",
                                 assignment.spool_id,
                                 assignment.ams_id,
                                 assignment.tray_id,
+                                printing_now,
+                                partial_return,
                             )
                             continue
                         # Off a print too, on firmware's own say-so: a blank report
@@ -2737,6 +2763,19 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                             spool.rgba if spool else "?",
                             spool.material if spool else "?",
                         )
+                        if partial_return and not is_valid_tag(
+                            current_tray.get("tag_uid"), current_tray.get("tray_uuid")
+                        ):
+                            # Untagged remove/reinsert or firmware metadata reset
+                            # cannot prove that a used spool became a full one.
+                            # Keep its existing persistent identity: the stock
+                            # selector still requires a confirmed runout to
+                            # replace it, or the operator assigns another spool.
+                            logger.info(
+                                "Auto-unlink skipped: known partial spool %d needs an explicit replacement",
+                                assignment.spool_id,
+                            )
+                            continue
                         stale.append(assignment)  # Spool changed
             # Snapshot the slots before the delete — ORM attribute access after the
             # commit would refresh against a deleted row.
