@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
@@ -15,6 +16,17 @@ function mount() {
 
 describe('Automatic stock fields — fallback and permissions', () => {
   beforeEach(() => { permissions.write = true; });
+
+  it('explains partial return preservation and the runout replacement contract', async () => {
+    server.use(http.get('/api/v1/inventory/spools/auto-stock-groups', () => HttpResponse.json([])));
+    mount();
+    await userEvent.click(screen.getByText('How automatic assignment works'));
+    const help = screen.getByText(/Removing and returning a known partial spool without runout/);
+    expect(help).toBeVisible();
+    expect(help).toHaveTextContent('including after restart');
+    expect(help).toHaveTextContent('After confirmed runout, insertion means a new full spool');
+    expect(help).toHaveTextContent('returning the old spool requires manual assignment');
+  });
 
   it('shows a load failure rather than inventing a stock group', async () => {
     server.use(http.get('/api/v1/inventory/spools/auto-stock-groups', () => new HttpResponse(null, { status: 500 })));

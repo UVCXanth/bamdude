@@ -21,7 +21,8 @@ from backend.tests.unit.services.test_auto_stock_spool import GROUP, event, mana
 @pytest.mark.asyncio
 @pytest.mark.integration
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
-async def test_two_printers_cannot_claim_the_same_spool(test_engine, tmp_path, monkeypatch, dialect):
+@pytest.mark.parametrize("added_full", [True, None])
+async def test_two_printers_cannot_claim_the_same_spool(test_engine, tmp_path, monkeypatch, dialect, added_full):
     from backend.app.services.auto_stock_spool import available_groups, claim_on_insertion
 
     admin = None
@@ -63,7 +64,7 @@ async def test_two_printers_cannot_claim_the_same_spool(test_engine, tmp_path, m
             db.add_all(printers)
             await db.commit()
             ids = [p.id for p in printers]
-            await spool(db)
+            await spool(db, added_full=added_full)
             # PostgreSQL requires the ORDER BY coalesce expression to share
             # its bound parameter with GROUP BY; SQLite silently accepts a
             # separately constructed expression. Exercise the live selector.

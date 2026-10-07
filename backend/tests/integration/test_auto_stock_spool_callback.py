@@ -64,9 +64,9 @@ async def test_callback_claims_once_and_reports_failed_configuration(db_session,
 @pytest.mark.asyncio
 @pytest.mark.integration
 @pytest.mark.parametrize("printer_state", ["IDLE", "RUNNING", "PAUSE"])
-@pytest.mark.parametrize("returned_report", ["same", "blank", "reset_color"])
-async def test_removing_and_returning_partial_spool_does_not_claim_full_stock(
-    db_session, printer_factory, printer_state, returned_report
+@pytest.mark.parametrize("returned_report", ["same", "blank", "reset_color", "restart", "missing_tray", "runout"])
+async def test_partial_spool_return_preserves_identity_except_confirmed_runout(
+    db_session, printer_factory, tmp_path, printer_state, returned_report
 ):
     from backend.tests.unit.services.test_auto_stock_spool import client
 
@@ -84,6 +84,12 @@ async def test_removing_and_returning_partial_spool_does_not_claim_full_stock(
         )
     )
     await db_session.commit()
+    if returned_report == "runout":
+        from backend.app.models.print_usage_event import EVENT_RUNOUT, KIND_PAUSE
+        from backend.tests.unit.services.test_usage_tracker_runout import _journal, _make_archive
+
+        archive = await _make_archive(db_session, p, tmp_path)
+        await _journal(db_session, p, archive, [(EVENT_RUNOUT, KIND_PAUSE, 0, 140, partial.id)])
     pm, state, _ = manager()
     state.state = printer_state
     occupied = state.raw_data["ams"]
@@ -107,22 +113,88 @@ async def test_removing_and_returning_partial_spool_does_not_claim_full_stock(
         patch("backend.app.services.filament_low.check_printer", AsyncMock()),
         patch("backend.app.api.routes.inventory.apply_spool_to_slot_via_mqtt", publisher),
     ):
-        state.raw_data["ams"] = empty
+        state.raw_data["ams"] = [] if returned_report == "missing_tray" else empty
         assert detector._stock_spool_insertions(empty, {"tray_exist_bits": "0"}) == []
-        await main.on_ams_change(p.id, empty)  # real empty-slot auto-unlink path
+        await main.on_ams_change(p.id, state.raw_data["ams"])  # real empty-slot auto-unlink path
+        if returned_report == "restart":
+            # Restart loses detector memory, but not the persistent assignment.
+            detector = client()
+            main._stock_insertion_seen.clear()
+            main._ams_assignment_locks.clear()
         state.raw_data["ams"] = occupied
         if returned_report == "blank":
             occupied[0]["tray"][0].update(tray_type="", tray_color="", state=9)
         elif returned_report == "reset_color":
             occupied[0]["tray"][0]["tray_color"] = "000000FF"
         insertions = detector._stock_spool_insertions(occupied, {"tray_exist_bits": "1"})
-        assert len(insertions) == 1
+        assert len(insertions) == (0 if returned_report == "restart" else 1)
         await main.on_ams_change(p.id, occupied)
-        await main.on_stock_spool_inserted(p.id, insertions[0])
+        for insertion in insertions:
+            await main.on_stock_spool_inserted(p.id, insertion)
     assigned = (await db_session.execute(select(SpoolAssignment))).scalars().all()
-    assert [a.spool_id for a in assigned] == [partial.id]
-    assert all(a.spool_id != full.id for a in assigned)
-    publisher.assert_not_awaited()
+    if returned_report == "runout":
+        # Operator contract: a confirmed runout means a new full replacement.
+        assert [a.spool_id for a in assigned] == [full.id]
+        publisher.assert_awaited_once()
+    else:
+        assert [a.spool_id for a in assigned] == [partial.id]
+        publisher.assert_not_awaited()
     await db_session.refresh(partial)
     await db_session.refresh(full)
     assert partial.weight_used == 300 and full.weight_used == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("owner", ["policy_off", "spoolman", "rfid", "external"])
+async def test_partial_return_guard_does_not_override_other_assignment_owners(
+    db_session, printer_factory, monkeypatch, owner
+):
+    from backend.tests.integration.test_ams_unlink_runout_guard import _run_on_ams_change
+
+    p = await printer(printer_factory)
+    partial = await spool(db_session, weight_used=300)
+    if owner == "policy_off":
+        p.ams_policies = {}
+    if owner == "spoolman":
+        monkeypatch.setattr("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="true"))
+    ams_id = 255 if owner == "external" else 0
+    db_session.add(
+        SpoolAssignment(
+            spool_id=partial.id,
+            printer_id=p.id,
+            ams_id=ams_id,
+            tray_id=0,
+            fingerprint_color=partial.rgba,
+            fingerprint_type=partial.material,
+        )
+    )
+    await db_session.commit()
+
+    @asynccontextmanager
+    async def session():
+        yield db_session
+
+    monkeypatch.setattr(main, "async_session", session)
+    if owner == "rfid":
+        # A different Bambu RFID spool must still release the previous identity.
+        report = [{"id": 0, "tray": [{"id": 0, "tray_uuid": "A" * 32, "tag_uid": "1234567890ABCDEF"}]}]
+    elif owner == "external":
+        # The existing external path is covered via a present, changed vt_tray.
+        from types import SimpleNamespace
+
+        status = SimpleNamespace(
+            state="IDLE", raw_data={"vt_tray": [{"id": 254, "tray_type": "PETG", "tray_color": "000000FF"}]}
+        )
+        with (
+            patch.object(main.printer_manager, "get_status", return_value=status),
+            patch.object(main.ws_manager, "send_printer_status", AsyncMock()),
+            patch.object(main.ws_manager, "broadcast", AsyncMock()),
+        ):
+            await main.on_ams_change(p.id, [])
+        assert (await db_session.execute(select(SpoolAssignment))).scalars().all() == []
+        return
+    else:
+        report = [{"id": 0, "tray": [{"id": 0, "state": 9, "tray_type": "", "tray_color": ""}]}]
+    await _run_on_ams_change(p.id, report, "IDLE")
+    assert (await db_session.execute(select(SpoolAssignment))).scalars().all() == []
