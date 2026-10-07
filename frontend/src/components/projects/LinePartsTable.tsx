@@ -70,6 +70,7 @@ export function LinePartsTable({
               ) : (
                 `× ${part.qty_per_unit}`
               )}
+              {(part.extra_qty ?? 0) > 0 && <div className="text-xs text-amber-700 dark:text-amber-400">{t('orders.parts.extraParts', { percent: part.extra_percent, count: part.extra_qty })}</div>}
             </td>
             <td className={`${CELL} tabular-nums`}>
               {part.need}

@@ -143,6 +143,7 @@ class ProductPart(Base):
     # purchased: "purchased:<lower name>" so it can never collide with a printed key.
     name_key: Mapped[str] = mapped_column(String(512))
     qty_per_unit: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    extra_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0, server_default="0")
     # printed only: every object name_key that IS this part. Unique across a
     # product's parts — the service enforces it, the DB covers only name_key.
     aliases: Mapped[list | None] = mapped_column(JSON, nullable=True)

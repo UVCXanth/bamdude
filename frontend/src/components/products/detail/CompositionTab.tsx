@@ -138,7 +138,9 @@ export function CompositionTab({
 
   const perUnit = (part: ProductPart) =>
     part.qty_per_unit > 0 ? (
-      t('products.detail.composition.times', { count: part.qty_per_unit })
+      <>{t('products.detail.composition.times', { count: part.qty_per_unit })}
+        {(part.extra_percent ?? 0) > 0 && <small className="ml-2 text-amber-700 dark:text-amber-400">{t('products.partDialog.extraBadge', { percent: part.extra_percent })}</small>}
+      </>
     ) : (
       <small className={`text-xs ${part.ignored ? AMBER : 'text-bambu-gray'}`}>
         {t(part.ignored ? 'products.composition.notCounted' : 'products.composition.outOfKit')}

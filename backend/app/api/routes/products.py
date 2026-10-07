@@ -1535,6 +1535,7 @@ async def duplicate_product(
                 name=part.name,
                 name_key=part.name_key,
                 qty_per_unit=part.qty_per_unit,
+                extra_percent=part.extra_percent,
                 ignored=part.ignored,
                 # NULL for a purchased part, and it stays NULL on the copy: the
                 # column is printed-only, and [] would read as "no aliases yet".
@@ -1652,6 +1653,8 @@ async def create_part(
     _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
+    if data.extra_percent and data.kind != "printed":
+        raise HTTPException(status_code=422, detail="Extra percentages apply to printed parts only")
     if data.ignored and data.kind != "printed":
         raise HTTPException(status_code=422, detail=_PRINTED_ONLY)
     if data.ignored and data.qty_per_unit > 0:
@@ -1675,6 +1678,7 @@ async def create_part(
         name=data.name.strip(),
         name_key=key,
         qty_per_unit=data.qty_per_unit,
+        extra_percent=data.extra_percent,
         ignored=data.ignored,
         aliases=[key] if data.kind == "printed" else None,
         auto=False,
@@ -1716,6 +1720,8 @@ async def update_part(
         # ``freeze_binding`` freezes from, and the one the new value is written over.
         product = await _get(db, product_id, fresh=True)
     part = await _part(db, product, part_id)
+    if data.extra_percent and part.kind != "printed":
+        raise HTTPException(status_code=422, detail="Extra percentages apply to printed parts only")
     if "variant_option_id" in data.model_fields_set and data.variant_option_id is not None:
         await _ensure_own_option(db, product, data.variant_option_id)
     if data.aliases is not None and part.kind != "printed":
@@ -1791,6 +1797,10 @@ async def delete_part(
         raise _busy(e) from e
     product = await _get(db, product_id, fresh=True)  # the part as it stands behind the gate
     part = await _part(db, product, part_id)
+    try:
+        await line_config.ensure_no_extra_snapshot(db, product.id, [part_id])
+    except line_config.LineConfigError as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
     # What the delete destroys beyond the catalog asks that domain's right too (WS-13 E13
     # O24), behind the locks and before a write: the part's shelf history and balance; an
     # order's acquisitions of it and a parts line's counters.
@@ -1850,6 +1860,12 @@ async def merge_part(
         raise HTTPException(
             status_code=409, detail="A part that is ordered cannot be merged into one marked as not counted"
         )
+    try:
+        await line_config.ensure_no_extra_snapshot(db, product.id, [target.id, source.id])
+    except line_config.LineConfigError as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
+    if (target.extra_percent or 0) != (source.extra_percent or 0):
+        raise HTTPException(status_code=409, detail="Parts with different additional percentages cannot be merged")
     merge_parts(target, source)
     # Free stock, unlike the procurement counts below, MOVES: it is parts on a
     # shelf, and the merge says those parts are these parts. Before the source
