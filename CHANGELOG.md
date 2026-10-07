@@ -1,12 +1,9 @@
 ## [Unreleased]
 
-<<<<<<< HEAD
 - **Print-start notifications, finish photos and post-print automation work again.** The first printer event after a queued dispatch now sends the start notification once. Finishing a print keeps its background work alive long enough to save its photo, send the completion message and run the configured auto-off or finish macros. Starting another print permanently cancels the previous print's permission to affect the printer, including delayed plug actions and late camera captures.
 
 - **PostgreSQL diagnostics keep working when a statistics query fails.** Each SQL check is isolated, so a missing `pg_stat_statements` no longer hides the server version, database size and other health data. The PostgreSQL Compose setup now enables query statistics automatically for both new and existing databases; apply the updated Compose files with `docker compose up -d`.
-=======
-- **Printers can assign full inventory spools when loaded.** An opt-in printer setting selects one strict group of unused, unassigned spools for any supported AMS slot. Fresh local empty-to-occupied telemetry claims one existing spool, including same-slot refills after an unambiguous runout during printing. Ordinary inventory entries work even when their optional historical full-spool marker is unset; explicit partial entries remain excluded. Removing and returning a known partial spool keeps its existing identity instead of claiming a full stock spool. RFID/manual assignments take priority; queue routing and AMS Backup policies remain in force. Missing stock leaves the slot for manual assignment.
->>>>>>> 4c238ec7 (feat(inventory): auto-assign full stock spools on AMS insertion)
+- **Printers can assign full inventory spools when loaded.** An opt-in printer setting selects one strict group of unused, unassigned spools for any supported AMS slot. Fresh local empty-to-occupied telemetry claims one existing spool, including same-slot refills after an unambiguous runout during printing. Ordinary inventory entries work even when their optional historical full-spool marker is unset; explicit partial entries remain excluded. Removing and returning a known partial spool without runout keeps its existing identity instead of claiming a full stock spool. RFID/manual assignments take priority; queue routing and AMS Backup policies remain in force. Missing stock leaves the slot for manual assignment.
 
 - **Uploads, folder scans and preview workers recover automatically from overly broad runtime directory permissions.** The bundled NATS manager now restores private permissions on its own service directories before startup, avoiding manual permission repair after a directory was created or copied with broader access.
 
