@@ -128,6 +128,20 @@ async def test_claims_fifo_distinct_spools_for_two_slots(db_session, printer_fac
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("added_full", [True, None])
+async def test_full_unused_stock_without_historical_marker_is_claimed(db_session, printer_factory, added_full):
+    p = await printer(printer_factory)
+    s = await spool(db_session, added_full=added_full)
+    assert await available_groups(db_session) == [GROUP | {"available_count": 1}]
+    pm, _, _ = manager()
+    result = await claim_on_insertion(db_session, printer_id=p.id, event=event(), manager=pm)
+    assert result["spool_id"] == s.id
+    # Compatibility is read-only; do not backfill or reinterpret stock history.
+    await db_session.refresh(s)
+    assert s.added_full is added_full
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "change",
     [
@@ -141,6 +155,10 @@ async def test_claims_fifo_distinct_spools_for_two_slots(db_session, printer_fac
         {"label_weight": 750},
         {"weight_used": 1},
         {"added_full": False},
+        {"added_full": None, "weight_used": 1, "weight_used_baseline": 1},
+        {"added_full": None, "last_used": datetime(2026, 1, 1)},
+        {"added_full": None, "tag_uid": "1234567890ABCDEF"},
+        {"added_full": None, "archived_at": datetime(2026, 1, 1)},
         {"archived_at": datetime(2026, 1, 1)},
         {"last_used": datetime(2026, 1, 1)},
         {"tag_uid": "1234567890ABCDEF"},

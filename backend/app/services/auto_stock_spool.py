@@ -33,7 +33,11 @@ def policy_for(printer) -> AutoStockSpoolPolicy:
 def available_filters():
     return [
         Spool.archived_at.is_(None),
-        Spool.added_full.is_(True),
+        # The ordinary internal create/bulk-create API leaves this optional
+        # historical marker NULL. Full stock is still represented by zero
+        # actual consumption and no use history below; an explicit False
+        # continues to exclude a spool entered as partial.
+        Spool.added_full.is_not(False),
         Spool.weight_used == 0,
         Spool.label_weight > 0,
         Spool.filament_diameter == "1.75",

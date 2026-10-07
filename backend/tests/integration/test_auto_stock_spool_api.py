@@ -7,6 +7,24 @@ from backend.tests.unit.services.test_auto_stock_spool import GROUP, spool
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
+async def test_normal_single_and_bulk_create_are_available_without_full_marker(async_client):
+    # Product A's ordinary inventory form does not post added_full, and the
+    # create schema does not expose it. Reproduce through public APIs, not an
+    # ORM fixture that artificially supplies True.
+    payload = {k: v for k, v in GROUP.items() if k != "filament_family_id"}
+    single = await async_client.post("/api/v1/inventory/spools", json=payload)
+    assert single.status_code == 200, single.text
+    assert single.json()["added_full"] is None
+    bulk = await async_client.post("/api/v1/inventory/spools/bulk", json={"spool": payload, "quantity": 2})
+    assert bulk.status_code == 200, bulk.text
+    assert all(s["added_full"] is None for s in bulk.json())
+    partial = await async_client.post("/api/v1/inventory/spools", json=payload | {"weight_used": 300})
+    assert partial.status_code == 200, partial.text
+    response = await async_client.get("/api/v1/inventory/spools/auto-stock-groups")
+    assert response.status_code == 200, response.text
+    assert response.json() == [payload | {"filament_family_id": "", "available_count": 3}]
+
+
 async def test_groups_are_strict_and_count_only_unused_unassigned_full_stock(async_client, db_session):
     await spool(db_session)
     await spool(db_session)
