@@ -2311,6 +2311,15 @@ async def on_stock_spool_inserted(printer_id: int, event: dict):
         try:
             async with async_session() as db:
                 outcome = await claim_on_insertion(db, printer_id=printer_id, event=event, manager=printer_manager)
+                logger.info(
+                    "Stock insertion decision: printer=%s AMS%s-T%s generation=%s sequence=%s reason=%s",
+                    printer_id,
+                    event["ams_id"],
+                    event["tray_id"],
+                    event["generation"],
+                    event["sequence"],
+                    outcome["reason"],
+                )
                 if outcome["reason"] == "assigned":
                     from backend.app.api.routes.inventory import apply_spool_to_slot_via_mqtt
                     from backend.app.models.spool import Spool

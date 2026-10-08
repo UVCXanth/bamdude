@@ -2214,6 +2214,7 @@ class BambuMQTTClient:
         self.on_spool_inserted = on_spool_inserted
         self._stock_presence_generation = None
         self._stock_presence: dict[tuple[int, int], bool] = {}
+        self._stock_presence_bits: str | int | None = None
         self._stock_insertion_sequence = 0
         self.on_layer_change = on_layer_change
         self.on_macro_complete = on_macro_complete
@@ -5082,7 +5083,19 @@ class BambuMQTTClient:
         if self._stock_presence_generation != self.state.connection_generation:
             self._stock_presence_generation = self.state.connection_generation
             self._stock_presence.clear()
+            self._stock_presence_bits = None
         if not isinstance(payload, dict):
+            return []
+        bits = payload.get("tray_exist_bits")
+        # A firmware presence push can precede discovery of the AMS units.
+        # Retain that real observation even when there are no tray rows yet.
+        # The canonical helper validates masks and ignores shutdown/unknown
+        # reports; never seed from cached tray content or a command ACK.
+        probe = [{"id": 0, "tray": [{"id": 0}]}]
+        apply_tray_exist_bits(
+            probe, bits, power_on_flag=payload.get("power_on_flag", True), annotate_exists=True
+        )
+        if not isinstance(probe[0]["tray"][0].get("exists"), bool):
             return []
         # Reuse the canonical firmware bit layout, but never feed cached presence
         # annotations back into the decision. Invalid/missing bits produce none.
@@ -5091,12 +5104,21 @@ class BambuMQTTClient:
             for u in units
             if isinstance(u, dict)
         ]
+        if self._stock_presence_bits is not None:
+            prior = [{"id": u["id"], "tray": [dict(t) for t in u["tray"]]} for u in fresh]
+            apply_tray_exist_bits(prior, self._stock_presence_bits, annotate_exists=True)
+            for unit in prior:
+                for tray in unit["tray"]:
+                    present = tray.get("exists")
+                    if isinstance(present, bool):
+                        self._stock_presence.setdefault((int(unit["id"]), int(tray["id"])), present)
         apply_tray_exist_bits(
             fresh,
-            payload.get("tray_exist_bits"),
+            bits,
             power_on_flag=payload.get("power_on_flag", True),
             annotate_exists=True,
         )
+        self._stock_presence_bits = bits
         events = []
         for unit in fresh:
             for tray in unit["tray"]:
@@ -5106,6 +5128,14 @@ class BambuMQTTClient:
                 key = (int(unit["id"]), int(tray["id"]))
                 previous = self._stock_presence.get(key)
                 self._stock_presence[key] = present
+                if previous is None and present:
+                    logger.info(
+                        "[%s] Stock presence baseline AMS%s-T%s generation=%s: already present; not an insertion",
+                        self.serial_number,
+                        key[0],
+                        key[1],
+                        self.state.connection_generation,
+                    )
                 if previous is False and present is True:
                     self._stock_insertion_sequence += 1
                     events.append(

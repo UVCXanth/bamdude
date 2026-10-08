@@ -597,6 +597,10 @@ async def update_printer(
             merged[AUTO_STOCK_NAMESPACE] = patch.auto_stock_spool.model_dump()
         update_data["ams_policies"] = merged
 
+    connection_changed = any(
+        key in update_data and update_data[key] != getattr(printer, key)
+        for key in ("ip_address", "access_code", "is_active")
+    )
     for field, value in update_data.items():
         setattr(printer, field, value)
 
@@ -609,7 +613,7 @@ async def update_printer(
         printer_manager.update_printer_name(printer_id, printer.name)
 
     # Reconnect if connection settings changed
-    if any(k in update_data for k in ["ip_address", "access_code", "is_active"]):
+    if connection_changed:
         printer_manager.disconnect_printer(printer_id)
         if printer.is_active:
             await printer_manager.connect_printer(printer)

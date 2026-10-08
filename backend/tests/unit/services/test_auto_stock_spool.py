@@ -81,6 +81,67 @@ def test_insertion_needs_a_fresh_empty_then_present_and_is_one_shot():
     assert c._stock_spool_insertions(units(), {"tray_exist_bits": "1"}) == []  # reconnect
 
 
+@pytest.mark.parametrize("ams,slot,bits", [(0, 1, "2"), (128, 0, "10000"), (6, 2, "4000000")])
+def test_empty_presence_before_ams_discovery_arms_the_new_slot(ams, slot, bits):
+    c = client()
+    assert c._stock_spool_insertions([], {"tray_exist_bits": "0"}) == []
+    result = c._stock_spool_insertions(units(ams, slot), {"tray_exist_bits": bits})
+    assert [(e["ams_id"], e["tray_id"]) for e in result] == [(ams, slot)]
+
+
+@pytest.mark.parametrize(
+    "payload", [{}, {"tray_exist_bits": "bad mask"}, {"tray_exist_bits": "0", "power_on_flag": False}]
+)
+def test_unreliable_empty_report_before_unit_discovery_does_not_arm(payload):
+    c = client()
+    c._stock_spool_insertions([], payload)
+    assert c._stock_spool_insertions(units(slot=1), {"tray_exist_bits": "2"}) == []
+
+
+def test_sparse_a1_style_status_replay_detects_insertion_once_before_metadata_arrives():
+    c = client()
+    fired = []
+    c.on_spool_inserted = fired.append
+    c._process_message({"print": {"command": "push_status", "ams": {"tray_exist_bits": "0"}}})
+    c._process_message(
+        {
+            "print": {
+                "command": "push_status",
+                "ams": {
+                    "tray_exist_bits": "2",
+                    "ams": [{"id": "0", "tray": [{"id": "1", "state": 3, "tray_type": ""}]}],
+                },
+            }
+        }
+    )
+    c._process_message(
+        {
+            "print": {
+                "command": "push_status",
+                "ams": {
+                    "ams": [
+                        {"id": "0", "tray": [{"id": "1", "state": 3, "tray_type": "PETG", "tray_color": "FFFFFFFF"}]}
+                    ],
+                },
+            }
+        }
+    )
+    assert [(e["ams_id"], e["tray_id"]) for e in fired] == [(0, 1)]
+
+
+def test_discovered_unit_does_not_turn_an_already_present_bit_into_insertion():
+    c = client()
+    c._stock_spool_insertions([], {"tray_exist_bits": "2"})
+    assert c._stock_spool_insertions(units(slot=1), {"tray_exist_bits": "2"}) == []
+
+
+def test_empty_mask_without_units_does_not_cross_a_reconnect():
+    c = client()
+    c._stock_spool_insertions([], {"tray_exist_bits": "0"})
+    c.state.connection_generation += 1
+    assert c._stock_spool_insertions(units(slot=1), {"tray_exist_bits": "2"}) == []
+
+
 @pytest.mark.parametrize("bad", [None, "", "invalid", -1, True])
 def test_missing_or_invalid_bits_do_not_use_cached_presence(bad):
     c = client()
