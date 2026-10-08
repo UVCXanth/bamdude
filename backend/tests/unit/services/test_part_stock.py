@@ -213,6 +213,7 @@ async def test_a_release_that_would_go_below_zero_is_refused_too(db_session):
         ("unfiled_print", -1),
         ("reservation_released", -1),
         ("reserved_for_order", 1),
+        ("reserved_parts_for_order", 1),
     ],
 )
 async def test_a_reason_pointing_the_wrong_way_is_a_caller_error(db_session, reason, delta):

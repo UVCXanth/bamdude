@@ -180,7 +180,7 @@ def _order_parts(
         else:
             for pf in figs.parts:
                 if pf.per > 0:
-                    received[pf.part_id] += (line.received or 0) * pf.per
+                    received[pf.part_id] += max(0, (line.received or 0) * pf.per - pf.stock_used_qty)
     return usable, received
 
 
@@ -195,11 +195,27 @@ def _product_line(ctx: OrderContext, line, figs: LineFigures, name: str, room: d
     uncovered = line.quantity - from_finished - (kits + assembled) + written_off
     kit = [pf for pf in figs.parts if pf.per > 0]
     if kit:
-        can_receive = max(0, min(uncovered, figs.units_printed) - received)
-        # …and never more than the order's prints still hold beyond what was received.
-        can_receive = min(can_receive, *(max(0, room[pf.part_id]) // pf.per for pf in kit))
+        partial = {pf.part_id: max(0, pf.allocated_qty - kits * pf.per) for pf in kit}
+        can_receive = max(0, uncovered - received)
+        # Attribution admits only prints compatible with THIS line's material and
+        # composition. The order-wide budget additionally prevents receiving the
+        # same output again after attribution moves it to a sibling line.
+        can_receive = min(
+            can_receive,
+            *(
+                (
+                    min(
+                        max(0, room[pf.part_id]),
+                        max(0, pf.usable - max(0, received * pf.per - pf.stock_used_qty)),
+                    )
+                    + partial[pf.part_id]
+                )
+                // pf.per
+                for pf in kit
+            ),
+        )
         for pf in kit:
-            room[pf.part_id] -= can_receive * pf.per
+            room[pf.part_id] -= max(0, can_receive * pf.per - partial[pf.part_id])
     else:
         # Nothing to print (a kit of bought parts): its units are received as they come
         # (final review M4) — otherwise such an order could never be issued and closed.

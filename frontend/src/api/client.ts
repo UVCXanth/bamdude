@@ -1848,6 +1848,10 @@ export interface PartFigures {
   queued: number;
   /** The part of `surplus` still to move — the number «bank surplus» moves (WS-13 E6 H01). */
   bankable: number;
+  /** Individual parts still allocated to this order, distinct from free stock. */
+  allocated_qty?: number;
+  /** Allocated loose parts already used in mixed receipts. */
+  stock_used_qty?: number;
 }
 
 /** A purchased part of one line (WS-13 E4 H03). `need` = per × the line's stored
@@ -3148,6 +3152,7 @@ export const STOCK_REASONS = [
   'surplus_banked',
   'unfiled_print',
   'reserved_for_order',
+  'reserved_parts_for_order',
   'reservation_released',
   'manual',
   'assembled',
@@ -3543,17 +3548,18 @@ export interface StockOffer {
   product_name: string;
   from_finished: number;
   kits: number;
+  parts?: Record<number, number>;
 }
 
 /** `POST /projects/{id}/take-stock` — what the banner SHOWED per line; omitted, the
  *  current offers. The answer says what each line asked and got. */
 export interface TakeStockBody {
-  lines?: { line_id: number; from_finished: number; kits: number }[];
+  lines?: { line_id: number; from_finished: number; kits: number; parts?: Record<number, number> }[];
 }
 
 export interface TakeStockResult {
   order: Order;
-  results: LineIntake[];
+  results: (LineIntake & { asked_parts?: Record<number, number>; got_parts?: Record<number, number> })[];
 }
 
 /** One line of «what was issued» in a list row. */

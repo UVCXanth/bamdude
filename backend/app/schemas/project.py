@@ -309,6 +309,8 @@ class PartFiguresOut(BaseModel):
     #: WS-13 E6 H01: the part of ``surplus`` still to move — ``PartFigures.bankable``,
     #: the very number ``bank-surplus`` moves (0 for a part without a shelf).
     bankable: int = 0
+    allocated_qty: int = 0
+    stock_used_qty: int = 0
 
 
 class LinePurchasedPartOut(BaseModel):
@@ -1017,6 +1019,7 @@ class StockOfferOut(BaseModel):
     product_name: str
     from_finished: int
     kits: int
+    parts: dict[int, int] = {}
 
 
 class TakeStockLineIn(BaseModel):
@@ -1025,6 +1028,7 @@ class TakeStockLineIn(BaseModel):
     line_id: int
     from_finished: int = Field(default=0, ge=0, le=MAX_QTY)
     kits: int = Field(default=0, ge=0, le=MAX_QTY)
+    parts: dict[int, Annotated[int, Field(ge=0, le=MAX_QTY)]] = Field(default_factory=dict, max_length=500)
 
 
 class TakeStockIn(BaseModel):
@@ -1032,6 +1036,11 @@ class TakeStockIn(BaseModel):
     lines: list[TakeStockLineIn] | None = Field(default=None, max_length=500)
 
 
+class StockTakenOut(LineIntakeOut):
+    asked_parts: dict[int, int] = {}
+    got_parts: dict[int, int] = {}
+
+
 class TakeStockOut(BaseModel):
     order: ProjectResponse
-    results: list[LineIntakeOut]
+    results: list[StockTakenOut]

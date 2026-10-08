@@ -13,6 +13,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
+from backend.app.services.line_composition import LineConfig
 from backend.app.services.order_metrics import (
     OrderContext,
     archive_material_set,
@@ -83,9 +84,35 @@ def _part(pid, product_id, key, qty, kind="printed", ignored=False):
 
 
 def _line(lid, product_id, qty, material=None, sort=0):
-    line = ProjectLine(project_id=1, product_id=product_id, quantity=qty, material=material, sort_order=sort)
+    line = ProjectLine(
+        project_id=1, product_id=product_id, quantity=qty, material=material, sort_order=sort, mode="product"
+    )
     line.id = lid
     return line
+
+
+def test_mixed_kits_share_procurement_once_using_each_lines_configuration():
+    parts = [_part(1, 10, "a", 3), _part(2, 10, "b", 1), _part(3, 10, "c", 2, kind="purchased")]
+    lines = [_line(100, 10, 10), _line(101, 10, 10, sort=1)]
+    archives = [_archive(1, file_id=5, plate=1, line_id=100), _archive(2, file_id=5, plate=1, line_id=101)]
+    for bought, expected in ((0, 0), (8, 4), (25, 11), (60, 20)):
+        ctx = _ctx(
+            lines, parts, archives, {1: [_ap(1, "b", 10)], 2: [_ap(2, "b", 10)]}, {(5, 1): 10}, procurement={3: bought}
+        )
+        ctx.reserved_by_line_part = {(100, 1): 30, (101, 1): 30}
+        ctx.config_by_line = {101: LineConfig(counts={3: 4})}
+        figs, other = attribute(ctx)
+        result = project_figures(ctx, figs, other)
+        assert (result.printed, result.covered_units, result.complete) == (0, 20, expected)
+
+
+def test_mixed_completeness_keeps_the_existing_uncapped_whole_print_reading():
+    parts = [_part(1, 10, "a", 1)]
+    lines = [_line(100, 10, 2)]
+    ctx = _ctx(lines, parts, [_archive(1, file_id=5, plate=1)], {1: [_ap(1, "a", 3)]}, {(5, 1): 10}, reserved={100: 2})
+    figs, other = attribute(ctx)
+    result = project_figures(ctx, figs, other)
+    assert (result.printed, result.covered_units, result.complete) == (3, 2, 5)
 
 
 def _archive(

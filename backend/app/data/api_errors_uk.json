@@ -620,6 +620,7 @@
   "Only an active order takes finished goods from stock": "Готові вироби зі складу бере лише активне замовлення",
   "Only catalogue products are kept in stock": "На складі тримають лише вироби з каталогу",
   "only counted printed parts hold stock": "залишок тримають лише друковані деталі, які враховуються",
+  "Only counted product parts can be reserved for a product line": "Для позиції виробу можна резервувати лише його обліковувані деталі",
   "Only failed or cancelled items can be retried, current status: '{}'": "Повторити можна лише невдалі або скасовані елементи, поточний статус: «{}»",
   "Only pending items can be grouped into a batch": "Обʼєднати в пакет можна лише елементи в очікуванні",
   "Only pending items can be skipped, current status: '{}'": "Пропустити можна лише елементи в очікуванні, поточний статус: «{}»",

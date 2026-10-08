@@ -370,6 +370,7 @@ async def set_configuration(
     current = (await load_line_configs(db, [line.id])).get(line.id, LineConfig())
     new_choices, new_counts = _validate(product, line.mode, {**current.choices, **choices}, counts)
     reserved_before = await part_stock.reserved_units_for_line(db, line)
+    reserved_parts = await part_stock.reserved_parts_for_line(db, line)
     if new_choices == current.choices and new_counts == current.counts:
         # Nothing changes: no rows, no reservation move, no journal entry.
         return ConfigOutcome(reserved_before, reserved_before, [], line.config_key)
@@ -379,17 +380,17 @@ async def set_configuration(
     if dry_run:
         dropping = await _dropping(db, line, product, old_comp, new_comp)
         after = 0
-        if reserved_before:
+        if reserved_parts:
             shelf = await part_stock.balances(db, product.id)
             # The line's own kits come back first — the rewrite releases them.
-            for part, per in counted(old_comp):
-                shelf[part.id] = shelf.get(part.id, 0) + reserved_before * per
+            for part_id, held in reserved_parts.items():
+                shelf[part_id] = shelf.get(part_id, 0) + held
             after = min(reserved_before, line.quantity, part_stock.kits_of(shelf, new_comp))
         return ConfigOutcome(reserved_before, after, dropping, config_key(line.mode, new_choices, new_counts))
     await _write(db, line, new_choices, new_counts)
     await db.flush()
     after = 0
-    if reserved_before:
+    if reserved_parts:
         after = await part_stock.reserve_for_line(
             db, line, reserved_before, comp=new_comp, created_by=actor.id if actor else None
         )

@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 - **Grouped filament inventory sorts by spool ID, lot, purchase date, location, label weight, net weight and remaining percentage.** Column headers order both the groups and their expanded spools. Group weights use their totals, and groups are sorted before pagination.
+- **Order plans can use loose warehouse parts, even without a complete kit.** The existing “Take from stock” action now reserves the missing individual parts and the plan subtracts their actual allocation. Mixed stock/printed receipts consume that reservation without crediting free stock twice; cancellation, quantity reduction and configuration changes return only unused parts. Batch offers share each warehouse balance between order lines. Repeated takes reserve only missing components, receipts keep each line's material eligibility, and mixed kits count as complete subject to purchased parts. The journal records the names and quantities of loose parts taken.
 
 - **MQTT recordings download from signed-in sessions again.** The debug dialog fetches the recording with the session token, refreshes an expired session and reports download errors without leaving the page. Recording permissions and printer scopes remain enforced.
 

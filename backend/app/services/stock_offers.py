@@ -13,17 +13,18 @@ what was shown: the shelf is clamped, never refused (a reservation, as in WS-10)
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.models.product import ProductPart
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
 from backend.app.services import finished_stock, order_journal, part_stock, plan_engine, stock_pick
-from backend.app.services.line_composition import load_line_configs
-from backend.app.services.order_metrics import attribute, load_order_context
+from backend.app.services.line_composition import counted, load_line_configs
+from backend.app.services.order_metrics import attribute, composition_of, load_order_context
 from backend.app.services.product_composition import recipes_for_products
 
 
@@ -41,6 +42,7 @@ class Offer:
     product_name: str
     from_finished: int
     kits: int
+    parts: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +52,8 @@ class Taken:
     got_finished: int
     asked_kits: int
     got_kits: int
+    asked_parts: dict[int, int] = field(default_factory=dict)
+    got_parts: dict[int, int] = field(default_factory=dict)
 
 
 async def offers(db: AsyncSession, project: Project) -> list[Offer]:
@@ -92,9 +96,60 @@ async def offers(db: AsyncSession, project: Project) -> list[Offer]:
             for line in asked
         ],
     )
-    out = []
+    shelves = await part_stock.balances_for_products(db, sorted({line.product_id for line in asked}))
+    # Suggestions describe each row's shelf. Offers are one batch: spend a
+    # shared shelf once, including two configurations of the same product.
+    ready_left: dict[int, int] = {}
+    fitted_suggestions = []
     for line, suggestion in zip(asked, suggestions, strict=True):
-        if suggestion.from_finished or suggestion.from_kits:
+        shelf = shelves.get(line.product_id, {})
+        ready = 0
+        if suggestion.position_id is not None:
+            available = ready_left.setdefault(suggestion.position_id, suggestion.finished_free)
+            ready = min(wants[line.id], available)
+            ready_left[suggestion.position_id] -= ready
+        kit = counted(composition_of(ctx, line))
+        kits = min(wants[line.id] - ready, part_stock.kits_of(shelf, kit))
+        # A partial reservation can already cover one component completely.
+        # A whole kit is an offer only if EVERY component is still needed;
+        # otherwise the loose-part pass takes just the missing components.
+        kits = (
+            min(
+                kits,
+                *(
+                    max(0, pf.remaining - pf.in_progress - queued.get(line.id, {}).get(pf.part_id, 0) - ready * pf.per)
+                    // pf.per
+                    for pf in figures[line.id].parts
+                    if pf.per > 0 and pf.shelf
+                ),
+            )
+            if kit
+            else 0
+        )
+        for part, per in kit:
+            shelf[part.id] -= kits * per
+        fitted_suggestions.append(replace(suggestion, from_finished=ready, from_kits=kits))
+    out = []
+    for line, suggestion in zip(asked, fitted_suggestions, strict=True):
+        shelf = shelves.get(line.product_id, {})
+        loose = {}
+        for pf in figures[line.id].parts:
+            if pf.per <= 0 or not pf.shelf:
+                continue
+            # Complete kit offers share the same shelf with loose parts and
+            # later lines. A finished unit comes from a different ledger.
+            need = max(
+                0,
+                pf.remaining
+                - pf.in_progress
+                - queued.get(line.id, {}).get(pf.part_id, 0)
+                - (suggestion.from_finished + suggestion.from_kits) * pf.per,
+            )
+            take = min(need, shelf[pf.part_id])
+            if take:
+                loose[pf.part_id] = take
+                shelf[pf.part_id] -= take
+        if suggestion.from_finished or suggestion.from_kits or loose:
             product = ctx.products_by_id.get(line.product_id)
             out.append(
                 Offer(
@@ -102,6 +157,7 @@ async def offers(db: AsyncSession, project: Project) -> list[Offer]:
                     product_name=product.name if product is not None else "",
                     from_finished=suggestion.from_finished,
                     kits=suggestion.from_kits,
+                    parts=loose,
                 )
             )
     return out
@@ -110,7 +166,7 @@ async def offers(db: AsyncSession, project: Project) -> list[Offer]:
 async def take(
     db: AsyncSession,
     project: Project,
-    shown: Mapping[int, tuple[int, int]] | None = None,
+    shown: Mapping[int, tuple[int, int] | tuple[int, int, dict[int, int]]] | None = None,
     *,
     actor: User | None,
 ) -> list[Taken]:
@@ -133,13 +189,16 @@ async def take(
     if await db.scalar(select(Project.status).where(Project.id == project.id)) != "active":
         raise StockOfferError("Only an active order takes finished goods from stock")
     current = {offer.line_id: offer for offer in await offers(db, project)}
-    asked = dict(shown) if shown is not None else {lid: (o.from_finished, o.kits) for lid, o in current.items()}
+    asked = (
+        dict(shown) if shown is not None else {lid: (o.from_finished, o.kits, o.parts) for lid, o in current.items()}
+    )
     out = []
     for line_id in sorted(asked):
         line = lines.get(line_id)
         if line is None:
             continue
-        asked_finished, asked_kits = asked[line_id]
+        asked_finished, asked_kits, *parts = asked[line_id]
+        asked_parts = parts[0] if parts else {}
         offer = current.get(line_id)
         finished = min(asked_finished, offer.from_finished) if offer is not None else 0
         kits = min(asked_kits, offer.kits) if offer is not None else 0
@@ -149,7 +208,24 @@ async def take(
             if kits
             else 0
         )
-        if got_finished or got_kits:
+        wanted_parts = {pid: min(qty, offer.parts.get(pid, 0)) for pid, qty in asked_parts.items()} if offer else {}
+        got_parts = (
+            await part_stock.add_parts_for_line(
+                db, line, wanted_parts, created_by=actor.id if actor is not None else None
+            )
+            if wanted_parts
+            else {}
+        )
+        if got_finished or got_kits or got_parts:
+            part_names = (
+                dict(
+                    (
+                        await db.execute(select(ProductPart.id, ProductPart.name).where(ProductPart.id.in_(got_parts)))
+                    ).all()
+                )
+                if got_parts
+                else {}
+            )
             await order_journal.record(
                 db,
                 project.id,
@@ -159,9 +235,17 @@ async def take(
                     "product": offer.product_name if offer is not None else None,
                     "from_finished": got_finished,
                     "kits": got_kits,
+                    **(
+                        {
+                            "parts": got_parts,
+                            "parts_taken": [[part_names[pid], qty] for pid, qty in sorted(got_parts.items())],
+                        }
+                        if got_parts
+                        else {}
+                    ),
                 },
                 actor=actor,
             )
-        out.append(Taken(line_id, asked_finished, got_finished, asked_kits, got_kits))
+        out.append(Taken(line_id, asked_finished, got_finished, asked_kits, got_kits, asked_parts, got_parts))
     await db.flush()
     return out
