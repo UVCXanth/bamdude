@@ -12,6 +12,63 @@ from backend.app.services import ams_advertised_overlay as overlay
 from backend.tests.unit.services.test_auto_stock_spool import event, manager, printer, spool
 
 
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("later_change", [None, "color", "rfid", "removal"])
+async def test_unknown_insertion_then_default_metadata_keeps_one_spool_until_config_echo(
+    db_session, printer_factory, later_change
+):
+    p = await printer(printer_factory)
+    first = await spool(db_session)
+    await spool(db_session)
+    pm, state, tray = manager(slot=1)
+    state.state = "IDLE"
+    tray.update(state=3, tray_type="", tray_color="00000000")
+
+    @asynccontextmanager
+    async def session():
+        yield db_session
+
+    publisher = AsyncMock(return_value=True)
+    with (
+        patch.object(main, "async_session", session),
+        patch.object(main.printer_manager, "get_status", pm.get_status),
+        patch.object(main, "printer_state_to_dict", return_value={}),
+        patch.object(main, "_repeat_available_for", AsyncMock(return_value=False)),
+        patch.object(main.ws_manager, "broadcast", AsyncMock()),
+        patch.object(main.ws_manager, "send_printer_status", AsyncMock()),
+        patch("backend.app.services.ams_backup_compatibility_apply.rebuild_once", AsyncMock()),
+        patch("backend.app.services.filament_low.check_printer", AsyncMock()),
+        patch("backend.app.api.routes.inventory.apply_spool_to_slot_via_mqtt", publisher),
+        patch("backend.app.api.routes.inventory.tray_types_written_for", AsyncMock(return_value={"PLA"})),
+    ):
+        insertion = event(slot=1)
+        await main.on_stock_spool_inserted(p.id, insertion)
+        # Firmware announces presence before it knows the material, then sends
+        # its temporary white default after accepting our configuration.
+        await main.on_ams_change(p.id, state.raw_data["ams"])
+        tray.update(tray_type="PLA", tray_color="FFFFFFFF", tray_info_idx="GFA00")
+        await main.on_ams_change(p.id, state.raw_data["ams"])
+        rows = (await db_session.execute(select(SpoolAssignment))).scalars().all()
+        assert [a.spool_id for a in rows] == [first.id]
+        tray.update(tray_color=first.rgba)
+        await main.on_ams_change(p.id, state.raw_data["ams"])
+        await main.on_stock_spool_inserted(p.id, insertion)
+        rows = (await db_session.execute(select(SpoolAssignment))).scalars().all()
+        assert [a.spool_id for a in rows] == [first.id]
+        assert rows[0].fingerprint_color == first.rgba
+        assert rows[0].fingerprint_type == "PLA"
+        if later_change == "color":
+            tray["tray_color"] = "0000FFFF"
+        elif later_change == "rfid":
+            tray.update(tray_uuid="A" * 32, tag_uid="1234567890ABCDEF")
+        elif later_change == "removal":
+            tray.update(exists=False, state=9, tray_type="", tray_color="")
+        if later_change:
+            await main.on_ams_change(p.id, state.raw_data["ams"])
+            assert (await db_session.execute(select(SpoolAssignment))).scalars().all() == []
+
+
 @pytest.fixture(autouse=True)
 def clear_callback_memory():
     main._stock_insertion_seen.clear()

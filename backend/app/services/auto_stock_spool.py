@@ -183,7 +183,11 @@ async def claim_on_insertion(db, *, printer_id: int, event: dict, manager) -> di
         ams_id=ams_id,
         tray_id=tray_id,
         fingerprint_color=tray.get("tray_color", ""),
-        fingerprint_type=tray.get("tray_type") or spool.material,
+        # Preserve unknown firmware identity. A blank fingerprint is the
+        # existing deferred-configuration marker used by manual pre-assignment:
+        # the next material report replays our slot plan instead of unlinking
+        # the stock claim on an intermediate default profile.
+        fingerprint_type=tray.get("tray_type") or "",
         created_at=now,
     )
     db.add(assignment)
