@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-- **Automatic stock assignment keeps the empty-slot evidence when settings are saved or AMS metadata arrives late.** Unchanged connection fields no longer reconnect MQTT. A fresh firmware presence mask received before the AMS tray list now arms subsequent insertions, without treating startup, reconnect, shutdown or command acknowledgements as a new spool.
+- **Automatic stock assignment keeps the empty-slot evidence when settings are saved or AMS metadata arrives late.** Unchanged connection fields no longer reconnect MQTT. A fresh firmware presence mask received before the AMS tray list now arms subsequent insertions. Presence transitions received before slot discovery remain available for at most 30 seconds in the same connection. A locally connected printer reporting its print state and both measured temperatures can establish an empty stock baseline even with AMS startup reading disabled; sparse shutdown reports, command acknowledgements and an already occupied startup slot still cannot claim a new spool.
 
 - **Print-start notifications, finish photos and post-print automation work again.** The first printer event after a queued dispatch now sends the start notification once. Finishing a print keeps its background work alive long enough to save its photo, send the completion message and run the configured auto-off or finish macros. Starting another print permanently cancels the previous print's permission to affect the printer, including delayed plug actions and late camera captures.
 

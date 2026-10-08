@@ -135,6 +135,128 @@ def test_discovered_unit_does_not_turn_an_already_present_bit_into_insertion():
     assert c._stock_spool_insertions(units(slot=1), {"tray_exist_bits": "2"}) == []
 
 
+@pytest.mark.parametrize("with_bits", [True, False])
+def test_presence_only_insertion_before_slot_discovery_is_delivered_once(with_bits):
+    c = client()
+    fired = []
+    c.on_spool_inserted = fired.append
+    c._process_message({"print": {"command": "push_status", "ams": {"tray_exist_bits": "0"}}})
+    c._process_message({"print": {"command": "push_status", "ams": {"tray_exist_bits": "1"}}})
+    metadata = {"ams": [{"id": "0", "tray": [{"id": "0", "state": 3, "tray_type": "PLA"}]}]}
+    if with_bits:
+        metadata["tray_exist_bits"] = "1"
+    c._process_message({"print": {"command": "push_status", "ams": metadata}})
+    c._process_message({"print": {"command": "push_status", "ams": metadata}})
+    assert [(e["ams_id"], e["tray_id"]) for e in fired] == [(0, 0)]
+    assert c.state.raw_data["ams"][0]["tray"][0]["exists"] is True
+
+
+def test_deferred_discovery_does_not_cross_a_reconnect_or_replay_a_removed_spool():
+    c = client()
+    c._stock_spool_insertions([], {"tray_exist_bits": "0"})
+    c._stock_spool_insertions([], {"tray_exist_bits": "1"})
+    c._stock_spool_insertions([], {"tray_exist_bits": "0"})
+    assert c._stock_spool_insertions(units(), {"tray_exist_bits": "0"}) == []
+    c._stock_spool_insertions([], {"tray_exist_bits": "1"})
+    c.state.connection_generation += 1
+    assert c._stock_spool_insertions(units(), {"tray_exist_bits": "1"}) == []
+
+
+@pytest.mark.parametrize("late_payload", [{}, {"tray_exist_bits": "1"}])
+def test_deferred_discovery_expires_at_the_original_observation_time(late_payload):
+    c = client()
+    c._stock_spool_insertions([], {"tray_exist_bits": "0"})
+    c._stock_spool_insertions([], {"tray_exist_bits": "1"})
+    c._stock_pending_presence[0]["observed_at"] -= timedelta(seconds=31)
+    assert c._stock_spool_insertions(units(), late_payload) == []
+
+
+def test_malformed_metadata_does_not_hide_a_valid_deferred_insertion():
+    c = client()
+    c._stock_spool_insertions([], {"tray_exist_bits": "0"})
+    c._stock_spool_insertions([], {"tray_exist_bits": "1"})
+    bad = [{"id": "unknown", "tray": [{"id": "bad"}]}, {"tray": [{}]}, {"id": 254, "tray": [{"id": 0}]}]
+    assert len(c._stock_spool_insertions(bad + units(), {})) == 1
+
+
+@pytest.mark.parametrize("veto", [{"tray_exist_bits": "bad mask"}, {"tray_exist_bits": "0", "power_on_flag": False}])
+def test_explicit_unreliable_report_cancels_deferred_insertion(veto):
+    c = client()
+    c._stock_spool_insertions([], {"tray_exist_bits": "0"})
+    c._stock_spool_insertions([], {"tray_exist_bits": "1"})
+    assert c._stock_spool_insertions([], veto) == []
+    assert c._stock_spool_insertions(units(), {}) == []
+
+
+@pytest.mark.parametrize("with_units", [False, True])
+def test_live_empty_status_with_startup_read_disabled_arms_first_insertion(with_units):
+    c = client()
+    c.state.connected = True
+    fired = []
+    c.on_spool_inserted = fired.append
+    empty = {"tray_exist_bits": "0", "power_on_flag": False}
+    if with_units:
+        empty["ams"] = [{"id": "0", "tray": [{"id": "0"}, {"id": "1"}]}]
+    c._process_message(
+        {
+            "print": {
+                "command": "push_status",
+                "gcode_state": "IDLE",
+                "nozzle_temper": 22.3,
+                "bed_temper": 22.5,
+                "ams": empty,
+            }
+        }
+    )
+    c._process_message(
+        {
+            "print": {
+                "command": "push_status",
+                "ams": {"tray_exist_bits": "1", "ams": [{"id": "0", "tray": [{"id": "0", "tray_type": "PLA"}]}]},
+            }
+        }
+    )
+    assert [(e["ams_id"], e["tray_id"]) for e in fired] == [(0, 0)]
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"connected": False},
+        {"command": "ams_user_setting"},
+        {"gcode_state": "UNKNOWN"},
+        {"nozzle_temper": None},
+        {"bed_temper": None},
+        {"nozzle_temper": True},
+        {"bed_temper": 0},
+        {"bed_temper": float("nan")},
+        {"nozzle_temper": float("inf")},
+        {"nozzle_temper": "22.3"},
+    ],
+)
+def test_shutdown_guard_requires_fresh_physical_status_in_the_same_frame(invalid):
+    c = client()
+    c.state.connected = invalid.get("connected", True)
+    # Cached measurements must never rescue an incomplete incoming frame.
+    c.state.nozzle_temperature = c.state.bed_temperature = 22.0
+    fired = []
+    c.on_spool_inserted = fired.append
+    frame = {
+        "command": "push_status",
+        "gcode_state": "IDLE",
+        "nozzle_temper": 22.3,
+        "bed_temper": 22.5,
+        "ams": {"tray_exist_bits": "0", "power_on_flag": False, "ams": units()},
+    }
+    frame.update({k: v for k, v in invalid.items() if k != "connected"})
+    for k, v in invalid.items():
+        if v is None:
+            frame.pop(k, None)
+    c._process_message({"print": frame})
+    c._process_message({"print": {"command": "push_status", "ams": {"tray_exist_bits": "1", "ams": units()}}})
+    assert fired == []
+
+
 def test_empty_mask_without_units_does_not_cross_a_reconnect():
     c = client()
     c._stock_spool_insertions([], {"tray_exist_bits": "0"})

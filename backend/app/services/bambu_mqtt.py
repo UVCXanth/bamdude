@@ -10,6 +10,7 @@ but with qos=1 they respond instantly.
 import asyncio
 import json
 import logging
+import math
 import os
 import ssl
 import threading
@@ -2215,6 +2216,7 @@ class BambuMQTTClient:
         self._stock_presence_generation = None
         self._stock_presence: dict[tuple[int, int], bool] = {}
         self._stock_presence_bits: str | int | None = None
+        self._stock_pending_presence: list[dict] = []
         self._stock_insertion_sequence = 0
         self.on_layer_change = on_layer_change
         self.on_macro_complete = on_macro_complete
@@ -3154,7 +3156,9 @@ class BambuMQTTClient:
         if "ams" in payload:
             try:
                 self._handle_ams_data(
-                    payload["ams"], presence_is_status=is_printer_status_frame(payload.get("print", payload))
+                    payload["ams"],
+                    presence_is_status=is_printer_status_frame(payload.get("print", payload)),
+                    printer_status=payload.get("print", payload),
                 )
             except Exception as e:
                 logger.error("[%s] Error handling AMS data: %s", self.serial_number, e)
@@ -3317,7 +3321,11 @@ class BambuMQTTClient:
             # Handle AMS data that comes inside print key
             if "ams" in print_data:
                 try:
-                    self._handle_ams_data(print_data["ams"], presence_is_status=is_printer_status_frame(print_data))
+                    self._handle_ams_data(
+                        print_data["ams"],
+                        presence_is_status=is_printer_status_frame(print_data),
+                        printer_status=print_data,
+                    )
                 except Exception as e:
                     logger.error("[%s] Error handling AMS data from print: %s", self.serial_number, e)
 
@@ -4338,7 +4346,7 @@ class BambuMQTTClient:
         logger.debug("[%s] External spool identity changed, triggering sync callback", self.serial_number)
         self.on_ams_change(self.state.raw_data.get("ams") or [])
 
-    def _handle_ams_data(self, ams_data, *, presence_is_status=True):
+    def _handle_ams_data(self, ams_data, *, presence_is_status=True, printer_status=None):
         """Handle AMS data changes for Spoolman integration.
 
         This is called when we receive top-level AMS data in MQTT messages.
@@ -4869,7 +4877,30 @@ class BambuMQTTClient:
             )
 
         self.state.raw_data["ams"] = merged_ams
-        inserted = self._stock_spool_insertions(merged_ams, ams_data) if presence_is_status else []
+        stock_payload = ams_data
+        if (
+            presence_is_status
+            and self.state.connected
+            and isinstance(ams_data, dict)
+            and ams_data.get("power_on_flag") is False
+            and isinstance(printer_status, dict)
+            and printer_status.get("gcode_state")
+            in ("IDLE", "RUNNING", "PAUSE", "FINISH", "FAILED", "PREPARE", "SLICING")
+            and all(
+                isinstance(printer_status.get(k), (int, float))
+                and not isinstance(printer_status[k], bool)
+                and math.isfinite(printer_status[k])
+                and printer_status[k] > 0
+                for k in ("nozzle_temper", "bed_temper")
+            )
+        ):
+            # This flag is "read AMS on startup", not the printer's power.
+            # A live status carrying both physical temperature measurements
+            # disproves the shutdown interpretation. Admit this empty baseline
+            # ONLY for stock insertion tracking; keep the shared cache/VP
+            # shutdown guard unchanged. Sparse reports/ACKs cannot override it.
+            stock_payload = {**ams_data, "power_on_flag": True}
+        inserted = self._stock_spool_insertions(merged_ams, stock_payload) if presence_is_status else []
 
         # ⚠️ Derived BEFORE the falling-edge detector below, which reads
         # ``dry_status`` to tell a finished cycle from a transient zero. It
@@ -5084,6 +5115,7 @@ class BambuMQTTClient:
             self._stock_presence_generation = self.state.connection_generation
             self._stock_presence.clear()
             self._stock_presence_bits = None
+            self._stock_pending_presence.clear()
         if not isinstance(payload, dict):
             return []
         bits = payload.get("tray_exist_bits")
@@ -5093,8 +5125,26 @@ class BambuMQTTClient:
         # reports; never seed from cached tray content or a command ACK.
         probe = [{"id": 0, "tray": [{"id": 0}]}]
         apply_tray_exist_bits(probe, bits, power_on_flag=payload.get("power_on_flag", True), annotate_exists=True)
-        if not isinstance(probe[0]["tray"][0].get("exists"), bool):
-            return []
+        valid_bits = isinstance(probe[0]["tray"][0].get("exists"), bool)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        self._stock_pending_presence = [
+            p for p in self._stock_pending_presence if 0 <= (now - p["observed_at"]).total_seconds() <= 30
+        ]
+        if not valid_bits:
+            # Metadata may follow an already witnessed bit edge in a separate
+            # status push. An explicitly invalid/shutdown mask still vetoes it.
+            if "tray_exist_bits" in payload:
+                self._stock_pending_presence.clear()
+                return []
+            if not self._stock_pending_presence:
+                return []
+        else:
+            if self._stock_presence_bits is not None and self._stock_presence_bits != bits:
+                self._stock_pending_presence.append(
+                    {"before": self._stock_presence_bits, "after": bits, "observed_at": now, "seen": set()}
+                )
+                self._stock_pending_presence = self._stock_pending_presence[-32:]
+            self._stock_presence_bits = bits
         # Reuse the canonical firmware bit layout, but never feed cached presence
         # annotations back into the decision. Invalid/missing bits produce none.
         fresh = [
@@ -5102,21 +5152,46 @@ class BambuMQTTClient:
             for u in units
             if isinstance(u, dict)
         ]
-        if self._stock_presence_bits is not None:
-            prior = [{"id": u["id"], "tray": [dict(t) for t in u["tray"]]} for u in fresh]
-            apply_tray_exist_bits(prior, self._stock_presence_bits, annotate_exists=True)
-            for unit in prior:
-                for tray in unit["tray"]:
-                    present = tray.get("exists")
-                    if isinstance(present, bool):
-                        self._stock_presence.setdefault((int(unit["id"]), int(tray["id"])), present)
         apply_tray_exist_bits(
             fresh,
-            bits,
-            power_on_flag=payload.get("power_on_flag", True),
+            self._stock_presence_bits,
             annotate_exists=True,
         )
-        self._stock_presence_bits = bits
+        current = {
+            (int(u["id"]), int(t["id"])): t["exists"]
+            for u in fresh
+            for t in u["tray"]
+            if isinstance(t.get("exists"), bool)
+        }
+        pending = {}
+        for observation in self._stock_pending_presence:
+            before = [{"id": u["id"], "tray": [dict(t) for t in u["tray"]]} for u in fresh]
+            after = [{"id": u["id"], "tray": [dict(t) for t in u["tray"]]} for u in fresh]
+            apply_tray_exist_bits(before, observation["before"], annotate_exists=True)
+            apply_tray_exist_bits(after, observation["after"], annotate_exists=True)
+            for prior_unit, next_unit in zip(before, after, strict=True):
+                for prior, next_tray in zip(prior_unit["tray"], next_unit["tray"], strict=True):
+                    if not isinstance(prior.get("exists"), bool):
+                        continue
+                    key = (int(prior_unit["id"]), int(prior["id"]))
+                    if key in observation["seen"] or key not in current:
+                        continue
+                    observation["seen"].add(key)
+                    if prior.get("exists") is False and next_tray.get("exists") is True and current[key]:
+                        pending[key] = observation["observed_at"]
+        if not valid_bits:
+            # Only the recent witnessed insertion may annotate a late-discovered
+            # slot. No default/cached tray shape can manufacture an observation.
+            for unit in units:
+                if not isinstance(unit, dict):
+                    continue
+                for tray in unit.get("tray", []):
+                    if not isinstance(tray, dict):
+                        continue
+                    # Only IDs already validated by the canonical bit decoder
+                    # may receive a deferred observation.
+                    if any(str(unit.get("id")) == str(a) and str(tray.get("id")) == str(t) for a, t in pending):
+                        tray["exists"] = True
         events = []
         for unit in fresh:
             for tray in unit["tray"]:
@@ -5126,7 +5201,7 @@ class BambuMQTTClient:
                 key = (int(unit["id"]), int(tray["id"]))
                 previous = self._stock_presence.get(key)
                 self._stock_presence[key] = present
-                if previous is None and present:
+                if previous is None and present and key not in pending:
                     logger.info(
                         "[%s] Stock presence baseline AMS%s-T%s generation=%s: already present; not an insertion",
                         self.serial_number,
@@ -5134,7 +5209,7 @@ class BambuMQTTClient:
                         key[1],
                         self.state.connection_generation,
                     )
-                if previous is False and present is True:
+                if key in pending:
                     self._stock_insertion_sequence += 1
                     events.append(
                         {
@@ -5142,7 +5217,7 @@ class BambuMQTTClient:
                             "tray_id": key[1],
                             "generation": self.state.connection_generation,
                             "sequence": self._stock_insertion_sequence,
-                            "observed_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                            "observed_at": pending[key],
                         }
                     )
         return events
