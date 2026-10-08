@@ -220,7 +220,12 @@ def _product_line(ctx: OrderContext, line, figs: LineFigures, name: str, room: d
                 (
                     min(
                         max(0, room[pf.part_id]),
-                        max(0, pf.usable - max(0, received * pf.per - pf.stock_used_qty)),
+                        max(
+                            0,
+                            pf.usable
+                            - max(0, received * pf.per - pf.stock_used_qty)
+                            - ctx.made_by_line_part.get((line.id, pf.part_id), 0),
+                        ),
                     )
                     + partial[pf.part_id]
                 )
@@ -247,8 +252,17 @@ def _product_line(ctx: OrderContext, line, figs: LineFigures, name: str, room: d
         # The main receipt has first call on the loose allocation. The number
         # exposed for extras is what is left after that maximum receipt.
         stock = max(0, pf.allocated_qty - kits * pf.per - can_receive * pf.per)
+        # Extras obey the same line eligibility and shared-output budget as the
+        # main kit. Its maximum receipt has already claimed printed components.
+        eligible = max(
+            0,
+            pf.usable
+            - max(0, received * pf.per - pf.stock_used_qty)
+            - ctx.made_by_line_part.get((line.id, pf.part_id), 0)
+            - max(0, can_receive * pf.per - partial[pf.part_id]),
+        )
         extra_can_receive = min(
-            max(0, pf.extra_qty + extra_written_off - extra_received), max(0, room[pf.part_id]) + stock
+            max(0, pf.extra_qty + extra_written_off - extra_received), min(max(0, room[pf.part_id]), eligible) + stock
         )
         from_stock = min(extra_can_receive, stock)
         room[pf.part_id] -= extra_can_receive - from_stock

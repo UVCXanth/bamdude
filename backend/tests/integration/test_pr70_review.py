@@ -149,3 +149,58 @@ async def test_line_cannot_hide_received_extras_but_can_reconfigure_before_movem
     response = await committing_client.put(url, json={"part_counts": {str(s["a"].id): 0}, "choices": {}})
     assert response.status_code == 409, response.text
     assert await state(committing_client, s) == before
+
+
+@pytest.mark.parametrize("receipt", ["main", "extra"])
+async def test_extra_receipts_keep_material_eligibility(committing_client, db_session, shop, receipt):
+    s = await extra_order(committing_client, db_session, shop, a=10, b=0)
+    assert (
+        await committing_client.patch(f"/api/v1/projects/{s['order']}/lines/{s['line']}", json={"material": "PLA"})
+    ).status_code == 200
+    response = await committing_client.post(
+        f"/api/v1/projects/{s['order']}/lines",
+        json={
+            "product_id": s["a"].product_id,
+            "quantity": 10,
+            "material": "PETG",
+        },
+    )
+    assert response.status_code == 200, response.text
+    other = next(line["id"] for line in response.json()["lines"] if line["id"] != s["line"])
+    await archive(db_session, {**s, "line": other}, status="completed", quantities=(33, 10))
+    before = await state(committing_client, s)
+    lines = {line["line_id"]: line for line in before["lines"]}
+    request = {
+        "line_id": s["line"],
+        **({"receive": 10} if receipt == "main" else {"parts": [{"part_id": s["a"].id, "receive": 3}]}),
+    }
+    response = await committing_client.post(f"/api/v1/projects/{s['order']}/fulfilment", json={"lines": [request]})
+    assert response.status_code == 409, response.text
+    assert lines[s["line"]]["can_receive"] == 0
+    assert lines[s["line"]]["parts"][0]["can_receive"] == 0
+    assert lines[other]["can_receive"] == 10
+    assert lines[other]["parts"][0]["can_receive"] == 3
+    assert await state(committing_client, s) == before
+
+
+async def test_mixed_stock_receipts_and_later_delivery_do_not_repeat_extras(committing_client, db_session, shop):
+    s = await extra_order(committing_client, db_session, shop, a=10, b=0)
+    await part_stock.move(db_session, part_id=s["a"].id, delta=33, reason="manual", note="Synthetic A delivery")
+    await db_session.commit()
+    assert (await committing_client.post(f"/api/v1/projects/{s['order']}/take-stock", json={})).status_code == 200
+    await archive(db_session, s, status="completed", quantities=(0, 10))
+    for main, extra in ((4, 1), (6, 2)):
+        response = await committing_client.post(
+            f"/api/v1/projects/{s['order']}/fulfilment",
+            json={
+                "lines": [{"line_id": s["line"], "receive": main, "parts": [{"part_id": s["a"].id, "receive": extra}]}],
+            },
+        )
+        assert response.status_code == 200, response.text
+    for part, qty in ((s["a"], 33), (s["b"], 10)):
+        await part_stock.move(db_session, part_id=part.id, delta=qty, reason="manual", note="Synthetic later delivery")
+    await db_session.commit()
+    for _ in range(2):
+        response = await committing_client.post(f"/api/v1/projects/{s['order']}/take-stock", json={})
+        assert response.status_code == 200 and response.json()["results"] == []
+        assert await part_stock.balances(db_session, s["a"].product_id) == {s["a"].id: 33, s["b"].id: 10}
