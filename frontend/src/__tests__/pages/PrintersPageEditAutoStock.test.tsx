@@ -35,7 +35,8 @@ describe('Edit Printer — automatic stock assignment', () => {
     await userEvent.selectOptions(screen.getByLabelText('Inventory filament group'), screen.getByRole('option', { name: /Fixture PETG Basic/ }));
     await userEvent.click(checkbox);
     await userEvent.click(screen.getByText('How automatic assignment works'));
-    expect(screen.getByText(/Only fresh local empty/)).toBeVisible();
+    expect(screen.getByText(/For AMS slots, only fresh local empty/)).toBeVisible();
+    expect(screen.getByText(/External holders: after an unambiguous runout/)).toBeVisible();
     await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
     await waitFor(() => expect(patches).toHaveLength(1));
     expect(patches[0].ams_policies.auto_stock_spool).toEqual({ enabled: true, group });

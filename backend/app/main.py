@@ -1543,6 +1543,7 @@ _nozzle_count_updated: set[int] = set()
 # HMS classification). The reason hint is consumed + cleared by the next
 # pause edge so a subsequent unrelated user-pause doesn't inherit it.
 _last_printer_state: dict[int, str] = {}
+_last_printer_state_generation: dict[int, int] = {}
 _pause_started_at: dict[int, float] = {}
 _expected_pause_reasons: dict[int, str] = {}
 
@@ -1689,7 +1690,7 @@ async def _handle_pause_edge(printer_id: int, state: PrinterState):
         logging.getLogger(__name__).warning("pause edge handler failed for printer %s: %s", printer_id, e)
 
 
-async def _handle_resume_edge(printer_id: int, state: PrinterState):
+async def _handle_resume_edge(printer_id: int, state: PrinterState, *, stock_resume_witnessed: bool = False):
     """Fire on_print_resume notification + WS push on PAUSE→RUNNING.
 
     Computes paused duration from ``_pause_started_at`` (planted by
@@ -1697,6 +1698,8 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState):
     without a recorded start (e.g. BamDude restarted while the printer
     was paused).
     """
+    observed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    generation = state.connection_generation
     try:
         printer_info = printer_manager.get_printer(printer_id)
         printer_name = printer_info.name if printer_info else f"Printer {printer_id}"
@@ -1718,9 +1721,39 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState):
             from backend.app.models.print_usage_event import EVENT_RESUME
             from backend.app.services.print_usage_journal import active_archive_id, record_event
 
-            async with async_session() as db:
+            async with _get_ams_assignment_lock(printer_id), async_session() as db:
                 archive_id = await active_archive_id(db, printer_id)
                 if archive_id is not None:
+                    from backend.app.services.auto_stock_spool import claim_on_external_resume
+
+                    outcome = (
+                        await claim_on_external_resume(
+                            db,
+                            printer_id=printer_id,
+                            event={"observed_at": observed_at, "generation": generation},
+                            manager=printer_manager,
+                        )
+                        if stock_resume_witnessed
+                        else {"reason": "unwitnessed_resume"}
+                    )
+                    if outcome["reason"] == "assigned":
+                        from backend.app.services import ams_advertised_overlay as overlay
+
+                        overlay.forget(printer_id, 255, outcome["tray_id"])
+                        # Resume was reported by the printer, not requested by
+                        # us. Keep its in-flight filament configuration intact;
+                        # only inventory attribution changes at the runout layer.
+                        await ws_manager.broadcast(
+                            {"type": "spool_auto_assigned", "printer_id": printer_id, "spool_id": outcome["spool_id"]}
+                        )
+                    elif outcome["reason"] == "no_full_stock":
+                        await ws_manager.broadcast({"type": "stock_spool_unavailable", "printer_id": printer_id})
+                    logging.getLogger(__name__).info(
+                        "External stock resume decision: printer=%s generation=%s reason=%s",
+                        printer_id,
+                        generation,
+                        outcome["reason"],
+                    )
                     tray, spool_id, spoolman_spool_id = await _current_tray_frozen(db, printer_id, state)
                     await record_event(
                         db,
@@ -1733,7 +1766,9 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState):
                         spoolman_spool_id=spoolman_spool_id,
                     )
         except Exception as e:
-            logging.getLogger(__name__).debug("Resume journal entry failed for printer %d: %s", printer_id, e)
+            logging.getLogger(__name__).warning(
+                "Resume stock/journal processing failed for printer %d: %s", printer_id, e
+            )
 
         filename = state.subtask_name or state.gcode_file
         ws_data = {
@@ -1968,8 +2003,17 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         if prev_state == "RUNNING" and current_state == "PAUSE":
             await _handle_pause_edge(printer_id, state)
         elif prev_state == "PAUSE" and current_state == "RUNNING":
-            await _handle_resume_edge(printer_id, state)
+            await _handle_resume_edge(
+                printer_id,
+                state,
+                stock_resume_witnessed=(
+                    _printer_last_connected.get(printer_id) is True
+                    and state.connected
+                    and _last_printer_state_generation.get(printer_id) == state.connection_generation
+                ),
+            )
     _last_printer_state[printer_id] = current_state
+    _last_printer_state_generation[printer_id] = state.connection_generation
 
     # Offline-notification edge (#1752): schedule on_printer_offline on the
     # connected→disconnected transition. "Back online" is already covered by the

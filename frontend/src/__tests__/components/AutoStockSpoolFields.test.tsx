@@ -26,6 +26,12 @@ describe('Automatic stock fields — fallback and permissions', () => {
     expect(help).toHaveTextContent('including after restart');
     expect(help).toHaveTextContent('After confirmed runout, insertion means a new full spool');
     expect(help).toHaveTextContent('returning the old spool requires manual assignment');
+    const externalHelp = screen.getByText(/External holders: after an unambiguous runout/);
+    expect(externalHelp).toBeVisible();
+    expect(externalHelp).toHaveTextContent('PAUSE → RUNNING');
+    expect(externalHelp).toHaveTextContent('ordinary loading without runout still needs manual assignment');
+    expect(externalHelp).toHaveTextContent('Both H2D external sides');
+    expect(externalHelp).toHaveTextContent('never resumes the printer or changes its in-flight filament configuration');
   });
 
   it('shows a load failure rather than inventing a stock group', async () => {

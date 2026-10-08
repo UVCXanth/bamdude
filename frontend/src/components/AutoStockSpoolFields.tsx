@@ -67,6 +67,7 @@ export function AutoStockSpoolFields({ value, onChange }: {
             <HelpCircle className="w-3.5 h-3.5" />{t('printers.autoStock.helpTitle')}
           </summary>
           <p className="mt-2">{t('printers.autoStock.help')}</p>
+          <p className="mt-2">{t('printers.autoStock.externalHelp')}</p>
         </details>
       </div>
     </div>
