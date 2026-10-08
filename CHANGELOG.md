@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **MQTT recordings download from signed-in sessions again.** The debug dialog fetches the recording with the session token, refreshes an expired session and reports download errors without leaving the page. Recording permissions and printer scopes remain enforced.
+
 - **Print-start notifications, finish photos and post-print automation work again.** The first printer event after a queued dispatch now sends the start notification once. Finishing a print keeps its background work alive long enough to save its photo, send the completion message and run the configured auto-off or finish macros. Starting another print permanently cancels the previous print's permission to affect the printer, including delayed plug actions and late camera captures.
 
 - **PostgreSQL diagnostics keep working when a statistics query fails.** Each SQL check is isolated, so a missing `pg_stat_statements` no longer hides the server version, database size and other health data. The PostgreSQL Compose setup now enables query statistics automatically for both new and existing databases; apply the updated Compose files with `docker compose up -d`.

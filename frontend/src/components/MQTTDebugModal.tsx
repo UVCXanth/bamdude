@@ -4,6 +4,7 @@ import { X, Play, Square, Trash2, RefreshCw, ArrowDown, ArrowUp, Search, Downloa
 import { api, type MQTTLogEntry } from '../api/client';
 import { Button } from './Button';
 import { Modal } from './Modal';
+import { useToast } from '../contexts/ToastContext';
 import { useState, useEffect, useId, useRef, useMemo } from 'react';
 
 function formatBytes(bytes: number): string {
@@ -20,6 +21,7 @@ interface MQTTDebugModalProps {
 
 export function MQTTDebugModal({ printerId, printerName, onClose }: MQTTDebugModalProps) {
   const { t } = useTranslation();
+  const { showToast } = useToast();
   const headingId = useId();
   const queryClient = useQueryClient();
   const [autoScroll, setAutoScroll] = useState(true);
@@ -54,6 +56,11 @@ export function MQTTDebugModal({ printerId, printerName, onClose }: MQTTDebugMod
   const clearMutation = useMutation({
     mutationFn: () => api.clearMQTTRecording(printerId),
     onSuccess: invalidate,
+  });
+
+  const downloadMutation = useMutation({
+    mutationFn: () => api.downloadMQTTRecording(printerId),
+    onError: (error: Error) => showToast(error.message, 'error'),
   });
 
   // Auto-scroll to bottom when new logs arrive
@@ -179,18 +186,16 @@ export function MQTTDebugModal({ printerId, printerName, onClose }: MQTTDebugMod
           >
             <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
           </Button>
-          <a
-            href={api.mqttRecordingDownloadUrl(printerId)}
-            className={`inline-flex items-center gap-1 rounded px-2 py-1 text-sm ${
-              sizeBytes > 0
-                ? 'text-bambu-gray hover:text-white'
-                : 'pointer-events-none opacity-40 text-bambu-gray'
-            }`}
+          <button
+            type="button"
+            onClick={() => downloadMutation.mutate()}
+            disabled={sizeBytes === 0 || downloadMutation.isPending}
+            className="inline-flex items-center gap-1 rounded px-2 py-1 text-sm text-bambu-gray hover:text-white disabled:opacity-40 disabled:pointer-events-none"
             title={t('mqttDebug.download')}
           >
             <Download className="w-4 h-4" />
             {t('mqttDebug.download')}
-          </a>
+          </button>
           {/* ⚠️ Nothing caps a recording. The size is what makes one nobody
               remembers starting visible rather than discovered when the disk
               fills — the same reason the printer card carries it. */}
