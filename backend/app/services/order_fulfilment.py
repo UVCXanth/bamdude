@@ -79,6 +79,7 @@ class PartState:
     issued: int
     #: Written off under the order (spec workshop-order-issue-followups, rule 44).
     written_off: int = 0
+    stock_qty: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +105,7 @@ class LineState:
     def fully_issued(self) -> bool:
         if self.mode == "parts":
             return all(part.issued >= part.wanted for part in self.parts)
-        return self.issued >= self.ordered
+        return self.issued >= self.ordered and all(part.issued >= part.wanted for part in self.parts)
 
     @property
     def fully_stocked(self) -> bool:
@@ -112,7 +113,9 @@ class LineState:
         workshop-order-issue-followups, rule 36) — what an order without a customer closes on."""
         if self.mode == "parts":
             return all(part.issued + part.held >= part.wanted for part in self.parts)
-        return self.issued + self.held >= self.ordered
+        return self.issued + self.held >= self.ordered and all(
+            part.issued + part.held >= part.wanted for part in self.parts
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,11 +184,22 @@ def _order_parts(
             for pf in figs.parts:
                 if pf.per > 0:
                     received[pf.part_id] += max(0, (line.received or 0) * pf.per - pf.stock_used_qty)
+                    received[pf.part_id] += ctx.made_by_line_part.get((line.id, pf.part_id), 0)
     return usable, received
 
 
-def _product_line(ctx: OrderContext, line, figs: LineFigures, name: str, room: dict[int, int]) -> LineState:
-    kits = ctx.reserved_by_line.get(line.id, 0)
+def _product_line(ctx: OrderContext, line, figs: LineFigures, name: str, room: dict[int, int], counters) -> LineState:
+    kits = min(
+        ctx.reserved_by_line.get(line.id, 0),
+        max(
+            0,
+            line.quantity
+            - (line.from_finished or 0)
+            - (line.assembled or 0)
+            - (line.received or 0)
+            + (line.written_off or 0),
+        ),
+    )
     from_finished, assembled, received = line.from_finished or 0, line.assembled or 0, line.received or 0
     written_off = line.written_off or 0
     # What the shelf and the kits already cover is not printed work to receive; what is
@@ -206,7 +220,12 @@ def _product_line(ctx: OrderContext, line, figs: LineFigures, name: str, room: d
                 (
                     min(
                         max(0, room[pf.part_id]),
-                        max(0, pf.usable - max(0, received * pf.per - pf.stock_used_qty)),
+                        max(
+                            0,
+                            pf.usable
+                            - max(0, received * pf.per - pf.stock_used_qty)
+                            - ctx.made_by_line_part.get((line.id, pf.part_id), 0),
+                        ),
                     )
                     + partial[pf.part_id]
                 )
@@ -223,6 +242,42 @@ def _product_line(ctx: OrderContext, line, figs: LineFigures, name: str, room: d
     # A kit is assembled only into a unit the order still needs: past the quantity it
     # would leave finished units held for an order that closes (spec rule 12).
     covered = from_finished + assembled + received - written_off
+    extras = []
+    for pf in kit:
+        if not pf.extra_qty:
+            continue
+        row = counters.get(pf.part_id)
+        extra_received = row.received if row is not None else 0
+        extra_written_off = row.written_off if row is not None else 0
+        # The main receipt has first call on the loose allocation. The number
+        # exposed for extras is what is left after that maximum receipt.
+        stock = max(0, pf.allocated_qty - kits * pf.per - can_receive * pf.per)
+        # Extras obey the same line eligibility and shared-output budget as the
+        # main kit. Its maximum receipt has already claimed printed components.
+        eligible = max(
+            0,
+            pf.usable
+            - max(0, received * pf.per - pf.stock_used_qty)
+            - ctx.made_by_line_part.get((line.id, pf.part_id), 0)
+            - max(0, can_receive * pf.per - partial[pf.part_id]),
+        )
+        extra_can_receive = min(
+            max(0, pf.extra_qty + extra_written_off - extra_received), min(max(0, room[pf.part_id]), eligible) + stock
+        )
+        from_stock = min(extra_can_receive, stock)
+        room[pf.part_id] -= extra_can_receive - from_stock
+        extras.append(
+            PartState(
+                part_id=pf.part_id,
+                name=pf.name,
+                wanted=pf.extra_qty,
+                can_receive=extra_can_receive,
+                held=part_stock.part_held(row) if row is not None else 0,
+                issued=row.issued if row is not None else 0,
+                written_off=extra_written_off,
+                stock_qty=from_stock,
+            )
+        )
     return LineState(
         line_id=line.id,
         product_name=name,
@@ -235,6 +290,7 @@ def _product_line(ctx: OrderContext, line, figs: LineFigures, name: str, room: d
         held=finished_stock.held_units(line),
         issued=line.issued or 0,
         written_off=written_off,
+        parts=extras,
     )
 
 
@@ -283,7 +339,9 @@ async def moved_line_ids(db: AsyncSession, lines: Sequence[ProjectLine]) -> set[
     """The lines whose stock has moved (spec rule 13): a product line assembled, received
     or issued something; a parts line received or issued a part. One read for the parts lines."""
     moved = {line.id for line in lines if line.mode != "parts" and finished_stock.moved(line)}
-    counters = await part_stock.line_part_stock(db, [line.id for line in lines if line.mode == "parts"])
+    counters = await part_stock.line_part_stock(
+        db, [line.id for line in lines if line.mode == "parts" or line.extra_percentages]
+    )
     for line_id, rows in counters.items():
         if any(row.received + row.issued > 0 for row in rows.values()):
             moved.add(line_id)
@@ -311,7 +369,9 @@ async def state(
     if ctx is None:
         ctx = await load_context(db, project)
     figures, _other = attribute(ctx)
-    counters = await part_stock.line_part_stock(db, [line.id for line in ctx.lines if line.mode == "parts"])
+    counters = await part_stock.line_part_stock(
+        db, [line.id for line in ctx.lines if line.mode == "parts" or line.extra_percentages]
+    )
     usable, received = _order_parts(ctx, figures, counters)
     # What the order's prints hold beyond what its lines received — shared out in line order.
     room: dict[int, int] = defaultdict(int, {pid: usable[pid] - received[pid] for pid in set(usable) | set(received)})
@@ -322,21 +382,25 @@ async def state(
         if line.mode == "parts":
             lines.append(_parts_line(line, figures[line.id], name, counters.get(line.id, {}), room))
         else:
-            lines.append(_product_line(ctx, line, figures[line.id], name, room))
+            lines.append(_product_line(ctx, line, figures[line.id], name, room, counters.get(line.id, {})))
     closes = project.customer_id is None if to_stock is None else to_stock
     fully_issued = all(row.fully_issued for row in lines)
     return OrderState(
         lines=lines,
-        ordered=sum(row.ordered for row in lines),
-        issued=sum(row.issued for row in lines),
-        held=sum(row.held for row in lines),
+        ordered=sum(row.ordered + (sum(p.wanted for p in row.parts) if row.mode == "product" else 0) for row in lines),
+        issued=sum(row.issued + (sum(p.issued for p in row.parts) if row.mode == "product" else 0) for row in lines),
+        held=sum(row.held + (sum(p.held for p in row.parts) if row.mode == "product" else 0) for row in lines),
         fully_issued=fully_issued,
         closes_to_stock=closes,
         can_complete=all(row.fully_stocked for row in lines) if closes else fully_issued,
         can_assemble=sum(row.can_assemble for row in lines),
         can_receive=sum(row.can_receive + sum(p.can_receive for p in row.parts) for row in lines),
         can_issue=sum(
-            row.held + row.can_assemble + row.can_receive + sum(p.can_receive for p in row.parts) for row in lines
+            row.held
+            + row.can_assemble
+            + row.can_receive
+            + sum(p.can_receive + (p.held if row.mode == "product" else 0) for p in row.parts)
+            for row in lines
         ),
     )
 
@@ -349,7 +413,9 @@ async def ensure_prints_can_leave(db: AsyncSession, project_id: int, archive_ids
     ctx = await load_order_context(db, project_id)
     if ctx is None or not archive_ids:
         return
-    counters = await part_stock.line_part_stock(db, [line.id for line in ctx.lines if line.mode == "parts"])
+    counters = await part_stock.line_part_stock(
+        db, [line.id for line in ctx.lines if line.mode == "parts" or line.extra_percentages]
+    )
     _usable, received = _order_parts(ctx, attribute(ctx)[0], counters)
     if not any(received.values()):
         return
@@ -364,9 +430,11 @@ def _check(row: LineState, request: LineRequest) -> None:
     """Refuse the first number above what ``row`` allows — the order is assemble, receive,
     issue, because what is issued may come from the first two of the same request."""
     name = row.product_name
-    if row.mode == "parts":
-        if request.assemble or request.receive or request.issue or request.write_off:
-            raise FulfilmentError(f"«{name}» is received and issued part by part", 422)
+    if row.mode == "parts" and (request.assemble or request.receive or request.issue or request.write_off):
+        raise FulfilmentError(f"«{name}» is received and issued part by part", 422)
+    if row.mode == "product" and not row.parts and (request.parts or request.parts_write_off):
+        raise FulfilmentError(f"«{name}» is issued as whole units", 422)
+    if row.parts or request.parts or request.parts_write_off:
         by_id = {part.part_id: part for part in row.parts}
         for part_id in sorted(set(request.parts) | set(request.parts_write_off)):
             part = by_id.get(part_id)
@@ -380,9 +448,8 @@ def _check(row: LineState, request: LineRequest) -> None:
                 raise FulfilmentError(f"«{name}», {part.name}: only {part.held + receive} can be written off")
             if issue > part.held + receive - write_off:
                 raise FulfilmentError(f"«{name}», {part.name}: only {part.held + receive - write_off} can be issued")
+    if row.mode == "parts":
         return
-    if request.parts or request.parts_write_off:
-        raise FulfilmentError(f"«{name}» is issued as whole units", 422)
     if request.assemble > row.can_assemble:
         raise FulfilmentError(f"«{name}»: only {row.can_assemble} can be assembled")
     if request.receive > row.can_receive:
@@ -399,7 +466,10 @@ def _issued_after(row: LineState, request: LineRequest | None) -> bool:
     if row.mode == "parts":
         asked = request.parts if request is not None else {}
         return all(part.issued + asked.get(part.part_id, (0, 0))[1] >= part.wanted for part in row.parts)
-    return row.issued + (request.issue if request is not None else 0) >= row.ordered
+    asked = request.parts if request is not None else {}
+    return row.issued + (request.issue if request is not None else 0) >= row.ordered and all(
+        part.issued + asked.get(part.part_id, (0, 0))[1] >= part.wanted for part in row.parts
+    )
 
 
 def _stocked_after(row: LineState, request: LineRequest | None) -> bool:
@@ -415,7 +485,14 @@ def _stocked_after(row: LineState, request: LineRequest | None) -> bool:
             >= part.wanted
             for part in row.parts
         )
-    return row.issued + row.held + request.assemble + request.receive - request.write_off >= row.ordered
+    return row.issued + row.held + request.assemble + request.receive - request.write_off >= row.ordered and all(
+        part.issued
+        + part.held
+        + request.parts.get(part.part_id, (0, 0))[0]
+        - request.parts_write_off.get(part.part_id, 0)
+        >= part.wanted
+        for part in row.parts
+    )
 
 
 async def close(
@@ -466,7 +543,9 @@ async def close(
 async def stocked_line_ids(db: AsyncSession, lines: Sequence[ProjectLine]) -> set[int]:
     """Lines whose goods went back to free stock — a cancel or a close to stock (followups, rule 41)."""
     out = {line.id for line in lines if line.mode != "parts" and (line.returned or 0) > 0}
-    counters = await part_stock.line_part_stock(db, [line.id for line in lines if line.mode == "parts"])
+    counters = await part_stock.line_part_stock(
+        db, [line.id for line in lines if line.mode == "parts" or line.extra_percentages]
+    )
     out |= {line_id for line_id, rows in counters.items() if any(row.returned > 0 for row in rows.values())}
     return out
 
@@ -570,7 +649,10 @@ async def apply(
             )
         received = {pid: r for pid, (r, _i) in request.parts.items() if r > 0}
         if received:
-            await part_stock.receive_parts_for_line(db, line, received, created_by=created_by)
+            stock = {
+                part.part_id: min(received.get(part.part_id, 0), part.stock_qty) for part in current[line_id].parts
+            }
+            await part_stock.receive_parts_for_line(db, line, received, created_by=created_by, stock_counts=stock)
             names = {part.part_id: part.name for part in current[line_id].parts}
             await order_journal.record(
                 db,

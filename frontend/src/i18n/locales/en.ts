@@ -5464,6 +5464,7 @@ export default {
     },
     // WS-13 E6 §E: «Stock & issue» in the mockup's words, with the app's additions (E03–E06).
     fulfil: {
+      extraParts: 'Additional parts',
       title: 'Stock & issue',
       noMoveRight: 'Receiving, issuing and writing off need the right to move stock — here the order can only be completed once its goods are out.',
       subtitleNoCustomer: 'without customer',
@@ -6124,6 +6125,7 @@ export default {
       empty: 'No lines yet — add a product or parts from the catalog.',
     },
     parts: {
+      extraParts: '+{{percent}}% · {{count}} additional',
       name: 'Part',
       perUnit: 'Per unit',
       need: 'Need',
@@ -7175,6 +7177,11 @@ export default {
     },
     // WS-13 E10 C01–C07: the part dialog — one form, one request.
     partDialog: {
+      extraPercent: 'Additional parts, %',
+      extraHint: 'Rounded up once over the whole order line. For example, 100 units × 1 part + 10% need 110 parts. Extras are received and issued separately from complete units. Applies to new orders; existing orders keep their percentage.',
+      extraInvalid: 'Enter a percentage from 0 to 1000.',
+      extraBadge: '+{{percent}}% extra',
+
       createTitle: 'New part',
       editTitle: 'Edit part',
       save: 'Save part',

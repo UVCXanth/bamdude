@@ -78,12 +78,15 @@ async def offers(db: AsyncSession, project: Project) -> list[Offer]:
         want = min(
             plan_engine.unplanned_units(figs, queued.get(line.id, {})), max(0, figs.quantity - figs.covered_units)
         )
-        if want > 0:
+        if want > 0 or any(
+            p.extra_qty and p.remaining > p.in_progress + queued.get(line.id, {}).get(p.part_id, 0) for p in figs.parts
+        ):
             wants[line.id] = want
     if not wants:
         return []
     configs = await load_line_configs(db, list(wants))
     asked = [line for line in lines if line.id in wants]
+    full_asked = [line for line in asked if wants[line.id] > 0]
     suggestions = await stock_pick.suggest(
         db,
         [
@@ -93,9 +96,13 @@ async def offers(db: AsyncSession, project: Project) -> list[Offer]:
                 counts=configs[line.id].counts if line.id in configs else {},
                 quantity=wants[line.id],
             )
-            for line in asked
+            for line in full_asked
         ],
     )
+    by_line = dict(zip((line.id for line in full_asked), suggestions, strict=True))
+    suggestions = [
+        by_line.get(line.id, stock_pick.Suggestion(line.product_id, 0, 0, 0, 0, 0, None, None)) for line in asked
+    ]
     shelves = await part_stock.balances_for_products(db, sorted({line.product_id for line in asked}))
     # Suggestions describe each row's shelf. Offers are one batch: spend a
     # shared shelf once, including two configurations of the same product.

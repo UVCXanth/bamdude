@@ -178,7 +178,7 @@ from backend.app.services.configuration_views import configuration_out, groups_b
 from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.filament_intake import require_source_requirements
 from backend.app.services.filament_requirements import PrintRequirementsCache
-from backend.app.services.line_composition import LineConfig, default_options, load_line_configs
+from backend.app.services.line_composition import LineConfig, default_options, extra_parts_for_line, load_line_configs
 from backend.app.services.list_paging import (
     SortSpec,
     apply_sql_sort,
@@ -406,6 +406,9 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
                     bankable=p.bankable,
                     allocated_qty=p.allocated_qty,
                     stock_used_qty=p.stock_used_qty,
+                    extra_qty=p.extra_qty,
+                    extra_percent=p.extra_percent,
+                    extra_received_qty=p.extra_received_qty,
                 )
                 for p in figs[line.id].parts
             ],
@@ -1966,6 +1969,16 @@ async def update_line(
                     status_code=409,
                     detail=f"The quantity cannot go below what is issued and held for this order ({floor})",
                 )
+    if line.extra_percentages and data.quantity is not None:
+        # A smaller BOM must still contain every extra part already issued or held.
+        comp = await part_stock.line_composition_of(db, line)
+        from types import SimpleNamespace
+
+        proposed = SimpleNamespace(mode=line.mode, quantity=data.quantity, extra_percentages=line.extra_percentages)
+        wanted = extra_parts_for_line(proposed, comp)
+        counters = (await part_stock.line_part_stock(db, [line.id])).get(line.id, {})
+        if any(wanted.get(pid, 0) < row.issued + part_stock.part_held(row) for pid, row in counters.items()):
+            raise HTTPException(status_code=409, detail="Additional parts already issued or held cannot be removed")
     wants_finished = data.from_finished is not None
     if wants_finished:
         # Ready units are taken only by an ACTIVE order (spec workshop-add-to-order,
@@ -2028,7 +2041,9 @@ async def update_line(
         # written off (it is needed again — spec workshop-order-issue-followups, rule 47): the
         # same room both «take from stock» doors fill (final review I1).
         fitted = max(0, line.quantity - finished_stock.covered_units(line))
-        if kits > fitted:
+        if line.extra_percentages and data.model_fields_set & {"quantity", "from_finished"}:
+            await part_stock.fit_reservation_for_line(db, line, fitted)
+        elif kits > fitted:
             await _reserve(db, line, fitted, current_user)
         elif data.model_fields_set & {"quantity", "from_finished"}:
             await part_stock.fit_reservation_for_line(db, line, fitted)

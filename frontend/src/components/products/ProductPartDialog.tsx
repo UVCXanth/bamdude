@@ -76,6 +76,7 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
     kind: useId(),
     name: useId(),
     qty: useId(),
+    extra: useId(),
     variant: useId(),
     aliases: useId(),
     aliasNote: useId(),
@@ -94,6 +95,7 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
   const [kind, setKind] = useState<ProductPartKind>(base?.kind ?? 'printed');
   const [name, setName] = useState(base?.name ?? '');
   const [qty, setQty] = useState(String(base?.qty_per_unit ?? 1));
+  const [extra, setExtra] = useState(String(base?.extra_percent ?? 0));
   const [ignored, setIgnored] = useState(base?.ignored ?? false);
   const [variant, setVariant] = useState(base?.variant_option_id != null ? String(base.variant_option_id) : '');
   const [price, setPrice] = useState(base?.unit_price != null ? String(base.unit_price) : '');
@@ -113,6 +115,8 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
 
   const printed = kind === 'printed';
   const qtyNumber = qty.trim() === '' ? Number.NaN : Number(qty);
+  const extraNumber = extra.trim() === '' ? Number.NaN : Number(extra);
+  const extraValid = Number.isFinite(extraNumber) && extraNumber >= 0 && extraNumber <= 1000;
   const qtyValid = Number.isInteger(qtyNumber) && qtyNumber >= 0;
   // «Not counted» only at zero (C04): a count > 0 takes the mark off.
   const canIgnore = printed && qtyValid && qtyNumber === 0;
@@ -179,6 +183,7 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
     setLocalError(null);
     if (name.trim() === '') return refuse(t('products.partDialog.nameRequired'), ids.name);
     if (!qtyValid) return refuse(t('products.partDialog.qtyInvalid'), ids.qty);
+    if (printed && !extraValid) return refuse(t('products.partDialog.extraInvalid'), ids.extra);
     let unitPrice: number | null = null;
     if (!printed && price.trim() !== '') {
       unitPrice = Number(price);
@@ -204,6 +209,7 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
               kind,
               name: name.trim(),
               qty_per_unit: qtyNumber,
+              ...(extraNumber > 0 ? { extra_percent: extraNumber } : {}),
               ignored: ignoredNow,
               aliases: tokens,
               variant_option_id: variantId,
@@ -227,6 +233,7 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
     if (qtyNumber !== base.qty_per_unit) data.qty_per_unit = qtyNumber;
     if (variantId !== base.variant_option_id) data.variant_option_id = variantId;
     if (printed) {
+      if (extraNumber !== (base.extra_percent ?? 0)) data.extra_percent = extraNumber;
       if (ignoredNow !== base.ignored) data.ignored = ignoredNow;
       if (!sameList(tokens, baseAliases)) data.aliases = tokens;
     } else {
@@ -339,6 +346,15 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
               disabled={pending}
             />
           </WorkshopField>
+
+          {printed && (
+            <WorkshopField label={t('products.partDialog.extraPercent')} htmlFor={ids.extra}
+              hint={t('products.partDialog.extraHint')}>
+              <input id={ids.extra} type="number" min={0} max={1000} step="any" value={extra}
+                onChange={(e) => { setExtra(e.target.value); setLocalError(null); }}
+                aria-describedby={`${ids.extra}-hint`} className={`${FIELD_CLASS} tabular-nums`} disabled={pending} />
+            </WorkshopField>
+          )}
 
           <WorkshopField
             label={t('products.partDialog.variant')}

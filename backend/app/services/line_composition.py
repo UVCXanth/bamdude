@@ -11,6 +11,7 @@ predicate, nothing reads ``qty_per_unit`` —
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from decimal import ROUND_CEILING, Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +24,35 @@ from backend.app.models.product_variant import ProductVariantGroup
 Composition = list[tuple[ProductPart, int]]
 # Large enough for a page of lines, small enough for asyncpg's bind-parameter limit.
 _CHUNK = 500
+
+
+def snapshot_extra_percentages(parts: Iterable[ProductPart]) -> dict[str, float]:
+    """New product lines inherit current printed-part defaults, never live settings."""
+    return {
+        str(part.id): float(part.extra_percent)
+        for part in parts
+        if part.kind == "printed" and (part.extra_percent or 0) > 0
+    }
+
+
+def extra_parts_for_line(line, comp: Composition) -> dict[int, int]:
+    """Round upward once over the WHOLE line, not per unit or per print batch.
+
+    Decimal(str(...)) uses the stored decimal spelling: a 10% extra of ten
+    parts is one part, without a binary float turning it into two. Parts-mode
+    lines already specify exact counts and never acquire implicit extras.
+    """
+    if line.mode == "parts":
+        return {}
+    percents = line.extra_percentages or {}
+    return {
+        part.id: int(
+            (Decimal(line.quantity) * per * Decimal(str(percents.get(str(part.id), 0))) / 100).to_integral_value(
+                rounding=ROUND_CEILING
+            )
+        )
+        for part, per in counted(comp)
+    }
 
 
 @dataclass

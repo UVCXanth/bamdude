@@ -311,6 +311,9 @@ class PartFiguresOut(BaseModel):
     bankable: int = 0
     allocated_qty: int = 0
     stock_used_qty: int = 0
+    extra_qty: int = 0
+    extra_percent: float = 0
+    extra_received_qty: int = 0
 
 
 class LinePurchasedPartOut(BaseModel):
@@ -951,6 +954,7 @@ class PartStateOut(BaseModel):
     held: int
     issued: int
     written_off: int = 0
+    stock_qty: int = 0
 
 
 class StockPositionRefOut(BaseModel):

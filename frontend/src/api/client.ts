@@ -1833,6 +1833,9 @@ export type ProjectPriority = 'low' | 'normal' | 'high' | 'urgent';
  * what was printed beyond the need — all server-computed, never derived here.
  */
 export interface PartFigures {
+  extra_qty?: number;
+  extra_percent?: number;
+  extra_received_qty?: number;
   part_id: number;
   name: string;
   qty_per_unit: number;
@@ -2734,6 +2737,8 @@ export interface ProductRef {
 }
 
 export interface ProductPart {
+  /** Additional printed parts, rounded up once over an order line. */
+  extra_percent?: number;
   id: number;
   kind: ProductPartKind;
   name: string;
@@ -2847,6 +2852,8 @@ export interface KitsConfiguration {
 }
 
 export interface ProductPartCreate {
+  /** Additional printed parts, rounded up once over an order line. */
+  extra_percent?: number;
   kind: ProductPartKind;
   name: string;
   qty_per_unit?: number;
@@ -2862,6 +2869,8 @@ export interface ProductPartCreate {
 }
 
 export interface ProductPartUpdate {
+  /** Additional printed parts, rounded up once over an order line. */
+  extra_percent?: number;
   name?: string;
   qty_per_unit?: number;
   unit_price?: number | null;
@@ -3450,6 +3459,7 @@ export interface FulfilmentRecipient {
 
 /** One part of a parts line in the issue dialog. */
 export interface FulfilmentPartState {
+  stock_qty?: number;
   part_id: number;
   name: string;
   wanted: number;

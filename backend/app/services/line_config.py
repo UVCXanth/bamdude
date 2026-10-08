@@ -49,6 +49,7 @@ from backend.app.services.line_composition import (
     line_composition,
     load_item_configs,
     load_line_configs,
+    snapshot_extra_percentages,
     standard_per,
 )
 
@@ -331,6 +332,8 @@ async def seed_line(
     product = await _product(db, line.product_id)
     new_choices, new_counts = _validate(product, line.mode, choices or {}, counts or {})
     await _write(db, line, new_choices, new_counts)
+
+    line.extra_percentages = snapshot_extra_percentages(product.parts) if line.mode == "product" else {}
 
 
 async def target_key(
@@ -619,4 +622,13 @@ async def copy_configuration(db: AsyncSession, source: ProjectLine, target: Proj
     ledger(db).note_created("project_lines", target.id)
     cfg = (await load_line_configs(db, [source.id])).get(source.id, LineConfig())
     target.mode = source.mode
+    target.extra_percentages = dict(source.extra_percentages or {})
     await _write(db, target, cfg.choices, cfg.counts)
+
+
+async def ensure_no_extra_snapshot(db: AsyncSession, product_id: int, part_ids: Sequence[int]) -> None:
+    """Catalog edits of a snapshotted extra must not silently change an order's obligation."""
+    ids = {str(pid) for pid in part_ids}
+    rows = await db.execute(select(ProjectLine.extra_percentages).where(ProjectLine.product_id == product_id))
+    if any(any((snapshot or {}).get(pid, 0) for pid in ids) for snapshot in rows.scalars()):
+        raise LineConfigError("This part has additional quantities in an order; keep it as a separate part", 409)

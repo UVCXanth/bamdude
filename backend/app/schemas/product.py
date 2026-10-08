@@ -148,6 +148,7 @@ class ProductPartCreate(BaseModel):
     kind: str = Field(pattern="^(printed|purchased)$")
     name: str = Field(min_length=1, max_length=512)
     qty_per_unit: int = Field(default=1, ge=0)
+    extra_percent: float = Field(default=0, ge=0, le=1000, allow_inf_nan=False, strict=True)
     #: «Не рахувати» (spec workshop-order-issue-followups, rule 34) — only with a zero.
     ignored: bool = False
     unit_price: float | None = None
@@ -174,6 +175,7 @@ class ProductPartCreate(BaseModel):
 class ProductPartUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=512)
     qty_per_unit: int | None = Field(default=None, ge=0)
+    extra_percent: float | None = Field(default=None, ge=0, le=1000, allow_inf_nan=False, strict=True)
     unit_price: float | None = None
     sourcing_url: str | None = Field(default=None, max_length=512)
     remarks: str | None = None
@@ -194,7 +196,7 @@ class ProductPartUpdate(BaseModel):
     def _name_is_never_null_and_is_clean(cls, v: Any) -> Any:
         return _clean_name(_never_null(v, "name"))
 
-    @field_validator("qty_per_unit", "sort_order", "ignored")
+    @field_validator("qty_per_unit", "sort_order", "ignored", "extra_percent")
     @classmethod
     def _number_is_never_null(cls, v: int | None) -> int | None:
         return _never_null(v, "value")
@@ -219,6 +221,7 @@ class ProductPartResponse(BaseModel):
     name: str
     name_key: str
     qty_per_unit: int
+    extra_percent: float = 0
     aliases: list[str] = []
     auto: bool = False
     unit_price: float | None = None
