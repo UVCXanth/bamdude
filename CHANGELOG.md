@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Manual spool corrections after AMS runout keep their priority.** Selecting the same partial reel again, including preassignment into an empty slot, no longer lets the subsequent insertion claim a full stock reel or incorrectly discard the remaining weight. The protection applies to that runout episode; a later real runout can still trigger automatic replacement.
+
 - **External holders can claim replacement stock after runout.** With automatic stock assignment enabled, a confirmed runout of the assigned external spool followed by the operator resuming the same print assigns one full spool from the configured group. The existing journal preserves the old/new usage split. Ordinary pauses, jams, reconnects, manual corrections, unavailable stock and ambiguous H2D holder signals leave assignments unchanged. No resume command or in-flight filament configuration is sent.
 
 - **An automatically claimed spool survives late default metadata after insertion.** An unknown initial material stays unknown in its fingerprint, using the existing deferred slot-configuration path. A temporary white/default profile no longer unlinks the new stock assignment before the printer echoes the configured filament. Later material/color changes, RFID replacements and removal still reconcile normally.

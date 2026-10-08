@@ -185,12 +185,15 @@ async def claim_on_insertion(
             or last.event != EVENT_RUNOUT
             or last.kind not in ((KIND_EXTERNAL,) if external else (KIND_PAUSE, KIND_AUTOSWITCH))
             or last.spool_id != existing.spool_id
+            # Manual re-linking of the same partial reel deliberately leaves
+            # the runout open. Its assignment survives deferred fingerprint
+            # filling, but a subsequent, independent runout can still replace it.
+            or existing.created_at > last.created_at
         ):
             return {"reason": "assignment_priority"}
         if external and (
             last.id != external_runout_id
             or archive_id != event["archive_id"]
-            or existing.created_at > last.created_at
             or any(e.event == EVENT_RESUME and e.id > last.id for e in events)
         ):
             return {"reason": "assignment_priority"}
