@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Grouped filament inventory sorts by spool ID, lot, purchase date, location, label weight, net weight and remaining percentage.** Column headers order both the groups and their expanded spools. Group weights use their totals, and groups are sorted before pagination.
+
 - **MQTT recordings download from signed-in sessions again.** The debug dialog fetches the recording with the session token, refreshes an expired session and reports download errors without leaving the page. Recording permissions and printer scopes remain enforced.
 
 - **Print-start notifications, finish photos and post-print automation work again.** The first printer event after a queued dispatch now sends the start notification once. Finishing a print keeps its background work alive long enough to save its photo, send the completion message and run the configured auto-off or finish macros. Starting another print permanently cancels the previous print's permission to affect the printer, including delayed plug actions and late camera captures.
