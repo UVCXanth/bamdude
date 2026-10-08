@@ -633,6 +633,7 @@ def _part_manifest(part: Any, variant: list[str] | None = None) -> dict:
         "name": part.name,
         "name_key": part.name_key,
         "qty_per_unit": part.qty_per_unit,
+        "extra_percent": getattr(part, "extra_percent", 0) or 0,
         "ignored": bool(getattr(part, "ignored", False)),
         "aliases": list(part.aliases) if part.aliases is not None else None,
         "auto": bool(part.auto),
@@ -1166,6 +1167,18 @@ async def import_zip(
             # whose whole job is to change nothing.
             qty = max(0, _whole(raw.get("qty_per_unit"), 1))
             ignored = imported_mark(raw, kind, qty)
+            from math import isfinite
+
+            extra = raw.get("extra_percent", 0)
+            if (
+                isinstance(extra, bool)
+                or not isinstance(extra, (int, float))
+                or not isfinite(extra)
+                or not 0 <= extra <= 1000
+            ):
+                raise HTTPException(status_code=400, detail="Invalid additional-part percentage")
+            if kind != "printed" and extra:
+                raise HTTPException(status_code=400, detail="Additional parts must be printed parts")
             db.add(
                 ProductPart(
                     product_id=product.id,
@@ -1173,6 +1186,7 @@ async def import_zip(
                     name=name,
                     name_key=key,
                     qty_per_unit=qty,
+                    extra_percent=extra,
                     ignored=ignored,
                     aliases=aliases,
                     auto=bool(raw.get("auto", False)),

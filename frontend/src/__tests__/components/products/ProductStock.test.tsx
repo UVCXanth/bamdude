@@ -383,6 +383,7 @@ describe('ProductStock', () => {
       'surplus_banked',
       'unfiled_print',
       'reserved_for_order',
+      'reserved_parts_for_order',
       'reservation_released',
       'manual',
       'assembled',

@@ -145,8 +145,9 @@ Autofix where it exists: `ruff check --fix backend/ && ruff format backend/`,
 `cd frontend && npm run lint -- --fix`. There is deliberately **no formatter on
 the frontend** (no Prettier); lint and typecheck are the gates.
 
-A Markdown-only change skips CI. The backend suite is ~8 700 tests and takes
-about ten minutes on the CI runner with `-n auto`.
+A Markdown-only change skips CI. Both Backend Tests and the Docker integration
+suite explicitly use `-n 4`: automatic detection selects only two pytest workers
+on the hosted runner. These are test processes, not additional CPU cores.
 
 ### Pre-commit hooks
 

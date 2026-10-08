@@ -1850,6 +1850,9 @@ export type ProjectPriority = 'low' | 'normal' | 'high' | 'urgent';
  * what was printed beyond the need — all server-computed, never derived here.
  */
 export interface PartFigures {
+  extra_qty?: number;
+  extra_percent?: number;
+  extra_received_qty?: number;
   part_id: number;
   name: string;
   qty_per_unit: number;
@@ -1865,6 +1868,10 @@ export interface PartFigures {
   queued: number;
   /** The part of `surplus` still to move — the number «bank surplus» moves (WS-13 E6 H01). */
   bankable: number;
+  /** Individual parts still allocated to this order, distinct from free stock. */
+  allocated_qty?: number;
+  /** Allocated loose parts already used in mixed receipts. */
+  stock_used_qty?: number;
 }
 
 /** A purchased part of one line (WS-13 E4 H03). `need` = per × the line's stored
@@ -2747,6 +2754,8 @@ export interface ProductRef {
 }
 
 export interface ProductPart {
+  /** Additional printed parts, rounded up once over an order line. */
+  extra_percent?: number;
   id: number;
   kind: ProductPartKind;
   name: string;
@@ -2860,6 +2869,8 @@ export interface KitsConfiguration {
 }
 
 export interface ProductPartCreate {
+  /** Additional printed parts, rounded up once over an order line. */
+  extra_percent?: number;
   kind: ProductPartKind;
   name: string;
   qty_per_unit?: number;
@@ -2875,6 +2886,8 @@ export interface ProductPartCreate {
 }
 
 export interface ProductPartUpdate {
+  /** Additional printed parts, rounded up once over an order line. */
+  extra_percent?: number;
   name?: string;
   qty_per_unit?: number;
   unit_price?: number | null;
@@ -3165,6 +3178,7 @@ export const STOCK_REASONS = [
   'surplus_banked',
   'unfiled_print',
   'reserved_for_order',
+  'reserved_parts_for_order',
   'reservation_released',
   'manual',
   'assembled',
@@ -3462,6 +3476,7 @@ export interface FulfilmentRecipient {
 
 /** One part of a parts line in the issue dialog. */
 export interface FulfilmentPartState {
+  stock_qty?: number;
   part_id: number;
   name: string;
   wanted: number;
@@ -3560,17 +3575,18 @@ export interface StockOffer {
   product_name: string;
   from_finished: number;
   kits: number;
+  parts?: Record<number, number>;
 }
 
 /** `POST /projects/{id}/take-stock` — what the banner SHOWED per line; omitted, the
  *  current offers. The answer says what each line asked and got. */
 export interface TakeStockBody {
-  lines?: { line_id: number; from_finished: number; kits: number }[];
+  lines?: { line_id: number; from_finished: number; kits: number; parts?: Record<number, number> }[];
 }
 
 export interface TakeStockResult {
   order: Order;
-  results: LineIntake[];
+  results: (LineIntake & { asked_parts?: Record<number, number>; got_parts?: Record<number, number> })[];
 }
 
 /** One line of «what was issued» in a list row. */
@@ -9916,8 +9932,20 @@ export const api = {
     request<{ removed: number }>(`/printers/${printerId}/mqtt-recording`, {
       method: 'DELETE',
     }),
-  mqttRecordingDownloadUrl: (printerId: number) =>
-    `/api/v1/printers/${printerId}/mqtt-recording/download`,
+  downloadMQTTRecording: async (printerId: number) => {
+    const blob = await fetchAuthorizedBlob(`${API_BASE}/printers/${printerId}/mqtt-recording/download`);
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `mqtt-printer-${printerId}.log`;
+    document.body.appendChild(a);
+    try {
+      a.click();
+    } finally {
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    }
+  },
 
   // Printer File Manager
   // ``storage`` is optional everywhere: omitted, the backend answers with the

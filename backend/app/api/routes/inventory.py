@@ -1335,9 +1335,9 @@ async def list_spools(
         False,
         description=(
             "Paged mode only: rows become GROUPS of similar spools "
-            "(material|subtype|brand|color_name|rgba|label_weight|lot) — "
+            "(material|subtype|brand|color_name|rgba|label_weight) — "
             "see SpoolGroupItem. Requires page; restricts sort_by to the "
-            "group-key subset (400 otherwise)."
+            "supported group identity, representative and weight sorts (400 otherwise)."
         ),
     ),
     include_k_profiles: bool = Query(
@@ -1381,12 +1381,11 @@ async def list_spools(
     without ``page`` it's a 400, never a silent flat-shaped answer) makes the
     rows ``SpoolGroupItem`` GROUPS under the SAME filters: filters first,
     then grouping, then pagination over GROUPS — ``meta.total`` counts
-    groups. The key and the merge-eligibility rule (used/assigned spools
-    never merge) port the deleted client's ``spoolGroupKey`` + consumers
-    exactly — see ``inventory_service._spool_group_key_exprs``. ``sort_by``
-    is restricted to the group-key subset (``display_name``, ``material``,
-    ``brand``, ``color_name`` — 400 otherwise, deliberately stricter than
-    the flat mode's permissive fallback).
+    groups. Only assigned spools stay singletons; started shelf spools can
+    merge — see ``inventory_service._spool_group_key_exprs``. ``sort_by``
+    accepts group identity fields, representative id/lot/purchase date/location,
+    and group label/net/remaining totals; unsupported keys return 400 rather
+    than the flat mode's permissive fallback.
     """
     if page is None:
         if group_similar:

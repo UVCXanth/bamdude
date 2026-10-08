@@ -820,13 +820,24 @@ async def inventory_stats(db: AsyncSession) -> dict[str, Any]:
 # the client key had none (and the stage-C collation ruling forbids adding
 # any).
 
-# The sort keys grouped mode accepts — the subset of the flat sort map that
-# maps onto group-key columns (plan Task 3 ruling). Everything else is
-# REFUSED (a 400 at the route, ValueError here) rather than silently
-# falling back like the flat list does: a caller asking to page groups under
-# an order the grouped query cannot express should hear "no", not receive
-# stable-looking pages in a different order.
-GROUP_SORT_KEYS = frozenset({"display_name", "material", "brand", "color_name"})
+# Group weights sort by the totals shown in the header; member-specific
+# columns use the representative (the smallest member id). Other keys are
+# refused rather than paging groups under an order the caller did not ask for.
+GROUP_SORT_KEYS = frozenset(
+    {
+        "display_name",
+        "material",
+        "brand",
+        "color_name",
+        "id",
+        "lot",
+        "purchase_date",
+        "location",
+        "label_weight",
+        "net",
+        "remaining",
+    }
+)
 
 
 def _spool_group_key_exprs() -> dict[str, Any]:
@@ -960,10 +971,18 @@ def _spool_group_order_by(sub, sort_by: str | None) -> list:
         clauses = [c.asc() for c in cols] if direction == "asc" else [c.desc() for c in cols]
         return [*clauses, tiebreak]
 
+    if key in {"id", "lot", "purchase_date", "location"}:
+        clauses, _ = _spool_order_by(sort_by)
+        return clauses
+
+    label_total = sub.c.label_weight * sub.c.group_count
     expr = {
         "material": sub.c.material,
         "brand": sub.c.brand,
         "color_name": func.lower(sub.c.color_name),
+        "label_weight": label_total,
+        "net": sub.c.remaining_total,
+        "remaining": func.coalesce(sub.c.remaining_total / func.nullif(label_total, 0), 0),
     }[key]
     return [expr.asc() if direction == "asc" else expr.desc(), tiebreak]
 
@@ -1013,6 +1032,8 @@ async def list_spool_groups(
         .options(selectinload(Spool.k_profiles))
         .order_by(*order_clauses)
     )
+    if sort_by in {"location_asc", "location_desc"}:
+        query = _join_first_assignment(query)
     if offset:
         query = query.offset(offset)
     if limit is not None:

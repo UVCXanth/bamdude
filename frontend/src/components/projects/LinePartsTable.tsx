@@ -70,8 +70,12 @@ export function LinePartsTable({
               ) : (
                 `× ${part.qty_per_unit}`
               )}
+              {(part.extra_qty ?? 0) > 0 && <div className="text-xs text-amber-700 dark:text-amber-400">{t('orders.parts.extraParts', { percent: part.extra_percent, count: part.extra_qty })}</div>}
             </td>
-            <td className={`${CELL} tabular-nums`}>{part.need}</td>
+            <td className={`${CELL} tabular-nums`}>
+              {part.need}
+              {(part.allocated_qty ?? 0) > 0 && <div className="text-xs text-bambu-green">{t('orders.take.allocatedParts', { count: part.allocated_qty })}</div>}
+            </td>
             <td className={`${CELL} tabular-nums`}>{part.usable}</td>
             <td className={`${CELL} tabular-nums`}>{`${part.in_progress} / ${part.queued ?? 0}`}</td>
             <td

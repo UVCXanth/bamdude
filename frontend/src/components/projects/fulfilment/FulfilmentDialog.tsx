@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { Fragment, useEffect, useId, useRef, useState } from 'react';
 import { useMutation, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WAYBILL_MAX } from '../../../api/client';
@@ -389,15 +389,20 @@ function FulfilmentForm({
                       issuing={issuing}
                     />
                   ) : (
-                    <ProductLineRow
-                      key={line.line_id}
-                      line={line}
-                      sharedName={sharedNames.has(line.product_name)}
-                      draft={draft[line.line_id]}
-                      onChange={change}
-                      writeOffOpen={writeOffOpen}
-                      issuing={issuing}
-                    />
+                    <Fragment key={line.line_id}>
+                      <ProductLineRow
+                        line={line}
+                        sharedName={sharedNames.has(line.product_name)}
+                        draft={draft[line.line_id]}
+                        onChange={change}
+                        writeOffOpen={writeOffOpen}
+                        issuing={issuing}
+                      />
+                      {line.parts.length > 0 && <PartsLineRows extra
+                        line={{ ...line, ordered: line.parts.reduce((s, p) => s + p.wanted, 0),
+                          held: line.parts.reduce((s, p) => s + p.held, 0), issued: line.parts.reduce((s, p) => s + p.issued, 0) }}
+                        draft={draft[line.line_id]} onChange={change} writeOffOpen={writeOffOpen} issuing={issuing} />}
+                    </Fragment>
                   ),
                 )}
               </tbody>
@@ -641,7 +646,9 @@ function PartsLineRows({
   onChange,
   writeOffOpen,
   issuing,
+  extra = false,
 }: {
+  extra?: boolean;
   line: FulfilmentLineState;
   draft: LineDraft;
   onChange: (lineId: number, patch: (d: LineDraft) => LineDraft) => void;
@@ -658,11 +665,11 @@ function PartsLineRows({
     }));
   return (
     <>
-      <tr data-testid={`fulfil-line-${line.line_id}`} className="border-t border-bambu-dark-tertiary">
+      <tr data-testid={`fulfil-${extra ? 'extras' : 'line'}-${line.line_id}`} className="border-t border-bambu-dark-tertiary">
         <td className={TD}>
           <div className="font-semibold text-white">{line.product_name}</div>
           <small data-config-accent className={`block text-xs ${CONFIG_ACCENT_CLASS}`}>
-            {t('orders.fulfil.partsLine')}
+            {t(extra ? 'orders.fulfil.extraParts' : 'orders.fulfil.partsLine')}
           </small>
         </td>
         <td className={TD}>{line.ordered}</td>

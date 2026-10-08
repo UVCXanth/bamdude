@@ -434,3 +434,37 @@ describe('ProductPartDialog', () => {
     });
   });
 });
+
+
+describe('ProductPartDialog additional parts', () => {
+  beforeEach(() => { vi.restoreAllMocks(); vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ currency: 'EUR' } as never); });
+  it('saves an entered fractional percentage and shows rounding/shipping help', async () => {
+    const update = vi.spyOn(api, 'updateProductPart').mockResolvedValue(body as never);
+    render(<ProductPartDialog product={product} part={body} onClose={noop} />);
+    const field = screen.getByLabelText('Additional parts, %');
+    expect(field).toHaveValue(0);
+    expect(field).toHaveAccessibleDescription(/Rounded up once over the whole order line/);
+    fireEvent.change(field, { target: { value: '12.5' } });
+    fireEvent.click(save());
+    await waitFor(() => expect(update).toHaveBeenCalledWith(7, 1, { extra_percent: 12.5 }));
+  });
+  it('can explicitly reset the stored percentage to zero', async () => {
+    const update = vi.spyOn(api, 'updateProductPart').mockResolvedValue(body as never);
+    render(<ProductPartDialog product={product} part={{ ...body, extra_percent: 15 }} onClose={noop} />);
+    fireEvent.change(screen.getByLabelText('Additional parts, %'), { target: { value: '0' } });
+    fireEvent.click(save());
+    await waitFor(() => expect(update).toHaveBeenCalledWith(7, 1, { extra_percent: 0 }));
+  });
+  it('does not offer an extra percentage for a purchased part', () => {
+    render(<ProductPartDialog product={product} part={magnet} onClose={noop} />);
+    expect(screen.queryByLabelText('Additional parts, %')).not.toBeInTheDocument();
+  });
+  it('rejects invalid percentage without writing', async () => {
+    const update = vi.spyOn(api, 'updateProductPart');
+    render(<ProductPartDialog product={product} part={body} onClose={noop} />);
+    fireEvent.change(screen.getByLabelText('Additional parts, %'), { target: { value: '-1' } });
+    fireEvent.click(save());
+    expect(await screen.findByText('Enter a percentage from 0 to 1000.')).toBeInTheDocument();
+    expect(update).not.toHaveBeenCalled();
+  });
+});

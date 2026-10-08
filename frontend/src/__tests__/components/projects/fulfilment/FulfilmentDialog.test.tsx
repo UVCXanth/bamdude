@@ -351,3 +351,28 @@ describe('FulfilmentDialog · closing the write-off column', () => {
     );
   });
 });
+
+
+describe('product fulfilment with additional parts', () => {
+  const extraState: FulfilmentState = { ...state, ordered: 11, lines: [{ ...state.lines[0], parts: [
+    { part_id: 41, name: 'Part A spare pin', wanted: 1, can_receive: 1, held: 0, issued: 0, written_off: 0, stock_qty: 1 },
+  ] }] };
+  it('sends complete units and extras together and cannot close without the extras', () => {
+    const draft = draftFrom(extraState, 'all');
+    expect(requestFrom(draft)).toEqual([{ line_id: 7, assemble: 3, receive: 5, issue: 10,
+      parts: [{ part_id: 41, receive: 1, issue: 1 }] }]);
+    expect(completesOrder(extraState, draft)).toBe(true);
+    draft[7].parts[41].issue = 0;
+    expect(completesOrder(extraState, draft)).toBe(false);
+  });
+  it('renders additional parts under the product without replacing the main row', async () => {
+    vi.restoreAllMocks();
+    vi.spyOn(api, 'getFulfilment').mockResolvedValue(extraState);
+    vi.spyOn(api, 'getDeliveryMethods').mockResolvedValue([]);
+    render(<FulfilmentDialog order={REF} mode="all" onClose={() => {}} />);
+    expect(await screen.findByTestId('fulfil-line-7')).toBeInTheDocument();
+    expect(screen.getByTestId('fulfil-extras-7')).toHaveTextContent('Additional parts');
+    expect(screen.getByText('Part A spare pin')).toBeInTheDocument();
+    expect(screen.getByLabelText('Receive printed — Part A spare pin')).toHaveValue(1);
+  });
+});
