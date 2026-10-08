@@ -627,7 +627,7 @@ async def copy_configuration(db: AsyncSession, source: ProjectLine, target: Proj
 
 
 async def ensure_no_extra_snapshot(db: AsyncSession, product_id: int, part_ids: Sequence[int]) -> None:
-    """Deleting or merging a snapshotted extra must not silently change an order's obligation."""
+    """Catalog edits of a snapshotted extra must not silently change an order's obligation."""
     ids = {str(pid) for pid in part_ids}
     rows = await db.execute(select(ProjectLine.extra_percentages).where(ProjectLine.product_id == product_id))
     if any(any((snapshot or {}).get(pid, 0) for pid in ids) for snapshot in rows.scalars()):

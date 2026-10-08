@@ -1707,7 +1707,9 @@ async def update_part(
     _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
-    if "variant_option_id" in data.model_fields_set:
+    if data.model_fields_set & {"variant_option_id", "qty_per_unit", "ignored"}:
+        # Composition edits affect saved lines too. Serialize the snapshot guard
+        # with order configuration and stock writers using the existing gate.
         # Rebinding rewrites the configurations of the product's lines and positions:
         # the gate, then that footprint without waiting (WS-13 E1 BL3 / BL5).
         await product_gate.product_gate(db, [product.id])
@@ -1746,6 +1748,14 @@ async def update_part(
             raise HTTPException(status_code=409, detail="A part with this name already exists")
     ignored_after = data.ignored if "ignored" in data.model_fields_set else part.ignored
     qty_after = data.qty_per_unit if "qty_per_unit" in data.model_fields_set else part.qty_per_unit
+    if qty_after != part.qty_per_unit or (ignored_after and not part.ignored):
+        # The percent is snapshotted, but its base count comes from composition.
+        # Removing or changing that base in the catalog must not erase an order's
+        # extras, including when no explicit line-count row was ever needed.
+        try:
+            await line_config.ensure_no_extra_snapshot(db, product.id, [part.id])
+        except line_config.LineConfigError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from e
     if ignored_after and not part.ignored and part.kind != "printed":
         raise HTTPException(status_code=422, detail=_PRINTED_ONLY)
     if ignored_after and qty_after > 0:

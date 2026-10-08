@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-- **Printed BOM parts can include a configurable extra percentage.** New order lines snapshot the catalog setting and round additional demand up once across the full line. Extras are planned against printed output, allocated stock and both queue tiers, then received and issued separately from complete units. Existing orders keep their original percentage; zero preserves the existing kit flow.
+- **Printed BOM parts can include a configurable extra percentage.** New order lines snapshot the catalog setting and round additional demand up once across the full line. Extras are planned against printed output, allocated stock and both queue tiers, then received and issued separately from complete units. Existing orders keep their original percentage; zero preserves the existing kit flow. Catalog edits cannot remove or change a part's base count while an order has its extra-percentage snapshot, so outstanding and received extras remain visible and must still be shipped. Pre-movement order-line configuration remains editable.
 
 - **Order plans can use loose warehouse parts, even without a complete kit.** The existing “Take from stock” action now reserves the missing individual parts and the plan subtracts their actual allocation. Mixed stock/printed receipts consume that reservation without crediting free stock twice; cancellation, quantity reduction and configuration changes return only unused parts. Batch offers share each warehouse balance between order lines.
 
