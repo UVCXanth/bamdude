@@ -123,6 +123,13 @@ export function journalText(event: TimelineEvent, t: TFunction): string | null {
       const kits = Number(m.kits) || 0;
       if (ready > 0) bits.push(t('orders.timeline.stock.ready', { count: ready }));
       if (kits > 0) bits.push(t('orders.timeline.stock.kits', { count: kits }));
+      if (Array.isArray(m.parts_taken)) {
+        const parts = m.parts_taken
+          .filter((pair): pair is [unknown, unknown] => Array.isArray(pair) && pair.length === 2)
+          .map(([name, n]) => `${named(name)} × ${text(n)}`)
+          .join(', ');
+        if (parts) bits.push(t('orders.timeline.stock.parts', { parts }));
+      }
       return bits.join(', ');
     }
     case 'prints_relined':

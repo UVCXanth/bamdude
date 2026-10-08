@@ -1125,7 +1125,10 @@ async def add_kits_for_line(db: AsyncSession, line: ProjectLine, kits: int, *, c
         - (line.returned or 0)
         - (line.written_off or 0)
     )
-    room = line.quantity - covered - await reserved_units_for_line(db, line)
+    held = await reserved_parts_for_line(db, line)
+    # Whole-kit history is add-only, but existing loose reservations also spend
+    # this line's room. Do not reserve its already-covered component twice.
+    room = min((max(0, (line.quantity - covered) * per - held.get(part.id, 0)) // per for part, per in kit))
     take = min(kits, room, kits_of(await balances(db, line.product_id), kit))
     if take <= 0:
         return 0

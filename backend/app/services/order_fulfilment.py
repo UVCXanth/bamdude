@@ -197,8 +197,23 @@ def _product_line(ctx: OrderContext, line, figs: LineFigures, name: str, room: d
     if kit:
         partial = {pf.part_id: max(0, pf.allocated_qty - kits * pf.per) for pf in kit}
         can_receive = max(0, uncovered - received)
-        # …and never more than the order's prints still hold beyond what was received.
-        can_receive = min(can_receive, *((max(0, room[pf.part_id]) + partial[pf.part_id]) // pf.per for pf in kit))
+        # Attribution admits only prints compatible with THIS line's material and
+        # composition. The order-wide budget additionally prevents receiving the
+        # same output again after attribution moves it to a sibling line.
+        can_receive = min(
+            can_receive,
+            *(
+                (
+                    min(
+                        max(0, room[pf.part_id]),
+                        max(0, pf.usable - max(0, received * pf.per - pf.stock_used_qty)),
+                    )
+                    + partial[pf.part_id]
+                )
+                // pf.per
+                for pf in kit
+            ),
+        )
         for pf in kit:
             room[pf.part_id] -= max(0, can_receive * pf.per - partial[pf.part_id])
     else:
