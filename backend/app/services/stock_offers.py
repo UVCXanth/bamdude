@@ -18,6 +18,7 @@ from dataclasses import dataclass, field, replace
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.models.product import ProductPart
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
@@ -116,6 +117,22 @@ async def offers(db: AsyncSession, project: Project) -> list[Offer]:
             ready_left[suggestion.position_id] -= ready
         kit = counted(composition_of(ctx, line))
         kits = min(wants[line.id] - ready, part_stock.kits_of(shelf, kit))
+        # A partial reservation can already cover one component completely.
+        # A whole kit is an offer only if EVERY component is still needed;
+        # otherwise the loose-part pass takes just the missing components.
+        kits = (
+            min(
+                kits,
+                *(
+                    max(0, pf.remaining - pf.in_progress - queued.get(line.id, {}).get(pf.part_id, 0) - ready * pf.per)
+                    // pf.per
+                    for pf in figures[line.id].parts
+                    if pf.per > 0 and pf.shelf
+                ),
+            )
+            if kit
+            else 0
+        )
         for part, per in kit:
             shelf[part.id] -= kits * per
         fitted_suggestions.append(replace(suggestion, from_finished=ready, from_kits=kits))
@@ -207,6 +224,15 @@ async def take(
             else {}
         )
         if got_finished or got_kits or got_parts:
+            part_names = (
+                dict(
+                    (
+                        await db.execute(select(ProductPart.id, ProductPart.name).where(ProductPart.id.in_(got_parts)))
+                    ).all()
+                )
+                if got_parts
+                else {}
+            )
             await order_journal.record(
                 db,
                 project.id,
@@ -216,7 +242,14 @@ async def take(
                     "product": offer.product_name if offer is not None else None,
                     "from_finished": got_finished,
                     "kits": got_kits,
-                    **({"parts": got_parts} if got_parts else {}),
+                    **(
+                        {
+                            "parts": got_parts,
+                            "parts_taken": [[part_names[pid], qty] for pid, qty in sorted(got_parts.items())],
+                        }
+                        if got_parts
+                        else {}
+                    ),
                 },
                 actor=actor,
             )

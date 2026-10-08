@@ -9915,8 +9915,20 @@ export const api = {
     request<{ removed: number }>(`/printers/${printerId}/mqtt-recording`, {
       method: 'DELETE',
     }),
-  mqttRecordingDownloadUrl: (printerId: number) =>
-    `/api/v1/printers/${printerId}/mqtt-recording/download`,
+  downloadMQTTRecording: async (printerId: number) => {
+    const blob = await fetchAuthorizedBlob(`${API_BASE}/printers/${printerId}/mqtt-recording/download`);
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `mqtt-printer-${printerId}.log`;
+    document.body.appendChild(a);
+    try {
+      a.click();
+    } finally {
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    }
+  },
 
   // Printer File Manager
   // ``storage`` is optional everywhere: omitted, the backend answers with the

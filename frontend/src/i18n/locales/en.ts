@@ -6334,6 +6334,7 @@ export default {
       showLess: 'Show less',
       stock: {
         ready: '{{count}} ready from stock',
+        parts: 'parts from stock: {{parts}}',
         kits_one: '{{count}} kit from stock',
         kits_other: '{{count}} kits from stock',
         waybill: ', waybill {{waybill}}',

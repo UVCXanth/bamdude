@@ -978,7 +978,10 @@ def _units_complete(ctx: OrderContext, line_figures: Mapping[int, LineFigures]) 
         if figs.mode == "parts":
             total += figs.covered_units
             continue
-        units = figs.units_printed + min(figs.from_stock_units, figs.quantity)
+        # Mixed kits (some reserved parts, the rest printed) are complete too.
+        # Keep the existing uncapped whole-print overproduction reading, while
+        # coverage contributes only units this line actually ordered.
+        units = max(figs.covered_units, figs.units_printed + min(figs.from_stock_units, figs.quantity))
         purchased = [(p, per) for p, per in composition_of(ctx, line) if p.kind == "purchased" and per > 0]
         for part, per in purchased:
             units = min(units, left.get(part.id, 0) // per)

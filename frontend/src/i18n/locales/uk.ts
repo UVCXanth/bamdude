@@ -6427,6 +6427,7 @@ export default {
       showLess: 'Згорнути',
       stock: {
         ready: 'готових {{count}} зі складу',
+        parts: 'деталі зі складу: {{parts}}',
         kits_one: '{{count}} комплект зі складу',
         kits_few: '{{count}} комплекти зі складу',
         kits_many: '{{count}} комплектів зі складу',
