@@ -1144,6 +1144,18 @@ async def return_parts_for_line(db: AsyncSession, line: ProjectLine, *, created_
     return back
 
 
+def kit_reservation_room(line: ProjectLine, kit: Composition, held: Mapping[int, int]) -> int:
+    """Base kits still reservable; additional parts never enlarge the kit count."""
+    covered = (
+        (line.from_finished or 0)
+        + (line.assembled or 0)
+        + (line.received or 0)
+        - (line.returned or 0)
+        - (line.written_off or 0)
+    )
+    return min((max(0, (line.quantity - covered) * per - held.get(part.id, 0)) // per for part, per in kit), default=0)
+
+
 async def add_kits_for_line(db: AsyncSession, line: ProjectLine, kits: int, *, created_by: int | None) -> int:
     """«Взяти зі складу» (spec rule 17): MORE kits for the line — never a release first,
     never past the line's quantity, never more than the shelf makes. Returns the kits taken."""
@@ -1153,19 +1165,10 @@ async def add_kits_for_line(db: AsyncSession, line: ProjectLine, kits: int, *, c
     if not kit:
         return 0
     await lock_parts(db, [part for part, _per in kit])
-    # What the shelf, the kits and the prints already cover — the same room as the ready
-    # units door's (final review M5).
-    covered = (
-        (line.from_finished or 0)
-        + (line.assembled or 0)
-        + (line.received or 0)
-        - (line.returned or 0)
-        - (line.written_off or 0)
-    )
     held = await reserved_parts_for_line(db, line)
     # Whole-kit history is add-only, but existing loose reservations also spend
     # this line's room. Do not reserve its already-covered component twice.
-    room = min((max(0, (line.quantity - covered) * per - held.get(part.id, 0)) // per for part, per in kit))
+    room = kit_reservation_room(line, kit, held)
     take = min(kits, room, kits_of(await balances(db, line.product_id), kit))
     if take <= 0:
         return 0

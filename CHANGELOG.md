@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Later stock deliveries fill incomplete kits even when the order includes extra parts.** Spare parts no longer inflate the number of full kits offered, so taking stock reserves all missing components instead of leaving a repeatedly unfulfillable kit suggestion.
+
 - **Grouped filament inventory sorts by spool ID, lot, purchase date, location, label weight, net weight and remaining percentage.** Column headers order both the groups and their expanded spools. Group weights use their totals, and groups are sorted before pagination.
 - **Printed BOM parts can include a configurable extra percentage.** New order lines snapshot the catalog setting and round additional demand up once across the full line. Extras are planned against printed output, allocated stock and both queue tiers, then received and issued separately from complete units. Existing orders keep their original percentage; zero preserves the existing kit flow. Catalog edits cannot remove or change a part's base count while an order has its extra-percentage snapshot, so outstanding and received extras remain visible and must still be shipped. Pre-movement order-line configuration remains editable. Extra receipts also enforce the line's material eligibility and share the same no-double-credit print budget as complete units.
 

@@ -116,7 +116,14 @@ async def offers(db: AsyncSession, project: Project) -> list[Offer]:
             ready = min(wants[line.id], available)
             ready_left[suggestion.position_id] -= ready
         kit = counted(composition_of(ctx, line))
-        kits = min(wants[line.id] - ready, part_stock.kits_of(shelf, kit))
+        held = {pf.part_id: pf.allocated_qty for pf in figures[line.id].parts}
+        # Extras contribute to remaining demand but cannot fill the base-kit
+        # writer's room. Use its same bound before spending the shared shelf.
+        kits = min(
+            wants[line.id] - ready,
+            part_stock.kits_of(shelf, kit),
+            max(0, part_stock.kit_reservation_room(line, kit, held) - ready),
+        )
         # A partial reservation can already cover one component completely.
         # A whole kit is an offer only if EVERY component is still needed;
         # otherwise the loose-part pass takes just the missing components.
