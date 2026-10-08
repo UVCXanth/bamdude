@@ -5092,9 +5092,7 @@ class BambuMQTTClient:
         # The canonical helper validates masks and ignores shutdown/unknown
         # reports; never seed from cached tray content or a command ACK.
         probe = [{"id": 0, "tray": [{"id": 0}]}]
-        apply_tray_exist_bits(
-            probe, bits, power_on_flag=payload.get("power_on_flag", True), annotate_exists=True
-        )
+        apply_tray_exist_bits(probe, bits, power_on_flag=payload.get("power_on_flag", True), annotate_exists=True)
         if not isinstance(probe[0]["tray"][0].get("exists"), bool):
             return []
         # Reuse the canonical firmware bit layout, but never feed cached presence
