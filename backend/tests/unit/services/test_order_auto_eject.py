@@ -7,11 +7,140 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from backend.app.models.print_completion_receipt import PrintCompletionReceipt
 from backend.app.models.project import Project
+from backend.app.models.user import User
 from backend.app.services.filament_routing import RoutingDeferred
 from backend.app.services.order_auto_eject import archive_mode, automatic_predecessor, dispatch_check, snapshot
 from backend.app.services.plate_detection import PlateDetectionResult
 from backend.app.services.printer_manager import printer_manager
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("options", [{}, {"auto_eject": False}])
+@pytest.mark.parametrize("require_clear", [False, True])
+@pytest.mark.parametrize("origin", ["direct-library", "direct-archive", "order-queue", "auto-queue"])
+async def test_manual_clear_then_direct_print_with_detection_disabled_skips_camera(
+    db_session, held, monkeypatch, options, require_clear, origin
+):
+    from backend.app.services.background_dispatch import PrintDispatchJob
+    from backend.app.services.plate_answers import answer_plate_run
+
+    p, archive, _ = held
+    p.plate_detection_enabled = False
+    p.require_plate_clear = require_clear
+    await db_session.commit()
+    monkeypatch.setattr(printer_manager, "confirm_awaiting_plate_clear_released", Mock())
+    await answer_plate_run(
+        db_session,
+        printer_id=p.id,
+        expected_archive_id=archive.id,
+        expected_gate_token="synthetic-token",
+        action="clear",
+    )
+    assert archive.extra_data["plate_clear_source"] == "manual"
+    assert not p.awaiting_plate_clear
+    camera = AsyncMock(return_value=PlateDetectionResult(False, 1, 7, "Occupied", status="occupied"))
+    monkeypatch.setattr("backend.app.services.plate_detection.check_plate_empty", camera)
+    verify = AsyncMock()
+    publish = Mock()
+    order = None
+    if origin in ("order-queue", "auto-queue"):
+        order = Project(name="Product B ordinary order", auto_eject_enabled=False)
+        db_session.add(order)
+        await db_session.commit()
+    job = PrintDispatchJob(
+        id=1,
+        kind="reprint_archive" if origin == "direct-archive" else "print_library_file",
+        source_id=None,
+        source_name="Synthetic Product B",
+        printer_id=p.id,
+        printer_name=p.name,
+        options=options,
+        project_id=order.id if order else None,
+        queue_item_id=1,
+        awaited_by_scheduler=origin in ("order-queue", "auto-queue"),
+    )
+    await dispatch_check(db_session, job, p, verify, lambda _job: None)
+    publish()
+    camera.assert_not_awaited()
+    verify.assert_awaited_once()
+    publish.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_existing_authenticated_manual_receipt_needs_no_data_rewrite(db_session, held, monkeypatch):
+    p, archive, _ = held
+    user = User(username="synthetic-plate-operator")
+    db_session.add(user)
+    await db_session.flush()
+    db_session.add(PrintCompletionReceipt(archive_id=archive.id, plate_action="clear", plate_action_actor_id=user.id))
+    p.awaiting_plate_clear = False
+    p.awaiting_plate_clear_archive_id = None
+    p.awaiting_plate_clear_token = None
+    p.plate_detection_enabled = False
+    await db_session.commit()
+    assert "plate_clear_source" not in archive.extra_data
+    camera = AsyncMock()
+    monkeypatch.setattr("backend.app.services.plate_detection.check_plate_empty", camera)
+    await dispatch_check(db_session, SimpleNamespace(options={"auto_eject": False}), p, AsyncMock(), lambda _job: None)
+    camera.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source,receipt_action", [("automatic", "clear"), (None, "clear"), ("manual", None), ("manual", "repeat")])
+async def test_non_manual_or_unproven_answer_cannot_cache_camera_permission(
+    db_session, held, monkeypatch, source, receipt_action
+):
+    p, archive, _ = held
+    p.awaiting_plate_clear = False
+    p.awaiting_plate_clear_archive_id = None
+    p.awaiting_plate_clear_token = None
+    p.plate_detection_enabled = False
+    if source is not None:
+        archive.extra_data = {**archive.extra_data, "plate_clear_source": source}
+    if receipt_action is not None:
+        db_session.add(PrintCompletionReceipt(archive_id=archive.id, plate_action=receipt_action))
+    await db_session.commit()
+    camera = AsyncMock(return_value=PlateDetectionResult(False, 1, 7, "Occupied", status="occupied"))
+    monkeypatch.setattr("backend.app.services.plate_detection.check_plate_empty", camera)
+    with pytest.raises(RoutingDeferred, match="plate_objects_detected"):
+        await dispatch_check(db_session, SimpleNamespace(options={"auto_eject": False}), p, AsyncMock(), lambda _job: None)
+    camera.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auto_job,enabled", [(True, False), (False, True)])
+async def test_manual_clear_does_not_disable_current_jobs_required_camera(db_session, held, monkeypatch, auto_job, enabled):
+    p, archive, _ = held
+    p.awaiting_plate_clear = False
+    p.awaiting_plate_clear_archive_id = None
+    p.awaiting_plate_clear_token = None
+    p.plate_detection_enabled = enabled
+    archive.extra_data = {**archive.extra_data, "plate_clear_source": "manual"}
+    db_session.add(PrintCompletionReceipt(archive_id=archive.id, plate_action="clear"))
+    await db_session.commit()
+    camera = AsyncMock(return_value=PlateDetectionResult(False, 1, 7, "Occupied", status="occupied"))
+    monkeypatch.setattr("backend.app.services.plate_detection.check_plate_empty", camera)
+    with pytest.raises(RoutingDeferred, match="plate_objects_detected"):
+        await dispatch_check(db_session, SimpleNamespace(options={"auto_eject": auto_job}), p, AsyncMock(), lambda _job: None)
+    camera.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_automatic_answer_records_source_and_rechecks_after_abandoned_start(db_session, held, monkeypatch):
+    p, archive, _ = held
+    monkeypatch.setattr(printer_manager, "confirm_awaiting_plate_clear_released", Mock())
+    camera = AsyncMock(return_value=PlateDetectionResult(True, 1, 0, "Clear"))
+    monkeypatch.setattr("backend.app.services.plate_detection.check_plate_empty", camera)
+    job = SimpleNamespace(options={"auto_eject": False})
+    await dispatch_check(db_session, job, p, AsyncMock(), lambda _job: None)
+    assert not p.awaiting_plate_clear
+    assert archive.extra_data["plate_clear_source"] == "automatic"
+    camera.return_value = PlateDetectionResult(False, 1, 7, "Occupied", status="occupied")
+    with pytest.raises(RoutingDeferred, match="plate_objects_detected"):
+        await dispatch_check(db_session, job, p, AsyncMock(), lambda _job: None)
+    assert camera.await_count == 2
 
 
 @pytest.mark.asyncio

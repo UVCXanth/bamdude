@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from backend.app.models.archive import PrintArchive
+from backend.app.models.print_completion_receipt import PrintCompletionReceipt
 from backend.app.models.printer import Printer
 from backend.app.models.project import Project
 from backend.app.schemas.order_auto_eject import AutoEjectSettings
@@ -127,6 +128,19 @@ async def dispatch_check(db, job, printer, verify_claim, raise_if_cancelled):
             .limit(1)
         )
         previous_mode = bool(latest and latest.status == "completed" and archive_mode(latest))
+        if previous_mode:
+            receipt = await db.scalar(
+                select(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == latest.id)
+            )
+            source = (latest.extra_data or {}).get("plate_clear_source")
+            manually_cleared = bool(
+                receipt
+                and receipt.plate_action == "clear"
+                and (source == "manual" or (source is None and receipt.plate_action_actor_id is not None))
+            )
+            # A manual answer ends that run's camera requirement. An automatic
+            # photo answer remains subject to a fresh check on dispatch retry.
+            previous_mode = not manually_cleared
     if (
         not job.options.get("auto_eject")
         and not printer.awaiting_plate_clear
@@ -238,6 +252,7 @@ async def dispatch_check(db, job, printer, verify_claim, raise_if_cancelled):
                 expected_archive_id=previous.id,
                 expected_gate_token=context[5],
                 action="clear",
+                automatic=True,
             )
         except StalePlateAnswer as exc:
             raise RoutingDeferred("plate_context_changed") from exc
