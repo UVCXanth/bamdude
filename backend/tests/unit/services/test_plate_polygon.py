@@ -4,9 +4,18 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from backend.app.schemas.plate_detection import PlatePolygon
-from backend.app.services.plate_detection import PlateDetector
+from backend.app.services import plate_detection
 
 POLYGON = [{"x": 0.1, "y": 0.1}, {"x": 0.8, "y": 0.15}, {"x": 0.65, "y": 0.8}, {"x": 0.2, "y": 0.7}]
+
+
+@pytest.fixture(autouse=True)
+def real_opencv_backend(monkeypatch):
+    # Existing availability tests reload this module with mocked imports. Use
+    # real image operations here and restore the previous state after each test.
+    monkeypatch.setattr(plate_detection, "cv2", cv2)
+    monkeypatch.setattr(plate_detection, "np", np)
+    monkeypatch.setattr(plate_detection, "OPENCV_AVAILABLE", True)
 
 
 @pytest.mark.parametrize(
@@ -43,7 +52,7 @@ def prepare(tmp_path, monkeypatch):
     image = np.repeat(np.tile(np.linspace(50, 180, 240, dtype=np.uint8), (180, 1))[:, :, None], 3, axis=2)
     # PNG bytes stored with .jpg filename: imread detects the actual format.
     (tmp_path / "printer_1_ref_0.jpg").write_bytes(jpeg(image))
-    return image, PlateDetector(polygon=POLYGON)
+    return image, plate_detection.PlateDetector(polygon=POLYGON)
 
 
 def test_outside_change_cannot_leak_through_blur_or_normalization(tmp_path, monkeypatch):
@@ -66,9 +75,11 @@ def test_inside_object_is_detected(tmp_path, monkeypatch):
 
 def test_mask_at_image_edge_and_too_small_raster_fail_closed(tmp_path, monkeypatch):
     image, _ = prepare(tmp_path, monkeypatch)
-    full = PlateDetector(polygon=[{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}, {"x": 0, "y": 1}])
+    full = plate_detection.PlateDetector(
+        polygon=[{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}, {"x": 0, "y": 1}]
+    )
     assert np.count_nonzero(full._polygon_mask(image)) == 180 * 240
-    tiny = PlateDetector(polygon=[{"x": 0.1, "y": 0.1}, {"x": 0.11, "y": 0.1}, {"x": 0.1, "y": 0.11}])
+    tiny = plate_detection.PlateDetector(polygon=[{"x": 0.1, "y": 0.1}, {"x": 0.11, "y": 0.1}, {"x": 0.1, "y": 0.11}])
     assert not tiny.analyze_frame(jpeg(image), 1).is_empty
 
 
@@ -84,7 +95,7 @@ def test_rectangle_preprocessing_remains_unchanged():
     expected = cv2.normalize(
         cv2.GaussianBlur(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (51, 51), 0), None, 0, 255, cv2.NORM_MINMAX
     )
-    assert np.array_equal(PlateDetector()._preprocess_for_comparison(image), expected)
+    assert np.array_equal(plate_detection.PlateDetector()._preprocess_for_comparison(image), expected)
 
 
 def test_polygon_never_reports_empty_on_missing_or_corrupt_inputs(tmp_path, monkeypatch):
