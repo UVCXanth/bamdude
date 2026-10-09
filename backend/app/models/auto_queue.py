@@ -62,6 +62,7 @@ class AutoQueueItem(Base):
         ForeignKey("queue_sources.id", ondelete="RESTRICT"), nullable=True, index=True
     )
     auto_eject: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    auto_eject_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)

@@ -49,7 +49,7 @@ setup, rather than retaining unrelated references as alternative empty states.
    reference-image controls. Keep lighting and the camera position consistent.
 3. Enable auto-eject on the order before creating its jobs. Verify the mode
    badge on each queued job. This setting is incompatible with Swap Mode.
-4. A fresh photo is required immediately before dispatch. Occupied plate,
+4. By default, a fresh photo is required immediately before dispatch. Occupied plate,
    unavailable camera, missing calibration or changed printer context leaves
    the queued job waiting. Correct the cause using the existing controls.
 5. After a successful auto-eject run, the next dispatch may answer that run's
@@ -61,12 +61,38 @@ Starts from the printer screen or another slicer remain ordinary prints, with
 the existing reactive detection and manual clearing. The mode belongs to a
 BamDude-dispatched run, not to a printer's current global settings.
 
+### Camera policy for new jobs
+
+Under the enabled order checkbox, **Allowed difference from the reference**
+sets the existing detector's image-difference threshold (default 1%, range
+0.1–10%). It is not a probability that the plate is empty. A higher value can
+miss a retained part. First add empty references for different lighting, in
+the same finish position and camera geometry (up to five references), then
+test with a real retained part inside the ROI. A clear result says nothing
+about areas outside the image or ROI.
+
+**Skip OpenCV plate check** requires two warning dialogs and explicit risk
+acknowledgement. In this mode no image is captured before that auto-eject
+job; BamDude cannot verify ejection. Jobs display a red “no plate check” badge.
+This is an operator opt-out, never a fallback when a camera check fails.
+Manual holds after ordinary, failed, cancelled or uncertain prints remain;
+fresh local telemetry, claim ownership, compatibility and pause/duplicate
+protections are still required. This option neither moves the printer nor
+adds G-code. Turning auto-eject back on resets this opt-out to checked mode.
+
+Both values are captured into each new job and its archive dispatch intent.
+Changing an order, including re-enabling camera checks, leaves existing jobs
+unchanged. Copies and repeats retain their original settings. Old jobs use
+the original 1% check; migration does not enable opt-out for them.
+
 ## Implementation boundaries
 
 This extends the existing dispatcher, queue claim, plate-answer gate and
 OpenCV detector. It adds three boolean columns: order setting, queue snapshot
 and auto-queue snapshot. Existing rows migrate to `false`. The archive's
-existing dispatch intent records the dispatched mode.
+existing dispatch intent records the dispatched mode and captured camera policy.
+Nullable JSON columns on these same three tables hold that small policy;
+missing policy uses the safe original defaults.
 
 No recipe registry, model-wide admission, G-code parser, ejection command,
 new scheduler, retry protocol or restart-recovery subsystem is introduced.

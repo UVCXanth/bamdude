@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, StringConstraints, ValidationInfo, field_
 
 from backend.app.models.stock_issue import WAYBILL_MAX
 from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
+from backend.app.schemas.order_auto_eject import AutoEjectSelection, AutoEjectSettings
 
 #: The most one request may put on a line or move on a shelf. Far above any
 #: shelf, far below the INTEGER a PostgreSQL column overflows at — a typo is
@@ -192,7 +193,7 @@ OrderColor = Annotated[str, StringConstraints(max_length=20)]
 OrderUrl = Annotated[str, StringConstraints(strip_whitespace=True, max_length=2048)]
 
 
-class ProjectCreate(BaseModel):
+class ProjectCreate(AutoEjectSelection):
     auto_eject_enabled: bool = False
     name: OrderName
     customer_id: int | None = None
@@ -223,7 +224,7 @@ class ProjectCreate(BaseModel):
         return v
 
 
-class ProjectUpdate(BaseModel):
+class ProjectUpdate(AutoEjectSelection):
     auto_eject_enabled: bool | None = None
     name: OrderName | None = None
     customer_id: int | None = None
@@ -239,7 +240,7 @@ class ProjectUpdate(BaseModel):
     url: OrderUrl | None = None
     responsible_id: int | None = None
 
-    @field_validator("name", "status", "priority", "auto_eject_enabled")
+    @field_validator("name", "status", "priority", "auto_eject_enabled", "auto_eject_settings")
     @classmethod
     def _not_null(cls, v: str | None, info: ValidationInfo) -> str:
         return _reject_null(v, info)
@@ -463,6 +464,7 @@ class OrderContactOut(BaseModel):
 
 
 class ProjectResponse(BaseModel):
+    auto_eject_settings: AutoEjectSettings = Field(default_factory=AutoEjectSettings)
     auto_eject_enabled: bool = False
     id: int
     code: str

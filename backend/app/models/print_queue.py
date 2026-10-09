@@ -71,6 +71,7 @@ class PrintQueueItem(Base):
     # job's own ``project_id`` / ``project_line_id`` / ``created_by_id`` — those
     # stay canonical as columns (spec §4). The blob is shared; this is not.
     auto_eject: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    auto_eject_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)

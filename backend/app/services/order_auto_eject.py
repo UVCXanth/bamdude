@@ -4,34 +4,61 @@ No ejection command, recipe registry, new lock or recovery protocol. The held
 run's archive decides whether a photo may replace its manual plate answer.
 """
 
+import logging
 import time
 
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 from backend.app.models.project import Project
+from backend.app.schemas.order_auto_eject import AutoEjectSettings
 from backend.app.services.filament_routing import RoutingDeferred
+
+logger = logging.getLogger(__name__)
 
 
 def archive_mode(archive) -> bool:
     return ((archive.extra_data or {}).get("dispatch_intent") or {}).get("auto_eject") is True if archive else False
 
 
-async def snapshot(db, *, project_id, options=None, inherited=False, preserve=False) -> bool:
-    """New work reads the order; copies/repeats retain the original job's flag."""
-    requested = (
-        options.get("auto_eject_enabled") if isinstance(options, dict) else getattr(options, "auto_eject_enabled", None)
+def archive_settings(archive):
+    return ((archive.extra_data or {}).get("dispatch_intent") or {}).get("auto_eject_settings") if archive else None
+
+
+async def capture(db, *, project_id, options=None, inherited=False, inherited_settings=None, preserve=False):
+    """Read the order once so mode and policy come from the same version."""
+    values = (
+        options
+        if isinstance(options, dict)
+        else {key: getattr(options, key, None) for key in ("auto_eject_enabled", "auto_eject_settings", "archive_id")}
     )
-    if requested is not None:
-        return bool(requested)
-    if preserve:
-        return bool(inherited)
-    archive_id = options.get("archive_id") if isinstance(options, dict) else getattr(options, "archive_id", None)
-    if archive_id:
-        return archive_mode(await db.get(PrintArchive, archive_id))
-    order = await db.get(Project, project_id, populate_existing=True) if project_id is not None else None
-    return bool(order and order.auto_eject_enabled)
+    mode, policy = inherited, inherited_settings
+    if not preserve:
+        if values.get("archive_id"):
+            archive = await db.get(PrintArchive, values["archive_id"])
+            mode, policy = archive_mode(archive), archive_settings(archive)
+        elif project_id is not None:
+            order = await db.get(Project, project_id, populate_existing=True)
+            mode, policy = (bool(order.auto_eject_enabled), order.auto_eject_settings) if order else (False, None)
+        if values.get("auto_eject_settings") is not None:
+            policy = values["auto_eject_settings"]
+    if values.get("auto_eject_enabled") is not None:
+        mode = values["auto_eject_enabled"]
+    return bool(mode), AutoEjectSettings.model_validate(policy or {}).model_dump()
+
+
+async def snapshot(db, *, project_id, options=None, inherited=False, preserve=False) -> bool:
+    mode, _ = await capture(db, project_id=project_id, options=options, inherited=inherited, preserve=preserve)
+    return mode
+
+
+async def settings_snapshot(db, *, project_id, inherited=None, preserve=False, options=None):
+    _, policy = await capture(
+        db, project_id=project_id, options=options, inherited_settings=inherited, preserve=preserve
+    )
+    return policy
 
 
 async def automatic_predecessor(db, printer):
@@ -135,22 +162,34 @@ async def dispatch_check(db, job, printer, verify_claim, raise_if_cancelled):
         printer.plate_detection_roi,
     )
     roi = printer.plate_detection_roi
-    await db.commit()  # Release the read transaction during camera I/O.
     try:
-        result = await check_plate_empty(
-            printer_id=printer.id,
-            ip_address=printer.ip_address,
-            access_code=printer.access_code,
-            model=printer.model,
-            fresh=True,
-            external_camera_url=printer.external_camera_url,
-            external_camera_type=printer.external_camera_type,
-            use_external=printer.external_camera_enabled,
-            external_camera_snapshot_url=printer.external_camera_snapshot_url,
-            roi=tuple(roi[k] for k in ("x", "y", "w", "h")) if roi else None,
-        )
-    except Exception as exc:
+        policy = AutoEjectSettings.model_validate(job.options.get("auto_eject_settings") or {})
+    except ValidationError as exc:
         raise RoutingDeferred("plate_check_unavailable") from exc
+    skip_check = bool(job.options.get("auto_eject") and policy.skip_check)
+    await db.commit()  # Release the read transaction during camera I/O.
+    result = None
+    if skip_check:
+        logger.warning(
+            "Auto-eject camera check explicitly skipped: printer=%s job=%s", printer.id, getattr(job, "id", None)
+        )
+    else:
+        try:
+            result = await check_plate_empty(
+                printer_id=printer.id,
+                ip_address=printer.ip_address,
+                access_code=printer.access_code,
+                model=printer.model,
+                fresh=True,
+                difference_threshold=policy.difference_threshold if job.options.get("auto_eject") else 1.0,
+                external_camera_url=printer.external_camera_url,
+                external_camera_type=printer.external_camera_type,
+                use_external=printer.external_camera_enabled,
+                external_camera_snapshot_url=printer.external_camera_snapshot_url,
+                roi=tuple(roi[k] for k in ("x", "y", "w", "h")) if roi else None,
+            )
+        except Exception as exc:
+            raise RoutingDeferred("plate_check_unavailable") from exc
     raise_if_cancelled(job)
     await verify_claim(db, job)
     live = await db.get(Printer, printer.id, populate_existing=True)
@@ -183,7 +222,7 @@ async def dispatch_check(db, job, printer, verify_claim, raise_if_cancelled):
         )
     ):
         raise RoutingDeferred("plate_context_changed")
-    if result.status != "clear":
+    if result is not None and result.status != "clear":
         raise RoutingDeferred(
             "plate_calibration_required"
             if result.needs_calibration

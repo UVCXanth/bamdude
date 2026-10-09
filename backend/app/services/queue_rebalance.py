@@ -787,6 +787,8 @@ async def _apply(
             # it exactly as it does for every other door.
             payload = {
                 "auto_eject_enabled": item.auto_eject,
+                "auto_eject_settings": item.auto_eject_settings or {},
+                "auto_eject_skip_acknowledged": True,  # Preserve the already accepted job policy.
                 **options,
                 "use_ams": item.use_ams,
                 "feed_policy": item.feed_policy,

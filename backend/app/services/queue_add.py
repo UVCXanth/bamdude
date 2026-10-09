@@ -380,10 +380,15 @@ async def _add_items_from_queue_source(
                         library_file_id=source_item.library_file_id,
                         plate_index=data.plate_id,
                     )
-                from backend.app.services.order_auto_eject import snapshot
+                from backend.app.services.order_auto_eject import capture
 
-                eject = await snapshot(
-                    db, project_id=effective_project_id, options=data, inherited=source_item.auto_eject, preserve=True
+                eject, eject_settings = await capture(
+                    db,
+                    project_id=effective_project_id,
+                    options=data,
+                    inherited=source_item.auto_eject,
+                    inherited_settings=source_item.auto_eject_settings,
+                    preserve=True,
                 )
                 stamped_routing = record_queue_source(routing, source)
                 rows = [
@@ -391,6 +396,7 @@ async def _add_items_from_queue_source(
                         queue_source_id=source.id,
                         source_snapshot=source_item.source_snapshot,
                         auto_eject=eject,
+                        auto_eject_settings=eject_settings,
                         queue_id=data.queue_id,
                         archive_id=source_item.archive_id,
                         library_file_id=source_item.library_file_id,
@@ -536,9 +542,9 @@ async def _publish_items(
 
             # Hoisted: every copy shares one intent, so the JSON is parsed and
             # re-serialised once rather than per row (review m5).
-            from backend.app.services.order_auto_eject import snapshot
+            from backend.app.services.order_auto_eject import capture
 
-            eject = await snapshot(session, project_id=effective_project_id, options=data)
+            eject, eject_settings = await capture(session, project_id=effective_project_id, options=data)
             stamped_routing = record_queue_source(routing, source)
             items: list[PrintQueueItem] = []
             for _ in range(data.quantity):
@@ -547,6 +553,7 @@ async def _publish_items(
                         queue_source_id=source.id,
                         source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
                         auto_eject=eject,
+                        auto_eject_settings=eject_settings,
                         queue_id=data.queue_id,
                         archive_id=data.archive_id,
                         library_file_id=data.library_file_id,

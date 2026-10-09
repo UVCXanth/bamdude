@@ -44,8 +44,9 @@ async def held(db_session, printer_factory, archive_factory, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("previous_mode,status", [(False, "completed"), (True, "failed"), (True, "cancelled")])
+@pytest.mark.parametrize("skip", [False, True])
 async def test_new_auto_flag_never_answers_normal_or_failed_predecessor(
-    db_session, held, monkeypatch, previous_mode, status
+    db_session, held, monkeypatch, previous_mode, status, skip
 ):
     p, archive, _ = held
     archive.status = status
@@ -56,12 +57,117 @@ async def test_new_auto_flag_never_answers_normal_or_failed_predecessor(
     publish = Mock()
     with pytest.raises(RoutingDeferred, match="plate_manual_inspection"):
         await dispatch_check(
-            db_session, SimpleNamespace(options={"auto_eject": True}), p, AsyncMock(), lambda _job: None
+            db_session,
+            SimpleNamespace(options={"auto_eject": True, "auto_eject_settings": {"skip_check": skip}}),
+            p,
+            AsyncMock(),
+            lambda _job: None,
         )
         publish()
     camera.assert_not_awaited()
     publish.assert_not_called()
     assert p.awaiting_plate_clear is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,skip,threshold", [(True, False, 2.5), (True, True, 10), (False, True, 10)])
+async def test_camera_policy_changes_only_the_auto_job_photo_step(db_session, held, monkeypatch, mode, skip, threshold):
+    p, archive, _ = held
+    camera = AsyncMock(return_value=PlateDetectionResult(True, 0, 0, "Synthetic clear"))
+    answer = AsyncMock()
+    monkeypatch.setattr("backend.app.services.plate_detection.check_plate_empty", camera)
+    monkeypatch.setattr("backend.app.services.plate_answers.answer_plate_run", answer)
+    verify = AsyncMock()
+    await dispatch_check(
+        db_session,
+        SimpleNamespace(
+            id=99,
+            options={
+                "auto_eject": mode,
+                "auto_eject_settings": {"skip_check": skip, "difference_threshold": threshold},
+            },
+        ),
+        p,
+        verify,
+        lambda _job: None,
+    )
+    if mode and skip:
+        camera.assert_not_awaited()
+    else:
+        assert camera.await_args.kwargs["difference_threshold"] == (threshold if mode else 1.0)
+        assert camera.await_args.kwargs["fresh"] is True
+    assert answer.await_args.kwargs["expected_archive_id"] == archive.id
+    assert verify.await_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["cancel", "claim", "stale", "disconnect", "swap", "invalid-policy"])
+async def test_skip_is_not_permission_to_bypass_other_admission_checks(db_session, held, monkeypatch, failure):
+    p, _, state = held
+    camera, answer = AsyncMock(), AsyncMock()
+    monkeypatch.setattr("backend.app.services.plate_detection.check_plate_empty", camera)
+    monkeypatch.setattr("backend.app.services.plate_answers.answer_plate_run", answer)
+    if failure == "stale":
+        monkeypatch.setattr(printer_manager, "peek_status", lambda _pid: (state, time.monotonic() - 30, False))
+    if failure == "disconnect":
+        state.connected = False
+    if failure == "swap":
+        p.swap_mode_enabled = True
+        await db_session.commit()
+    verify = AsyncMock(side_effect=RoutingDeferred("claim changed")) if failure == "claim" else AsyncMock()
+
+    def cancel(_job):
+        if failure == "cancel":
+            raise RoutingDeferred("cancelled")
+
+    policy = {"skip_check": True, "difference_threshold": 20 if failure == "invalid-policy" else 1}
+    with pytest.raises(RoutingDeferred):
+        await dispatch_check(
+            db_session, SimpleNamespace(options={"auto_eject": True, "auto_eject_settings": policy}), p, verify, cancel
+        )
+    camera.assert_not_awaited()
+    answer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_settings_snapshot_preserves_old_job_and_archive_policy(db_session, archive_factory, printer_factory):
+    from backend.app.schemas.print_queue import PrintQueueItemCreate
+    from backend.app.services.order_auto_eject import settings_snapshot
+
+    a = Project(name="Product A order", auto_eject_settings={"difference_threshold": 2, "skip_check": True})
+    b = Project(name="Product B order")
+    db_session.add_all([a, b])
+    await db_session.commit()
+    captured = await settings_snapshot(db_session, project_id=a.id)
+    assert captured == {"difference_threshold": 2, "skip_check": True}
+    a.auto_eject_settings = {"difference_threshold": 1, "skip_check": False}
+    await db_session.commit()
+    assert await settings_snapshot(db_session, project_id=a.id, inherited=captured, preserve=True) == captured
+    assert await settings_snapshot(db_session, project_id=a.id, preserve=True) == a.auto_eject_settings
+    assert await settings_snapshot(db_session, project_id=b.id) == a.auto_eject_settings
+    p = await printer_factory()
+    archive = await archive_factory(p.id, extra_data={"dispatch_intent": {"auto_eject_settings": captured}})
+    assert (
+        await settings_snapshot(
+            db_session, project_id=a.id, options=PrintQueueItemCreate(queue_id=1, archive_id=archive.id)
+        )
+        == captured
+    )
+
+
+@pytest.mark.asyncio
+async def test_threshold_is_forwarded_to_existing_detector(monkeypatch):
+    from backend.app.services import plate_detection as pd
+
+    detector = Mock()
+    detector.analyze_frame.return_value = PlateDetectionResult(True, 0, 0, "Synthetic clear")
+    factory = Mock(return_value=detector)
+    monkeypatch.setattr(pd, "OPENCV_AVAILABLE", True)
+    monkeypatch.setattr(pd, "PlateDetector", factory)
+    monkeypatch.setattr(pd, "capture_camera_image", AsyncMock(return_value=(b"synthetic", "test")))
+    await pd.check_plate_empty(1, "synthetic", "synthetic", "A1M", fresh=True, difference_threshold=2.5)
+    factory.assert_called_once_with(roi=None, difference_threshold=2.5)
+    assert detector.analyze_frame.call_args.kwargs["strict_dimensions"] is True
 
 
 @pytest.mark.asyncio

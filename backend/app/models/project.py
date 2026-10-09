@@ -19,6 +19,7 @@ class Project(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     auto_eject_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    auto_eject_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     name: Mapped[str] = mapped_column(String(255))
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id", ondelete="SET NULL"), nullable=True)
     # Who receives this order — a contact of ITS customer (checked in the route).

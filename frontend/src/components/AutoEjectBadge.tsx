@@ -1,7 +1,11 @@
 import { useTranslation } from 'react-i18next';
+import type { AutoEjectSettings } from '../api/client';
 
-export function AutoEjectBadge({ mode }: { mode?: unknown }) {
+export function AutoEjectBadge({ mode, settings }: { mode?: unknown; settings?: AutoEjectSettings | null }) {
   const { t } = useTranslation();
-  return mode === true ? <span className="inline-flex rounded bg-bambu-green/10 px-1.5 py-0.5 text-xs text-bambu-green"
-    title={t('autoEject.requirements')}>{t('autoEject.badge')}</span> : null;
+  return mode === true ? <span className={`inline-flex rounded px-1.5 py-0.5 text-xs ${settings?.skip_check
+    ? 'bg-red-500/10 text-red-400' : 'bg-bambu-green/10 text-bambu-green'}`}
+    title={settings?.skip_check ? t('autoEject.riskTitle') : t('autoEject.requirements')}>
+    {t(settings?.skip_check ? 'autoEject.badgeUnchecked' : 'autoEject.badge')}
+  </span> : null;
 }

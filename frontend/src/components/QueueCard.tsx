@@ -1292,7 +1292,7 @@ function PendingItemRow({
                 same size as the plate icon above, for the same reason: it lines
                 up down the column and the row keeps its geometry. Renders
                 nothing at all for an external print or an older server. */}
-            <AutoEjectBadge mode={item.auto_eject} />
+            <AutoEjectBadge mode={item.auto_eject} settings={item.auto_eject_settings} />
           <QueueSourceIndicator
               state={item.source_storage}
               className="w-3 h-3"
@@ -1730,7 +1730,7 @@ function IssuesSection({
                 {/* A failed row keeps its saved file ON PURPOSE, so Retry has
                     something to print — the tooltip says so where the operator
                     is looking at the row that is holding it (spec §10). */}
-                <AutoEjectBadge mode={item.auto_eject} />
+                <AutoEjectBadge mode={item.auto_eject} settings={item.auto_eject_settings} />
           <QueueSourceIndicator
                   state={item.source_storage}
                   held
@@ -1768,7 +1768,7 @@ function IssuesSection({
             return (
               <div key={item.id} className="flex items-center gap-2 py-1 px-2 rounded bg-bambu-dark-tertiary/40 group">
                 <Ban className="w-3 h-3 text-bambu-gray flex-shrink-0" />
-                <AutoEjectBadge mode={item.auto_eject} />
+                <AutoEjectBadge mode={item.auto_eject} settings={item.auto_eject_settings} />
           <QueueSourceIndicator
                   state={item.source_storage}
                   held
@@ -1806,7 +1806,7 @@ function IssuesSection({
             return (
               <div key={item.id} className="flex items-center gap-2 py-1 px-2 rounded bg-yellow-500/5 group">
                 <Pause className="w-3 h-3 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
-                <AutoEjectBadge mode={item.auto_eject} />
+                <AutoEjectBadge mode={item.auto_eject} settings={item.auto_eject_settings} />
           <QueueSourceIndicator
                   state={item.source_storage}
                   held

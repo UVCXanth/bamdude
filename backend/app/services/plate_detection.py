@@ -727,6 +727,7 @@ async def check_plate_empty(
     roi: tuple[float, float, float, float] | None = None,
     external_camera_snapshot_url: str | None = None,
     fresh: bool = False,
+    difference_threshold: float = PlateDetector.DEFAULT_DIFFERENCE_THRESHOLD,
 ) -> PlateDetectionResult:
     """Check if the build plate is empty for a printer.
 
@@ -776,7 +777,7 @@ async def check_plate_empty(
         )
 
     # Analyze the captured frame
-    detector = PlateDetector(roi=roi)
+    detector = PlateDetector(roi=roi, difference_threshold=difference_threshold)
     result = detector.analyze_frame(image_data, printer_id, plate_type, include_debug_image, strict_dimensions=fresh)
 
     # Add camera source to message

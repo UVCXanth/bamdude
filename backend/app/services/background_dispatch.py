@@ -16,6 +16,7 @@ import time
 import zipfile
 from collections import deque
 from contextlib import AsyncExitStack
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict
@@ -79,6 +80,7 @@ def _dispatch_intent(job: PrintDispatchJob, remote_filename: str, submission_id:
         "dispatch_job_id": job.id,
         "remote_filename": remote_filename,
         "auto_eject": job.options.get("auto_eject"),
+        "auto_eject_settings": job.options.get("auto_eject_settings"),
     }
 
 
@@ -1939,6 +1941,7 @@ class BackgroundDispatchService:
         if item is None or item.status != "printing":
             raise RoutingDeferred("dispatch_claim_changed")
         job.options["auto_eject"] = item.auto_eject
+        job.options["auto_eject_settings"] = deepcopy(item.auto_eject_settings)
         job.claim_started_at = item.started_at
         job.original_archive_id, job.original_library_file_id = item.archive_id, item.library_file_id
         job.source = await item_descriptor(db, item)
@@ -1962,6 +1965,7 @@ class BackgroundDispatchService:
             or item.started_at != job.claim_started_at
             or item.filament_routing != job.routing_intent
             or bool(item.auto_eject) != bool(job.options.get("auto_eject"))
+            or item.auto_eject_settings != job.options.get("auto_eject_settings")
         ):
             from backend.app.models.printer_queue import PrinterQueue
 
