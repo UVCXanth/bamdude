@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from backend.app.migrations import m197_auto_eject_camera_settings as migration
+from backend.app.migrations import m198_auto_eject_camera_settings as migration
 
 
 @pytest.mark.asyncio

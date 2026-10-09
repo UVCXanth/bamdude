@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from backend.app.migrations import m196_order_auto_eject as migration
+from backend.app.migrations import m197_order_auto_eject as migration
 
 
 @pytest.mark.asyncio

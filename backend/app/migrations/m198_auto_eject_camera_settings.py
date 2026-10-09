@@ -6,7 +6,7 @@ order preference into existing jobs. Copies carry their original policy.
 
 from backend.app.migrations.helpers import add_column, json_column_type
 
-version = 197
+version = 198
 name = "auto_eject_camera_settings"
 
 

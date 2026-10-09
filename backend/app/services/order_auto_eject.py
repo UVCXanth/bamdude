@@ -174,6 +174,7 @@ async def dispatch_check(db, job, printer, verify_claim, raise_if_cancelled):
         printer.external_camera_type,
         printer.external_camera_snapshot_url,
         printer.plate_detection_roi,
+        getattr(printer, "plate_detection_polygon", None),
     )
     roi = printer.plate_detection_roi
     try:
@@ -188,6 +189,10 @@ async def dispatch_check(db, job, printer, verify_claim, raise_if_cancelled):
             "Auto-eject camera check explicitly skipped: printer=%s job=%s", printer.id, getattr(job, "id", None)
         )
     else:
+        # PR #71 supplies polygon support independently. Forward a saved mask
+        # when it is present, while remaining usable on the rectangle-only base.
+        polygon = getattr(printer, "plate_detection_polygon", None)
+        region_options = {"polygon": polygon} if polygon is not None else {}
         try:
             result = await check_plate_empty(
                 printer_id=printer.id,
@@ -201,6 +206,7 @@ async def dispatch_check(db, job, printer, verify_claim, raise_if_cancelled):
                 use_external=printer.external_camera_enabled,
                 external_camera_snapshot_url=printer.external_camera_snapshot_url,
                 roi=tuple(roi[k] for k in ("x", "y", "w", "h")) if roi else None,
+                **region_options,
             )
         except Exception as exc:
             raise RoutingDeferred("plate_check_unavailable") from exc
@@ -233,6 +239,7 @@ async def dispatch_check(db, job, printer, verify_claim, raise_if_cancelled):
             live.external_camera_type,
             live.external_camera_snapshot_url,
             live.plate_detection_roi,
+            getattr(live, "plate_detection_polygon", None),
         )
     ):
         raise RoutingDeferred("plate_context_changed")

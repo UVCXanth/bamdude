@@ -5,6 +5,10 @@ queue and auto-queue jobs. Existing jobs keep their saved value. Copies,
 repeats and queue rebalancing preserve that value. Printer-wide settings are
 not changed; the feature is not restricted to a printer model.
 
+This is an experimental workflow for operator-prepared files. Successful
+ejection of one part does not establish that another part, material, surface
+or finish sequence will eject. Camera checks are enabled by default.
+
 ## Operator setup
 
 Enabling the order setting opens the existing confirmation dialog. Read the
@@ -32,7 +36,8 @@ stock A1 mini printer preset.
   must cover the print area and auxiliary parts. Nothing outside the camera
   image or ROI is observable; a clear result only describes the checked area.
 - Do not add blind homing before the photo. Successful G-code completion does
-  not itself prove ejection; the fresh photo still decides whether to proceed.
+  not itself prove ejection; with checking enabled, the fresh photo decides
+  whether to proceed. Camera opt-out removes this observation.
 - P1S and other printers need their own prepared hardware and finish sequence.
   Never copy the A1 mini motion coordinates to another printer model.
 
@@ -113,10 +118,16 @@ Automated checks use synthetic orders, printers and camera frames. They cover
 mode snapshots, copies, migration, failed and ordinary predecessor gates,
 camera failures, stale telemetry, changing run tokens, reconnects, cancellation
 and existing queue/dispatcher regressions. The development deployment uses the
-isolated port-8001 environment and cannot reach farm printers.
+isolated development environment and cannot reach farm printers.
 
 These checks do not establish physical ejection reliability or the detector's
 ability to see a particular small part. A supervised hardware trial and
 production activation require separate agreement. Keep the first hardware
 trial limited to one printer with a prepared file; observe the existing check
 with both an empty plate and a retained part before allowing unattended work.
+
+The polygon inspection area is maintained independently in PR #71. When that
+feature is available, dispatch uses its saved mask and refuses the result if
+the mask changes while the photo is being checked. This feature also works
+with the existing rectangle-only detector; it does not change the comparison
+algorithm or add the experimental external recognition laboratory.

@@ -2,7 +2,7 @@
 
 from backend.app.migrations.helpers import add_column
 
-version = 196
+version = 197
 name = "order_auto_eject"
 
 

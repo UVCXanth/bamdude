@@ -295,7 +295,10 @@ async def test_threshold_is_forwarded_to_existing_detector(monkeypatch):
     monkeypatch.setattr(pd, "PlateDetector", factory)
     monkeypatch.setattr(pd, "capture_camera_image", AsyncMock(return_value=(b"synthetic", "test")))
     await pd.check_plate_empty(1, "synthetic", "synthetic", "A1M", fresh=True, difference_threshold=2.5)
-    factory.assert_called_once_with(roi=None, difference_threshold=2.5)
+    factory.assert_called_once()
+    assert factory.call_args.kwargs["roi"] is None
+    assert factory.call_args.kwargs["difference_threshold"] == 2.5
+    assert factory.call_args.kwargs.get("polygon") is None
     assert detector.analyze_frame.call_args.kwargs["strict_dimensions"] is True
 
 
@@ -387,6 +390,36 @@ async def test_context_change_during_photo_invalidates_permission(db_session, he
     finish.set()
     with pytest.raises(RoutingDeferred):
         await task
+    answer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_existing_polygon_is_forwarded_to_fresh_dispatch_photo(db_session, held, monkeypatch):
+    p, _, _ = held
+    polygon = [{"x": 0.1, "y": 0.2}, {"x": 0.9, "y": 0.2}, {"x": 0.5, "y": 0.8}]
+    monkeypatch.setattr(p, "plate_detection_polygon", polygon, raising=False)
+    camera = AsyncMock(return_value=PlateDetectionResult(True, 0, 0, "Synthetic clear"))
+    monkeypatch.setattr("backend.app.services.plate_detection.check_plate_empty", camera)
+    monkeypatch.setattr("backend.app.services.plate_answers.answer_plate_run", AsyncMock())
+    await dispatch_check(db_session, SimpleNamespace(options={"auto_eject": True}), p, AsyncMock(), lambda _job: None)
+    assert camera.await_args.kwargs["fresh"] is True
+    assert camera.await_args.kwargs["polygon"] == polygon
+
+
+@pytest.mark.asyncio
+async def test_polygon_change_during_photo_cannot_answer_held_run(db_session, held, monkeypatch):
+    p, _, _ = held
+    monkeypatch.setattr(p, "plate_detection_polygon", [{"x": 0.1, "y": 0.2}], raising=False)
+
+    async def camera(**kwargs):
+        monkeypatch.setattr(p, "plate_detection_polygon", [{"x": 0.2, "y": 0.3}])
+        return PlateDetectionResult(True, 0, 0, "Synthetic clear")
+
+    monkeypatch.setattr("backend.app.services.plate_detection.check_plate_empty", camera)
+    answer = AsyncMock()
+    monkeypatch.setattr("backend.app.services.plate_answers.answer_plate_run", answer)
+    with pytest.raises(RoutingDeferred, match="plate_context_changed"):
+        await dispatch_check(db_session, SimpleNamespace(options={"auto_eject": True}), p, AsyncMock(), lambda _job: None)
     answer.assert_not_awaited()
 
 
