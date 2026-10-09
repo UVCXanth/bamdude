@@ -2450,7 +2450,9 @@ const PrinterCard = memo(function PrinterCard({
   // commands), so both calibration kebab entries are gated on the printer
   // being online and not mid-print.
   const calibrationAvailable = isConnected === true && !isPrintingOrPaused;
-  const needsPlateClear = requirePlateClear && status?.awaiting_plate_clear === true;
+  // The setting controls future holds. An existing hold (including an
+  // auto-eject run) must remain visible and manually answerable when it is off.
+  const needsPlateClear = status?.awaiting_plate_clear === true;
   // Repeat needs a finished queue row to re-arm, and the gate can be armed
   // over nothing — then the button only ever answered "nothing is waiting".
   // An older backend does not send the field; then the button stays as before.
@@ -2476,10 +2478,10 @@ const PrinterCard = memo(function PrinterCard({
   // run dry, and the only pair the compact card ever draws.
   const plateDefects = usePlateDefects(
     printer.id,
-    showClearPlateButton && (status?.state === 'FINISH' || status?.state === 'FAILED'),
+    showClearPlateButton,
   );
   const plateStatus = (() => {
-    if (!requirePlateClear || !status?.connected) return null;
+    if ((!requirePlateClear && !needsPlateClear) || !status?.connected) return null;
     if (isPrintingOrPaused) {
       return {
         label: t('printers.plateStatus.inUse'),

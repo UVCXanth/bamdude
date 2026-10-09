@@ -15,10 +15,11 @@ pytestmark = pytest.mark.integration
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("options", [{}, {"auto_eject": False}])
+@pytest.mark.parametrize("require_plate_clear", [False, True])
 async def test_clear_api_allows_direct_job_after_auto_run_with_printer_detection_disabled(
-    async_client, printer_factory, db_session, monkeypatch, options
+    async_client, printer_factory, db_session, monkeypatch, options, require_plate_clear
 ):
-    printer = await printer_factory(plate_detection_enabled=False, require_plate_clear=True)
+    printer = await printer_factory(plate_detection_enabled=False, require_plate_clear=require_plate_clear)
     archive, _ = await _finished_flat(db_session, printer, 1)
     archive.extra_data = {"dispatch_intent": {"auto_eject": True, "submission_id": "synthetic"}}
     printer.awaiting_plate_clear = True
