@@ -88,7 +88,9 @@ async def test_existing_authenticated_manual_receipt_needs_no_data_rewrite(db_se
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source,receipt_action", [("automatic", "clear"), (None, "clear"), ("manual", None), ("manual", "repeat")])
+@pytest.mark.parametrize(
+    "source,receipt_action", [("automatic", "clear"), (None, "clear"), ("manual", None), ("manual", "repeat")]
+)
 async def test_non_manual_or_unproven_answer_cannot_cache_camera_permission(
     db_session, held, monkeypatch, source, receipt_action
 ):
@@ -105,13 +107,17 @@ async def test_non_manual_or_unproven_answer_cannot_cache_camera_permission(
     camera = AsyncMock(return_value=PlateDetectionResult(False, 1, 7, "Occupied", status="occupied"))
     monkeypatch.setattr("backend.app.services.plate_detection.check_plate_empty", camera)
     with pytest.raises(RoutingDeferred, match="plate_objects_detected"):
-        await dispatch_check(db_session, SimpleNamespace(options={"auto_eject": False}), p, AsyncMock(), lambda _job: None)
+        await dispatch_check(
+            db_session, SimpleNamespace(options={"auto_eject": False}), p, AsyncMock(), lambda _job: None
+        )
     camera.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("auto_job,enabled", [(True, False), (False, True)])
-async def test_manual_clear_does_not_disable_current_jobs_required_camera(db_session, held, monkeypatch, auto_job, enabled):
+async def test_manual_clear_does_not_disable_current_jobs_required_camera(
+    db_session, held, monkeypatch, auto_job, enabled
+):
     p, archive, _ = held
     p.awaiting_plate_clear = False
     p.awaiting_plate_clear_archive_id = None
@@ -123,7 +129,9 @@ async def test_manual_clear_does_not_disable_current_jobs_required_camera(db_ses
     camera = AsyncMock(return_value=PlateDetectionResult(False, 1, 7, "Occupied", status="occupied"))
     monkeypatch.setattr("backend.app.services.plate_detection.check_plate_empty", camera)
     with pytest.raises(RoutingDeferred, match="plate_objects_detected"):
-        await dispatch_check(db_session, SimpleNamespace(options={"auto_eject": auto_job}), p, AsyncMock(), lambda _job: None)
+        await dispatch_check(
+            db_session, SimpleNamespace(options={"auto_eject": auto_job}), p, AsyncMock(), lambda _job: None
+        )
     camera.assert_awaited_once()
 
 
@@ -419,7 +427,9 @@ async def test_polygon_change_during_photo_cannot_answer_held_run(db_session, he
     answer = AsyncMock()
     monkeypatch.setattr("backend.app.services.plate_answers.answer_plate_run", answer)
     with pytest.raises(RoutingDeferred, match="plate_context_changed"):
-        await dispatch_check(db_session, SimpleNamespace(options={"auto_eject": True}), p, AsyncMock(), lambda _job: None)
+        await dispatch_check(
+            db_session, SimpleNamespace(options={"auto_eject": True}), p, AsyncMock(), lambda _job: None
+        )
     answer.assert_not_awaited()
 
 

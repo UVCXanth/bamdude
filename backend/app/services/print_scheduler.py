@@ -1500,9 +1500,8 @@ class PrintScheduler:
         # OR at FINISH/FAILED with the plate-clear gate released. The gate is the
         # persisted ``awaiting_plate_clear`` flag inverted — absent means clear,
         # present means still waiting on user confirmation.
-        idle = (
-            state.state in ("IDLE", "FINISH", "FAILED")
-            and (not require_plate_clear or not printer_manager.is_awaiting_plate_clear(printer_id))
+        idle = state.state in ("IDLE", "FINISH", "FAILED") and (
+            not require_plate_clear or not printer_manager.is_awaiting_plate_clear(printer_id)
         )
         if not idle:
             logger.debug(
