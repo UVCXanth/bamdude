@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Orders can opt into prepared finish-G-code auto-ejection.** New queue jobs capture the mode and camera policy; ordinary, failed and cancelled predecessors still require their existing manual plate answer.
+
 ## [0.7.0] - 2026-10-06
 
 Images: `ghcr.io/kainpl/bamdude:0.7.0` / `kainpl/bamdude:0.7.0` (`:latest` tracks this release).

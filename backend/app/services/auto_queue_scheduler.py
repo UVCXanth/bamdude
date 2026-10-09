@@ -660,6 +660,7 @@ class AutoQueueScheduler:
                     # display name and the plate fallback with the job.
                     queue_source_id=item.queue_source_id,
                     source_snapshot=item.source_snapshot,
+                    auto_eject=item.auto_eject,
                     project_id=item.project_id,
                     project_line_id=item.project_line_id,
                     position=next_pos,

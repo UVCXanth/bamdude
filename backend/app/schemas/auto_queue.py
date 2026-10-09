@@ -26,6 +26,7 @@ UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)
 
 
 class AutoQueueItemCreate(BaseModel):
+    auto_eject_enabled: bool | None = None
     # Source file (either archive_id OR library_file_id)
     archive_id: int | None = None
     library_file_id: int | None = None
@@ -135,6 +136,7 @@ class AutoQueueItemUpdate(BaseModel):
 
 
 class AutoQueueItemResponse(BaseModel):
+    auto_eject: bool = False
     id: int
     archive_id: int | None
     library_file_id: int | None

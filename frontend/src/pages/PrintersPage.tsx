@@ -2148,6 +2148,7 @@ const PrinterCard = memo(function PrinterCard({
   } | null>(null);
   const [showFirmwareModal, setShowFirmwareModal] = useState(false);
   const [plateCheckResult, setPlateCheckResult] = useState<{
+    status?: 'clear' | 'occupied' | 'unavailable';
     is_empty: boolean;
     confidence: number;
     difference_percent: number;
@@ -6757,7 +6758,7 @@ const PrinterCard = memo(function PrinterCard({
               <>
                 <div className={`p-3 rounded-lg ${plateCheckResult.is_empty ? 'bg-green-100 dark:bg-green-500/20 border border-green-300 dark:border-green-500/50' : 'bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-300 dark:border-yellow-500/50'}`}>
                   <p className={`font-medium ${plateCheckResult.is_empty ? 'text-green-700 dark:text-green-400' : 'text-yellow-700 dark:text-yellow-400'}`}>
-                    {plateCheckResult.is_empty ? t('printers.plateDetection.plateEmpty') : t('printers.plateDetection.objectsDetected')}
+                    {plateCheckResult.status === 'unavailable' ? t('autoEject.checkUnavailable') : plateCheckResult.is_empty ? t('printers.plateDetection.plateEmpty') : t('printers.plateDetection.objectsDetected')}
                   </p>
                   <p className="text-sm text-bambu-gray mt-1">
                     {t('printers.plateDetection.confidence')}: {Math.round(plateCheckResult.confidence * 100)}% | {t('printers.plateDetection.difference')}: {plateCheckResult.difference_percent.toFixed(1)}%

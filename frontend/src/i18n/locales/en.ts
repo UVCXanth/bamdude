@@ -1,4 +1,22 @@
 export default {
+  autoEject: {
+  "title": "Auto-eject after printing",
+  "badge": "Auto-eject",
+  "help": "For new jobs of this order, a fresh empty-plate check replaces manual plate confirmation after a successful auto-eject run. Other orders and existing jobs keep their settings.",
+  "how": "How auto-eject works",
+    profileTitle: 'Prepared printer profile',
+    profileExample: 'Reference setup: A1 mini with the Infinity Flow 3D Tilt Kit and its modified End G-code. The supplied template is dated 2025-10-08; use the profile for the installed hardware, not the stock printer preset.',
+    profileSource: 'Infinity Flow: kits, slicer profiles and G-code',
+    profileHeight: 'In this A1 mini template, ejection runs only when the maximum printed height is greater than 5.5 mm. Shorter jobs do not eject. After the ejection branch, the commanded position is X5 / Y185 / Z6.',
+    profileCamera: 'The empty reference and camera region must match the final position and cover the print area, including auxiliary parts. Anything outside the image or selected region cannot be checked. Recalibrate after changing the camera, profile or final position.',
+    profileOtherPrinters: 'Other printers, including P1S, need their own prepared hardware and finish G-code. This A1 mini sequence must not be copied to them.',
+    confirmTitle: 'Enable auto-eject for this order?',
+    confirmMessage: 'This setting does not make an ordinary file eject parts. Before enabling it, read the profile requirements and verify every file you will queue. BamDude does not validate the preset or the ejection commands inside the file.',
+    confirmAcknowledgement: 'I have read the requirements, installed the matching hardware, selected files sliced with the prepared profile, and checked the camera calibration.',
+    confirmEnable: 'Enable auto-eject',
+    requirements: "Choose a file whose finish G-code already ejects the part and purge cube. BamDude does not analyse or add ejection G-code. The existing camera check must succeed before the next start. Failed or cancelled prints still require inspection. Other orders, pending jobs and global printer settings are unchanged. External printer/slicer starts remain ordinary prints.",
+  "checkUnavailable": "Plate check unavailable — inspect before continuing"
+},
   modelCompatibility: {
     compatible: 'File for {{fileModel}} is compatible with {{targetModel}}',
     incompatible: 'File for {{fileModel}} is incompatible with {{targetModel}}',
@@ -6382,6 +6400,7 @@ export default {
         removed: 'Cover image removed',
       },
       fields: {
+        auto_eject_enabled: 'auto-eject after printing',
         name: 'name',
         customer: 'customer',
         contact: 'contact person',

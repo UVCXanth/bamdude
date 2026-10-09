@@ -193,6 +193,7 @@ OrderUrl = Annotated[str, StringConstraints(strip_whitespace=True, max_length=20
 
 
 class ProjectCreate(BaseModel):
+    auto_eject_enabled: bool = False
     name: OrderName
     customer_id: int | None = None
     # A contact of ``customer_id`` (checked in the route), who receives the order.
@@ -223,6 +224,7 @@ class ProjectCreate(BaseModel):
 
 
 class ProjectUpdate(BaseModel):
+    auto_eject_enabled: bool | None = None
     name: OrderName | None = None
     customer_id: int | None = None
     contact_id: int | None = None
@@ -237,7 +239,7 @@ class ProjectUpdate(BaseModel):
     url: OrderUrl | None = None
     responsible_id: int | None = None
 
-    @field_validator("name", "status", "priority")
+    @field_validator("name", "status", "priority", "auto_eject_enabled")
     @classmethod
     def _not_null(cls, v: str | None, info: ValidationInfo) -> str:
         return _reject_null(v, info)
@@ -461,6 +463,7 @@ class OrderContactOut(BaseModel):
 
 
 class ProjectResponse(BaseModel):
+    auto_eject_enabled: bool = False
     id: int
     code: str
     name: str

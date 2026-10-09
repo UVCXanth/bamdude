@@ -430,6 +430,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
         select(func.count()).select_from(StockIssue).where(StockIssue.project_id == project.id)
     )
     return ProjectResponse(
+        auto_eject_enabled=bool(project.auto_eject_enabled),
         id=project.id,
         code=code_for("order", project.id),
         name=project.name,
@@ -3600,8 +3601,11 @@ async def get_order_queue(
     if scope is not None:
         printing_q = printing_q.where(PrintArchive.printer_id.in_(scope))
         pending_q = pending_q.where(PrintQueueItem.queue_id.in_(scope))
+    from backend.app.services.order_auto_eject import archive_mode
+
     printing = [
         OrderQueuePrinting(
+            auto_eject=archive_mode(archive),
             archive_id=archive.id,
             printer_id=archive.printer_id,
             printer_name=printer_name,

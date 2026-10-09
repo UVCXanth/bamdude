@@ -21,6 +21,7 @@ UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)
 
 
 class PrintQueueItemCreate(FilamentRoutingChoices):
+    auto_eject_enabled: bool | None = None
     queue_id: int  # Required - which printer's queue to add to
     # One-time placement for this newly created block. It is intentionally not
     # stored on the row: after insertion normal queue ordering takes over.
@@ -163,6 +164,7 @@ class QueueSummaryResponse(BaseModel):
 
 
 class PrintQueueItemResponse(BaseModel):
+    auto_eject: bool = False
     filament_routing: dict | None = None
     id: int
     queue_id: int
