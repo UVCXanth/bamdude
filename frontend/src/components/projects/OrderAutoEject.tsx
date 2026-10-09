@@ -93,8 +93,8 @@ export function OrderAutoEject({ order, canEdit }: { order: Order; canEdit: bool
           </div>
         </label>
         <p className="text-xs text-bambu-gray">{t('autoEject.thresholdHelp')}</p>
-        {!validThreshold && <p role="alert" className="text-xs text-red-400">{t('autoEject.thresholdInvalid')}</p>}
-        {threshold > 1 && <p className="text-xs text-yellow-400">{t('autoEject.thresholdWarning')}</p>}
+        {!validThreshold && <p role="alert" className="text-xs text-red-700 dark:text-red-400">{t('autoEject.thresholdInvalid')}</p>}
+        {threshold > 1 && <p className="text-xs text-yellow-700 dark:text-yellow-400">{t('autoEject.thresholdWarning')}</p>}
         {mayEdit && <Button variant="secondary" size="sm"
           disabled={!validThreshold || threshold === policy.difference_threshold || toggle.isPending || policy.skip_check}
           onClick={() => save({ auto_eject_settings: { ...policy, difference_threshold: threshold } })}>
@@ -109,7 +109,7 @@ export function OrderAutoEject({ order, canEdit }: { order: Order; canEdit: bool
             }} />
           {t('autoEject.skipLabel')}
         </label>
-        {policy.skip_check && <p role="alert" className="text-sm font-bold text-red-400">{t('autoEject.riskTitle')}</p>}
+        {policy.skip_check && <p role="alert" className="text-sm font-bold text-red-700 dark:text-red-400">{t('autoEject.riskTitle')}</p>}
       </div>}
       <details className="text-xs text-bambu-gray">
         <summary className="cursor-pointer text-bambu-green">{t('autoEject.how')}</summary>
@@ -123,7 +123,7 @@ export function OrderAutoEject({ order, canEdit }: { order: Order; canEdit: bool
         </ol>
         <div className="mt-3"><ProfileHelp /></div>
       </details>
-      {toggle.error && !kind && <p role="alert" className="text-xs text-red-400">{toggle.error.message}</p>}
+      {toggle.error && !kind && <p role="alert" className="text-xs text-red-700 dark:text-red-400">{toggle.error.message}</p>}
       {kind === 'enable' && <ConfirmModal
         title={t('autoEject.confirmTitle')}
         message={t('autoEject.confirmMessage')}
@@ -144,7 +144,7 @@ export function OrderAutoEject({ order, canEdit }: { order: Order; canEdit: bool
             disabled={toggle.isPending} onChange={(event) => setAcknowledged(event.target.checked)} />
           {t('autoEject.confirmAcknowledgement')}
         </label>
-        {toggle.error && <p role="alert" className="mt-2 text-xs text-red-400">{toggle.error.message}</p>}
+        {toggle.error && <p role="alert" className="mt-2 text-xs text-red-700 dark:text-red-400">{toggle.error.message}</p>}
       </ConfirmModal>}
       {kind === 'skipFirst' && <ConfirmModal
         key="skip-first" title={t('autoEject.skipFirstTitle')} message={t('autoEject.skipFirstMessage')}
@@ -155,7 +155,7 @@ export function OrderAutoEject({ order, canEdit }: { order: Order; canEdit: bool
           setConfirmation({ orderId: order.id, kind: 'skipFinal' });
         }}
       >
-        <p className="text-lg font-bold text-red-400">{t('autoEject.riskTitle')}</p>
+        <p className="text-lg font-bold text-red-700 dark:text-red-400">{t('autoEject.riskTitle')}</p>
       </ConfirmModal>}
       {kind === 'skipFinal' && <ConfirmModal
         key="skip-final" title={t('autoEject.skipFinalTitle')} message={t('autoEject.skipFinalMessage')}
@@ -167,13 +167,13 @@ export function OrderAutoEject({ order, canEdit }: { order: Order; canEdit: bool
           });
         }}
       >
-        <p className="text-lg font-bold text-red-400">{t('autoEject.riskTitle')}</p>
+        <p className="text-lg font-bold text-red-700 dark:text-red-400">{t('autoEject.riskTitle')}</p>
         <label className="mt-4 flex items-start gap-2 text-sm text-white">
           <input type="checkbox" className="mt-1 accent-red-500" checked={acknowledged}
             disabled={toggle.isPending} onChange={(event) => setAcknowledged(event.target.checked)} />
           {t('autoEject.skipAcknowledgement')}
         </label>
-        {toggle.error && <p role="alert" className="mt-2 text-xs text-red-400">{toggle.error.message}</p>}
+        {toggle.error && <p role="alert" className="mt-2 text-xs text-red-700 dark:text-red-400">{toggle.error.message}</p>}
       </ConfirmModal>}
     </div>
   );
