@@ -192,7 +192,7 @@ describe('confirmed batch printer actions', () => {
     vi.mocked(api.getPrinterStatus).mockResolvedValue({ ...idle,
       state: action === 'stop' || action === 'pause' ? 'RUNNING' : action === 'resume' ? 'PAUSE' : action === 'clearPlate' ? 'FINISH' : 'IDLE',
       awaiting_plate_clear: action === 'clearPlate',
-      hms_errors: action === 'clearHMS' ? [{ code: 123 } as PrinterStatus['hms_errors'][number]] : [],
+      hms_errors: action === 'clearHMS' ? [{ code: '123', attr: 0, module: 1, severity: 3 }] : [],
     });
     if (action === 'queueResume') vi.mocked(api.getQueues).mockResolvedValue([{ id: 11, printer_id: 1, is_paused: true }] as PrinterQueue[]);
     if (action === 'serviceOff') vi.mocked(api.getPrinter).mockResolvedValue({ ...printers[0], is_active: false });
