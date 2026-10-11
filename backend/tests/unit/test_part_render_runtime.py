@@ -7,9 +7,11 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import psutil
 import pytest
@@ -1126,3 +1128,173 @@ async def test_an_unexpected_error_inside_the_proof_closes_restore_and_keeps_the
     assert runtime.uncertain and attempt.exists() and (runtime.staging / "service.pid").exists()
     assert f"Part render ownership uncertain: the proof failed at {stage}: OSError" in caplog.text
     assert "private" not in caplog.text
+
+
+# R3 (spec part-render-unrecorded-launch §4.2; consilium Q3): the order of spawn, retire and shutdown is the
+# current callers' -- no lock. The probes block inside the NEW proof phase (R2 and the token walk), not only
+# in stop(). Process and RPC boundaries are controlled: no OS children, no broker.
+
+
+def lifecycle_runtime(tmp_path) -> PartRenderRuntime:
+    runtime = PartRenderRuntime(tmp_path, SimpleNamespace(url="unused", token="unused"), app_dir=tmp_path)
+    runtime.staging.mkdir(parents=True)
+    runtime.store = object()
+    runtime.nc = SimpleNamespace(is_connected=True, close=AsyncMock())
+    runtime._refresh_node_if_due = AsyncMock()
+    runtime._reprobe_node_if_due = AsyncMock()
+
+    async def ready(command, timeout):
+        return {"outcome": "ok", "epoch": runtime.epoch, "version": 1, "monotonic_ns": time.monotonic_ns()}
+
+    runtime.rpc = ready
+    return runtime
+
+
+async def until(event: threading.Event) -> None:
+    async with asyncio.timeout(8):
+        while not event.is_set():
+            await asyncio.sleep(0.01)
+
+
+def gated(trace: list[str], label: str, entered: threading.Event, release: threading.Event, answer=None):
+    """A proof phase that waits for the test: it records its start and end, and answers ``answer``."""
+
+    def phase(*args, **kwargs):
+        trace.append(f"{label}-start")
+        entered.set()
+        assert release.wait(8)
+        trace.append(f"{label}-end")
+        return answer
+
+    return phase
+
+
+@pytest.mark.asyncio
+async def test_the_monitor_starts_no_replacement_until_the_worker_proof_has_finished(tmp_path, monkeypatch):
+    """T11 (1)."""
+    runtime = lifecycle_runtime(tmp_path)
+    entered, release, spawned = threading.Event(), threading.Event(), threading.Event()
+    trace: list[str] = []
+    monkeypatch.setattr(prr, "worker_records_unproven", gated(trace, "worker-proof", entered, release))
+    runtime.service = SimpleNamespace(process=SimpleNamespace(poll=lambda: 1), stop=lambda: None)
+
+    def new_process(*args, **kwargs):
+        trace.append("spawn")
+        spawned.set()
+        return SimpleNamespace(process=SimpleNamespace(poll=lambda: None, pid=12345), stop=lambda: None)
+
+    monkeypatch.setattr(prr, "PreviewProcess", new_process)
+    runtime.monitor = asyncio.create_task(runtime._monitor())
+    try:
+        await until(entered)
+        # longer than the monitor's tick plus its first backoff: a retire that did not wait for the proof would
+        # have let the replacement spawn by now
+        await asyncio.sleep(2.0)
+        assert not spawned.is_set()
+        release.set()
+        await until(spawned)
+        assert trace.index("worker-proof-end") < trace.index("spawn")
+    finally:
+        release.set()
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_shutdown_during_a_spawn_waits_for_it_then_proves_the_worker(tmp_path, monkeypatch):
+    """T11 (2)."""
+    runtime = lifecycle_runtime(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    trace: list[str] = []
+
+    def constructor(*args, **kwargs):
+        trace.append("spawn-start")
+        entered.set()
+        assert release.wait(8)
+        trace.append("spawn-end")
+        return SimpleNamespace(process=SimpleNamespace(poll=lambda: None, pid=12345), stop=lambda: trace.append("stop"))
+
+    def worker_proof(generation, **kwargs):
+        trace.append("worker-proof")
+
+    monkeypatch.setattr(prr, "PreviewProcess", constructor)
+    monkeypatch.setattr(prr, "worker_records_unproven", worker_proof)
+    runtime.monitor = asyncio.create_task(runtime._monitor())
+    stopper = None
+    try:
+        await until(entered)
+        stopper = asyncio.create_task(runtime.stop())
+        await asyncio.sleep(0.1)
+        assert not stopper.done() and "stop" not in trace
+        release.set()
+        await asyncio.wait_for(stopper, 8)
+        assert trace == ["spawn-start", "spawn-end", "stop", "worker-proof"]
+        assert runtime.closed and runtime.service is None
+    finally:
+        release.set()
+        if stopper is not None:
+            await stopper
+        else:
+            await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_attempt_being_retired_holds_the_slot_and_blocks_a_replacement(tmp_path, monkeypatch):
+    """T11 (3): blocked inside the token walk of the attempt's own retire."""
+    runtime = lifecycle_runtime(tmp_path)
+    (runtime.staging / "service" / ("d" * 32)).mkdir(parents=True)  # the attempt the token walk proves
+    entered, release = threading.Event(), threading.Event()
+    trace: list[str] = []
+    monkeypatch.setattr(prr, "tree_unproven", gated(trace, "token-proof", entered, release))
+    runtime._initialize = AsyncMock()
+    runtime.service = SimpleNamespace(process=SimpleNamespace(poll=lambda: 1), stop=lambda: None)
+
+    async def active_attempt():
+        async with runtime.slot:
+            runtime.active_task = asyncio.current_task()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                await prr.owned(runtime.retire())
+            finally:
+                runtime.active_task = None
+
+    active = asyncio.create_task(active_attempt())
+    await asyncio.sleep(0)  # the attempt holds the slot before the monitor's first look
+    runtime.monitor = asyncio.create_task(runtime._monitor())
+    try:
+        await until(entered)
+        await asyncio.sleep(2.0)  # longer than the monitor's tick plus its first backoff: a replacement would be due
+        assert runtime.slot.locked()
+        # the attempt's own retire is the only proof running: a monitor that went on would have entered it too
+        assert trace.count("token-proof-start") == 1
+        runtime._initialize.assert_not_awaited()
+        release.set()
+        await asyncio.wait_for(active, 8)
+    finally:
+        release.set()
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_unfinished_proof_keeps_its_records_and_admission_closed(tmp_path, monkeypatch):
+    """T11 (4): while the token walk runs nothing is deleted and nothing is admitted; refused, it keeps all."""
+    runtime = lifecycle_runtime(tmp_path)
+    attempt = runtime.staging / "service" / ("d" * 32)
+    attempt.mkdir(parents=True)
+    launch(attempt, "child")
+    entered, release = threading.Event(), threading.Event()
+    trace: list[str] = []
+    refusal = "child: launched without its record (parent guardian never launched)"
+    monkeypatch.setattr(prr, "tree_unproven", gated(trace, "token-proof", entered, release, answer=refusal))
+    runtime.ready = True
+    retiring = asyncio.create_task(runtime.retire())
+    try:
+        await until(entered)
+        assert runtime.refusal("fallback") is not None
+        assert (attempt / "child.launch").exists()
+        release.set()
+        with pytest.raises(RuntimeUnavailable):
+            await retiring
+        assert runtime.uncertain and (attempt / "child.launch").exists()
+    finally:
+        release.set()
