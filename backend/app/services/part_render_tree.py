@@ -350,6 +350,25 @@ def tree_unproven(
     return None
 
 
+def worker_records_unproven(generation: Path, *, timeout: float = 5) -> str | None:
+    """R2 (spec part-render-unrecorded-launch §4.2): this run's worker guardian and worker, by their records,
+    once ``PreviewProcess.stop()`` has run -- killed and waited for if one still runs; ``<record>: <why>`` when
+    one is not proven ended. The worker is the parent of every attempt guardian's launch: an attempt's launch
+    without its record is ended only under it proven dead.
+
+    A record that is absent proves and refuses nothing: a worker never started (a broker unavailable before the
+    first spawn) leaves none. A launch without its record is not looked at: such a worker never received its
+    bootstrap -- its guardian records it first -- so it launched no attempt. It is a bounded limit, not a proof
+    that it ended: EOF is not an exit (consilium Q2)."""
+    for name in GENERATION_RECORDS:
+        pid_file = generation / f"{name}.pid"
+        if pid_file.exists():
+            why = _not_gone(pid_file, timeout, this_run=True)  # this run's records: this boot's
+            if why is not None:
+                return f"{name}: {why}"
+    return None
+
+
 def _known_boot(boot: object) -> str | None:
     """A boot identity in this platform's format -- what ``_read_boot_id`` writes -- else None. A persisted
     boot is checked like the reader's answer: other text is no observation of any boot (consilium r4, R4.2)."""

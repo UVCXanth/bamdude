@@ -36,7 +36,7 @@ from backend.app.services.part_render_protocol import (
     PackError,
     unpack,
 )
-from backend.app.services.part_render_tree import generation_gone, tree_unproven
+from backend.app.services.part_render_tree import generation_gone, tree_unproven, worker_records_unproven
 from backend.app.services.part_render_types import (
     AttemptResult,
     Mode,
@@ -450,8 +450,9 @@ class PartRenderRuntime:
             self.active_task.cancel()
 
     async def retire(self) -> None:
-        """Stop the worker and prove every attempt it ran gone; ``ownership_uncertain`` when it cannot, with
-        every proof left where it is."""
+        """Stop the worker, prove it dead by its records (R2), and prove every attempt it ran gone -- ending a
+        launch without its record by its token under a parent proven ended; ``ownership_uncertain`` when it
+        cannot, with every proof left where it is."""
         self.ready = False
         service = self.service
         if service is not None:
@@ -462,21 +463,50 @@ class PartRenderRuntime:
                 logger.error("Part render worker ownership uncertain: its process tree is not proven gone")
                 raise RuntimeUnavailable("ownership_uncertain") from exc
             self.service = None
-        service_root = self.staging / "service"
-        if not await disk(service_root.is_dir):
-            return
-        attempts, unknown = await disk(abandoned_attempts, service_root)
-        for path in unknown:
-            logger.warning("Part render worker staging holds an unknown entry: %s", path.name)
-        # all attempts first, deletions after: one unproven attempt keeps every directory (consilium E3-R1)
-        for attempt in attempts:
-            # strict: the worker is gone, so a launch without its record may have left a process outside
-            # every tree this process can see
-            why = await disk(lambda path=attempt: tree_unproven(path, strict=True))
+        stage = "worker records"
+        try:
+            # R2: the worker that launched these attempts is positively dead by its records before any attempt is
+            # walked -- every attempt guardian's launch without its record needs that parent (spec
+            # part-render-unrecorded-launch §4.2). No worker record at all is no refusal: none was ever launched.
+            why = await disk(worker_records_unproven, self.staging)
             if why is not None:
                 self.uncertain, self.reason = True, "ownership_uncertain"
-                logger.error("Part render attempt=%s ownership uncertain: %s", attempt.name[:8], why)
+                logger.error("Part render worker records: %s", why)
                 raise RuntimeUnavailable("ownership_uncertain")
+            stage = "attempts"
+            service_root = self.staging / "service"
+            if not await disk(service_root.is_dir):
+                return
+            attempts, unknown = await disk(abandoned_attempts, service_root)
+            for path in unknown:
+                logger.warning("Part render worker staging holds an unknown entry: %s", path.name)
+            # all attempts first, deletions after: one unproven attempt keeps every directory (consilium E3-R1)
+            for attempt in attempts:
+                stage = f"attempt={attempt.name[:8]}"
+                # strict: the worker is gone, so a launch without its record may have left a process outside every
+                # tree this process can see -- ended by its token under a parent proven ended, or unproven
+                notes: list[str] = []
+                why = await disk(
+                    lambda path=attempt, notes=notes: tree_unproven(
+                        path, strict=True, generation=self.staging, notes=notes
+                    )
+                )
+                for note in notes:
+                    logger.warning("Part render attempt=%s %s", attempt.name[:8], note)
+                if why is not None:
+                    self.uncertain, self.reason = True, "ownership_uncertain"
+                    logger.error("Part render attempt=%s ownership uncertain: %s", attempt.name[:8], why)
+                    raise RuntimeUnavailable("ownership_uncertain")
+        except RuntimeUnavailable:
+            raise
+        except Exception as exc:
+            # An error inside the proof is no proof (consilium E3-I-R2, plan UL-R1): admission and restore stay
+            # closed, every record stays where it is, and stop() deletes nothing. The log names the stage and the
+            # error's type only -- never its text, which may carry a path. CancelledError is not an Exception: it
+            # passes, and disk()/owned() never let it detach the proof's live thread.
+            self.uncertain, self.reason = True, "ownership_uncertain"
+            logger.error("Part render ownership uncertain: the proof failed at %s: %s", stage, type(exc).__name__)
+            raise RuntimeUnavailable("ownership_uncertain") from exc
         for attempt in attempts:
             result = await disk(cleanup_owned, attempt)
             if result.status == "retained_error":

@@ -5,8 +5,11 @@ import hashlib
 import json
 import logging
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import psutil
 import pytest
@@ -14,7 +17,7 @@ import pytest
 from backend.app.services import part_render_runtime as prr, render_runtime
 from backend.app.services.local_worker_broker import LocalWorkerBroker
 from backend.app.services.part_render_runtime import PartRenderRuntime
-from backend.app.services.part_render_tree import launch
+from backend.app.services.part_render_tree import launch, launch_arg, record
 from backend.app.services.part_render_types import RenderTask, RuntimeUnavailable, SourceRef
 from backend.tests.fixtures.part_render_3mf import two_objects_3mf
 from backend.tests.unit.services.test_part_render_node import NODE, needs_pin
@@ -885,3 +888,241 @@ async def test_a_worker_that_does_not_answer_is_logged_with_the_rpc_stage(tmp_pa
     result = await runtime.render(task_for(tmp_path / "x.3mf"), mode="fallback", deadline_ns=deadline(5))
     assert (result.outcome, result.crash) == ("crashed", "rpc:ConnectionResetError")
     assert any("crash=rpc:ConnectionResetError" in r.getMessage() for r in caplog.records)
+
+
+SLEEP = [sys.executable, "-c", "import time; time.sleep(60)"]
+
+
+def token_holder(token: str) -> subprocess.Popen:
+    """A live process carrying a launch's token, as a launched process with no record does."""
+    return subprocess.Popen([*SLEEP, launch_arg(token)], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def dead_record(path: Path) -> None:
+    """The record of a process that has ended."""
+    process = subprocess.Popen(SLEEP, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    record(path, process.pid)
+    process.kill()
+    process.wait()
+
+
+def this_run(runtime: PartRenderRuntime) -> Path:
+    """The runtime's staging as retire finds it after its worker died: its owner, its dead worker, one attempt."""
+    runtime.staging.mkdir(parents=True, exist_ok=True)
+    record(runtime.staging / "owner.pid", os.getpid())
+    for name in ("worker", "service"):
+        launch(runtime.staging, name)
+        dead_record(runtime.staging / f"{name}.pid")
+    attempt = runtime.staging / "service" / ("d" * 32)
+    attempt.mkdir(parents=True)
+    return attempt
+
+
+def stop_all(*processes: subprocess.Popen) -> None:
+    for process in processes:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
+@pytest.mark.asyncio
+async def test_a_retire_in_the_spawn_window_ends_the_unrecorded_child_and_admits_again(tmp_path, caplog):
+    """The macOS window of 2026-10-10 (spec part-render-unrecorded-launch §1): the retire kills the recorded
+    guardian, ends the child by its token, removes the attempt and leaves the runtime admissible."""
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    attempt = this_run(runtime)
+    guardian = token_holder(launch(attempt, "guardian"))
+    record(attempt / "guardian.pid", guardian.pid)
+    child = token_holder(launch(attempt, "child"))
+    runtime.ready = True
+    try:
+        with caplog.at_level(logging.WARNING, logger="backend.app.services.part_render_runtime"):
+            await runtime.retire()
+        assert child.wait(timeout=5) is not None and guardian.wait(timeout=5) is not None
+        assert not attempt.exists() and not runtime.uncertain
+        assert "attempt=dddddddd child launched without its record: ended by its token (holders=" in caplog.text
+    finally:
+        stop_all(guardian, child)
+
+
+@pytest.mark.asyncio
+async def test_a_shutdown_in_the_spawn_window_ends_the_child(tmp_path):
+    """Review focus 4: stop() never raises, and the proof it runs inside its slot ends the child too."""
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    attempt = this_run(runtime)
+    launch(attempt, "guardian")
+    dead_record(attempt / "guardian.pid")
+    child = token_holder(launch(attempt, "child"))
+    try:
+        await runtime.stop()
+        assert child.wait(timeout=5) is not None
+        assert not runtime.uncertain and not attempt.exists()
+    finally:
+        stop_all(child)
+
+
+@pytest.mark.asyncio
+async def test_a_worker_that_outlived_its_stop_is_ended_by_its_record(tmp_path):
+    """R2: the worker is positively ended before any attempt is walked -- killed when stop() missed it."""
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    runtime.staging.mkdir(parents=True)
+    record(runtime.staging / "owner.pid", os.getpid())
+    worker = subprocess.Popen(SLEEP, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    launch(runtime.staging, "service")
+    record(runtime.staging / "service.pid", worker.pid)
+    try:
+        await runtime.retire()
+        assert worker.wait(timeout=5) is not None and not runtime.uncertain
+    finally:
+        stop_all(worker)
+
+
+@pytest.mark.asyncio
+async def test_an_unproven_worker_record_closes_admission_and_says_why(tmp_path, caplog):
+    """T8 (c): R2's new refusal -- a worker not shown dead keeps admission, restore and every proof closed."""
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    attempt = runtime.staging / "service" / ("d" * 32)
+    attempt.mkdir(parents=True)
+    (runtime.staging / "service.pid").write_text("{broken", encoding="ascii")
+    runtime.ready = True
+    with (
+        caplog.at_level(logging.ERROR, logger="backend.app.services.part_render_runtime"),
+        pytest.raises(RuntimeUnavailable),
+    ):
+        await runtime.retire()
+    assert runtime.uncertain and runtime.refusal("fallback") == "ownership_uncertain"
+    assert attempt.exists() and (runtime.staging / "service.pid").exists()
+    assert "Part render worker records: service: record unreadable" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_whose_first_worker_never_started_is_not_made_uncertain(tmp_path, monkeypatch):
+    """Consilium Q1: a broker unavailable before the first spawn leaves no worker record -- absent records are
+    no refusal; only an attempt without its proven parent is (spec §4.3)."""
+    monkeypatch.setattr(prr, "get_local_worker_broker", lambda: None)
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    await runtime.start()
+    assert not runtime.uncertain
+    await runtime.stop()
+    assert not runtime.uncertain
+
+
+@pytest.mark.asyncio
+async def test_a_retained_attempt_proven_once_is_proven_again_after_the_worker_is_replaced(tmp_path, monkeypatch):
+    """The lemma of spec §4.2: an attempt kept after its proof (its directory could not be removed) is proven
+    again at the next retire, when this generation's worker records already name a later worker."""
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    attempt = this_run(runtime)
+    launch(attempt, "guardian")  # the first worker died before recording the guardian, which never started
+    real_cleanup = prr.cleanup_owned
+    retained = SimpleNamespace(status="retained_error", error_type="PermissionError")
+    monkeypatch.setattr(prr, "cleanup_owned", lambda path: retained)
+    await runtime.retire()
+    assert attempt.exists() and not runtime.uncertain
+    for name in ("worker", "service"):  # the next worker's records replace the first one's
+        launch(runtime.staging, name)
+        dead_record(runtime.staging / f"{name}.pid")
+    monkeypatch.setattr(prr, "cleanup_owned", real_cleanup)
+    await runtime.retire()
+    assert not attempt.exists() and not runtime.uncertain
+
+
+@pytest.mark.asyncio
+async def test_a_real_worker_dying_beside_an_unrecorded_child_recovers_and_says_so(live, caplog):
+    """The parent-log invariant with a real worker: the window's orphan is ended by main's retire, the parent
+    log says so, and a new worker comes up (spec §4.7)."""
+    runtime, broker = live
+    attempt = runtime.staging / "service" / ("c" * 32)
+    attempt.mkdir()
+    launch(attempt, "guardian")
+    dead_record(attempt / "guardian.pid")
+    child = token_holder(launch(attempt, "child"))  # what the 2026-10-10 window left beside the worker
+    old_pid = runtime.service.process.pid
+    try:
+        with caplog.at_level(logging.WARNING, logger="backend.app.services.part_render_runtime"):
+            for process in psutil.Process(old_pid).children(recursive=True):
+                if "part_render_service" in " ".join(process.cmdline()):
+                    process.kill()
+            for _ in range(300):
+                if runtime.service and runtime.service.process.pid != old_pid and runtime.refusal("fallback") is None:
+                    break
+                await asyncio.sleep(0.1)
+        assert runtime.refusal("fallback") is None and not runtime.uncertain
+        assert child.wait(timeout=5) is not None and not attempt.exists()
+        assert "attempt=cccccccc child launched without its record: ended by its token" in caplog.text
+    finally:
+        stop_all(child)
+
+
+# Consilium UL-R1, independent negative controls (plan review r1, test_unrecorded_review.py): an error inside the
+# proof -- a damaged launch file, or any unexpected exception -- is no proof. ownership_uncertain before retire
+# returns, restore refused, every record kept; shutdown deletes nothing.
+
+
+def damaged_window(runtime: PartRenderRuntime) -> tuple[Path, subprocess.Popen]:
+    """The spawn window's state whose child.launch is damaged -- bytes that are not ASCII (fault injection, not a
+    measured disk failure): a live child carrying the token the file no longer holds."""
+    attempt = this_run(runtime)
+    launch(attempt, "guardian")
+    dead_record(attempt / "guardian.pid")
+    child = token_holder(launch(attempt, "child"))
+    (attempt / "child.launch").write_bytes(b"\xff")
+    return attempt, child
+
+
+@pytest.mark.asyncio
+async def test_a_damaged_launch_token_keeps_restore_closed_and_the_child_untouched(tmp_path):
+    from backend.app.services.part_render_scheduler import PartRenderScheduler
+
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    attempt, child = damaged_window(runtime)
+    try:
+        with pytest.raises(RuntimeUnavailable):
+            await runtime.retire()
+        assert child.poll() is None
+        assert not await PartRenderScheduler(runtime, None, tmp_path / "results").stop("restore")
+        assert runtime.uncertain and attempt.exists()
+    finally:
+        stop_all(child)
+
+
+@pytest.mark.asyncio
+async def test_a_shutdown_whose_proof_cannot_read_a_token_keeps_every_record(tmp_path):
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    attempt, child = damaged_window(runtime)
+    try:
+        await runtime.stop()
+        assert child.poll() is None
+        assert runtime.uncertain and attempt.exists() and (runtime.staging / "service.pid").exists()
+    finally:
+        stop_all(child)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("phase", "stage"), [("worker_records_unproven", "worker records"), ("tree_unproven", "attempt=dddddddd")]
+)
+async def test_an_unexpected_error_inside_the_proof_closes_restore_and_keeps_the_records(
+    tmp_path, monkeypatch, caplog, phase, stage
+):
+    """UL-R1: not only a token read -- any exception of R2 or of the attempt walk. The parent log names the stage
+    and the error's type, never its text (which may carry a path)."""
+    from backend.app.services.part_render_scheduler import PartRenderScheduler
+
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    attempt = this_run(runtime)
+    launch(attempt, "child")
+
+    def fault(*args, **kwargs):
+        raise OSError("injected failure reading C:/private/share/plate.3mf")
+
+    monkeypatch.setattr(prr, phase, fault)
+    with (
+        caplog.at_level(logging.ERROR, logger="backend.app.services.part_render_runtime"),
+        pytest.raises(RuntimeUnavailable),
+    ):
+        await runtime.retire()
+    assert not await PartRenderScheduler(runtime, None, tmp_path / "results").stop("restore")
+    assert runtime.uncertain and attempt.exists() and (runtime.staging / "service.pid").exists()
+    assert f"Part render ownership uncertain: the proof failed at {stage}: OSError" in caplog.text
+    assert "private" not in caplog.text

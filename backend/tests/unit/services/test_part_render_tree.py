@@ -1549,3 +1549,51 @@ def test_the_workers_own_proof_still_leaves_a_launch_without_its_record_alone(tm
         assert child.poll() is None
     finally:
         _stop(child)
+
+
+# R2 (spec part-render-unrecorded-launch §4.2): after stop(), the worker that may have launched attempts is
+# positively ended by its records -- the parent every attempt guardian's launch needs proven.
+
+
+def test_this_runs_worker_records_are_proven_by_their_records(tmp_path):
+    from backend.app.services.part_render_tree import worker_records_unproven
+
+    generation, _ = _generation(tmp_path)
+    launch(generation, "worker")
+    _dead(generation / "worker.pid")
+    worker = _spawn()
+    launch(generation, "service")
+    record(generation / "service.pid", worker.pid)
+    try:
+        assert worker_records_unproven(generation) is None
+        assert worker.wait(timeout=5) is not None  # it outlived stop(): killed by its record
+    finally:
+        _stop(worker)
+
+
+def test_a_worker_record_that_cannot_be_read_is_unproven(tmp_path):
+    from backend.app.services.part_render_tree import worker_records_unproven
+
+    generation, _ = _generation(tmp_path)
+    (generation / "service.pid").write_text("{broken", encoding="ascii")
+    assert worker_records_unproven(generation) == "service: record unreadable"
+
+
+def test_a_run_whose_worker_never_started_has_nothing_to_prove(tmp_path):
+    """Consilium Q1: a broker unavailable before the first spawn leaves no worker record, and that absence
+    alone is no refusal (spec §4.3)."""
+    from backend.app.services.part_render_tree import worker_records_unproven
+
+    generation, _ = _generation(tmp_path)
+    assert worker_records_unproven(generation) is None
+
+
+def test_a_worker_launched_without_its_record_is_a_bounded_limit_not_a_proof(tmp_path):
+    """Consilium Q2: a worker without its record never received its bootstrap and launched no attempt. The
+    worker proof does not look at it -- and claims nothing about its end: EOF is no proof (spec §4.2). An
+    attempt beside it is refused (``…_under_an_unrecorded_worker_is_not_over``)."""
+    from backend.app.services.part_render_tree import worker_records_unproven
+
+    generation, _ = _generation(tmp_path)
+    launch(generation, "service")
+    assert worker_records_unproven(generation) is None
