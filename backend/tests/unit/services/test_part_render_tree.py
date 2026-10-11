@@ -1318,9 +1318,9 @@ def test_a_fork_of_the_guardian_caught_before_its_exec_is_ended_before_the_child
     order: list[str] = []
     real = tree._end_why
 
-    def spy(token, timeout, owner):
+    def spy(token, timeout, owner, confirmed=None):
         order.append(token)
-        return real(token, timeout, owner)
+        return real(token, timeout, owner, confirmed)
 
     monkeypatch.setattr(tree, "_end_why", spy)
     try:

@@ -272,7 +272,13 @@ def tree_gone(attempt_dir: Path, *, strict: bool, timeout: float = 5) -> bool:
 
 
 def _unrecorded_why(
-    attempt_dir: Path, name: str, generation: Path | None, ended: set[str], owner: int | str | None, timeout: float
+    attempt_dir: Path,
+    name: str,
+    generation: Path | None,
+    ended: set[str],
+    owner: int | str | None,
+    timeout: float,
+    confirmed: list[int] | None = None,
 ) -> tuple[str | None, int]:
     """A launch of THIS run whose record never reached the disk, ENDED by its token (spec
     part-render-unrecorded-launch §4.1): its parent proven ended in this same walk; then the holders of the
@@ -303,10 +309,10 @@ def _unrecorded_why(
     parent_token = _token(scope, parent)
     if parent_token is None:
         return f"parent {parent} token unreadable", 0
-    why, first = _end_why(parent_token, timeout, owner)
+    why, first = _end_why(parent_token, timeout, owner, confirmed)
     if why is not None:
         return f"parent {parent} token: {why}", first
-    why, second = _end_why(token, timeout, owner)
+    why, second = _end_why(token, timeout, owner, confirmed)
     return why, first + second
 
 
@@ -342,7 +348,17 @@ def tree_unproven(
             if generation is None:
                 # no staging, no owner to read a holder against: refused as before the rule (final review M3)
                 return f"{name}: launched without its record"
-            why, holders = _unrecorded_why(attempt_dir, name, generation, ended, owner, timeout)
+            confirmed: list[int] = []
+            try:
+                why, holders = _unrecorded_why(attempt_dir, name, generation, ended, owner, timeout, confirmed)
+            except BaseException:
+                # what the scan saw end before it raised is in the parent log too (consilium UL-I-M1)
+                if confirmed and notes is not None:
+                    notes.append(
+                        f"{name} launched without its record: {len(confirmed)} token holders ended before the "
+                        "proof failed"
+                    )
+                raise
             if why is not None:
                 if holders and notes is not None:  # the kills happened, whatever the refusal (final review M1)
                     notes.append(
@@ -476,7 +492,9 @@ def _holders(marker: str, owner: int | str | None) -> list[psutil.Process] | Non
     return None if why is not None else found
 
 
-def _end_why(token: str, timeout: float, owner: int | str | None) -> tuple[str | None, int]:
+def _end_why(
+    token: str, timeout: float, owner: int | str | None, confirmed: list[int] | None = None
+) -> tuple[str | None, int]:
     """End every process started with this launch's token: ``(None, ended)`` when a scan finds none left
     running, else ``(why, ended)`` -- ``ended`` counts the holders this call killed and saw end.
 
@@ -504,6 +522,8 @@ def _end_why(token: str, timeout: float, owner: int | str | None) -> tuple[str |
                 if not _wait(process, timeout):
                     return f"holder still running after its kill pid={process.pid} status={_state(process)}", ended
                 ended += 1
+                if confirmed is not None:  # kept even if a later round raises (consilium UL-I-M1)
+                    confirmed.append(process.pid)
             except psutil.NoSuchProcess:
                 continue
             except psutil.AccessDenied:

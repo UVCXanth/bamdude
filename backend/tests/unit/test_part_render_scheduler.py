@@ -29,6 +29,12 @@ class FakeRuntime:
         self.uncertain = False  # the runtime's ownership_uncertain
         self.proof: asyncio.Event | None = None  # set: a cancel waits for the test to release its proof
         self.refresh_requested = False
+        self.stops = 0
+
+    async def stop(self):
+        """runtime.stop's contract: the scheduler's stop joins it, and it returns only once the runtime's own
+        proof -- its monitor's retire included -- has ended (consilium UL-I-R1)."""
+        self.stops += 1
 
     def refresh_node_soon(self):
         self.refresh_requested = True

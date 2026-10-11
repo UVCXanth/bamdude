@@ -1399,3 +1399,129 @@ async def test_a_launch_ended_before_a_later_error_still_reaches_the_parent_log(
         assert "the proof failed at attempt=dddddddd: OSError" in caplog.text
     finally:
         stop_all(child)
+
+
+# Consilium of the implementation (25c35b77f): UL-I-R1 -- a restore waits for the runtime's own proof, not only the
+# scheduler's task; UL-I-M1 -- an end confirmed by the token scan reaches the parent log when a later scan raises.
+
+
+def monitor_retire_in_proof(tmp_path, monkeypatch, phase: str):
+    """The runtime after its worker died while idle: the monitor's retire -- outside the slot -- is held inside the
+    named proof phase, which then answers a refusal. Returns the runtime and the phase's two events."""
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    this_run(runtime)  # its records and one retained attempt directory
+    entered, release = threading.Event(), threading.Event()
+
+    def proof(*args, **kwargs):
+        entered.set()
+        assert release.wait(10)
+        return "child: injected unproven tree"
+
+    monkeypatch.setattr(prr, phase, proof)
+    runtime._refresh_node_if_due = AsyncMock()
+    runtime._reprobe_node_if_due = AsyncMock()
+    runtime.service = SimpleNamespace(stop=lambda: None, process=SimpleNamespace(poll=lambda: 1))
+    runtime.monitor = asyncio.create_task(runtime._monitor())
+    return runtime, entered, release
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["worker_records_unproven", "tree_unproven"])
+async def test_a_restore_waits_for_the_monitors_own_proof(tmp_path, monkeypatch, phase):
+    """UL-I-R1 (independent test of the consilium, both phases): the monitor's retire runs outside the slot, so a
+    restore that only stopped the scheduler's task answered True while that proof was still running -- and the
+    proof then refused. The restore now joins the runtime's stop and answers its finished proof."""
+    from backend.app.services.part_render_scheduler import PartRenderScheduler
+
+    runtime, entered, release = monitor_retire_in_proof(tmp_path, monkeypatch, phase)
+    scheduler = PartRenderScheduler(runtime, None, tmp_path / "results")
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        stop = asyncio.create_task(scheduler.stop("restore"))
+        await asyncio.sleep(0.1)
+        assert not stop.done()  # no answer while the proof runs
+        release.set()
+        assert not await asyncio.wait_for(stop, 10)
+        assert runtime.uncertain and runtime.closed
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(runtime.monitor, return_exceptions=True), 10)
+
+
+@pytest.mark.asyncio
+async def test_a_restore_before_the_scheduler_started_waits_for_the_runtimes_proof(tmp_path, monkeypatch):
+    """UL-I-R1, the branch without a scheduler: the runtime's proof is joined there too."""
+    from backend.app.services import part_render_scheduler
+
+    runtime, entered, release = monitor_retire_in_proof(tmp_path, monkeypatch, "worker_records_unproven")
+    runtime.earlier_proven = True
+    monkeypatch.setattr(part_render_scheduler, "scheduler", None)
+    monkeypatch.setattr(prr, "runtime", runtime)
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        stop = asyncio.create_task(part_render_scheduler.stop_part_render_scheduler("restore"))
+        await asyncio.sleep(0.1)
+        assert not stop.done()
+        release.set()
+        assert not await asyncio.wait_for(stop, 10)
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(runtime.monitor, return_exceptions=True), 10)
+
+
+@pytest.mark.asyncio
+async def test_every_stop_of_a_runtime_shares_one_stop_and_its_proof(tmp_path, monkeypatch):
+    """UL-I-R1: a restore stops the runtime and the lifespan stops it again; two at once, or one after the other,
+    run ONE stop -- one proof, one answer -- never a second retire over records the first already removed."""
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    this_run(runtime)
+    proofs: list[Path] = []
+    real = prr.worker_records_unproven
+
+    def counted(generation, **kwargs):
+        proofs.append(generation)
+        return real(generation, **kwargs)
+
+    monkeypatch.setattr(prr, "worker_records_unproven", counted)
+    await asyncio.gather(runtime.stop(), runtime.stop())
+    await runtime.stop()
+    assert len(proofs) == 1 and not runtime.uncertain and runtime.closed
+
+
+@pytest.mark.asyncio
+async def test_an_end_confirmed_before_a_scan_raises_reaches_the_parent_log(tmp_path, monkeypatch, caplog):
+    """UL-I-M1 (independent test of the consilium): the child is killed and seen to end by its token, then the
+    next round of the scan raises. The confirmed end is in the parent log beside the proof's failure -- never the
+    exception's text."""
+    from backend.app.services import part_render_tree
+
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    attempt = this_run(runtime)
+    launch(attempt, "guardian")
+    dead_record(attempt / "guardian.pid")
+    token = launch(attempt, "child")
+    child = subprocess.Popen(
+        [getattr(sys, "_base_executable", sys.executable), "-c", "import time; time.sleep(60)", launch_arg(token)],
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    real = part_render_tree._holders_why
+
+    def scan(marker, owner):
+        if marker == launch_arg(token) and child.poll() is not None:
+            raise OSError("C:/private/path")
+        return real(marker, owner)
+
+    monkeypatch.setattr(part_render_tree, "_holders_why", scan)
+    try:
+        with (
+            caplog.at_level(logging.WARNING, logger="backend.app.services.part_render_runtime"),
+            pytest.raises(RuntimeUnavailable),
+        ):
+            await runtime.retire()
+        assert child.poll() is not None and runtime.uncertain and attempt.exists()
+        assert "attempt=dddddddd child launched without its record: 1 token holders ended before the proof failed" in (
+            caplog.text
+        )
+        assert "the proof failed at attempt=dddddddd: OSError" in caplog.text and "private" not in caplog.text
+    finally:
+        stop_all(child)

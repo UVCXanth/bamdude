@@ -96,6 +96,10 @@ class PartRenderScheduler:
         if self.task is not None:
             self.task.cancel()  # 2. the attempt in flight: its cancel and proof; a publication finishes (owned)
             await asyncio.gather(self.task, return_exceptions=True)
+        # 2b. the runtime's own lifecycle too: its monitor retires a dead worker OUTSIDE the slot, so the answer
+        # waits for that proof -- the runtime stops (no replacement worker can start) and only its finished
+        # proof counts (consilium UL-I-R1). Rendering stays stopped until the process restarts, as step 4 says.
+        await self.runtime.stop()
         old, self.generation = self.generation, uuid4().hex  # 3. a late result of the old one writes nothing
         part_renders.set_live_generation(None)  # 4. stopped until the process restarts
         proven = not self.runtime.uncertain
@@ -237,7 +241,10 @@ async def stop_part_render_scheduler(reason: str) -> bool:
     during it proves nothing (consilium E3-I-R2)."""
     if scheduler is None:
         current = get_part_render_runtime()
-        return current is None or (current.earlier_proven and not current.uncertain)
+        if current is None:
+            return True
+        await current.stop()  # its monitor's proof is joined here too (consilium UL-I-R1)
+        return current.earlier_proven and not current.uncertain
     return await scheduler.stop(reason)
 
 

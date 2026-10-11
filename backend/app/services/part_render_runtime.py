@@ -97,6 +97,7 @@ class PartRenderRuntime:
         # every earlier run proven over: until then restore is refused even without a scheduler (E3-I-R2)
         self.earlier_proven = False
         self.staging_over = False
+        self.stopping: asyncio.Task | None = None  # ONE stop, shared by every caller (consilium UL-I-R1)
         self.reason: str | None = "not_started"
         self.node: render_runtime.NodeInstall | None = None
         self.node_reason: str | None = "runtime_missing"
@@ -737,7 +738,16 @@ class PartRenderRuntime:
             await owned(self._drop(result.files.parent, result.attempt_id))
 
     async def stop(self) -> None:
-        """Never raises: lifespan shutdown must still reach the broker's stop (plan E3, R6)."""
+        """Never raises: lifespan shutdown must still reach the broker's stop (plan E3, R6).
+
+        ONE stop per runtime. A restore stops it through the scheduler and the lifespan stops it again; every
+        caller awaits the same stop and its finished proof -- never a second retire over records the first
+        removed (consilium UL-I-R1). Shielded, so a caller that goes away does not cut the stop in half."""
+        if self.stopping is None:
+            self.stopping = asyncio.create_task(self._stop(), name="part-render-runtime-stop")
+        await asyncio.shield(self.stopping)
+
+    async def _stop(self) -> None:
         self.closed = True
         if self.monitor is not None:
             self.monitor.cancel()
