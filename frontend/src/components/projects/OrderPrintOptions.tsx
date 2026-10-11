@@ -66,11 +66,11 @@ export function OrderPrintOptions({ orderId, canEdit, busy, onBlocked }: {
           )}<p className="mt-0.5">{summary(m, overrides[m.model] ?? m.inherited)}</p></div>
         ))}
       </div>
-      {dirty && <p className="text-xs text-amber-400 mt-2" role="status">{t('orderPrintOptions.unsaved')}</p>}
+      {dirty && <p className="text-xs text-amber-700 dark:text-amber-400 mt-2" role="status">{t('orderPrintOptions.unsaved')}</p>}
       {expanded && (
         <div className="mt-3 space-y-3">
           {query.isPending && <p className="text-sm text-bambu-gray">{t('common.loading')}</p>}
-          {query.isError && <div role="alert" className="text-sm text-red-400">
+          {query.isError && <div role="alert" className="text-sm text-red-600 dark:text-red-400">
             <p>{query.error.message}</p>
             <Button variant="outline" size="sm" onClick={() => query.refetch()}>{t('orderPrintOptions.retry')}</Button>
           </div>}
@@ -97,7 +97,7 @@ export function OrderPrintOptions({ orderId, canEdit, busy, onBlocked }: {
                 }} />
               {t('orderPrintOptions.override')}
             </label>
-            {!current.capabilities.known && <p className="text-xs text-amber-400 mt-2">{t('orderPrintOptions.unknown')}</p>}
+            {!current.capabilities.known && <p className="text-xs text-amber-700 dark:text-amber-400 mt-2">{t('orderPrintOptions.unknown')}</p>}
             <p className="text-xs text-bambu-gray my-2" data-testid="order-options-summary">
               {summary(current, options)}
             </p>
@@ -107,7 +107,7 @@ export function OrderPrintOptions({ orderId, canEdit, busy, onBlocked }: {
                 showDualNozzleOptions={current.capabilities.supported.nozzle_offset_cali} />
             </fieldset>}
           </div>}
-          {save.isError && <p role="alert" className="text-sm text-red-400">{save.error.message}</p>}
+          {save.isError && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{save.error.message}</p>}
           {canEdit && <div className="flex gap-2">
             <Button size="sm" disabled={!dirty || !editable} onClick={() => save.mutate(overrides)}>
               {save.isPending ? t('common.loading') : t('orderPrintOptions.save')}
