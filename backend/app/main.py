@@ -4091,7 +4091,13 @@ async def _on_print_start_impl(printer_id: int, data: dict):
         # fire_event_macros() above already dispatched those — nothing to do
         # here.
 
-        if printer and printer.plate_detection_enabled:
+        # Firmware calibration events are not user prints and must not be paused
+        # by the bed camera; use the same classifier as archive filtering below.
+        if (
+            printer
+            and printer.plate_detection_enabled
+            and not is_internal_printer_job(data.get("filename", ""), data.get("subtask_name", ""))
+        ):
             await db.commit()  # Release the connection during camera I/O.
             await _check_plate_at_print_start(printer, db)
 

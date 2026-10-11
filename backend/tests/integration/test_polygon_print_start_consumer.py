@@ -15,6 +15,7 @@ POLYGON = [{"x": 0.1, "y": 0.1}, {"x": 0.9, "y": 0.1}, {"x": 0.9, "y": 0.9}, {"x
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("polygon", [True, False])
+@pytest.mark.parametrize("job", ["normal", "internal-path", "internal-subtask"])
 @pytest.mark.parametrize(
     "case",
     [
@@ -30,7 +31,7 @@ POLYGON = [{"x": 0.1, "y": 0.1}, {"x": 0.9, "y": 0.1}, {"x": 0.9, "y": 0.9}, {"x
     ],
 )
 async def test_real_print_start_classifies_clear_occupied_and_unavailable(
-    db_session, test_engine, printer_factory, tmp_path, monkeypatch, caplog, polygon, case
+    db_session, test_engine, printer_factory, tmp_path, monkeypatch, caplog, polygon, case, job
 ):
     from backend.app import main
 
@@ -82,7 +83,20 @@ async def test_real_print_start_classifies_clear_occupied_and_unavailable(
         "backend.app.main.smart_plug_manager.on_print_start",
     ]:
         monkeypatch.setattr(path, AsyncMock())
-    await main._on_print_start_impl(p.id, {"filename": "Product A.gcode", "subtask_name": "Product A"})
+    data = {"filename": "Product A.gcode", "subtask_name": "Product A"}
+    if job == "internal-path":
+        data = {"filename": "/usr/etc/print/auto_cali_for_user.gcode", "subtask_name": "auto_cali_for_user"}
+    elif job == "internal-subtask":
+        data = {"filename": "", "subtask_name": "auto_pa_line_calib_mode"}
+    await main._on_print_start_impl(p.id, data)
+
+    if job != "normal":
+        capture.assert_not_awaited()
+        manager.get_client.return_value.pause_print.assert_not_called()
+        ws.broadcast.assert_not_awaited()
+        notice.assert_not_awaited()
+        hint.assert_not_called()
+        return
 
     unavailable = case not in ("clear", "occupied") and not (case == "resolution" and not polygon)
     paused = case == "occupied" or (polygon and unavailable)
