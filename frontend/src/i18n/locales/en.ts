@@ -133,6 +133,7 @@ export default {
       "ai_spaghetti": "Possible print failure",
       "foreign_object": "Foreign object on plate",
       "plate_objects": "Objects detected on plate",
+      "plate_check_unavailable": "Plate check unavailable",
       "hms_other": "Printer warning",
       "unknown": "Check the printer"
     },
@@ -1432,6 +1433,19 @@ export default {
     accessCodePlaceholder: 'Leave empty to keep current',
     // ROI editor
     roi: {
+      shape: "Detection shape",
+      rectangle: "Rectangle",
+      polygon: "Polygon",
+      sourceImage: "Original camera frame",
+      vertex: "Vertex {{count}}",
+      width: "Width",
+      height: "Height",
+      redraw: "Draw a new contour",
+      undoPoint: "Remove last point",
+      polygonHelp: "Click to add vertices. Drag points to adjust. Arrow keys move a focused point; Delete removes it. Use at least 3 points without crossing edges.",
+      coverageHelp: "Cover the visible plate and auxiliary objects, allowing space for taller parts. Outside the contour is ignored. Keep the same camera and printer position.",
+      invalidPolygon: "Choose at least three distinct points forming a valid area.",
+
       title: 'Detection Area (ROI)',
       xStart: 'X Start',
       yStart: 'Y Start',
@@ -4184,6 +4198,7 @@ export default {
 
   // Plate detection alert
   plateAlert: {
+    unavailableMessage: 'The plate check is unavailable. The print has been automatically paused. Inspect the plate, camera and calibration before resuming.',
     title: 'Print Paused!',
     message: 'Objects detected on build plate. The print has been automatically paused. Please clear the plate and resume the print.',
     understand: 'I Understand'

@@ -52,6 +52,7 @@ PAUSE_REASON_LABELS: dict[str, str] = {
     "ai_spaghetti": "AI: spaghetti / pile-up",
     "foreign_object": "Foreign object on heatbed",
     "plate_objects": "Objects detected on plate",
+    "plate_check_unavailable": "Plate check unavailable",
     "hms_other": "HMS error",
     "unknown": "Unknown",
 }

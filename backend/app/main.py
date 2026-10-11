@@ -4106,6 +4106,76 @@ def _name_after_plate_reject(subtask_name: str, corrected_subtask: str | None, f
     return filename.split("/")[-1].replace(".gcode.3mf", "").replace(".gcode", "").replace(".3mf", "")
 
 
+async def _check_plate_at_print_start(printer, db, *, may_run=None):
+    """Consume the detector result for an already-started print, including unavailable checks."""
+    from backend.app.services.plate_detection import PlateDetectionResult, check_plate_empty
+
+    logger = logging.getLogger(__name__)
+    roi = printer.plate_detection_roi
+    try:
+        result = await check_plate_empty(
+            printer_id=printer.id,
+            ip_address=printer.ip_address,
+            access_code=printer.access_code,
+            model=printer.model,
+            include_debug_image=False,
+            external_camera_url=printer.external_camera_url,
+            external_camera_type=printer.external_camera_type,
+            use_external=printer.external_camera_enabled,
+            roi=tuple(roi[k] for k in ("x", "y", "w", "h")) if roi else None,
+            polygon=printer.plate_detection_polygon,
+            external_camera_snapshot_url=printer.external_camera_snapshot_url,
+        )
+    except Exception:
+        logger.exception("[PLATE CHECK] Capture/check unavailable for printer %s", printer.id)
+        result = PlateDetectionResult(False, 0, 0, "Plate check failed", status="unavailable")
+
+    if may_run is not None and not may_run():
+        return
+
+    if result.status == "clear":
+        logger.info("[PLATE CHECK] Plate is empty for printer %s, proceeding with print", printer.id)
+        return
+    if result.status == "unavailable" and printer.plate_detection_polygon is None:
+        logger.warning(
+            "[PLATE CHECK] Check unavailable for printer %s; legacy rectangle policy permits print", printer.id
+        )
+        return
+
+    unavailable = result.status == "unavailable"
+    reason = "plate_check_unavailable" if unavailable else "plate_objects"
+    message = (
+        "Plate check unavailable. Print paused; inspect the plate and camera calibration."
+        if unavailable
+        else f"Objects detected on build plate! Print paused. (Diff: {result.difference_percent:.1f}%)"
+    )
+    logger.warning("[PLATE CHECK] %s for printer %s", reason, printer.id)
+    client = printer_manager.get_client(printer.id)
+    if client:
+        set_expected_pause_reason(printer.id, reason)
+        client.pause_print()
+    await ws_manager.broadcast(
+        {
+            "type": "plate_not_empty",
+            "printer_id": printer.id,
+            "printer_name": printer.name,
+            "reason": reason,
+            "message": message,
+        }
+    )
+    # An unavailable check must never send an objects-detected push notification.
+    if not unavailable:
+        try:
+            await notification_service.on_plate_not_empty(
+                printer_id=printer.id,
+                printer_name=printer.name,
+                db=db,
+                difference_percent=result.difference_percent,
+            )
+        except Exception as exc:
+            logger.warning("[PLATE CHECK] Failed to send notification: %s", exc)
+
+
 async def on_print_start(printer_id: int, data: dict):
     """Admit a live start once, independently of its prepared dispatch."""
     from backend.app.services.print_run_binding import (
@@ -4347,105 +4417,21 @@ async def _on_print_start_impl(printer_id: int, data: dict):
         # fire_event_macros() above already dispatched those — nothing to do
         # here.
 
-        # Plate detection check - pause if objects detected on build plate
-        logger.info(
-            f"[PLATE CHECK] printer_id={printer_id}, plate_detection_enabled={printer.plate_detection_enabled if printer else 'NO PRINTER'}"
-        )
+        # Dispatch-owned prints were checked before publish. Firmware jobs are
+        # not user prints; all other starts use the same camera result consumer.
         from backend.app.services.print_run_binding import current_print_run
 
         _plate_bound = current_print_run(printer_manager, printer_id)
-        if printer and printer.plate_detection_enabled and (not _plate_bound or _plate_bound.origin != "dispatch"):
-            logger.info("[PLATE CHECK] ENTERING plate detection code for printer %s", printer_id)
-            # Release the pooled DB connection before the plate-detection camera work
-            # (the camera-light lease + FTP/camera capture). Only the printer SELECT has
-            # run so far — nothing to persist — so this commit is a data-noop that ends
-            # the read transaction and returns the connection to the pool during the
-            # I/O (#2572). expire_on_commit=False keeps printer.* readable; the archive
-            # lookups below re-acquire a fresh connection on the next execute.
-            await db.commit()
-            try:
-                from backend.app.services.plate_detection import check_plate_empty
-
-                # Build ROI tuple from printer settings if available
-                roi = None
-                if all(
-                    [
-                        printer.plate_detection_roi_x is not None,
-                        printer.plate_detection_roi_y is not None,
-                        printer.plate_detection_roi_w is not None,
-                        printer.plate_detection_roi_h is not None,
-                    ]
-                ):
-                    roi = (
-                        printer.plate_detection_roi_x,
-                        printer.plate_detection_roi_y,
-                        printer.plate_detection_roi_w,
-                        printer.plate_detection_roi_h,
-                    )
-
-                # The chamber light is the capture's business: check_plate_empty
-                # captures with purpose="plate_check", which the camera-light lease
-                # always lights (services/camera_light.ALWAYS_PURPOSES) — on if it
-                # was off, confirmed by the printer instead of a 2.5 s pause, off
-                # again after the grace, and never touched if it was already on.
-                logger.info("[PLATE CHECK] Running plate detection for printer %s", printer_id)
-                plate_result = await check_plate_empty(
-                    printer_id=printer_id,
-                    ip_address=printer.ip_address,
-                    access_code=printer.access_code,
-                    model=printer.model,
-                    include_debug_image=False,
-                    external_camera_url=printer.external_camera_url,
-                    external_camera_type=printer.external_camera_type,
-                    use_external=printer.external_camera_enabled,
-                    roi=roi,
-                    external_camera_snapshot_url=printer.external_camera_snapshot_url,
-                )
-
-                if not owns_start():
-                    return
-                if plate_result.status != "clear":
-                    # Objects detected - pause the print!
-                    logger.warning(
-                        f"[PLATE CHECK] Objects detected on plate for printer {printer_id}! "
-                        f"Confidence: {plate_result.confidence:.0%}, Diff: {plate_result.difference_percent:.1f}%"
-                    )
-                    client = printer_manager.get_client(printer_id)
-                    if client:
-                        # Plant the reason hint BEFORE issuing the pause
-                        # command — Bambu firmware fires HMS 0300_8001
-                        # ("paused by user") for any pause-command we send,
-                        # so without this hint the resulting RUNNING→PAUSE
-                        # edge would label this auto-pause as user-initiated.
-                        set_expected_pause_reason(printer_id, "plate_objects")
-                        client.pause_print()
-                        logger.info("[PLATE CHECK] Print paused for printer %s", printer_id)
-
-                    # Send notification about plate not empty
-                    await ws_manager.broadcast(
-                        {
-                            "type": "plate_not_empty",
-                            "printer_id": printer_id,
-                            "printer_name": printer.name,
-                            "message": f"Objects detected on build plate! Print paused. (Diff: {plate_result.difference_percent:.1f}%)",
-                        }
-                    )
-
-                    # Also send push notification
-                    try:
-                        await notification_service.on_plate_not_empty(
-                            printer_id=printer_id,
-                            printer_name=printer.name,
-                            db=db,
-                            difference_percent=plate_result.difference_percent,
-                        )
-                    except Exception as notif_err:
-                        logger.warning("[PLATE CHECK] Failed to send notification: %s", notif_err)
-                else:
-                    logger.info("[PLATE CHECK] Plate is empty for printer %s, proceeding with print", printer_id)
-            except Exception as plate_err:
-                # Don't block print on plate detection errors
-                logger.warning("[PLATE CHECK] Plate detection failed for printer %s: %s", printer_id, plate_err)
+        if (
+            printer
+            and printer.plate_detection_enabled
+            and (not _plate_bound or _plate_bound.origin != "dispatch")
+            and not is_internal_printer_job(data.get("filename", ""), data.get("subtask_name", ""))
+        ):
+            await db.commit()  # Release the connection during camera I/O.
+            await _check_plate_at_print_start(printer, db, may_run=owns_start)
+            if not owns_start():
+                return
 
         if not printer or not printer.auto_archive:
             # Send notification without archive data (auto-archive disabled)

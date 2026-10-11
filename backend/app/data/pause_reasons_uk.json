@@ -8,6 +8,7 @@
   "ai_spaghetti": "ШІ: спагеті / накопичення",
   "foreign_object": "Сторонній предмет на столі",
   "plate_objects": "На столі виявлено обʼєкти",
+  "plate_check_unavailable": "Перевірка столу недоступна",
   "hms_other": "Помилка HMS",
   "unknown": "Невідомо"
 }

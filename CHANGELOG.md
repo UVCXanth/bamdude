@@ -35,6 +35,13 @@
 - Fresh auto-eject checks accept only a frame published after admission began, from the selected camera and the same live producer generation. Stalled or changed streams defer without opening another reader. Swap Mode is checked again after camera I/O before answering the previous plate gate.
 
 - **Orders can opt into prepared finish-G-code auto-ejection.** New queue jobs capture the mode and camera policy, including an editable image-difference threshold and a camera opt-out behind two danger confirmations. BamDude sends no ejection motion: the selected file must perform it. Camera checks remain enabled by default, errors block dispatch, and ordinary, failed or cancelled predecessors retain their manual plate answer. Existing jobs and printer-wide settings are unchanged.
+### Added
+
+- **Choose a polygon for plate detection.** The camera-area editor can follow the visible plate instead of including the corners of its rectangular bounding box. Switch between Rectangle and Polygon, drag or keyboard-adjust vertices, and retain the existing rectangle and full calibration photos. Pixels outside the polygon do not affect its blur, normalization or difference score.
+
+### Fixed
+
+- Polygon checks pause an already-started print when calibration, camera capture or analysis is unavailable, with a distinct explanation. Unavailable rectangle checks retain their legacy permissive policy and are no longer logged as an empty plate.
 
 ## [0.7.0] - 2026-10-06
 

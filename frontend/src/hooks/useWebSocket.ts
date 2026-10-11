@@ -823,6 +823,7 @@ export function useWebSocket() {
             printer_id: message.printer_id,
             printer_name: (message as unknown as { printer_name?: string }).printer_name,
             message: (message as unknown as { message?: string }).message,
+            reason: (message as unknown as { reason?: string }).reason,
           }
         }));
         break;
