@@ -254,3 +254,17 @@ describe('the local preview (Review Focus 5)', () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:preview-2');
   });
 });
+
+describe('after the browser check (plan E5, Task 41)', () => {
+  it('the native file field hides behind its own button — it never says «no file chosen» beside the chosen one', () => {
+    render(<Host part={null} />);
+    expect(screen.getByLabelText('Choose a photo')).toHaveClass('sr-only');
+    expect(screen.getByText('Choose a photo', { selector: 'label' })).toHaveAttribute('for', 'photo-input');
+  });
+
+  it('a new part has nothing saved to describe', () => {
+    render(<Host part={null} />);
+    expect(screen.queryByText(/^Saved:/)).not.toBeInTheDocument();
+    expect(screen.getByText('No picture yet')).toBeInTheDocument();
+  });
+});

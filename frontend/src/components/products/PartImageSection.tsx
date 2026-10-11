@@ -272,7 +272,7 @@ export function PartImageSection({
           <p className="text-xs text-bambu-gray-light">
             {image ? t('products.partImage.shown') : t('products.partImage.none')}
           </p>
-          <SavedState choice={choice} />
+          {partId != null && <SavedState choice={choice} />}
         </div>
       </div>
 
@@ -307,6 +307,9 @@ export function PartImageSection({
             {t('products.partImage.photo')}
           </label>
           <div className="flex flex-wrap items-center gap-2 pl-6">
+            {/* The native field hides behind its own button: it is reset after every pick (the same
+                file may be chosen again), so it would say «no file chosen» beside the chosen one
+                (browser check, plan E5 Task 41). */}
             <input
               id={photoInputId}
               type="file"
@@ -318,8 +321,16 @@ export function PartImageSection({
                 if (file) onChange({ source: 'photo', file });
                 e.target.value = ''; // the same file may be chosen again
               }}
-              className="max-w-full text-xs text-bambu-gray-light file:mr-2 file:rounded-lg file:border-0 file:bg-bambu-dark-tertiary file:px-3 file:py-1.5 file:text-white"
+              className="peer sr-only"
             />
+            <label
+              htmlFor={photoInputId}
+              className={`inline-flex items-center rounded-lg bg-bambu-dark-tertiary px-3 py-1.5 text-xs text-white peer-focus-visible:ring-2 peer-focus-visible:ring-bambu-green ${
+                disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-bambu-gray-dark'
+              }`}
+            >
+              {t('products.partImage.choosePhoto')}
+            </label>
             {chosenFile && <LocalPreview file={chosenFile} alt={name} />}
             {chosenFile ? (
               <small className="text-xs text-bambu-gray wrap-anywhere">

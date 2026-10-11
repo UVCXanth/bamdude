@@ -343,7 +343,8 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
     onClose();
   }
 
-  const pictureRefusal = image.isError ? (image.error as Error).message : null;
+  // the server's own sentence without its closing full stop: the dialog's sentence puts one after it
+  const pictureRefusal = image.isError ? (image.error as Error).message.replace(/\.\s*$/, '') : null;
   const error =
     localError ??
     (fields.isError ? (fields.error as Error).message : undefined) ??
@@ -618,6 +619,7 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
             touched.current = true;
             setImageDraft(next);
             setLocalError(null);
+            image.reset(); // a new choice is not the one refused (browser check, plan E5 Task 41)
           }}
           disabled={pending}
           photoInputId={ids.photo}

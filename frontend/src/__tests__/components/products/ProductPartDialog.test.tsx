@@ -618,6 +618,35 @@ describe('ProductPartDialog', () => {
       );
     });
 
+    it('a refusal leaves the slot once another file is chosen (plan E5, Task 41)', async () => {
+      vi.spyOn(api, 'uploadPartPhoto').mockRejectedValueOnce(new ApiError('The photo must be a PNG, JPEG or WebP picture', 422));
+      render(<ProductPartDialog product={product} part={body} onClose={noop} />);
+      choosePhoto();
+      fireEvent.click(save());
+      expect(await screen.findByRole('alert')).toHaveTextContent('The picture is not saved');
+      choosePhoto();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('the partial-success sentence ends the server’s own and reads on — one full stop (plan E5, Task 41)', async () => {
+      vi.spyOn(api, 'createProductPart').mockResolvedValue(savedNew as never);
+      vi.spyOn(api, 'uploadPartPhoto')
+        .mockRejectedValueOnce(new ApiError('The photo must be a PNG, JPEG or WebP picture', 422))
+        .mockRejectedValueOnce(new ApiError('Not a picture.', 422));
+      render(<ProductPartDialog product={product} onClose={noop} />);
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Gear' } });
+      choosePhoto();
+      fireEvent.click(save());
+      // the server's sentences carry no full stop: the dialog puts one before its own
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'The part is saved; its picture is not: The photo must be a PNG, JPEG or WebP picture. «Save part» tries the picture again',
+      );
+      await waitFor(() => expect(save()).not.toBeDisabled());
+      fireEvent.click(save());
+      // and one that does carry it gets no second
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('its picture is not: Not a picture. «Save part»'));
+    });
+
     it('«Photo» with no file on a part without a saved photo: said in the dialog, nothing sent', () => {
       const update = vi.spyOn(api, 'updateProductPart');
       const upload = vi.spyOn(api, 'uploadPartPhoto');

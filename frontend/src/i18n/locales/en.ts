@@ -7253,7 +7253,7 @@ export default {
       rerenderFailed: 'Could not queue the re-render: {{message}}',
       failed: 'The picture is not saved: {{message}}',
       partSavedPictureFailed:
-        'The part is saved; its picture is not: {{message}} «Save part» tries the picture again; «Cancel» closes and keeps the part as it is saved.',
+        'The part is saved; its picture is not: {{message}}. «Save part» tries the picture again; «Cancel» closes and keeps the part as it is saved.',
     },
     // WS-13 E10 C08: merging one printed part into another.
     mergeDialog: {
