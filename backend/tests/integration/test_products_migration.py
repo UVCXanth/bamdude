@@ -28,6 +28,7 @@ from backend.app.migrations import (
     m158_products_and_orders as m158,
     m190_customer_contacts as m190,
     m191_order_stage_journal as m191,
+    m199_order_print_options as m199,
 )
 from backend.app.migrations.helpers import get_table_columns, table_exists
 from backend.app.models.archive import PrintArchive
@@ -205,6 +206,7 @@ async def _run_upgrade(engine):
         # ``contact_id`` (m190), ``stage`` and ``responsible_id`` (m191).
         await m190.upgrade(conn)
         await m191.upgrade(conn)
+        await m199.upgrade(conn)
 
 
 @pytest.mark.asyncio
