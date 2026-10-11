@@ -622,6 +622,49 @@ var RenderError = class extends Error {
 	}
 };
 //#endregion
+//#region src/part-render/colour.ts
+/** Where black still reads as black plastic and its faces show (measured on real renders, 2026-10-11). */
+const MIN_LIGHTNESS = .35;
+const toLinear = (c) => c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4;
+const toSrgb = (c) => {
+	const v = Math.min(1, Math.max(0, c));
+	return v <= .0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - .055;
+};
+function toOklab([r, g, b]) {
+	const [lr, lg, lb] = [
+		toLinear(r),
+		toLinear(g),
+		toLinear(b)
+	];
+	const l = Math.cbrt(.4122214708 * lr + .5363325363 * lg + .0514459929 * lb);
+	const m = Math.cbrt(.2119034982 * lr + .6806995451 * lg + .1073969566 * lb);
+	const s = Math.cbrt(.0883024619 * lr + .2817188376 * lg + .6299787005 * lb);
+	return [
+		.2104542553 * l + .793617785 * m - .0040720468 * s,
+		1.9779984951 * l - 2.428592205 * m + .4505937099 * s,
+		.0259040371 * l + .7827717662 * m - .808675766 * s
+	];
+}
+function fromOklab([L, a, b]) {
+	const l = (L + .3963377774 * a + .2158037573 * b) ** 3;
+	const m = (L - .1055613458 * a - .0638541728 * b) ** 3;
+	const s = (L - .0894841775 * a - 1.291485548 * b) ** 3;
+	return [
+		toSrgb(4.0767416621 * l - 3.3077115913 * m + .2309699292 * s),
+		toSrgb(-1.2684380046 * l + 2.6097574011 * m - .3413193965 * s),
+		toSrgb(-.0041960863 * l - .7034186147 * m + 1.707614701 * s)
+	];
+}
+/** The colour the renderer paints: raised to MIN_LIGHTNESS when darker, hue and chroma kept; else as given. */
+function paintColour(rgb) {
+	const [L, a, b] = toOklab(rgb);
+	return L >= .35 ? rgb : fromOklab([
+		MIN_LIGHTNESS,
+		a,
+		b
+	]);
+}
+//#endregion
 //#region src/part-render/raster.ts
 const LTX = -.4574957, LTY = .4574957, LTZ = .7624929;
 const TOP_DIFFUSE = .6 * .8;
@@ -1195,8 +1238,9 @@ function runJob(job, gcode, emit, draw = drawSegments) {
 		const data = ue(selection.layers, parsed.defaultWidth);
 		if (data.hasNaN) throw new RenderError("parse_failed", "segment geometry contains NaN");
 		const rgb = new Float32Array(data.nV * 3);
+		const paint = new Map(tools.map((t) => [t, paintColour(parseHex(palette[t]))]));
 		for (let v = 0; v < data.nV; v++) {
-			const [r, g, b] = parseHex(palette[data.meta.vType[v] - 1]);
+			const [r, g, b] = paint.get(data.meta.vType[v] - 1);
 			rgb[v * 3] = r;
 			rgb[v * 3 + 1] = g;
 			rgb[v * 3 + 2] = b;
@@ -1238,7 +1282,7 @@ function runJob(job, gcode, emit, draw = drawSegments) {
 		});
 	}
 	return {
-		renderer: 2,
+		renderer: 3,
 		palette,
 		objects
 	};

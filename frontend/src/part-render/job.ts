@@ -9,6 +9,7 @@ import { buildSegmentData } from '../lib/vendor/toolpathRenderer.js';
 import {
   CONTROL_FRAME_MAX, PNG_FRAME_OVERHEAD, RENDERER_VERSION, RenderError, isAllocationFailure, type RenderJob, type RenderManifest,
 } from './protocol';
+import { paintColour } from './colour';
 import { drawSegments, frameCamera, geometryBounds, isEmpty, RenderTarget, resolve } from './raster';
 import { encodePng } from './png';
 import { fitsBox, paletteFromGcode, selectSegments } from './select';
@@ -61,8 +62,10 @@ export function runJob(
     if (data.hasNaN) throw new RenderError('parse_failed', 'segment geometry contains NaN');
     // vType is tool + 1 after selectSegments re-keyed it (spec §5.2)
     const rgb = new Float32Array(data.nV * 3);
+    // the colour each tool is painted in: a dark filament raised to its lightness floor (spec §34)
+    const paint = new Map(tools.map((t) => [t, paintColour(parseHex(palette[t]))] as const));
     for (let v = 0; v < data.nV; v++) {
-      const [r, g, b] = parseHex(palette[data.meta.vType[v] - 1]);
+      const [r, g, b] = paint.get(data.meta.vType[v] - 1)!;
       rgb[v * 3] = r;
       rgb[v * 3 + 1] = g;
       rgb[v * 3 + 2] = b;

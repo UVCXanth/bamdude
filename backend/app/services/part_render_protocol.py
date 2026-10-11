@@ -15,7 +15,7 @@ import struct
 from pathlib import Path
 from typing import Literal
 
-RENDERER_VERSION = 2  # == frontend/src/part-render/protocol.ts; part_render_node takes it from here
+RENDERER_VERSION = 3  # == frontend/src/part-render/protocol.ts; part_render_node takes it from here (3: spec §34)
 INSTANCE_CAP = 256
 GCODE_BYTES = 256 * 1024**2
 MASTER_SIZE = 512

@@ -19,6 +19,7 @@ import psutil
 from PIL import Image
 
 from backend.app.services.part_render_node import NodeRenderError, node_command, node_env, run_frames, verify_bundle
+from backend.app.services.part_render_protocol import RENDERER_VERSION
 from backend.app.services.render_runtime import UnsupportedPlatform, locate
 
 FIXTURES = Path(__file__).resolve().parent / "data" / "render_probe"
@@ -251,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         results = {f: render_fixture(node, f, out / f) for f in FIXTURE_JOBS}
         if args.write_golden and all(r["ok"] for r in results.values()):
             golden = {
-                "renderer": 2,
+                "renderer": RENDERER_VERSION,
                 "node": node_version(node),
                 "png_sha256": {f: r["sha256"] for f, r in results.items()},
             }

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.models.plate_render import PlateRender, PlateRenderObject
 from backend.app.services import part_renders
+from backend.app.services.part_render_protocol import RENDERER_VERSION
 from backend.app.services.part_render_types import AttemptResult
 from backend.tests.unit.test_part_renders_queue import GEN, linked
 
@@ -43,7 +44,7 @@ def attempt_files(tmp_path, *, tamper: bool = False) -> AttemptResult:
     (files / "101.lg.png").write_bytes(lg)
     (files / "101.sm.png").write_bytes(sm if not tamper else _png(64))
     manifest = {
-        "renderer": 2,
+        "renderer": RENDERER_VERSION,
         "reason": None,
         "objects": [
             {

@@ -7,6 +7,7 @@ from backend.app.services.part_render_protocol import RENDERER_VERSION
 
 ROOT = Path(__file__).resolve().parents[3]
 RENDER_INPUTS = (
+    "frontend/src/part-render/colour.ts",  # the colour a filament is painted in (spec §34)
     "frontend/src/part-render/entry.ts",
     "frontend/src/part-render/io.ts",
     "frontend/src/part-render/job.ts",
@@ -25,7 +26,9 @@ RENDER_INPUTS = (
 )
 # Changed a file above? Decide first whether RENDERER_VERSION goes up (spec §8.5), then re-pin with
 #   python -c "from backend.tests.unit.test_renderer_inputs_digest import digest; print(digest())"
-PINNED = {2: "654f85810b7ac17ad92f4789868a4fa2aaabb27fcee9aaaa98f8a6a013cd3301"}
+PINNED = {
+    3: "787f8cc56411394909799a402f31b48dd136d31eecfb3157a8c08892012f6d7b"
+}  # 3: a dark filament raised to its lightness floor (spec §34)
 
 
 def digest() -> str:

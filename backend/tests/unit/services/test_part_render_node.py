@@ -13,6 +13,7 @@ import pytest
 
 from backend.app.services import part_render_node as prn
 from backend.app.services.part_render_node import NodeRenderError, node_command, node_env, run_frames
+from backend.app.services.part_render_protocol import RENDERER_VERSION
 
 FIXTURES = Path(__file__).resolve().parents[3] / "app" / "data" / "render_probe"
 JOB = {"size": 64, "outputBytes": 2**20, "objects": [{"id": 101, "mode": "toolpath"}, {"id": 202, "mode": "toolpath"}]}
@@ -76,7 +77,7 @@ def entry(object_id: int, png: bytes = PNG, size: int = 64) -> dict:
 
 
 GOOD_MANIFEST = {
-    "renderer": 2,
+    "renderer": RENDERER_VERSION,
     "palette": [],
     "objects": [entry(101), {"id": 202, "method": "missing", "reason": "empty_selection"}],
 }

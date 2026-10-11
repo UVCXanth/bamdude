@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.models.plate_render import PlateRender, PlateRenderObject
 from backend.app.services import part_images, part_renders
-from backend.app.services.part_render_protocol import GC_GRACE_SECONDS
+from backend.app.services.part_render_protocol import GC_GRACE_SECONDS, RENDERER_VERSION
 from backend.tests.unit.test_part_renders_queue import linked
 
 SHA = "a" * 64
@@ -22,7 +22,7 @@ def factory(test_engine):
     return async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
 
 
-def write_dir(root, name: str, *, sha=SHA, version=2, plate=1, files=None) -> tuple:
+def write_dir(root, name: str, *, sha=SHA, version=RENDERER_VERSION, plate=1, files=None) -> tuple:
     directory = part_renders.result_path(root, sha, version, plate, name)
     directory.mkdir(parents=True)
     files = {"101.lg.png": b"lg", "101.sm.png": b"sm"} if files is None else files
@@ -46,7 +46,9 @@ def write_dir(root, name: str, *, sha=SHA, version=2, plate=1, files=None) -> tu
     return directory, hashlib.sha256(raw).hexdigest()
 
 
-async def add_row(db, *, status="ready", result_dir=None, manifest_sha256=None, sha=SHA, version=2, objects=True):
+async def add_row(
+    db, *, status="ready", result_dir=None, manifest_sha256=None, sha=SHA, version=RENDERER_VERSION, objects=True
+):
     row = PlateRender(
         file_sha256=sha,
         plate_index=1,

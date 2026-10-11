@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { paintColour } from '../../part-render/colour';
 import { runJob } from '../../part-render/job';
 import { MANIFEST_MAX, PNG_FRAME_OVERHEAD, RenderError, type RenderJob } from '../../part-render/protocol';
+import { drawSegments } from '../../part-render/raster';
 
 const FIXTURES = join(process.cwd(), '..', 'backend', 'app', 'data', 'render_probe');
 const gcode = (name: string) => readFileSync(join(FIXTURES, name), 'utf8');
@@ -19,7 +21,7 @@ describe('runJob', () => {
     const m = runJob(job([{ id: 101, mode: 'toolpath' }, { id: 202, mode: 'toolpath' }, { id: 999, mode: 'toolpath' }]),
       gcode('two-objects.gcode'), (id, png) => pngs.set(id, png));
     expect([...pngs.keys()]).toEqual([101, 202]);
-    expect(m.renderer).toBe(2);
+    expect(m.renderer).toBe(3); // spec §34: dark filament raised to its lightness floor
     expect(m.objects.map((o) => [o.id, o.method])).toEqual([[101, 'toolpath'], [202, 'toolpath'], [999, 'missing']]);
     expect(m.objects[2]).toMatchObject({ reason: 'empty_selection' });
     expect(m.objects[0]).toMatchObject({ tools: [0, 2], width: 64, height: 64, bytes: pngs.get(101)!.length });
@@ -56,6 +58,17 @@ describe('runJob', () => {
     const exact = png + PNG_FRAME_OVERHEAD + 5 + MANIFEST_MAX;
     expect(reasonOf(() => runJob(job(one, exact), gcode('two-objects.gcode'), () => {}))).toBe('no error');
     expect(reasonOf(() => runJob(job(one, exact - 1), gcode('two-objects.gcode'), () => {}))).toBe('invalid_output');
+  });
+
+  it('paints a black filament in its raised colour, so its faces show (spec §34)', () => {
+    const black = gcode('two-objects.gcode').replace(/^; filament_colour = .+$/m, '; filament_colour = #000000;#000000;#000000');
+    const seen: number[] = [];
+    runJob(job([{ id: 202, mode: 'toolpath' }]), black, () => {}, (data, rgb, cam, target) => {
+      seen.push(rgb[0], rgb[1], rgb[2]);
+      drawSegments(data, rgb, cam, target);
+    });
+    expect(seen).toEqual(Array.from(new Float32Array(paintColour([0, 0, 0])))); // the rgb buffer is float32
+    expect(seen[0]).toBeGreaterThan(0.2);
   });
 
   it('gives the same bytes twice', () => {

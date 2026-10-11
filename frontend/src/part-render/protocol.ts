@@ -4,7 +4,7 @@
  */
 
 /** Bump when anything that reaches the pixels or the instance choice changes (spec §8.5). Mirrored in part_render_protocol.py. */
-export const RENDERER_VERSION = 2;
+export const RENDERER_VERSION = 3; // 3: a dark filament raised to its lightness floor (spec §34)
 
 /** Largest manifest / error payload (spec §5.6). */
 export const MANIFEST_MAX = 1024 * 1024;
