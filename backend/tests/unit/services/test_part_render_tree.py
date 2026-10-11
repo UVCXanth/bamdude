@@ -77,7 +77,7 @@ def test_a_half_written_record_fails_the_strict_proof(tmp_path):
 
 def test_a_proof_names_a_launch_without_its_record(tmp_path):
     launch(tmp_path, "child")
-    assert tree_unproven(tmp_path, strict=True) == "child: launched without its record"
+    assert tree_unproven(tmp_path, strict=True) == "child: launched without its record (parent guardian never launched)"
     assert tree_unproven(tmp_path, strict=False) is None
 
 
@@ -1235,3 +1235,317 @@ def test_a_run_without_a_readable_owner_record_names_no_user(tmp_path):
     assert tree._run_owner(tmp_path) is None
     (tmp_path / "owner.pid").write_text("[1000]", encoding="ascii")
     assert tree._run_owner(tmp_path) is None
+
+
+# THIS run's strict proof ends a launch without its record (spec part-render-unrecorded-launch §4.1): once its
+# parent is proven ended in the same walk, the holders of the parent's token -- a fork caught before its exec
+# -- and then of the launch's own are killed and waited for until a scan finds none.
+
+
+def _token_holder(token: str) -> subprocess.Popen:
+    """A live process with a launch's token on its command line: the launched process itself, or a fork of its
+    parent caught before it executed the child."""
+    from backend.app.services.part_render_tree import launch_arg
+
+    return subprocess.Popen([*SLEEP, launch_arg(token)], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def _this_run(tmp_path: Path) -> tuple[Path, Path]:
+    """THIS run's staging and one attempt: its owner (this test process) and its worker, proven dead -- what
+    ``retire`` has established before it walks an attempt (spec §4.2, R2)."""
+    generation, attempt = _generation(tmp_path)
+    record(generation / "owner.pid", os.getpid())
+    for name in ("worker", "service"):
+        launch(generation, name)
+        _dead(generation / f"{name}.pid")
+    return generation, attempt
+
+
+def _stop(*processes: subprocess.Popen) -> None:
+    for process in processes:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
+def test_this_runs_child_launched_without_its_record_is_ended_once_its_guardian_is(tmp_path):
+    """The macOS spawn window of 2026-10-10 (spec §1): the worker died while its attempt's guardian was between
+    starting part_render and recording it. The proof kills the recorded guardian, finds the child by its token
+    and ends it, and the attempt is proven over (spec §4.1)."""
+    generation, attempt = _this_run(tmp_path)
+    guardian = _token_holder(launch(attempt, "guardian"))
+    record(attempt / "guardian.pid", guardian.pid)
+    child_token = launch(attempt, "child")
+    child = _token_holder(child_token)
+    notes: list[str] = []
+    try:
+        assert tree_unproven(attempt, strict=True, generation=generation, notes=notes) is None
+        assert guardian.wait(timeout=5) is not None and child.wait(timeout=5) is not None
+        assert _holders(child_token) == []
+        assert len(notes) == 1
+        assert notes[0].startswith("child launched without its record: ended by its token (holders=")
+    finally:
+        _stop(guardian, child)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="SIGSTOP holds a process before it reads EOF (POSIX)")
+def test_a_stopped_child_launched_without_its_record_is_ended(tmp_path):
+    """EOF is not an exit (consilium r2, R2.1): a child stopped before it read its dead guardian's EOF is ended."""
+    import signal
+
+    generation, attempt = _this_run(tmp_path)
+    launch(attempt, "guardian")
+    _dead(attempt / "guardian.pid")
+    child = _token_holder(launch(attempt, "child"))
+    os.kill(child.pid, signal.SIGSTOP)
+    try:
+        assert tree_unproven(attempt, strict=True, generation=generation) is None
+        assert child.wait(timeout=5) is not None
+    finally:
+        _stop(child)
+
+
+def test_a_fork_of_the_guardian_caught_before_its_exec_is_ended_before_the_child_is_looked_for(tmp_path, monkeypatch):
+    """A guardian killed inside Popen may leave its fork still running the guardian's command line: its token's
+    holders are ended first, so none can become a child after the child's scan (spec §4.1, step 3)."""
+    from backend.app.services import part_render_tree as tree
+
+    generation, attempt = _this_run(tmp_path)
+    guardian_token = launch(attempt, "guardian")
+    _dead(attempt / "guardian.pid")
+    fork = _token_holder(guardian_token)
+    child_token = launch(attempt, "child")
+    order: list[str] = []
+    real = tree._end_why
+
+    def spy(token, timeout, owner):
+        order.append(token)
+        return real(token, timeout, owner)
+
+    monkeypatch.setattr(tree, "_end_why", spy)
+    try:
+        assert tree_unproven(attempt, strict=True, generation=generation) is None
+        assert fork.wait(timeout=5) is not None
+        assert order == [guardian_token, child_token]
+    finally:
+        _stop(fork)
+
+
+def test_a_child_with_a_half_written_record_is_ended_like_one_without(tmp_path):
+    """The guardian died inside record(): child.pid.part beside child.launch. The launch precedes the spawn, so
+    the token finds the child (spec §4.1)."""
+    generation, attempt = _this_run(tmp_path)
+    launch(attempt, "guardian")
+    _dead(attempt / "guardian.pid")
+    child = _token_holder(launch(attempt, "child"))
+    (attempt / "child.pid.part").write_text("{", encoding="ascii")
+    try:
+        assert tree_unproven(attempt, strict=True, generation=generation) is None
+        assert child.wait(timeout=5) is not None
+    finally:
+        _stop(child)
+
+
+def test_a_guardian_launched_without_its_record_is_ended_once_its_worker_is_proven_dead(tmp_path):
+    """The worker died between starting the attempt's guardian and recording it: the worker's own record is
+    dead (R2), so the guardian is found by its token and ended."""
+    generation, attempt = _this_run(tmp_path)
+    guardian = _token_holder(launch(attempt, "guardian"))
+    try:
+        assert tree_unproven(attempt, strict=True, generation=generation) is None
+        assert guardian.wait(timeout=5) is not None
+    finally:
+        _stop(guardian)
+
+
+def test_a_guardian_launched_without_its_record_under_a_worker_not_proven_dead_is_not_over(tmp_path, monkeypatch):
+    """The worker may still start what the token names: nothing is signalled, and the proof says why."""
+    import psutil
+
+    generation, attempt = _generation(tmp_path)
+    record(generation / "owner.pid", os.getpid())
+    worker = _spawn()
+    launch(generation, "service")
+    record(generation / "service.pid", worker.pid)
+    guardian = _token_holder(launch(attempt, "guardian"))
+    real = psutil.Process
+
+    def guarded(pid):
+        if pid == worker.pid:
+            raise psutil.AccessDenied(pid)
+        return real(pid)
+
+    monkeypatch.setattr(psutil, "Process", guarded)
+    try:
+        assert tree_unproven(attempt, strict=True, generation=generation) == (
+            f"guardian: launched without its record (parent service not proven ended: access denied pid={worker.pid})"
+        )
+        assert worker.poll() is None and guardian.poll() is None
+    finally:
+        monkeypatch.undo()
+        _stop(worker, guardian)
+
+
+def test_a_guardian_launched_without_its_record_under_an_unrecorded_worker_is_not_over(tmp_path):
+    """A worker without its record never received its bootstrap: an attempt beside it is a state this code does
+    not write, and the proof refuses it (spec §4.3; consilium: a parent missing while an attempt exists)."""
+    generation, attempt = _generation(tmp_path)
+    record(generation / "owner.pid", os.getpid())
+    launch(generation, "service")  # launched, never recorded
+    launch(attempt, "guardian")
+    assert tree_unproven(attempt, strict=True, generation=generation) == (
+        "guardian: launched without its record (parent service not proven ended: launched without its record)"
+    )
+
+
+def test_a_node_launched_without_its_record_is_ended_once_part_render_is(tmp_path):
+    generation, attempt = _this_run(tmp_path)
+    launch(attempt, "guardian")
+    _dead(attempt / "guardian.pid")
+    child = _token_holder(launch(attempt, "child"))
+    record(attempt / "child.pid", child.pid)
+    node = _token_holder(launch(attempt, "node"))
+    try:
+        assert tree_unproven(attempt, strict=True, generation=generation) is None
+        assert child.wait(timeout=5) is not None and node.wait(timeout=5) is not None
+    finally:
+        _stop(child, node)
+
+
+def _fake_run(tmp_path: Path, monkeypatch, processes, *, windows: bool, owner: bool = True):
+    """This run's staging with a dead recorded guardian and a child launched with the test token "a" * 32, whose
+    process table is ``processes`` (the scan's fakes)."""
+    generation, attempt = _generation(tmp_path)
+    user = ("HOST\\me" if windows else 1000) if owner else None
+    (generation / "owner.pid").write_text(json.dumps({"user": user}), encoding="ascii")
+    launch(attempt, "guardian")
+    _dead(attempt / "guardian.pid")
+    (attempt / "child.launch").write_text("a" * 32, encoding="ascii")
+    _Holder.killed = []
+    tree = _scan(monkeypatch, processes, windows=windows)
+    return tree, generation, attempt
+
+
+@pytest.mark.parametrize("windows", [False, True])
+@pytest.mark.parametrize(
+    ("processes", "owner", "why"),
+    [
+        (lambda: [_Readable(9, uid=4242, user="OTHER\\mallory")], True, None),  # a stranger: not signalled, no refusal
+        (lambda: [_Readable(9)], True, "a holder's user unreadable"),
+        (lambda: [_Readable(9, uid=1000, user="HOST\\me")], False, "run owner names no user"),
+        (lambda: [], False, None),  # no holder, no ambiguous candidate: the success _end_launched allows
+        (
+            lambda: [_Unreadable(7, uid=1000, name="python.exe", ppid=6000)],
+            True,
+            "parent guardian token: a possible holder unreadable",
+        ),
+    ],
+)
+def test_the_right_to_signal_in_this_run_is_the_one_earlier_runs_have(
+    tmp_path, monkeypatch, windows, processes, owner, why
+):
+    """Spec §4.4 / consilium T7: the walk of this run signals and refuses exactly as _holders_why decides."""
+    tree, generation, attempt = _fake_run(tmp_path, monkeypatch, processes(), windows=windows, owner=owner)
+    expected = None if why is None else f"child: launched without its record ({why})"
+    assert tree.tree_unproven(attempt, strict=True, generation=generation) == expected
+    assert _Holder.killed == []
+
+
+def test_a_holder_that_outlives_its_kill_keeps_the_attempt_unproven(tmp_path, monkeypatch):
+    """Review focus 1: a holder in uninterruptible sleep on a hung share survives SIGKILL past the wait."""
+    holder = _Readable(9, uid=1000, user="HOST\\me")
+    tree, generation, attempt = _fake_run(tmp_path, monkeypatch, [holder], windows=False)
+    monkeypatch.setattr(tree, "_wait", lambda _process, _timeout: False)
+    why = tree.tree_unproven(attempt, strict=True, generation=generation)
+    assert why.startswith("child: launched without its record (holder still running after its kill pid=9 status=")
+
+
+@pytest.mark.parametrize(
+    ("state", "why"),
+    [
+        ("token", "child: launched without its record (token unreadable)"),
+        ("parent_never", "child: launched without its record (parent guardian never launched)"),
+        ("parent_token", "child: launched without its record (parent guardian token unreadable)"),
+        ("parent_record", "guardian: record unreadable"),
+    ],
+)
+def test_a_launch_without_its_record_that_cannot_be_ended_says_why(tmp_path, state, why):
+    generation, attempt = _this_run(tmp_path)
+    if state != "parent_never":
+        if state == "parent_token":
+            (attempt / "guardian.launch").write_text("", encoding="ascii")  # review focus 5: its token is lost
+        else:
+            launch(attempt, "guardian")
+        if state == "parent_record":
+            (attempt / "guardian.pid").write_text("{broken", encoding="ascii")
+        else:
+            _dead(attempt / "guardian.pid")
+    if state == "token":
+        (attempt / "child.launch").write_text("", encoding="ascii")
+    else:
+        launch(attempt, "child")
+    assert tree_unproven(attempt, strict=True, generation=generation) == why
+
+
+@pytest.mark.parametrize("which", ["child", "guardian"])
+def test_a_launch_token_that_is_not_ascii_is_unreadable_not_an_error(tmp_path, which):
+    """Consilium UL-R1: today's strict proof never reads a launch file; this one does. A damaged one -- bytes
+    that are not ASCII -- is no token: a refusal with its reason, never an exception that leaves the proof's
+    caller without an answer; nothing is signalled."""
+    generation, attempt = _this_run(tmp_path)
+    launch(attempt, "guardian")
+    _dead(attempt / "guardian.pid")
+    child = _token_holder(launch(attempt, "child"))
+    (attempt / f"{which}.launch").write_bytes(b"\xff")
+    why = "token unreadable" if which == "child" else "parent guardian token unreadable"
+    try:
+        assert tree_unproven(attempt, strict=True, generation=generation) == (
+            f"child: launched without its record ({why})"
+        )
+        assert child.poll() is None
+    finally:
+        _stop(child)
+
+
+def test_a_fully_recorded_attempt_of_this_run_scans_no_process_table(tmp_path, monkeypatch):
+    """Spec §4.5 / T8 (a): what is proven by records today is proven by records alone -- no scan, same answer."""
+    import psutil
+
+    generation, attempt = _this_run(tmp_path)
+    for name in ("guardian", "child", "node"):
+        launch(attempt, name)
+        _dead(attempt / f"{name}.pid")
+
+    def no_scan(attrs):
+        raise AssertionError("a fully recorded attempt scans no process table")
+
+    monkeypatch.setattr(psutil, "process_iter", no_scan)
+    assert tree_unproven(attempt, strict=True, generation=generation) is None
+
+
+@pytest.mark.parametrize(
+    ("state", "why"),
+    [("unreadable", "guardian: record unreadable"), ("half_written", "guardian: half-written record")],
+)
+def test_a_refusal_the_rule_does_not_touch_keeps_its_reason_in_this_run(tmp_path, state, why):
+    """T8 (a): a refusal outside §4.1 is the same refusal with the run's staging given."""
+    generation, attempt = _this_run(tmp_path)
+    if state == "unreadable":
+        (attempt / "guardian.pid").write_text("{broken", encoding="ascii")
+    else:
+        (attempt / "guardian.pid.part").write_text("{", encoding="ascii")  # no launch: a state this code never writes
+    assert tree_unproven(attempt, strict=True, generation=generation) == why
+
+
+def test_the_workers_own_proof_still_leaves_a_launch_without_its_record_alone(tmp_path):
+    """T8 (a): not strict -- the worker right after stop() killed the attempt's group / Job Object -- no scan,
+    no signal, as before."""
+    generation, attempt = _this_run(tmp_path)
+    launch(attempt, "guardian")
+    _dead(attempt / "guardian.pid")
+    child = _token_holder(launch(attempt, "child"))
+    try:
+        assert tree_unproven(attempt, strict=False) is None
+        assert child.poll() is None
+    finally:
+        _stop(child)

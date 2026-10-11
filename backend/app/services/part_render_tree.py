@@ -263,28 +263,90 @@ def tree_gone(attempt_dir: Path, *, strict: bool, timeout: float = 5) -> bool:
 
     Every record must be proven dead. ``strict`` is main's proof after the worker itself died: a launch
     without its record -- or a half-written one -- may have produced a process outside every tree main can
-    see, so it fails the proof and closes admission. Without ``strict``, as the worker asks right after
+    see. It is ended by its token only with this run's staging (``tree_unproven(generation=...)``); without
+    it, it fails the proof and closes admission. Without ``strict``, as the worker asks right after
     ``PreviewProcess.stop()`` killed the attempt's group / Job Object, an unrecorded process was inside
     that group and went with it.
     """
     return tree_unproven(attempt_dir, strict=strict, timeout=timeout) is None
 
 
-def tree_unproven(attempt_dir: Path, *, strict: bool, timeout: float = 5) -> str | None:
+def _unrecorded_why(
+    attempt_dir: Path, name: str, generation: Path | None, ended: set[str], owner: int | str | None, timeout: float
+) -> tuple[str | None, int]:
+    """A launch of THIS run whose record never reached the disk, ENDED by its token (spec
+    part-render-unrecorded-launch §4.1): its parent proven ended in this same walk; then the holders of the
+    parent's token -- a fork of the parent caught before it executed this child still runs the parent's command
+    line -- and then this launch's own. ``(None, holders ended)`` when it is over, else ``(why, holders ended)``.
+
+    The parent of ``child`` and ``node`` is a record of this attempt, settled earlier in the walk (``ended``). The
+    parent of ``guardian`` is the worker that launched the attempt, recorded in this run's ``generation``
+    (``service.pid``): it must be recorded and proven ended -- a worker without its record never received its
+    bootstrap and launched no attempt (spec §4.2, §4.3)."""
+    token = _token(attempt_dir, name)
+    if token is None:
+        return "token unreadable", 0
+    parent = _PARENT[name]
+    if parent == "service":
+        scope = generation
+        if scope is None or not ((scope / "service.pid").exists() or _launched(scope, "service")):
+            return "parent service never launched", 0
+        if not (scope / "service.pid").exists():
+            return "parent service not proven ended: launched without its record", 0
+        why = _not_gone(scope / "service.pid", timeout, this_run=True)
+        if why is not None:
+            return f"parent service not proven ended: {why}", 0
+    else:
+        scope = attempt_dir
+        if parent not in ended:
+            return f"parent {parent} never launched", 0
+    parent_token = _token(scope, parent)
+    if parent_token is None:
+        return f"parent {parent} token unreadable", 0
+    why, first = _end_why(parent_token, timeout, owner)
+    if why is not None:
+        return f"parent {parent} token: {why}", first
+    why, second = _end_why(token, timeout, owner)
+    return why, first + second
+
+
+def tree_unproven(
+    attempt_dir: Path,
+    *,
+    strict: bool,
+    timeout: float = 5,
+    generation: Path | None = None,
+    notes: list[str] | None = None,
+) -> str | None:
     """Why the attempt's processes are not proven gone -- ``<record>: <what failed>``, with a pid and its
     psutil status, never a command line or a path -- or None when they are (``tree_gone``). The reason is
     what the parent log needs to tell a slow kill from an unreadable record or a launch caught before its
-    record (the local-microservice invariant)."""
+    record (the local-microservice invariant).
+
+    ``strict`` is main's proof over an attempt of THIS run once its worker is gone. A launch without its record
+    -- with or without a half-written one -- is ended by its token when its parent is proven ended in this same
+    walk (``_unrecorded_why``), else it fails the proof. ``generation`` is this run's staging: where the attempt
+    guardian's parent, the worker, is recorded, and whose owner record names the user a token holder must be.
+    ``notes`` collects one line per launch so ended, for the parent log. Every recorded process is proven by
+    its record, as before: a fully recorded attempt scans no process table (spec §4.5)."""
+    owner = _run_owner(generation) if strict and generation is not None else None
+    ended: set[str] = set()
     for name in RECORDS:
         pid_file = attempt_dir / f"{name}.pid"
         if pid_file.exists():
             why = _not_gone(pid_file, timeout, this_run=True)  # an attempt of this run: this boot's
             if why is not None:
                 return f"{name}: {why}"
+            ended.add(name)
         elif strict and (attempt_dir / f"{name}.launch").exists():
-            return f"{name}: launched without its record"
+            why, holders = _unrecorded_why(attempt_dir, name, generation, ended, owner, timeout)
+            if why is not None:
+                return f"{name}: launched without its record ({why})"
+            ended.add(name)
+            if notes is not None:
+                notes.append(f"{name} launched without its record: ended by its token (holders={holders})")
         elif strict and (attempt_dir / f"{name}.pid.part").exists():
-            return f"{name}: half-written record"
+            return f"{name}: half-written record"  # no launch beside it: a state this code never writes
     return None
 
 
@@ -320,7 +382,7 @@ def _this_boot(data: dict) -> bool:
 def _token(scope: Path, name: str) -> str | None:
     try:
         token = (scope / f"{name}.launch").read_text(encoding="ascii").strip()
-    except OSError:
+    except (OSError, ValueError):  # a damaged launch -- bytes that are not ASCII -- is no token (plan UL-R1)
         return None
     return token if _TOKEN.fullmatch(token) else None
 
