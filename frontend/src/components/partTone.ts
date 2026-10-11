@@ -27,40 +27,55 @@ export const MAT_CROSSOVER =
   Math.sqrt((luminanceOf(MAT_COLOURS.dark) + 0.05) * (luminanceOf(MAT_COLOURS.light) + 0.05)) - 0.05;
 
 /**
- * The mat for a sample of a picture (RGBA bytes): by the mean luminance of its opaque pixels -- the part, not its
- * half-transparent edge. None when nothing is transparent (a photo) or nothing is opaque.
+ * The mat for a sample of a picture (RGBA bytes), by the part's tone: the mean luminance of its opaque pixels (alpha
+ * >= 128) -- the part, not its half-transparent edge. A thin part can have none (Codex BT-R1, 2026-10-12: a bar
+ * about 100 x 1 x 2 mm reduced to 16 px had alpha 98 at most): then the tone is the mean of every visible pixel,
+ * weighted by its alpha -- so no thinner part can fall under a fixed threshold. None when nothing is transparent
+ * (a photo fills its box) or nothing is visible.
  */
 export function matForSample(rgba: ArrayLike<number>): PartMat | null {
-  let sum = 0;
-  let count = 0;
+  let opaqueSum = 0;
+  let opaqueCount = 0;
+  let weightedSum = 0;
+  let weight = 0;
   let transparent = false;
   for (let i = 0; i + 3 < rgba.length; i += 4) {
     const alpha = rgba[i + 3];
     if (alpha < 255) transparent = true;
+    if (alpha === 0) continue;
+    const luminance = 0.2126 * channel(rgba[i]) + 0.7152 * channel(rgba[i + 1]) + 0.0722 * channel(rgba[i + 2]);
     if (alpha >= 128) {
-      sum += 0.2126 * channel(rgba[i]) + 0.7152 * channel(rgba[i + 1]) + 0.0722 * channel(rgba[i + 2]);
-      count += 1;
+      opaqueSum += luminance;
+      opaqueCount += 1;
     }
+    weightedSum += luminance * alpha;
+    weight += alpha;
   }
-  if (!transparent || count === 0) return null;
-  return sum / count > MAT_CROSSOVER ? 'dark' : 'light';
+  if (!transparent || weight === 0) return null;
+  const tone = opaqueCount > 0 ? opaqueSum / opaqueCount : weightedSum / weight;
+  return tone > MAT_CROSSOVER ? 'dark' : 'light';
 }
 
-const SAMPLE_PX = 16;
+/** A picture is sampled at its own size up to this side: the small thumbnail (128 px) is read whole, nothing is
+ *  reduced to the point where a thin part loses its pixels, and the cost stays bounded (16 k pixels a load). */
+const SAMPLE_MAX_PX = 128;
 
 /**
- * The mat for a loaded picture, read back at 16 x 16 through a canvas (the picture is same-origin, so the canvas
- * is not tainted). None when the browser gives no 2D context or refuses the read -- the theme's frame then stays.
+ * The mat for a loaded picture, read back through a canvas at its own size, at most SAMPLE_MAX_PX a side (the
+ * picture is same-origin, so the canvas is not tainted). None when the browser gives no 2D context or refuses the
+ * read -- the theme's frame then stays.
  */
 export function matForImage(img: HTMLImageElement): PartMat | null {
   try {
+    const width = Math.max(1, Math.min(SAMPLE_MAX_PX, img.naturalWidth || SAMPLE_MAX_PX));
+    const height = Math.max(1, Math.min(SAMPLE_MAX_PX, img.naturalHeight || SAMPLE_MAX_PX));
     const canvas = document.createElement('canvas');
-    canvas.width = SAMPLE_PX;
-    canvas.height = SAMPLE_PX;
+    canvas.width = width;
+    canvas.height = height;
     const context = canvas.getContext('2d', { willReadFrequently: true });
     if (!context) return null;
-    context.drawImage(img, 0, 0, SAMPLE_PX, SAMPLE_PX);
-    return matForSample(context.getImageData(0, 0, SAMPLE_PX, SAMPLE_PX).data);
+    context.drawImage(img, 0, 0, width, height);
+    return matForSample(context.getImageData(0, 0, width, height).data);
   } catch {
     return null;
   }
