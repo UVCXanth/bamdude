@@ -89,6 +89,9 @@ const mockPrinters = [
 ];
 
 export const handlers = [
+  // Spec part-thumbnails §11.2: the part editor asks for its plate objects; a test that does not
+  // care sees none, instead of a request that leaves for the network (`onUnhandledRequest: 'bypass'`).
+  http.get('/api/v1/product-parts/:id/image-candidates', () => HttpResponse.json([])),
   // Scheduled drying: every printer card reads these two fleet-wide lists.
   http.get('/api/v1/scheduled-dryings', () => HttpResponse.json([])),
   http.get('/api/v1/drying-schedules', () => HttpResponse.json({ server_timezone: 'UTC', schedules: [] })),
