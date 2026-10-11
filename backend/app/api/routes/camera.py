@@ -592,7 +592,7 @@ async def _snapshot_from(printer_id: int, printer):
 
     # Check for external camera first
     if printer.external_camera_enabled and printer.external_camera_url:
-        from backend.app.services.camera_runtime import CameraCaptureRequest, CameraWorkerUnavailable, capture
+        from backend.app.services.camera_runtime import CameraWorkerUnavailable, capture
 
         cached = _get_cached_snapshot(printer_id)
         if cached is not None:
@@ -650,7 +650,7 @@ async def _snapshot_from(printer_id: int, printer):
     temp_path.chmod(0o600)
 
     try:
-        from backend.app.services.camera_runtime import CameraCaptureRequest, CameraWorkerUnavailable, capture
+        from backend.app.services.camera_runtime import CameraWorkerUnavailable, capture
 
         try:
             result = await capture(
