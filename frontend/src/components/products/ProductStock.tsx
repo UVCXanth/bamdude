@@ -4,6 +4,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { Loader2 } from 'lucide-react';
 import { useProductStock } from '../../hooks/useProductStock';
 import { Button } from '../Button';
+import { PartThumb } from '../PartThumb';
 import { AssembleDialog } from '../stock/AssembleDialog';
 import { LoadFailedNote } from '../workshop/LoadFailedNote';
 import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
@@ -119,7 +120,12 @@ export function ProductStock({ productId, productName, canEdit, hasVariants = fa
               <tbody>
                 {inKit.map((b) => (
                   <tr key={b.part_id} className="border-t border-bambu-dark-tertiary text-white">
-                    <td className="p-2">{b.name}</td>
+                    <td className="p-2">
+                      <span className="flex items-center gap-2">
+                        <PartThumb partId={b.part_id} image={b.image} name={b.name} size="sm" />
+                        <span className="min-w-0 break-words">{b.name}</span>
+                      </span>
+                    </td>
                     <td className="p-2 tabular-nums">{`× ${b.qty_per_unit}`}</td>
                     <td className="p-2 tabular-nums" data-testid={`stock-balance-${b.part_id}`}>
                       {b.balance}
@@ -151,7 +157,12 @@ export function ProductStock({ productId, productName, canEdit, hasVariants = fa
                 <tbody>
                   {outOfKit.map((b) => (
                     <tr key={b.part_id} className="border-t border-bambu-dark-tertiary text-white">
-                      <td className="p-2">{b.name}</td>
+                      <td className="p-2">
+                        <span className="flex items-center gap-2">
+                          <PartThumb partId={b.part_id} image={b.image} name={b.name} size="sm" />
+                          <span className="min-w-0 break-words">{b.name}</span>
+                        </span>
+                      </td>
                       <td className="p-2 tabular-nums" data-testid={`stock-balance-${b.part_id}`}>
                         {b.balance}
                       </td>
