@@ -42,6 +42,7 @@
 ### Fixed
 
 - Polygon checks pause an already-started print when calibration, camera capture or analysis is unavailable, with a distinct explanation. Unavailable rectangle checks retain their legacy permissive policy and are no longer logged as an empty plate.
+- **Order plans can override print parameters per sliced printer model.** Only new plan jobs snapshot the explicit choices; auto-queue promotion and rebalance retain them without changing saved operator profiles or existing jobs. Routing-target edits keep the captured file's choices; replacing the file selects the new sliced model's entry. The editor reuses the print dialog and the mirrored BambuStudio capability catalog, hiding unsupported functions and refusing unsupported automatic calibration modes.
 
 ## [0.7.0] - 2026-10-06
 

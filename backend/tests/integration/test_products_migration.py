@@ -30,6 +30,7 @@ from backend.app.migrations import (
     m191_order_stage_journal as m191,
     m197_order_auto_eject as m197,
     m198_auto_eject_camera_settings as m198,
+    m199_order_print_options as m199,
 )
 from backend.app.migrations.helpers import get_table_columns, table_exists
 from backend.app.models.archive import PrintArchive
@@ -210,6 +211,7 @@ async def _run_upgrade(engine):
         await m191.upgrade(conn)
         await m197.upgrade(conn)
         await m198.upgrade(conn)
+        await m199.upgrade(conn)
 
 
 @pytest.mark.asyncio

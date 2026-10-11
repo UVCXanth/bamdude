@@ -10,6 +10,7 @@ import os
 import shutil
 import uuid
 from collections.abc import Callable, Sequence
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -90,6 +91,12 @@ from backend.app.schemas.listing import (
     ProjectsNavBadges,
 )
 from backend.app.schemas.order_from_files import OrderFromFilesRequest
+from backend.app.schemas.order_print_options import (
+    OrderPrintModel,
+    OrderPrintOptions,
+    OrderPrintOptionsResponse,
+    capabilities,
+)
 from backend.app.schemas.order_queue import OrderQueueOut, OrderQueuePrinting
 from backend.app.schemas.project import (
     PROJECT_PRIORITIES,
@@ -197,6 +204,7 @@ from backend.app.services.order_metrics import (
     procurement_totals,
     project_figures,
 )
+from backend.app.services.order_print_options import inherited_options, override_options
 from backend.app.services.order_queue import (
     RUNNING_STATUS,
     awaiting_auto_row_conditions,
@@ -214,6 +222,7 @@ from backend.app.services.product_files import (
 )
 from backend.app.services.product_gate import product_gate
 from backend.app.services.queue_batch import enqueue_batch_copies
+from backend.app.utils.printer_models import normalize_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -3385,6 +3394,7 @@ async def duplicate_project(
         raise HTTPException(status_code=409, detail=order_fulfilment.ORDER_CHANGED)
     taken = set((await db.execute(select(Project.name))).scalars().all())
     copy = Project(
+        order_print_options=deepcopy(source.order_print_options),
         name=data.name or _duplicate_name(source.name, taken),
         customer_id=source.customer_id,
         contact_id=source.contact_id,
@@ -3593,6 +3603,64 @@ async def get_order_plan(
     )
 
 
+async def _order_print_options_response(db, project, user) -> OrderPrintOptionsResponse:
+    products = (
+        (
+            await db.execute(
+                select(Product)
+                .options(selectinload(Product.parts), selectinload(Product.plates))
+                .where(Product.id.in_({line.product_id for line in project.lines}))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    recipes = await recipes_for_products(db, products) if products else {}
+    overrides = project.order_print_options or {}
+    models = set(overrides)
+    for rows in recipes.values():
+        for _plate, _file, recipe in rows:
+            if recipe.sliced and recipe.printer_model:
+                models.add(normalize_model_name(recipe.printer_model))
+    contexts = []
+    for model in sorted(m for m in models if m):
+        inherited = await inherited_options(db, user, model)
+        contexts.append(
+            OrderPrintModel(
+                model=model,
+                capabilities=capabilities(model),
+                inherited=inherited,
+                options=overrides.get(model, inherited),
+                custom=model in overrides,
+            )
+        )
+    return OrderPrintOptionsResponse(overrides=overrides, models=contexts)
+
+
+@router.get("/{project_id}/print-options", response_model=OrderPrintOptionsResponse)
+async def get_order_print_options(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.ORDERS_READ),
+):
+    return await _order_print_options_response(db, await _get_project(db, project_id), user)
+
+
+@router.put("/{project_id}/print-options", response_model=OrderPrintOptionsResponse)
+async def put_order_print_options(
+    project_id: int,
+    data: OrderPrintOptions,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
+):
+    await order_fulfilment.lock_order(db, project_id)
+    project = await _get_project(db, project_id, fresh=True)
+    await order_filing.resolve_link(db, project_id, None)
+    project.order_print_options = data.model_dump()["overrides"] or None
+    await db.flush()
+    return await _order_print_options_response(db, project, user)
+
+
 @router.get("/{project_id}/queue", response_model=OrderQueueOut)
 async def get_order_queue(
     project_id: int,
@@ -3761,12 +3829,11 @@ async def enqueue_order_plan(
     is named, otherwise the model each plate's file was sliced for, which is the
     same model the auto-queue will route it by.
 
-    ⚠️ **Order of application, when a request body eventually carries its own
-    options block: profile, then body, then the mute.** The body is somebody's
-    explicit answer and outranks a saved default; the mute is not a default at
-    all but a statement about what the machine and the file can physically do,
-    so nothing sent over the wire may talk it out of firing. Today the body
-    carries no such block, and the code is already shaped for one.
+    ⚠️ **Order of application: profile, saved order override, then the mute.**
+    Explicit order options are selected by the model the plate was sliced for
+    and outrank the operator's default. Validate every override against the
+    named printer before writing anything. The mute describes what the machine
+    and file can physically do and still applies to the resolved result.
 
     Each item is one call to the existing writer with ``quantity = count``, and
     **the writers commit per call**: ``add_items_to_auto_queue`` and
@@ -3778,7 +3845,11 @@ async def enqueue_order_plan(
     The target's shape is the schema's business (``PlanEnqueueTarget``): a
     printer kind without an id, or an auto kind with one, never reaches here.
     """
-    lines_by_id = {line.id: line for line in (await _get_project(db, project_id)).lines}
+    project = await _get_project(db, project_id)
+    lines_by_id = {line.id: line for line in project.lines}
+    # Plain validated values BEFORE any writer commits. This is the order's
+    # snapshot at job creation, not a reference to its future settings.
+    order_options = OrderPrintOptions(overrides=project.order_print_options or {}).model_dump()["overrides"]
     await order_filing.resolve_link(db, project_id, None)
 
     printer_id: int | None = None
@@ -3875,6 +3946,14 @@ async def enqueue_order_plan(
         for model in ({printer_model} if printer_id is not None else {p.sliced_for_model for p in resolved})
     }
 
+    try:
+        explicit_options = {
+            model: override_options(order_options, model, printer_model if printer_id is not None else None)
+            for model in {p.sliced_for_model for p in resolved}
+        }
+    except ValueError as exc:
+        raise HTTPException(422, "Order print options do not fit the target printer") from exc
+
     created: list[PlanEnqueueCreated] = []
 
     def _partial(message: str) -> HTTPException:
@@ -3896,11 +3975,9 @@ async def enqueue_order_plan(
             options = profile.for_auto_queue() if profile else {}
         else:
             options = profile.for_printer_queue() if profile else {}
-        # ⚠️ A request body carrying its own options block merges HERE — the
-        # explicit answer wins over the saved profile — and the mute below then
-        # applies to the RESULT. That order is the point: the gate is about what
-        # the machine and the file can physically do, so nothing anybody sends
-        # may talk it out of muting. Today the body carries no such block.
+        options.update(explicit_options[plate.sliced_for_model])
+        # Explicit order choices win over the profile; the existing physical
+        # capability/file mute below still applies to the resolved result.
         #
         # The rule every other queue door applies (``services/queue_add.py`` and
         # the two print-now routes): swap macros are meaningful only on a printer
@@ -3927,6 +4004,7 @@ async def enqueue_order_plan(
                     ),
                     current_user,
                     requirements_cache=requirements_cache,
+                    order_print_options=order_options or None,
                 )
             else:
                 rows, _batch_id = await enqueue_batch_copies(

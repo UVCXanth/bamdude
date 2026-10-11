@@ -53,6 +53,7 @@ from backend.app.schemas.auto_queue import (
 )
 from backend.app.schemas.calibration_mode import derive_mode, mode_to_bool
 from backend.app.schemas.filament_routing import PrinterRoutingPreviewRequest, RoutingPreviewRequest
+from backend.app.schemas.print_options_preference import PrintOptionsToggles
 from backend.app.schemas.project import RebalanceOut
 from backend.app.services import queue_rebalance
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
@@ -421,16 +422,39 @@ async def update_auto_queue_item(
         raise HTTPException(400, f"Cannot edit item in status '{item.status}'")
 
     update_data = data.model_dump(exclude_unset=True)
-    await _validate_model_update(db, item, update_data)
-    _apply_item_update(item, update_data)
+    source_model = await _validate_model_update(db, item, update_data)
+    _apply_item_update(item, update_data, source_model=source_model)
 
     await db.commit()
     return _to_response((await db.execute(stmt)).scalar_one())
 
 
-def _apply_item_update(item: AutoQueueItem, update_data: dict) -> None:
+def _apply_item_update(item: AutoQueueItem, update_data: dict, *, source_model: str | None) -> None:
     """Field-by-field update shared by the single-item and batch PUTs."""
     update_data = dict(update_data)
+    # A subsequent explicit edit belongs to this job, not its former order.
+    # Edit the verified sliced file's entry, never the independently editable
+    # routing restriction. Resolve it before changing any row/batch member.
+    if item.order_print_options:
+        from copy import deepcopy
+
+        from pydantic import ValidationError
+
+        from backend.app.schemas.order_print_options import OrderPrintOptions
+
+        model = normalize_model_name(source_model)
+        snapshot = deepcopy(item.order_print_options)
+        if model in snapshot:
+            changes = {
+                key: value
+                for key, value in update_data.items()
+                if key in snapshot[model] and (value is not None or key == "timelapse_storage")
+            }
+            snapshot[model].update(changes)
+            try:
+                item.order_print_options = OrderPrintOptions(overrides=snapshot).model_dump()["overrides"]
+            except ValidationError as exc:
+                raise HTTPException(422, "Invalid order print options") from exc
     if update_data.get("feed_policy") is None:
         update_data.pop("feed_policy", None)
         if update_data.get("use_ams") is not None:
@@ -451,10 +475,11 @@ def _apply_item_update(item: AutoQueueItem, update_data: dict) -> None:
         setattr(item, key, value)
 
 
-async def _validate_model_update(db: AsyncSession, item: AutoQueueItem, update_data: dict) -> None:
-    """A changed target or plate must still accept the captured file bytes."""
-    if "target_model" not in update_data and "plate_id" not in update_data:
-        return
+async def _validate_model_update(db: AsyncSession, item: AutoQueueItem, update_data: dict) -> str | None:
+    """Validate routing and resolve snapshot edits from the captured file bytes."""
+    edits_order_options = item.order_print_options and update_data.keys() & PrintOptionsToggles.model_fields.keys()
+    if "target_model" not in update_data and "plate_id" not in update_data and not edits_order_options:
+        return None
     if "plate_id" in update_data and update_data["plate_id"] != item.plate_id:
         source_item = SimpleNamespace(
             queue_source_id=item.queue_source_id,
@@ -473,6 +498,7 @@ async def _validate_model_update(db: AsyncSession, item: AutoQueueItem, update_d
     target = normalize_model_name(update_data.get("target_model", item.target_model)) or req.model
     if model_compatibility(req.model, target) == "incompatible":
         raise HTTPException(400, f"File was sliced for {req.model} and cannot target a {target} printer")
+    return req.model
 
 
 @router.put("/batch/{batch_id}", response_model=AutoQueueBatchActionResponse)
@@ -499,10 +525,9 @@ async def update_auto_queue_batch(
 
     update_data = data.model_dump(exclude_unset=True)
     update_data.pop("position", None)
-    for item in items:
-        await _validate_model_update(db, item, update_data)
-    for item in items:
-        _apply_item_update(item, update_data)
+    source_models = [await _validate_model_update(db, item, update_data) for item in items]
+    for item, source_model in zip(items, source_models, strict=True):
+        _apply_item_update(item, update_data, source_model=source_model)
     await db.commit()
     return AutoQueueBatchActionResponse(batch_id=batch_id, affected=len(items))
 

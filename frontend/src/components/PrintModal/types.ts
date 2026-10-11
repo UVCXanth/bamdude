@@ -566,6 +566,9 @@ export interface TimelapseBlocker {
 }
 
 export interface PrintOptionsProps {
+  /** Optional model catalog gates for the order editor. Ordinary dialogs keep
+   * their existing presentation when these are omitted. */
+  supportedOptions?: Partial<Record<keyof PrintOptions, boolean>>;
   timelapseBlockers?: TimelapseBlocker[];
   selectedPrinterCount?: number;
   /** Selected printers whose timelapse storage is nearly full. Kept apart from

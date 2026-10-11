@@ -12,6 +12,7 @@
  */
 import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateMetadata, PlateObjectsResponse } from '../types/plates';
 import type { MonitorSnapshot, MonitorView } from '../features/monitor/types';
+import type { PrintOptions as PrintDialogOptions } from '../components/PrintModal/types';
 import { isMonitorKioskLocation } from '../features/monitor/location';
 import { createPrinterStatusBatcher } from './printerStatusBatch';
 import { farmRead, farmReadBudget } from './farmReadBudget';
@@ -2526,6 +2527,21 @@ export interface PlanTotals {
   cost: number | null;
   /** WS-13 E1 OR9 — Σ the lines' rows: the «Print plan» tab's badge. */
   rows: number;
+}
+
+export interface OrderPrintOptionsResponse {
+  overrides: Record<string, PrintDialogOptions>;
+  models: Array<{
+    model: string;
+    capabilities: {
+      known: boolean;
+      supported: Partial<Record<keyof PrintDialogOptions, boolean>>;
+      auto: { bed_levelling: boolean; flow_cali: boolean; nozzle_offset_cali: boolean };
+    };
+    inherited: PrintDialogOptions;
+    options: PrintDialogOptions;
+    custom: boolean;
+  }>;
 }
 
 export interface OrderPlan {
@@ -12758,6 +12774,9 @@ export const api = {
   bankOrderSurplus: (orderId: number) =>
     request<BankSurplusResponse>(`/projects/${orderId}/bank-surplus`, { method: 'POST' }),
 
+  getOrderPrintOptions: (id: number) => request<OrderPrintOptionsResponse>(`/projects/${id}/print-options`),
+  setOrderPrintOptions: (id: number, overrides: OrderPrintOptionsResponse['overrides']) =>
+    request<OrderPrintOptionsResponse>(`/projects/${id}/print-options`, { method: 'PUT', body: JSON.stringify({ overrides }) }),
   getOrderPlan: (id: number) => request<OrderPlan>(`/projects/${id}/plan`),
   enqueueOrderPlan: (id: number, body: PlanEnqueueRequest) =>
     request<PlanEnqueueResponse>(`/projects/${id}/plan/enqueue`, {

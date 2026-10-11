@@ -311,6 +311,27 @@ async def _move(db_session, farm):
 
 
 @pytest.mark.asyncio
+async def test_order_print_choices_survive_conversion_and_companions(db_session, printer_factory, tmp_path):
+    from backend.app.services.order_print_options import inherited_options, override_options
+
+    farm = await rebalance_farm(db_session, printer_factory, tmp_path)
+    mini = (await inherited_options(db_session, None, "A1 Mini")).model_dump()
+    p1 = (await inherited_options(db_session, None, "P1S")).model_dump()
+    mini.update(flow_cali="off", preheat_override="off")
+    snapshot = {"A1 Mini": mini, "P1S": p1}
+    farm.item.order_print_options = snapshot
+    await db_session.commit()
+    result = await _move(db_session, farm)
+    assert (result.converted, result.created) == (1, 2), result.skipped
+    rows = await _pending(db_session)
+    assert len(rows) == 3
+    for row in rows:
+        assert row.order_print_options == snapshot
+        assert override_options(row.order_print_options, row.target_model)["flow_cali"] == "off"
+        assert override_options(row.order_print_options, row.target_model)["preheat_override"] == "off"
+
+
+@pytest.mark.asyncio
 async def test_a_moved_row_names_the_TARGET_files_bytes(db_session, printer_factory, tmp_path):
     """Task 6 review C1: the converted row used to keep the OLD model's blob.
 

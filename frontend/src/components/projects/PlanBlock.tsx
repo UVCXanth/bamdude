@@ -12,6 +12,7 @@ import { formatDuration } from '../../utils/date';
 import { Button } from '../Button';
 import { FilamentNeeds } from './FilamentNeeds';
 import { PlanLine } from './PlanLine';
+import { OrderPrintOptions } from './OrderPrintOptions';
 import { MAX_PER_PLATE } from './PlanRow';
 import { projectPlan, rowDistribution, splitIsOff, type ChosenByRow, type SplitByRow } from './planMath';
 import { invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInvalidation';
@@ -67,6 +68,7 @@ export function PlanBlock({
   const queryClient = useQueryClient();
 
   const active = order.status === 'active';
+  const [optionsBlocked, setOptionsBlocked] = useState(false);
 
   const { data: plan, isLoading, isError, refetch } = useOrderPlan(order.id, active);
 
@@ -457,6 +459,9 @@ export function PlanBlock({
     <section id="order-plan" className="space-y-3" data-testid="plan-block">
       {heading}
       {intro}
+      <OrderPrintOptions key={order.id} orderId={order.id}
+        canEdit={canEdit && hasPermission('orders:update')} busy={enqueue.isPending}
+        onBlocked={setOptionsBlocked} />
 
       {/* The engine's iteration guard stopped covering, so what follows is a
           PREFIX of the plan — rows, totals and no unsatisfiable part all look
@@ -501,7 +506,7 @@ export function PlanBlock({
                 showCost={showCost}
                 canQueue={canQueue}
                 canPrint={canPrint}
-                busy={enqueue.isPending || rebalance.isPending}
+                busy={enqueue.isPending || rebalance.isPending || optionsBlocked}
                 canRebalance={canRebalance}
                 onRebalance={() => rebalance.mutate(line.line_id)}
                 ratePerGram={ratePerGram}
@@ -546,7 +551,7 @@ export function PlanBlock({
             {canQueue && (
               <Button
                 data-testid="plan-enqueue-all"
-                disabled={enqueue.isPending || overCap || splitOff}
+                disabled={enqueue.isPending || optionsBlocked || overCap || splitOff}
                 // A disabled button with no reason on it is a dead end. `overCap`
                 // is checked first because it names a row's number, which is the
                 // more specific of the two complaints.
