@@ -1121,3 +1121,117 @@ def test_a_record_of_a_process_with_mixed_uids_names_no_owner(monkeypatch):
 
     monkeypatch.setattr(tree, "_WINDOWS", False)
     assert tree._identity(Setuid()) is None
+
+
+# The token scan says why it proves nothing (spec part-render-unrecorded-launch §4.7). The walk of THIS run
+# names the cause in the parent log; the answers are the ones _end_launched has always given.
+
+
+@pytest.mark.parametrize("windows", [False, True])
+@pytest.mark.parametrize(
+    ("holder", "owner", "why"),
+    [
+        (lambda: _Readable(9), "known", "a holder's user unreadable"),
+        (lambda: _Readable(9, uid=1000, user="HOST\\me"), "missing", "run owner names no user"),
+        (lambda: _Unreadable(7, uid=1000, name="python.exe", ppid=6000), "known", "a possible holder unreadable"),
+    ],
+)
+def test_a_scan_that_proves_nothing_says_why_and_signals_nobody(monkeypatch, windows, holder, owner, why):
+    _Holder.killed = []
+    tree = _scan(monkeypatch, [holder()], windows=windows)
+    ours = ("HOST\\me" if windows else 1000) if owner == "known" else None
+    assert tree._end_why("a" * 32, 0.1, ours) == (why, 0)
+    assert _Holder.killed == []
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_ending_counts_the_holders_it_saw_end(monkeypatch, windows):
+    _Holder.killed = []
+    tree = _scan(monkeypatch, [], windows=windows)
+    rounds = iter([[_Readable(9, uid=1000, user="HOST\\me"), _Readable(10, uid=1000, user="HOST\\me")], []])
+    monkeypatch.setattr(tree.psutil, "process_iter", lambda attrs: next(rounds))
+    assert tree._end_why("a" * 32, 0.1, "HOST\\me" if windows else 1000) == (None, 2)
+    assert _Holder.killed == [9, 10]
+
+
+def test_ending_names_a_holder_that_outlived_its_kill(monkeypatch):
+    tree = _scan(monkeypatch, [_Readable(9, uid=1000)], windows=False)
+    monkeypatch.setattr(tree, "_wait", lambda _process, _timeout: False)
+    why, ended = tree._end_why("a" * 32, 0.1, 1000)
+    assert why.startswith("holder still running after its kill pid=9 status=") and ended == 0
+
+
+def test_ending_names_a_holder_it_may_not_kill(monkeypatch):
+    import psutil
+
+    class Guarded(_Readable):
+        def kill(self):
+            raise psutil.AccessDenied(self.pid)
+
+    tree = _scan(monkeypatch, [Guarded(9, uid=1000)], windows=False)
+    assert tree._end_why("a" * 32, 0.1, 1000) == ("holder access denied pid=9", 0)
+
+
+def test_a_holder_that_ended_by_itself_before_its_kill_is_no_refusal(monkeypatch):
+    """Review focus 2: the child reads its dead guardian's EOF and exits between the scan and the kill."""
+    import psutil
+
+    class Exited(_Readable):
+        def kill(self):
+            raise psutil.NoSuchProcess(self.pid)
+
+    tree = _scan(monkeypatch, [], windows=False)
+    rounds = iter([[Exited(9, uid=1000)], []])
+    monkeypatch.setattr(tree.psutil, "process_iter", lambda attrs: next(rounds))
+    assert tree._end_why("a" * 32, 0.1, 1000) == (None, 0)
+
+
+def test_ending_names_holders_that_keep_appearing(monkeypatch):
+    tree = _scan(monkeypatch, [], windows=False)
+    monkeypatch.setattr(tree.psutil, "process_iter", lambda attrs: [_Readable(9, uid=1000)])
+    assert tree._end_why("a" * 32, 0.1, 1000) == ("holders still found after 4 rounds", 4)
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_a_run_whose_owner_names_no_user_is_proven_when_no_holder_is_found(monkeypatch, windows):
+    """What _end_launched has always allowed: no holder and no ambiguous candidate is the same success."""
+    tree = _scan(monkeypatch, [], windows=windows)
+    assert tree._end_why("a" * 32, 0.1, None) == (None, 0)
+
+
+def test_a_stranger_holding_the_token_is_neither_signalled_nor_a_refusal(monkeypatch):
+    _Holder.killed = []
+    tree = _scan(monkeypatch, [_Readable(9, uid=4242)], windows=False)
+    assert tree._end_why("a" * 32, 0.1, 1000) == (None, 0)
+    assert _Holder.killed == []
+
+
+@pytest.mark.parametrize(
+    ("windows", "user", "owner"),
+    [
+        (False, 1000, 1000),
+        (False, True, None),
+        (False, "1000", None),
+        (False, None, None),
+        (True, "HOST\\me", "HOST\\me"),
+        (True, 1000, None),
+    ],
+)
+def test_the_run_owner_is_the_user_its_record_names_in_this_platforms_form(tmp_path, monkeypatch, windows, user, owner):
+    from backend.app.services import part_render_tree as tree
+
+    monkeypatch.setattr(tree, "_WINDOWS", windows)
+    record_text = json.dumps({"pid": 1, "create_time": 0.0, "boot": None, "user": user})
+    (tmp_path / "owner.pid").write_text(record_text, encoding="ascii")
+    assert tree._run_owner(tmp_path) == owner
+
+
+def test_a_run_without_a_readable_owner_record_names_no_user(tmp_path):
+    """Review focus 3: no owner identity, no holder shown ours."""
+    from backend.app.services import part_render_tree as tree
+
+    assert tree._run_owner(tmp_path) is None
+    (tmp_path / "owner.pid").write_text("{broken", encoding="ascii")
+    assert tree._run_owner(tmp_path) is None
+    (tmp_path / "owner.pid").write_text("[1000]", encoding="ascii")
+    assert tree._run_owner(tmp_path) is None

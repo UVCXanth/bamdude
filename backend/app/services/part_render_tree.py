@@ -335,8 +335,9 @@ def _another_program(info: dict) -> bool:
     return info.get("ppid") in _KERNEL_PIDS
 
 
-def _holders(marker: str, owner: int | str | None) -> list[psutil.Process] | None:
-    """Every process carrying ``marker``; None when a process that may carry it cannot be read.
+def _holders_why(marker: str, owner: int | str | None) -> tuple[list[psutil.Process], str | None]:
+    """Every process carrying ``marker`` -- ``(found, None)`` -- or ``([], why)`` when a process that may carry it
+    cannot be read, or cannot be shown ours.
 
     Only a positive observation excludes a process (consilium r3, R3.1) -- psutil answers None for what it
     may not read, and None is not absence:
@@ -351,7 +352,8 @@ def _holders(marker: str, owner: int | str | None) -> list[psutil.Process] | Non
 
     The token is public, so carrying it is no authority to signal (consilium r4, R4.1): a holder is returned
     -- to be killed -- only when its identity is READ and IS the run's owner. A holder whose identity cannot
-    be read, or any holder of a run whose owner names no identity, keeps the scan unproven, untouched."""
+    be read, or any holder of a run whose owner names no identity, keeps the scan unproven, untouched. The
+    ``why`` is for the parent log (spec part-render-unrecorded-launch §4.7): never a command line or a path."""
     attrs = ["cmdline", "username", "name", "ppid"] if _WINDOWS else ["cmdline", "uids"]
     found = []
     for process in psutil.process_iter(attrs):
@@ -361,8 +363,10 @@ def _holders(marker: str, owner: int | str | None) -> list[psutil.Process] | Non
         cmdline = process.info.get("cmdline")
         if cmdline is not None:
             if marker in cmdline:
-                if owner is None or identity is None:
-                    return None  # nothing shows it is ours: no proof, no signal
+                if owner is None:
+                    return [], "run owner names no user"  # nothing shows it is ours: no proof, no signal
+                if identity is None:
+                    return [], "a holder's user unreadable"
                 found.append(process)
             continue
         if _WINDOWS and _another_program(process.info):
@@ -374,26 +378,34 @@ def _holders(marker: str, owner: int | str | None) -> list[psutil.Process] | Non
             continue
         except psutil.AccessDenied:
             pass
-        return None
-    return found
+        return [], "a possible holder unreadable"
+    return found, None
 
 
-def _end_launched(token: str, timeout: float, owner: int | str | None) -> bool:
-    """End every process started with this launch's token; True when a scan finds none left running.
+def _holders(marker: str, owner: int | str | None) -> list[psutil.Process] | None:
+    """``_holders_why``'s list, or None when the scan proves nothing."""
+    found, why = _holders_why(marker, owner)
+    return None if why is not None else found
+
+
+def _end_why(token: str, timeout: float, owner: int | str | None) -> tuple[str | None, int]:
+    """End every process started with this launch's token: ``(None, ended)`` when a scan finds none left
+    running, else ``(why, ended)`` -- ``ended`` counts the holders this call killed and saw end.
 
     Called only once the launch's parent is proven dead, so the token can be held only by what that parent
     started and by what THOSE started before they got any input -- on Windows the venv launcher starts the
     real interpreter with the same command line. Each round kills and waits for every holder it finds; a
     holder dead by the end of a round starts nothing more, so a round that finds none closes the set. A
-    zombie has ended. A round that cannot read a process that may be a holder proves nothing (``_holders``).
+    zombie has ended. A round that cannot read a process that may be a holder proves nothing (``_holders_why``).
 
     ``owner`` is the run's user, as its owner record names it: without it no process is a stranger, and no
     holder is shown to be ours -- one found keeps the run unproven."""
     marker = launch_arg(token)
+    ended = 0
     for _ in range(_END_ROUNDS):
-        found = _holders(marker, owner)
-        if found is None:
-            return False  # a process that may hold the token cannot be read: not proven (consilium r3, R3.1)
+        found, why = _holders_why(marker, owner)
+        if why is not None:
+            return why, ended  # a process that may hold the token cannot be read or shown ours (r3, R3.1; r4, R4.1)
         alive = False
         for process in found:
             try:
@@ -402,14 +414,39 @@ def _end_launched(token: str, timeout: float, owner: int | str | None) -> bool:
                 alive = True
                 process.kill()
                 if not _wait(process, timeout):
-                    return False
+                    return f"holder still running after its kill pid={process.pid} status={_state(process)}", ended
+                ended += 1
             except psutil.NoSuchProcess:
                 continue
             except psutil.AccessDenied:
-                return False
+                return f"holder access denied pid={process.pid}", ended
         if not alive:
-            return True
-    return False  # still finding holders: not proven
+            return None, ended
+    return f"holders still found after {_END_ROUNDS} rounds", ended  # still finding holders: not proven
+
+
+def _end_launched(token: str, timeout: float, owner: int | str | None) -> bool:
+    """``_end_why`` as a proof: True when a scan finds no holder left running."""
+    return _end_why(token, timeout, owner)[0] is None
+
+
+def _user_of(data: dict) -> int | str | None:
+    """The run's user as its owner record names it, in the form this platform reads (a uid on POSIX, a user
+    name on Windows); None when it names none -- then no process is a stranger and no holder is shown ours."""
+    user = data.get("user")
+    if isinstance(user, str) if _WINDOWS else isinstance(user, int) and not isinstance(user, bool):
+        return user
+    return None
+
+
+def _run_owner(generation: Path) -> int | str | None:
+    """THIS run's user, off its own owner record (main writes it before it spawns anything); None when the
+    record cannot be read or names no user (fail closed: a holder found is then unproven, untouched)."""
+    try:
+        data = json.loads((generation / "owner.pid").read_text(encoding="ascii"))
+    except (OSError, ValueError):
+        return None
+    return _user_of(data) if isinstance(data, dict) else None
 
 
 def _launched(scope: Path, name: str) -> bool:
@@ -461,9 +498,7 @@ def generation_gone(generation: Path, *, timeout: float = 5) -> bool:
         return False
     if _another_boot(data):
         return True  # a run of an earlier boot: nothing of it exists any more
-    user = data.get("user")
-    if not (isinstance(user, str) if _WINDOWS else isinstance(user, int) and not isinstance(user, bool)):
-        user = None  # no identity this platform reads: no process is a stranger -- fail closed
+    user = _user_of(data)  # no identity this platform reads: no process is a stranger -- fail closed
     if not _gone(owner, timeout, kill=False):
         return False  # that main still runs, or its record cannot be read
     settled: dict[tuple[Path, str], bool] = {}
