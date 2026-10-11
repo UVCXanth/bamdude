@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Inventory projection tests distinguish a refused MQTT publish from a successful one.** The refusal regression now expects `False` while still checking that no assignment verification or advertised-profile overlay is created.
+
 - **Manual spool corrections after AMS runout keep their priority.** Selecting the same partial reel again, including preassignment into an empty slot, no longer lets the subsequent insertion claim a full stock reel or incorrectly discard the remaining weight. The protection applies to that runout episode; a later real runout can still trigger automatic replacement.
 
 - **External holders can claim replacement stock after runout.** With automatic stock assignment enabled, a confirmed runout of the assigned external spool followed by the operator resuming the same print assigns one full spool from the configured group. The existing journal preserves the old/new usage split. Ordinary pauses, jams, reconnects, manual corrections, unavailable stock and ambiguous H2D holder signals leave assignments unchanged. No resume command or in-flight filament configuration is sent.
