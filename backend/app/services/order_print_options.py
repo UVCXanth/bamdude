@@ -11,7 +11,8 @@ def override_options(snapshot: dict | None, model: str | None, target_model: str
 
     The model belongs to the sliced job. Compatible placement must not silently
     replace its explicit choices with another model's profile. Rebalance really
-    changes the source file/target_model, and selects that model's snapshot entry.
+    changes the source file, and selects the new file's snapshot entry. A routing
+    target edit alone does not change the bytes or their model.
     No entry means the existing operator-profile path.
     Revalidation also refuses a corrupt persisted snapshot before assignment.
     """

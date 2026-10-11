@@ -294,7 +294,7 @@ async def test_auto_job_edit_updates_only_its_model_entry(committing_client, db_
     assert (await enqueue(committing_client, pid, plates, models={"A1 Mini"})).status_code == 200
     row = (await db_session.execute(select(AutoQueueItem))).scalars().first()
     before = deepcopy(row.order_print_options)
-    _apply_item_update(row, {"flow_cali": "off", "timelapse": True})
+    _apply_item_update(row, {"flow_cali": "off", "timelapse": True}, source_model="A1 Mini")
     assert row.order_print_options["A1 Mini"]["flow_cali"] == "off"
     assert row.order_print_options["A1 Mini"]["timelapse"] is True
     assert row.order_print_options["H2D"] == before["H2D"]

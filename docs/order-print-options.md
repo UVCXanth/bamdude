@@ -17,8 +17,10 @@ that model to operator-profile inheritance. **To printer…** continues to open
 the existing interactive print dialog with its own choices.
 
 Auto Queue stores a creation-time copy of the explicit model overrides. When a
-job is placed, the matching model's values are retained and validated for the
-destination. Rebalancing to a different sliced file/model uses that model's
+job is placed, the captured file's sliced-model values are retained and validated
+for the destination. Changing or clearing the routing target without replacing
+the file does not select another model's settings. The same rule applies to single
+and batch edits of job parameters. Rebalancing to a different sliced file/model uses that model's
 entry from the saved copy, rather than the current order. Manual editing changes
 only the job's relevant model entry. Existing routing, source/claim checks,
 macro constraints and plate-clear admission remain in force.

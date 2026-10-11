@@ -586,7 +586,7 @@ class AutoQueueScheduler:
             profile = await preference_options(db, owner, printer.model)
             options = profile.for_printer_queue() if profile else {}
             try:
-                options.update(override_options(item.order_print_options, item.target_model, printer.model))
+                options.update(override_options(item.order_print_options, requirements.model, printer.model))
             except ValueError as exc:
                 logger.info("Auto item %s: explicit print options do not fit target model %s", item.id, printer.model)
                 raise AutoPlacementConflict("incompatible_target") from exc
