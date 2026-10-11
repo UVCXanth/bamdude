@@ -1,5 +1,6 @@
 ## [Unreleased]
 
+- **Selected printers have confirmed batch actions for homing, device calibration, maintenance records, queues, maintenance mode and lights.** Every action names its recipients, rechecks eligibility and reports per-printer outcomes. Maintenance retains history and lifetime hours; motion refuses stale or unknown idle telemetry and unsupported calibration options.
 - **Inventory projection tests distinguish a refused MQTT publish from a successful one.** The refusal regression now expects `False` while still checking that no assignment verification or advertised-profile overlay is created.
 
 - **Manual spool corrections after AMS runout keep their priority.** Selecting the same partial reel again, including preassignment into an empty slot, no longer lets the subsequent insertion claim a full stock reel or incorrectly discard the remaining weight. The protection applies to that runout episode; a later real runout can still trigger automatic replacement.

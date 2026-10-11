@@ -188,6 +188,9 @@ class TestHomeAxesAPI:
         printer = await printer_factory(name="P1")
         mock_client = MagicMock()
         mock_client.send_gcode.return_value = True
+        mock_client.state.connected = True
+        mock_client.state.state = "IDLE"
+        mock_client.is_stale.return_value = False
         with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
             mock_pm.get_client.return_value = mock_client
             response = await async_client.post(f"/api/v1/printers/{printer.id}/home-axes?axes={axes}")

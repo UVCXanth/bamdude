@@ -597,6 +597,9 @@ async def update_printer(
             merged[AUTO_STOCK_NAMESPACE] = patch.auto_stock_spool.model_dump()
         update_data["ams_policies"] = merged
 
+    if update_data.get("is_active") is False and printer.is_active and is_printer_busy(printer_id):
+        raise HTTPException(409, "Printer is busy — cannot enter maintenance mode during a print")
+
     connection_changed = any(
         key in update_data and update_data[key] != getattr(printer, key)
         for key in ("ip_address", "access_code", "is_active")
@@ -2834,9 +2837,29 @@ async def start_calibration(
         # routines moves the toolhead across the plate.
         raise HTTPException(409, "Printer is busy — cannot calibrate while a job is on it")
 
+    if not client.status_received_at or client.is_stale() or client.state.state not in ("IDLE", "FINISH", "FAILED"):
+        raise HTTPException(409, "Fresh idle printer status is required for calibration")
+
     # Check that at least one option is selected
     if not any([bed_leveling, vibration, motor_noise, nozzle_offset, high_temp_heatbed, lidar, clump_pos]):
         raise HTTPException(400, "At least one calibration option must be selected")
+
+    from backend.app.utils.printer_configs import resolve_device_calibrations
+
+    available = resolve_device_calibrations(
+        printer.model, client.state.device_cali_support, client.state.firmware_version
+    )
+    requested = {
+        "bed_leveling": bed_leveling,
+        "vibration": vibration,
+        "motor_noise": motor_noise,
+        "nozzle_offset": nozzle_offset,
+        "high_temp_heatbed": high_temp_heatbed,
+        "lidar": lidar,
+        "clump_pos": clump_pos,
+    }
+    if any(value and not available[key] for key, value in requested.items()):
+        raise HTTPException(409, "A selected calibration is not supported by this printer")
 
     success = client.start_calibration(
         bed_leveling=bed_leveling,
@@ -3928,7 +3951,7 @@ async def home_axes(
         raise HTTPException(404, "Printer not found")
 
     client = printer_manager.get_client(printer_id)
-    if not client:
+    if not client or not client.state.connected:
         raise HTTPException(400, "Printer not connected")
 
     if is_printer_busy(printer_id):
@@ -3949,6 +3972,9 @@ async def home_axes(
         # implement. An X-only mid-print home would be a new capability, not a
         # guard, and belongs with the rest of the motion work.
         raise HTTPException(409, "Printer is busy — cannot home while a job is on it")
+
+    if not client.status_received_at or client.is_stale() or client.state.state not in ("IDLE", "FINISH", "FAILED"):
+        raise HTTPException(409, "Fresh idle printer status is required for homing")
 
     if not client.send_gcode("G28"):
         raise HTTPException(500, "Failed to send home command")

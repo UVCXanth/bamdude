@@ -100,7 +100,8 @@ import { SelectionBox } from '../components/SelectionBox';
 import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router';
 import { api, discoveryApi, firmwareApi, macrosApi, withMediaToken, DEFAULT_BACKUP_COMPATIBILITY, DEFAULT_AUTO_STOCK_SPOOL } from '../api/client';
 import { AutoStockSpoolFields } from '../components/AutoStockSpoolFields';
-import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
+import { BulkPrinterToolbar, type BulkAction } from '../components/BulkPrinterToolbar';
+import { BulkPrinterActionDialog } from '../components/BulkPrinterActionDialog';
 import { PauseChip } from '../components/PauseChip';
 import { formatDateOnly, formatETA, formatDuration, formatTimeOnly, parseUTCDate } from '../utils/date';
 import type { Printer, PrinterCreate, PrinterStatus, AirductFan, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro, InventorySpool, SmartPlug, PrinterDiagnosticResult, HeaterSensorKind, ScheduledDryingInput, DryingScheduleInput } from '../api/client';
@@ -9424,8 +9425,8 @@ export function PrintersPage() {
   // the current visual order; plain Ctrl/Cmd-click both selects and updates
   // the anchor. Cleared whenever the selection set is emptied.
   const [lastSelectedId, setLastSelectedId] = useState<number | null>(null);
-  const [bulkConfirmAction, setBulkConfirmAction] = useState<'stop' | 'pause' | 'clearPlate' | null>(null);
-  const [bulkActionPending, setBulkActionPending] = useState(false);
+  const [bulkSelection, setBulkSelection] = useState<{ action: BulkAction; printers: Printer[] } | null>(null);
+
   const selectionMode = selectedPrinterIds.size > 0;
   // Compact-card "expand into popup" — single printer id, null = closed.
   // The popup re-mounts <PrinterCard> with viewMode='expanded' cardSize=2
@@ -9895,43 +9896,11 @@ export function PrintersPage() {
     setSelectedPrinterIds(new Set(ids));
   }, [printers, queryClient]);
 
-  const executeBulkAction = useCallback(async (action: string) => {
-    const ids = Array.from(selectedPrinterIds);
-    setBulkActionPending(true);
-    setBulkConfirmAction(null);
-    let successCount = 0;
-    for (const id of ids) {
-      try {
-        if (action === 'stop') await api.stopPrint(id);
-        else if (action === 'pause') await api.pausePrint(id);
-        else if (action === 'resume') await api.resumePrint(id);
-        else if (action === 'clearPlate') {
-          // The bulk tool still answers one held run per printer. Fetching it
-          // immediately before the mutation gives it the same stale-card guard
-          // as the individual card instead of silently clearing a newer run.
-          const waiting = await api.getWaitingPrint(id);
-          await api.clearPlate(id, {
-            expected_archive_id: waiting.archive_id,
-            expected_gate_token: waiting.gate_token ?? undefined,
-          });
-        }
-        else if (action === 'clearHMS') await api.clearHMSErrors(id);
-        successCount++;
-      } catch { /* skip failed */ }
-    }
-    setBulkActionPending(false);
-    showToast(t('printers.bulk.actionComplete', { count: successCount }), 'success');
-    clearSelection();
-  }, [selectedPrinterIds, showToast, t, clearSelection]);
-
-  const handleBulkAction = useCallback((action: string) => {
-    if (action === 'stop' || action === 'pause' || action === 'clearPlate') {
-      setBulkConfirmAction(action as 'stop' | 'pause' | 'clearPlate');
-    } else {
-      executeBulkAction(action);
-    }
-  }, [executeBulkAction]);
-
+  const handleBulkAction = useCallback((action: BulkAction) => {
+    // Snapshot names and IDs at the click: background selection changes cannot
+    // add a printer to an already-open confirmation.
+    setBulkSelection({ action, printers: (printers ?? []).filter(p => selectedPrinterIds.has(p.id)).map(p => ({ ...p })) });
+  }, [printers, selectedPrinterIds]);
   // Increment version counter whenever a printerStatus cache entry is updated so
   // filteredPrinters re-computes reactively on WebSocket-driven status changes (#852).
   // Only the status-filter branch of filteredPrinters actually reads this
@@ -10767,34 +10736,13 @@ export function PrintersPage() {
         />
       )}
 
-      {/* Bulk confirm modals */}
-      {bulkConfirmAction === 'stop' && (
-        <ConfirmModal
-          title={t('printers.bulk.actions.stop')}
-          message={t('printers.bulk.selected', { count: selectedPrinterIds.size })}
-          confirmText={t('printers.bulk.actions.stop')}
-          variant="danger"
-          onConfirm={() => executeBulkAction('stop')}
-          onCancel={() => setBulkConfirmAction(null)}
+      {bulkSelection && (
+        <BulkPrinterActionDialog
+          action={bulkSelection.action}
+          printers={bulkSelection.printers}
+          onClose={() => setBulkSelection(null)}
         />
       )}
-      {bulkConfirmAction === 'pause' && (
-        <ConfirmModal
-          title={t('printers.bulk.actions.pause')}
-          message={t('printers.bulk.selected', { count: selectedPrinterIds.size })}
-          onConfirm={() => executeBulkAction('pause')}
-          onCancel={() => setBulkConfirmAction(null)}
-        />
-      )}
-      {bulkConfirmAction === 'clearPlate' && (
-        <ConfirmModal
-          title={t('printers.bulk.actions.clearPlate')}
-          message={t('printers.bulk.selected', { count: selectedPrinterIds.size })}
-          onConfirm={() => executeBulkAction('clearPlate')}
-          onCancel={() => setBulkConfirmAction(null)}
-        />
-      )}
-
       {/* Compact-card "expand into popup": re-mount the same PrinterCard
           with M-size sizing for the picked printer. The shell draws no
           header (``hideClose`` + no title): the card already shows the
@@ -10871,7 +10819,7 @@ export function PrintersPage() {
           onSelectByLocation={selectByLocation}
           onSelectByState={selectByState}
           onAction={handleBulkAction}
-          actionPending={bulkActionPending}
+          actionPending={bulkSelection !== null}
         />
       )}
     </div>
