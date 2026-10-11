@@ -17,6 +17,7 @@ import { MergePartDialog } from '../MergePartDialog';
 import { ProductPartDialog } from '../ProductPartDialog';
 import { ProductVariantsDialog } from '../ProductVariantsDialog';
 import { deleteProductPart } from '../partMutations';
+import { PartThumb } from '../../PartThumb';
 import { ModelChip } from './ModelChip';
 import { useUiPreferences } from '../../../hooks/useUiPreferences';
 
@@ -280,12 +281,17 @@ export function CompositionTab({
                 {printed.map((part) => (
                   <tr key={part.id} data-testid={`part-${part.id}-row`} className="border-b border-bambu-dark-tertiary last:border-0">
                     <td className={CELL}>
-                      <b className="font-medium text-white break-words">{part.name}</b>
-                      {part.auto && (
-                        <span className={`${CHIP} ml-1.5 bg-bambu-dark-tertiary text-bambu-gray`}>
-                          {t('products.composition.fromFile')}
+                      <span className="flex items-start gap-2">
+                        <PartThumb partId={part.id} image={part.image} name={part.name} kind="printed" size="sm" />
+                        <span className="min-w-0">
+                          <b className="font-medium text-white break-words">{part.name}</b>
+                          {part.auto && (
+                            <span className={`${CHIP} ml-1.5 bg-bambu-dark-tertiary text-bambu-gray`}>
+                              {t('products.composition.fromFile')}
+                            </span>
+                          )}
                         </span>
-                      )}
+                      </span>
                     </td>
                     <td className={`${CELL} whitespace-nowrap tabular-nums`}>{perUnit(part)}</td>
                     <td className={CELL}>{variantOf(part)}</td>
@@ -330,7 +336,12 @@ export function CompositionTab({
               <tbody>
                 {purchased.map((part) => (
                   <tr key={part.id} data-testid={`part-${part.id}-row`} className="border-b border-bambu-dark-tertiary last:border-0">
-                    <td className={`${CELL} text-white break-words`}>{part.name}</td>
+                    <td className={`${CELL} text-white`}>
+                      <span className="flex items-start gap-2">
+                        <PartThumb partId={part.id} image={part.image} name={part.name} kind="purchased" size="sm" />
+                        <span className="min-w-0 break-words">{part.name}</span>
+                      </span>
+                    </td>
                     <td className={`${CELL} whitespace-nowrap tabular-nums`}>{perUnit(part)}</td>
                     <td className={CELL}>{variantOf(part)}</td>
                     <td className={`${CELL} whitespace-nowrap tabular-nums`} data-testid="part-price">

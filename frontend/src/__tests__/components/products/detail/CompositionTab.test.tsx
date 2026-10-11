@@ -415,3 +415,23 @@ describe('CompositionTab', () => {
     });
   });
 });
+
+describe('the parts’ pictures (spec part-thumbnails §12.2)', () => {
+  it('a printed row shows its picture beside the name; a purchased row its glyph; a queued one says so', async () => {
+    vi.spyOn(api, 'getProductSources').mockResolvedValue({ parts: [] } as never);
+    const withPictures = {
+      ...product,
+      parts: [
+        part({ id: 1, name: 'Body', image: { kind: 'render', status: 'ready', v: 'r1' } }),
+        part({ id: 2, name: 'Lid', image: { kind: 'render', status: 'pending', v: null } }),
+        part({ id: 4, name: 'Magnet', kind: 'purchased', image: null }),
+      ],
+    } as Product;
+    render(<Host product={withPictures} />);
+    const body = screen.getByTestId('part-1-row');
+    expect(within(body).getByRole('button', { name: 'Show Body larger' })).toBeInTheDocument();
+    expect(within(body).getByTestId('part-thumb-img')).toHaveAttribute('src', '/api/v1/product-parts/1/image?v=r1&size=sm');
+    expect(within(screen.getByTestId('part-2-row')).getByRole('img', { name: 'Lid: the picture is being prepared' })).toBeInTheDocument();
+    expect(within(screen.getByTestId('part-4-row')).getByTestId('part-thumb').querySelector('[data-glyph="purchased"]')).not.toBeNull();
+  });
+});

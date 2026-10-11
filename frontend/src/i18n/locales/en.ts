@@ -7266,6 +7266,7 @@ export default {
       orders: 'Saved order configurations count it into the target.',
       procurement: 'Its purchase records are deleted.',
       variant: 'Its variant binding goes.',
+      photo: 'Its photo is deleted; the target keeps its own picture.',
       merge: 'Merge',
       merged: 'Parts merged',
     },
