@@ -246,3 +246,66 @@ describe('after the final review (plan E5)', () => {
     expect(img).toHaveAttribute('loading', 'eager');
   });
 });
+
+describe('the mat a picture sits on (thumbnail backdrop, 2026-10-11)', () => {
+  /** What a 16 × 16 canvas reads back off the loaded picture. */
+  function canvasReads(...pixels: number[]) {
+    const context = { drawImage: () => {}, getImageData: () => ({ data: new Uint8ClampedArray(pixels) }) };
+    // getContext is overloaded per context kind; the 2D one is what partTone asks for
+    return vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context as never);
+  }
+  const box = () => screen.getByTestId('part-thumb').firstElementChild as HTMLElement;
+  const readyInstance: InstanceImageRef = { library_file_id: 9, plate_index: 1, identify_id: 4, status: 'ready', v: 'v1' };
+
+  it('puts a dark part on the light mat once its picture has loaded — the frame and the larger picture', () => {
+    canvasReads(0, 0, 0, 255, 0, 0, 0, 0);
+    render(<PartThumb partId={5} image={ready} name="Body" />);
+    expect(box()).not.toHaveAttribute('data-mat');
+    fireEvent.load(screen.getByTestId('part-thumb-img'));
+    expect(box()).toHaveAttribute('data-mat', 'light');
+    expect(box()).toHaveClass('bg-part-mat-light');
+    fireEvent.click(screen.getByRole('button', { name: 'Show Body larger' }));
+    expect(screen.getByTestId('part-thumb-zoom')).toHaveClass('bg-part-mat-light');
+  });
+
+  it('puts a light part on the dark mat', () => {
+    canvasReads(255, 255, 255, 255, 0, 0, 0, 0);
+    render(<InstanceThumb productId={3} image={readyInstance} name="Leg" />);
+    fireEvent.load(screen.getByTestId('part-thumb-img'));
+    expect(box()).toHaveAttribute('data-mat', 'dark');
+    expect(box()).toHaveClass('bg-part-mat-dark');
+  });
+
+  it('keeps the theme’s frame for a photo, and where the browser gives no canvas', () => {
+    canvasReads(0, 0, 0, 255, 255, 255, 255, 255); // nothing transparent: a photo fills its box
+    const { unmount } = render(<PartThumb partId={5} image={ready} name="Body" />);
+    fireEvent.load(screen.getByTestId('part-thumb-img'));
+    expect(box()).not.toHaveAttribute('data-mat');
+    expect(box()).toHaveClass('bg-bambu-dark-tertiary/60');
+    unmount();
+    vi.restoreAllMocks();
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    render(<PartThumb partId={5} image={ready} name="Body" />);
+    fireEvent.load(screen.getByTestId('part-thumb-img'));
+    expect(box()).not.toHaveAttribute('data-mat');
+  });
+
+  it('a mat belongs to its picture: a new version starts on the theme’s frame until it has loaded', () => {
+    canvasReads(0, 0, 0, 255, 0, 0, 0, 0);
+    const { rerender } = render(<PartThumb partId={5} image={ready} name="Body" />);
+    fireEvent.load(screen.getByTestId('part-thumb-img'));
+    expect(box()).toHaveAttribute('data-mat', 'light');
+    rerender(<PartThumb partId={5} image={{ ...ready, v: 'def456' }} name="Body" />);
+    expect(box()).not.toHaveAttribute('data-mat');
+  });
+
+  it('a broken picture shows its glyph on the theme’s frame, never on a mat', () => {
+    setMediaToken('t');
+    canvasReads(0, 0, 0, 255, 0, 0, 0, 0);
+    render(<PartThumb partId={5} image={ready} name="Body" />);
+    const img = screen.getByTestId('part-thumb-img');
+    fireEvent.load(img);
+    fireEvent.error(img);
+    expect(box()).not.toHaveAttribute('data-mat');
+  });
+});

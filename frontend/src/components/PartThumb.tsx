@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import type { InstanceImageRef, PartImageRef, PartImageSize, ProductPartKind } from '../api/client';
 import { mediaRetryStarted } from '../hooks/useCameraStreamToken';
+import { matForImage, type PartMat } from './partTone';
 
 export type PartThumbSize = 'xs' | 'sm' | 'md';
 /** `click` — hover or a click (a touch) opens the larger picture; `hover` — hover only (the editor's
@@ -18,6 +19,10 @@ const BOX: Record<PartThumbSize, string> = { xs: 'h-4 w-4', sm: 'h-8 w-8', md: '
 const GLYPH: Record<PartThumbSize, string> = { xs: 'h-3 w-3', sm: 'h-4 w-4', md: 'h-7 w-7' };
 const ZOOM_PX = 256;
 const MARGIN_PX = 8;
+// A picture with transparency sits on the mat its part's tone asks for (components/partTone.ts): no one backdrop
+// reads every filament colour. Until it has loaded -- and for a photo, a glyph or a broken picture -- the frame
+// is the theme's own.
+const MAT: Record<PartMat, string> = { dark: 'bg-part-mat-dark', light: 'bg-part-mat-light' };
 
 function Glyph({ kind, size }: { kind: ProductPartKind | 'pending'; size: PartThumbSize }) {
   // a queued picture has its own quiet mark: it must not read as «no picture» (final review 1)
@@ -38,6 +43,7 @@ function Picture({
   size,
   failed,
   onFailed,
+  onMat,
 }: {
   src: string;
   alt: string;
@@ -45,6 +51,7 @@ function Picture({
   size: PartThumbSize;
   failed: boolean;
   onFailed: (failed: boolean) => void;
+  onMat: (mat: PartMat | null) => void;
 }) {
   return (
     <>
@@ -56,7 +63,10 @@ function Picture({
         // that defers what is not rendered, and the recovery retries into this very element (final review 9).
         loading={failed ? 'eager' : 'lazy'}
         hidden={failed}
-        onLoad={() => onFailed(false)}
+        onLoad={(e) => {
+          onFailed(false);
+          onMat(matForImage(e.currentTarget));
+        }}
         onError={(e) => {
           const el = e.currentTarget;
           if (mediaRetryStarted(el)) return;
@@ -102,6 +112,9 @@ function ThumbFrame({ state, src, zoomSrc, name, kind, size, zoom }: FrameProps)
   // larger one (final review 7) — the next version starts clean.
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const failed = src !== null && failedSrc === src;
+  // The mat belongs to the picture it was read off, like a failure: a new version starts on the theme's frame.
+  const [matOf, setMatOf] = useState<{ src: string; mat: PartMat } | null>(null);
+  const mat = !failed && src !== null && matOf?.src === src ? matOf.mat : null;
   // The door stays what it is when the picture fails: swapping the button for a span would remount the
   // <img> the media-token recovery retries into. A failure only keeps the larger picture shut.
   const zoomDoor = state === 'ready' && zoom !== 'none' && zoomSrc !== null;
@@ -142,7 +155,7 @@ function ThumbFrame({ state, src, zoomSrc, name, kind, size, zoom }: FrameProps)
     };
   }, [open]);
 
-  const box = `relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded bg-bambu-dark-tertiary/60 ${BOX[size]}`;
+  const box = `relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded ${mat ? MAT[mat] : 'bg-bambu-dark-tertiary/60'} ${BOX[size]}`;
   const body: ReactNode =
     state === 'ready' && src ? (
       <Picture
@@ -153,6 +166,7 @@ function ThumbFrame({ state, src, zoomSrc, name, kind, size, zoom }: FrameProps)
         size={size}
         failed={failed}
         onFailed={(value) => setFailedSrc(value ? src : null)}
+        onMat={(value) => setMatOf(value ? { src, mat: value } : null)}
       />
     ) : (
       <Glyph kind={state === 'pending' ? 'pending' : kind} size={size} />
@@ -183,6 +197,7 @@ function ThumbFrame({ state, src, zoomSrc, name, kind, size, zoom }: FrameProps)
             setHovered(false);
           }}
           onBlur={() => setHeld(false)}
+          data-mat={mat ?? undefined}
           className={`${box} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green`}
         >
           {body}
@@ -190,6 +205,7 @@ function ThumbFrame({ state, src, zoomSrc, name, kind, size, zoom }: FrameProps)
       ) : (
         <span
           className={box}
+          data-mat={mat ?? undefined}
           role={pendingLabel ? 'img' : undefined}
           aria-label={pendingLabel}
           title={pendingLabel}
@@ -204,7 +220,7 @@ function ThumbFrame({ state, src, zoomSrc, name, kind, size, zoom }: FrameProps)
           <span
             data-testid="part-thumb-zoom"
             style={{ left: at.left, top: at.top, width: ZOOM_PX, height: ZOOM_PX }}
-            className="pointer-events-none fixed z-[49] rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary p-1 shadow-xl"
+            className={`pointer-events-none fixed z-[49] rounded-lg border border-bambu-dark-tertiary ${mat ? MAT[mat] : 'bg-bambu-dark-secondary'} p-1 shadow-xl`}
           >
             <img src={zoomSrc} alt="" className="h-full w-full object-contain" />
           </span>

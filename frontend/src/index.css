@@ -250,6 +250,11 @@
   --color-bambu-gray-light: var(--text-secondary);
   --color-bambu-gray-dark: var(--text-tertiary);
 
+  /* The mats a part picture sits on (components/partTone.ts): the same pair in every theme, chosen per picture
+     by the part's own tone -- a dark part on the light mat, a light part on the dark one. */
+  --color-part-mat-dark: #2f2f2f;
+  --color-part-mat-light: #c8c8c8;
+
   /* Tailwind 4's container scale stops at 7xl (80rem). The modal shell offers
      size="8xl"; without this token `max-w-8xl` silently generates nothing. */
   --container-8xl: 88rem;
