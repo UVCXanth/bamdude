@@ -1354,6 +1354,7 @@ export interface PlateDetectionROI {
 }
 
 export interface PlateDetectionResult {
+  status?: 'clear' | 'occupied' | 'unavailable';
   is_empty: boolean;
   confidence: number;
   difference_percent: number;
@@ -2104,7 +2105,14 @@ export interface OrderContact {
   email: string | null;
 }
 
+export interface AutoEjectSettings {
+  difference_threshold: number;
+  skip_check: boolean;
+}
+
 export interface Order {
+  auto_eject_settings?: AutoEjectSettings;
+  auto_eject_enabled?: boolean;
   id: number;
   code: string;
   name: string;
@@ -2197,6 +2205,9 @@ export interface LineProduct {
 }
 
 export interface OrderCreate {
+  auto_eject_settings?: AutoEjectSettings;
+  auto_eject_skip_acknowledged?: boolean;
+  auto_eject_enabled?: boolean;
   name: string;
   customer_id?: number | null;
   contact_id?: number | null;
@@ -2213,6 +2224,9 @@ export interface OrderCreate {
 }
 
 export interface OrderUpdate {
+  auto_eject_settings?: AutoEjectSettings;
+  auto_eject_skip_acknowledged?: boolean;
+  auto_eject_enabled?: boolean;
   name?: string;
   description?: string | null;
   color?: string | null;
@@ -2326,6 +2340,8 @@ export interface OrderViewFilters {
 }
 /** An order's archive printing now — what the «Printing» tile counts (spec workshop-order-queue). */
 export interface OrderQueuePrinting {
+  auto_eject?: boolean;
+  auto_eject_settings?: AutoEjectSettings;
   archive_id: number;
   printer_id: number | null;
   printer_name: string | null;
@@ -6040,6 +6056,8 @@ export type QueueSourceStorage = 'ready' | 'preparing' | 'legacy' | 'broken' | '
 
 // Print Queue types
 export interface PrintQueueItem {
+  auto_eject?: boolean;
+  auto_eject_settings?: AutoEjectSettings;
   filament_routing?: FilamentRoutingSnapshot | null;
   id: number;
   queue_id: number;
@@ -6481,6 +6499,8 @@ export interface AutoQueueFilamentOverride {
 }
 
 export interface AutoQueueItem {
+  auto_eject?: boolean;
+  auto_eject_settings?: AutoEjectSettings;
   feed_policy?: FeedPolicy;
   id: number;
   archive_id: number | null;

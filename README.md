@@ -275,6 +275,7 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - Auto error-pause on print failure (queue stops, user decides next step)
 - Staggered start for farms (limit concurrent heating — farm-wide or per electrical phase and room via printer tags and locations, each group with its own cap if needed; bed temp monitoring)
 - Printer tags with colours; the Printers page filters and groups by tag
+- **Prepared-file auto-ejection for orders** — an experimental opt-in for hardware and finish G-code prepared by the operator. New jobs snapshot the mode and camera policy; fresh camera checks normally guard the next dispatch. An explicit no-check option requires two warnings. BamDude adds no ejection motion, and ordinary, failed or uncertain predecessors still need manual plate confirmation.
 - **Swap Mode** — A1 Mini / A1 / A2L plate swapper with multi-profile support (Kit, STL, JobOx, A2L STL), auto-detect swap files, per-job event selection (start sequence / change table), plate-clear auto-bypass
 - **Swap macro auto-execution** — `swap_mode_start` before print, `swap_mode_change_table` after print, with ACK + stg_cur completion tracking, queue pause on failure
 - **Quick Vibration Check toggle** — per-job toggle; when disabled, 3MF gcode post-processor comments out `M970` commands, recalculates MD5 sidecars, repacks archive

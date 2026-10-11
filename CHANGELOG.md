@@ -32,6 +32,9 @@
 - **Printer filters and sorting stay usable in the compact toolbar.** Status, location and sort lists now open without collapsing their parent panel; tags can be selected in succession, and the Power On list closes after its action. Fixes [#54](https://github.com/kainpl/bamdude/issues/54).
 - **Telegram defect counts now reach the right print.** Replies to a custom count prompt are matched after the bot identifies the chat, and current permissions and printer scope are checked before recording. The cancel button and `/cancel` also clear the operator's live assessment without affecting another operator's draft. Fixes [#64](https://github.com/kainpl/bamdude/issues/64).
 - **Telegram queue screens show job names again.** The printer card, queue list and job detail read the captured source's display name or the legacy archive/library name, with a safe job-number fallback when metadata is unavailable. Fixes [#65](https://github.com/kainpl/bamdude/issues/65).
+- Fresh auto-eject checks accept only a frame published after admission began, from the selected camera and the same live producer generation. Stalled or changed streams defer without opening another reader. Swap Mode is checked again after camera I/O before answering the previous plate gate.
+
+- **Orders can opt into prepared finish-G-code auto-ejection.** New queue jobs capture the mode and camera policy, including an editable image-difference threshold and a camera opt-out behind two danger confirmations. BamDude sends no ejection motion: the selected file must perform it. Camera checks remain enabled by default, errors block dispatch, and ordinary, failed or cancelled predecessors retain their manual plate answer. Existing jobs and printer-wide settings are unchanged.
 
 ## [0.7.0] - 2026-10-06
 

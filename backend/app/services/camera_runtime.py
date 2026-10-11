@@ -110,6 +110,26 @@ class CameraCaptureRequest:
             hold=hold,
         )
 
+    def same_source(self, other: CameraCaptureRequest) -> bool:
+        """Compare camera configuration, excluding caller timeout and light purpose."""
+        return (
+            self.kind,
+            self.ip_address,
+            self.access_code,
+            self.model,
+            self.url,
+            self.camera_type,
+            self.snapshot_url,
+        ) == (
+            other.kind,
+            other.ip_address,
+            other.access_code,
+            other.model,
+            other.url,
+            other.camera_type,
+            other.snapshot_url,
+        )
+
     def __post_init__(self) -> None:
         if not 1 <= self.timeout <= 120:
             raise ValueError("camera capture timeout must be between 1 and 120 seconds")
