@@ -7203,6 +7203,11 @@ export default {
       priceInvalid: 'The price cannot be negative.',
       saved: 'Part saved',
     },
+    // Spec part-thumbnails §12.1: a part's picture beside its name.
+    partThumb: {
+      enlarge: 'Show {{name}} larger',
+      pending: '{{name}}: the picture is being prepared',
+    },
     // WS-13 E10 C08: merging one printed part into another.
     mergeDialog: {
       title: 'Merge part “{{name}}” into…',
