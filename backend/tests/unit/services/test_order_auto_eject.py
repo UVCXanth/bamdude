@@ -531,3 +531,45 @@ async def test_incomplete_configured_external_camera_does_not_use_builtin(monkey
     frame, _ = await pd.capture_camera_image(1, "synthetic", "synthetic", "P1S", use_external=True, fresh=True)
     assert frame is None
     capture.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skip", [False, True])
+async def test_swap_mode_committed_during_admission_never_clears_gate_or_publishes(
+    db_session, test_engine, held, monkeypatch, skip
+):
+    from sqlalchemy import select, update
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from backend.app.models.printer import Printer
+
+    p, archive, _ = held
+
+    async def enable_swap(*args, **kwargs):
+        async with async_sessionmaker(test_engine, expire_on_commit=False)() as other:
+            await other.execute(update(Printer).where(Printer.id == p.id).values(swap_mode_enabled=True))
+            await other.commit()
+        return PlateDetectionResult(True, 1, 0, "Clear")
+
+    monkeypatch.setattr("backend.app.services.plate_detection.check_plate_empty", AsyncMock(side_effect=enable_swap))
+    answer, publish = AsyncMock(), Mock()
+    monkeypatch.setattr("backend.app.services.plate_answers.answer_plate_run", answer)
+    verify = AsyncMock(side_effect=enable_swap) if skip else AsyncMock()
+    with pytest.raises(RoutingDeferred, match="auto_eject_conflict"):
+        await dispatch_check(
+            db_session,
+            SimpleNamespace(options={"auto_eject": True, "auto_eject_settings": {"skip_check": skip}}),
+            p,
+            verify,
+            lambda _job: None,
+        )
+        publish()
+    answer.assert_not_awaited()
+    publish.assert_not_called()
+    await db_session.refresh(p)
+    assert p.swap_mode_enabled and p.awaiting_plate_clear
+    assert p.awaiting_plate_clear_archive_id == archive.id
+    assert (
+        await db_session.scalar(select(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == archive.id))
+        is None
+    )

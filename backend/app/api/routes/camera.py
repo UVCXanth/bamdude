@@ -32,6 +32,7 @@ from backend.app.services.camera_fanout import (
     iter_subscriber,
     shutdown_broadcaster,
 )
+from backend.app.services.camera_runtime import CameraCaptureRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["camera"])
@@ -41,6 +42,9 @@ _last_frames: dict[int, bytes] = {}
 
 # Track last frame timestamp for each printer (for stall detection)
 _last_frame_times: dict[int, float] = {}
+# Admission evidence is separate from wall-clock timestamps used by camera/status.
+# Each frame belongs to one producer generation and its actual camera configuration.
+_live_frame_metadata: dict[int, tuple[float, str, CameraCaptureRequest]] = {}
 
 # Track stream start times for each printer
 _stream_start_times: dict[int, float] = {}
@@ -81,7 +85,18 @@ def is_stream_active(printer_id: int) -> bool:
     return printer_id in _active_worker_streams
 
 
-def live_frame_for_capture(printer_id: int, *, not_before: float | None = None) -> tuple[bool, bytes | None]:
+def live_stream_generation(printer_id: int) -> str | None:
+    active = _active_worker_streams.get(printer_id)
+    return active[0] if active else None
+
+
+def live_frame_for_capture(
+    printer_id: int,
+    *,
+    not_before: float | None = None,
+    expected_source: CameraCaptureRequest | None = None,
+    generation: str | None = None,
+) -> tuple[bool, bytes | None]:
     """Should a one-shot capture stand down for the live view, and to what frame?
 
     Returns ``(defer, frame)``. ``defer`` True means **do not open a capture of
@@ -104,12 +119,24 @@ def live_frame_for_capture(printer_id: int, *, not_before: float | None = None) 
     every consumer that reimplemented it is a consumer that can get it subtly
     wrong (see ``40-invariants/inv-single-camera-socket``).
     """
+    if generation is not None and live_stream_generation(printer_id) != generation:
+        # A check waiting on a viewer must not switch producers or open a second reader.
+        return True, None
     if not is_stream_active(printer_id):
         return False, None
     # Through the public accessor, not ``_last_frames`` directly: there is one
     # way to read the buffer and this is not a second one.
-    if not_before is not None and _last_frame_times.get(printer_id, 0) < not_before:
-        return True, None
+    if not_before is not None or expected_source is not None:
+        metadata = _live_frame_metadata.get(printer_id)
+        if metadata is None:
+            return True, None
+        arrived, producer, source_request = metadata
+        if (
+            producer != live_stream_generation(printer_id)
+            or (not_before is not None and arrived <= not_before)
+            or (expected_source is not None and not source_request.same_source(expected_source))
+        ):
+            return True, None
     return True, get_buffered_frame(printer_id)
 
 
@@ -153,6 +180,7 @@ def _release_printer_frame_state(printer_id: int | None) -> None:
         return
     _last_frames.pop(printer_id, None)
     _last_frame_times.pop(printer_id, None)
+    _live_frame_metadata.pop(printer_id, None)
     _stream_start_times.pop(printer_id, None)
     _snapshot_frames.pop(printer_id, None)
     _snapshot_frame_times.pop(printer_id, None)
@@ -242,13 +270,17 @@ async def _worker_stream_response(
     )
     source = "chamber_image" if builtin and is_chamber_image_model(printer.model) else "rtsp" if builtin else "external"
 
-    def _publish_worker_frame(frame: bytes) -> None:
-        now = time.time()
-        _last_frames[printer_id] = frame
-        _last_frame_times[printer_id] = now
-        # The external snapshot endpoint consults this short cache before it
-        # opens a competing one-shot connection to a single-reader camera.
-        _remember_snapshot(printer_id, frame)
+    source_request = (
+        CameraCaptureRequest.builtin(
+            ip_address=printer.ip_address, access_code=printer.access_code, model=printer.model
+        )
+        if builtin
+        else CameraCaptureRequest.external(
+            url=printer.external_camera_url,
+            camera_type=printer.external_camera_type,
+            snapshot_url=getattr(printer, "external_camera_snapshot_url", None),
+        )
+    )
 
     def _factory(disconnect_event: asyncio.Event):
         # The factory runs once per actual upstream, not once per browser
@@ -272,7 +304,12 @@ async def _worker_stream_response(
                     worker_stream_token,
                     first_frame_ms,
                 )
-            _publish_worker_frame(frame)
+            if _active_worker_streams.get(printer_id) != (worker_stream_token, source):
+                return  # A departing producer cannot overwrite its successor's frame.
+            _last_frames[printer_id] = frame
+            _last_frame_times[printer_id] = time.time()
+            _live_frame_metadata[printer_id] = (time.monotonic(), worker_stream_token, source_request)
+            _remember_snapshot(printer_id, frame)
 
         async def _stream():
             reason = "source_ended"
@@ -288,9 +325,9 @@ async def _worker_stream_response(
                 stream = (
                     runtime.stream_builtin(
                         identity=identity,
-                        ip_address=printer.ip_address,
-                        access_code=printer.access_code,
-                        model=printer.model,
+                        ip_address=source_request.ip_address,
+                        access_code=source_request.access_code,
+                        model=source_request.model,
                         fps=fps,
                         disconnect_event=disconnect_event,
                         on_frame=_observe_worker_frame,
@@ -298,8 +335,8 @@ async def _worker_stream_response(
                     if builtin
                     else runtime.stream_external(
                         identity=identity,
-                        url=printer.external_camera_url,
-                        camera_type=printer.external_camera_type,
+                        url=source_request.url,
+                        camera_type=source_request.camera_type,
                         fps=fps,
                         disconnect_event=disconnect_event,
                         on_frame=_observe_worker_frame,

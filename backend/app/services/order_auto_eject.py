@@ -243,6 +243,8 @@ async def dispatch_check(db, job, printer, verify_claim, raise_if_cancelled):
         )
     ):
         raise RoutingDeferred("plate_context_changed")
+    if job.options.get("auto_eject") and live.swap_mode_enabled:
+        raise RoutingDeferred("auto_eject_conflict")
     if result is not None and result.status != "clear":
         raise RoutingDeferred(
             "plate_calibration_required"

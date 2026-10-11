@@ -625,11 +625,33 @@ async def capture_camera_image(
     # docstring's promise not to compete with a viewer was true for one camera
     # kind and not the other — and a USB device allows exactly one handle, so
     # the external attempt did not degrade, it failed.
-    from backend.app.api.routes.camera import live_frame_for_capture
+    from backend.app.api.routes.camera import live_frame_for_capture, live_stream_generation
+    from backend.app.services.camera_runtime import CameraCaptureRequest
 
+    expected_source = (
+        (
+            CameraCaptureRequest.external(
+                url=external_camera_url,
+                camera_type=external_camera_type,
+                snapshot_url=external_camera_snapshot_url,
+            )
+            if use_external
+            else CameraCaptureRequest.builtin(
+                ip_address=ip_address,
+                access_code=access_code,
+                model=model,
+            )
+        )
+        if fresh
+        else None
+    )
+    generation = live_stream_generation(printer_id) if fresh else None
+    live_options = {"expected_source": expected_source, "generation": generation} if fresh else {}
     not_before = time.monotonic() if fresh else None
     defer, buffered_live = (
-        live_frame_for_capture(printer_id, not_before=not_before) if fresh else live_frame_for_capture(printer_id)
+        live_frame_for_capture(printer_id, not_before=not_before, **live_options)
+        if fresh
+        else live_frame_for_capture(printer_id)
     )
     if fresh and defer:
         # A viewer owns the camera socket. Wait for its next frame, never open
@@ -637,7 +659,7 @@ async def capture_camera_image(
         deadline = time.monotonic() + 10
         while buffered_live is None and defer and time.monotonic() < deadline:
             await asyncio.sleep(0.1)
-            defer, buffered_live = live_frame_for_capture(printer_id, not_before=not_before)
+            defer, buffered_live = live_frame_for_capture(printer_id, not_before=not_before, **live_options)
     if defer:
         if buffered_live is None:
             logger.debug(

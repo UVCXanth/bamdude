@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Fresh auto-eject checks accept only a frame published after admission began, from the selected camera and the same live producer generation. Stalled or changed streams defer without opening another reader. Swap Mode is checked again after camera I/O before answering the previous plate gate.
+
 - **Orders can opt into prepared finish-G-code auto-ejection.** New queue jobs capture the mode and camera policy, including an editable image-difference threshold and a camera opt-out behind two danger confirmations. BamDude sends no ejection motion: the selected file must perform it. Camera checks remain enabled by default, errors block dispatch, and ordinary, failed or cancelled predecessors retain their manual plate answer. Existing jobs and printer-wide settings are unchanged.
 
 ## [0.7.0] - 2026-10-06
