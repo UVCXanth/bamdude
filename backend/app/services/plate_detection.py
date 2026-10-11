@@ -46,7 +46,10 @@ class PlateDetectionResult:
         debug_image: bytes | None = None,
         needs_calibration: bool = False,
         source_image: bytes | None = None,
+        status: str | None = None,
     ):
+        self.status = "unavailable" if needs_calibration else status or ("clear" if is_empty else "occupied")
+        # Preserve the legacy rectangle result; consumers must consult status.
         self.is_empty = is_empty
         self.confidence = confidence  # 0.0 to 1.0
         self.difference_percent = difference_percent  # How different from reference
@@ -57,6 +60,7 @@ class PlateDetectionResult:
 
     def to_dict(self) -> dict:
         return {
+            "status": self.status,
             "is_empty": bool(self.is_empty),
             "confidence": float(round(self.confidence, 2)),
             "difference_percent": float(round(self.difference_percent, 2)),
@@ -473,6 +477,7 @@ class PlateDetector:
                     confidence=0.0,
                     difference_percent=0.0,
                     message="Failed to decode current image",
+                    status="unavailable",
                 )
 
             # Extract ROI from current frame
@@ -481,7 +486,9 @@ class PlateDetector:
             if self.polygon is not None:
                 mask = self._polygon_mask(current_frame)[y_start : y_start + roi_height, x_start : x_start + roi_width]
                 if np.count_nonzero(mask) < 32:
-                    return PlateDetectionResult(False, 0, 0, "Detection polygon is too small at this resolution")
+                    return PlateDetectionResult(
+                        False, 0, 0, "Detection polygon is too small at this resolution", status="unavailable"
+                    )
             current_processed = self._preprocess_for_comparison(current_roi, mask)
 
             # Compare against all references, find best match (lowest difference)
@@ -626,6 +633,7 @@ class PlateDetector:
                 confidence=0.0,
                 difference_percent=0.0,
                 message=f"Analysis error: {e!s}",
+                status="unavailable",
             )
 
 
@@ -772,6 +780,7 @@ async def check_plate_empty(
             confidence=0.0,
             difference_percent=0.0,
             message="OpenCV not available - plate detection disabled",
+            status="unavailable",
         )
 
     image_data, camera_source = await capture_camera_image(
@@ -791,6 +800,7 @@ async def check_plate_empty(
             confidence=0.0,
             difference_percent=0.0,
             message="Failed to capture camera frame from any source",
+            status="unavailable",
         )
 
     # Analyze the captured frame

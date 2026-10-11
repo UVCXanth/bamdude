@@ -238,6 +238,7 @@ export function Layout() {
   const [plateDetectionAlert, setPlateDetectionAlert] = useState<{
     printer_id: number;
     printer_name: string;
+    reason?: string;
     message: string;
   } | null>(null);
 
@@ -701,6 +702,7 @@ export function Layout() {
         printer_id: detail.printer_id,
         printer_name: detail.printer_name,
         message: detail.message,
+        reason: detail.reason,
       });
     };
     window.addEventListener('plate-not-empty', handlePlateNotEmpty);
@@ -1429,7 +1431,7 @@ export function Layout() {
               {plateDetectionAlert.printer_name}
             </p>
             <p className="text-bambu-gray mb-4">
-              {t('plateAlert.message')}
+              {t(plateDetectionAlert.reason === 'plate_check_unavailable' ? 'plateAlert.unavailableMessage' : 'plateAlert.message')}
             </p>
             <button
               onClick={() => setPlateDetectionAlert(null)}

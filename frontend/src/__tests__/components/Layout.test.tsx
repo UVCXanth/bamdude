@@ -229,6 +229,15 @@ describe('Layout', () => {
   });
 
   describe('plate detection alert modal', () => {
+    it('shows unavailable checks without claiming objects were detected', async () => {
+      render(<Layout />);
+      await waitFor(() => expect(document.querySelector('a[href="/settings"]')).toBeInTheDocument());
+      window.dispatchEvent(new CustomEvent('plate-not-empty', {
+        detail: { printer_id: 1, printer_name: 'Product A printer', reason: 'plate_check_unavailable' },
+      }));
+      await waitFor(() => expect(document.body.textContent).toContain('The plate check is unavailable'));
+      expect(document.body.textContent).not.toContain('Objects detected on build plate');
+    });
     it('shows modal when plate-not-empty event is dispatched', async () => {
       render(<Layout />);
 

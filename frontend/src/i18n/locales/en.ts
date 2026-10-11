@@ -95,6 +95,7 @@ export default {
       "ai_spaghetti": "Possible print failure",
       "foreign_object": "Foreign object on plate",
       "plate_objects": "Objects detected on plate",
+      "plate_check_unavailable": "Plate check unavailable",
       "hms_other": "Printer warning",
       "unknown": "Check the printer"
     },
@@ -4088,6 +4089,7 @@ export default {
 
   // Plate detection alert
   plateAlert: {
+    unavailableMessage: 'The plate check is unavailable. The print has been automatically paused. Inspect the plate, camera and calibration before resuming.',
     title: 'Print Paused!',
     message: 'Objects detected on build plate. The print has been automatically paused. Please clear the plate and resume the print.',
     understand: 'I Understand'
