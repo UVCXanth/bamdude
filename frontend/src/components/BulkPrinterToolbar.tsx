@@ -2,12 +2,15 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
-import { X, Square, Pause, Play, ChevronDown, BellOff, Eraser } from 'lucide-react';
+import { X, Square, Pause, Play, ChevronDown, BellOff, Eraser, Home, Wrench, SlidersHorizontal, Lightbulb, Clock, Power } from 'lucide-react';
 import { Button } from './Button';
-import type { Printer } from '../api/client';
+import { CardActionMenu } from './CardActionMenu';
+import type { Printer, Permission } from '../api/client';
 import { byLocationName } from '../utils/locationOrder';
 
-export type BulkAction = 'stop' | 'pause' | 'resume' | 'clearPlate' | 'clearHMS';
+export type BulkAction = 'stop' | 'pause' | 'resume' | 'clearPlate' | 'clearHMS'
+  | 'home' | 'calibrate' | 'maintenance' | 'queuePause' | 'queueResume'
+  | 'serviceOn' | 'serviceOff' | 'lightOn' | 'lightOff';
 type PrinterStateFilter = 'printing' | 'paused' | 'finished' | 'idle' | 'error' | 'offline';
 
 interface PrinterStatus {
@@ -186,6 +189,32 @@ export function BulkPrinterToolbar({
       <div className="w-px h-6 bg-bambu-dark-tertiary" />
 
       {/* Actions */}
+      <CardActionMenu
+        label={t('printers.bulk.moreActions')}
+        icon={<><span>{t('printers.bulk.moreActions')}</span><ChevronDown className="w-3 h-3" /></>}
+        triggerClassName="flex items-center gap-2 rounded-md px-3 py-2 bg-bambu-dark-tertiary text-white text-sm font-medium hover:bg-bambu-dark"
+        width={280}
+        estimatedHeight={400}
+        disabled={actionPending || selectedIds.size === 0}
+      >{close => ([
+        { action: 'home', icon: Home, permission: 'printers:control' },
+        { action: 'calibrate', icon: SlidersHorizontal, permission: 'printers:control' },
+        { action: 'maintenance', icon: Wrench, permission: 'maintenance:update', read: 'maintenance:read' },
+        { action: 'queuePause', icon: Clock, permission: 'queue:update_all', read: 'queue:read' },
+        { action: 'queueResume', icon: Clock, permission: 'queue:update_all', read: 'queue:read' },
+        { action: 'serviceOn', icon: Power, permission: 'printers:update' },
+        { action: 'serviceOff', icon: Power, permission: 'printers:update' },
+        { action: 'lightOn', icon: Lightbulb, permission: 'printers:control' },
+        { action: 'lightOff', icon: Lightbulb, permission: 'printers:control' },
+      ] satisfies { action: BulkAction; icon: typeof Home; permission: Permission; read?: Permission }[]).map(({ action, icon: Icon, permission, read }) => (
+        <button key={action} role="menuitem" type="button"
+          disabled={!hasPermission(permission) || (!!read && !hasPermission(read))}
+          onClick={() => { close(); onAction(action); }}
+          className="flex w-full items-center gap-2 px-3 py-2 text-sm text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white disabled:opacity-40"
+        >
+          <Icon className="w-4 h-4" />{t(`printers.bulk.actions.${action}`)}
+        </button>
+      ))}</CardActionMenu>
       <Button size="sm" className="bg-red-500 hover:bg-red-600" onClick={() => onAction('stop')}
         disabled={actionPending || !canControl || !anyStoppable}
       >
