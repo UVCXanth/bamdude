@@ -1298,3 +1298,104 @@ async def test_an_unfinished_proof_keeps_its_records_and_admission_closed(tmp_pa
         assert runtime.uncertain and (attempt / "child.launch").exists()
     finally:
         release.set()
+
+
+# Final review of the unrecorded-launch change (fix pass): I1 -- an attempt that cannot be listed is no proof; M1.
+
+
+def spawn_window(runtime: PartRenderRuntime) -> tuple[Path, subprocess.Popen]:
+    """The measured window: dead worker records, a dead recorded guardian, a live child with no record."""
+    attempt = this_run(runtime)
+    launch(attempt, "guardian")
+    dead_record(attempt / "guardian.pid")
+    return attempt, token_holder(launch(attempt, "child"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unreadable", ["listing", "entry"])
+async def test_staging_that_cannot_be_listed_is_no_proof(tmp_path, monkeypatch, caplog, unreadable):
+    """Review I1: abandoned_attempts files a listing error -- or an attempt it cannot stat -- as an unknown entry,
+    and nothing waited for an attempt it never saw. An attempt may hide there: no proof, admission and restore
+    closed, the child untouched."""
+    import errno
+
+    from backend.app.services import worker_staging
+    from backend.app.services.part_render_scheduler import PartRenderScheduler
+
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    attempt, child = spawn_window(runtime)
+    service_root = runtime.staging / "service"
+    if unreadable == "listing":
+        real = worker_staging._entries
+
+        def entries(path):
+            if path == service_root:
+                raise PermissionError(errno.EACCES, "denied")
+            return real(path)
+
+        monkeypatch.setattr(worker_staging, "_entries", entries)
+        stage = "attempts: listing unreadable"
+    else:
+        real = worker_staging._info
+
+        def info(path):
+            if path == attempt:
+                raise OSError(errno.EIO, "i/o error")
+            return real(path)
+
+        monkeypatch.setattr(worker_staging, "_info", info)
+        stage = "attempt=dddddddd: entry unreadable"
+    try:
+        with (
+            caplog.at_level(logging.ERROR, logger="backend.app.services.part_render_runtime"),
+            pytest.raises(RuntimeUnavailable),
+        ):
+            await runtime.retire()
+        assert child.poll() is None and attempt.exists()
+        assert not await PartRenderScheduler(runtime, None, tmp_path / "results").stop("restore")
+        assert runtime.uncertain
+        assert f"Part render ownership uncertain: the proof failed at {stage}" in caplog.text
+    finally:
+        stop_all(child)
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_entry_in_the_staging_stays_a_warning(tmp_path, caplog):
+    """Review I1, ruled: an entry whose name is no attempt's (attempt directories are named by a uuid4 hex) cannot
+    hide an attempt -- a warning, as before, never a new refusal."""
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    this_run(runtime)
+    (runtime.staging / "service" / "notes.txt").write_text("x", encoding="ascii")
+    with caplog.at_level(logging.WARNING, logger="backend.app.services.part_render_runtime"):
+        await runtime.retire()
+    assert not runtime.uncertain
+    assert "Part render worker staging holds an unknown entry: notes.txt" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_launch_ended_before_a_later_error_still_reaches_the_parent_log(tmp_path, monkeypatch, caplog):
+    """Review M1: the child was killed by its token, then the walk failed on Node -- the kill is in the log too."""
+    from backend.app.services import part_render_tree
+
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    attempt, child = spawn_window(runtime)
+    launch(attempt, "node")
+    real = part_render_tree._unrecorded_why
+
+    def failing(attempt_dir, name, *args):
+        if name == "node":
+            raise OSError("injected")
+        return real(attempt_dir, name, *args)
+
+    monkeypatch.setattr(part_render_tree, "_unrecorded_why", failing)
+    try:
+        with (
+            caplog.at_level(logging.WARNING, logger="backend.app.services.part_render_runtime"),
+            pytest.raises(RuntimeUnavailable),
+        ):
+            await runtime.retire()
+        assert child.wait(timeout=5) is not None
+        assert "attempt=dddddddd child launched without its record: ended by its token" in caplog.text
+        assert "the proof failed at attempt=dddddddd: OSError" in caplog.text
+    finally:
+        stop_all(child)

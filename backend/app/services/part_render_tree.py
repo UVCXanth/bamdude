@@ -339,8 +339,15 @@ def tree_unproven(
                 return f"{name}: {why}"
             ended.add(name)
         elif strict and (attempt_dir / f"{name}.launch").exists():
+            if generation is None:
+                # no staging, no owner to read a holder against: refused as before the rule (final review M3)
+                return f"{name}: launched without its record"
             why, holders = _unrecorded_why(attempt_dir, name, generation, ended, owner, timeout)
             if why is not None:
+                if holders and notes is not None:  # the kills happened, whatever the refusal (final review M1)
+                    notes.append(
+                        f"{name} launched without its record: {holders} token holders ended before its refusal"
+                    )
                 return f"{name}: launched without its record ({why})"
             ended.add(name)
             if notes is not None:

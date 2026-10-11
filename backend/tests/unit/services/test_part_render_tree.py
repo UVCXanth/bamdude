@@ -77,7 +77,7 @@ def test_a_half_written_record_fails_the_strict_proof(tmp_path):
 
 def test_a_proof_names_a_launch_without_its_record(tmp_path):
     launch(tmp_path, "child")
-    assert tree_unproven(tmp_path, strict=True) == "child: launched without its record (parent guardian never launched)"
+    assert tree_unproven(tmp_path, strict=True) == "child: launched without its record"  # no staging: no rule
     assert tree_unproven(tmp_path, strict=False) is None
 
 
@@ -1597,3 +1597,76 @@ def test_a_worker_launched_without_its_record_is_a_bounded_limit_not_a_proof(tmp
     generation, _ = _generation(tmp_path)
     launch(generation, "service")
     assert worker_records_unproven(generation) is None
+
+
+# Final review of the unrecorded-launch change (fix pass): M1-M3.
+
+
+def test_a_refusal_after_ending_holders_says_how_many_it_ended(tmp_path, monkeypatch):
+    """Review M1: a launch refused after some of its token holders were already killed says so in the parent
+    log -- the kills happened, whatever the refusal."""
+    from backend.app.services.part_render_tree import launch_arg
+
+    generation, attempt = _generation(tmp_path)
+    (generation / "owner.pid").write_text(json.dumps({"user": 1000}), encoding="ascii")
+    (attempt / "guardian.launch").write_text("b" * 32, encoding="ascii")
+    _dead(attempt / "guardian.pid")
+    (attempt / "child.launch").write_text("a" * 32, encoding="ascii")
+    fork = _Readable(9, uid=1000)
+    fork.info["cmdline"] = ["python", launch_arg("b" * 32)]  # the guardian's fork, caught before its exec
+    _Holder.killed = []
+    tree = _scan(monkeypatch, [], windows=False)
+    rounds = iter([[fork], [], [_Unreadable(7, uid=1000)]])  # parent token: one holder, then none; then the child's
+    monkeypatch.setattr(tree.psutil, "process_iter", lambda attrs: next(rounds))
+    notes: list[str] = []
+    why = tree.tree_unproven(attempt, strict=True, generation=generation, notes=notes)
+    assert why == "child: launched without its record (a possible holder unreadable)"
+    assert _Holder.killed == [9]
+    assert notes == ["child launched without its record: 1 token holders ended before its refusal"]
+
+
+def test_a_guardian_launched_without_its_record_has_its_workers_fork_ended_first(tmp_path):
+    """Review M2: the guardian's parent is the worker, so the worker's own token is scanned first -- a fork of the
+    worker caught before it executed the guardian still runs the worker's command line (spec §4.1, step 3)."""
+    generation, attempt = _this_run(tmp_path)
+    fork = _token_holder((generation / "service.launch").read_text(encoding="ascii"))
+    launch(attempt, "guardian")
+    try:
+        assert tree_unproven(attempt, strict=True, generation=generation) is None
+        assert fork.wait(timeout=5) is not None
+    finally:
+        _stop(fork)
+
+
+def test_this_runs_worker_guardian_record_is_proven_too(tmp_path):
+    """Review M2: R2 proves both of the generation's records -- the worker guardian as well as the worker."""
+    from backend.app.services.part_render_tree import worker_records_unproven
+
+    generation, _ = _generation(tmp_path)
+    guardian = _spawn()
+    launch(generation, "worker")
+    record(generation / "worker.pid", guardian.pid)
+    launch(generation, "service")
+    _dead(generation / "service.pid")
+    try:
+        assert worker_records_unproven(generation) is None
+        assert guardian.wait(timeout=5) is not None
+    finally:
+        _stop(guardian)
+
+
+def test_a_strict_proof_without_this_runs_staging_refuses_a_launch_without_its_record_as_before(tmp_path, monkeypatch):
+    """Review M3: the rule needs this run's staging -- its owner names the user a holder must be. Without it the
+    strict proof refuses exactly as before the rule, and scans nothing."""
+    import psutil
+
+    _, attempt = _this_run(tmp_path)
+    launch(attempt, "guardian")
+    _dead(attempt / "guardian.pid")
+    launch(attempt, "child")
+
+    def no_scan(attrs):
+        raise AssertionError("no staging, no scan")
+
+    monkeypatch.setattr(psutil, "process_iter", no_scan)
+    assert tree_unproven(attempt, strict=True) == "child: launched without its record"

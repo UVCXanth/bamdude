@@ -2,8 +2,10 @@
 
 Owns the worker, its bucket and ONE slot. ``render`` holds the slot from the request to the end of its
 cleanup. When the worker does not answer, the slot is held through the cancel and, if that is not
-confirmed, through the retire and its proof. The proof covers the worker's tree and every attempt it ran
-(``part_render_tree.tree_gone(strict=True)`` over the worker's staging). So no attempt ever starts beside
+confirmed, through the retire and its proof. The proof covers the worker's tree, the worker by its own
+records (``part_render_tree.worker_records_unproven``) and every attempt it ran
+(``part_render_tree.tree_unproven(strict=True, generation=...)`` over the worker's staging, which ends a
+launch without its record by its token under a parent proven ended). So no attempt ever starts beside
 one that may still run -- not after a hung NAS read, a timeout or a cancellation. A retire that cannot
 prove the tree gone leaves the runtime ``ownership_uncertain`` until the process restarts (spec §13); no
 replacement worker starts and no proof is deleted.
@@ -479,6 +481,14 @@ class PartRenderRuntime:
                 return
             attempts, unknown = await disk(abandoned_attempts, service_root)
             for path in unknown:
+                if path == service_root or _HEX.fullmatch(path.name):
+                    # the listing, or an entry named as an attempt, could not be read as one: an attempt may
+                    # hide there, and an attempt never read is no attempt proven (final review I1, UL-R1). A
+                    # foreign name stays a warning: attempts are named by a uuid4 hex, so it hides none.
+                    self.uncertain, self.reason = True, "ownership_uncertain"
+                    where = "attempts: listing" if path == service_root else f"attempt={path.name[:8]}: entry"
+                    logger.error("Part render ownership uncertain: the proof failed at %s unreadable", where)
+                    raise RuntimeUnavailable("ownership_uncertain")
                 logger.warning("Part render worker staging holds an unknown entry: %s", path.name)
             # all attempts first, deletions after: one unproven attempt keeps every directory (consilium E3-R1)
             for attempt in attempts:
@@ -486,13 +496,17 @@ class PartRenderRuntime:
                 # strict: the worker is gone, so a launch without its record may have left a process outside every
                 # tree this process can see -- ended by its token under a parent proven ended, or unproven
                 notes: list[str] = []
-                why = await disk(
-                    lambda path=attempt, notes=notes: tree_unproven(
-                        path, strict=True, generation=self.staging, notes=notes
+                try:
+                    why = await disk(
+                        lambda path=attempt, notes=notes: tree_unproven(
+                            path, strict=True, generation=self.staging, notes=notes
+                        )
                     )
-                )
-                for note in notes:
-                    logger.warning("Part render attempt=%s %s", attempt.name[:8], note)
+                finally:
+                    # a launch ended by its token is in the parent log even when a later step of the walk
+                    # raised (final review M1)
+                    for note in notes:
+                        logger.warning("Part render attempt=%s %s", attempt.name[:8], note)
                 if why is not None:
                     self.uncertain, self.reason = True, "ownership_uncertain"
                     logger.error("Part render attempt=%s ownership uncertain: %s", attempt.name[:8], why)
