@@ -194,3 +194,55 @@ describe('InstanceThumb', () => {
     expect(screen.getByRole('img', { name: 'cube.stl: the picture is being prepared' })).toBeInTheDocument();
   });
 });
+
+describe('after the final review (plan E5)', () => {
+  it('a queued picture has its own mark — not the glyph of «no picture» (review 1)', () => {
+    render(<PartThumb partId={5} image={pending} name="Body" />);
+    expect(screen.getByTestId('part-thumb').querySelector('[data-glyph="pending"]')).not.toBeNull();
+    expect(screen.getByTestId('part-thumb').querySelector('[data-glyph="printed"]')).toBeNull();
+  });
+
+  it('a broken picture opens no larger one; once it loads, it does (review 7)', () => {
+    setMediaToken('fake-token');
+    render(<PartThumb partId={5} image={ready} name="Body" />);
+    const img = screen.getByTestId('part-thumb-img');
+    fireEvent.error(img);
+    fireEvent.mouseEnter(screen.getByTestId('part-thumb'));
+    expect(screen.queryByTestId('part-thumb-zoom')).not.toBeInTheDocument();
+    fireEvent.mouseLeave(screen.getByTestId('part-thumb'));
+    fireEvent.load(img);
+    fireEvent.mouseEnter(screen.getByTestId('part-thumb'));
+    expect(screen.getByTestId('part-thumb-zoom')).toBeInTheDocument();
+  });
+
+  it('a failure the token recovery already answers is not counted (review 8)', () => {
+    setMediaToken('fake-token');
+    render(<PartThumb partId={5} image={ready} name="Body" />);
+    const img = screen.getByTestId('part-thumb-img');
+    img.dataset.mediaRetry = img.getAttribute('src') ?? '';
+    fireEvent.error(img);
+    expect(img).toBeVisible();
+    expect(screen.getByTestId('part-thumb').querySelector('[data-glyph="printed"]')).toBeNull();
+  });
+
+  it('a failure on one version never carries over to the next (review 8)', () => {
+    setMediaToken('fake-token');
+    const { rerender } = render(<PartThumb partId={5} image={ready} name="Body" />);
+    fireEvent.error(screen.getByTestId('part-thumb-img'));
+    expect(screen.getByTestId('part-thumb-img')).not.toBeVisible();
+    rerender(<PartThumb partId={5} image={{ ...ready, v: 'next1' }} name="Body" />);
+    const next = screen.getByTestId('part-thumb-img');
+    expect(next.getAttribute('src')).toContain('v=next1');
+    expect(next).toBeVisible();
+    expect(screen.getByTestId('part-thumb').querySelector('[data-glyph="printed"]')).toBeNull();
+  });
+
+  it('a failed picture is asked again at once, not lazily — a hidden lazy image may wait for ever (review 9)', () => {
+    setMediaToken('fake-token');
+    render(<PartThumb partId={5} image={ready} name="Body" />);
+    const img = screen.getByTestId('part-thumb-img');
+    expect(img).toHaveAttribute('loading', 'lazy');
+    fireEvent.error(img);
+    expect(img).toHaveAttribute('loading', 'eager');
+  });
+});

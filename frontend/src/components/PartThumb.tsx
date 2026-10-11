@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Box, ShoppingBag } from 'lucide-react';
+import { Box, Hourglass, ShoppingBag } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import type { InstanceImageRef, PartImageRef, PartImageSize, ProductPartKind } from '../api/client';
@@ -19,8 +19,9 @@ const GLYPH: Record<PartThumbSize, string> = { xs: 'h-3 w-3', sm: 'h-4 w-4', md:
 const ZOOM_PX = 256;
 const MARGIN_PX = 8;
 
-function Glyph({ kind, size }: { kind: ProductPartKind; size: PartThumbSize }) {
-  const Icon = kind === 'purchased' ? ShoppingBag : Box;
+function Glyph({ kind, size }: { kind: ProductPartKind | 'pending'; size: PartThumbSize }) {
+  // a queued picture has its own quiet mark: it must not read as «no picture» (final review 1)
+  const Icon = kind === 'pending' ? Hourglass : kind === 'purchased' ? ShoppingBag : Box;
   return <Icon data-glyph={kind} className={`${GLYPH[size]} text-bambu-gray`} aria-hidden="true" />;
 }
 
@@ -30,22 +31,37 @@ function Glyph({ kind, size }: { kind: ProductPartKind; size: PartThumbSize }) {
  * media-token recovery (`useStreamTokenSync`) retries INTO it. A failure it already answers
  * (`mediaRetryStarted`), or one asked before the token existed, is not counted.
  */
-function Picture({ src, alt, kind, size }: { src: string; alt: string; kind: ProductPartKind; size: PartThumbSize }) {
-  const [failed, setFailed] = useState(false);
+function Picture({
+  src,
+  alt,
+  kind,
+  size,
+  failed,
+  onFailed,
+}: {
+  src: string;
+  alt: string;
+  kind: ProductPartKind;
+  size: PartThumbSize;
+  failed: boolean;
+  onFailed: (failed: boolean) => void;
+}) {
   return (
     <>
       <img
         data-testid="part-thumb-img"
         src={src}
         alt={alt}
-        loading="lazy"
+        // A failed picture is asked again at once: a hidden LAZY image may never be fetched in a browser
+        // that defers what is not rendered, and the recovery retries into this very element (final review 9).
+        loading={failed ? 'eager' : 'lazy'}
         hidden={failed}
-        onLoad={() => setFailed(false)}
+        onLoad={() => onFailed(false)}
         onError={(e) => {
           const el = e.currentTarget;
           if (mediaRetryStarted(el)) return;
           if (!new URL(el.getAttribute('src') ?? '', window.location.href).searchParams.has('token')) return;
-          setFailed(true);
+          onFailed(true);
         }}
         className="h-full w-full object-contain"
       />
@@ -82,7 +98,14 @@ function ThumbFrame({ state, src, zoomSrc, name, kind, size, zoom }: FrameProps)
   const [hovered, setHovered] = useState(false);
   const [held, setHeld] = useState(false);
   const [at, setAt] = useState<{ left: number; top: number } | null>(null);
-  const zoomable = state === 'ready' && zoom !== 'none' && zoomSrc !== null;
+  // The address whose picture failed: a failure belongs to that picture alone, and a broken one opens no
+  // larger one (final review 7) — the next version starts clean.
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const failed = src !== null && failedSrc === src;
+  // The door stays what it is when the picture fails: swapping the button for a span would remount the
+  // <img> the media-token recovery retries into. A failure only keeps the larger picture shut.
+  const zoomDoor = state === 'ready' && zoom !== 'none' && zoomSrc !== null;
+  const zoomable = zoomDoor && !failed;
   const open = zoomable && (hovered || held);
 
   const place = () => {
@@ -121,7 +144,19 @@ function ThumbFrame({ state, src, zoomSrc, name, kind, size, zoom }: FrameProps)
 
   const box = `relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded bg-bambu-dark-tertiary/60 ${BOX[size]}`;
   const body: ReactNode =
-    state === 'ready' && src ? <Picture key={src} src={src} alt={name} kind={kind} size={size} /> : <Glyph kind={kind} size={size} />;
+    state === 'ready' && src ? (
+      <Picture
+        key={src}
+        src={src}
+        alt={name}
+        kind={kind}
+        size={size}
+        failed={failed}
+        onFailed={(value) => setFailedSrc(value ? src : null)}
+      />
+    ) : (
+      <Glyph kind={state === 'pending' ? 'pending' : kind} size={size} />
+    );
   const pendingLabel = state === 'pending' ? t('products.partThumb.pending', { name }) : undefined;
 
   return (
@@ -137,7 +172,7 @@ function ThumbFrame({ state, src, zoomSrc, name, kind, size, zoom }: FrameProps)
       }}
       onMouseLeave={() => setHovered(false)}
     >
-      {zoomable && zoom === 'click' ? (
+      {zoomDoor && zoom === 'click' ? (
         <button
           type="button"
           aria-label={t('products.partThumb.enlarge', { name })}

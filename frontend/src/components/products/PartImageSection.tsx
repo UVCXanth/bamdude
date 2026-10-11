@@ -187,6 +187,8 @@ export function PartImageSection({
 
   const list = candidates.data ?? [];
   const chosenFile = draft.source === 'photo' ? draft.file : null;
+  // The last file chosen here: «Photo» picks it up again after a trip to another option (final review 3).
+  const [lastFile, setLastFile] = useState<File | null>(chosenFile);
   const summary = printed && partId != null && list.length > 0 ? platesSummary(list) : null;
 
   let objects = null;
@@ -270,7 +272,11 @@ export function PartImageSection({
         <PartThumb partId={partId ?? 0} image={image} name={name} kind={kind} size="md" />
         <div className="min-w-0 space-y-0.5">
           <p className="text-xs text-bambu-gray-light">
-            {image ? t('products.partImage.shown') : t('products.partImage.none')}
+            {image?.status === 'pending'
+              ? t('products.partImage.method.pending')
+              : image
+                ? t('products.partImage.shown')
+                : t('products.partImage.none')}
           </p>
           {partId != null && <SavedState choice={choice} />}
         </div>
@@ -301,7 +307,7 @@ export function PartImageSection({
               name={group}
               className={RADIO}
               checked={draft.source === 'photo'}
-              onChange={() => onChange({ source: 'photo', file: chosenFile })}
+              onChange={() => onChange({ source: 'photo', file: chosenFile ?? lastFile })}
               disabled={disabled}
             />
             {t('products.partImage.photo')}
@@ -318,14 +324,17 @@ export function PartImageSection({
               disabled={disabled}
               onChange={(e) => {
                 const file = e.target.files?.[0];
-                if (file) onChange({ source: 'photo', file });
+                if (file) {
+                  setLastFile(file);
+                  onChange({ source: 'photo', file });
+                }
                 e.target.value = ''; // the same file may be chosen again
               }}
               className="peer sr-only"
             />
             <label
               htmlFor={photoInputId}
-              className={`inline-flex items-center rounded-lg bg-bambu-dark-tertiary px-3 py-1.5 text-xs text-white peer-focus-visible:ring-2 peer-focus-visible:ring-bambu-green ${
+              className={`inline-flex items-center rounded-lg bg-bambu-dark-tertiary px-3 py-1.5 text-xs text-white peer-focus:ring-2 peer-focus:ring-bambu-green ${
                 disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-bambu-gray-dark'
               }`}
             >

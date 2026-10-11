@@ -7251,7 +7251,7 @@ export default {
       rerender: 'Re-render',
       rerenderQueued: 'Plates queued for re-render: {{count}}',
       rerenderFailed: 'Could not queue the re-render: {{message}}',
-      failed: 'The picture is not saved: {{message}}',
+      failed: 'The picture is not saved: {{message}}.',
       partSavedPictureFailed:
         'The part is saved; its picture is not: {{message}}. «Save part» tries the picture again; «Cancel» closes and keeps the part as it is saved.',
     },

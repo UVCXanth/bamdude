@@ -317,6 +317,8 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
     const body = fieldsBody(tokens, variantId, unitPrice);
     const request = pendingImageRequest(imageDraft, facts.choice); // the LIVE saved choice (D16)
     if (body === null && request === null) {
+      // a partial success earlier in this dialog IS a saved part: say so on the way out (final review 4)
+      if (savedHere) showToast(t('products.partDialog.saved'));
       onClose();
       return;
     }
@@ -329,14 +331,21 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
         adopt(saved);
         setSavedHere(true);
         invalidateComposition(queryClient, product.id);
+        // what the part matches follows its saved name and aliases (D8): the gallery is asked again
+        queryClient.invalidateQueries({ queryKey: ['part-image-candidates', saved.id] });
       }
       if (request !== null && saved) {
         adopt(await image.mutateAsync({ partId: saved.id, request }));
         invalidatePartImageViews(queryClient);
       }
     } catch {
-      // The refusal is in the dialog; the draft and its file stay for the retry (D7).
+      // The refusal is in the dialog; the draft and its file stay for the retry (D7). A refused pin may be
+      // a gallery that moved: the saved state and the candidates are asked again (final review 2).
       sent.current = false;
+      if (base) {
+        queryClient.invalidateQueries({ queryKey: ['product', product.id] });
+        queryClient.invalidateQueries({ queryKey: ['part-image-candidates', base.id] });
+      }
       return;
     }
     showToast(t('products.partDialog.saved'));

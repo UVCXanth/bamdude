@@ -647,6 +647,57 @@ describe('ProductPartDialog', () => {
       await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('its picture is not: Not a picture. «Save part»'));
     });
 
+    it('a refused pin asks the gallery again: what the part now matches may have moved (review 2)', async () => {
+      const candidate = {
+        library_file_id: 9,
+        filename: 'flask.gcode.3mf',
+        hidden: false,
+        plate_index: 1,
+        identify_id: 11,
+        method: 'toolpath',
+        reason: null,
+        plate_status: 'ready' as const,
+        v: 'v11',
+        pinned: false,
+      };
+      const candidates = vi.spyOn(api, 'getPartImageCandidates').mockResolvedValue([candidate]);
+      vi.spyOn(api, 'updateProductPart').mockResolvedValue({ ...body, name: 'Body 2' } as never);
+      vi.spyOn(api, 'setPartImage').mockRejectedValue(new ApiError('This object cannot be pinned to this part', 422));
+      render(<ProductPartDialog product={product} part={body} onClose={noop} />);
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Body 2' } });
+      fireEvent.click(await screen.findByRole('radio', { name: /Object #11/ }));
+      const before = candidates.mock.calls.length;
+      fireEvent.click(save());
+      expect(await screen.findByRole('alert')).toHaveTextContent('This object cannot be pinned to this part');
+      await waitFor(() => expect(candidates.mock.calls.length).toBeGreaterThan(before));
+    });
+
+    it('after a partial success, putting the picture back to what is saved closes with «Part saved» (review 4)', async () => {
+      vi.spyOn(api, 'createProductPart').mockResolvedValue(savedNew as never);
+      vi.spyOn(api, 'uploadPartPhoto').mockRejectedValue(new ApiError('The photo must be a PNG, JPEG or WebP picture', 422));
+      const onClose = vi.fn();
+      render(<ProductPartDialog product={product} onClose={onClose} />);
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Gear' } });
+      choosePhoto();
+      fireEvent.click(save());
+      expect(await screen.findByRole('alert')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('radio', { name: /Automatic/ }));
+      await waitFor(() => expect(save()).not.toBeDisabled());
+      fireEvent.click(save());
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText('Part saved')).toBeInTheDocument();
+    });
+
+    it('a picture-only refusal ends with its own full stop (review 5)', async () => {
+      vi.spyOn(api, 'uploadPartPhoto').mockRejectedValue(new ApiError('The photo must be a PNG, JPEG or WebP picture', 422));
+      render(<ProductPartDialog product={product} part={body} onClose={noop} />);
+      choosePhoto();
+      fireEvent.click(save());
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'The picture is not saved: The photo must be a PNG, JPEG or WebP picture.',
+      );
+    });
+
     it('«Photo» with no file on a part without a saved photo: said in the dialog, nothing sent', () => {
       const update = vi.spyOn(api, 'updateProductPart');
       const upload = vi.spyOn(api, 'uploadPartPhoto');

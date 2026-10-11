@@ -268,3 +268,27 @@ describe('after the browser check (plan E5, Task 41)', () => {
     expect(screen.getByText('No picture yet')).toBeInTheDocument();
   });
 });
+
+describe('after the final review (plan E5)', () => {
+  it('a queued picture says it is being prepared, never «Shown now» (review 1)', () => {
+    render(<Host part={savedPart({ image: { kind: 'render', status: 'pending', v: null } })} />);
+    expect(screen.getByText('Being prepared')).toBeInTheDocument();
+    expect(screen.queryByText('Shown now')).not.toBeInTheDocument();
+  });
+
+  it('the chosen file survives a trip to another option (review 3)', () => {
+    const onDraft = vi.fn();
+    render(<Host part={null} onDraft={onDraft} />);
+    const file = new File(['a'], 'a.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Choose a photo'), { target: { files: [file] } });
+    fireEvent.click(screen.getByRole('radio', { name: /Automatic/ }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Photo' }));
+    expect(onDraft).toHaveBeenLastCalledWith({ source: 'photo', file });
+    expect(screen.getByText('Chosen: a.png')).toBeInTheDocument();
+  });
+
+  it('the photo button shows any focus of its field — the dialog moves it there on a refusal (review 6)', () => {
+    render(<Host part={null} />);
+    expect(screen.getByText('Choose a photo', { selector: 'label' })).toHaveClass('peer-focus:ring-2');
+  });
+});
