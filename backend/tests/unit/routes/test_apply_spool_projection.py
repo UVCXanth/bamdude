@@ -49,7 +49,7 @@ async def _fixture(db_session, policy: dict | None, tray=LIVE_MANUAL_TRAY):
     return printer, spool, state, client
 
 
-async def _run(db_session, printer, spool, state, client):
+async def _run(db_session, printer, spool, state, client, *, expected_sent=True):
     with (
         patch("backend.app.services.printer_manager.printer_manager") as pm,
         patch(
@@ -64,7 +64,7 @@ async def _run(db_session, printer, spool, state, client):
             await apply_spool_to_slot_via_mqtt(
                 db=db_session, current_user=None, spool=spool, printer_id=printer.id, ams_id=0, tray_id=1
             )
-            is True
+            is expected_sent
         )
     return client.ams_set_filament_setting.call_args.kwargs, cali
 
@@ -121,7 +121,7 @@ async def test_a_refused_publish_leaves_no_overlay_entry(db_session):
         db_session, {"normalize_color": True, "canonical_color_rgba": "000000FF"}
     )
     client.ams_set_filament_setting.return_value = False
-    await _run(db_session, printer, spool, state, client)
+    await _run(db_session, printer, spool, state, client, expected_sent=False)
     client.register_assignment_verification.assert_not_called()
     assert ams_advertised_overlay.entries_for(printer.id) == {}
 
