@@ -3,16 +3,35 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
-import type { Product, ProductPart, ProductPartCreate, ProductPartKind, ProductPartUpdate } from '../../api/client';
+import type {
+  PartImageChoice,
+  PartImageRef,
+  Product,
+  ProductPart,
+  ProductPartCreate,
+  ProductPartKind,
+  ProductPartUpdate,
+} from '../../api/client';
+import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { useInnerEscape } from '../../hooks/useInnerEscape';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 import { getCurrencySymbol } from '../../utils/currency';
+import { invalidatePartImageViews } from '../../utils/queryInvalidation';
 import { Button } from '../Button';
 import { Select } from '../Select';
 import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { WorkshopField, WorkshopFormGrid } from '../workshop/WorkshopFormGrid';
+import { PartImageSection } from './PartImageSection';
+import {
+  draftFromChoice,
+  needsPhotoFile,
+  pendingImageRequest,
+  sendImageRequest,
+  type PartImageDraft,
+  type PartImageRequest,
+} from './partImageDraft';
 import { compositionMutationKey, invalidateComposition } from './partMutations';
-import { useUiPreferences } from '../../hooks/useUiPreferences';
 
 const FIELD_CLASS =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
@@ -32,6 +51,21 @@ function sameList(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
+/** The saved picture as the server says it now (plan E5 r2, D15) — not the editing base. */
+interface ImageFacts {
+  image: PartImageRef | null;
+  choice: PartImageChoice | null;
+}
+
+function factsOf(part: ProductPart | null | undefined): ImageFacts {
+  return { image: part?.image ?? null, choice: part?.image_choice ?? null };
+}
+
+/** A printed part's aliases without its own key — what the token field shows and sends. */
+function ownAliases(part: ProductPart | null): string[] {
+  return part ? part.aliases.filter((alias) => alias !== part.name_key) : [];
+}
+
 interface ProductPartDialogProps {
   product: Product;
   /** The part to edit; none for a new one. */
@@ -40,15 +74,28 @@ interface ProductPartDialogProps {
 }
 
 /**
- * A product's part — new or edited — in one dialog and ONE request (WS-13 E10 C01–C07,
- * F14). Nothing is written before «Save part»: the aliases travel with the part as its
- * whole list, and a new part carries its variant binding (A05), so a refusal — a key
- * another part owns, a busy product — leaves nothing half-saved, and what was typed stays.
+ * A product's part — new or edited — and its picture, in one dialog (WS-13 E10 C01–C07, F14;
+ * spec part-thumbnails §12.4). Nothing is written before «Save part»: the aliases travel with the
+ * part as its whole list, a new part carries its variant binding (A05), and the picture section
+ * holds its choice and its file as a draft — «Cancel» sends nothing at all.
  *
- * ⚠️ **One session, one base (J).** The part handed over at the opening is the base the
- * PATCH is measured from; a background refresh of the product changes the variant list
- * (the dictionary) but never what was typed. A bound option the product lost is named so
- * and blocks the save until another is chosen.
+ * ⚠️ **«Save part» is two requests, in order (plan E5, D7).** The part first — created, or patched
+ * by what differs — and then, only if the draft moved, the picture. After each success the dialog
+ * takes the server's answer as its base: what was sent is saved, so nothing of it is sent again. A
+ * picture refused after the part was saved keeps the dialog open on the saved part — a new one is an
+ * edit now — with the draft and its file kept: the retry sends the picture alone, never a second
+ * create, and «Cancel» closes without the picture, undoing nothing (the error says so).
+ *
+ * ⚠️ **The saved picture is live, the base is not (plan E5 r2, D15–D16).** The effective picture, the
+ * saved choice and its pin's validity come from `product.parts` by the base's id — refreshed by the
+ * server event and every write — and from this dialog's own answers, whichever came later; the
+ * caller's `part` is a snapshot taken at the opening. A picture draft the operator has not touched IS
+ * «keep what is saved» and follows the saved choice; a touched one never moves, and «Save part»
+ * compares it with the LIVE saved choice — an untouched draft never reverts another client's pin.
+ *
+ * ⚠️ **One session, one base (J).** Only this dialog's own writes move the base; a background refresh
+ * of the product changes the variant list (the dictionary) but never what was typed. A bound option
+ * the product lost is named so and blocks the save until another is chosen.
  *
  * The kind is chosen at creation only (K2): the server has no `kind` on a PATCH.
  * «Not counted» belongs to a printed part with nothing per unit (K4); a count typed on a
@@ -58,19 +105,20 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const { hasPermission } = useAuth();
   const { data: settings } = useUiPreferences();
 
   const groups = product.variant_groups ?? [];
   const optionLabel = new Map(groups.flatMap((g) => g.options.map((o) => [o.id, `${g.name}: ${o.name}`] as const)));
 
-  // The session's base — the part as it was at the opening — and the name of its option then.
-  const [base] = useState<ProductPart | null>(part ?? null);
+  // The session's base — the part as it was at the opening, then as this dialog's writes answered.
+  const [base, setBase] = useState<ProductPart | null>(part ?? null);
   const [baseOptionLabel] = useState(() =>
-    base?.variant_option_id != null ? optionLabel.get(base.variant_option_id) : undefined,
+    part?.variant_option_id != null ? optionLabel.get(part.variant_option_id) : undefined,
   );
   const isEdit = base != null;
   const ownKey = base?.kind === 'printed' ? base.name_key : null;
-  const baseAliases = base ? base.aliases.filter((alias) => alias !== base.name_key) : [];
+  const baseAliases = ownAliases(base);
 
   const ids = {
     kind: useId(),
@@ -83,6 +131,7 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
     price: useId(),
     url: useId(),
     remarks: useId(),
+    photo: useId(),
   };
   // The cursor starts in the name (C01). The Modal focuses its panel in its own (child)
   // effect; this one runs after it.
@@ -103,6 +152,24 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
   const [aliasDraft, setAliasDraft] = useState('');
   const [aliasNote, setAliasNote] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [imageDraft, setImageDraft] = useState<PartImageDraft>(() => draftFromChoice(part?.image_choice));
+  // The saved picture, live (D15): from the product by the base's id, and from this dialog's answers.
+  const [facts, setFacts] = useState<ImageFacts>(() => factsOf(part));
+  // The operator changed the picture in this dialog: no refresh moves the draft any more (D16).
+  const touched = useRef(false);
+  const livePart = base ? product.parts.find((p) => p.id === base.id) : undefined;
+  // At the opening the caller's part IS the state; the product counts from its first CHANGE on — the
+  // part as last seen is kept, so an unchanged one (structural sharing keeps its reference) and
+  // StrictMode's second run apply nothing.
+  const seenPart = useRef(livePart);
+  useEffect(() => {
+    if (!livePart || livePart === seenPart.current) return;
+    seenPart.current = livePart;
+    setFacts(factsOf(livePart));
+    if (!touched.current) setImageDraft(draftFromChoice(livePart.image_choice));
+  }, [livePart]);
+  // A write of this dialog landed: a picture refused later says the part IS saved (D7).
+  const [savedHere, setSavedHere] = useState(false);
   // Escape in the alias field empties it and stops there; on an empty field it is the
   // dialog's again — the next Escape closes it (C06).
   const aliasField = useRef<HTMLInputElement>(null);
@@ -135,46 +202,97 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
     return next;
   }
 
-  const mutation = useMutation({
+  /** The server's answer is the base now, and the fields with it: a retry measures from here (D7). */
+  function adopt(saved: ProductPart) {
+    setBase(saved);
+    setName(saved.name);
+    setQty(String(saved.qty_per_unit));
+    setIgnored(saved.ignored);
+    setVariant(saved.variant_option_id != null ? String(saved.variant_option_id) : '');
+    setPrice(saved.unit_price != null ? String(saved.unit_price) : '');
+    setUrl(saved.sourcing_url ?? '');
+    setRemarks(saved.remarks ?? '');
+    setAliases(ownAliases(saved));
+    // the answer is the newest word on the picture too (D15); an untouched draft follows it (D16)
+    setFacts(factsOf(saved));
+    if (!touched.current) setImageDraft(draftFromChoice(saved.image_choice));
+  }
+
+  const fields = useMutation({
     mutationKey: compositionMutationKey(product.id),
-    mutationFn: (body: ProductPartCreate | ProductPartUpdate) =>
-      base
-        ? api.updateProductPart(product.id, base.id, body as ProductPartUpdate)
+    mutationFn: ({ partId, body }: { partId: number | null; body: ProductPartCreate | ProductPartUpdate }) =>
+      partId != null
+        ? api.updateProductPart(product.id, partId, body as ProductPartUpdate)
         : api.createProductPart(product.id, body as ProductPartCreate),
-    onSuccess: () => {
-      invalidateComposition(queryClient, product.id);
-      showToast(t('products.partDialog.saved'));
-      onClose();
-    },
+  });
+  const image = useMutation({
+    mutationKey: compositionMutationKey(product.id),
+    mutationFn: ({ partId, request }: { partId: number; request: PartImageRequest }) => sendImageRequest(partId, request),
   });
 
   // ⚠️ Synchronous: a press and an Escape in the same frame see `isPending` still false —
-  // the ref makes «one press, one request» and «no closing under a request» hold; a
+  // the ref makes «one press, one request chain» and «no closing under a request» hold; a
   // refusal re-arms it.
   const sent = useRef(false);
   const formId = useId();
   const submitId = `${formId}-submit`;
   // After a refusal the fields are live again: the focus goes back to the button that sent it.
+  const refused = fields.isError || image.isError;
   useEffect(() => {
-    if (mutation.isError) {
-      sent.current = false;
-      document.getElementById(submitId)?.focus();
-    }
-  }, [mutation.isError, mutation.error, submitId]);
+    if (refused) document.getElementById(submitId)?.focus();
+  }, [refused, fields.error, image.error, submitId]);
 
   function close() {
     if (sent.current) return;
     onClose();
   }
 
-  const pending = mutation.isPending;
+  const pending = fields.isPending || image.isPending;
 
   function refuse(message: string, fieldId: string) {
     setLocalError(message);
     document.getElementById(fieldId)?.focus();
   }
 
-  function submit() {
+  /** What «Save part» sends for the part itself; `null` when an edit changed nothing (C07). */
+  function fieldsBody(tokens: string[], variantId: number | null, unitPrice: number | null) {
+    if (!base) {
+      return printed
+        ? {
+            kind,
+            name: name.trim(),
+            qty_per_unit: qtyNumber,
+            ignored: ignoredNow,
+            aliases: tokens,
+            variant_option_id: variantId,
+          }
+        : {
+            kind,
+            name: name.trim(),
+            qty_per_unit: qtyNumber,
+            variant_option_id: variantId,
+            unit_price: unitPrice,
+            sourcing_url: url.trim() || null,
+            remarks: remarks.trim() || null,
+          };
+    }
+    // An edit sends what differs from the session's base (C07); the aliases only if the list moved.
+    const data: ProductPartUpdate = {};
+    if (name.trim() !== base.name) data.name = name.trim();
+    if (qtyNumber !== base.qty_per_unit) data.qty_per_unit = qtyNumber;
+    if (variantId !== base.variant_option_id) data.variant_option_id = variantId;
+    if (printed) {
+      if (ignoredNow !== base.ignored) data.ignored = ignoredNow;
+      if (!sameList(tokens, baseAliases)) data.aliases = tokens;
+    } else {
+      if (unitPrice !== base.unit_price) data.unit_price = unitPrice;
+      if ((url.trim() || null) !== base.sourcing_url) data.sourcing_url = url.trim() || null;
+      if ((remarks.trim() || null) !== base.remarks) data.remarks = remarks.trim() || null;
+    }
+    return Object.keys(data).length === 0 ? null : data;
+  }
+
+  async function submit() {
     if (sent.current || pending || variantGone) return;
     setLocalError(null);
     if (name.trim() === '') return refuse(t('products.partDialog.nameRequired'), ids.name);
@@ -194,55 +312,46 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
       }
       tokens = taken;
     }
+    if (needsPhotoFile(imageDraft, facts.choice)) return refuse(t('products.partImage.photoRequired'), ids.photo);
     const variantId = variant ? Number(variant) : null;
-
-    if (!base) {
-      sent.current = true;
-      mutation.mutate(
-        printed
-          ? {
-              kind,
-              name: name.trim(),
-              qty_per_unit: qtyNumber,
-              ignored: ignoredNow,
-              aliases: tokens,
-              variant_option_id: variantId,
-            }
-          : {
-              kind,
-              name: name.trim(),
-              qty_per_unit: qtyNumber,
-              variant_option_id: variantId,
-              unit_price: unitPrice,
-              sourcing_url: url.trim() || null,
-              remarks: remarks.trim() || null,
-            },
-      );
-      return;
-    }
-
-    // An edit sends what differs from the session's base (C07); the aliases only if the list moved.
-    const data: ProductPartUpdate = {};
-    if (name.trim() !== base.name) data.name = name.trim();
-    if (qtyNumber !== base.qty_per_unit) data.qty_per_unit = qtyNumber;
-    if (variantId !== base.variant_option_id) data.variant_option_id = variantId;
-    if (printed) {
-      if (ignoredNow !== base.ignored) data.ignored = ignoredNow;
-      if (!sameList(tokens, baseAliases)) data.aliases = tokens;
-    } else {
-      if (unitPrice !== base.unit_price) data.unit_price = unitPrice;
-      if ((url.trim() || null) !== base.sourcing_url) data.sourcing_url = url.trim() || null;
-      if ((remarks.trim() || null) !== base.remarks) data.remarks = remarks.trim() || null;
-    }
-    if (Object.keys(data).length === 0) {
+    const body = fieldsBody(tokens, variantId, unitPrice);
+    const request = pendingImageRequest(imageDraft, facts.choice); // the LIVE saved choice (D16)
+    if (body === null && request === null) {
       onClose();
       return;
     }
+
     sent.current = true;
-    mutation.mutate(data);
+    try {
+      let saved = base;
+      if (body !== null) {
+        saved = await fields.mutateAsync({ partId: base?.id ?? null, body });
+        adopt(saved);
+        setSavedHere(true);
+        invalidateComposition(queryClient, product.id);
+      }
+      if (request !== null && saved) {
+        adopt(await image.mutateAsync({ partId: saved.id, request }));
+        invalidatePartImageViews(queryClient);
+      }
+    } catch {
+      // The refusal is in the dialog; the draft and its file stay for the retry (D7).
+      sent.current = false;
+      return;
+    }
+    showToast(t('products.partDialog.saved'));
+    onClose();
   }
 
-  const error = localError ?? (mutation.isError ? (mutation.error as Error).message : undefined);
+  const pictureRefusal = image.isError ? (image.error as Error).message : null;
+  const error =
+    localError ??
+    (fields.isError ? (fields.error as Error).message : undefined) ??
+    (pictureRefusal === null
+      ? undefined
+      : savedHere
+        ? t('products.partImage.partSavedPictureFailed', { message: pictureRefusal })
+        : t('products.partImage.failed', { message: pictureRefusal }));
   const kindLabel = (k: ProductPartKind) => t(k === 'printed' ? 'products.partDialog.printed' : 'products.partDialog.purchased');
   const currency = getCurrencySymbol(settings?.currency || 'USD');
 
@@ -271,7 +380,7 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
         noValidate
         onSubmit={(e) => {
           e.preventDefault();
-          submit();
+          void submit();
         }}
       >
         <WorkshopFormGrid>
@@ -497,6 +606,23 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
             </>
           )}
         </WorkshopFormGrid>
+        <PartImageSection
+          productId={product.id}
+          partId={base?.id ?? null}
+          image={facts.image}
+          choice={facts.choice}
+          kind={kind}
+          name={name.trim() || base?.name || ''}
+          draft={imageDraft}
+          onChange={(next) => {
+            touched.current = true;
+            setImageDraft(next);
+            setLocalError(null);
+          }}
+          disabled={pending}
+          photoInputId={ids.photo}
+          canRerender={hasPermission('products:update')}
+        />
       </form>
     </WorkshopDialog>
   );
