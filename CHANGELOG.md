@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Order plans can override print parameters per sliced printer model.** Only new plan jobs snapshot the explicit choices; auto-queue promotion and rebalance retain them without changing saved operator profiles or existing jobs. The editor reuses the print dialog and the mirrored BambuStudio capability catalog, hiding unsupported functions and refusing unsupported automatic calibration modes.
+
 ## [0.7.0] - 2026-10-06
 
 Images: `ghcr.io/kainpl/bamdude:0.7.0` / `kainpl/bamdude:0.7.0` (`:latest` tracks this release).

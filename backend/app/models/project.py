@@ -19,6 +19,8 @@ class Project(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
+    # Explicit per-model toggles for NEW plan jobs; None inherits saved profiles.
+    order_print_options: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id", ondelete="SET NULL"), nullable=True)
     # Who receives this order — a contact of ITS customer (checked in the route).
     contact_id: Mapped[int | None] = mapped_column(

@@ -48,6 +48,7 @@ export function PrintOptionsPanel({
   defaultExpanded = false,
   showDualNozzleOptions = false,
   autoCaps,
+  supportedOptions,
   timelapseBlockers = [],
   selectedPrinterCount = 0,
   timelapseLowSpace = [],
@@ -110,7 +111,7 @@ export function PrintOptionsPanel({
       </button>
       {isExpanded && (
         <div className="mt-2 bg-bambu-dark rounded-lg p-3 space-y-2">
-          {calibrationOptions.map(({ key, labelKey, descKey }) => (
+          {calibrationOptions.filter(({ key }) => supportedOptions?.[key] !== false).map(({ key, labelKey, descKey }) => (
             <CalibrationModeControl
               key={key}
               label={t(labelKey)}
@@ -120,7 +121,7 @@ export function PrintOptionsPanel({
               autoSupported={autoCaps?.[key] ?? false}
             />
           ))}
-          {TOGGLE_OPTIONS_CONFIG.map(({ key, labelKey, descKey }) => {
+          {TOGGLE_OPTIONS_CONFIG.filter(({ key }) => supportedOptions?.[key] !== false).map(({ key, labelKey, descKey }) => {
             /* ⚠️ Whether a printer can record at all is asked HERE, while a
                person is choosing printers and can do something about it — put a
                card in, pick a different machine, untick the box. The queue
@@ -246,7 +247,7 @@ export function PrintOptionsPanel({
                 </button>
               ))}
             </div>
-            {options.preheat_override !== 'off' && (
+            {options.preheat_override !== 'off' && supportedOptions?.preheat_chamber_target_override !== false && (
               <>
                 <div className="flex items-center gap-2">
                   <label className="text-xs text-bambu-gray flex-1">

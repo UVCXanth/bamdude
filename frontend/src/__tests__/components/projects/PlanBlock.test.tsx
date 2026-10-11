@@ -347,6 +347,7 @@ describe('PlanBlock', () => {
     // The product's files are a link only for whoever may open the product (WS-13 E13 O19).
     auth.granted = new Set(['orders:update', 'products:read', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'queue:create', 'printers:control']);
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(plan);
+    vi.spyOn(api, 'getOrderPrintOptions').mockResolvedValue({ overrides: {}, models: [] });
     vi.spyOn(api, 'getProductPlates').mockResolvedValue(plates);
     // The currency is the test's choice, not `formatMoney`'s USD fallback —
     // otherwise the money assertions pass on an unresolved settings query.
@@ -541,6 +542,35 @@ describe('PlanBlock', () => {
     // The plan itself is re-read, and so is the order behind it.
     await waitFor(() => expect(api.getOrderPlan).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(onProbeFetch).toHaveBeenCalledTimes(2));
+  });
+
+  it('blocks both queue buttons while order parameters are unsaved, then sends the same plan', async () => {
+    const options = {
+      bed_levelling: 'on' as const, flow_cali: 'on' as const, nozzle_offset_cali: 'off' as const,
+      layer_inspect: false, timelapse: false, timelapse_storage: null,
+      mesh_mode_fast_check: true, gcode_injection: false,
+      preheat_override: 'inherit' as const, preheat_chamber_target_override: null,
+    };
+    const context = { overrides: {}, models: [{
+      model: 'A1 Mini', options, inherited: options, custom: false,
+      capabilities: { known: true, supported: { bed_levelling: true, flow_cali: true, nozzle_offset_cali: false },
+        auto: { bed_levelling: false, flow_cali: false, nozzle_offset_cali: false } },
+    }] };
+    vi.mocked(api.getOrderPrintOptions).mockResolvedValue(context);
+    const save = vi.spyOn(api, 'setOrderPrintOptions').mockImplementation(async (_id, overrides) => ({ ...context, overrides }));
+    const enqueue = vi.spyOn(api, 'enqueueOrderPlan').mockResolvedValue({ created: [] });
+    render(<PlanBlock order={order} canEdit />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Print parameters for this order' }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Use custom parameters for this order and model' }));
+    await waitFor(() => expect(screen.getByTestId('plan-enqueue-all')).toBeDisabled());
+    expect(screen.getByTestId('plan-row-10-100-queue')).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Save parameters' }));
+    await waitFor(() => expect(screen.getByTestId('plan-enqueue-all')).not.toBeDisabled());
+    expect(save).toHaveBeenCalledWith(1, { 'A1 Mini': options });
+    fireEvent.click(screen.getByTestId('plan-row-10-100-queue'));
+    await waitFor(() => expect(enqueue).toHaveBeenCalledWith(1, {
+      items: [{ line_id: 10, plate_id: 100, count: plan.lines[0].rows[0].count }], target: { kind: 'auto' },
+    }));
   });
 
   it('offers Rebalance on a line with pending router rows, calls the API and re-reads the order', async () => {

@@ -431,6 +431,28 @@ async def update_auto_queue_item(
 def _apply_item_update(item: AutoQueueItem, update_data: dict) -> None:
     """Field-by-field update shared by the single-item and batch PUTs."""
     update_data = dict(update_data)
+    # A subsequent explicit edit belongs to this job, not its former order.
+    # Keep its model entry in sync before calibration modes become bool mirrors.
+    if item.order_print_options:
+        from copy import deepcopy
+
+        from pydantic import ValidationError
+
+        from backend.app.schemas.order_print_options import OrderPrintOptions
+
+        model = normalize_model_name(update_data.get("target_model") or item.target_model)
+        snapshot = deepcopy(item.order_print_options)
+        if model in snapshot:
+            changes = {
+                key: value
+                for key, value in update_data.items()
+                if key in snapshot[model] and (value is not None or key == "timelapse_storage")
+            }
+            snapshot[model].update(changes)
+            try:
+                item.order_print_options = OrderPrintOptions(overrides=snapshot).model_dump()["overrides"]
+            except ValidationError as exc:
+                raise HTTPException(422, "Invalid order print options") from exc
     if update_data.get("feed_policy") is None:
         update_data.pop("feed_policy", None)
         if update_data.get("use_ams") is not None:

@@ -56,6 +56,7 @@ from backend.app.services.filament_preflight import feed_signature
 from backend.app.services.filament_requirements import PrintRequirementsCache, probe_identity
 from backend.app.services.filament_routing import resolve_filament_routing
 from backend.app.services.offline_feed import OfflineFeedCache, offline_shortfall
+from backend.app.services.order_print_options import override_options
 from backend.app.services.print_option_defaults import preference_options
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.printer_occupancy import (
@@ -584,6 +585,11 @@ class AutoQueueScheduler:
             owner = await db.get(User, item.created_by_id) if item.created_by_id is not None else None
             profile = await preference_options(db, owner, printer.model)
             options = profile.for_printer_queue() if profile else {}
+            try:
+                options.update(override_options(item.order_print_options, item.target_model, printer.model))
+            except ValueError as exc:
+                logger.info("Auto item %s: explicit print options do not fit target model %s", item.id, printer.model)
+                raise AutoPlacementConflict("incompatible_target") from exc
 
             # A queued row must retain the full calibration mode, unlike the
             # model-agnostic auto row which only has bool mirrors.
@@ -691,6 +697,8 @@ class AutoQueueScheduler:
                     bed_levelling_mode=bed_mode,
                     flow_cali=flow_mode == "on",
                     flow_cali_mode=flow_mode,
+                    preheat_override=options.get("preheat_override", "inherit"),
+                    preheat_chamber_target_override=options.get("preheat_chamber_target_override"),
                     layer_inspect=bool(options.get("layer_inspect", False)),
                     timelapse=bool(options.get("timelapse", False)),
                     timelapse_storage=options.get("timelapse_storage"),

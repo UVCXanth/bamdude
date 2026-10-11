@@ -61,6 +61,7 @@ from backend.app.services.farm_forecast import FarmSnapshot, load_snapshot, mode
 from backend.app.services.filament_policy import auto_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.order_metrics import attribute, batch_contexts, line_accepts_materials
+from backend.app.services.order_print_options import override_options
 from backend.app.services.order_queue import awaiting_auto_row_conditions
 from backend.app.services.plan_engine import (
     _pick_key,
@@ -776,6 +777,7 @@ async def _apply(
         if move.k > 1:
             profile = await preference_options(db, current_user, to_model)
             options = profile.for_auto_queue() if profile else {}
+            options.update(override_options(item.order_print_options, to_model))
             if file.swap_compatible:
                 options["execute_swap_macros"] = False
                 options["swap_macro_events"] = None
@@ -882,6 +884,7 @@ async def _apply(
                 ),
                 current_user,
                 requirements_cache=cache,
+                order_print_options=item.order_print_options,
             )
             for row in created:
                 row.batch_id = batch_id

@@ -1,4 +1,20 @@
 export default {
+  orderPrintOptions: {
+    title: 'Print parameters for this order',
+    scope: 'For new jobs from “To queue” and “Whole plan to queue”. Each sliced printer model has its own settings. Existing jobs and saved operator profiles stay unchanged; “To printer…” opens its own print dialog.',
+    custom: 'Order settings',
+    inherit: 'Saved profile / defaults',
+    override: 'Use custom parameters for this order and model',
+    unsaved: 'Save or cancel these changes before adding jobs to the queue.',
+    models: 'Sliced printer models',
+    noModels: 'No sliced printer model is known yet. Add a sliced file with printer model metadata.',
+    unknown: 'No capability catalog for this model. Custom parameters are unavailable.',
+    save: 'Save parameters',
+    retry: 'Retry',
+    bed_levelling: 'Bed leveling',
+    flow_cali: 'Flow calibration',
+    nozzle_offset_cali: 'Nozzle offset',
+  },
   modelCompatibility: {
     compatible: 'File for {{fileModel}} is compatible with {{targetModel}}',
     incompatible: 'File for {{fileModel}} is incompatible with {{targetModel}}',

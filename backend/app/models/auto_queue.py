@@ -40,6 +40,9 @@ class AutoQueueItem(Base):
     __table_args__ = (Index("ix_auto_queue_items_project_status", "project_id", "status"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Immutable order choices copied at creation. Promotion/rebalance picks the
+    # sliced model's entry; NULL retains the existing operator-profile path.
+    order_print_options: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Source file (mirrors print_queue: archive_id XOR library_file_id)
     #

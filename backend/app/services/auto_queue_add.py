@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from copy import deepcopy
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -36,6 +37,7 @@ from backend.app.models.queue_source import QueueSource
 from backend.app.models.user import User
 from backend.app.schemas.auto_queue import AutoQueueItemCreate
 from backend.app.schemas.calibration_mode import mode_to_bool
+from backend.app.schemas.order_print_options import OrderPrintOptions
 from backend.app.services import queue_sources
 from backend.app.services.filament_intake import routing_detail
 from backend.app.services.filament_policy import feed_policy
@@ -59,12 +61,15 @@ async def add_items_to_auto_queue(
     current_user: User | None,
     *,
     requirements_cache: PrintRequirementsCache | None = None,
+    order_print_options: dict | None = None,
 ) -> list[AutoQueueItem]:
     """Validate, build and persist the auto-queue rows ``data`` asks for.
 
     Returns the created items in position order. Commits — see the module
     docstring.
     """
+    if order_print_options:
+        order_print_options = OrderPrintOptions(overrides=order_print_options).model_dump()["overrides"]
     if not data.archive_id and not data.library_file_id:
         raise HTTPException(400, "Either archive_id or library_file_id must be provided")
 
@@ -130,7 +135,9 @@ async def add_items_to_auto_queue(
         used_slots = {f["slot_id"] for _, req in resolved for f in req.used_filaments}
         if any(o.slot_id not in used_slots for o in data.filament_overrides or []):
             raise HTTPException(422, routing_detail("override_slot_not_used"))
-        created_ids = await _publish_items(data, staged, resolved, effective_project_id, current_user, library_file)
+        created_ids = await _publish_items(
+            data, staged, resolved, effective_project_id, current_user, library_file, order_print_options
+        )
     except BaseException:
         await discard_staged(staged)
         raise
@@ -155,6 +162,7 @@ async def _publish_items(
     effective_project_id: int | None,
     current_user: User | None,
     library_file: LibraryFile | None,
+    order_print_options: dict | None = None,
 ) -> list[int]:
     """Publish the captured bytes and write every row in ONE transaction (§5 step 6).
 
@@ -249,6 +257,7 @@ async def _publish_items(
                 pos_offset += 1
                 items.append(
                     AutoQueueItem(
+                        order_print_options=deepcopy(order_print_options),
                         queue_source_id=source.id,
                         source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
                         archive_id=data.archive_id,
