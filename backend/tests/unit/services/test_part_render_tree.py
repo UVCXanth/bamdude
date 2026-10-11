@@ -365,6 +365,7 @@ def test_a_stopped_real_node_launched_without_a_record_is_ended_by_the_proof(tmp
     """Consilium r2, R2.1 with the pinned Node and the production command: stopped before it could read EOF,
     its parent dead -- the proof ends it instead of trusting the EOF."""
     import signal
+    import time
 
     import psutil
 
@@ -399,7 +400,12 @@ def test_a_stopped_real_node_launched_without_a_record_is_ended_by_the_proof(tmp
     node_pid = int(parent.stdout.readline())
     parent.wait(timeout=10)
     try:
-        assert psutil.Process(node_pid).status() == psutil.STATUS_STOPPED
+        # SIGSTOP takes effect when the kernel next schedules Node: under load its status still reads "running" a
+        # moment after the parent sent it (Backend Tests, -n 4, 2026-10-11). The precondition waits for the stop.
+        deadline = time.monotonic() + 5
+        while psutil.Process(node_pid).status() != psutil.STATUS_STOPPED:
+            assert time.monotonic() < deadline, "Node never showed stopped"
+            time.sleep(0.01)
         assert generation_gone(generation)
         assert not psutil.pid_exists(node_pid) or psutil.Process(node_pid).status() == psutil.STATUS_ZOMBIE
     finally:
