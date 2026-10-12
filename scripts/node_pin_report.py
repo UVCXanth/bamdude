@@ -20,6 +20,7 @@ def outputs(report: dict) -> str:
     return "\n".join(
         [
             f"action={str(report['action']).lower()}",
+            f"notice={str(report['notice']).lower()}",
             f"repin={str(report['repin']).lower()}",
             f"branch={report['branch']}",
         ]
@@ -73,6 +74,8 @@ def issue_body(
                     "Accept it on the integrated revision: merge it into the release line -- the branch is named by "
                     "its versions and may be older than dev -- and run the release manual's macOS acceptance there."
                 )
+                # final review M5: the check reads dev, so a pin merged into a feature release line is behind there
+                lines.append("Once merged into the release line, this issue repeats until that line reaches dev.")
     lines += ["", f"Run: {run_url}"]
     return "\n".join(lines) + "\n"
 

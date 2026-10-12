@@ -249,3 +249,43 @@ def test_a_line_override_parses():
 def test_a_line_override_does_not_combine_with_check_or_golden(mode):
     with pytest.raises(SystemExit):
         pin.main([mode, "--line", "24=v24.17.0"])
+
+
+def _official(versions_lines: dict[str, str]) -> tuple[dict, dict]:
+    """A manifest pinned exactly as the pin script would, and the (unsigned, test-only) SHASUMS bodies behind it."""
+    plan = {line: {"version": version, "end_of_life": "2028-04-30"} for line, version in versions_lines.items()}
+    shasums = {
+        version: "\n".join(
+            f"{i:064x}  node-{version}-{key}.{'zip' if key == 'win-x64' else 'tar.xz'}"
+            for i, key in enumerate(pin.LINES[line])
+        )
+        for line, version in versions_lines.items()
+    }
+    return pin.build_manifest(plan, shasums, TODAY, size=lambda url: 7), shasums
+
+
+def test_a_manifest_made_from_the_signed_sums_verifies():
+    manifest, shasums = _official({"24": "v24.21.0", "22": "v22.23.3"})
+    pin.verify_manifest(manifest, shasums)
+
+
+def test_a_tampered_archive_hash_is_refused_by_verify():
+    # final review I1: the job that pushes re-checks what the job that made the pin wrote
+    manifest, shasums = _official({"24": "v24.21.0", "22": "v22.23.3"})
+    manifest["platforms"]["win-x64"]["sha256"] = "f" * 64
+    with pytest.raises(pin.PinError, match="win-x64"):
+        pin.verify_manifest(manifest, shasums)
+
+
+def test_a_platform_on_another_line_is_refused_by_verify():
+    manifest, shasums = _official({"24": "v24.21.0", "22": "v22.23.3"})
+    manifest["platforms"]["linux-armv7l"]["line"] = "24"
+    with pytest.raises(pin.PinError, match="linux-armv7l"):
+        pin.verify_manifest(manifest, shasums)
+
+
+def test_a_missing_platform_is_refused_by_verify():
+    manifest, shasums = _official({"24": "v24.21.0", "22": "v22.23.3"})
+    del manifest["platforms"]["darwin-x64"]
+    with pytest.raises(pin.PinError, match="darwin-x64"):
+        pin.verify_manifest(manifest, shasums)

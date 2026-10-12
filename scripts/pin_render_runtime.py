@@ -46,10 +46,12 @@ sys.path.insert(0, str(ROOT))
 from backend.app.services.part_render_protocol import RENDERER_VERSION  # noqa: E402
 from backend.app.services.render_runtime import (  # noqa: E402
     MANIFEST,
+    PLATFORMS,
     ProvisionError,
     artifacts_from_shasums,
     load_manifest,
     locate_in,
+    pinned_version,
     platform_key,
     provision,
 )
@@ -361,6 +363,23 @@ def prove_golden(manifest: dict, shasums: dict[str, str], host: str, workdir: Pa
     return agreed_golden(hashes, existing, RENDERER_VERSION)
 
 
+def verify_manifest(manifest: dict, shasums: dict[str, str]) -> None:
+    """Every platform of PLATFORMS is pinned on the line LINES puts it on, to the official archive of that line's
+    version in its signed SHASUMS256.txt (final review I1: the job that pushes a pin re-checks, with gpg and the
+    stdlib only, what the job that made it -- the one that ran third-party packages -- wrote)."""
+    missing = sorted(set(PLATFORMS) - set(manifest["platforms"]))
+    if missing:
+        raise PinError(f"the manifest pins no build for {', '.join(missing)}")
+    for key, entry in sorted(manifest["platforms"].items()):
+        line = entry.get("line")
+        if key not in LINES.get(line, ()):
+            raise PinError(f"{key}: pinned on line {line}, but LINES puts it on another line")
+        version = pinned_version(manifest, key)
+        name, sha256 = artifacts_from_shasums(shasums[version], version, (key,))[key]
+        if entry.get("url") != f"{DIST}/{version}/{name}" or entry.get("sha256") != sha256:
+            raise PinError(f"{key}: the manifest's archive is not the official {name} of the signed SHASUMS256.txt")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group()
@@ -368,13 +387,24 @@ def main(argv: list[str] | None = None) -> int:
         "--check", action="store_true", help="report the pin as JSON; exit 0 nothing, 2 action, 3 notices, 1 error"
     )
     mode.add_argument("--golden", action="store_true", help="prove and write the golden for the current pin only")
+    mode.add_argument("--verify", action="store_true", help="check the manifest against the signed SHASUMS only")
     parser.add_argument("--line", action="append", default=[], metavar="LINE=vX.Y.Z", help="pin this patch of a line")
     args = parser.parse_args(argv)
-    if args.line and (args.check or args.golden):
-        parser.error("--line pins a version; it does not combine with --check or --golden")
+    if args.line and (args.check or args.golden or args.verify):
+        parser.error("--line pins a version; it does not combine with --check, --golden or --verify")
     today = date.today()
     try:
         overrides = parse_lines(args.line)
+        if args.verify:
+            gpg = shutil.which("gpg")
+            if gpg is None:
+                print("gpg is required: the pin is checked only against a signed SHASUMS256.txt.asc", file=sys.stderr)
+                return 1
+            manifest = load_manifest()
+            versions = sorted({pin["version"] for pin in manifest["lines"].values()}, key=_vkey)
+            verify_manifest(manifest, {version: signed_shasums(version, gpg) for version in versions})
+            print(f"manifest verified against the signed SHASUMS256.txt of {', '.join(versions)}")
+            return 0
         releases, schedule = fetch_json(f"{DIST}/index.json"), fetch_json(SCHEDULE)
         if args.check:
             report = check(load_manifest(), releases, schedule, today)

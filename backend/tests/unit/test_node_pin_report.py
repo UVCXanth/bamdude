@@ -14,6 +14,7 @@ _spec.loader.exec_module(report_mod)
 BEHIND = {
     "today": "2026-10-13",
     "action": True,
+    "notice": False,
     "repin": True,
     "branch": "chore/node-pin-v24.21.0-v22.23.3",
     "lines": {
@@ -45,6 +46,7 @@ BEHIND = {
 def test_the_outputs_tell_the_workflow_what_to_do():
     assert report_mod.outputs(BEHIND).splitlines() == [
         "action=true",
+        "notice=false",
         "repin=true",
         "branch=chore/node-pin-v24.21.0-v22.23.3",
     ]
@@ -141,3 +143,8 @@ def test_an_ended_line_asks_the_maintainer_to_drop_it():
 def test_a_new_lts_line_is_reported_not_pinned():
     newer = {**BEHIND, "repin": False, "new_lines": ["26"]}
     assert "Node.js 26" in _body(newer, repin="skipped", tested="", current="", smoke="skipped")
+
+
+def test_an_accepted_candidate_says_it_repeats_until_the_release_line_reaches_dev():
+    # final review M5: the check reads dev; a pin merged into a feature release line is still "behind" there
+    assert "until that line reaches dev" in _body()

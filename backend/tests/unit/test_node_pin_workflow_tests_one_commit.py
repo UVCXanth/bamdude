@@ -13,15 +13,15 @@ def _load(name: str) -> dict:
 
 def test_the_smoke_is_handed_the_fixed_candidate_never_the_branch_name():
     jobs = _load("node-pin.yml")["jobs"]
-    assert jobs["repin"]["outputs"]["candidate"] == "${{ steps.candidate.outputs.sha }}"
-    assert jobs["smoke"]["with"]["ref"] == "${{ needs.repin.outputs.candidate }}"
-    assert "needs.repin.outputs.candidate != ''" in jobs["smoke"]["if"]  # no candidate, no smoke
+    assert jobs["publish"]["outputs"]["candidate"] == "${{ steps.candidate.outputs.sha }}"
+    assert jobs["smoke"]["with"]["ref"] == "${{ needs.publish.outputs.candidate }}"
+    assert "needs.publish.outputs.candidate != ''" in jobs["smoke"]["if"]  # no candidate, no smoke
 
 
 def test_the_report_names_the_tested_commit_apart_from_the_current_head():
     steps = _load("node-pin.yml")["jobs"]["report"]["steps"]
     issue = next(step for step in steps if "node_pin_report.py issue" in step.get("run", ""))
-    assert issue["env"]["TESTED"] == "${{ needs.repin.outputs.candidate }}"
+    assert issue["env"]["TESTED"] == "${{ needs.publish.outputs.candidate }}"
     assert "--tested-sha" in issue["run"] and "--current-sha" in issue["run"]
 
 
@@ -30,3 +30,40 @@ def test_every_smoke_checkout_takes_the_ref_and_checks_it():
         checkout = next(step for step in job["steps"] if str(step.get("uses", "")).startswith("actions/checkout"))
         assert checkout["with"]["ref"] == "${{ inputs.ref }}", name
         assert any("git rev-parse HEAD" in step.get("run", "") for step in job["steps"]), name
+
+
+def _runs(job: dict) -> str:
+    return "\n".join(step.get("run", "") for step in job["steps"])
+
+
+def test_the_job_that_makes_the_pin_holds_no_write_token():
+    # final review I1: ~100 unhashed dependencies and the probe run in this job -- it may read, never push
+    job = _load("node-pin.yml")["jobs"]["repin"]
+    assert job["permissions"] == {"contents": "read"}
+    checkout = next(step for step in job["steps"] if str(step.get("uses", "")).startswith("actions/checkout"))
+    assert checkout["with"]["persist-credentials"] is False
+    assert "requirements.txt" not in _runs(job) and "pip install psutil pillow" in _runs(job)
+
+
+def test_the_job_that_pushes_verifies_the_pin_and_installs_nothing():
+    job = _load("node-pin.yml")["jobs"]["publish"]
+    assert job["permissions"] == {"contents": "write"}
+    runs = _runs(job)
+    assert "pip install" not in runs
+    assert runs.index("pin_render_runtime.py --verify") < runs.index("git push")
+
+
+def test_every_checkout_takes_the_base_and_the_base_defaults_to_dev():
+    # final review I3: a live run on a temporary branch must be able to read that branch
+    workflow = _load("node-pin.yml")
+    assert "inputs.base" in workflow["env"]["BASE"] and "'dev'" in workflow["env"]["BASE"]
+    for name, job in workflow["jobs"].items():
+        for step in job.get("steps", []):
+            if str(step.get("uses", "")).startswith("actions/checkout"):
+                assert step["with"]["ref"] == "${{ env.BASE }}", name
+
+
+def test_the_issue_lives_only_while_there_is_an_action():
+    # final review M1/M7: notices go to the run summary, a pin with nothing left to do closes the issue
+    runs = _runs(_load("node-pin.yml")["jobs"]["report"])
+    assert "gh issue close" in runs and "GITHUB_STEP_SUMMARY" in runs
