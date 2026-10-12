@@ -253,16 +253,32 @@ def run(
     return {"ok": ok, "worker": health, "files": results, "attempts": attempts(log)}
 
 
-def provenance(install_root: Path, expected_sha: str, *, own_root: Path | None = None) -> dict:
-    """The installation accepted is the revision intended, with ITS pinned Node and ITS bundle (consilium E7-R2)."""
+def provenance(
+    install_root: Path, expected_sha: str, *, own_root: Path | None = None, own_prefix: Path | None = None
+) -> dict:
+    """The installation accepted is the revision intended, with ITS pinned Node and ITS bundle (consilium E7-R2).
+
+    The driver runs from that installation's source and its venv (``sys.prefix`` -- ``measure`` runs the probe with
+    this interpreter), and the installed source is the revision as committed: a rebuilt ``static/`` (install.sh builds
+    it in place) and untracked caches are no change of it (final review, 2026-10-12)."""
     root = install_root.resolve()
     if (own_root or Path(__file__).resolve().parents[2]).resolve() != root:
         raise SystemExit("run the driver from the installation it accepts (its own source and venv)")
+    if not (own_prefix or Path(sys.prefix)).resolve().is_relative_to(root):
+        raise SystemExit("run the driver with the installation's own venv (its probe measures with this interpreter)")
     head = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
     ).stdout.strip()
     if head != expected_sha:
         raise SystemExit(f"installed revision {head[:12]} is not the intended {expected_sha[:12]}")
+    changed = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no", "--", ".", ":!static"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if changed:
+        raise SystemExit(f"the installation has uncommitted changes: {changed.splitlines()[:3]}")
     node = render_runtime.locate(root)  # <root>/runtime only -- a Node on PATH is never this installation's
     if node is None:
         raise SystemExit("the installation has no provisioned Node runtime")
@@ -281,6 +297,21 @@ def provenance(install_root: Path, expected_sha: str, *, own_root: Path | None =
         "bundle_sha256": digest,
         "renderer": RENDERER_VERSION,
     }
+
+
+def service_problems(worker: dict, origin: dict) -> list[str]:
+    """The service rendered through runs THIS installation's Node and bundle: ``run`` proves that some service at the
+    URL renders, ``provenance`` proves the tree on disk, and this ties the two (final review, 2026-10-12)."""
+    problems = []
+    loaded = (worker.get("bundle") or {}).get("sha256")
+    if loaded != origin["bundle_sha256"]:
+        problems.append(
+            f"the service runs bundle {str(loaded)[:12]}, not the installation's {origin['bundle_sha256'][:12]}"
+        )
+    version = (worker.get("runtime") or {}).get("version")
+    if version != origin["node"]["version"]:
+        problems.append(f"the service runs Node {version}, not the installation's {origin['node']['version']}")
+    return problems
 
 
 def measure(install_root: Path, node: str, files: list[Path], out: Path, pin: str) -> dict:
@@ -330,7 +361,11 @@ def main(argv: list[str] | None = None) -> int:
     with make_client(args.base_url) as client:
         report = run(client, expectations, log=args.log, timeout=args.timeout, poll=args.poll, sleep=time.sleep)
     if origin:
-        report["provenance"] = origin
+        # VERSION is what provenance read; only a measurement runs the binary and hears it name itself (plan D3)
+        report["provenance"] = dict(origin, binary_proven=bool(args.measure))
+        report["service_problems"] = service_problems(report["worker"], origin)
+        if report["service_problems"]:
+            report["ok"] = False
         if args.measure:
             out = args.report.with_name(args.report.stem + ".measure.json")
             report["measure"] = measure(
@@ -341,6 +376,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"acceptance: {'ok' if report['ok'] else 'FAILED'} -- {ready} pictures, worker {report['worker'].get('state')}"
     )
+    for problem in report.get("service_problems", []):
+        print(f"  the service is not the installation: {problem}")
     for r in report["files"]:
         for problem in r["problems"]:
             print(f"  {r['file']}: {problem}")

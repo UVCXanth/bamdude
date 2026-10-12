@@ -382,7 +382,7 @@ def installation(root: Path, *, node=True) -> str:
 
 def test_provenance_names_the_installation_its_node_and_its_bundle(tmp_path):
     sha = installation(tmp_path)
-    found = acc.provenance(tmp_path, sha, own_root=tmp_path)
+    found = acc.provenance(tmp_path, sha, own_root=tmp_path, own_prefix=tmp_path / "venv")
     assert found["sha"] == sha and found["node"]["version"] == "v24.17.0"
     assert found["bundle_sha256"] == hashlib.sha256(b"export const x = 1;\n").hexdigest()
 
@@ -390,7 +390,7 @@ def test_provenance_names_the_installation_its_node_and_its_bundle(tmp_path):
 def test_another_revision_is_refused(tmp_path):
     installation(tmp_path)
     with pytest.raises(SystemExit, match="is not the intended"):
-        acc.provenance(tmp_path, "0" * 40, own_root=tmp_path)
+        acc.provenance(tmp_path, "0" * 40, own_root=tmp_path, own_prefix=tmp_path / "venv")
 
 
 def test_no_installed_node_is_refused_even_with_one_on_path(tmp_path, monkeypatch):
@@ -401,13 +401,13 @@ def test_no_installed_node_is_refused_even_with_one_on_path(tmp_path, monkeypatc
     # a Node first on PATH (git still on it) -- and still refused: the installation's own runtime/ is the only place
     monkeypatch.setenv("PATH", str(fake) + os.pathsep + os.environ.get("PATH", ""))
     with pytest.raises(SystemExit, match="no provisioned Node"):
-        acc.provenance(tmp_path, sha, own_root=tmp_path)
+        acc.provenance(tmp_path, sha, own_root=tmp_path, own_prefix=tmp_path / "venv")
 
 
 def test_the_driver_must_run_from_the_installation_it_accepts(tmp_path):
     sha = installation(tmp_path)
     with pytest.raises(SystemExit, match="from the installation"):
-        acc.provenance(tmp_path, sha, own_root=tmp_path / "another-checkout")
+        acc.provenance(tmp_path, sha, own_root=tmp_path / "another-checkout", own_prefix=tmp_path / "venv")
 
 
 def test_a_measurement_on_another_node_is_refused(tmp_path, monkeypatch):
@@ -422,3 +422,102 @@ def test_a_measurement_on_another_node_is_refused(tmp_path, monkeypatch):
     )
     with pytest.raises(SystemExit, match="not the pin"):
         acc.measure(tmp_path, "node", [tmp_path / "a.gcode"], out, "v24.17.0")
+
+
+def commit(root: Path) -> str:
+    git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "y"], check=True)
+    return subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def test_a_driver_outside_the_installations_venv_is_refused(tmp_path):
+    """measure() runs the probe with sys.executable: another venv would be another installation's code (review)."""
+    sha = installation(tmp_path)
+    with pytest.raises(SystemExit, match="venv"):
+        acc.provenance(tmp_path, sha, own_root=tmp_path, own_prefix=tmp_path.parent / "another-venv")
+
+
+def test_uncommitted_changes_are_refused_but_a_rebuilt_static_and_untracked_files_are_not(tmp_path):
+    """install.sh rebuilds static/ in place and leaves caches: those are no change of the installed source."""
+    (tmp_path / "static").mkdir()
+    (tmp_path / "static" / "index.html").write_text("built", encoding="utf-8")
+    sha = installation(tmp_path)
+    (tmp_path / "static" / "index.html").write_text("rebuilt", encoding="utf-8")
+    (tmp_path / ".cache").mkdir()
+    (tmp_path / ".cache" / "x").write_text("x", encoding="utf-8")
+    acc.provenance(tmp_path, sha, own_root=tmp_path, own_prefix=tmp_path / "venv")
+    (tmp_path / "backend" / "app" / "data" / "render_runtime.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(SystemExit, match="uncommitted"):
+        acc.provenance(tmp_path, sha, own_root=tmp_path, own_prefix=tmp_path / "venv")
+
+
+def test_a_node_whose_version_is_off_the_pin_is_refused(tmp_path):
+    installation(tmp_path)
+    key = render_runtime.platform_key()
+    (tmp_path / "runtime" / render_runtime.PRODUCT_DIR / key / "VERSION").write_text("v22.0.0\n", encoding="utf-8")
+    sha = commit(tmp_path)
+    with pytest.raises(SystemExit, match="is not the pin"):
+        acc.provenance(tmp_path, sha, own_root=tmp_path, own_prefix=tmp_path / "venv")
+
+
+def test_a_bundle_off_its_manifest_is_refused(tmp_path):
+    installation(tmp_path)
+    (tmp_path / "backend" / "app" / "data" / "part_render" / "part-render.mjs").write_bytes(b"export const x = 2;\n")
+    sha = commit(tmp_path)
+    with pytest.raises(SystemExit, match="does not match its manifest"):
+        acc.provenance(tmp_path, sha, own_root=tmp_path, own_prefix=tmp_path / "venv")
+
+
+def test_a_part_named_twice_is_refused(tmp_path):
+    client, _ = instance(parts=[*PARTS, {"id": 4, "name": "A", "kind": "printed"}])
+    report = quick(client, expect(tmp_path))
+    assert report["ok"] is False
+    assert any("parts twice: ['A']" in p for p in report["files"][0]["problems"]), report
+
+
+ORIGIN = {"bundle_sha256": "b" * 64, "node": {"version": "v24.17.0"}}
+
+
+@pytest.mark.parametrize(
+    ("worker", "problem"),
+    [
+        ({"runtime": {"version": "v24.17.0"}, "bundle": {"sha256": "b" * 64}}, None),
+        ({"runtime": {"version": "v24.17.0"}, "bundle": {"sha256": "c" * 64}}, "bundle"),
+        ({"runtime": {"version": "v22.0.0"}, "bundle": {"sha256": "b" * 64}}, "Node"),
+        ({"runtime": None, "bundle": None}, "bundle"),
+    ],
+)
+def test_the_service_rendered_through_must_run_the_installations_node_and_bundle(worker, problem):
+    """Final review I2: run() proves SOME service renders, provenance() proves the tree on disk -- this ties them."""
+    found = acc.service_problems(worker, ORIGIN)
+    assert (found == []) if problem is None else any(problem in p for p in found), found
+
+
+def test_the_cli_fails_a_service_that_is_not_the_installation_and_says_the_binary_was_not_measured(
+    tmp_path, monkeypatch, capsys
+):
+    expect(tmp_path)
+    client, _ = instance()  # its worker reports no runtime and no bundle
+    monkeypatch.setattr(acc, "make_client", lambda base_url: client)
+    monkeypatch.setattr(acc, "provenance", lambda root, sha: dict(ORIGIN, sha=sha))
+    code = acc.main(
+        [
+            "--base-url",
+            "http://bamdude.test",
+            "--expect",
+            str(tmp_path / "expect.json"),
+            "--report",
+            str(tmp_path / "r.json"),
+            "--poll",
+            "0",
+            "--install-root",
+            str(tmp_path),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    report = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+    assert code == 1 and report["ok"] is False
+    assert report["service_problems"] and report["provenance"]["binary_proven"] is False
+    assert "not the installation" in capsys.readouterr().out
