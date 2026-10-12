@@ -454,9 +454,10 @@ provision_render_runtime() {
     local code=0
     ${as_service[@]+"${as_service[@]}"} "$python" -m backend.app.services.render_runtime provision --runtime "$INSTALL_PATH/runtime" || code=$?
     if [[ $code -eq 3 ]]; then
-        # No official Node.js for this architecture (32-bit ARM under Node 24):
-        # part thumbnails use the top-view fallback, and the System page says so.
-        log_info "No official Node.js build for $(uname -m): part thumbnails will use the top-view fallback"
+        # No official Node.js for this machine (armv6 -- Pi 1 / Zero --, an armel or musl
+        # 32-bit userland, RISC-V ...): part thumbnails use the top-view fallback, and the
+        # System page says so. 32-bit armhf (Raspberry Pi OS 32-bit) runs Node 22.
+        log_info "No official Node.js build for this machine ($(uname -m)): part thumbnails will use the top-view fallback"
         return 0
     fi
     if [[ $code -ne 0 ]]; then
