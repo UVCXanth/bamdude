@@ -599,8 +599,11 @@ async def _provision_render_runtime(app_dir: Path) -> None:
     Runs the CHECKED-OUT module in a child process: this process still holds the
     old code and the old pin. An unchanged pin returns at once without the
     network. Never fails the update -- a missing runtime is a missing feature,
-    reported on the System page as ``runtime_missing``.
+    reported on the System page as ``runtime_missing``. Logged start to outcome with its elapsed time, and the
+    child's reason with the installation's path replaced (final review M9, the parent-log invariant).
     """
+    logger.info("Render runtime provisioning started")
+    started = time.monotonic()
     try:
         process = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -617,14 +620,16 @@ async def _provision_render_runtime(app_dir: Path) -> None:
     except OSError as exc:
         logger.warning("Render runtime update failed: %s", type(exc).__name__)
         return
+    elapsed = time.monotonic() - started
     reason = stderr.decode(errors="replace").strip().splitlines()[-1:] if stderr else []
     if process.returncode == 0:
-        logger.info("Render runtime provisioned")
+        logger.info("Render runtime provisioned in %.1f s", elapsed)
     elif process.returncode == 3:
-        # No official Node.js build for this machine (32-bit ARM): the top-view fallback, as install.sh says.
+        # No official Node.js build for this machine (armv6, armel, musl ...): the top-view fallback, as install.sh says.
         logger.info("Render runtime: no official Node.js build for this machine; part thumbnails use the fallback")
     else:
-        logger.warning("Render runtime update failed: %s", reason[0] if reason else f"exit {process.returncode}")
+        said = reason[0].replace(str(app_dir), "<install>") if reason else f"exit {process.returncode}"
+        logger.warning("Render runtime update failed after %.1f s: %s", elapsed, said)
 
 
 async def _perform_update(target_ref: str):

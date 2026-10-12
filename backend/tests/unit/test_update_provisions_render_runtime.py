@@ -73,3 +73,16 @@ async def test_a_runtime_that_cannot_be_provisioned_never_fails_the_update(tmp_p
     assert updates._update_status["status"] == "complete"
     if code == 1:
         assert "render-runtime: blocked host" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_provisioning_is_logged_with_its_start_its_time_and_no_install_path(tmp_path, caplog):
+    # final review M9 (parent-log invariant): a start line, the outcome with its elapsed time, and a reason that
+    # does not carry the installation's path
+    reason = f"render-runtime: {tmp_path / 'runtime' / 'node'}: a tree still held after the retries\n".encode()
+    with caplog.at_level("INFO", logger=updates.logger.name):
+        await _run_update(tmp_path, provision_code=1, provision_stderr=reason)
+    text = caplog.text
+    assert "Render runtime provisioning started" in text
+    assert "Render runtime update failed after" in text and "<install>" in text
+    assert str(tmp_path) not in text
