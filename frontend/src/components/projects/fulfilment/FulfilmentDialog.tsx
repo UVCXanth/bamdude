@@ -9,6 +9,7 @@ import { fulfilmentQuery, useFulfilment } from '../../../hooks/useFulfilment';
 import { invalidateOrderViews } from '../../../utils/queryInvalidation';
 import { canTakeStock, canWriteOff } from '../../../utils/workshopRights';
 import { Button } from '../../Button';
+import { PartThumb } from '../../PartThumb';
 import { DispatchNoteCreated } from '../../stock/DispatchNoteCreated';
 import { WorkshopDialog } from '../../workshop/WorkshopDialog';
 import { WorkshopFormGrid } from '../../workshop/WorkshopFormGrid';
@@ -361,8 +362,9 @@ function FulfilmentForm({
           )}
 
           {!canMove && <p className="text-sm text-bambu-gray">{t('orders.fulfil.noMoveRight')}</p>}
-          {/* Without the stock's move the numbers are read, never typed (WS-13 E13 O06). */}
-          <fieldset disabled={!canMove} className="min-w-0 border-0 m-0 p-0">
+          {/* Without the stock's move the numbers are read, never typed (WS-13 E13 O06): every number and
+              «all parts» box is disabled itself — a disabled fieldset would take the part pictures' buttons
+              with it, and seeing a picture is no right of the stock's (plan E6, D6). */}
           <WorkshopTableScroll label={t('orders.fulfil.title')}>
             <table id={`${writeOffId}-table`} className="w-full text-sm">
               <thead>
@@ -387,6 +389,7 @@ function FulfilmentForm({
                       onChange={change}
                       writeOffOpen={writeOffOpen}
                       issuing={issuing}
+                      locked={!canMove}
                     />
                   ) : (
                     <ProductLineRow
@@ -397,13 +400,13 @@ function FulfilmentForm({
                       onChange={change}
                       writeOffOpen={writeOffOpen}
                       issuing={issuing}
+                      locked={!canMove}
                     />
                   ),
                 )}
               </tbody>
             </table>
           </WorkshopTableScroll>
-          </fieldset>
 
           <div id={writeOffId}>
             {writeOffOpen && (
@@ -490,11 +493,14 @@ function NumberCell({
   max,
   label,
   onChange,
+  disabled = false,
 }: {
   value: number;
   max: number;
   label: string;
   onChange: (n: number) => void;
+  /** Read, never typed: without the stock's move (WS-13 E13 O06, plan E6 D6). */
+  disabled?: boolean;
 }) {
   const { t } = useTranslation();
   // Nothing to do in this column: a dash, not a dead field (E05).
@@ -506,6 +512,7 @@ function NumberCell({
         min={0}
         max={max}
         value={value}
+        disabled={disabled}
         onChange={(e) => onChange(Number(e.target.value))}
         aria-label={label}
         className={NUMBER_CLS}
@@ -522,6 +529,7 @@ function ProductLineRow({
   onChange,
   writeOffOpen,
   issuing,
+  locked,
 }: {
   line: FulfilmentLineState;
   /** Another line of the dialog is of the same product — the field names add the configuration. */
@@ -530,6 +538,8 @@ function ProductLineRow({
   onChange: (lineId: number, patch: (d: LineDraft) => LineDraft) => void;
   writeOffOpen: boolean;
   issuing: boolean;
+  /** Without the stock's move every field of the row is read, never typed (WS-13 E13 O06, plan E6 D6). */
+  locked: boolean;
 }) {
   const { t } = useTranslation();
   const name = line.product_name;
@@ -557,6 +567,7 @@ function ProductLineRow({
       <td className={TD}>{line.ordered}</td>
       <td className={TD}>
         <NumberCell
+          disabled={locked}
           value={draft.assemble}
           max={line.can_assemble}
           label={t('orders.fulfil.assembleLabel', { name: fieldName })}
@@ -565,6 +576,7 @@ function ProductLineRow({
       </td>
       <td className={TD}>
         <NumberCell
+          disabled={locked}
           value={draft.receive}
           max={line.can_receive}
           label={t('orders.fulfil.receiveLabel', { name: fieldName })}
@@ -575,6 +587,7 @@ function ProductLineRow({
       {writeOffOpen && (
         <td className={TD}>
           <NumberCell
+            disabled={locked}
             value={draft.writeOff}
             max={line.held + draft.assemble + draft.receive}
             label={t('orders.fulfil.writeOffLabel', { name: fieldName })}
@@ -585,6 +598,7 @@ function ProductLineRow({
       {issuing && (
         <td className={TD}>
           <NumberCell
+            disabled={locked}
             value={draft.issue}
             max={issueCeiling(line, draft)}
             label={t('orders.fulfil.issueLabel', { name: fieldName })}
@@ -603,11 +617,14 @@ function AllPartsCell({
   draft,
   column,
   onChange,
+  disabled = false,
 }: {
   line: FulfilmentLineState;
   draft: LineDraft;
   column: PartsColumn;
   onChange: (lineId: number, patch: (d: LineDraft) => LineDraft) => void;
+  /** Read, never ticked: without the stock's move (plan E6, D6). */
+  disabled?: boolean;
 }) {
   const { t } = useTranslation();
   const box = useRef<HTMLInputElement>(null);
@@ -625,6 +642,7 @@ function AllPartsCell({
         ref={box}
         type="checkbox"
         checked={at === 'all'}
+        disabled={disabled}
         onChange={(e) => onChange(line.line_id, (d) => setAllParts(line, d, column, e.target.checked))}
         aria-label={t('orders.fulfil.allPartsLabel', { column: columnName, name: line.product_name })}
       />
@@ -641,12 +659,15 @@ function PartsLineRows({
   onChange,
   writeOffOpen,
   issuing,
+  locked,
 }: {
   line: FulfilmentLineState;
   draft: LineDraft;
   onChange: (lineId: number, patch: (d: LineDraft) => LineDraft) => void;
   writeOffOpen: boolean;
   issuing: boolean;
+  /** Without the stock's move every field of the row is read, never typed (WS-13 E13 O06, plan E6 D6). */
+  locked: boolean;
 }) {
   const { t } = useTranslation();
   const setPart = (partId: number, field: keyof PartDraft, n: number) =>
@@ -668,13 +689,13 @@ function PartsLineRows({
         <td className={TD}>{line.ordered}</td>
         <td className={`${TD} text-bambu-gray`}>—</td>
         <td className={TD}>
-          <AllPartsCell line={line} draft={draft} column="receive" onChange={onChange} />
+          <AllPartsCell disabled={locked} line={line} draft={draft} column="receive" onChange={onChange} />
         </td>
         <td className={TD}>{line.held}</td>
         {writeOffOpen && <td className={TD} />}
         {issuing && (
           <td className={TD}>
-            <AllPartsCell line={line} draft={draft} column="issue" onChange={onChange} />
+            <AllPartsCell disabled={locked} line={line} draft={draft} column="issue" onChange={onChange} />
           </td>
         )}
         <td className={`${TD} whitespace-nowrap`}>{t('orders.fulfil.issuedOf', { issued: line.issued, ordered: line.ordered })}</td>
@@ -683,11 +704,17 @@ function PartsLineRows({
         const d = draft.parts[part.part_id] ?? { receive: 0, writeOff: 0, issue: 0 };
         return (
           <tr key={part.part_id} className="text-bambu-gray-light">
-            <td className={`${TD} pl-8`}>{part.name}</td>
+            <td className={`${TD} pl-8`}>
+              <span className="flex items-center gap-2">
+                <PartThumb partId={part.part_id} image={part.image} name={part.name} size="sm" />
+                <span className="min-w-0 break-words">{part.name}</span>
+              </span>
+            </td>
             <td className={TD}>{part.wanted}</td>
             <td className={TD} />
             <td className={TD}>
               <NumberCell
+                disabled={locked}
                 value={d.receive}
                 max={part.can_receive}
                 label={t('orders.fulfil.receiveLabel', { name: part.name })}
@@ -698,6 +725,7 @@ function PartsLineRows({
             {writeOffOpen && (
               <td className={TD}>
                 <NumberCell
+                  disabled={locked}
                   value={d.writeOff}
                   max={part.held + d.receive}
                   label={t('orders.fulfil.writeOffLabel', { name: part.name })}
@@ -708,6 +736,7 @@ function PartsLineRows({
             {issuing && (
               <td className={TD}>
                 <NumberCell
+                  disabled={locked}
                   value={d.issue}
                   max={part.held + d.receive - d.writeOff}
                   label={t('orders.fulfil.issueLabel', { name: part.name })}
