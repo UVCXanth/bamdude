@@ -205,6 +205,30 @@ describe('the line’s configuration dialog', () => {
     );
     expect(preview).toHaveBeenCalledTimes(1);
   });
+
+  it('two dropped parts of one name are two lines, each its own part — keyed by the part, not the sentence (final review)', async () => {
+    const twins = {
+      ...product,
+      parts: [...product.parts, { id: 11, kind: 'printed', name: 'straight tail', qty_per_unit: 1, sort_order: 5, variant_option_id: 11, image: ready('s11') }],
+    } as Product;
+    vi.spyOn(api, 'getProduct').mockResolvedValue(twins);
+    vi.spyOn(api, 'previewLineConfiguration').mockResolvedValue({
+      reserved_before: 4,
+      reserved_after: 4,
+      finished_before: 0,
+      finished_after: 0,
+      dropping: [
+        { part_id: 6, name: 'straight tail', per_before: 1, per_after: 0, printed: 3, queued: 1, image: null },
+        { part_id: 11, name: 'straight tail', per_before: 1, per_after: 0, printed: 3, queued: 1, image: null },
+      ],
+    });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={configLine} onClose={() => {}} />);
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Хвіст' })).getByRole('radio', { name: 'кутовий' }));
+    const lines = await screen.findAllByText('straight tail: 3 printed, 1 queued will become surplus');
+    expect(lines.map((p) => within(p).getByTestId('part-thumb-img').getAttribute('src'))).toEqual([src(6, 't6'), src(11, 's11')]);
+    expect(errors.mock.calls.filter(([message]) => String(message).includes('same key'))).toEqual([]);
+  });
 });
 
 function ConfigHost() {

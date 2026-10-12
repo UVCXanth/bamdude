@@ -705,7 +705,8 @@ function PartsLineRows({
         return (
           <tr key={part.part_id} className="text-bambu-gray-light">
             <td className={`${TD} pl-8`}>
-              <span className="flex items-center gap-2">
+              {/* The cells are top-aligned: the name starts level with the figures beside it. */}
+              <span className="flex items-start gap-2">
                 <PartThumb partId={part.part_id} image={part.image} name={part.name} size="sm" />
                 <span className="min-w-0 break-words">{part.name}</span>
               </span>

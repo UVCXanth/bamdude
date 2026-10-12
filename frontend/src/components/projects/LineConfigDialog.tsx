@@ -500,7 +500,8 @@ function Impact({
     if (d.printed > 0 || d.queued > 0) {
       const text = t('orders.lineConfig.impact.dropping', { name: d.name, printed: d.printed, queued: d.queued });
       const image = pictureOf.has(d.part_id) ? pictureOf.get(d.part_id) : d.image;
-      lines.push({ key: text, text, part: { id: d.part_id, name: d.name, image } });
+      // Keyed by the part: two parts of one name and the same counts say the same sentence.
+      lines.push({ key: `part-${d.part_id}`, text, part: { id: d.part_id, name: d.name, image } });
     }
   }
   return (

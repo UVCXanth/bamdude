@@ -315,7 +315,8 @@ export function AssembleDialog({
                   return (
                     <tr key={p.part_id} className="text-white align-top" data-testid={`assemble-part-${p.part_id}`}>
                       <td className="p-1">
-                        <span className="flex items-center gap-2">
+                        {/* The row is top-aligned: the name starts level with the figures beside it. */}
+                        <span className="flex items-start gap-2">
                           <PartThumb partId={p.part_id} image={p.image} name={p.name} size="sm" />
                           <span className="min-w-0 break-words">{p.name}</span>
                         </span>

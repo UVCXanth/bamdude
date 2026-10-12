@@ -102,6 +102,28 @@ describe('the assembly dialog', () => {
     const row = await screen.findByTestId('assemble-part-11');
     expect(within(row).getByTestId('part-thumb-img')).toHaveAttribute('src', src(11, 'f11'));
   });
+
+  it('the name lines up with the row’s figures: the row is top-aligned, so is the name beside its picture (final review)', async () => {
+    render(<AssembleDialog item={pipeItem} onClose={() => {}} />);
+    const row = await screen.findByTestId('assemble-part-11');
+    expect(row).toHaveClass('align-top');
+    expect(within(row).getByTestId('part-thumb').parentElement).toHaveClass('items-start');
+  });
+
+  it('opened for a product, the lookup’s parts show their pictures too (final review)', async () => {
+    vi.spyOn(api, 'lookupStockItem').mockResolvedValue({
+      item: pipeItem,
+      configuration: pipeItem.configuration,
+      can_assemble: 1,
+      parts: [
+        { part_id: 11, name: 'flask', per: 1, on_shelf: 4, image: ready('k11') },
+        { part_id: 12, name: 'tail', per: 2, on_shelf: 6, image: null },
+      ],
+    });
+    render(<AssembleDialog productId={1} onClose={() => {}} />);
+    const row = await screen.findByTestId('assemble-part-11');
+    expect(within(row).getByTestId('part-thumb-img')).toHaveAttribute('src', src(11, 'k11'));
+  });
 });
 
 describe('the stock page’s journal', () => {

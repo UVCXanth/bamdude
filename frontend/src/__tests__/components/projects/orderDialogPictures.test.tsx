@@ -127,6 +127,14 @@ describe('the issue dialog’s parts line', () => {
     expect(screen.getByTestId('part-thumb-zoom')).toBeInTheDocument();
   });
 
+  it('a part’s name lines up with the row’s figures: the cells are top-aligned, so is the name beside its picture (final review)', async () => {
+    render(<FulfilmentDialog order={REF} onClose={() => {}} />);
+    const button = await screen.findByRole('button', { name: 'Show shade larger' });
+    const cell = button.closest('td') as HTMLTableCellElement;
+    expect(cell).toHaveClass('align-top');
+    expect(button.closest('[data-testid="part-thumb"]')?.parentElement).toHaveClass('items-start');
+  });
+
   it.each([
     ['with the right to move stock', null],
     ['read-only, without it', READ_ONLY],
