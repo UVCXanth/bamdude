@@ -51,7 +51,8 @@ describe('selectSegments', () => {
   });
 
   it('keeps the bounds of the lowest selected layer apart -- what a first-layer box is compared with', () => {
-    const text = load('single-no-markers.gcode').replace(
+    // patched by LF-anchored patterns: a Windows checkout (core.autocrlf) has the fixture in CRLF
+    const text = load('single-no-markers.gcode').replace(/\r\n/g, '\n').replace(
       /(; Z_HEIGHT: 0\.4[\s\S]*?; FEATURE: Outer wall\n)[\s\S]*?(; FEATURE: Custom)/,
       '$1G1 X114 Y114 F12000\nG1 X131 Y114 E0.4\nG1 X131 Y131 E0.4\nG1 X114 Y131 E0.4\nG1 X114 Y114 E0.4\n$2',
     );

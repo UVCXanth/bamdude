@@ -8,6 +8,8 @@ import { drawSegments } from '../../part-render/raster';
 
 const FIXTURES = join(process.cwd(), '..', 'backend', 'app', 'data', 'render_probe');
 const gcode = (name: string) => readFileSync(join(FIXTURES, name), 'utf8');
+// The tests that PATCH a fixture match its lines with LF: a Windows checkout (core.autocrlf) has it in CRLF.
+const lfGcode = (name: string) => gcode(name).replace(/\r\n/g, '\n');
 // outputBytes covers the PNG frames AND the manifest reserve (MANIFEST_MAX)
 const job = (objects: RenderJob['objects'], outputBytes = 8 * 2 ** 20): RenderJob => ({ size: 64, objects, outputBytes });
 const reasonOf = (run: () => unknown) => {
@@ -43,7 +45,7 @@ describe('runJob', () => {
     );
 
   it('proves the model by its first layer against the first-layer box, whatever the layers above overhang', () => {
-    const text = overhung(gcode('single-no-markers.gcode'));
+    const text = overhung(lfGcode('single-no-markers.gcode'));
     expect(text).toContain('G1 X131 Y131 E0.4');
     const m = runJob(job([{ id: 1, mode: 'model', bbox: [119, 119, 126, 126] }]), text, () => {});
     expect(m.objects[0].method).toBe('model');
@@ -53,7 +55,7 @@ describe('runJob', () => {
   // typed record above it -- user layer-change G-code inheriting the last feature, say -- is drawn into the model.
   // Changing that is a spec §5.3 decision; this test makes it a deliberate one.
   it('does not refuse the model for a typed record above the first layer', () => {
-    const text = gcode('single-no-markers.gcode').replace(
+    const text = lfGcode('single-no-markers.gcode').replace(
       /(; Z_HEIGHT: 0\.4[\s\S]*?; FEATURE: Outer wall\n)/,
       '$1G1 X10 Y10 F12000\nG1 X60 Y10 E0.8\n',
     );
@@ -63,7 +65,7 @@ describe('runJob', () => {
   });
 
   it('still refuses a typed purge line on the first layer beside the model', () => {
-    const text = gcode('single-no-markers.gcode').replace(
+    const text = lfGcode('single-no-markers.gcode').replace(
       '; FEATURE: Outer wall\n; LINE_WIDTH: 0.42\n',
       '; FEATURE: Outer wall\n; LINE_WIDTH: 0.42\nG1 X18 Y1 F12000\nG1 X218 Y1 E12\n',
     );
