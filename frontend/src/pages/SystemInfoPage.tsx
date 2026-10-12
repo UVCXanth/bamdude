@@ -678,6 +678,12 @@ export function SystemInfoPage() {
         <p className={systemInfo.part_render_worker?.state === 'ready' ? 'text-bambu-green' : 'text-yellow-400'}>
           {t(`system.partRenderWorker.states.${systemInfo.part_render_worker?.state ?? 'unavailable'}`)}
         </p>
+        {systemInfo.part_render_worker?.reason &&
+          t(`system.partRenderWorker.reasons.${systemInfo.part_render_worker.reason}`, { defaultValue: '' }) && (
+            <p className="text-sm text-bambu-gray mt-2">
+              {t(`system.partRenderWorker.reasons.${systemInfo.part_render_worker.reason}`)}
+            </p>
+          )}
         <p className="text-sm text-bambu-gray mt-2">{t('system.partRenderWorker.scope')}</p>
         {systemInfo.part_render_worker?.reason && (
           <p className="text-sm text-bambu-gray mt-2">
@@ -709,6 +715,16 @@ export function SystemInfoPage() {
               seconds: (systemInfo.part_render_worker.last.elapsed_ms / 1000).toFixed(1),
             })}
           </p>
+        )}
+        {systemInfo.part_render_worker?.state !== 'ready' && (
+          <a
+            href={`https://docs.bamdude.top/${i18n.resolvedLanguage?.startsWith('uk') ? 'uk/' : ''}reference/troubleshooting/#part-thumbnail-worker`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-block mt-2 text-bambu-green hover:underline"
+          >
+            {t('system.partRenderWorker.guide')}
+          </a>
         )}
       </Section>
 
