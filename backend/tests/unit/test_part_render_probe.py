@@ -157,3 +157,15 @@ def test_the_probe_falls_back_to_node_on_path_when_nothing_is_provisioned(monkey
     monkeypatch.setattr(part_render_probe, "locate", lambda app_dir: None)
     monkeypatch.setattr(part_render_probe.shutil, "which", lambda name: "/usr/bin/node")
     assert part_render_probe.default_node() == Path("/usr/bin/node")
+
+
+def test_a_rendered_fixture_missing_from_the_golden_is_reported():
+    # final review M2: a fixture the golden does not hold is never silently left uncompared
+    golden = {"renderer": RENDERER_VERSION, "node": ["v1"], "png_sha256": {"two-objects": {"101": "a" * 64}}}
+    results = {
+        "two-objects": {"ok": True, "node": "v1", "sha256": {"101": "a" * 64}},
+        "new-fixture": {"ok": True, "node": "v1", "sha256": {"1": "b" * 64}},
+    }
+    assert part_render_probe.compare_golden(results, golden) == [
+        "new-fixture: not in the golden (run scripts/pin_render_runtime.py --golden)"
+    ]

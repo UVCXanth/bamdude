@@ -228,12 +228,36 @@ def check(manifest: dict, releases: list[dict], schedule: dict, today: date) -> 
     newest = sorted((entry["newest"] for entry in lines.values()), key=_vkey, reverse=True)
     return {
         "today": today.isoformat(),
-        "action": repin or ended or bool(new_lines) or any(entry["end_soon"] for entry in lines.values()),
+        # final review M1: an ACTION is what a release must settle (a newer patch to pin, a line that ended); a NOTICE
+        # is for the maintainer to read (a new LTS line, a line that ends within 90 days) and never holds a release
+        "action": repin or ended,
+        "notice": bool(new_lines) or any(entry["end_soon"] for entry in lines.values()),
         "repin": repin,
         "branch": "chore/node-pin-" + "-".join(newest),
         "lines": lines,
         "new_lines": new_lines,
     }
+
+
+def check_exit_code(report: dict) -> int:
+    """--check: 0 nothing to do, 2 an action (the release gate), 3 notices only, 1 an error (main)."""
+    if report["action"]:
+        return 2
+    return 3 if report["notice"] else 0
+
+
+_LINE_OVERRIDE = re.compile(r"(\d+)=(\S+)")
+
+
+def parse_lines(items: list[str]) -> dict[str, str]:
+    """``--line LINE=vX.Y.Z`` items; anything else is refused before the network (final review M6)."""
+    overrides = {}
+    for item in items:
+        match = _LINE_OVERRIDE.fullmatch(item)
+        if match is None:
+            raise PinError(f"--line takes LINE=vX.Y.Z, got {item!r}")
+        overrides[match.group(1)] = match.group(2)
+    return overrides
 
 
 def signed_shasums(version: str, gpg: str) -> str:
@@ -297,11 +321,20 @@ def agreed_golden(hashes: dict[str, dict], existing: dict | None, renderer: int)
             "decision (parent spec §8.5), not a pin"
         )
     png = hashes[versions[0]]
-    if existing and existing.get("renderer") == renderer and existing.get("png_sha256") != png:
-        raise PinError(
-            f"the pinned Node renders other pixels than the golden of renderer {renderer}: a RENDERER_VERSION "
-            "decision (parent spec §8.5), not a pin"
+    if existing and existing.get("renderer") == renderer:
+        # only a fixture object present in both may not change; a fixture added since is no pixel change (review M2)
+        old = existing.get("png_sha256") or {}
+        changed = sorted(
+            f"{fixture} {obj}"
+            for fixture, objects in png.items()
+            for obj, sha in objects.items()
+            if old.get(fixture, {}).get(obj) not in (None, sha)
         )
+        if changed:
+            raise PinError(
+                f"the pinned Node renders other pixels than the golden of renderer {renderer} ({', '.join(changed)}): "
+                "a RENDERER_VERSION decision (parent spec §8.5), not a pin"
+            )
     return {"renderer": renderer, "node": versions, "png_sha256": png}
 
 
@@ -331,17 +364,22 @@ def prove_golden(manifest: dict, shasums: dict[str, str], host: str, workdir: Pa
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--check", action="store_true", help="report the pin as JSON; exit 0 current, 2 action, 1 error")
+    mode.add_argument(
+        "--check", action="store_true", help="report the pin as JSON; exit 0 nothing, 2 action, 3 notices, 1 error"
+    )
     mode.add_argument("--golden", action="store_true", help="prove and write the golden for the current pin only")
     parser.add_argument("--line", action="append", default=[], metavar="LINE=vX.Y.Z", help="pin this patch of a line")
     args = parser.parse_args(argv)
+    if args.line and (args.check or args.golden):
+        parser.error("--line pins a version; it does not combine with --check or --golden")
     today = date.today()
     try:
+        overrides = parse_lines(args.line)
         releases, schedule = fetch_json(f"{DIST}/index.json"), fetch_json(SCHEDULE)
         if args.check:
             report = check(load_manifest(), releases, schedule, today)
             print(json.dumps(report, indent=2))
-            return 2 if report["action"] else 0
+            return check_exit_code(report)
         gpg = shutil.which("gpg")
         if gpg is None:
             print("gpg is required: the pin is taken only from a signed SHASUMS256.txt.asc", file=sys.stderr)
@@ -350,7 +388,6 @@ def main(argv: list[str] | None = None) -> int:
             manifest = load_manifest()
             shasums = {p["version"]: signed_shasums(p["version"], gpg) for p in manifest["lines"].values()}
         else:
-            overrides = dict(item.split("=", 1) for item in args.line)
             plan = plan_versions(releases, schedule, today, overrides)
             shasums = {pinned["version"]: signed_shasums(pinned["version"], gpg) for pinned in plan.values()}
             manifest = build_manifest(plan, shasums, today)

@@ -198,6 +198,9 @@ def compare_golden(results: dict[str, dict], golden: dict) -> list[str]:
         for object_id, sha in expected.items():
             if got["sha256"].get(object_id) != sha:
                 problems.append(f"{fixture} {object_id}: sha256 differs from golden")
+    # a fixture the golden does not hold is never silently left uncompared (final review M2)
+    for fixture in sorted(set(results) - set(golden["png_sha256"])):
+        problems.append(f"{fixture}: not in the golden (run scripts/pin_render_runtime.py --golden)")
     return problems
 
 

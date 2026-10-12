@@ -133,20 +133,21 @@ def test_check_reports_a_pin_behind_and_the_security_releases_it_missed():
 def test_check_on_a_current_pin_asks_nothing():
     current = {line: pin.newest_patch(RELEASES, line) for line in pin.LINES}
     report = pin.check(_pinned(**current), RELEASES, SCHEDULE, TODAY)
-    assert not report["action"] and not report["repin"]
+    assert not report["action"] and not report["notice"] and not report["repin"]
 
 
 def test_check_names_a_new_lts_line_but_never_repins_for_it():
     current = {line: pin.newest_patch(RELEASES, line) for line in pin.LINES}
     report = pin.check(_pinned(**current), RELEASES, SCHEDULE, date(2026, 11, 2))
     assert report["new_lines"] == ["26"]
-    assert report["action"] and not report["repin"]
+    # final review M1: a new LTS line is a notice for the maintainer, never an action the gate waits on
+    assert report["notice"] and not report["action"] and not report["repin"]
 
 
 def test_check_warns_ninety_days_before_a_line_ends():
     current = {line: pin.newest_patch(RELEASES, line) for line in pin.LINES}
     report = pin.check(_pinned(**current), RELEASES, SCHEDULE, date(2028, 2, 15))
-    assert report["lines"]["24"]["end_soon"] and report["action"]
+    assert report["lines"]["24"]["end_soon"] and report["notice"]
 
 
 def test_build_manifest_pins_each_platform_on_its_line():
@@ -206,3 +207,45 @@ def test_the_manifest_is_written_only_after_the_golden_is_proven(tmp_path, monke
     monkeypatch.setattr(pin, "prove_golden", refuse)
     assert pin.main([]) == 1
     assert manifest_file.read_text(encoding="utf-8") == "{}" and not golden_file.exists()
+
+
+def test_an_ended_line_is_an_action():
+    current = {line: pin.newest_patch(RELEASES, line) for line in pin.LINES}
+    report = pin.check(_pinned(**current), RELEASES, SCHEDULE, date(2027, 5, 3))
+    assert report["lines"]["22"]["ended"] and report["action"] and not report["repin"]
+
+
+@pytest.mark.parametrize(
+    ("report", "code"),
+    [
+        ({"action": False, "notice": False}, 0),
+        ({"action": True, "notice": False}, 2),
+        ({"action": True, "notice": True}, 2),
+        ({"action": False, "notice": True}, 3),
+    ],
+)
+def test_the_check_exit_code_tells_an_action_from_a_notice(report, code):
+    assert pin.check_exit_code(report) == code
+
+
+def test_a_new_fixture_joins_the_golden_of_the_same_renderer():
+    # final review M2: only a fixture or object present in both may not differ; an added fixture is no pixel change
+    existing = {"renderer": 3, "node": ["v24.21.0"], "png_sha256": GOOD}
+    grown = {**GOOD, "new-fixture": {"1": "c" * 64}}
+    assert pin.agreed_golden({"v24.21.0": grown}, existing, 3)["png_sha256"] == grown
+
+
+@pytest.mark.parametrize("item", ["24", "=v24.1.0", "x=v24.1.0", "24="])
+def test_a_malformed_line_override_is_refused(item):
+    with pytest.raises(pin.PinError, match="LINE=vX.Y.Z"):
+        pin.parse_lines([item])
+
+
+def test_a_line_override_parses():
+    assert pin.parse_lines(["24=v24.17.0", "22=v22.23.3"]) == {"24": "v24.17.0", "22": "v22.23.3"}
+
+
+@pytest.mark.parametrize("mode", ["--check", "--golden"])
+def test_a_line_override_does_not_combine_with_check_or_golden(mode):
+    with pytest.raises(SystemExit):
+        pin.main([mode, "--line", "24=v24.17.0"])
