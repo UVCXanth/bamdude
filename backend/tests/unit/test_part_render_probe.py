@@ -6,6 +6,7 @@ from PIL import Image
 from backend.app import part_render_probe
 from backend.app.part_render_probe import FIXTURE_JOBS, evaluate_render, pixel_counts
 from backend.app.services import render_runtime
+from backend.app.services.part_render_protocol import RENDERER_VERSION
 
 
 def _pinned_node() -> Path | None:
@@ -75,19 +76,32 @@ def test_evaluate_render_fails_on_page_error():
 
 
 def test_compare_golden_reports_each_difference():
-    golden = {"renderer": 2, "node": "v1", "png_sha256": {"two-objects": {"101": "a" * 64, "202": "b" * 64}}}
+    golden = {
+        "renderer": RENDERER_VERSION,
+        "node": "v1",
+        "png_sha256": {"two-objects": {"101": "a" * 64, "202": "b" * 64}},
+    }
     results = {"two-objects": {"ok": True, "node": "v1", "sha256": {"101": "a" * 64, "202": "c" * 64}}}
     assert part_render_probe.compare_golden(results, golden) == ["two-objects 202: sha256 differs from golden"]
 
 
 def test_compare_golden_refuses_another_node_version():
-    golden = {"renderer": 2, "node": "v1", "png_sha256": {"two-objects": {"101": "a" * 64}}}
+    golden = {"renderer": RENDERER_VERSION, "node": "v1", "png_sha256": {"two-objects": {"101": "a" * 64}}}
     results = {"two-objects": {"ok": True, "node": "v2", "sha256": {"101": "a" * 64}}}
     assert part_render_probe.compare_golden(results, golden) == ["golden not comparable: run on node v2, written on v1"]
 
 
+def test_compare_golden_refuses_a_golden_of_another_renderer():
+    # plan E7 D2: renderer 3 left the fixtures' PNGs unchanged, so a renderer-2 golden would have passed
+    golden = {"renderer": RENDERER_VERSION - 1, "node": "v1", "png_sha256": {"two-objects": {"101": "a" * 64}}}
+    results = {"two-objects": {"ok": True, "node": "v1", "sha256": {"101": "a" * 64}}}
+    assert part_render_probe.compare_golden(results, golden) == [
+        f"golden not comparable: written for renderer {RENDERER_VERSION - 1}, this is renderer {RENDERER_VERSION}"
+    ]
+
+
 def test_compare_golden_reports_a_failed_render_instead_of_raising():
-    golden = {"renderer": 2, "node": "v1", "png_sha256": {"two-objects": {"101": "a" * 64}}}
+    golden = {"renderer": RENDERER_VERSION, "node": "v1", "png_sha256": {"two-objects": {"101": "a" * 64}}}
     results = {"two-objects": {"ok": False, "node": "v1", "problems": ["crashed: x"], "sha256": {}}}
     assert part_render_probe.compare_golden(results, golden) == ["two-objects: not rendered"]
 

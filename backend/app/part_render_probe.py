@@ -174,6 +174,11 @@ def render_fixture(node: Path, fixture: str, out_dir: Path, *, timeout: float = 
 
 
 def compare_golden(results: dict[str, dict], golden: dict) -> list[str]:
+    if golden.get("renderer") != RENDERER_VERSION:
+        # not a pass: a golden of another renderer may match by chance (renderer 3 left these PNGs as they were)
+        return [
+            f"golden not comparable: written for renderer {golden.get('renderer')}, this is renderer {RENDERER_VERSION}"
+        ]
     problems: list[str] = []
     for fixture, expected in golden["png_sha256"].items():
         got = results.get(fixture)
