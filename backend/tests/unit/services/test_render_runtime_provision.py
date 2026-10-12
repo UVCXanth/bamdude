@@ -326,13 +326,13 @@ ARMHF = "arm-linux-gnueabihf"
 
 @pytest.mark.parametrize("machine", ["armv7l", "armv8l"])
 def test_a_32_bit_armhf_userland_runs_armv7l(machine):
-    assert render_runtime.platform_key("Linux", machine, bits=32, triplet=ARMHF) == "linux-armv7l"
+    assert render_runtime.platform_key("Linux", machine, bits=32, triplet=ARMHF, libc="glibc") == "linux-armv7l"
 
 
 @pytest.mark.parametrize("machine", ["aarch64", "arm64", "armv8l"])
 def test_a_32_bit_armhf_userland_on_a_64_bit_kernel_runs_armv7l(machine):
     # Raspberry Pi OS 32-bit on a Pi 4 / Pi 5: the kernel says aarch64, this interpreter is armhf (spec D4)
-    assert render_runtime.platform_key("Linux", machine, bits=32, triplet=ARMHF) == "linux-armv7l"
+    assert render_runtime.platform_key("Linux", machine, bits=32, triplet=ARMHF, libc="glibc") == "linux-armv7l"
     assert render_runtime.platform_key("Linux", "aarch64", bits=64) == "linux-arm64"
 
 
@@ -363,7 +363,7 @@ def test_armhf_whose_line_ended_is_unsupported(machine, monkeypatch):
     # consilium NL-R1: the armhf branch meets the same PLATFORMS check as every other one
     monkeypatch.setattr(render_runtime, "PLATFORMS", WITHOUT_ARMV7)
     with pytest.raises(render_runtime.UnsupportedPlatform):
-        render_runtime.platform_key("Linux", machine, bits=32, triplet=ARMHF)
+        render_runtime.platform_key("Linux", machine, bits=32, triplet=ARMHF, libc="glibc")
 
 
 def test_pruning_removes_only_retired_platforms(tmp_path, monkeypatch):
@@ -617,6 +617,7 @@ def test_the_cli_on_armhf_whose_line_ended_exits_3_and_cleans_up(tmp_path: Path,
     monkeypatch.setattr(render_runtime._platform, "machine", lambda: "aarch64")
     monkeypatch.setattr(render_runtime, "_interpreter_bits", lambda: 32)
     monkeypatch.setattr(render_runtime, "interpreter_triplet", lambda: ARMHF)
+    monkeypatch.setattr(render_runtime, "interpreter_libc", lambda: "glibc")
     node = tmp_path / "rt" / "node"
     (node / "linux-armv7l" / "bin").mkdir(parents=True)
     (node / "linux-armv7l" / "bin" / "node").write_bytes(b"old runtime")
@@ -625,3 +626,50 @@ def test_the_cli_on_armhf_whose_line_ended_exits_3_and_cleans_up(tmp_path: Path,
     pin_file.write_text(json.dumps({"lines": {"24": {"version": "v24.21.0"}}, "platforms": {}}), encoding="utf-8")
     assert render_runtime.main(["provision", "--runtime", str(tmp_path / "rt"), "--manifest", str(pin_file)]) == 3
     assert sorted(p.name for p in node.iterdir()) == ["linux-arm64"]
+
+
+@pytest.mark.parametrize("libc", ["", "musl"])
+def test_a_musl_interpreter_that_claims_gnueabihf_has_no_runtime(libc):
+    # final review M4: CPython before bpo-43112 reports a gnueabihf SOABI on musl; the official armv7l Node needs glibc
+    with pytest.raises(render_runtime.UnsupportedPlatform, match="glibc"):
+        render_runtime.platform_key("Linux", "armv7l", bits=32, triplet=ARMHF, libc=libc)
+
+
+def test_the_interpreter_libc_comes_from_libc_ver(monkeypatch):
+    monkeypatch.setattr(render_runtime._platform, "libc_ver", lambda: ("glibc", "2.41"))
+    assert render_runtime.interpreter_libc() == "glibc"
+    monkeypatch.setattr(render_runtime._platform, "libc_ver", lambda: ("", ""))
+    assert render_runtime.interpreter_libc() == ""
+
+
+def _refuse_prune(runtime_root):
+    raise PermissionError("a root-owned leftover")
+
+
+def test_a_failed_prune_never_fails_a_provision(tmp_path: Path, monkeypatch, capsys):
+    # final review M3: a leftover the service user cannot remove must not turn an install into a failure
+    monkeypatch.setattr(render_runtime, "prune_retired_platforms", _refuse_prune)
+    archive, sha, size = _archive(tmp_path)
+    target = provision(
+        tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive)
+    )
+    assert (target / "node.exe").is_file()
+    assert "a root-owned leftover" in capsys.readouterr().err
+
+
+def test_a_failed_prune_keeps_exit_3_on_a_machine_without_a_build(tmp_path: Path, monkeypatch, capsys):
+    _, sha, size = _archive(tmp_path)
+    monkeypatch.setattr(render_runtime, "prune_retired_platforms", _refuse_prune)
+    monkeypatch.setattr(render_runtime._platform, "system", lambda: "Linux")
+    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "armv6l")
+    args = ["provision", "--runtime", str(tmp_path / "rt"), "--manifest", str(_pin_file(tmp_path, sha, size))]
+    assert render_runtime.main(args) == 3
+    err = capsys.readouterr().err
+    assert "top-view fallback" in err and "Traceback" not in err
+
+
+def test_an_old_shape_manifest_is_a_message_not_a_traceback():
+    # final review M10: a manifest of the one-version shape names no line for the platform
+    manifest = {"version": "v24.17.0", "platforms": {"win-x64": {"url": "u", "sha256": "0" * 64, "bytes": 1}}}
+    with pytest.raises(ProvisionError, match="line"):
+        render_runtime.pinned_version(manifest, "win-x64")

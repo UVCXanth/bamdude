@@ -49,13 +49,23 @@ def interpreter_triplet() -> str:
     return parts[2] if len(parts) == 3 else ""
 
 
+def interpreter_libc() -> str:
+    """'glibc' when this interpreter links glibc, '' when that cannot be told (musl, Windows, macOS)."""
+    return _platform.libc_ver()[0]
+
+
 def _interpreter_bits() -> int:
     """This interpreter's pointer width -- the USERLAND's, which uname does not report."""
     return struct.calcsize("P") * 8
 
 
 def platform_key(
-    system: str | None = None, machine: str | None = None, *, bits: int | None = None, triplet: str | None = None
+    system: str | None = None,
+    machine: str | None = None,
+    *,
+    bits: int | None = None,
+    triplet: str | None = None,
+    libc: str | None = None,
 ) -> str:
     system = (system or _platform.system()).lower()
     machine = (machine or _platform.machine()).lower()
@@ -68,6 +78,9 @@ def platform_key(
             raise UnsupportedPlatform(
                 f"no official Node.js build for a 32-bit ARM userland that is not armhf ({abi or 'unknown ABI'})"
             )
+        # CPython before bpo-43112 reports a gnueabihf SOABI on musl too (final review M4): the libc decides as well
+        if (interpreter_libc() if libc is None else libc) != "glibc":
+            raise UnsupportedPlatform("no official Node.js build for a 32-bit ARM userland without glibc")
         key = "linux-armv7l"
     else:
         arch = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(machine)
@@ -109,6 +122,15 @@ def prune_retired_platforms(runtime_root: Path) -> list[str]:
     return removed
 
 
+def _prune(runtime_root: Path) -> None:
+    """prune_retired_platforms, never fatal (final review M3): a leftover the service user cannot remove is
+    reported, and the install -- or the exit code -- it would have answered stays what it is."""
+    try:
+        prune_retired_platforms(runtime_root)
+    except OSError as exc:
+        print(f"render-runtime: a retired runtime could not be removed: {exc}", file=sys.stderr)
+
+
 def artifacts_from_shasums(text: str, version: str, platforms: Iterable[str]) -> dict[str, tuple[str, str]]:
     """The official archive of each of ``platforms`` (one line's) in a release's SHASUMS256.txt: platform ->
     (file name, sha256).
@@ -143,7 +165,11 @@ def pinned_version(manifest: dict, key: str) -> str:
     entry = manifest["platforms"].get(key)
     if entry is None:
         raise ProvisionError(f"the manifest pins no build for {key}")
-    return manifest["lines"][entry["line"]]["version"]
+    try:
+        return manifest["lines"][entry["line"]]["version"]
+    except (KeyError, TypeError) as exc:
+        # final review M10: a manifest of the old one-version shape is a message, not a traceback
+        raise ProvisionError(f"the manifest names no pinned line for {key}: re-pin it") from exc
 
 
 def download(url: str, dest: Path, limit: int | None = None) -> None:
@@ -251,7 +277,7 @@ def provision(
         and marker.read_text(encoding="utf-8").strip() == version
         and _executable(target, key).is_file()
     ):
-        prune_retired_platforms(runtime_root)
+        _prune(runtime_root)
         return target
 
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -296,7 +322,7 @@ def provision(
         kept = "; the previous one is kept" if had_previous else ""
         raise ProvisionError(f"{key}: the new runtime could not be put in place ({exc}){kept}") from exc
     shutil.rmtree(old, ignore_errors=True)
-    prune_retired_platforms(runtime_root)
+    _prune(runtime_root)
     return target
 
 
@@ -345,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         target = provision(args.runtime, manifest=load_manifest(args.manifest), platform=args.platform)
     except UnsupportedPlatform as exc:
-        prune_retired_platforms(args.runtime)  # spec D9: a line that ended leaves no runtime behind
+        _prune(args.runtime)  # spec D9: a line that ended leaves no runtime behind
         print(f"render-runtime: {exc}: part thumbnails use the top-view fallback", file=sys.stderr)
         return 3
     except (ProvisionError, OSError) as exc:
