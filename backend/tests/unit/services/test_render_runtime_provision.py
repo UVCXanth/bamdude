@@ -33,9 +33,14 @@ def _archive(tmp_path: Path, *, evil: bool = False) -> tuple[Path, str, int]:
 
 def _manifest(sha256: str, size: int) -> dict:
     return {
-        "version": VERSION,
+        "lines": {"t": {"version": VERSION}},
         "platforms": {
-            "win-x64": {"url": f"https://nodejs.org/dist/{VERSION}/{TOP}.zip", "sha256": sha256, "bytes": size}
+            "win-x64": {
+                "line": "t",
+                "url": f"https://nodejs.org/dist/{VERSION}/{TOP}.zip",
+                "sha256": sha256,
+                "bytes": size,
+            }
         },
     }
 
@@ -91,8 +96,15 @@ def test_only_the_executable_and_the_licence_are_installed_from_a_tar_xz(tmp_pat
     }
     data = _tar_xz(tmp_path, "node-v9-linux-x64", files).read_bytes()
     manifest = {
-        "version": "v9",
-        "platforms": {"linux-x64": {"url": "u.tar.xz", "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}},
+        "lines": {"t": {"version": "v9"}},
+        "platforms": {
+            "linux-x64": {
+                "line": "t",
+                "url": "u.tar.xz",
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "bytes": len(data),
+            }
+        },
     }
     target = render_runtime.provision(
         tmp_path / "runtime",
@@ -338,9 +350,12 @@ SHASUMS = "\n".join(
 )
 
 
+LINE_24 = ("linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win-x64")
+
+
 def test_artifacts_from_shasums_picks_one_archive_per_platform():
-    found = render_runtime.artifacts_from_shasums(SHASUMS, "v24.17.0")
-    assert set(found) == set(render_runtime.PLATFORMS)
+    found = render_runtime.artifacts_from_shasums(SHASUMS, "v24.17.0", LINE_24)
+    assert set(found) == set(LINE_24)
     assert found["linux-x64"][0] == "node-v24.17.0-linux-x64.tar.xz"
     assert found["win-x64"][0] == "node-v24.17.0-win-x64.zip"
 
@@ -348,7 +363,29 @@ def test_artifacts_from_shasums_picks_one_archive_per_platform():
 def test_artifacts_from_shasums_names_every_missing_platform():
     text = "\n".join(line for line in SHASUMS.splitlines() if "darwin" not in line)
     with pytest.raises(render_runtime.ProvisionError, match="darwin-arm64.*darwin-x64|darwin-x64.*darwin-arm64"):
-        render_runtime.artifacts_from_shasums(text, "v24.17.0")
+        render_runtime.artifacts_from_shasums(text, "v24.17.0", LINE_24)
+
+
+def test_artifacts_from_shasums_takes_only_the_platforms_it_is_given():
+    found = render_runtime.artifacts_from_shasums(SHASUMS, "v24.17.0", ("linux-x64", "win-x64"))
+    assert set(found) == {"linux-x64", "win-x64"}
+
+
+def test_the_version_marker_is_the_platforms_line(tmp_path: Path):
+    archive, sha, size = _archive(tmp_path)
+    manifest = {
+        "lines": {"24": {"version": "v24.1.0"}, "22": {"version": VERSION}},
+        "platforms": {
+            "win-x64": {
+                "line": "22",
+                "url": f"https://nodejs.org/dist/{VERSION}/{TOP}.zip",
+                "sha256": sha,
+                "bytes": size,
+            }
+        },
+    }
+    target = provision(tmp_path / "runtime", manifest=manifest, platform="win-x64", fetch=_fetch_from(archive))
+    assert (target / "VERSION").read_text().strip() == VERSION
 
 
 def _tar_xz(tmp_path: Path, top: str, files: dict[str, bytes]) -> Path:
@@ -365,8 +402,10 @@ def test_provision_unpacks_a_tar_xz_and_locates_bin_node(tmp_path):
     archive = _tar_xz(tmp_path, "node-v9-linux-x64", {"bin/node": b"#!fake", "LICENSE": b"x"})
     data = archive.read_bytes()
     manifest = {
-        "version": "v9",
-        "platforms": {"linux-x64": {"url": "u", "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}},
+        "lines": {"t": {"version": "v9"}},
+        "platforms": {
+            "linux-x64": {"line": "t", "url": "u", "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+        },
     }
     target = render_runtime.provision(
         tmp_path / "runtime",
@@ -391,8 +430,10 @@ def test_provision_refuses_a_tar_entry_escaping_the_target(tmp_path):
         tf.addfile(info, io.BytesIO(b"x"))
     data = archive.read_bytes()
     manifest = {
-        "version": "v9",
-        "platforms": {"linux-x64": {"url": "u", "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}},
+        "lines": {"t": {"version": "v9"}},
+        "platforms": {
+            "linux-x64": {"line": "t", "url": "u", "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+        },
     }
     with pytest.raises(render_runtime.ProvisionError):
         render_runtime.provision(
@@ -465,8 +506,10 @@ def test_download_stops_at_the_pinned_size(tmp_path: Path, monkeypatch):
 def _pin_file(tmp_path: Path, sha: str, size: int) -> Path:
     # an unresolvable host: a code path that reaches the network by mistake fails fast instead of downloading
     pin = {
-        "version": VERSION,
-        "platforms": {"win-x64": {"url": "https://invalid.invalid/node.zip", "sha256": sha, "bytes": size}},
+        "lines": {"t": {"version": VERSION}},
+        "platforms": {
+            "win-x64": {"line": "t", "url": "https://invalid.invalid/node.zip", "sha256": sha, "bytes": size}
+        },
     }
     path = tmp_path / "render_runtime.json"
     path.write_text(json.dumps(pin), encoding="utf-8")

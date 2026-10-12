@@ -365,7 +365,9 @@ def installation(root: Path, *, node=True) -> str:
     (data / "part_render" / "manifest.json").write_text(
         json.dumps({"file": "part-render.mjs", "sha256": hashlib.sha256(bundle).hexdigest()}), encoding="utf-8"
     )
-    (data / "render_runtime.json").write_text(json.dumps({"version": "v24.17.0", "artifacts": {}}), encoding="utf-8")
+    key = render_runtime.platform_key()
+    pin = {"lines": {"24": {"version": "v24.17.0"}}, "platforms": {key: {"line": "24"}}}
+    (data / "render_runtime.json").write_text(json.dumps(pin), encoding="utf-8")
     if node:
         key = render_runtime.platform_key()
         target = root / "runtime" / render_runtime.PRODUCT_DIR / key

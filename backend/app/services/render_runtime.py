@@ -18,7 +18,7 @@ import tempfile
 import time
 import urllib.request
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,8 +54,9 @@ def platform_key(system: str | None = None, machine: str | None = None, *, bits:
     return key
 
 
-def artifacts_from_shasums(text: str, version: str) -> dict[str, tuple[str, str]]:
-    """The official archive of every platform in a release's SHASUMS256.txt: platform -> (file name, sha256).
+def artifacts_from_shasums(text: str, version: str, platforms: Iterable[str]) -> dict[str, tuple[str, str]]:
+    """The official archive of each of ``platforms`` (one line's) in a release's SHASUMS256.txt: platform ->
+    (file name, sha256).
 
     A platform the release does not publish is an error naming every such platform at once (consilium N1);
     no other build is ever substituted.
@@ -67,7 +68,7 @@ def artifacts_from_shasums(text: str, version: str) -> dict[str, tuple[str, str]
             sums[fields[1]] = fields[0]
     found: dict[str, tuple[str, str]] = {}
     missing = []
-    for key in PLATFORMS:
+    for key in platforms:
         name = f"node-{version}-{key}.{'zip' if key == 'win-x64' else 'tar.xz'}"
         if name in sums:
             found[key] = (name, sums[name])
@@ -80,6 +81,14 @@ def artifacts_from_shasums(text: str, version: str) -> dict[str, tuple[str, str]
 
 def load_manifest(path: Path = MANIFEST) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def pinned_version(manifest: dict, key: str) -> str:
+    """The version ``key`` is pinned to: its LINE's (part-render-node-lines-spec D1), written once per line."""
+    entry = manifest["platforms"].get(key)
+    if entry is None:
+        raise ProvisionError(f"the manifest pins no build for {key}")
+    return manifest["lines"][entry["line"]]["version"]
 
 
 def download(url: str, dest: Path, limit: int | None = None) -> None:
@@ -177,7 +186,7 @@ def provision(
     entry = manifest["platforms"].get(key)
     if entry is None:
         raise ProvisionError(f"the manifest pins no build for {key}")
-    version = manifest["version"]
+    version = pinned_version(manifest, key)
     target = runtime_root / PRODUCT_DIR / key
     marker = target / "VERSION"
     # The marker alone is not an install: a quarantined or deleted executable

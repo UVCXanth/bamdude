@@ -4,11 +4,12 @@ import importlib.util
 import shutil
 import subprocess
 import tempfile
+from datetime import date
 from pathlib import Path
 
 import pytest
 
-from backend.app.services.render_runtime import ProvisionError
+from backend.app.services.render_runtime import PLATFORMS, ProvisionError
 
 ROOT = Path(__file__).resolve().parents[3]
 GPG = shutil.which("gpg")
@@ -66,3 +67,95 @@ def test_a_body_signed_by_another_key_is_refused():
 def test_the_vendored_release_keys_are_there():
     keys = (ROOT / "scripts" / "node-release-keys.asc").read_text(encoding="ascii")
     assert keys.count("-----BEGIN PGP PUBLIC KEY BLOCK-----") >= 20
+
+
+RELEASES = [
+    {"version": "v26.1.0", "lts": False, "security": False},
+    {"version": "v24.21.0", "lts": "Krypton", "security": False},
+    {"version": "v24.18.1", "lts": "Krypton", "security": True},
+    {"version": "v24.17.0", "lts": "Krypton", "security": True},
+    {"version": "v24.10.0", "lts": False, "security": False},
+    {"version": "v22.23.3", "lts": "Jod", "security": False},
+    {"version": "v22.23.2", "lts": "Jod", "security": True},
+]
+SCHEDULE = {
+    "v22": {"start": "2024-04-24", "lts": "2024-10-29", "end": "2027-04-30"},
+    "v24": {"start": "2025-05-06", "lts": "2025-10-28", "end": "2028-04-30"},
+    "v26": {"start": "2026-05-05", "lts": "2026-10-28", "end": "2029-04-30"},
+}
+TODAY = date(2026, 10, 13)
+
+
+def _pinned(**versions: str) -> dict:
+    return {"lines": {line: {"version": v} for line, v in versions.items()}}
+
+
+def test_every_platform_is_on_exactly_one_line():
+    on = [key for platforms in pin.LINES.values() for key in platforms]
+    assert sorted(on) == sorted(PLATFORMS)
+
+
+def test_the_newest_lts_patch_of_a_line_is_chosen():
+    assert pin.newest_patch(RELEASES, "24") == "v24.21.0"  # v26.1.0 is no LTS, v24.10.0 neither
+
+
+def test_a_line_past_its_end_of_life_is_refused():
+    with pytest.raises(pin.PinError, match="end of life"):
+        pin.plan_versions(RELEASES, SCHEDULE, date(2028, 5, 1), {})
+
+
+def test_an_override_names_a_line_of_the_table():
+    with pytest.raises(pin.PinError, match="no line"):
+        pin.plan_versions(RELEASES, SCHEDULE, TODAY, {"20": "v20.1.0"})
+
+
+@pytest.mark.parametrize("override", ["v22.23.3", "v26.1.0", "v24.10.0", "v24.not-a-version", "v24.99.0"])
+def test_an_override_must_be_a_published_lts_of_its_line(override):
+    # consilium NL-R2: another line's release, a non-LTS major, a pre-LTS patch, a malformed and an unpublished
+    # version -- all refused before anything is downloaded
+    with pytest.raises(pin.PinError):
+        pin.plan_versions(RELEASES, SCHEDULE, TODAY, {"24": override})
+
+
+def test_an_older_lts_patch_of_the_line_is_a_valid_override():
+    # the way back from a patch that broke the renderer (spec D6); the weekly check reports it as behind
+    assert pin.plan_versions(RELEASES, SCHEDULE, TODAY, {"24": "v24.17.0"})["24"]["version"] == "v24.17.0"
+
+
+def test_check_reports_a_pin_behind_and_the_security_releases_it_missed():
+    report = pin.check(_pinned(**{"24": "v24.17.0"}), RELEASES, SCHEDULE, TODAY)
+    entry = report["lines"]["24"]
+    assert entry["behind"] and entry["newest"] == "v24.21.0"
+    assert entry["missed_security"] == ["v24.18.1"]
+    assert report["repin"] and report["action"]
+
+
+def test_check_on_a_current_pin_asks_nothing():
+    current = {line: pin.newest_patch(RELEASES, line) for line in pin.LINES}
+    report = pin.check(_pinned(**current), RELEASES, SCHEDULE, TODAY)
+    assert not report["action"] and not report["repin"]
+
+
+def test_check_names_a_new_lts_line_but_never_repins_for_it():
+    current = {line: pin.newest_patch(RELEASES, line) for line in pin.LINES}
+    report = pin.check(_pinned(**current), RELEASES, SCHEDULE, date(2026, 11, 2))
+    assert report["new_lines"] == ["26"]
+    assert report["action"] and not report["repin"]
+
+
+def test_check_warns_ninety_days_before_a_line_ends():
+    current = {line: pin.newest_patch(RELEASES, line) for line in pin.LINES}
+    report = pin.check(_pinned(**current), RELEASES, SCHEDULE, date(2028, 2, 15))
+    assert report["lines"]["24"]["end_soon"] and report["action"]
+
+
+def test_build_manifest_pins_each_platform_on_its_line():
+    plan = {"24": {"version": "v24.21.0", "end_of_life": "2028-04-30"}}
+    shasums = "\n".join(
+        f"{i:064x}  node-v24.21.0-{key}.{'zip' if key == 'win-x64' else 'tar.xz'}"
+        for i, key in enumerate(pin.LINES["24"])
+    )
+    manifest = pin.build_manifest(plan, {"v24.21.0": shasums}, TODAY, size=lambda url: 7)
+    assert manifest["lines"] == plan and manifest["pinned_at"] == "2026-10-13"
+    assert {entry["line"] for entry in manifest["platforms"].values()} == {"24"}
+    assert manifest["platforms"]["win-x64"]["url"] == "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip"

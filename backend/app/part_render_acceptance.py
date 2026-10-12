@@ -282,7 +282,8 @@ def provenance(
     node = render_runtime.locate(root)  # <root>/runtime only -- a Node on PATH is never this installation's
     if node is None:
         raise SystemExit("the installation has no provisioned Node runtime")
-    pin = render_runtime.load_manifest(root / "backend" / "app" / "data" / "render_runtime.json")["version"]
+    manifest_pin = render_runtime.load_manifest(root / "backend" / "app" / "data" / "render_runtime.json")
+    pin = render_runtime.pinned_version(manifest_pin, node.platform)
     if node.version != pin:
         raise SystemExit(f"installed Node {node.version} is not the pin {pin}")
     bundle_dir = root / "backend" / "app" / "data" / "part_render"
