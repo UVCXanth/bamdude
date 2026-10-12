@@ -7,6 +7,7 @@ import re
 import shutil
 import sys
 import time
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends
@@ -592,6 +593,40 @@ async def check_for_updates(
         }
 
 
+async def _provision_render_runtime(app_dir: Path) -> None:
+    """The pinned Node.js for part thumbnails, as update.sh installs it (spec §6).
+
+    Runs the CHECKED-OUT module in a child process: this process still holds the
+    old code and the old pin. An unchanged pin returns at once without the
+    network. Never fails the update -- a missing runtime is a missing feature,
+    reported on the System page as ``runtime_missing``.
+    """
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "backend.app.services.render_runtime",
+            "provision",
+            "--runtime",
+            str(app_dir / "runtime"),
+            cwd=str(app_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await process.communicate()
+    except OSError as exc:
+        logger.warning("Render runtime update failed: %s", type(exc).__name__)
+        return
+    reason = stderr.decode(errors="replace").strip().splitlines()[-1:] if stderr else []
+    if process.returncode == 0:
+        logger.info("Render runtime provisioned")
+    elif process.returncode == 3:
+        # No official Node.js build for this machine (32-bit ARM): the top-view fallback, as install.sh says.
+        logger.info("Render runtime: no official Node.js build for this machine; part thumbnails use the fallback")
+    else:
+        logger.warning("Render runtime update failed: %s", reason[0] if reason else f"exit {process.returncode}")
+
+
 async def _perform_update(target_ref: str):
     """Perform the actual update by checking out a specific git tag.
 
@@ -779,6 +814,14 @@ async def _perform_update(target_ref: str):
 
         if process.returncode != 0:
             logger.warning("pip install warning: %s", stderr.decode() if stderr else "unknown")
+
+        _update_status = {
+            "status": "installing",
+            "progress": 60,
+            "message": "Updating the part-render runtime...",
+            "error": None,
+        }
+        await _provision_render_runtime(app_dir)
 
         # Try to build frontend if npm is available (optional - static files are pre-built)
         npm_path = _find_executable("npm")
