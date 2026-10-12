@@ -4,12 +4,9 @@ name: Part render acceptance
 # that changes the Node pin or its provisioning, the installer or the service setup, permissions, or the worker's
 # process lifecycle -- not a regression gate on every push.
 on:
+  # GitHub dispatches only a workflow present on the default branch: until a release carries this file to main,
+  # a run needs a temporary push trigger of its own (E7 did exactly that, then removed it).
   workflow_dispatch:
-  # TEMPORARY (E7 acceptance): workflow_dispatch reaches only a workflow on the default branch, so the first run
-  # is triggered by this file's own push; the next commit removes this trigger.
-  push:
-    branches: [feature/part-thumbnails]
-    paths: [.github/workflows/part-render-acceptance.yml]
 
 permissions:
   contents: read
