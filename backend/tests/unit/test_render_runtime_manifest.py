@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from backend.app.services.render_runtime import MANIFEST, PLATFORMS, pinned_version
 
 LINE_OF = dict.fromkeys(("linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win-x64"), "24")
+LINE_OF["linux-armv7l"] = "22"
 
 
 def _manifest() -> dict:

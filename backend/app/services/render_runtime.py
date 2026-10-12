@@ -10,9 +10,11 @@ import argparse
 import hashlib
 import json
 import platform as _platform
+import re
 import shutil
 import struct
 import sys
+import sysconfig
 import tarfile
 import tempfile
 import time
@@ -24,8 +26,12 @@ from pathlib import Path
 
 MANIFEST = Path(__file__).resolve().parents[1] / "data" / "render_runtime.json"
 PRODUCT_DIR = "node"
-# Node 24 official builds only (consilium N1).
-PLATFORMS = ("linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win-x64")
+# Node 24 official builds for five platforms; Node 22 -- the last line with an official linux-armv7l -- for 32-bit
+# ARM (part-render-node-lines-spec D1, D2). The lines live in scripts/pin_render_runtime.py LINES.
+PLATFORMS = ("linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win-x64", "linux-armv7l")
+_ARMHF = "arm-linux-gnueabihf"
+_ARM32_MACHINES = frozenset({"armv7l", "armv8l"})
+_ARM64_KERNELS = frozenset({"aarch64", "arm64", "armv8l"})
 _HEADERS = {"User-Agent": "BamDude render-runtime provisioning"}
 
 
@@ -37,21 +43,70 @@ class UnsupportedPlatform(ProvisionError):
     """No official Node.js build for this machine: part thumbnails run their fallback methods (no_runtime)."""
 
 
-def platform_key(system: str | None = None, machine: str | None = None, *, bits: int | None = None) -> str:
+def interpreter_triplet() -> str:
+    """This interpreter's target triplet from SOABI (``cpython-313-arm-linux-gnueabihf``), '' when it names none."""
+    parts = (sysconfig.get_config_var("SOABI") or "").split("-", 2)
+    return parts[2] if len(parts) == 3 else ""
+
+
+def _interpreter_bits() -> int:
+    """This interpreter's pointer width -- the USERLAND's, which uname does not report."""
+    return struct.calcsize("P") * 8
+
+
+def platform_key(
+    system: str | None = None, machine: str | None = None, *, bits: int | None = None, triplet: str | None = None
+) -> str:
     system = (system or _platform.system()).lower()
     machine = (machine or _platform.machine()).lower()
-    bits = bits or struct.calcsize("P") * 8
-    arch = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(machine)
-    key = {"linux": f"linux-{arch}", "darwin": f"darwin-{arch}", "windows": f"win-{arch}"}.get(system) if arch else None
-    if system == "linux" and bits == 32:
-        # uname names the KERNEL: Raspberry Pi OS 32-bit runs a 64-bit kernel on a Pi 4 / Pi 5, so it
-        # says aarch64 while the userland is armhf and has no loader for a 64-bit Node.
-        raise UnsupportedPlatform(f"no official Node.js build for a 32-bit linux userland ({machine} kernel)")
+    bits = bits or _interpreter_bits()
+    if system == "linux" and (machine in _ARM32_MACHINES or (bits == 32 and machine in _ARM64_KERNELS)):
+        # uname names the KERNEL: Raspberry Pi OS 32-bit boots a 64-bit kernel on a Pi 4 / Pi 5 (aarch64) while the
+        # userland is armhf. The official armv7l Node is glibc hard-float, so the userland decides (spec D4).
+        abi = interpreter_triplet() if triplet is None else triplet
+        if abi != _ARMHF:
+            raise UnsupportedPlatform(
+                f"no official Node.js build for a 32-bit ARM userland that is not armhf ({abi or 'unknown ABI'})"
+            )
+        key = "linux-armv7l"
+    else:
+        arch = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(machine)
+        key = (
+            {"linux": f"linux-{arch}", "darwin": f"darwin-{arch}", "windows": f"win-{arch}"}.get(system)
+            if arch
+            else None
+        )
+        if system == "linux" and bits == 32:
+            raise UnsupportedPlatform(f"no official Node.js build for a 32-bit linux userland ({machine} kernel)")
+    # ONE exit for every recognised machine (consilium NL-R1): a platform whose line ended and left PLATFORMS is
+    # unsupported here -- exit 3 and the clean-up of D9 -- never a key the manifest no longer pins (exit 1, old Node
+    # left on disk). armv6l (Pi 1, Zero), riscv64 ...: the top-view fallback (spec §5.3, §6.1), never a third-party build
     if key not in PLATFORMS:
-        # Node 24 builds no 32-bit ARM (armv7l moved to experimental): part thumbnails
-        # fall back to the top-view method there (spec §5.3, §6.1) -- never a third-party build.
         raise UnsupportedPlatform(f"no official Node.js build for {system}/{machine}")
     return key
+
+
+_PLATFORM_ENTRY = re.compile(r"\.?((?:linux|darwin|win)-[a-z0-9]+)(?:\..*)?")
+
+
+def prune_retired_platforms(runtime_root: Path) -> list[str]:
+    """Spec D9: a platform that left PLATFORMS (its line ended, D3) leaves nothing executable behind -- its tree and
+    its ``.<key>.*`` leftovers go. A pinned platform is never touched, this machine's or not: a checkout mounted
+    into a container holds the HOST's Node. Names that are no platform key are not ours to judge."""
+    product = runtime_root / PRODUCT_DIR
+    if not product.is_dir():
+        return []
+    removed = []
+    for entry in sorted(product.iterdir(), key=lambda p: p.name):
+        match = _PLATFORM_ENTRY.fullmatch(entry.name)
+        if match is None or match.group(1) in PLATFORMS:
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+        removed.append(entry.name)
+    return removed
 
 
 def artifacts_from_shasums(text: str, version: str, platforms: Iterable[str]) -> dict[str, tuple[str, str]]:
@@ -196,6 +251,7 @@ def provision(
         and marker.read_text(encoding="utf-8").strip() == version
         and _executable(target, key).is_file()
     ):
+        prune_retired_platforms(runtime_root)
         return target
 
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -240,6 +296,7 @@ def provision(
         kept = "; the previous one is kept" if had_previous else ""
         raise ProvisionError(f"{key}: the new runtime could not be put in place ({exc}){kept}") from exc
     shutil.rmtree(old, ignore_errors=True)
+    prune_retired_platforms(runtime_root)
     return target
 
 
@@ -288,6 +345,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         target = provision(args.runtime, manifest=load_manifest(args.manifest), platform=args.platform)
     except UnsupportedPlatform as exc:
+        prune_retired_platforms(args.runtime)  # spec D9: a line that ended leaves no runtime behind
         print(f"render-runtime: {exc}: part thumbnails use the top-view fallback", file=sys.stderr)
         return 3
     except (ProvisionError, OSError) as exc:

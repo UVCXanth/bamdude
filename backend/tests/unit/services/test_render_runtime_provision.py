@@ -315,19 +315,74 @@ def test_platform_key(system, machine, key):
     assert render_runtime.platform_key(system, machine) == key
 
 
-@pytest.mark.parametrize("machine", ["armv7l", "armv6l", "riscv64"])
+@pytest.mark.parametrize("machine", ["armv6l", "riscv64"])
 def test_platform_key_reports_a_platform_without_an_official_build(machine):
     with pytest.raises(render_runtime.UnsupportedPlatform):
         render_runtime.platform_key("Linux", machine)
 
 
-@pytest.mark.parametrize("machine", ["aarch64", "x86_64"])
-def test_a_32_bit_linux_userland_on_a_64_bit_kernel_is_unsupported(machine):
-    # Raspberry Pi OS 32-bit boots a 64-bit kernel on a Pi 4 / Pi 5: uname says aarch64, but the userland
-    # (this Python included) is armhf and cannot run the arm64 Node -- that is no_runtime, not an install
+ARMHF = "arm-linux-gnueabihf"
+
+
+@pytest.mark.parametrize("machine", ["armv7l", "armv8l"])
+def test_a_32_bit_armhf_userland_runs_armv7l(machine):
+    assert render_runtime.platform_key("Linux", machine, bits=32, triplet=ARMHF) == "linux-armv7l"
+
+
+@pytest.mark.parametrize("machine", ["aarch64", "arm64", "armv8l"])
+def test_a_32_bit_armhf_userland_on_a_64_bit_kernel_runs_armv7l(machine):
+    # Raspberry Pi OS 32-bit on a Pi 4 / Pi 5: the kernel says aarch64, this interpreter is armhf (spec D4)
+    assert render_runtime.platform_key("Linux", machine, bits=32, triplet=ARMHF) == "linux-armv7l"
+    assert render_runtime.platform_key("Linux", "aarch64", bits=64) == "linux-arm64"
+
+
+@pytest.mark.parametrize("triplet", ["arm-linux-gnueabi", "arm-linux-musleabihf", ""])
+def test_a_32_bit_arm_userland_that_is_not_armhf_has_no_runtime(triplet):
+    # the official armv7l Node is glibc hard-float: it would download and never start (spec D4)
+    with pytest.raises(render_runtime.UnsupportedPlatform, match="armhf|arm-linux-gnueabihf"):
+        render_runtime.platform_key("Linux", "armv7l", bits=32, triplet=triplet)
+
+
+def test_a_32_bit_x86_linux_has_no_runtime():
     with pytest.raises(render_runtime.UnsupportedPlatform):
-        render_runtime.platform_key("Linux", machine, bits=32)
-    assert render_runtime.platform_key("Linux", machine, bits=64).startswith("linux-")
+        render_runtime.platform_key("Linux", "x86_64", bits=32)
+
+
+def test_the_interpreter_triplet_comes_from_soabi(monkeypatch):
+    monkeypatch.setattr(render_runtime.sysconfig, "get_config_var", lambda name: "cpython-313-arm-linux-gnueabihf")
+    assert render_runtime.interpreter_triplet() == ARMHF
+    monkeypatch.setattr(render_runtime.sysconfig, "get_config_var", lambda name: "cp312-win_amd64")
+    assert render_runtime.interpreter_triplet() == ""
+
+
+WITHOUT_ARMV7 = tuple(k for k in render_runtime.PLATFORMS if k != "linux-armv7l")
+
+
+@pytest.mark.parametrize("machine", ["armv7l", "armv8l", "aarch64"])
+def test_armhf_whose_line_ended_is_unsupported(machine, monkeypatch):
+    # consilium NL-R1: the armhf branch meets the same PLATFORMS check as every other one
+    monkeypatch.setattr(render_runtime, "PLATFORMS", WITHOUT_ARMV7)
+    with pytest.raises(render_runtime.UnsupportedPlatform):
+        render_runtime.platform_key("Linux", machine, bits=32, triplet=ARMHF)
+
+
+def test_pruning_removes_only_retired_platforms(tmp_path, monkeypatch):
+    # linux-armv7l stands for a platform whose line ended and left PLATFORMS (spec D3, D9)
+    monkeypatch.setattr(render_runtime, "PLATFORMS", WITHOUT_ARMV7)
+    node = tmp_path / "node"
+    for name in ("win-x64", "linux-x64", "linux-armv7l", ".linux-armv7l.v22.0.0.part", ".linux-armv7l.old", "notes"):
+        (node / name).mkdir(parents=True)
+    removed = render_runtime.prune_retired_platforms(tmp_path)
+    assert removed == [".linux-armv7l.old", ".linux-armv7l.v22.0.0.part", "linux-armv7l"]
+    assert sorted(p.name for p in node.iterdir()) == ["linux-x64", "notes", "win-x64"]
+
+
+def test_pruning_keeps_every_pinned_platform_and_its_backup(tmp_path):
+    # a failed restore keeps .<key>.old as the only runtime there is (provision's own rule); a checkout mounted
+    # into a container holds the HOST's platform -- neither is ever taken
+    for name in ("win-x64", ".win-x64.old", "linux-arm64", ".linux-x64.download.ab12"):
+        (tmp_path / "node" / name).mkdir(parents=True)
+    assert render_runtime.prune_retired_platforms(tmp_path) == []
 
 
 def test_a_32_bit_python_on_64_bit_windows_still_runs_the_x64_node():
@@ -455,7 +510,7 @@ def test_locate_in_tells_unsupported_from_missing_from_installed(tmp_path, monke
     # consilium R5.3: three answers, never folded together
     runtime = tmp_path / "runtime"
     monkeypatch.setattr(render_runtime._platform, "system", lambda: "Linux")
-    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "armv7l")
+    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "armv6l")
     with pytest.raises(render_runtime.UnsupportedPlatform):
         render_runtime.locate_in(runtime)  # no_runtime: fallback methods only
     monkeypatch.setattr(render_runtime._platform, "machine", lambda: "aarch64")
@@ -466,7 +521,7 @@ def test_locate_in_tells_unsupported_from_missing_from_installed(tmp_path, monke
 
 def test_locate_in_refuses_an_explicit_platform_without_an_official_build(tmp_path):
     with pytest.raises(render_runtime.UnsupportedPlatform):
-        render_runtime.locate_in(tmp_path, platform="linux-armv7l")
+        render_runtime.locate_in(tmp_path, platform="linux-armv6l")
 
 
 def test_a_version_marker_without_its_executable_is_not_an_install(tmp_path):
@@ -541,7 +596,32 @@ def test_cli_provision_exits_1_with_a_message_when_the_download_fails(tmp_path: 
 def test_cli_provision_exits_3_on_a_platform_without_an_official_build(tmp_path: Path, monkeypatch, capsys):
     _, sha, size = _archive(tmp_path)
     monkeypatch.setattr(render_runtime._platform, "system", lambda: "Linux")
-    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "armv7l")
+    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "armv6l")
     args = ["provision", "--runtime", str(tmp_path / "rt"), "--manifest", str(_pin_file(tmp_path, sha, size))]
     assert render_runtime.main(args) == 3
     assert "top-view fallback" in capsys.readouterr().err
+
+
+def test_a_provision_prunes_a_retired_platform(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(render_runtime, "PLATFORMS", WITHOUT_ARMV7)
+    archive, sha, size = _archive(tmp_path)
+    (tmp_path / "runtime" / "node" / "linux-armv7l" / "bin").mkdir(parents=True)
+    provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    assert sorted(p.name for p in (tmp_path / "runtime" / "node").iterdir()) == ["win-x64"]
+
+
+def test_the_cli_on_armhf_whose_line_ended_exits_3_and_cleans_up(tmp_path: Path, monkeypatch):
+    # the REAL configuration of a 32-bit Raspberry Pi OS on a Pi 4: aarch64 kernel, 32-bit armhf interpreter
+    monkeypatch.setattr(render_runtime, "PLATFORMS", WITHOUT_ARMV7)
+    monkeypatch.setattr(render_runtime._platform, "system", lambda: "Linux")
+    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(render_runtime, "_interpreter_bits", lambda: 32)
+    monkeypatch.setattr(render_runtime, "interpreter_triplet", lambda: ARMHF)
+    node = tmp_path / "rt" / "node"
+    (node / "linux-armv7l" / "bin").mkdir(parents=True)
+    (node / "linux-armv7l" / "bin" / "node").write_bytes(b"old runtime")
+    (node / "linux-arm64" / "bin").mkdir(parents=True)  # a pinned platform's runtime (a mounted host checkout)
+    pin_file = tmp_path / "render_runtime.json"
+    pin_file.write_text(json.dumps({"lines": {"24": {"version": "v24.21.0"}}, "platforms": {}}), encoding="utf-8")
+    assert render_runtime.main(["provision", "--runtime", str(tmp_path / "rt"), "--manifest", str(pin_file)]) == 3
+    assert sorted(p.name for p in node.iterdir()) == ["linux-arm64"]

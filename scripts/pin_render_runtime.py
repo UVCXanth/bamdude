@@ -63,6 +63,8 @@ HEADERS = {"User-Agent": "BamDude render-runtime pin"}
 # a new major line is a maintainer's decision with acceptance, never pinned by this script on its own.
 LINES: dict[str, tuple[str, ...]] = {
     "24": ("linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win-x64"),
+    # the last line with an official linux-armv7l (Node 24 dropped it); its end of life ends armv7 (spec D3)
+    "22": ("linux-armv7l",),
 }
 END_SOON_DAYS = 90
 
