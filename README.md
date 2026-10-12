@@ -301,7 +301,7 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - **Four sections in the sidebar, with separate permissions** — orders (what was asked for), products (how it is made), customers (who asked), stock (what is on the shelves). Orders open as cards unless this browser has saved another view; the other lists offer cards and tables too
 - **Order page** — price and margin in the header, headline figures, lines of *product × quantity* that expand into per-part progress, a purchased-parts checklist, the prints grouped **by the line they belong to**, the queue, a timeline, notes and attachments, and a banner offering to close the order once everything is printed
 - **"What to print next"** under the lines — plates chosen by useful parts per print hour until the shortfall is covered, with live filament / time / cost totals, alternative files per printer model and a split across them, and one click sends a row, a split or the whole plan to the auto-queue — a single row can also go straight to a chosen printer through the print dialog, which preselects the file sliced for that machine
-- **Product page** — composition (printed parts with per-unit counts, purchased parts with price and link), plates grouped by file, linked files and folders, free stock, and every order that asks for this product
+- **Product page** — composition (printed parts with per-unit counts, purchased parts with price and link), plates grouped by file, linked files and folders, free stock, and every order that asks for this product; every printed part with its picture, rendered on the server from the sliced G-code — or your own photo
 - **Free stock of product parts** — a movement ledger with a reason on every row, a bank-the-surplus button on the order, a hand correction with a note, and a per-line "from stock" reservation that every order figure counts as already done
 - **The order is asked for where the print starts** — the print and auto-queue dialogs offer the orders that still need this plate first — by priority, then deadline, then age, never by how much they still want — with how many prints each is still short; the archive editor and the order page can file (and un-file) a print afterwards
 - **Count a past print into stock** — a button in the archive editor for an order-less print whose parts are on the shelf but were never recorded
@@ -512,6 +512,7 @@ Short version:
 | Frontend | React 19, TypeScript, Tailwind CSS 4 |
 | Database | SQLite (default), your own PostgreSQL, or a bundled PostgreSQL 18 on native installs |
 | 3D Viewer | Three.js |
+| Part thumbnails | Pinned Node.js (bundled in Docker and the Windows installer) |
 | Communication | MQTT (TLS), FTPS |
 | Telegram | aiogram 3.x, MarkdownV2, FSM |
 

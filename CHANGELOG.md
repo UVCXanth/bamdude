@@ -1,5 +1,6 @@
 ## [Unreleased]
 
+- **Every part has a picture.** Each printed part of a product gets its own picture, rendered in the background on the server from the sliced G-code in the filament's colours — or your own photo — and it shows on products, orders and stock. The Docker image and the Windows installer bring the pinned Node.js the renderer needs; a native install downloads it once.
 - **Frontend dependency alerts are resolved.** Updated DOMPurify, brace-expansion and source-map-js to patched releases; the frontend dependency audit now reports no vulnerabilities. Covers [#62](https://github.com/kainpl/bamdude/issues/62) and the updates proposed in [#60](https://github.com/kainpl/bamdude/pull/60) and [#63](https://github.com/kainpl/bamdude/pull/63).
 - **Security scanners now have fewer real issues to report.** Entity-code and part-name parsing avoid slow regex matches on long input, uploaded 3MF metadata uses safe XML parsing, LDAP filter values use ldap3's standard escaping, and two automation workflows declare minimal token permissions.
 - **The Docker runtime image is smaller and has fewer vulnerable packages.** It no longer installs the unused OpenSSH client, removes build-only pip after dependencies are installed, and updates base Debian packages even when the local base-image tag is stale.
