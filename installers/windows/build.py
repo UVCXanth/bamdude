@@ -163,7 +163,7 @@ def configure_python_path(target: Path) -> None:
     if not pth_files:
         raise RuntimeError(f"no python3*._pth file found in {target}")
     pth = pth_files[0]
-    content = pth.read_text()
+    content = pth.read_text(encoding="utf-8")
     content = content.replace("#import site", "import site")
     # Also add Lib\site-packages explicitly. The embedded distribution
     # doesn't include this path by default even with `import site` enabled.
@@ -178,7 +178,7 @@ def configure_python_path(target: Path) -> None:
     # directory itself. Entries are relative to this file: python\ -> ..\app.
     if "..\\app" not in content:
         content = content.rstrip() + "\n..\\app\n"
-    pth.write_text(content)
+    pth.write_text(content, encoding="utf-8")
 
 
 def stage_embedded_python(reuse: bool = False) -> Path:
@@ -440,7 +440,9 @@ def _read_app_version() -> str:
     config_py = REPO_ROOT / "backend" / "app" / "core" / "config.py"
     if not config_py.exists():
         return "0.0.0+dev"
-    for raw in config_py.read_text().splitlines():
+    # utf-8, never the locale: config.py carries non-ASCII (a U+FE0F among them), and a Windows runner's cp1252
+    # cannot map its 0x8f byte -- a bare read_text() failed the build on its last step
+    for raw in config_py.read_text(encoding="utf-8").splitlines():
         stripped = raw.strip()
         if stripped.startswith("APP_VERSION"):
             # APP_VERSION = "0.2.5b1"  ->  0.2.5b1
@@ -480,11 +482,11 @@ def write_version_file() -> None:
     time without a fragile file-read hack.
     """
     version = _resolve_installer_version()
-    (STAGING / "VERSION").write_text(version)
+    (STAGING / "VERSION").write_text(version, encoding="utf-8")
 
     # Inno Setup include — bamdude.iss does `#include "build\staging\version.iss"`
     iss_version = STAGING / "version.iss"
-    iss_version.write_text(f'#define MyAppVersion "{version}"\n')
+    iss_version.write_text(f'#define MyAppVersion "{version}"\n', encoding="utf-8")
     log(f"staged VERSION = {version}")
 
 
