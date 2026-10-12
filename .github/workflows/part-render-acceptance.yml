@@ -5,6 +5,11 @@ name: Part render acceptance
 # process lifecycle -- not a regression gate on every push.
 on:
   workflow_dispatch:
+  # TEMPORARY (E7 acceptance): workflow_dispatch reaches only a workflow on the default branch, so the first run
+  # is triggered by this file's own push; the next commit removes this trigger.
+  push:
+    branches: [feature/part-thumbnails]
+    paths: [.github/workflows/part-render-acceptance.yml]
 
 permissions:
   contents: read
