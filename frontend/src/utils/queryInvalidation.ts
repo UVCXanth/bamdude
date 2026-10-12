@@ -283,6 +283,31 @@ export function invalidateProductCatalog(qc: QueryClient): void {
 export const PRODUCT_FILE_KEYS = ['product-plates', 'product-part-sources', 'product-file-groups', 'product-estimate'] as const;
 
 /**
+ * Every view that shows a part's picture (spec part-thumbnails §12.2–12.3), as key prefixes: the
+ * catalog and the product, its plates and files, the parts list, the stock section and the part
+ * editor's candidates. The order views ride `ORDER_VIEW_KEYS` beside it. One server event
+ * (`part_images_changed`) refreshes them for EVERY client — a render that finished, a choice
+ * somebody else made, a merge, a link (spec §12.3).
+ */
+export const PART_IMAGE_VIEW_KEYS: readonly (readonly string[])[] = [
+  ...PRODUCT_CATALOG_KEYS,
+  ...STOCK_KEYS,
+  ...PRODUCT_FILE_KEYS.map((key) => [key]),
+  ['product-parts'],
+  ['part-image-candidates'],
+];
+
+/**
+ * The author's own picture write (spec part-thumbnails §12.3; plan E5, D12): what the server's
+ * `part_images_changed` refreshes for every client — at once for the one who wrote it. The event
+ * still comes; this does not wait for the socket.
+ */
+export function invalidatePartImageViews(qc: QueryClient): void {
+  for (const queryKey of PART_IMAGE_VIEW_KEYS) qc.invalidateQueries({ queryKey: [...queryKey] });
+  invalidateOrderViews(qc);
+}
+
+/**
  * Mark what a product prints from stale — after a composition, alias or merge edit,
  * a file linked or unlinked, a card re-read, a purchased part's price. Without a
  * product id every product's: a file trashed or restored in the file manager moves

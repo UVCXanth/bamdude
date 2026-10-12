@@ -5,6 +5,7 @@ import { api } from '../../api/client';
 import type {
   LineConfigurationBody,
   LineConfigurationImpact,
+  PartImageRef,
   PartSource,
   Product,
   ProductPart,
@@ -17,6 +18,7 @@ import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { WorkshopTableScroll } from '../workshop/WorkshopPanel';
 import { MODEL_CHIP, VARIANT_CHIP } from './chips';
+import { PartThumb } from '../PartThumb';
 import { CountInput } from './add-to-order/CountInput';
 import { saveAllowed } from './lineConfigSave';
 
@@ -326,20 +328,25 @@ export function LineConfigDialog({
                             </td>
                           )}
                           <td className={CELL}>
-                            <span className="[overflow-wrap:anywhere]">{part.name}</span>
-                            {part.kind === 'purchased' && (
-                              <span className={`ml-1.5 ${VARIANT_CHIP}`}>{t('orders.lineConfig.chip.bought')}</span>
-                            )}
-                            {variant && (
-                              <span className={`ml-1.5 ${VARIANT_CHIP}`}>
-                                {t('orders.lineConfig.chip.variant', { option: variant })}
+                            <span className="flex items-start gap-2">
+                              <PartThumb partId={part.id} image={part.image} name={part.name} kind={part.kind} size="sm" />
+                              <span className="min-w-0">
+                                <span className="[overflow-wrap:anywhere]">{part.name}</span>
+                                {part.kind === 'purchased' && (
+                                  <span className={`ml-1.5 ${VARIANT_CHIP}`}>{t('orders.lineConfig.chip.bought')}</span>
+                                )}
+                                {variant && (
+                                  <span className={`ml-1.5 ${VARIANT_CHIP}`}>
+                                    {t('orders.lineConfig.chip.variant', { option: variant })}
+                                  </span>
+                                )}
+                                {!isParts && part.id in body.part_counts && (
+                                  <span className="ml-1.5 inline-block rounded bg-bambu-green/20 px-1.5 py-px align-[1px] text-[11px] font-medium leading-4 text-bambu-green">
+                                    {t('orders.lineConfig.chip.changed')}
+                                  </span>
+                                )}
                               </span>
-                            )}
-                            {!isParts && part.id in body.part_counts && (
-                              <span className="ml-1.5 inline-block rounded bg-bambu-green/20 px-1.5 py-px align-[1px] text-[11px] font-medium leading-4 text-bambu-green">
-                                {t('orders.lineConfig.chip.changed')}
-                              </span>
-                            )}
+                            </span>
                           </td>
                           <td className={`${CELL} whitespace-nowrap`}>
                             <CountInput
@@ -397,7 +404,7 @@ export function LineConfigDialog({
             </div>
           )}
 
-          {dirty && <Impact preview={preview} settled={settled} />}
+          {dirty && <Impact preview={preview} settled={settled} parts={product?.parts ?? []} />}
         </fieldset>
       ) : null}
     </WorkshopDialog>
@@ -453,13 +460,16 @@ function SourceCell({
   );
 }
 
-/** The dry run's answer for this draft, said line by line (E5 F07). */
+/** The dry run's answer for this draft, said line by line (E5 F07). A part it drops shows the live
+ *  product's picture beside its sentence (plan E6, D5): a picture changing does not re-ask the dry run. */
 function Impact({
   preview,
   settled,
+  parts,
 }: {
   preview: UseQueryResult<LineConfigurationImpact>;
   settled: boolean;
+  parts: ProductPart[];
 }) {
   const { t } = useTranslation();
   if (!settled || preview.isFetching || preview.isPending) {
@@ -476,21 +486,40 @@ function Impact({
     );
   }
   const impact = preview.data;
-  const lines: string[] = [];
+  const pictureOf = new Map(parts.map((p) => [p.id, p.image]));
+  const lines: { key: string; text: string; part?: { id: number; name: string; image?: PartImageRef | null } }[] = [];
   if (impact.reserved_before !== impact.reserved_after) {
-    lines.push(t('orders.lineConfig.impact.reserve', { before: impact.reserved_before, after: impact.reserved_after }));
+    const text = t('orders.lineConfig.impact.reserve', { before: impact.reserved_before, after: impact.reserved_after });
+    lines.push({ key: text, text });
   }
   if (impact.finished_before !== impact.finished_after) {
-    lines.push(t('orders.lineConfig.impact.ready', { before: impact.finished_before, after: impact.finished_after }));
+    const text = t('orders.lineConfig.impact.ready', { before: impact.finished_before, after: impact.finished_after });
+    lines.push({ key: text, text });
   }
   for (const d of impact.dropping) {
     if (d.printed > 0 || d.queued > 0) {
-      lines.push(t('orders.lineConfig.impact.dropping', { name: d.name, printed: d.printed, queued: d.queued }));
+      const text = t('orders.lineConfig.impact.dropping', { name: d.name, printed: d.printed, queued: d.queued });
+      const image = pictureOf.has(d.part_id) ? pictureOf.get(d.part_id) : d.image;
+      // Keyed by the part: two parts of one name and the same counts say the same sentence.
+      lines.push({ key: `part-${d.part_id}`, text, part: { id: d.part_id, name: d.name, image } });
     }
   }
   return (
     <div className="space-y-0.5 text-sm text-amber-700 dark:text-amber-400" data-testid="line-config-impact">
-      {lines.length > 0 ? lines.map((l) => <p key={l}>{l}</p>) : <p>{t('orders.lineConfig.impact.none')}</p>}
+      {lines.length > 0 ? (
+        lines.map((l) =>
+          l.part ? (
+            <p key={l.key} className="flex items-start gap-1.5">
+              <PartThumb partId={l.part.id} image={l.part.image} name={l.part.name} size="xs" />
+              {l.text}
+            </p>
+          ) : (
+            <p key={l.key}>{l.text}</p>
+          ),
+        )
+      ) : (
+        <p>{t('orders.lineConfig.impact.none')}</p>
+      )}
     </div>
   );
 }

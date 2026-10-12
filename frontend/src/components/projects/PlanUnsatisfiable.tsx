@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { AlertTriangle } from 'lucide-react';
 import type { PlanPartCount } from '../../api/client';
 import { SectionLink } from '../workshop/SectionLink';
+import { PartThumb } from '../PartThumb';
 
 interface PlanUnsatisfiableProps {
   lineId: number;
@@ -36,6 +37,8 @@ export function PlanUnsatisfiable({ lineId, productId, material, part, notSliced
       className="mt-2.5 flex items-center gap-2 flex-wrap rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2.5 text-[13px] text-amber-700 dark:text-amber-400"
     >
       <AlertTriangle className="w-4 h-4 shrink-0" aria-hidden />
+      {/* The part beside the sentence, not inside it: the sentence is translated whole (plan E6, D7). */}
+      <PartThumb partId={part.part_id} image={part.image} name={part.name} size="xs" />
       <span className="min-w-0 flex-1">
         {t('orders.plan.noPlateFor', {
           part: part.name,

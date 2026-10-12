@@ -66,6 +66,7 @@ from backend.app.api.routes import (
     notifications,
     obico,
     orca_cloud,
+    part_images as part_images_routes,
     print_options_preferences,
     print_queue,
     printer_locations,
@@ -11440,6 +11441,12 @@ async def lifespan(app: FastAPI):
         await start_library_file_runtime(Path(app_settings.base_dir))
     except Exception:
         logging.getLogger(__name__).exception("Library file service unavailable at startup")
+    from backend.app.services.part_render_scheduler import start_part_render, stop_part_render
+
+    try:
+        await start_part_render(Path(app_settings.base_dir), Path(app_settings.app_dir))
+    except Exception:
+        logging.getLogger(__name__).exception("Part render service unavailable at startup")
 
     yield
 
@@ -11447,6 +11454,10 @@ async def lifespan(app: FastAPI):
     from backend.app.services.print_run_binding import revoke_print_effects
 
     revoke_print_effects(printer_manager)
+    await stop_part_render()  # its attempt ends with its proof before any worker or the broker goes
+    from backend.app.services import part_images
+
+    await part_images.shutdown()  # events and photo removals already started finish, or are cancelled
     await stop_preview_runtime()
     await ws_manager.shutdown()
     # Cloud Link first: it holds a socket and describes this farm, so it should
@@ -11750,6 +11761,8 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     # share these paths and ride in with them — the middleware sees a path, not
     # a method — and are stopped by their own products:update / orders:update permission.
     re.compile(r"^/api/v1/products/\d+/cover-image$"),
+    re.compile(r"^/api/v1/product-parts/\d+/image$"),
+    re.compile(r"^/api/v1/products/\d+/files/\d+/plates/\d+/objects/\d+/image$"),
     re.compile(r"^/api/v1/projects/\d+/cover-image$"),
     re.compile(r"^/api/v1/archives/\d+/qrcode$"),
     # The timelapse VIDEO only. The six timelapse routes beside it
@@ -12311,6 +12324,8 @@ app.include_router(projects.router, prefix=app_settings.api_prefix)
 app.include_router(customers.router, prefix=app_settings.api_prefix)
 app.include_router(delivery_methods.router, prefix=app_settings.api_prefix)
 app.include_router(products.router, prefix=app_settings.api_prefix)
+app.include_router(part_images_routes.router, prefix=app_settings.api_prefix)
+app.include_router(part_images_routes.product_router, prefix=app_settings.api_prefix)
 app.include_router(product_categories.router, prefix=app_settings.api_prefix)
 app.include_router(stock.router, prefix=app_settings.api_prefix)
 app.include_router(stock_issues.router, prefix=app_settings.api_prefix)

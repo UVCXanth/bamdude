@@ -1967,7 +1967,9 @@ async def test_the_plan_loads_every_products_recipes_in_one_batch(
     assert all(line["rows"] for line in r.json()["lines"]), "each line still gets its own plate to print"
     assert calls["batched"] == 1
     assert engine_reads == [1], seen
-    assert len(seen) == 2, seen  # + the one batched read of the names
+    # + the one batched read of the names, + the parts' pictures (part thumbnails E4: one batch
+    # for every part of the answer, whatever the number of products)
+    assert len(seen) == 3, seen
 
 
 @pytest.mark.asyncio
@@ -3980,11 +3982,14 @@ async def test_a_line_lists_its_purchased_parts_and_they_add_up_to_procurement(c
     detail = await _detail(committing_client, pid)
     product_line, parts_line = detail["lines"]
     assert parts_line["quantity"] == 2  # the DTO's reading: the printed parts it wants
+    # ``image`` (part thumbnails E4): a purchased part shows its photo, and these have none
     assert product_line["purchased"] == [
-        {"part_id": screw, "name": "M3", "per": 4, "need": 12, "variant": False},
-        {"part_id": magnet.id, "name": "Magnet", "per": 2, "need": 6, "variant": True},
+        {"part_id": screw, "name": "M3", "per": 4, "need": 12, "variant": False, "image": None},
+        {"part_id": magnet.id, "name": "Magnet", "per": 2, "need": 6, "variant": True, "image": None},
     ]
-    assert parts_line["purchased"] == [{"part_id": screw, "name": "M3", "per": 5, "need": 5, "variant": False}]
+    assert parts_line["purchased"] == [
+        {"part_id": screw, "name": "M3", "per": 5, "need": 5, "variant": False, "image": None}
+    ]
     per_line = Counter()
     for line in detail["lines"]:
         for row in line["purchased"]:

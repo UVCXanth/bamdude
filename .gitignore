@@ -96,3 +96,6 @@ graphify-out/
 ds-bundle/
 .design-sync/
 .codex/
+
+# Part-render runtime (pinned Node.js), provisioned from backend/app/data/render_runtime.json (spec §6.2)
+/runtime/

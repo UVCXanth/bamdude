@@ -5,6 +5,7 @@ import { api } from '../../api/client';
 import type { Product, ProductPart } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
+import { PartThumb } from '../PartThumb';
 import { Select } from '../Select';
 import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { WorkshopField, WorkshopFormGrid } from '../workshop/WorkshopFormGrid';
@@ -104,6 +105,22 @@ export function MergePartDialog({ product, source, onClose, beforeSend }: MergeP
         </>
       }
     >
+      {/* Plan E5, D13: what goes into what — the target keeps its own picture (spec §10.3). */}
+      <div data-testid="merge-pair" className="mb-3 flex flex-wrap items-center gap-2 text-sm">
+        <PartThumb partId={source.id} image={source.image} name={source.name} size="md" />
+        <span className="text-white break-words">{source.name}</span>
+        <span aria-hidden="true" className="text-bambu-gray">
+          →
+        </span>
+        {chosen ? (
+          <>
+            <PartThumb partId={chosen.id} image={chosen.image} name={chosen.name} size="md" />
+            <span className="text-white break-words">{chosen.name}</span>
+          </>
+        ) : (
+          <span className="text-bambu-gray">{t('products.mergeDialog.choose')}</span>
+        )}
+      </div>
       <WorkshopFormGrid>
         <WorkshopField label={t('products.mergeDialog.target')} htmlFor={targetFieldId} full>
           <Select
@@ -129,6 +146,7 @@ export function MergePartDialog({ product, source, onClose, beforeSend }: MergeP
         <li>{t('products.mergeDialog.orders')}</li>
         <li>{t('products.mergeDialog.procurement')}</li>
         {source.variant_option_id != null && <li>{t('products.mergeDialog.variant')}</li>}
+        {source.image_choice?.source === 'photo' && <li>{t('products.mergeDialog.photo')}</li>}
       </ul>
     </WorkshopDialog>
   );

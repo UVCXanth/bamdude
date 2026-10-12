@@ -46,3 +46,71 @@ def test_rejects_untrusted_entrypoint_or_camera_frame(envelope):
 def test_preview_limit_is_not_raised_to_camera_limit():
     with pytest.raises(ValueError, match="preview bootstrap too large"):
         _child_bootstrap(_line({"module": "backend.app.preview_service", "padding": "x" * 16384}))
+
+
+def test_the_part_render_modules_are_allowed():
+    from backend.app.worker_guardian import _PREVIEW_MODULES
+
+    assert {"backend.app.part_render_service", "backend.app.part_render"} <= _PREVIEW_MODULES
+
+
+def test_the_guardian_records_part_render_before_its_bootstrap(tmp_path):
+    """Plan E3, R12: child.launch before the spawn, child.pid before the child has its bootstrap."""
+    import json
+    import time
+
+    from backend.app.services.preview_process import PreviewProcess
+
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    missing = {
+        "path": str(tmp_path / "gone.3mf"),
+        "root": str(tmp_path),
+        "kind": "3mf",
+        "sha256": "0" * 64,
+        "size": 1,
+        "plate_index": 1,
+    }
+    boot = {"root": str(attempt), "task": missing, "deadline_ns": time.monotonic_ns() + 30 * 10**9, "node": None}
+    child = PreviewProcess("backend.app.part_render", boot, tmp_path / "cache")
+    try:
+        assert child.process.wait(timeout=60) == 0
+    finally:
+        child.stop()
+    assert (attempt / "child.launch").exists()
+    recorded = json.loads((attempt / "child.pid").read_text(encoding="ascii"))
+    assert recorded["pid"] != child.process.pid  # the part_render process, recorded by its guardian
+    assert json.loads((attempt / "result.json").read_text(encoding="utf-8"))["reason"] == "source_read_failed"
+
+
+def test_the_guardian_records_the_part_render_service_before_its_bootstrap(tmp_path):
+    """Consilium E3-I-R1: the worker is recorded in its generation, so a later start can prove the parent of
+    every unrecorded attempt guardian dead."""
+    import json
+    import uuid
+
+    from backend.app.services.preview_process import PreviewProcess
+
+    generation = tmp_path / "generation"
+    (generation / "service").mkdir(parents=True)
+    boot = {
+        "url": "nats://127.0.0.1:9",
+        "token": "x",
+        "bucket": "b",
+        "generation": uuid.uuid4().hex,
+        "epoch": uuid.uuid4().hex,
+        "staging": str(generation / "service"),
+    }
+    import time
+
+    worker = PreviewProcess("backend.app.part_render_service", boot, tmp_path / "cache")
+    try:
+        for _ in range(200):  # the guardian records the service before the service has its bootstrap
+            if (generation / "service.pid").exists():
+                break
+            time.sleep(0.05)
+    finally:
+        worker.stop()  # no broker on port 9: the tree is stopped here, whatever the service does next
+    assert (generation / "service.launch").exists()
+    recorded = json.loads((generation / "service.pid").read_text(encoding="ascii"))
+    assert recorded["pid"] != worker.process.pid

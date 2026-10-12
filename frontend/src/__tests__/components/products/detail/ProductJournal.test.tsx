@@ -187,4 +187,14 @@ describe('ProductJournal', () => {
     render(<ProductJournal productId={7} />);
     expect(screen.getByTestId('journal-skeleton')).toBeInTheDocument();
   });
+
+  it('a parts row shows the part’s picture; a finished row none (plan E5, D11)', async () => {
+    vi.spyOn(api, 'getStockJournal').mockResolvedValue(
+      page([finished(1), { ...part(2, 'Lid'), part_id: 5, image: { kind: 'render', status: 'ready', v: 'l5' } }]),
+    );
+    render(<ProductJournal productId={7} />);
+    const row = await screen.findByTestId('journal-row-parts-2');
+    expect(within(row).getByTestId('part-thumb-img')).toHaveAttribute('src', '/api/v1/product-parts/5/image?v=l5&size=sm');
+    expect(within(screen.getByTestId('journal-row-finished-1')).queryByTestId('part-thumb')).not.toBeInTheDocument();
+  });
 });

@@ -674,6 +674,60 @@ export function SystemInfoPage() {
         )}
       </Section>
 
+      <Section title={t('system.partRenderWorker.title')} icon={Activity}>
+        <p className={systemInfo.part_render_worker?.state === 'ready' ? 'text-bambu-green' : 'text-yellow-400'}>
+          {t(`system.partRenderWorker.states.${systemInfo.part_render_worker?.state ?? 'unavailable'}`)}
+        </p>
+        {systemInfo.part_render_worker?.reason &&
+          t(`system.partRenderWorker.reasons.${systemInfo.part_render_worker.reason}`, { defaultValue: '' }) && (
+            <p className="text-sm text-bambu-gray mt-2">
+              {t(`system.partRenderWorker.reasons.${systemInfo.part_render_worker.reason}`)}
+            </p>
+          )}
+        <p className="text-sm text-bambu-gray mt-2">{t('system.partRenderWorker.scope')}</p>
+        {systemInfo.part_render_worker?.reason && (
+          <p className="text-sm text-bambu-gray mt-2">
+            {t('system.partRenderWorker.reason')}: <code>{systemInfo.part_render_worker.reason}</code>
+          </p>
+        )}
+        {systemInfo.part_render_worker?.runtime && (
+          <p className="text-sm text-bambu-gray mt-2">
+            {t('system.partRenderWorker.runtime', {
+              version: systemInfo.part_render_worker.runtime.version,
+              pinnedAt: systemInfo.part_render_worker.runtime.pinned_at ?? '—',
+            })}
+          </p>
+        )}
+        {systemInfo.part_render_worker?.queue && (
+          <p className="text-sm text-bambu-gray mt-2">
+            {t('system.partRenderWorker.queue', {
+              pending: systemInfo.part_render_worker.queue.pending,
+              failed: systemInfo.part_render_worker.queue.failed,
+            })}
+          </p>
+        )}
+        {systemInfo.part_render_worker?.last && (
+          <p className="text-sm text-bambu-gray mt-2">
+            {t('system.partRenderWorker.last', {
+              outcome: t(`system.partRenderWorker.outcomes.${systemInfo.part_render_worker.last.outcome}`, {
+                defaultValue: systemInfo.part_render_worker.last.outcome,
+              }),
+              seconds: (systemInfo.part_render_worker.last.elapsed_ms / 1000).toFixed(1),
+            })}
+          </p>
+        )}
+        {systemInfo.part_render_worker?.state !== 'ready' && (
+          <a
+            href={`https://docs.bamdude.top/${i18n.resolvedLanguage?.startsWith('uk') ? 'uk/' : ''}reference/troubleshooting/#part-thumbnail-worker`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-block mt-2 text-bambu-green hover:underline"
+          >
+            {t('system.partRenderWorker.guide')}
+          </a>
+        )}
+      </Section>
+
       <Section title={t('system.database', 'Database')} icon={Database}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <StatCard

@@ -1,0 +1,148 @@
+"""Fallback methods of a plate's instances (spec §5.3): top_mask over the slicer's own top/pick pair."""
+
+import io
+import json
+
+import numpy as np
+from PIL import Image
+
+from backend.app.services import part_render_fallback as fb
+
+
+def _png(img: Image.Image) -> bytes:
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _pick(ids: dict[tuple[int, int, int, int], int], size=(64, 64)) -> bytes:
+    """A pick image: each box (x0, y0, x1, y1) painted with its id as R | G<<8 | B<<16."""
+    img = Image.new("RGB", size, (0, 0, 0))
+    for (x0, y0, x1, y1), oid in ids.items():
+        img.paste((oid & 0xFF, (oid >> 8) & 0xFF, (oid >> 16) & 0xFF), (x0, y0, x1, y1))
+    return _png(img)
+
+
+def _top(size=(64, 64)) -> bytes:
+    return _png(Image.new("RGBA", size, (200, 30, 30, 255)))
+
+
+def test_ids_decode_exactly_without_dark_colour_heuristics():
+    pick = Image.open(io.BytesIO(_pick({(0, 0, 4, 4): 265})))
+    assert fb.decode_ids(pick)[0, 0] == 265  # RGB(9, 1, 0) is a valid id, not "dark"
+
+
+def test_a_pair_of_identical_bytes_is_refused():
+    same = _top()
+    assert fb.valid_pair(same, same) is None
+
+
+def test_a_pair_of_different_sizes_is_refused():
+    assert fb.valid_pair(_top((64, 64)), _pick({(0, 0, 4, 4): 1}, size=(32, 32))) is None
+
+
+def test_a_pair_that_does_not_decode_is_refused():
+    assert fb.valid_pair(b"not a png", _pick({(0, 0, 4, 4): 1})) is None
+
+
+def test_top_mask_keeps_the_instance_and_clears_the_rest():
+    pair = fb.valid_pair(_top(), _pick({(10, 10, 30, 20): 101, (40, 40, 60, 60): 202}))
+    png = fb.top_mask(pair, 101)
+    img = Image.open(io.BytesIO(png)).convert("RGBA")
+    # native resolution: the 20x10 instance, centred on a 20 + 2 * 2 square (spec §5.3: no upscale)
+    assert img.size == (24, 24)
+    alpha = np.asarray(img)[..., 3]
+    assert alpha[0, 0] == 0 and alpha[-1, -1] == 0  # margin and the other instance are transparent
+    assert alpha[12, 12] == 255  # the centre is the instance itself
+    assert tuple(np.asarray(img)[12, 12][:3]) == (200, 30, 30)
+
+
+def test_top_mask_of_an_absent_id_is_none():
+    pair = fb.valid_pair(_top(), _pick({(10, 10, 30, 20): 101}))
+    assert fb.top_mask(pair, 999) is None
+
+
+def test_small_is_128():
+    pair = fb.valid_pair(_top(), _pick({(10, 10, 30, 20): 101}))
+    small = Image.open(io.BytesIO(fb.small(fb.top_mask(pair, 101))))
+    assert small.size == (128, 128)
+
+
+def _plate(*entries) -> bytes:
+    return json.dumps({"bbox_objects": list(entries)}).encode()
+
+
+WIPE_TOWER = {"id": 1001, "name": "wipe_tower", "bbox": [200, 200, 230, 230]}
+
+
+def test_model_bbox_finds_the_object_under_the_id_bambustudio_writes():
+    """BambuStudio files the bbox under the PrintObject's id (Plater::priv::generate_first_layer_bbox), a counter
+    apart from the identify_id in slice_info: 109 against 94 on a real file (E7 acceptance, 2026-10-12). The
+    record of a single-object plate is its one entry beside the wipe tower, and only under the object's name."""
+    plate = _plate({"id": 109, "name": "Box.STL", "bbox": [1, 2, 3, 4]}, WIPE_TOWER)
+    assert fb.model_bbox(plate, "Box.STL") == [1.0, 2.0, 3.0, 4.0]
+
+
+def test_model_bbox_proves_nothing_it_cannot_pin_to_the_object():
+    assert fb.model_bbox(_plate({"id": 109, "name": "Lid.STL", "bbox": [1, 2, 3, 4]}), "Box.STL") is None
+    two = _plate(
+        {"id": 109, "name": "Box.STL", "bbox": [1, 2, 3, 4]}, {"id": 110, "name": "Box.STL", "bbox": [5, 6, 7, 8]}
+    )
+    assert fb.model_bbox(two, "Box.STL") is None
+    assert fb.model_bbox(_plate(WIPE_TOWER), "wipe_tower") is None
+    assert fb.model_bbox(_plate(), "Box.STL") is None
+    assert fb.model_bbox(None, "Box.STL") is None
+    assert fb.model_bbox(b"{broken", "Box.STL") is None
+    assert fb.model_bbox(_plate({"id": 109, "name": "Box.STL", "bbox": [1, "x"]}), "Box.STL") is None
+
+
+def test_a_pair_over_the_pixel_ceiling_is_refused_before_it_is_decoded(monkeypatch):
+    """Security review: a PNG of a few KiB may declare an enormous image; the size in its header decides
+    before a single pixel is decoded."""
+    monkeypatch.setattr(fb, "PAIR_PIXELS", 64 * 64 - 1)
+    decoded = []
+    monkeypatch.setattr(fb, "decode_ids", lambda pick: decoded.append(pick))
+    assert fb.valid_pair(_top(), _pick({(0, 0, 4, 4): 1})) is None
+    assert decoded == []
+    assert not fb.fits(_top()) and fb.fits(_top((8, 8)))
+    assert not fb.fits(None) and not fb.fits(b"not a png")
+
+
+def _as(fmt: str, size=(16, 16)) -> bytes:
+    out = io.BytesIO()
+    Image.new("RGBA" if fmt != "BMP" else "RGB", size, (200, 30, 30, 255)[: 4 if fmt != "BMP" else 3]).save(
+        out, format=fmt
+    )
+    return out.getvalue()
+
+
+def test_only_a_png_fits():
+    """Security review: the size another format declares at open need not be the size it decodes to (an ICO's
+    directory against the image inside it), so nothing but PNG is measured or decoded."""
+    assert fb.fits(_as("PNG"))
+    assert not fb.fits(_as("ICO")) and not fb.fits(_as("BMP")) and not fb.fits(_as("GIF"))
+
+
+def test_a_pair_that_is_not_png_is_refused():
+    assert fb.valid_pair(_as("BMP", (64, 64)), _as("GIF", (64, 64))) is None
+
+
+def test_model_bbox_survives_what_json_can_hold():
+    """Final review M1: an infinite id, an enormous coordinate and a deep nest are no bbox, never a crash."""
+    assert fb.model_bbox(b'{"bbox_objects": [{"id": 1e999, "name": "a", "bbox": [1, 2, 3, 1e999]}]}', "a") is None
+    huge = "1" + "0" * 400
+    assert fb.model_bbox(f'{{"bbox_objects": [{{"name": "a", "bbox": [{huge}, 2, 3, 4]}}]}}'.encode(), "a") is None
+    assert fb.model_bbox(b"[" * 100000 + b"]" * 100000, "a") is None
+    assert fb.model_bbox(b'{"bbox_objects": [7, "x", null]}', "a") is None
+
+
+def test_a_crop_larger_than_a_master_is_scaled_down_not_refused():
+    """Final review M8: past MASTER_SIZE a native crop of a busy top image could outgrow PNG_BYTES and fail the
+    whole plate; it is scaled down to the master size -- never up (R11)."""
+    from backend.app.services.part_render_protocol import MASTER_SIZE
+
+    noise = np.random.default_rng(1).integers(0, 255, (1200, 1200, 4), dtype=np.uint8)
+    noise[..., 3] = 255
+    pair = fb.valid_pair(_png(Image.fromarray(noise, "RGBA")), _pick({(0, 0, 1200, 1200): 101}, size=(1200, 1200)))
+    with Image.open(io.BytesIO(fb.top_mask(pair, 101))) as master:
+        assert master.size == (MASTER_SIZE, MASTER_SIZE)

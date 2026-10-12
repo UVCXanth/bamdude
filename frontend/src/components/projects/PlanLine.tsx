@@ -8,6 +8,7 @@ import { etaShort } from '../../utils/forecast';
 import { formatDuration } from '../../utils/date';
 import { PlanRow } from './PlanRow';
 import { PlanUnsatisfiable } from './PlanUnsatisfiable';
+import { PartCounts } from './PartCounts';
 import { projectPlan, type YieldByPlate } from './planMath';
 import { lineConfigLabel } from './lineConfigLabel';
 import { Select } from '../Select';
@@ -200,9 +201,8 @@ export function PlanLine({
           </p>
           {line.outstanding_before.length > 0 && (
             <small className="block mt-0.5 text-xs text-bambu-gray">
-              {`${t('orders.plan.outstanding')} ${line.outstanding_before
-                .map((o) => `${o.name} × ${o.count}`)
-                .join(' · ')}`}
+              {t('orders.plan.outstanding')}{' '}
+              <PartCounts parts={line.outstanding_before} format={(o) => `${o.name} × ${o.count}`} separator=" · " />
             </small>
           )}
           {forecast?.eta_complete && forecast.now_eta && (
@@ -319,7 +319,8 @@ export function PlanLine({
         <div className="space-y-1 min-w-0">
           {surplus.length > 0 && (
             <p className="text-xs text-amber-700 dark:text-amber-400" data-testid={`plan-line-${line.line_id}-surplus`}>
-              {`${t('orders.plan.surplusAfter')} ${surplus.map((s) => `${s.name} +${s.count}`).join(' · ')}`}
+              {t('orders.plan.surplusAfter')}{' '}
+              <PartCounts parts={surplus} format={(s) => `${s.name} +${s.count}`} separator=" · " />
             </p>
           )}
           {slicedInFooter && (
