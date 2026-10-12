@@ -30,8 +30,13 @@ jobs:
 
       - name: The service runs under launchd
         run: |
+          # launchd lists the agent before it has a pid ("-"): wait for the process, not for the listing
+          for _ in $(seq 1 30); do
+            pid=$(launchctl list | awk '/com.bamdude.app/ {print $1}')
+            [ -n "$pid" ] && [ "$pid" != "-" ] && break
+            sleep 2
+          done
           launchctl list | grep com.bamdude.app
-          pid=$(launchctl list | awk '/com.bamdude.app/ {print $1}')
           ps -o pid,ppid,user,command -p "$pid" | tee service-process.txt
           test "$(ps -o ppid= -p "$pid" | tr -d ' ')" = "1"
 
