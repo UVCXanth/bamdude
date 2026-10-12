@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { Order, PlanRow as PlanRowData } from '../../api/client';
+import { PartCounts } from './PartCounts';
 import { formatMoney } from '../../utils/currency';
 import { formatDuration } from '../../utils/date';
 import { Button } from '../Button';
@@ -190,7 +191,11 @@ export function PlanRow({
         </td>
 
         <td className={`${CELL} text-xs text-bambu-gray`}>
-          {row.useful.length > 0 ? row.useful.map((u) => `${u.name} × ${u.count}`).join(', ') : '—'}
+          {row.useful.length > 0 ? (
+            <PartCounts parts={row.useful} format={(u) => `${u.name} × ${u.count}`} separator=", " />
+          ) : (
+            '—'
+          )}
         </td>
 
         <td className={CELL}>
