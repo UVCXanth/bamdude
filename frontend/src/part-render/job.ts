@@ -50,7 +50,9 @@ export function runJob(
       objects.push({ id: want.id, method: 'missing', reason: 'empty_selection' });
       continue;
     }
-    if (want.mode === 'model' && !(want.bbox && fitsBox(selection.bounds, want.bbox))) {
+    // plate_N.json's box is the FIRST LAYER's (BambuStudio's generate_first_layer_bbox): the lowest selected layer
+    // is compared with it, so an overhanging part is still proven and a typed purge line beside it is not (§5.3)
+    if (want.mode === 'model' && !(want.bbox && selection.firstLayer && fitsBox(selection.firstLayer, want.bbox))) {
       objects.push({ id: want.id, method: 'missing', reason: 'model_unproven' });
       continue;
     }

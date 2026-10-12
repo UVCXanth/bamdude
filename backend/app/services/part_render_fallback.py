@@ -107,8 +107,17 @@ def small(master_png: bytes, *, size: int = SMALL_SIZE) -> bytes:
         return _png(_resize(img, size))
 
 
-def model_bbox(plate_json: bytes | None, identify_id: int) -> list[float] | None:
-    """``bbox_objects[].bbox`` of the object in ``Metadata/plate_N.json`` -- spec §5.3, condition 3."""
+WIPE_TOWER = "wipe_tower"  # BambuStudio's name for the wipe tower's own bbox entry
+
+
+def model_bbox(plate_json: bytes | None, name: str) -> list[float] | None:
+    """``bbox_objects[].bbox`` of a single-object plate's object in ``Metadata/plate_N.json`` -- spec §5.3,
+    condition 3.
+
+    BambuStudio files the entry under the PrintObject's id (``Plater::priv::generate_first_layer_bbox``), a
+    counter apart from the instance's ``identify_id`` in slice_info -- they never met on a real file (E7
+    acceptance, 2026-10-12). So the record is the plate's one entry beside the wipe tower, and only when it carries
+    the object's name: two entries or another name prove nothing."""
     if not plate_json:
         return None
     try:
@@ -116,18 +125,16 @@ def model_bbox(plate_json: bytes | None, identify_id: int) -> list[float] | None
     except (ValueError, RecursionError):  # a deep nest is no bbox either (final review M1)
         return None
     entries = data.get("bbox_objects") if isinstance(data, dict) else None
-    for entry in entries if isinstance(entries, list) else []:
-        try:
-            if int(entry.get("id")) != identify_id:
-                continue
-        except (TypeError, ValueError, AttributeError, OverflowError):
-            continue
-        bbox = entry.get("bbox")
-        if not (isinstance(bbox, list) and len(bbox) >= 4 and all(type(v) in (int, float) for v in bbox[:4])):
-            return None
-        try:
-            box = [float(v) for v in bbox[:4]]
-        except OverflowError:
-            return None
-        return box if all(math.isfinite(v) for v in box) else None
-    return None
+    found = (
+        [e for e in entries if isinstance(e, dict) and e.get("name") != WIPE_TOWER] if isinstance(entries, list) else []
+    )
+    if len(found) != 1 or found[0].get("name") != name:
+        return None
+    bbox = found[0].get("bbox")
+    if not (isinstance(bbox, list) and len(bbox) >= 4 and all(type(v) in (int, float) for v in bbox[:4])):
+        return None
+    try:
+        box = [float(v) for v in bbox[:4]]
+    except OverflowError:
+        return None
+    return box if all(math.isfinite(v) for v in box) else None

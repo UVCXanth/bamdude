@@ -21,6 +21,8 @@ export type Target = { kind: 'object'; id: number } | { kind: 'model' };
 export interface Selection {
   layers: ToolpathLayer[];
   bounds: Bounds | null;
+  /** Bounds of the lowest layer with a selected record: what plate_N.json's first-layer box is compared with. */
+  firstLayer: Bounds | null;
   segments: number;
   /** Segment count per original T number. */
   tools: Record<number, number>;
@@ -41,10 +43,13 @@ export function selectSegments(parsed: ParsedToolpath, target: Target): Selectio
   const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
   const tools: Record<number, number> = {};
   let segments = 0;
+  let firstLayer: Bounds | null = null;
 
   const layers = parsed.layers.map((layer): ToolpathLayer => {
     const paths: number[] = [];
     const widths: number[] = [];
+    const lmin: [number, number, number] = [Infinity, Infinity, Infinity];
+    const lmax: [number, number, number] = [-Infinity, -Infinity, -Infinity];
     for (let i = 0; i < layer.paths.length; i += 8) {
       const k = i / 8;
       const type = layer.paths[i + 3];
@@ -67,13 +72,16 @@ export function selectSegments(parsed: ParsedToolpath, target: Target): Selectio
           const v = layer.paths[at + axis];
           if (v < min[axis]) min[axis] = v;
           if (v > max[axis]) max[axis] = v;
+          if (v < lmin[axis]) lmin[axis] = v;
+          if (v > lmax[axis]) lmax[axis] = v;
         }
       }
     }
+    if (firstLayer === null && widths.length > 0) firstLayer = { min: lmin, max: lmax };
     return { z: layer.z, paths: new Float32Array(paths), widths };
   });
 
-  return { layers, segments, tools, bounds: segments > 0 ? { min, max } : null };
+  return { layers, segments, tools, bounds: segments > 0 ? { min, max } : null, firstLayer };
 }
 
 const PALETTE_LINE = /^; filament_colour = (.+)$/m;
@@ -94,7 +102,7 @@ export function paletteFromGcode(gcode: string): string[] {
   });
 }
 
-/** Whether selected bounds lie inside an object box from plate_N.json, in mm, with tolerance. */
+/** Whether bounds lie inside an object box from plate_N.json (its first layer's), in mm, with tolerance. */
 export function fitsBox(bounds: Bounds, box: [number, number, number, number], tolMm = 2): boolean {
   const [x0, y0, x1, y1] = box;
   return (

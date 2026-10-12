@@ -1131,10 +1131,21 @@ function selectSegments(parsed, target) {
 	];
 	const tools = {};
 	let segments = 0;
+	let firstLayer = null;
 	return {
 		layers: parsed.layers.map((layer) => {
 			const paths = [];
 			const widths = [];
+			const lmin = [
+				Infinity,
+				Infinity,
+				Infinity
+			];
+			const lmax = [
+				-Infinity,
+				-Infinity,
+				-Infinity
+			];
 			for (let i = 0; i < layer.paths.length; i += 8) {
 				const k = i / 8;
 				const type = layer.paths[i + 3];
@@ -1152,8 +1163,14 @@ function selectSegments(parsed, target) {
 					const v = layer.paths[at + axis];
 					if (v < min[axis]) min[axis] = v;
 					if (v > max[axis]) max[axis] = v;
+					if (v < lmin[axis]) lmin[axis] = v;
+					if (v > lmax[axis]) lmax[axis] = v;
 				}
 			}
+			if (firstLayer === null && widths.length > 0) firstLayer = {
+				min: lmin,
+				max: lmax
+			};
 			return {
 				z: layer.z,
 				paths: new Float32Array(paths),
@@ -1165,7 +1182,8 @@ function selectSegments(parsed, target) {
 		bounds: segments > 0 ? {
 			min,
 			max
-		} : null
+		} : null,
+		firstLayer
 	};
 }
 const PALETTE_LINE = /^; filament_colour = (.+)$/m;
@@ -1182,7 +1200,7 @@ function paletteFromGcode(gcode) {
 		return colour ? colour[0].slice(0, 7).toUpperCase() : "";
 	});
 }
-/** Whether selected bounds lie inside an object box from plate_N.json, in mm, with tolerance. */
+/** Whether bounds lie inside an object box from plate_N.json (its first layer's), in mm, with tolerance. */
 function fitsBox(bounds, box, tolMm = 2) {
 	const [x0, y0, x1, y1] = box;
 	return bounds.min[0] >= x0 - tolMm && bounds.min[1] >= y0 - tolMm && bounds.max[0] <= x1 + tolMm && bounds.max[1] <= y1 + tolMm;
@@ -1224,7 +1242,7 @@ function runJob(job, gcode, emit, draw = drawSegments) {
 			});
 			continue;
 		}
-		if (want.mode === "model" && !(want.bbox && fitsBox(selection.bounds, want.bbox))) {
+		if (want.mode === "model" && !(want.bbox && selection.firstLayer && fitsBox(selection.firstLayer, want.bbox))) {
 			objects.push({
 				id: want.id,
 				method: "missing",

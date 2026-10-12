@@ -50,6 +50,17 @@ describe('selectSegments', () => {
     expect(rounded(sel.bounds)).toEqual({ min: [120, 120, 0.2], max: [125, 125, 0.4] });
   });
 
+  it('keeps the bounds of the lowest selected layer apart -- what a first-layer box is compared with', () => {
+    const text = load('single-no-markers.gcode').replace(
+      /(; Z_HEIGHT: 0\.4[\s\S]*?; FEATURE: Outer wall\n)[\s\S]*?(; FEATURE: Custom)/,
+      '$1G1 X114 Y114 F12000\nG1 X131 Y114 E0.4\nG1 X131 Y131 E0.4\nG1 X114 Y131 E0.4\nG1 X114 Y114 E0.4\n$2',
+    );
+    const sel = selectSegments(parseGcodeToolpath(text), { kind: 'model' });
+    expect(rounded(sel.firstLayer)).toEqual({ min: [120, 120, 0.2], max: [125, 125, 0.2] });
+    expect(rounded(sel.bounds)).toEqual({ min: [114, 114, 0.2], max: [131, 131, 0.4] });
+    expect(selectSegments(parsed, { kind: 'object', id: 999 }).firstLayer).toBeNull();
+  });
+
   it('model selection on a marked file keeps no service toolpaths', () => {
     // Everything outside objects there is purge, skirt or prime tower.
     expect(selectSegments(parsed, { kind: 'model' }).segments).toBe(0);

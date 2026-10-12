@@ -89,7 +89,7 @@ def test_a_single_unmarked_object_renders_as_model_in_one_pass(tmp_path, monkeyp
     result, _ = part_render.render_attempt(boot_for(tmp_path, single_object_3mf(tmp_path / "f.3mf"), node=NODE))
     manifest, _ = manifest_of(tmp_path)
     assert result["outcome"] == "ok"
-    assert methods(manifest) == {1: ("model", None)}
+    assert methods(manifest) == {94: ("model", None)}
     assert passes == [1]  # one read of the G-code, not a second one for the model (plan E3, R3)
 
 

@@ -68,13 +68,32 @@ def test_small_is_128():
     assert small.size == (128, 128)
 
 
-def test_model_bbox_reads_bbox_objects_by_id():
-    plate = json.dumps({"bbox_objects": [{"id": 7, "name": "a", "bbox": [1, 2, 3, 4]}]}).encode()
-    assert fb.model_bbox(plate, 7) == [1.0, 2.0, 3.0, 4.0]
-    assert fb.model_bbox(plate, 8) is None
-    assert fb.model_bbox(None, 7) is None
-    assert fb.model_bbox(b"{broken", 7) is None
-    assert fb.model_bbox(json.dumps({"bbox_objects": [{"id": 7, "bbox": [1, "x"]}]}).encode(), 7) is None
+def _plate(*entries) -> bytes:
+    return json.dumps({"bbox_objects": list(entries)}).encode()
+
+
+WIPE_TOWER = {"id": 1001, "name": "wipe_tower", "bbox": [200, 200, 230, 230]}
+
+
+def test_model_bbox_finds_the_object_under_the_id_bambustudio_writes():
+    """BambuStudio files the bbox under the PrintObject's id (Plater::priv::generate_first_layer_bbox), a counter
+    apart from the identify_id in slice_info: 109 against 94 on a real file (E7 acceptance, 2026-10-12). The
+    record of a single-object plate is its one entry beside the wipe tower, and only under the object's name."""
+    plate = _plate({"id": 109, "name": "Box.STL", "bbox": [1, 2, 3, 4]}, WIPE_TOWER)
+    assert fb.model_bbox(plate, "Box.STL") == [1.0, 2.0, 3.0, 4.0]
+
+
+def test_model_bbox_proves_nothing_it_cannot_pin_to_the_object():
+    assert fb.model_bbox(_plate({"id": 109, "name": "Lid.STL", "bbox": [1, 2, 3, 4]}), "Box.STL") is None
+    two = _plate(
+        {"id": 109, "name": "Box.STL", "bbox": [1, 2, 3, 4]}, {"id": 110, "name": "Box.STL", "bbox": [5, 6, 7, 8]}
+    )
+    assert fb.model_bbox(two, "Box.STL") is None
+    assert fb.model_bbox(_plate(WIPE_TOWER), "wipe_tower") is None
+    assert fb.model_bbox(_plate(), "Box.STL") is None
+    assert fb.model_bbox(None, "Box.STL") is None
+    assert fb.model_bbox(b"{broken", "Box.STL") is None
+    assert fb.model_bbox(_plate({"id": 109, "name": "Box.STL", "bbox": [1, "x"]}), "Box.STL") is None
 
 
 def test_a_pair_over_the_pixel_ceiling_is_refused_before_it_is_decoded(monkeypatch):
@@ -110,10 +129,11 @@ def test_a_pair_that_is_not_png_is_refused():
 
 def test_model_bbox_survives_what_json_can_hold():
     """Final review M1: an infinite id, an enormous coordinate and a deep nest are no bbox, never a crash."""
-    assert fb.model_bbox(b'{"bbox_objects": [{"id": 1e999, "bbox": [1, 2, 3, 4]}]}', 7) is None
+    assert fb.model_bbox(b'{"bbox_objects": [{"id": 1e999, "name": "a", "bbox": [1, 2, 3, 1e999]}]}', "a") is None
     huge = "1" + "0" * 400
-    assert fb.model_bbox(f'{{"bbox_objects": [{{"id": 7, "bbox": [{huge}, 2, 3, 4]}}]}}'.encode(), 7) is None
-    assert fb.model_bbox(b"[" * 100000 + b"]" * 100000, 7) is None
+    assert fb.model_bbox(f'{{"bbox_objects": [{{"name": "a", "bbox": [{huge}, 2, 3, 4]}}]}}'.encode(), "a") is None
+    assert fb.model_bbox(b"[" * 100000 + b"]" * 100000, "a") is None
+    assert fb.model_bbox(b'{"bbox_objects": [7, "x", null]}', "a") is None
 
 
 def test_a_crop_larger_than_a_master_is_scaled_down_not_refused():

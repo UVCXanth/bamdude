@@ -1,7 +1,7 @@
 {
   "file": "part-render.mjs",
-  "bytes": 41552,
-  "sha256": "b3f65e88c0c13d420fc9ecd72b12b34491d2868852f99a4d2b21efbf63e89f14",
+  "bytes": 41943,
+  "sha256": "e46b514980def2f6eba15543765047939fc9a79fea620073a6673462408e541c",
   "imports": [
     "node:crypto",
     "node:zlib"

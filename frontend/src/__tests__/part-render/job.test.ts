@@ -34,6 +34,31 @@ describe('runJob', () => {
     expect(outside.objects[0]).toMatchObject({ method: 'missing', reason: 'model_unproven' });
   });
 
+  // BambuStudio's plate_N.json box is the FIRST LAYER's (Plater::priv::generate_first_layer_bbox): a part whose
+  // upper layers overhang its footprint is still the part -- a real box overhung by 3-4 mm (E7 acceptance).
+  const overhung = (text: string) =>
+    text.replace(
+      /(; Z_HEIGHT: 0\.4[\s\S]*?; FEATURE: Outer wall\n)[\s\S]*?(; FEATURE: Custom)/,
+      '$1G1 X114 Y114 F12000\nG1 X131 Y114 E0.4\nG1 X131 Y131 E0.4\nG1 X114 Y131 E0.4\nG1 X114 Y114 E0.4\n$2',
+    );
+
+  it('proves the model by its first layer against the first-layer box, whatever the layers above overhang', () => {
+    const text = overhung(gcode('single-no-markers.gcode'));
+    expect(text).toContain('G1 X131 Y131 E0.4');
+    const m = runJob(job([{ id: 1, mode: 'model', bbox: [119, 119, 126, 126] }]), text, () => {});
+    expect(m.objects[0].method).toBe('model');
+  });
+
+  it('still refuses a typed purge line on the first layer beside the model', () => {
+    const text = gcode('single-no-markers.gcode').replace(
+      '; FEATURE: Outer wall\n; LINE_WIDTH: 0.42\n',
+      '; FEATURE: Outer wall\n; LINE_WIDTH: 0.42\nG1 X18 Y1 F12000\nG1 X218 Y1 E12\n',
+    );
+    expect(text).toContain('G1 X218 Y1 E12\nG1 X120 Y120');
+    const m = runJob(job([{ id: 1, mode: 'model', bbox: [119, 119, 126, 126] }]), text, () => {});
+    expect(m.objects[0]).toMatchObject({ method: 'missing', reason: 'model_unproven' });
+  });
+
   it('reports a fully transparent render as missing empty_render, without a PNG', () => {
     const m = runJob(job([{ id: 101, mode: 'toolpath' }]), gcode('two-objects.gcode'),
       () => { throw new Error('no PNG for an empty render'); }, () => {});

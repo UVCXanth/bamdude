@@ -76,10 +76,19 @@ def two_objects_3mf(path: Path, *, with_pair: bool = True) -> Path:
 
 
 def single_object_3mf(path: Path) -> Path:
-    """Fixture `single-no-markers` as plate 1: one object, no markers, its bbox in plate_1.json."""
+    """Fixture `single-no-markers` as plate 1: one object, no markers, its bbox in plate_1.json -- in the shape
+    BambuStudio writes it: the bbox entry carries the PrintObject's id, never slice_info's identify_id (the two
+    are separate counters; E7 acceptance, 2026-10-12), and the wipe tower has an entry of its own."""
     return write_3mf(
         path,
         {1: gcode("single-no-markers")},
-        objects={1: {1: "Cube"}},
-        plate_json={1: {"bbox_objects": [{"id": 1, "name": "Cube", "bbox": [119, 119, 126, 126]}]}},
+        objects={1: {94: "Cube"}},
+        plate_json={
+            1: {
+                "bbox_objects": [
+                    {"id": 109, "name": "Cube", "bbox": [119, 119, 126, 126]},
+                    {"id": 1001, "name": "wipe_tower", "bbox": [200, 200, 230, 230]},
+                ]
+            }
+        },
     )

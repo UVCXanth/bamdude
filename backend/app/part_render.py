@@ -280,7 +280,7 @@ def plan_3mf(zf: zipfile.ZipFile, plate_index: int, limits: Limits) -> tuple[Pla
     )
     plan.pair = fallback.valid_pair(side["top"], side["pick"]) if side["top"] and side["pick"] else None
     if len(objects) == 1:
-        plan.model_bbox = fallback.model_bbox(side["plate"], next(iter(objects)))
+        plan.model_bbox = fallback.model_bbox(side["plate"], next(iter(objects.values())))
     return plan, entry
 
 
