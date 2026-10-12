@@ -3,7 +3,8 @@ import { Link, useNavigate, useParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, ExternalLink, Plus } from 'lucide-react';
 import { ApiError } from '../../api/client';
-import type { StockItemDetail } from '../../api/client';
+import type { PartImageRef, StockItemDetail } from '../../api/client';
+import { PartThumb } from '../../components/PartThumb';
 import { useAuth } from '../../contexts/AuthContext';
 import { Button } from '../../components/Button';
 import { CardActionMenu, CardActionMenuItem } from '../../components/CardActionMenu';
@@ -257,9 +258,17 @@ function PositionView({ item, refreshFailed, onRetry }: { item: StockItemDetail;
           {item.parts.length === 0 ? (
             <p className="text-sm text-bambu-gray">{t('stock.assemble.noParts')}</p>
           ) : (
-            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1 text-sm">
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 text-sm">
               {item.parts.map((p) => (
-                <PartRow key={p.part_id} partId={p.part_id} label={t('stock.item.partPer', { name: p.name, per: p.per })} shelf={p.on_shelf} short={p.on_shelf < p.per} />
+                <PartRow
+                  key={p.part_id}
+                  partId={p.part_id}
+                  name={p.name}
+                  image={p.image}
+                  label={t('stock.item.partPer', { name: p.name, per: p.per })}
+                  shelf={p.on_shelf}
+                  short={p.on_shelf < p.per}
+                />
               ))}
             </div>
           )}
@@ -288,10 +297,28 @@ function PositionView({ item, refreshFailed, onRetry }: { item: StockItemDetail;
   );
 }
 
-function PartRow({ partId, label, shelf, short }: { partId: number; label: string; shelf: number; short: boolean }) {
+function PartRow({
+  partId,
+  name,
+  image,
+  label,
+  shelf,
+  short,
+}: {
+  partId: number;
+  name: string;
+  image?: PartImageRef | null;
+  label: string;
+  shelf: number;
+  short: boolean;
+}) {
+  // Two cells of the parent's grid, as before: the picture lives inside the first (plan E6, D2).
   return (
     <>
-      <span className="text-white min-w-0 break-words">{label}</span>
+      <span className="flex min-w-0 items-center gap-2 text-white">
+        <PartThumb partId={partId} image={image} name={name} size="sm" />
+        <span className="min-w-0 break-words">{label}</span>
+      </span>
       <b data-testid={`item-shelf-${partId}`} className={`text-right tabular-nums font-semibold ${short ? 'text-status-warning' : 'text-white'}`}>
         {shelf}
       </b>

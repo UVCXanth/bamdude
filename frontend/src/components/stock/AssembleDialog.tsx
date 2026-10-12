@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
 import { api } from '../../api/client';
 import type { LineConfiguration, StockAssembleBody, StockItem } from '../../api/client';
+import { PartThumb } from '../PartThumb';
 import { useToast } from '../../contexts/ToastContext';
 import { invalidateStock } from '../../utils/queryInvalidation';
 import { Button } from '../Button';
@@ -313,7 +314,12 @@ export function AssembleDialog({
                   const short = need > p.on_shelf ? need - p.on_shelf : 0;
                   return (
                     <tr key={p.part_id} className="text-white align-top" data-testid={`assemble-part-${p.part_id}`}>
-                      <td className="p-1">{p.name}</td>
+                      <td className="p-1">
+                        <span className="flex items-center gap-2">
+                          <PartThumb partId={p.part_id} image={p.image} name={p.name} size="sm" />
+                          <span className="min-w-0 break-words">{p.name}</span>
+                        </span>
+                      </td>
                       <td className="p-1 text-right tabular-nums">{`× ${p.per}`}</td>
                       <td
                         className={`p-1 text-right tabular-nums ${short > 0 ? 'text-status-warning' : ''}`}

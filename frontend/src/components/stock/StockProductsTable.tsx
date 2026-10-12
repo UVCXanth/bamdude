@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../contexts/AuthContext';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { StockListItem } from '../../api/client';
+import { PartThumb } from '../PartThumb';
 import { Button } from '../Button';
 import { SortableHeader } from '../SortableHeader';
 import { WorkshopPanel, WorkshopTableScroll } from '../workshop/WorkshopPanel';
@@ -174,15 +175,20 @@ export function StockProductsTable({ products, canEdit, onAdjust, onAssemble, so
                             {p.parts.map((b) => (
                               <tr key={b.part_id} className="text-white">
                                 <td className="p-1">
-                                  {b.name}
-                                  {b.variant && (
-                                    <span
-                                      title={`${b.variant.group}: ${b.variant.option}`}
-                                      className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] bg-bambu-dark-tertiary text-bambu-gray"
-                                    >
-                                      {t('stock.page.variant')}
+                                  <span className="flex items-center gap-2">
+                                    <PartThumb partId={b.part_id} image={b.image} name={b.name} size="sm" />
+                                    <span className="min-w-0">
+                                      {b.name}
+                                      {b.variant && (
+                                        <span
+                                          title={`${b.variant.group}: ${b.variant.option}`}
+                                          className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] bg-bambu-dark-tertiary text-bambu-gray"
+                                        >
+                                          {t('stock.page.variant')}
+                                        </span>
+                                      )}
                                     </span>
-                                  )}
+                                  </span>
                                 </td>
                                 <td className="p-1 tabular-nums">
                                   {b.qty_per_unit > 0 ? (
