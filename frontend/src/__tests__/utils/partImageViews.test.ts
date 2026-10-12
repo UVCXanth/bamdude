@@ -33,3 +33,23 @@ describe('the event reaches every E5 surface', () => {
     expect(covered(key)).toBe(true);
   });
 });
+
+// The event refreshes PART_IMAGE_VIEW_KEYS and, through `invalidateProjectViews`, every ORDER_VIEW_KEYS prefix.
+const coveredByEvent = (key: readonly unknown[]) => covered(key) || (ORDER_VIEW_KEYS as readonly unknown[]).includes(key[0]);
+
+describe('the event reaches every E6 surface', () => {
+  it.each([
+    ['an order — its lines, the line editor, «Surplus to free stock»', ['project', 5]],
+    ['the line’s configuration — the product it reads its pictures from (D5)', ['product', 7]],
+    ['the plan', ['project-plan', 5]],
+    ['the plates the plan projects its surplus from', ['product-plates', 7]],
+    ['the issue dialog', ['project-fulfilment', 5]],
+    ['the parts tab of «Add to order»', ['product-parts', { q: '', page: 1 }]],
+    ['the stock page', ['stock-summary', { page: 1 }]],
+    ['a position', ['stock-item', 5]],
+    ['the assembly dialog’s lookup', ['stock-lookup', 1, '100']],
+    ['the stock page’s journal', ['stock-journal-page', { book: 'both', page: 1 }]],
+  ])('%s', (_name, key) => {
+    expect(coveredByEvent(key)).toBe(true);
+  });
+});
