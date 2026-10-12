@@ -43,15 +43,18 @@ from pathlib import Path, PureWindowsPath
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from backend.app.services.part_render_protocol import RENDERER_VERSION  # noqa: E402
 from backend.app.services.render_runtime import (  # noqa: E402
     MANIFEST,
     ProvisionError,
     artifacts_from_shasums,
     load_manifest,
     locate_in,
+    platform_key,
     provision,
 )
 
+GOLDEN = ROOT / "backend" / "app" / "data" / "render_probe" / "golden.json"
 DIST = "https://nodejs.org/dist"
 SCHEDULE = "https://raw.githubusercontent.com/nodejs/Release/main/schedule.json"
 KEYS = Path(__file__).resolve().with_name("node-release-keys.asc")
@@ -254,11 +257,80 @@ def build_manifest(plan: dict[str, dict], shasums: dict[str, str], today: date, 
     }
 
 
+def render_fixtures(node: Path, workdir: Path) -> dict[str, dict[str, str]]:
+    """{fixture: {object id: sha256}} of the probe's fixtures rendered with ``node``."""
+    report = workdir / "probe.json"
+    # the probe exits 1 when the golden is not comparable -- expected for a version not proven yet; the report says
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "backend.app.part_render_probe",
+            "render",
+            "--node",
+            str(node),
+            "--out",
+            str(workdir / "png"),
+            "--report",
+            str(report),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+    )
+    if not report.is_file():
+        raise PinError(f"the probe wrote no report with {node}")
+    results = json.loads(report.read_text(encoding="utf-8"))["render"]
+    failed = sorted(fixture for fixture, result in results.items() if not result["ok"])
+    if failed:
+        raise PinError(f"the fixtures did not render with {node}: {', '.join(failed)}")
+    return {fixture: result["sha256"] for fixture, result in results.items()}
+
+
+def agreed_golden(hashes: dict[str, dict], existing: dict | None, renderer: int) -> dict:
+    """Spec D5: one set of PNGs for every pinned version, or no pin."""
+    versions = sorted(hashes, key=_vkey)
+    if len({json.dumps(hashes[v], sort_keys=True) for v in versions}) != 1:
+        raise PinError(
+            f"Node {' and '.join(versions)} render different pixels for the same file: a RENDERER_VERSION "
+            "decision (parent spec §8.5), not a pin"
+        )
+    png = hashes[versions[0]]
+    if existing and existing.get("renderer") == renderer and existing.get("png_sha256") != png:
+        raise PinError(
+            f"the pinned Node renders other pixels than the golden of renderer {renderer}: a RENDERER_VERSION "
+            "decision (parent spec §8.5), not a pin"
+        )
+    return {"renderer": renderer, "node": versions, "png_sha256": png}
+
+
+def prove_golden(manifest: dict, shasums: dict[str, str], host: str, workdir: Path) -> dict:
+    """Spec D5: every pinned version renders the fixtures on THIS machine -- the official build of that version
+    for this platform, hashed from the same signed SHASUMS256.txt -- and the golden comes only from agreement."""
+    hashes = {}
+    for line, pinned in manifest["lines"].items():
+        version = pinned["version"]
+        name, sha256 = artifacts_from_shasums(shasums[version], version, (host,))[host]
+        url = f"{DIST}/{version}/{name}"
+        proof = {
+            "lines": {line: {"version": version}},
+            "platforms": {host: {"line": line, "url": url, "sha256": sha256, "bytes": _size(url)}},
+        }
+        root = workdir / version
+        provision(root, manifest=proof, platform=host)
+        found = locate_in(root, platform=host)
+        if found is None:
+            raise PinError(f"Node {version} was provisioned for {host}, but no executable is there")
+        hashes[version] = render_fixtures(found.executable, root)
+        print(f"proved Node {version} on {host}")
+    existing = json.loads(GOLDEN.read_text(encoding="utf-8")) if GOLDEN.exists() else None
+    return agreed_golden(hashes, existing, RENDERER_VERSION)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--check", action="store_true", help="report the pin as JSON; exit 0 current, 2 action, 1 error"
-    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true", help="report the pin as JSON; exit 0 current, 2 action, 1 error")
+    mode.add_argument("--golden", action="store_true", help="prove and write the golden for the current pin only")
     parser.add_argument("--line", action="append", default=[], metavar="LINE=vX.Y.Z", help="pin this patch of a line")
     args = parser.parse_args(argv)
     today = date.today()
@@ -272,35 +344,29 @@ def main(argv: list[str] | None = None) -> int:
         if gpg is None:
             print("gpg is required: the pin is taken only from a signed SHASUMS256.txt.asc", file=sys.stderr)
             return 1
-        overrides = dict(item.split("=", 1) for item in args.line)
-        plan = plan_versions(releases, schedule, today, overrides)
-        shasums = {pinned["version"]: signed_shasums(pinned["version"], gpg) for pinned in plan.values()}
-        manifest = build_manifest(plan, shasums, today)
+        if args.golden:
+            manifest = load_manifest()
+            shasums = {p["version"]: signed_shasums(p["version"], gpg) for p in manifest["lines"].values()}
+        else:
+            overrides = dict(item.split("=", 1) for item in args.line)
+            plan = plan_versions(releases, schedule, today, overrides)
+            shasums = {pinned["version"]: signed_shasums(pinned["version"], gpg) for pinned in plan.values()}
+            manifest = build_manifest(plan, shasums, today)
+        # Spec D5: the golden is proven on every pinned version BEFORE anything is written -- a version that renders
+        # other pixels leaves the manifest and the golden as they were.
+        host = platform_key()
+        with tempfile.TemporaryDirectory(prefix="node-pin-proof-", ignore_cleanup_errors=True) as tmp:
+            golden = prove_golden(manifest, shasums, host, Path(tmp))
+        if not args.golden:
+            MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
+            print(f"pinned {', '.join(f'{line}: {p["version"]}' for line, p in manifest['lines'].items())}")
+        GOLDEN.write_text(json.dumps(golden, indent=2) + "\n", encoding="utf-8", newline="\n")
+        target = provision(ROOT / "runtime", manifest=manifest)  # this machine's own pin, for the dev instance
+        print(f"golden proved on {', '.join(golden['node'])}; provisioned {target}")
     except (PinError, ProvisionError, OSError, ValueError) as exc:
         print(exc, file=sys.stderr)
         return 1
-    MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
-    print(f"pinned {', '.join(f'{line}: {p["version"]}' for line, p in plan.items())} -> {MANIFEST}")
-
-    # The stand's golden hashes belong to the pinned Node: provision it here and write them on it.
-    target = provision(ROOT / "runtime", manifest=manifest)
-    found = locate_in(ROOT / "runtime")
-    if found is None:
-        print(f"provisioned {target}, but no Node executable is there", file=sys.stderr)
-        return 1
-    print(f"provisioned {target}")
-    return subprocess.call(
-        [
-            sys.executable,
-            "-m",
-            "backend.app.part_render_probe",
-            "render",
-            "--write-golden",
-            "--node",
-            str(found.executable),
-        ],
-        cwd=ROOT,
-    )
+    return 0
 
 
 if __name__ == "__main__":

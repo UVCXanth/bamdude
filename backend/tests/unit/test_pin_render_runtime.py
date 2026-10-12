@@ -159,3 +159,50 @@ def test_build_manifest_pins_each_platform_on_its_line():
     assert manifest["lines"] == plan and manifest["pinned_at"] == "2026-10-13"
     assert {entry["line"] for entry in manifest["platforms"].values()} == {"24"}
     assert manifest["platforms"]["win-x64"]["url"] == "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip"
+
+
+GOOD = {"two-objects": {"101": "a" * 64}}
+OTHER = {"two-objects": {"101": "b" * 64}}
+
+
+def test_versions_that_agree_make_the_golden():
+    golden = pin.agreed_golden({"v24.21.0": GOOD, "v22.23.3": GOOD}, None, 3)
+    assert golden == {"renderer": 3, "node": ["v22.23.3", "v24.21.0"], "png_sha256": GOOD}
+
+
+def test_versions_that_render_different_pixels_are_refused():
+    with pytest.raises(pin.PinError, match="RENDERER_VERSION"):
+        pin.agreed_golden({"v24.21.0": GOOD, "v22.23.3": OTHER}, None, 3)
+
+
+def test_a_pin_that_changes_the_pixels_of_this_renderer_is_refused():
+    existing = {"renderer": 3, "node": ["v24.17.0"], "png_sha256": GOOD}
+    with pytest.raises(pin.PinError, match="RENDERER_VERSION"):
+        pin.agreed_golden({"v24.21.0": OTHER}, existing, 3)
+
+
+def test_a_new_renderer_takes_its_new_pixels():
+    existing = {"renderer": 2, "node": ["v24.17.0"], "png_sha256": GOOD}
+    assert pin.agreed_golden({"v24.21.0": OTHER}, existing, 3)["png_sha256"] == OTHER
+
+
+def test_the_manifest_is_written_only_after_the_golden_is_proven(tmp_path, monkeypatch):
+    manifest_file, golden_file = tmp_path / "render_runtime.json", tmp_path / "golden.json"
+    manifest_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(pin, "MANIFEST", manifest_file)
+    monkeypatch.setattr(pin, "GOLDEN", golden_file)
+    monkeypatch.setattr(pin, "fetch_json", lambda url: SCHEDULE if url == pin.SCHEDULE else RELEASES)
+    # a fixed plan: the refusal under test is the golden's, never a line that ended by the day the test runs
+    monkeypatch.setattr(
+        pin, "plan_versions", lambda *args: {"24": {"version": "v24.21.0", "end_of_life": "2028-04-30"}}
+    )
+    monkeypatch.setattr(pin.shutil, "which", lambda name: "gpg")
+    monkeypatch.setattr(pin, "signed_shasums", lambda version, gpg: "")
+    monkeypatch.setattr(pin, "build_manifest", lambda plan, shasums, today: {"lines": plan, "platforms": {}})
+
+    def refuse(*args, **kwargs):
+        raise pin.PinError("Node v22.23.3 and v24.21.0 render different pixels: a RENDERER_VERSION decision")
+
+    monkeypatch.setattr(pin, "prove_golden", refuse)
+    assert pin.main([]) == 1
+    assert manifest_file.read_text(encoding="utf-8") == "{}" and not golden_file.exists()
