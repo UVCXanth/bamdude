@@ -49,6 +49,19 @@ describe('runJob', () => {
     expect(m.objects[0].method).toBe('model');
   });
 
+  // Accepted, not an oversight (owner, 2026-10-12; final review): only the first layer is compared with the box, so a
+  // typed record above it -- user layer-change G-code inheriting the last feature, say -- is drawn into the model.
+  // Changing that is a spec §5.3 decision; this test makes it a deliberate one.
+  it('does not refuse the model for a typed record above the first layer', () => {
+    const text = gcode('single-no-markers.gcode').replace(
+      /(; Z_HEIGHT: 0\.4[\s\S]*?; FEATURE: Outer wall\n)/,
+      '$1G1 X10 Y10 F12000\nG1 X60 Y10 E0.8\n',
+    );
+    expect(text).toContain('G1 X60 Y10 E0.8');
+    const m = runJob(job([{ id: 1, mode: 'model', bbox: [119, 119, 126, 126] }]), text, () => {});
+    expect(m.objects[0].method).toBe('model');
+  });
+
   it('still refuses a typed purge line on the first layer beside the model', () => {
     const text = gcode('single-no-markers.gcode').replace(
       '; FEATURE: Outer wall\n; LINE_WIDTH: 0.42\n',

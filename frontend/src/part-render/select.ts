@@ -21,7 +21,8 @@ export type Target = { kind: 'object'; id: number } | { kind: 'model' };
 export interface Selection {
   layers: ToolpathLayer[];
   bounds: Bounds | null;
-  /** Bounds of the lowest layer with a selected record: what plate_N.json's first-layer box is compared with. */
+  /** Bounds of the first layer, in G-code order, with a selected record -- the lowest for a plate printed layer by
+   *  layer, the only kind the model method reaches: what plate_N.json's first-layer box is compared with. */
   firstLayer: Bounds | null;
   segments: number;
   /** Segment count per original T number. */

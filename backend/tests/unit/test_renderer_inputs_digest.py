@@ -26,9 +26,10 @@ RENDER_INPUTS = (
 )
 # Changed a file above? Decide first whether RENDERER_VERSION goes up (spec §8.5), then re-pin with
 #   python -c "from backend.tests.unit.test_renderer_inputs_digest import digest; print(digest())"
-PINNED = {
-    3: "787f8cc56411394909799a402f31b48dd136d31eecfb3157a8c08892012f6d7b"
-}  # 3: a dark filament raised to its lightness floor (spec §34)
+# 3: a dark filament raised to its lightness floor (spec §34). Re-pinned under 3 in E7 (2026-10-12, owner): a single
+# object's bbox is found by name beside the wipe tower and proven by its first layer (spec §5.3, condition 3), so such
+# plates now get `model` instead of `top_mask` -- the feature is unreleased, so no renderer-3 result exists to replace.
+PINNED = {3: "83fab1c8d4025e9a39bc3143a62663d4086bf2d02af413c5ab48ac8ab19754c8"}
 
 
 def digest() -> str:
