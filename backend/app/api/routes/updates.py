@@ -21,6 +21,7 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
+from backend.app.services import render_runtime_child
 
 logger = logging.getLogger(__name__)
 
@@ -599,37 +600,10 @@ async def _provision_render_runtime(app_dir: Path) -> None:
     Runs the CHECKED-OUT module in a child process: this process still holds the
     old code and the old pin. An unchanged pin returns at once without the
     network. Never fails the update -- a missing runtime is a missing feature,
-    reported on the System page as ``runtime_missing``. Logged start to outcome with its elapsed time, and the
-    child's reason with the installation's path replaced (final review M9, the parent-log invariant).
+    reported on the System page as ``runtime_missing``. The runner logs the start, one outcome with its elapsed
+    time and a bounded reason without the installation's path (the parent-log invariant).
     """
-    logger.info("Render runtime provisioning started")
-    started = time.monotonic()
-    try:
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "backend.app.services.render_runtime",
-            "provision",
-            "--runtime",
-            str(app_dir / "runtime"),
-            cwd=str(app_dir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await process.communicate()
-    except OSError as exc:
-        logger.warning("Render runtime update failed: %s", type(exc).__name__)
-        return
-    elapsed = time.monotonic() - started
-    reason = stderr.decode(errors="replace").strip().splitlines()[-1:] if stderr else []
-    if process.returncode == 0:
-        logger.info("Render runtime provisioned in %.1f s", elapsed)
-    elif process.returncode == 3:
-        # No official Node.js build for this machine (armv6, armel, musl ...): the top-view fallback, as install.sh says.
-        logger.info("Render runtime: no official Node.js build for this machine; part thumbnails use the fallback")
-    else:
-        said = reason[0].replace(str(app_dir), "<install>") if reason else f"exit {process.returncode}"
-        logger.warning("Render runtime update failed after %.1f s: %s", elapsed, said)
+    await render_runtime_child.run_provision(app_dir, trigger="update")
 
 
 async def _perform_update(target_ref: str):

@@ -6,6 +6,8 @@ CHECKED-OUT module in a child process -- the running one is the old code with th
 fails the update: a missing runtime is a missing feature, reported on the System page.
 """
 
+import asyncio
+import logging
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -21,9 +23,16 @@ class _Process:
     def __init__(self, returncode: int, stderr: bytes = b""):
         self.returncode = returncode
         self._stderr = stderr
+        # the provisioning runner drains stderr itself (a bounded tail) and waits; git and pip communicate()
+        self.stderr = asyncio.StreamReader()
+        self.stderr.feed_data(stderr)
+        self.stderr.feed_eof()
 
     async def communicate(self):
         return b"", self._stderr
+
+    async def wait(self):
+        return self.returncode
 
 
 def _fake_exec(calls: list, provision_code: int, provision_stderr: bytes = b""):
@@ -80,9 +89,28 @@ async def test_the_provisioning_is_logged_with_its_start_its_time_and_no_install
     # final review M9 (parent-log invariant): a start line, the outcome with its elapsed time, and a reason that
     # does not carry the installation's path
     reason = f"render-runtime: {tmp_path / 'runtime' / 'node'}: a tree still held after the retries\n".encode()
-    with caplog.at_level("INFO", logger=updates.logger.name):
+    with caplog.at_level(logging.INFO):
         await _run_update(tmp_path, provision_code=1, provision_stderr=reason)
     text = caplog.text
-    assert "Render runtime provisioning started" in text
-    assert "Render runtime update failed after" in text and "<install>" in text
+    assert "started (update)" in text
+    assert "failed after" in text and "<install>" in text
     assert str(tmp_path) not in text
+
+
+@pytest.mark.asyncio
+async def test_a_real_oserror_from_the_child_does_not_put_the_install_path_in_the_log(tmp_path, caplog):
+    # implementation consilium NL-I-R1: str(OSError) quotes the filename with repr() -- doubled Windows backslashes
+    said = "render-runtime: " + str(PermissionError(13, "Permission denied", str(tmp_path / "runtime" / "node")))
+    with caplog.at_level(logging.INFO):
+        await _run_update(tmp_path, provision_code=1, provision_stderr=said.encode())
+    assert tmp_path.name not in caplog.text
+    assert "Permission denied" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_flooding_child_never_reaches_the_update_log_whole(tmp_path, caplog):
+    # implementation consilium NL-I-M1: a one-line megabyte diagnostic is bounded before it reaches the log
+    with caplog.at_level(logging.INFO):
+        await _run_update(tmp_path, provision_code=1, provision_stderr=b"x" * (1024 * 1024))
+    assert updates._update_status["status"] == "complete"
+    assert len(caplog.text) < 65536
