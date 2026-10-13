@@ -266,7 +266,7 @@ def _official(versions_lines: dict[str, str]) -> tuple[dict, dict]:
 
 def test_a_manifest_made_from_the_signed_sums_verifies():
     manifest, shasums = _official({"24": "v24.21.0", "22": "v22.23.3"})
-    pin.verify_manifest(manifest, shasums)
+    pin.verify_manifest(manifest, shasums, size=lambda url: 7)
 
 
 def test_a_tampered_archive_hash_is_refused_by_verify():
@@ -274,21 +274,21 @@ def test_a_tampered_archive_hash_is_refused_by_verify():
     manifest, shasums = _official({"24": "v24.21.0", "22": "v22.23.3"})
     manifest["platforms"]["win-x64"]["sha256"] = "f" * 64
     with pytest.raises(pin.PinError, match="win-x64"):
-        pin.verify_manifest(manifest, shasums)
+        pin.verify_manifest(manifest, shasums, size=lambda url: 7)
 
 
 def test_a_platform_on_another_line_is_refused_by_verify():
     manifest, shasums = _official({"24": "v24.21.0", "22": "v22.23.3"})
     manifest["platforms"]["linux-armv7l"]["line"] = "24"
     with pytest.raises(pin.PinError, match="linux-armv7l"):
-        pin.verify_manifest(manifest, shasums)
+        pin.verify_manifest(manifest, shasums, size=lambda url: 7)
 
 
 def test_a_missing_platform_is_refused_by_verify():
     manifest, shasums = _official({"24": "v24.21.0", "22": "v22.23.3"})
     del manifest["platforms"]["darwin-x64"]
     with pytest.raises(pin.PinError, match="darwin-x64"):
-        pin.verify_manifest(manifest, shasums)
+        pin.verify_manifest(manifest, shasums, size=lambda url: 7)
 
 
 def _check_report(**newest: str) -> dict:
@@ -300,12 +300,16 @@ def test_a_signed_but_older_version_than_the_check_chose_is_refused_by_verify():
     # "official" -- the push job holds it to the version the check (no packages) chose
     manifest, shasums = _official({"24": "v24.17.0", "22": "v22.23.3"})
     with pytest.raises(pin.PinError, match="24"):
-        pin.verify_manifest(manifest, shasums, expected=_check_report(**{"24": "v24.21.0", "22": "v22.23.3"}))
+        pin.verify_manifest(
+            manifest, shasums, expected=_check_report(**{"24": "v24.21.0", "22": "v22.23.3"}), size=lambda url: 7
+        )
 
 
 def test_the_version_the_check_chose_verifies():
     manifest, shasums = _official({"24": "v24.21.0", "22": "v22.23.3"})
-    pin.verify_manifest(manifest, shasums, expected=_check_report(**{"24": "v24.21.0", "22": "v22.23.3"}))
+    pin.verify_manifest(
+        manifest, shasums, expected=_check_report(**{"24": "v24.21.0", "22": "v22.23.3"}), size=lambda url: 7
+    )
 
 
 def test_a_golden_that_names_other_versions_than_the_manifest_is_refused():
@@ -328,3 +332,27 @@ def test_a_golden_that_agrees_with_the_manifest_and_the_base_verifies():
     base = {"renderer": pin.RENDERER_VERSION, "node": ["v24.17.0"], "png_sha256": GOOD}
     golden = {"renderer": pin.RENDERER_VERSION, "node": ["v22.23.3", "v24.21.0"], "png_sha256": GOOD}
     pin.verify_golden(golden, manifest, base=base)
+
+
+def test_a_wrong_archive_size_is_refused_by_verify():
+    # security review (incomplete integrity check): the pinned size is the download's limit -- a poisoned size
+    # would let provisioning fill the disk before the hash ever fails
+    manifest, shasums = _official({"24": "v24.21.0", "22": "v22.23.3"})
+    manifest["platforms"]["linux-x64"]["bytes"] = 10**12
+    with pytest.raises(pin.PinError, match="linux-x64"):
+        pin.verify_manifest(manifest, shasums, size=lambda url: 7)
+
+
+def test_the_official_archive_size_verifies():
+    manifest, shasums = _official({"24": "v24.21.0", "22": "v22.23.3"})
+    pin.verify_manifest(manifest, shasums, size=lambda url: 7)
+
+
+def test_a_golden_that_drops_a_fixture_of_the_base_is_refused():
+    # security review (validator bypass): a golden may grow, never lose what the base golden proves -- an empty
+    # golden would otherwise agree with everything
+    manifest, _ = _official({"24": "v24.21.0", "22": "v22.23.3"})
+    base = {"renderer": pin.RENDERER_VERSION, "node": ["v24.17.0"], "png_sha256": GOOD}
+    golden = {"renderer": pin.RENDERER_VERSION, "node": ["v22.23.3", "v24.21.0"], "png_sha256": {}}
+    with pytest.raises(pin.PinError, match="two-objects"):
+        pin.verify_golden(golden, manifest, base=base)

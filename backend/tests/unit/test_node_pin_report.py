@@ -1,6 +1,7 @@
 """scripts/node_pin_report.py: what the weekly pin workflow outputs and writes into its one issue (spec D7)."""
 
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 
@@ -49,6 +50,7 @@ def test_the_outputs_tell_the_workflow_what_to_do():
         "notice=false",
         "repin=true",
         "branch=chore/node-pin-v24.21.0-v22.23.3",
+        "report=" + json.dumps(BEHIND, separators=(",", ":"), ensure_ascii=False),
     ]
 
 

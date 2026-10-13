@@ -337,6 +337,15 @@ def agreed_golden(hashes: dict[str, dict], existing: dict | None, renderer: int)
                 f"the pinned Node renders other pixels than the golden of renderer {renderer} ({', '.join(changed)}): "
                 "a RENDERER_VERSION decision (parent spec §8.5), not a pin"
             )
+        # a golden may grow, never lose what this renderer's golden proves -- an empty one would agree with anything
+        lost = sorted(
+            f"{fixture} {obj}" for fixture, objects in old.items() for obj in objects if obj not in png.get(fixture, {})
+        )
+        if lost:
+            raise PinError(
+                f"the golden would lose {', '.join(lost)} of renderer {renderer}'s golden: a fixture leaves the golden "
+                "by hand, never through a pin"
+            )
     return {"renderer": renderer, "node": versions, "png_sha256": png}
 
 
@@ -363,7 +372,7 @@ def prove_golden(manifest: dict, shasums: dict[str, str], host: str, workdir: Pa
     return agreed_golden(hashes, existing, RENDERER_VERSION)
 
 
-def verify_manifest(manifest: dict, shasums: dict[str, str], *, expected: dict | None = None) -> None:
+def verify_manifest(manifest: dict, shasums: dict[str, str], *, expected: dict | None = None, size=_size) -> None:
     """Every platform of PLATFORMS is pinned on the line LINES puts it on, to the official archive of that line's
     version in its signed SHASUMS256.txt (final review I1: the job that pushes a pin re-checks, with gpg and the
     stdlib only, what the job that made it -- the one that ran third-party packages -- wrote). With ``expected`` (the
@@ -385,6 +394,11 @@ def verify_manifest(manifest: dict, shasums: dict[str, str], *, expected: dict |
         name, sha256 = artifacts_from_shasums(shasums[version], version, (key,))[key]
         if entry.get("url") != f"{DIST}/{version}/{name}" or entry.get("sha256") != sha256:
             raise PinError(f"{key}: the manifest's archive is not the official {name} of the signed SHASUMS256.txt")
+        # the pinned size is the download's limit: a poisoned one would let provisioning fill the disk before the
+        # hash fails (security review)
+        actual = size(entry["url"])
+        if entry.get("bytes") != actual:
+            raise PinError(f"{key}: the manifest's size {entry.get('bytes')} is not the archive's {actual} bytes")
 
 
 def verify_golden(golden: dict, manifest: dict, *, base: dict | None) -> None:

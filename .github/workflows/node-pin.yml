@@ -38,6 +38,8 @@ jobs:
       notice: ${{ steps.check.outputs.notice }}
       repin: ${{ steps.check.outputs.repin }}
       branch: ${{ steps.check.outputs.branch }}
+      # the whole --check report, as an immutable output (security review: never read back as an artifact)
+      report: ${{ steps.check.outputs.report }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -57,7 +59,7 @@ jobs:
           cat check.json
           case "$code" in 0|2|3) ;; *) exit 1 ;; esac
           python scripts/node_pin_report.py outputs check.json >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7  # for a human to read; no job reads it back
         with:
           name: node-pin-check
           path: check.json
@@ -115,12 +117,6 @@ jobs:
         with:
           ref: ${{ env.BASE }}
       - if: needs.repin.outputs.exists == 'false'
-        # the --check report of the job that ran no packages: the versions the pin must be (no downgrade)
-        uses: actions/download-artifact@v7
-        with:
-          name: node-pin-check
-          path: ${{ runner.temp }}/check
-      - if: needs.repin.outputs.exists == 'false'
         uses: actions/download-artifact@v7
         with:
           name: node-pin-files
@@ -131,6 +127,9 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - if: needs.repin.outputs.exists == 'false'
         name: Verify the pin against the check, the signed SHASUMS and the base golden, then push (never force)
+        env:
+          # the --check report of the job that ran no packages: the versions the pin must be (no downgrade)
+          CHECK: ${{ needs.check.outputs.report }}
         run: |
           # the artifact comes from the job that ran third-party packages: it may change the two pin files, nothing else
           git status --porcelain --untracked-files=all | cut -c4- | while read -r path; do
@@ -140,7 +139,8 @@ jobs:
             esac
           done
           git show HEAD:backend/app/data/render_probe/golden.json > "$RUNNER_TEMP/golden.base.json"
-          python scripts/pin_render_runtime.py --verify --expect "$RUNNER_TEMP/check/check.json" --base-golden "$RUNNER_TEMP/golden.base.json"
+          printf '%s' "$CHECK" > "$RUNNER_TEMP/check.json"
+          python scripts/pin_render_runtime.py --verify --expect "$RUNNER_TEMP/check.json" --base-golden "$RUNNER_TEMP/golden.base.json"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$BRANCH"
@@ -178,9 +178,6 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - uses: actions/download-artifact@v7
-        with:
-          name: node-pin-check
       - name: The tested commit, its base, and where the branch is now (consilium NL-M1, NL2-R1)
         id: branch
         env:
@@ -201,6 +198,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          CHECK: ${{ needs.check.outputs.report }}
           ACTION: ${{ needs.check.outputs.action }}
           NOTICE: ${{ needs.check.outputs.notice }}
           REPIN: repin ${{ needs.repin.result }}, publish ${{ needs.publish.result }}
@@ -210,6 +208,7 @@ jobs:
           BASE_SHA: ${{ steps.branch.outputs.base }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          printf '%s' "$CHECK" > check.json
           python scripts/node_pin_report.py issue check.json --repin "$REPIN" --smoke "$SMOKE" \
             --tested-sha "$TESTED" --current-sha "$CURRENT" --base-sha "$BASE_SHA" --run-url "$RUN_URL" > body.md
           number=$(gh issue list --state open --label node-pin --json number --jq '.[0].number // empty')

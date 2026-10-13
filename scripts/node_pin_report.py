@@ -23,6 +23,9 @@ def outputs(report: dict) -> str:
             f"notice={str(report['notice']).lower()}",
             f"repin={str(report['repin']).lower()}",
             f"branch={report['branch']}",
+            # the whole report as an immutable job output: the job that ran third-party packages holds the run's
+            # artifact token and could replace an artifact, never another job's outputs (security review)
+            "report=" + json.dumps(report, separators=(",", ":"), ensure_ascii=False),
         ]
     )
 

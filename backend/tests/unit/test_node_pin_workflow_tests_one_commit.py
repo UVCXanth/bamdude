@@ -76,3 +76,17 @@ def test_the_push_job_holds_the_pin_to_the_check_and_the_base_golden():
     assert "--expect" in runs and "--base-golden" in runs
     assert "the pin artifact touched" in runs
     assert runs.index("--expect") < runs.index("git push")
+
+
+def test_no_job_reads_back_an_artifact_the_untrusted_job_could_replace():
+    # security review (artifact poisoning): the job that ran third-party packages holds the run's artifact token
+    # and could re-upload node-pin-check; the check's report travels as an immutable job output instead
+    jobs = _load("node-pin.yml")["jobs"]
+    for name in ("publish", "report"):
+        for step in jobs[name]["steps"]:
+            if str(step.get("uses", "")).startswith("actions/download-artifact"):
+                assert step["with"]["name"] != "node-pin-check", name
+        assert any(
+            step.get("env", {}).get("CHECK") == "${{ needs.check.outputs.report }}" for step in jobs[name]["steps"]
+        ), name
+    assert jobs["check"]["outputs"]["report"] == "${{ steps.check.outputs.report }}"
