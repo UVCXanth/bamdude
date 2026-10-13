@@ -210,7 +210,7 @@ jobs:
         run: |
           printf '%s' "$CHECK" > check.json
           python scripts/node_pin_report.py issue check.json --repin "$REPIN" --smoke "$SMOKE" \
-            --tested-sha "$TESTED" --current-sha "$CURRENT" --base-sha "$BASE_SHA" --run-url "$RUN_URL" > body.md
+            --tested-sha "$TESTED" --current-sha "$CURRENT" --base-sha "$BASE_SHA" --base "$BASE" --run-url "$RUN_URL" > body.md
           number=$(gh issue list --state open --label node-pin --json number --jq '.[0].number // empty')
           if [ "$ACTION" = "true" ]; then
             gh label create node-pin --color 0E8A16 --description "Weekly Node.js pin check" --force

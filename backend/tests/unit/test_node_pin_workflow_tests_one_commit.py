@@ -90,3 +90,9 @@ def test_no_job_reads_back_an_artifact_the_untrusted_job_could_replace():
             step.get("env", {}).get("CHECK") == "${{ needs.check.outputs.report }}" for step in jobs[name]["steps"]
         ), name
     assert jobs["check"]["outputs"]["report"] == "${{ steps.check.outputs.report }}"
+
+
+def test_the_report_names_the_base_the_run_read():
+    steps = _load("node-pin.yml")["jobs"]["report"]["steps"]
+    issue = next(step for step in steps if "node_pin_report.py issue" in step.get("run", ""))
+    assert '--base "$BASE"' in issue["run"]

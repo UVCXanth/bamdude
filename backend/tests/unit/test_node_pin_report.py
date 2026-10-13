@@ -150,3 +150,22 @@ def test_a_new_lts_line_is_reported_not_pinned():
 def test_an_accepted_candidate_says_it_repeats_until_the_release_line_reaches_dev():
     # final review M5: the check reads dev; a pin merged into a feature release line is still "behind" there
     assert "until that line reaches dev" in _body()
+
+
+def test_the_candidate_names_the_base_it_came_from():
+    # T12 on a throwaway branch: the issue said "from dev" for a candidate made from another base
+    body = report_mod.issue_body(
+        BEHIND,
+        repin="success",
+        tested_sha=TESTED,
+        current_sha=TESTED,
+        base_sha=BASE,
+        base="feature/v0.7.0-fixes",
+        smoke="success",
+        run_url="https://x/1",
+    )
+    assert f"(from feature/v0.7.0-fixes `{BASE[:12]}`)" in body and "from dev" not in body
+
+
+def test_a_scheduled_report_still_says_dev():
+    assert f"(from dev `{BASE[:12]}`)" in _body()

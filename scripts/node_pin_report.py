@@ -31,12 +31,20 @@ def outputs(report: dict) -> str:
 
 
 def issue_body(
-    report: dict, *, repin: str, tested_sha: str, current_sha: str, base_sha: str, smoke: str, run_url: str
+    report: dict,
+    *,
+    repin: str,
+    tested_sha: str,
+    current_sha: str,
+    base_sha: str,
+    smoke: str,
+    run_url: str,
+    base: str = "dev",
 ) -> str:
     """What the weekly run found and what really exists. A smoke result belongs to the ONE commit the repin job fixed
     and every smoke job checked out (``tested_sha``), never to whatever the branch points at by report time
     (``current_sha``): a candidate is offered only when it is green AND still the branch head (consilium NL-M1,
-    NL2-R1)."""
+    NL2-R1). ``base`` is the branch the run read: dev on the schedule, another on a manual run (T12)."""
     lines = ["The weekly check of the pinned Node.js (spec part-render-node-lines) found work.", ""]
     for line, entry in sorted(report["lines"].items(), key=lambda item: -int(item[0])):
         state = f"{entry['pinned']} → {entry['newest']}" if entry["behind"] else f"{entry['pinned']} (current)"
@@ -60,7 +68,7 @@ def issue_body(
         if not tested_sha:
             lines.append(f"**Re-pin failed — no candidate on `{branch}`, nothing to merge** (re-pin job: {repin}).")
         else:
-            lines.append(f"Candidate `{tested_sha[:12]}` on `{branch}` (from dev `{base_sha[:12] or 'unknown'}`).")
+            lines.append(f"Candidate `{tested_sha[:12]}` on `{branch}` (from {base} `{base_sha[:12] or 'unknown'}`).")
             if smoke != "success":
                 lines.append(f"**Smoke: {smoke} — do not merge.**")
             else:
@@ -94,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
                 p.add_argument(flag, default="skipped")
             for flag in ("--tested-sha", "--current-sha", "--base-sha", "--run-url"):
                 p.add_argument(flag, default="")
+            p.add_argument("--base", default="dev")
     args = parser.parse_args(argv)
     report = json.loads(args.report.read_text(encoding="utf-8"))
     if args.cmd == "outputs":
@@ -105,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         tested_sha=args.tested_sha,
         current_sha=args.current_sha,
         base_sha=args.base_sha,
+        base=args.base,
         smoke=args.smoke,
         run_url=args.run_url,
     )
