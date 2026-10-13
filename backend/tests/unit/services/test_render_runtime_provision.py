@@ -607,7 +607,8 @@ def test_a_provision_prunes_a_retired_platform(tmp_path: Path, monkeypatch):
     archive, sha, size = _archive(tmp_path)
     (tmp_path / "runtime" / "node" / "linux-armv7l" / "bin").mkdir(parents=True)
     provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
-    assert sorted(p.name for p in (tmp_path / "runtime" / "node").iterdir()) == ["win-x64"]
+    # the platform's lock file stays (startup-provisioning spec P8): removing it would race
+    assert sorted(p.name for p in (tmp_path / "runtime" / "node").iterdir()) == [".win-x64.lock", "win-x64"]
 
 
 def test_the_cli_on_armhf_whose_line_ended_exits_3_and_cleans_up(tmp_path: Path, monkeypatch):

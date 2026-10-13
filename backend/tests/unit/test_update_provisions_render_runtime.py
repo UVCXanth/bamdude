@@ -135,3 +135,16 @@ async def test_a_flooding_child_never_reaches_the_update_log_whole(tmp_path, cap
         await _run_update(tmp_path, provision_code=1, provision_stderr=b"x" * (1024 * 1024))
     assert updates._update_status["status"] == "complete"
     assert len(caplog.text) < 65536
+
+
+@pytest.mark.asyncio
+async def test_the_update_bounds_the_provisioning_like_the_start_does(tmp_path, monkeypatch):
+    # startup-provisioning spec P6: one budget for both callers, now that a killed run is reclaimed (P8)
+    seen = {}
+
+    async def run_provision(app_dir, *, trigger, timeout=None):
+        seen.update(app_dir=app_dir, trigger=trigger, timeout=timeout)
+
+    monkeypatch.setattr(updates.render_runtime_child, "run_provision", run_provision)
+    await updates._provision_render_runtime(tmp_path)
+    assert seen == {"app_dir": tmp_path, "trigger": "update", "timeout": render_runtime_child.PROVISION_SECONDS}

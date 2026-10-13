@@ -7,8 +7,10 @@ Windows build call ``python -m backend.app.services.render_runtime provision``.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
+import os
 import platform as _platform
 import re
 import shutil
@@ -240,6 +242,82 @@ def _executable(target: Path, key: str) -> Path:
     return target / "node.exe" if key == "win-x64" else target / "bin" / "node"
 
 
+_LOCK_POLL = 0.25  # seconds between two tries at a platform's lock held by another provision
+
+if sys.platform == "win32":
+    import msvcrt
+
+    def _try_lock(handle) -> bool:
+        handle.seek(0)
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except PermissionError:  # EACCES: another process holds the byte
+            return False
+        return True
+
+    def _unlock(handle) -> None:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+else:
+    import fcntl
+
+    def _try_lock(handle) -> bool:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        return True
+
+    def _unlock(handle) -> None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def _exclusive(product: Path, key: str):
+    """The platform's provisioning lock (startup-provisioning spec P8). The OS releases it when its holder ends,
+    however it ends -- on Windows a moment after the process is gone, hence the polling -- so a held lock is a live
+    provision of ``key``. The file stays: removing it would race a provision that has just opened it."""
+    product.mkdir(parents=True, exist_ok=True)
+    with (product / f".{key}.lock").open("a+b") as handle:
+        waited = False
+        while not _try_lock(handle):
+            if not waited:
+                print(f"render-runtime: another provisioning of {key} is running; waiting for it", file=sys.stderr)
+                sys.stderr.flush()
+                waited = True
+            time.sleep(_LOCK_POLL)
+        try:
+            yield
+        finally:
+            _unlock(handle)
+
+
+def _reclaim(product: Path, key: str) -> tuple[list[str], list[str]]:
+    """Under the platform's lock: what dead provisions of ``key`` left -- downloads and staging of any version
+    (startup-provisioning spec P8, consilium SP-R1). Never another platform's entries, the backup ``.<key>.old``
+    (kept until a runtime is back in place) or the lock. Answers what is gone and what the OS kept (a file still
+    held): only an entry that no longer exists is called removed (consilium r2 SP2-M1)."""
+    dead = re.compile(rf"\.{re.escape(key)}\.(?:download\..+|.+\.part)")
+    removed, held = [], []
+    for entry in sorted(product.iterdir(), key=lambda p: p.name):
+        if dead.fullmatch(entry.name) is None:
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry, ignore_errors=True)  # a file still held stays for the next run
+        else:
+            with contextlib.suppress(OSError):
+                entry.unlink()
+        (held if os.path.lexists(entry) else removed).append(entry.name)
+    return removed, held
+
+
+def _names(entries: list[str], shown: int = 5) -> str:
+    """Names, never paths, and a bounded list of them."""
+    more = len(entries) - shown
+    return ", ".join(entries[:shown]) + (f" and {more} more" if more > 0 else "")
+
+
 def _rename(src: Path, dst: Path, *, attempts: int = 20, delay: float = 0.5) -> None:
     """Rename, waiting out a short hold: on Windows a just-unpacked tree is held for a moment
     (an antivirus scanning the new node.exe) and refuses the rename; a hold that outlasts the
@@ -268,6 +346,22 @@ def provision(
     if entry is None:
         raise ProvisionError(f"the manifest pins no build for {key}")
     version = pinned_version(manifest, key)
+    product = runtime_root / PRODUCT_DIR
+    with _exclusive(product, key):
+        removed, held = _reclaim(product, key)
+        if removed:
+            print(f"render-runtime: removed what an interrupted provisioning left: {_names(removed)}", file=sys.stderr)
+        if held:
+            print(
+                f"render-runtime: what an interrupted provisioning left is still held, kept for the next run: "
+                f"{_names(held)}",
+                file=sys.stderr,
+            )
+        return _install(runtime_root, key, entry, version, fetch)
+
+
+def _install(runtime_root: Path, key: str, entry: dict, version: str, fetch) -> Path:
+    """The provision itself, under the platform's lock."""
     target = runtime_root / PRODUCT_DIR / key
     marker = target / "VERSION"
     # The marker alone is not an install: a quarantined or deleted executable
@@ -281,8 +375,12 @@ def provision(
         return target
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    staged = target.parent / f".{key}.{version}.part"
-    shutil.rmtree(staged, ignore_errors=True)
+    staged = target.parent / f".{key}.{version}.part"  # a dead run's is gone already (_reclaim) ...
+    if os.path.lexists(staged):
+        # ... unless the OS still holds it: refused before the download, in words (consilium r2 SP2-M1)
+        raise ProvisionError(
+            f"{key}: {staged.name}, left by an interrupted provisioning, is still held; the next run removes it"
+        )
     with tempfile.TemporaryDirectory(dir=target.parent, prefix=f".{key}.download.") as tmp:
         # Named after the URL so _extract sees the archive's suffix.
         archive = Path(tmp) / Path(entry["url"]).name

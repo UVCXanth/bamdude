@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 STDERR_TAIL = 4096  # bytes of the child's stderr kept; the rest is read and dropped
 REASON_CHARS = 240  # the longest reason the parent log carries
 KILL_WAIT = 10.0  # seconds a killed child gets to be reaped
+# the whole provisioning, for every caller; the socket's own 60 s bound a stalled connection, this a
+# very slow one (startup-provisioning spec P6) -- a killed run is reclaimed by the next (P8)
+PROVISION_SECONDS = 900.0
 _READ = 65536
 
 

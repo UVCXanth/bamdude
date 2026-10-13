@@ -576,7 +576,7 @@ async def _provision_render_runtime(app_dir: Path) -> None:
     reported on the System page as ``runtime_missing``. The runner logs the start, one outcome with its elapsed
     time and a bounded reason without the installation's path (the parent-log invariant).
     """
-    await render_runtime_child.run_provision(app_dir, trigger="update")
+    await render_runtime_child.run_provision(app_dir, trigger="update", timeout=render_runtime_child.PROVISION_SECONDS)
 
 
 async def _perform_update(target_ref: str):
