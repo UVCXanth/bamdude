@@ -463,3 +463,31 @@ async def test_a_second_cancel_does_not_cut_the_wait_short(tmp_path, monkeypatch
             await asyncio.wait_for(task, 30)
     assert spawned[0].poll() is not None
     assert len(_outcomes(caplog)) == 1 and "cancelled after" in _outcomes(caplog)[0]
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_says_what_the_child_said_last(tmp_path, caplog):
+    # final review M5: a run that waited for another provision's lock and one that downloaded slowly must not read alike
+    said = "render-runtime: another provisioning of win-x64 is running; waiting for it"
+    app_dir = _noisy(tmp_path, blocks=0, last=said, hang=True)
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        run = await asyncio.wait_for(run_provision(app_dir, trigger="test", timeout=2), 60)
+    assert run.outcome == "timed_out" and run.reason == said
+    assert said in _outcomes(caplog)[0]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_says_what_the_child_said_last(tmp_path, caplog):
+    said = "render-runtime: another provisioning of win-x64 is running; waiting for it"
+    app_dir = _noisy(tmp_path, blocks=0, last=said, hang=True)
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        task = asyncio.create_task(run_provision(app_dir, trigger="test"))
+        for _ in range(600):
+            if (app_dir / "child.pid").is_file():
+                break
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 30)
+    assert said in _outcomes(caplog)[0]

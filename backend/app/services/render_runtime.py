@@ -346,6 +346,11 @@ def provision(
     if entry is None:
         raise ProvisionError(f"the manifest pins no build for {key}")
     version = pinned_version(manifest, key)
+    if _in_place(runtime_root / PRODUCT_DIR / key, key, version):
+        # a pin in place writes nothing, not even the lock: a lock file this user may not create (a runtime directory
+        # left root-owned by a sudo run) must not fail the update of an install whose Node is fine (final review M3)
+        _prune(runtime_root)
+        return runtime_root / PRODUCT_DIR / key
     product = runtime_root / PRODUCT_DIR
     with _exclusive(product, key):
         removed, held = _reclaim(product, key)
@@ -353,24 +358,28 @@ def provision(
             print(f"render-runtime: removed what an interrupted provisioning left: {_names(removed)}", file=sys.stderr)
         if held:
             print(
-                f"render-runtime: what an interrupted provisioning left is still held, kept for the next run: "
-                f"{_names(held)}",
+                f"render-runtime: what an interrupted provisioning left could not be removed (a file still held, or "
+                f"no permission): {_names(held)}",
                 file=sys.stderr,
             )
         return _install(runtime_root, key, entry, version, fetch)
 
 
-def _install(runtime_root: Path, key: str, entry: dict, version: str, fetch) -> Path:
-    """The provision itself, under the platform's lock."""
-    target = runtime_root / PRODUCT_DIR / key
+def _in_place(target: Path, key: str, version: str) -> bool:
+    """The pinned version installed. The marker alone is not an install: a quarantined or deleted executable must be
+    put back by the next run, not reported as already there."""
     marker = target / "VERSION"
-    # The marker alone is not an install: a quarantined or deleted executable
-    # must be put back by the next run, not reported as already there.
-    if (
+    return (
         marker.is_file()
         and marker.read_text(encoding="utf-8").strip() == version
         and _executable(target, key).is_file()
-    ):
+    )
+
+
+def _install(runtime_root: Path, key: str, entry: dict, version: str, fetch) -> Path:
+    """The provision itself, under the platform's lock."""
+    target = runtime_root / PRODUCT_DIR / key
+    if _in_place(target, key, version):  # put in place by the provision this one waited for
         _prune(runtime_root)
         return target
 
@@ -379,7 +388,8 @@ def _install(runtime_root: Path, key: str, entry: dict, version: str, fetch) -> 
     if os.path.lexists(staged):
         # ... unless the OS still holds it: refused before the download, in words (consilium r2 SP2-M1)
         raise ProvisionError(
-            f"{key}: {staged.name}, left by an interrupted provisioning, is still held; the next run removes it"
+            f"{key}: {staged.name}, left by an interrupted provisioning, could not be removed (a file still held, or "
+            "no permission); a later run tries again"
         )
     with tempfile.TemporaryDirectory(dir=target.parent, prefix=f".{key}.download.") as tmp:
         # Named after the URL so _extract sees the archive's suffix.

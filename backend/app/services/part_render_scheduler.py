@@ -231,10 +231,11 @@ async def start_part_render(base: Path, app_dir: Path) -> None:
     from backend.app.core import database
 
     runtime = await start_part_render_runtime(base, app_dir)
-    # the process's start, once (startup-provisioning spec P1, P5): a native install without its Node installs it
-    runtime.start_provisioning()
     scheduler = PartRenderScheduler(runtime, database.async_session, settings.part_renders_dir)
     scheduler.start_in_background()
+    # the process's start, once (startup-provisioning spec P1, P5): a native install without its Node installs it;
+    # after the scheduler, so nothing this asks can keep the queue from starting (final review M4)
+    runtime.start_provisioning()
 
 
 async def stop_part_render_scheduler(reason: str) -> bool:

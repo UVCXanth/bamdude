@@ -176,13 +176,10 @@ async def test_stop_takes_the_provisioning_child_with_it(tmp_path, monkeypatch, 
     assert "cancelled after" in caplog.text
 
 
-@pytest.mark.asyncio
-async def test_stop_waits_for_a_provisioning_whose_spawn_is_slower_than_the_kill_wait(tmp_path, monkeypatch, caplog):
-    # consilium r3 SP3-R1 through the REAL stop(): it does not return while the child its spawn holds is alive.
-    # KILL_WAIT is made short so the test does not sit out the real one; the order is what is proven.
+def _gate_the_spawn(monkeypatch):
+    """The real ``_spawn`` with its child alive, held back from the watcher until ``gate`` is set: a spawn slower than
+    KILL_WAIT. KILL_WAIT is made short so a test does not sit out the real one; the order is what is proven."""
     monkeypatch.setattr(render_runtime_child, "KILL_WAIT", 0.5)
-    app_dir = _stand_in(tmp_path, wait=True)
-    runtime = _runtime(app_dir, monkeypatch)
     spawn = render_runtime_child._spawn
     loop = asyncio.get_running_loop()
     entered, gate, spawned = asyncio.Event(), threading.Event(), []
@@ -196,6 +193,15 @@ async def test_stop_waits_for_a_provisioning_whose_spawn_is_slower_than_the_kill
         return process
 
     monkeypatch.setattr(render_runtime_child, "_spawn", gated)
+    return entered, gate, spawned
+
+
+@pytest.mark.asyncio
+async def test_stop_waits_for_a_provisioning_whose_spawn_is_slower_than_the_kill_wait(tmp_path, monkeypatch, caplog):
+    # consilium r3 SP3-R1 through the REAL stop(): it does not return while the child its spawn holds is alive
+    app_dir = _stand_in(tmp_path, wait=True)
+    runtime = _runtime(app_dir, monkeypatch)
+    entered, gate, spawned = _gate_the_spawn(monkeypatch)
     with caplog.at_level(logging.INFO):
         runtime.start_provisioning()
         await asyncio.wait_for(entered.wait(), 10)
@@ -322,3 +328,77 @@ def test_on_the_reload_loop_a_native_checkout_provisions_at_start(tmp_path, monk
         runner.run(main())
     assert render_runtime.locate(app_dir) is not None
     assert runtime.node_refresh_at == 0.0
+
+
+@pytest.mark.asyncio
+async def test_stop_closes_the_runtime_before_it_waits_for_the_provisioning_child(tmp_path, monkeypatch):
+    # final review M1: while stop() waits for a provisioning child, the runtime is already stopped -- the monitor
+    # starts no replacement worker and health says so; the worker's own retire does not wait behind the child
+    app_dir = _stand_in(tmp_path, wait=True)
+    runtime = _runtime(app_dir, monkeypatch)
+    entered, gate, spawned = _gate_the_spawn(monkeypatch)
+    runtime.start_provisioning()
+    await asyncio.wait_for(entered.wait(), 10)
+    stopping = asyncio.create_task(runtime.stop())
+    try:
+        await asyncio.sleep(0.3)
+        assert not stopping.done()
+        assert runtime.closed and runtime.health()["reason"] == "stopped"
+    finally:
+        gate.set()
+    await asyncio.wait_for(stopping, 60)
+    assert spawned[0].poll() is not None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_provisioning_has_the_monitor_look_again_at_once(tmp_path, monkeypatch):
+    # final review M2: a resolve the monitor ran beside the task may have written runtime_provisioning back; the
+    # next tick corrects it instead of the 30 s refresh
+    app_dir = _stand_in(tmp_path, code=1, said="render-runtime: refused")
+    runtime = _runtime(app_dir, monkeypatch)
+    runtime.node_refresh_at = time.monotonic() + 30  # what the monitor's last refresh left
+    runtime.start_provisioning()
+    await asyncio.wait_for(runtime.provisioning, 60)
+    assert runtime.node_reason == "runtime_missing" and runtime.node_refresh_at == 0.0
+
+
+@pytest.mark.asyncio
+async def test_a_provisioned_install_is_starting_at_once(tmp_path, monkeypatch):
+    # final review M2: provisioning -> starting (spec P4), never a moment of "not installed" in between
+    app_dir = _real_tree(tmp_path, good=True)
+    runtime = _runtime(app_dir, monkeypatch)
+    runtime.start_provisioning()
+    await asyncio.wait_for(runtime.provisioning, 120)
+    assert runtime.node_reason == "starting"
+    assert runtime.node is not None and runtime.node_reprobe_at == 0.0
+
+
+@pytest.mark.asyncio
+async def test_a_failing_install_kind_probe_never_stops_the_scheduler(tmp_path, monkeypatch, caplog):
+    # final review M4: the provisioning trigger is best effort -- the scheduler starts whatever it raises
+    runtime = _runtime(tmp_path / "install", monkeypatch)
+
+    def refuse(app_dir):
+        raise PermissionError(13, "Permission denied", str(app_dir / ".git"))
+
+    monkeypatch.setattr(part_render_runtime.install_kind, "kind", refuse)
+    started = []
+
+    async def start_runtime(base, app):
+        return runtime
+
+    class Scheduler:
+        def __init__(self, *args):
+            pass
+
+        def start_in_background(self):
+            started.append(True)
+
+    monkeypatch.setattr(part_render_scheduler, "start_part_render_runtime", start_runtime)
+    monkeypatch.setattr(part_render_scheduler, "PartRenderScheduler", Scheduler)
+    monkeypatch.setattr(part_render_scheduler, "scheduler", None)
+    with caplog.at_level(logging.INFO):
+        await part_render_scheduler.start_part_render(tmp_path / "data", tmp_path / "install")
+    assert started == [True]
+    assert runtime.provisioning is None and runtime.node_reason == "runtime_missing"
+    assert "PermissionError" in caplog.text and str(tmp_path) not in caplog.text

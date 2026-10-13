@@ -207,7 +207,7 @@ def test_a_held_staging_of_this_version_is_a_clear_refusal_before_any_download(t
     archive = _archive(tmp_path, size=1024)
     fetched = []
 
-    with pytest.raises(ProvisionError, match="still held; the next run removes it"):
+    with pytest.raises(ProvisionError, match="could not be removed"):
         provision(
             tmp_path / "runtime",
             manifest=_manifest(archive, archive.as_uri()),
@@ -217,7 +217,10 @@ def test_a_held_staging_of_this_version_is_a_clear_refusal_before_any_download(t
 
     assert fetched == []
     said = capsys.readouterr().err
-    assert "removed what" not in said and f"still held, kept for the next run: {staged.name}" in said
+    assert (
+        "removed what" not in said
+        and f"could not be removed (a file still held, or no permission): {staged.name}" in said
+    )
 
 
 @pytest.mark.asyncio
@@ -242,3 +245,20 @@ async def test_a_waiter_past_its_budget_ends_only_itself(tmp_path):
     assert len(gets) == 1
     assert _leftovers(runtime) == []
     assert render_runtime.locate_in(runtime, KEY) is not None
+
+
+def test_a_pin_already_in_place_is_answered_without_the_lock(tmp_path, monkeypatch):
+    # final review M3: a provision with its pin in place writes nothing -- a lock file it may not create (a runtime
+    # directory left root-owned by a sudo run) must not fail the update of an install whose Node is fine
+    target = tmp_path / "runtime" / "node" / KEY
+    executable = target / ("node.exe" if KEY == "win-x64" else "bin/node")
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"node")
+    (target / "VERSION").write_text(VERSION + "\n", encoding="utf-8")
+    archive = _archive(tmp_path, size=1024)
+
+    def no_lock(*args, **kwargs):
+        raise AssertionError("the lock was taken for a pin already in place")
+
+    monkeypatch.setattr(render_runtime, "_exclusive", no_lock)
+    assert provision(tmp_path / "runtime", manifest=_manifest(archive, archive.as_uri()), platform=KEY) == target

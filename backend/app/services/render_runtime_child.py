@@ -199,6 +199,14 @@ def _ended_as(watcher: _Watcher) -> str:
     return "never started" if watcher.ended.result().error is not None else "was stopped"
 
 
+def _said_last(watcher: _Watcher, app_dir: Path) -> str | None:
+    """The redacted last line of a child that has ended: a run that waited for another provision's lock and one that
+    downloaded slowly must not read alike (final review M5)."""
+    ended = watcher.ended.result()
+    last = _last_line(ended.tail, ended.truncated) if ended.error is None else None
+    return redact(last, app_dir) if last else None
+
+
 async def run_provision(app_dir: Path, *, trigger: str, timeout: float | None = None) -> ProvisionRun:
     """``python -m backend.app.services.render_runtime provision --runtime <app_dir>/runtime`` in ``app_dir``.
 
@@ -214,24 +222,27 @@ async def run_provision(app_dir: Path, *, trigger: str, timeout: float | None = 
     except asyncio.CancelledError:
         await _stop(watcher, run_id)
         logger.info(
-            "Render runtime provisioning %s cancelled after %.1f s; the child %s",
+            "Render runtime provisioning %s cancelled after %.1f s; the child %s; it said last: %s",
             run_id,
             time.monotonic() - started,
             _ended_as(watcher),
+            _said_last(watcher, app_dir) or "nothing",
         )
         raise
     elapsed = time.monotonic() - started
     if not done:
         cancelled = await _stop(watcher, run_id)
+        reason = _said_last(watcher, app_dir)
         logger.warning(
-            "Render runtime provisioning %s timed out after %.1f s; the child %s",
+            "Render runtime provisioning %s timed out after %.1f s; the child %s; it said last: %s",
             run_id,
             elapsed,
             _ended_as(watcher),
+            reason or "nothing",
         )
         if cancelled:
             raise asyncio.CancelledError  # asked while the stop waited: answered once the child is gone
-        return ProvisionRun("timed_out", elapsed)
+        return ProvisionRun("timed_out", elapsed, reason)
     ended = watcher.ended.result()
     if ended.error is not None:
         logger.warning(
