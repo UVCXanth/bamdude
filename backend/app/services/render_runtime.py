@@ -273,13 +273,19 @@ else:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-@contextlib.contextmanager
-def _exclusive(product: Path, key: str):
-    """The platform's provisioning lock (startup-provisioning spec P8). The OS releases it when its holder ends,
-    however it ends -- on Windows a moment after the process is gone, hence the polling -- so a held lock is a live
-    provision of ``key``. The file stays: removing it would race a provision that has just opened it."""
+def _open_lock(product: Path, key: str):
+    """The platform's lock file, opened for locking -- created when it is not there. The file stays: removing it would
+    race a provision that has just opened it."""
     product.mkdir(parents=True, exist_ok=True)
-    with (product / f".{key}.lock").open("a+b") as handle:
+    return (product / f".{key}.lock").open("a+b")
+
+
+@contextlib.contextmanager
+def _holding(handle, key: str):
+    """The platform's provisioning lock, held on an open lock file (startup-provisioning spec P8). The OS releases it
+    when its holder ends, however it ends -- on Windows a moment after the process is gone, hence the polling -- so a
+    held lock is a live provision of ``key``."""
+    with handle:
         waited = False
         while not _try_lock(handle):
             if not waited:
@@ -346,13 +352,18 @@ def provision(
     if entry is None:
         raise ProvisionError(f"the manifest pins no build for {key}")
     version = pinned_version(manifest, key)
-    if _in_place(runtime_root / PRODUCT_DIR / key, key, version):
-        # a pin in place writes nothing, not even the lock: a lock file this user may not create (a runtime directory
-        # left root-owned by a sudo run) must not fail the update of an install whose Node is fine (final review M3)
-        _prune(runtime_root)
-        return runtime_root / PRODUCT_DIR / key
     product = runtime_root / PRODUCT_DIR
-    with _exclusive(product, key):
+    try:
+        handle = _open_lock(product, key)
+    except OSError:
+        if not _in_place(product / key, key, version):
+            raise
+        # the pin is in place and this user may not write the lock (a runtime directory left root-owned by a sudo
+        # run): the install's Node is fine, so this provision is too -- only the reclaim waits for a run that can lock
+        # (final review M3; consilium r5 SP-I-M1: a pin in place is no reason to skip the reclaim otherwise)
+        _prune(runtime_root)
+        return product / key
+    with _holding(handle, key):
         removed, held = _reclaim(product, key)
         if removed:
             print(f"render-runtime: removed what an interrupted provisioning left: {_names(removed)}", file=sys.stderr)

@@ -247,18 +247,62 @@ async def test_a_waiter_past_its_budget_ends_only_itself(tmp_path):
     assert render_runtime.locate_in(runtime, KEY) is not None
 
 
-def test_a_pin_already_in_place_is_answered_without_the_lock(tmp_path, monkeypatch):
-    # final review M3: a provision with its pin in place writes nothing -- a lock file it may not create (a runtime
-    # directory left root-owned by a sudo run) must not fail the update of an install whose Node is fine
-    target = tmp_path / "runtime" / "node" / KEY
+def _pin_in_place(runtime: Path) -> Path:
+    target = runtime / "node" / KEY
     executable = target / ("node.exe" if KEY == "win-x64" else "bin/node")
     executable.parent.mkdir(parents=True)
     executable.write_bytes(b"node")
     (target / "VERSION").write_text(VERSION + "\n", encoding="utf-8")
+    return target
+
+
+def test_a_pin_in_place_succeeds_when_its_lock_cannot_be_opened(tmp_path, monkeypatch):
+    # final review M3: a lock file this user may not create (a runtime directory left root-owned by a sudo run) must
+    # not fail the update of an install whose Node is fine
+    target = _pin_in_place(tmp_path / "runtime")
     archive = _archive(tmp_path, size=1024)
 
-    def no_lock(*args, **kwargs):
-        raise AssertionError("the lock was taken for a pin already in place")
+    def refuse(product, key):
+        raise PermissionError(13, "Permission denied", str(product / f".{key}.lock"))
 
-    monkeypatch.setattr(render_runtime, "_exclusive", no_lock)
+    monkeypatch.setattr(render_runtime, "_open_lock", refuse)
     assert provision(tmp_path / "runtime", manifest=_manifest(archive, archive.as_uri()), platform=KEY) == target
+
+
+def test_a_lock_that_cannot_be_opened_is_an_error_without_the_pin(tmp_path, monkeypatch):
+    archive = _archive(tmp_path, size=1024)
+
+    def refuse(product, key):
+        raise PermissionError(13, "Permission denied", str(product / f".{key}.lock"))
+
+    monkeypatch.setattr(render_runtime, "_open_lock", refuse)
+    with pytest.raises(PermissionError):
+        provision(tmp_path / "runtime", manifest=_manifest(archive, archive.as_uri()), platform=KEY)
+
+
+def test_a_later_provision_reclaims_what_an_earlier_one_could_not(tmp_path, monkeypatch, capsys):
+    # consilium r5 SP-I-M1: a leftover the OS held during a successful provision is removed by the next one of the
+    # same pin -- the reclaim runs under the lock even when the pin is already in place (spec P8)
+    runtime = tmp_path / "runtime"
+    stale = runtime / "node" / f".{KEY}.download.interrupted"
+    stale.mkdir(parents=True)
+    (stale / "archive").write_bytes(b"left by a killed download")
+    archive = _archive(tmp_path, size=1024)
+    manifest = _manifest(archive, archive.as_uri())
+    rmtree = render_runtime.shutil.rmtree
+
+    def held(path, *args, **kwargs):
+        if Path(path) == stale:
+            return  # rmtree(ignore_errors=True) while an antivirus holds a file
+        return rmtree(path, *args, **kwargs)
+
+    with monkeypatch.context() as hold:
+        hold.setattr(render_runtime.shutil, "rmtree", held)
+        target = provision(runtime, manifest=manifest, platform=KEY)
+    assert stale.exists() and render_runtime.locate_in(runtime, KEY) is not None
+    capsys.readouterr()
+
+    assert provision(runtime, manifest=manifest, platform=KEY) == target  # the hold is over; same pin, no download
+
+    assert not stale.exists()
+    assert f"removed what an interrupted provisioning left: {stale.name}" in capsys.readouterr().err
