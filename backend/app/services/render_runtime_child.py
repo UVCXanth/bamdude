@@ -170,11 +170,30 @@ class _Watcher:
             self._end(process)
 
 
-async def _stop(watcher: _Watcher) -> bool:
-    """Kill the child and wait for its watcher to reap it (stderr still drains); ``True`` once it has."""
+async def _stop(watcher: _Watcher, run_id: str) -> bool:
+    """Kill the child and wait for its watcher to reap it -- to the end: a run is over only when its child is, however
+    long its spawn takes (consilium r3 SP3-R1). Past KILL_WAIT the parent log says it is still waiting, once. A cancel
+    that arrives meanwhile does not cut the wait short; ``True`` when one did arrive, for the caller to raise."""
     watcher.kill()
-    await asyncio.wait({watcher.ended}, timeout=KILL_WAIT)
-    return watcher.ended.done()
+    cancelled = waiting = False
+    while not watcher.ended.done():
+        try:
+            await asyncio.wait({watcher.ended}, timeout=KILL_WAIT)
+        except asyncio.CancelledError:
+            cancelled = True
+            continue
+        if not watcher.ended.done() and not waiting:
+            waiting = True
+            logger.warning(
+                "Render runtime provisioning %s: the child has not ended %.0f s after the kill; waiting for it",
+                run_id,
+                KILL_WAIT,
+            )
+    return cancelled
+
+
+def _ended_as(watcher: _Watcher) -> str:
+    return "never started" if watcher.ended.result().error is not None else "was stopped"
 
 
 async def run_provision(app_dir: Path, *, trigger: str, timeout: float | None = None) -> ProvisionRun:
@@ -190,23 +209,25 @@ async def run_provision(app_dir: Path, *, trigger: str, timeout: float | None = 
     try:
         done, _ = await asyncio.wait({watcher.ended}, timeout=timeout)
     except asyncio.CancelledError:
-        stopped = await _stop(watcher)
+        await _stop(watcher, run_id)
         logger.info(
             "Render runtime provisioning %s cancelled after %.1f s; the child %s",
             run_id,
             time.monotonic() - started,
-            "was stopped" if stopped else "did not exit after the kill",
+            _ended_as(watcher),
         )
         raise
     elapsed = time.monotonic() - started
     if not done:
-        stopped = await _stop(watcher)
+        cancelled = await _stop(watcher, run_id)
         logger.warning(
             "Render runtime provisioning %s timed out after %.1f s; the child %s",
             run_id,
             elapsed,
-            "was stopped" if stopped else "did not exit after the kill",
+            _ended_as(watcher),
         )
+        if cancelled:
+            raise asyncio.CancelledError  # asked while the stop waited: answered once the child is gone
         return ProvisionRun("timed_out", elapsed)
     ended = watcher.ended.result()
     if ended.error is not None:

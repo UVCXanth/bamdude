@@ -16,6 +16,7 @@ import json
 import logging
 import sys
 import tarfile
+import threading
 import time
 import zipfile
 from pathlib import Path, PureWindowsPath
@@ -370,3 +371,95 @@ async def test_a_run_cancelled_while_its_child_is_starting_still_ends_that_child
     assert len(spawned) == 1  # it did start, after the cancel
     assert spawned[0].poll() is not None and not psutil.pid_exists(spawned[0].pid)
     assert "cancelled after" in caplog.text and "was stopped" in caplog.text
+
+
+# --- a spawn slower than KILL_WAIT (consilium r3 SP3-R1) ------------------------------------------------------------
+
+
+def _gate_the_spawn(monkeypatch):
+    """The real ``_spawn`` with its child alive, held back from the watcher until ``gate`` is set: a spawn slower than
+    KILL_WAIT. KILL_WAIT is made short so the test does not sit out the real one; the order is what is proven."""
+    monkeypatch.setattr(render_runtime_child, "KILL_WAIT", 0.5)
+    spawn = render_runtime_child._spawn
+    loop = asyncio.get_running_loop()
+    entered, gate, spawned = asyncio.Event(), threading.Event(), []
+
+    def gated(app_dir):
+        process = spawn(app_dir)
+        spawned.append(process)
+        loop.call_soon_threadsafe(entered.set)
+        if not gate.wait(30):
+            process.kill()
+        return process
+
+    monkeypatch.setattr(render_runtime_child, "_spawn", gated)
+    return entered, gate, spawned
+
+
+_OUTCOMES = (" cancelled after ", " timed out after ", "provisioned in", " failed after ", "did not start after")
+
+
+def _outcomes(caplog) -> list[str]:
+    said = [r.getMessage() for r in caplog.records if r.name == LOGGER]
+    return [line for line in said if any(word in line for word in _OUTCOMES)]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_waits_for_a_spawn_slower_than_the_kill_wait(tmp_path, monkeypatch, caplog):
+    app_dir = _noisy(tmp_path, blocks=0, hang=True)
+    entered, gate, spawned = _gate_the_spawn(monkeypatch)
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        task = asyncio.create_task(run_provision(app_dir, trigger="test"))
+        try:
+            await asyncio.wait_for(entered.wait(), 10)
+            task.cancel()
+            await asyncio.sleep(render_runtime_child.KILL_WAIT * 3)
+            assert spawned[0].poll() is None  # the child lives, its spawn not yet returned
+            assert not task.done(), "the cancel ended before its child did"
+        finally:
+            gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 30)
+    assert spawned[0].poll() is not None
+    assert "has not ended" in caplog.text
+    assert len(_outcomes(caplog)) == 1 and "cancelled after" in _outcomes(caplog)[0]
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_waits_for_a_spawn_slower_than_the_kill_wait(tmp_path, monkeypatch, caplog):
+    app_dir = _noisy(tmp_path, blocks=0, hang=True)
+    entered, gate, spawned = _gate_the_spawn(monkeypatch)
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        task = asyncio.create_task(run_provision(app_dir, trigger="test", timeout=0.5))
+        try:
+            await asyncio.wait_for(entered.wait(), 10)
+            await asyncio.sleep(0.5 + render_runtime_child.KILL_WAIT * 3)
+            assert spawned[0].poll() is None
+            assert not task.done(), "the timeout answered before its child ended"
+        finally:
+            gate.set()
+        run = await asyncio.wait_for(task, 30)
+    assert run.outcome == "timed_out"
+    assert spawned[0].poll() is not None
+    assert len(_outcomes(caplog)) == 1 and "timed out after" in _outcomes(caplog)[0]
+
+
+@pytest.mark.asyncio
+async def test_a_second_cancel_does_not_cut_the_wait_short(tmp_path, monkeypatch, caplog):
+    app_dir = _noisy(tmp_path, blocks=0, hang=True)
+    entered, gate, spawned = _gate_the_spawn(monkeypatch)
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        task = asyncio.create_task(run_provision(app_dir, trigger="test"))
+        try:
+            await asyncio.wait_for(entered.wait(), 10)
+            task.cancel()
+            await asyncio.sleep(render_runtime_child.KILL_WAIT)
+            task.cancel()  # a shutdown that gives up waiting asks again
+            await asyncio.sleep(render_runtime_child.KILL_WAIT * 2)
+            assert not task.done(), "a second cancel ended the run before its child"
+        finally:
+            gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 30)
+    assert spawned[0].poll() is not None
+    assert len(_outcomes(caplog)) == 1 and "cancelled after" in _outcomes(caplog)[0]
