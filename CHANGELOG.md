@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Opening an occupied camera no longer restarts every camera stream.** A live-view request refused because the camera is already reserved or its subscription limit is reached leaves the camera worker and its existing streams running.
+
 - **Every part has a picture.** Each printed part of a product gets its own picture, rendered in the background on the server from the sliced G-code in the filament's colours — or your own photo — and it shows on products, orders and stock. The Docker image and the Windows installer bring the pinned Node.js the renderer needs; a native install downloads it once — at install, with `update.sh`, or when it is updated from Settings.
 - **Selected printers have confirmed batch actions for homing, device calibration, maintenance records, queues, maintenance mode and lights.** Every action names its recipients, rechecks eligibility and reports per-printer outcomes. Maintenance retains history and lifetime hours; motion refuses stale or unknown idle telemetry and unsupported calibration options.
 - **Inventory projection tests distinguish a refused MQTT publish from a successful one.** The refusal regression now expects `False` while still checking that no assignment verification or advertised-profile overlay is created.

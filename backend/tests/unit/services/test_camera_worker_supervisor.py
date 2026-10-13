@@ -487,6 +487,96 @@ async def test_worker_relays_latest_frames_for_an_external_live_lease():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["builtin", "external"])
+async def test_rejected_live_subscription_preserves_worker_raw_proxy_and_other_stream(caplog, kind):
+    caplog.set_level(logging.INFO, logger="backend.app.services.camera_worker_supervisor")
+
+    async def echo(reader, writer):
+        try:
+            while data := await reader.read(1024):
+                writer.write(data)
+                await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    target = await asyncio.start_server(echo, host="127.0.0.1", port=0)
+    target_port = target.sockets[0].getsockname()[1]
+    source = await asyncio.start_server(_serve_snapshot, host="127.0.0.1", port=0)
+    source_port = source.sockets[0].getsockname()[1]
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        listen_port = reservation.getsockname()[1]
+    supervisor = CameraWorkerSupervisor()
+    raw_writer = None
+    try:
+        await supervisor.start()
+        process = supervisor.process
+        pid, generation = process.pid, supervisor.bootstrap.generation
+        busy = str(uuid.uuid4())
+        await supervisor.start_raw_proxy(
+            identity=busy,
+            bind_address="127.0.0.1",
+            listen_port=listen_port,
+            target_host="127.0.0.1",
+            target_port=target_port,
+        )
+        raw_reader, raw_writer = await asyncio.open_connection("127.0.0.1", listen_port)
+        raw_writer.write(b"before")
+        await raw_writer.drain()
+        assert await asyncio.wait_for(raw_reader.readexactly(6), 3) == b"before"
+        _lease, queue = await supervisor.subscribe_external(
+            identity=str(uuid.uuid4()),
+            url=f"http://127.0.0.1:{source_port}/snapshot.jpg",
+            camera_type="snapshot",
+            fps=5,
+        )
+        assert (await asyncio.wait_for(queue.get(), 3)).frame == _JPEG
+        queues_before = dict(supervisor._live_media_queues)
+        with pytest.raises(CameraWorkerUnavailable, match="rejected.*subscription"):
+            if kind == "builtin":
+                await supervisor.subscribe_builtin(
+                    identity=busy, ip_address="127.0.0.1", access_code="private-code", model="P1S", fps=5
+                )
+            else:
+                await supervisor.subscribe_external(
+                    identity=busy,
+                    url=f"http://127.0.0.1:{source_port}/private-source",
+                    camera_type="snapshot",
+                    fps=5,
+                )
+        assert supervisor._live_media_queues == queues_before
+        assert (await supervisor.request("heartbeat"))["result"] == {"state": "ready"}
+        assert supervisor.process.pid == pid and supervisor.process.returncode is None
+        assert supervisor.bootstrap.generation == generation
+        raw_writer.write(b"after")
+        await raw_writer.drain()
+        assert await asyncio.wait_for(raw_reader.readexactly(5), 3) == b"after"
+        while not queue.empty():
+            queue.get_nowait()
+        assert (await asyncio.wait_for(queue.get(), 3)).frame == _JPEG
+        rejection = [r.getMessage() for r in caplog.records if "live subscription rejected:" in r.getMessage()]
+        assert len(rejection) == 1
+        assert f"kind={kind}" in rejection[0] and "reason=busy" in rejection[0]
+        assert "session=" in rejection[0] and "elapsed_ms=" in rejection[0]
+        assert "private-code" not in rejection[0] and "private-source" not in rejection[0]
+        assert "127.0.0.1" not in rejection[0]
+    finally:
+        if raw_writer is not None:
+            raw_writer.close()
+            await raw_writer.wait_closed()
+        await supervisor.stop()
+        target.close()
+        source.close()
+        await target.wait_closed()
+        await source.wait_closed()
+    assert supervisor.last_stop_outcome == "graceful"
+    assert process.returncode is not None
+    with pytest.raises(OSError):
+        await asyncio.open_connection("127.0.0.1", listen_port)
+
+
+@pytest.mark.asyncio
 async def test_normal_stop_joins_multiple_live_leases_and_shared_producer():
     server = await asyncio.start_server(_serve_snapshot, host="127.0.0.1", port=0)
     port = server.sockets[0].getsockname()[1]

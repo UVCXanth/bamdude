@@ -52,6 +52,20 @@ logger = logging.getLogger(__name__)
 LiveMediaQueue = asyncio.Queue[WorkerMediaFrame | None]
 
 
+def _log_live_rejection(kind: str, session_id: str, started: float, reason: object) -> None:
+    """Only fixed admission codes may cross the parent logging boundary."""
+    safe_reason = (
+        reason if isinstance(reason, str) and reason in {"busy", "subscriber_limit", "producer_limit"} else "rejected"
+    )
+    logger.warning(
+        "Camera live subscription rejected: kind=%s session=%s reason=%s elapsed_ms=%d",
+        kind,
+        session_id,
+        safe_reason,
+        int((time.monotonic() - started) * 1000),
+    )
+
+
 class CameraWorkerUnavailable(RuntimeError):
     """The harness child did not authenticate or stopped responding."""
 
@@ -242,6 +256,7 @@ class CameraWorkerSupervisor:
             raise CameraWorkerUnavailable("camera worker live relay limit reached")
         if self.process is None or self.process.returncode is not None:
             raise CameraWorkerUnavailable("camera worker is not ready")
+        started = time.monotonic()
         session_id = str(uuid.uuid4())
         queue: LiveMediaQueue = asyncio.Queue(maxsize=1)
         self._live_media_queues[session_id] = queue
@@ -258,6 +273,7 @@ class CameraWorkerSupervisor:
             )
             lease_id = reply["result"].get("lease_id")
             if not reply["ok"] or not isinstance(lease_id, str):
+                _log_live_rejection("external", session_id, started, reply["result"].get("reason"))
                 raise CameraWorkerUnavailable("camera worker rejected live subscription")
             return lease_id, queue
         except Exception:
@@ -273,6 +289,7 @@ class CameraWorkerSupervisor:
             raise CameraWorkerUnavailable("camera worker is not ready")
         if len(self._live_media_queues) >= _MAX_LIVE_MEDIA_QUEUES:
             raise CameraWorkerUnavailable("camera worker live relay limit reached")
+        started = time.monotonic()
         session_id = str(uuid.uuid4())
         queue: LiveMediaQueue = asyncio.Queue(maxsize=1)
         self._live_media_queues[session_id] = queue
@@ -290,6 +307,7 @@ class CameraWorkerSupervisor:
             )
             lease_id = reply["result"].get("lease_id")
             if not reply["ok"] or not isinstance(lease_id, str):
+                _log_live_rejection("builtin", session_id, started, reply["result"].get("reason"))
                 raise CameraWorkerUnavailable("camera worker rejected built-in live subscription")
             return lease_id, queue
         except Exception:
