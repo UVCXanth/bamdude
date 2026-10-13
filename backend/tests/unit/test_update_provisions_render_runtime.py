@@ -6,7 +6,7 @@ CHECKED-OUT module in a child process -- the running one is the old code with th
 fails the update: a missing runtime is a missing feature, reported on the System page.
 """
 
-import asyncio
+import io
 import logging
 import sys
 from pathlib import Path
@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from backend.app.api.routes import updates
+from backend.app.services import render_runtime_child
 
 PROVISION = ["-m", "backend.app.services.render_runtime", "provision", "--runtime"]
 
@@ -23,26 +24,45 @@ class _Process:
     def __init__(self, returncode: int, stderr: bytes = b""):
         self.returncode = returncode
         self._stderr = stderr
-        # the provisioning runner drains stderr itself (a bounded tail) and waits; git and pip communicate()
-        self.stderr = asyncio.StreamReader()
-        self.stderr.feed_data(stderr)
-        self.stderr.feed_eof()
 
     async def communicate(self):
         return b"", self._stderr
 
-    async def wait(self):
+
+class _Child:
+    """What the provisioning runner's watcher reads of a Popen: stderr to EOF, then the exit."""
+
+    def __init__(self, returncode: int, stderr: bytes):
+        self._code = returncode
+        self.returncode = None
+        self.pid = 0
+        self.stderr = io.BytesIO(stderr)
+
+    def wait(self, timeout=None):
+        self.returncode = self._code
+        return self._code
+
+    def poll(self):
         return self.returncode
 
+    def kill(self):
+        pass
 
-def _fake_exec(calls: list, provision_code: int, provision_stderr: bytes = b""):
+
+def _fake_exec(calls: list):
     async def create_subprocess_exec(*args, **kwargs):
         calls.append((list(args), kwargs.get("cwd")))
-        if list(args[1:5]) == PROVISION[:4]:
-            return _Process(provision_code, provision_stderr)
         return _Process(0)
 
     return create_subprocess_exec
+
+
+def _fake_spawn(calls: list, provision_code: int, provision_stderr: bytes):
+    def spawn(app_dir: Path):
+        calls.append((render_runtime_child._argv(app_dir), str(app_dir)))
+        return _Child(provision_code, provision_stderr)
+
+    return spawn
 
 
 async def _run_update(tmp_path: Path, provision_code: int, provision_stderr: bytes = b"") -> list:
@@ -50,7 +70,8 @@ async def _run_update(tmp_path: Path, provision_code: int, provision_stderr: byt
     with (
         patch.object(updates.settings, "app_dir", tmp_path),
         patch.object(updates, "_find_executable", lambda name: "git" if name == "git" else None),
-        patch.object(updates.asyncio, "create_subprocess_exec", _fake_exec(calls, provision_code, provision_stderr)),
+        patch.object(updates.asyncio, "create_subprocess_exec", _fake_exec(calls)),
+        patch.object(render_runtime_child, "_spawn", _fake_spawn(calls, provision_code, provision_stderr)),
     ):
         await updates._perform_update("v0.7.0")
     return calls
