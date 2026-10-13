@@ -9,6 +9,7 @@ capture** (S7: a bad spool must not make anything read another file).
 """
 
 from collections.abc import Iterable
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
@@ -21,8 +22,13 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
 from backend.app.models.queue_source import FORMAT_GCODE, QueueSource
+from backend.app.services import swap_compatibility
 from backend.app.services.filament_requirements import PrintRequirements, PrintRequirementsCache
-from backend.app.services.queue_source_descriptor import QueueSourceDescriptor, stored_descriptor
+from backend.app.services.queue_source_descriptor import (
+    SOURCE_SNAPSHOT_VERSION,
+    QueueSourceDescriptor,
+    stored_descriptor,
+)
 from backend.app.services.source_io import SourceUnavailable
 
 
@@ -161,7 +167,44 @@ async def item_descriptor(db, item) -> QueueSourceDescriptor | None:
     source = await db.get(QueueSource, source_id)
     if source is None:
         return None
-    return stored_descriptor(source, getattr(item, "source_snapshot", None))
+    descriptor = stored_descriptor(source, getattr(item, "source_snapshot", None))
+    if descriptor.swap_fact.missing:
+        descriptor = replace(descriptor, swap_fact=await _legacy_swap_fact(db, item, descriptor))
+    return descriptor
+
+
+async def _legacy_swap_fact(db, item, descriptor: QueueSourceDescriptor) -> swap_compatibility.SourceFact:
+    """§6 of the swap-source-lifecycle spec: a snapshot written before the fix, answered from the job's own links.
+
+    Only the job's live foreign keys are read -- a trashed row too, as metadata, since the link is the job's own;
+    a link that is gone (``SET NULL``) is gone, and the provenance's id is never looked up (an id may have been
+    reused). The answer is a value for this read: the stored snapshot is not rewritten.
+    """
+    kind = descriptor.provenance.get("kind")
+    archive_id = getattr(item, "archive_id", None) if kind in (None, "archive") else None
+    library_id = getattr(item, "library_file_id", None) if kind in (None, "library_file") else None
+    return swap_compatibility.resolve_legacy(
+        provenance_kind=kind,
+        archive=await db.get(PrintArchive, archive_id) if archive_id else None,
+        library_file=await db.get(LibraryFile, library_id) if library_id else None,
+        sha256=descriptor.sha256,
+    )
+
+
+async def snapshot_for_copy(db, item) -> dict | None:
+    """The ``source_snapshot`` a job copied from ``item`` gets: a new dict, with the fact recorded.
+
+    A clone, a copy and an assignment print the same bytes for the same reason, so they carry the same
+    declaration -- resolved now, if the parent's predates the fix, and WRITTEN into the copy, so the copy never
+    depends on the parent's links again (swap-source-lifecycle spec r4 §6). The parent's payload is not touched.
+    A payload this version cannot read is copied as it is: it stays unreadable, and unknown, in the copy.
+    """
+    snapshot = getattr(item, "source_snapshot", None)
+    if not isinstance(snapshot, dict) or snapshot.get("version") != SOURCE_SNAPSHOT_VERSION:
+        return deepcopy(snapshot)
+    descriptor = await item_descriptor(db, item)
+    fact = descriptor.swap_fact if descriptor is not None else swap_compatibility.snapshot_fact(snapshot)
+    return swap_compatibility.snapshot_with_fact(snapshot, fact)
 
 
 def source_display_filename(descriptor: QueueSourceDescriptor) -> str:

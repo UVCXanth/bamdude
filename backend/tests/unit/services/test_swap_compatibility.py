@@ -241,3 +241,100 @@ def test_projection_preserves_wire_bool():
     assert sc.project(True) == (True, True)
     assert sc.project(False) == (False, True)
     assert sc.project(None) == (False, False)
+
+
+# --- a job's own fact (§5, §6) --------------------------------------------------------------------------------------
+
+H1, H2 = "a" * 64, "b" * 64
+
+
+def test_a_rejected_record_says_so():
+    assert sc.archive_fact(_archive(True, {sc.CARRIER_KEY: "forged"})).invalid is True
+    assert sc.archive_fact(_archive(False, None)).invalid is False  # legacy is not a rejection
+    archive = _archive(
+        False,
+        {sc.CARRIER_KEY: "forged"},
+    )
+    archive.source_content_hash = H1
+    assert sc.archive_source(archive) == (sc.SourceFact(None, "record_invalid"), H1)
+
+
+def test_archive_source_expects_the_unpatched_hash_first():
+    archive = _archive(False, {sc.CARRIER_KEY: _carrier(False)})
+    archive.source_content_hash, archive.content_hash = H1, H2
+    assert sc.archive_source(archive) == (sc.SourceFact(False), H1)
+    archive.source_content_hash = None
+    assert sc.archive_source(archive) == (sc.SourceFact(False), H2)
+    legacy = _archive(False, None)
+    legacy.source_content_hash = H1
+    assert sc.archive_source(legacy) == (sc.SourceFact(None, "source_unknown"), H1)
+
+
+def test_library_source_needs_a_valid_hash():
+    assert sc.library_source(SimpleNamespace(swap_compatible=True, file_hash=H1)) == (sc.SourceFact(True), H1)
+    assert sc.library_source(SimpleNamespace(swap_compatible=False, file_hash=None)) == (
+        sc.SourceFact(None, "hash_missing"),
+        None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("fact", "expected", "actual", "result"),
+    [
+        (sc.SourceFact(True), H1, H1, sc.SourceFact(True)),
+        (sc.SourceFact(False), H1, H1, sc.SourceFact(False)),
+        (sc.SourceFact(False), H1, H2, sc.SourceFact(None, "hash_mismatch")),
+        (sc.SourceFact(False), None, H1, sc.SourceFact(None, "hash_missing")),
+        (sc.SourceFact(True), "A" * 64, "A" * 64, sc.SourceFact(None, "hash_missing")),
+        (sc.SourceFact(None, "record_invalid"), H1, H1, sc.SourceFact(None, "record_invalid")),
+        (sc.SourceFact(None, missing=True), H1, H1, sc.SourceFact(None, "source_unknown")),
+    ],
+)
+def test_the_receipt_confirms_the_declaration_against_the_real_hash(fact, expected, actual, result):
+    assert sc.confirm(fact, expected, actual) == result
+
+
+@pytest.mark.parametrize(
+    ("payload", "fact"),
+    [
+        ({}, sc.SourceFact(None, missing=True)),
+        ({sc.SNAPSHOT_FACT_KEY: True}, sc.SourceFact(True)),
+        ({sc.SNAPSHOT_FACT_KEY: False}, sc.SourceFact(False)),
+        ({sc.SNAPSHOT_FACT_KEY: None}, sc.SourceFact(None, "source_unknown")),
+        ({sc.SNAPSHOT_FACT_KEY: None, sc.SNAPSHOT_REASON_KEY: "hash_missing"}, sc.SourceFact(None, "hash_missing")),
+        ({sc.SNAPSHOT_FACT_KEY: None, sc.SNAPSHOT_REASON_KEY: "granted"}, sc.SourceFact(None, "source_unknown")),
+        ({sc.SNAPSHOT_FACT_KEY: 0}, sc.SourceFact(None, "record_invalid")),
+        ({sc.SNAPSHOT_FACT_KEY: "false"}, sc.SourceFact(None, "record_invalid")),
+        # a reason never turns a value into something else
+        ({sc.SNAPSHOT_FACT_KEY: False, sc.SNAPSHOT_REASON_KEY: "hash_mismatch"}, sc.SourceFact(False)),
+    ],
+)
+def test_the_snapshot_fact_is_read_strictly(payload, fact):
+    assert sc.snapshot_fact(payload) == fact
+
+
+def test_a_copy_records_an_answer_and_never_shares_the_dict():
+    parent = {"version": 1, "provenance": {"kind": "library_file", "id": 3}, sc.SNAPSHOT_REASON_KEY: "hash_missing"}
+    copy = sc.snapshot_with_fact(parent, sc.SourceFact(True))
+    assert copy == {"version": 1, "provenance": {"kind": "library_file", "id": 3}, sc.SNAPSHOT_FACT_KEY: True}
+    assert copy["provenance"] is not parent["provenance"]
+    assert sc.SNAPSHOT_FACT_KEY not in parent
+    unanswered = sc.snapshot_with_fact(parent, sc.SourceFact(None, missing=True))
+    assert unanswered[sc.SNAPSHOT_FACT_KEY] is None and unanswered[sc.SNAPSHOT_REASON_KEY] == "source_unknown"
+
+
+def test_legacy_resolution_takes_exactly_one_own_link():
+    library = SimpleNamespace(swap_compatible=True, file_hash=H1)
+    archive = _archive(False, {sc.CARRIER_KEY: _carrier(False)})
+    archive.source_content_hash = H1
+    resolve = sc.resolve_legacy
+    assert resolve(provenance_kind="library_file", archive=archive, library_file=library, sha256=H1) == sc.SourceFact(
+        True
+    )
+    assert resolve(provenance_kind="archive", archive=archive, library_file=library, sha256=H1) == sc.SourceFact(False)
+    assert resolve(provenance_kind=None, archive=archive, library_file=library, sha256=H1) == sc.UNKNOWN_SOURCE
+    assert resolve(provenance_kind=None, archive=None, library_file=None, sha256=H1) == sc.UNKNOWN_SOURCE
+    assert resolve(provenance_kind="share", archive=None, library_file=library, sha256=H1) == sc.UNKNOWN_SOURCE
+    assert resolve(provenance_kind=None, archive=None, library_file=library, sha256=H2) == sc.SourceFact(
+        None, "hash_mismatch"
+    )

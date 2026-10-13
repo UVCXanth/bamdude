@@ -24,6 +24,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.services.filament_intake import snapshot_for_copy
 from backend.app.services.queue_source_capture import reusing_sources
 
 logger = logging.getLogger(__name__)
@@ -312,7 +313,8 @@ def _copy_item_fields(src: PrintQueueItem, new_batch_id: str | None, new_positio
         # m173: the clone prints the SAME bytes and becomes a second owner of the
         # same blob — never a new read of the original (queue-source-spool spec
         # §9). The snapshot travels beside the id because that is what keeps the
-        # display name and the plate fallback with the copy.
+        # display name and the plate fallback with the copy; the async callers
+        # replace it with ``snapshot_for_copy``, which records the declaration.
         queue_source_id=src.queue_source_id,
         source_snapshot=src.source_snapshot,
         project_id=src.project_id,
@@ -405,6 +407,7 @@ async def clone_item(
             )
         ).scalar() or 0
         clone = _copy_item_fields(src, new_batch_id, max_pos + 1)
+        clone.source_snapshot = await snapshot_for_copy(db, src)
         _as_new_work(clone, created_by_id, keep_order)
         db.add(clone)
         await db.commit()
@@ -449,6 +452,7 @@ async def clone_batch(
         ).scalar() or 0
         for i, src in enumerate(siblings):
             clone = _copy_item_fields(src, new_batch_id, max_pos + 1 + i)
+            clone.source_snapshot = await snapshot_for_copy(db, src)
             _as_new_work(clone, created_by_id, keep_order)
             db.add(clone)
             clones.append(clone)

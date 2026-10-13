@@ -14,6 +14,10 @@ One place answers each question:
   bool column kept as its projection (``column == (value is True)``). The column is for display and for legacy
   readers only; no macro or plate-clear gate may read it directly.
 - :func:`library_fact` -- a library row's declaration counts only with a valid content hash.
+- :class:`SourceFact` -- a JOB's own declaration: taken at capture (:func:`archive_source` / :func:`library_source`),
+  confirmed against the hash the worker computed (:func:`confirm`), kept in the job's ``source_snapshot``
+  (:func:`snapshot_fact`, :func:`snapshot_with_fact`), and for a snapshot that predates the fix answered once from
+  the job's own links (:func:`resolve_legacy`).
 - :func:`decide` -- whether OUR swap macros may run for a job, and what an unknown source does to a request for them.
 """
 
@@ -21,6 +25,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,11 +45,12 @@ _MARKER = re.compile(r"\.swaps?\.", re.IGNORECASE)
 class ArchiveFact:
     """What an archive declares. ``recorded`` is False for a legacy row with no record (or an unreadable one);
     ``pending_external`` is True only for a valid record of an observed external start whose file has not been
-    classified yet -- the one state a late attach may finish."""
+    classified yet -- the one state a late attach may finish. ``invalid``: a record is there and was rejected."""
 
     value: bool | None
     pending_external: bool = False
     recorded: bool = False
+    invalid: bool = False
 
 
 @dataclass(frozen=True)
@@ -93,22 +99,23 @@ def archive_fact(archive) -> ArchiveFact:
     extra = getattr(archive, "extra_data", None)
     if extra is None or (isinstance(extra, Mapping) and CARRIER_KEY not in extra):
         return ArchiveFact(True if column is True else None)
+    rejected = ArchiveFact(None, invalid=True)
     if not isinstance(extra, Mapping):
-        return ArchiveFact(None)
+        return rejected
     record = extra[CARRIER_KEY]
     if not isinstance(record, Mapping):
-        return ArchiveFact(None)
+        return rejected
     version = record.get("version")
     value = record.get("value", ...)
     pending = record.get("pending_external")
     if type(version) is not int or version != CARRIER_VERSION:
-        return ArchiveFact(None)
+        return rejected
     if value is ... or (value is not None and type(value) is not bool) or type(pending) is not bool:
-        return ArchiveFact(None)
+        return rejected
     if pending and value is not None:
-        return ArchiveFact(None)
+        return rejected
     if type(column) is not bool or column is not (value is True):
-        return ArchiveFact(None)
+        return rejected
     return ArchiveFact(value, pending_external=pending, recorded=True)
 
 
@@ -155,6 +162,132 @@ def library_fact(library_file) -> bool | None:
     if not valid_hash(getattr(library_file, "file_hash", None)):
         return None
     return _strict_fact(getattr(library_file, "swap_compatible", None))
+
+
+# --- a job's own fact: capture, snapshot, legacy (§5, §6) -----------------------------------------------------------
+
+#: The keys of a job's ``source_snapshot`` this module owns: the fact (JSON true/false/null) and, for an unknown,
+#: why -- diagnostics only, never a permission.
+SNAPSHOT_FACT_KEY = "swap_compatible"
+SNAPSHOT_REASON_KEY = "swap_reason"
+
+REASON_HASH_MISSING = "hash_missing"
+REASON_HASH_MISMATCH = "hash_mismatch"
+REASON_SOURCE_UNKNOWN = "source_unknown"
+REASON_RECORD_INVALID = "record_invalid"
+UNKNOWN_REASONS = frozenset({REASON_HASH_MISSING, REASON_HASH_MISMATCH, REASON_SOURCE_UNKNOWN, REASON_RECORD_INVALID})
+
+
+@dataclass(frozen=True)
+class SourceFact:
+    """A job's declaration as its source handed it over.
+
+    ``reason`` says why an unknown is unknown and is ``None`` for a known value. ``missing`` is True only for a
+    valid snapshot written before this fix, which has no key at all -- the one state §6's legacy resolution may
+    answer; everything else, an explicit null included, is final.
+    """
+
+    value: bool | None
+    reason: str | None = None
+    missing: bool = False
+
+
+UNKNOWN_SOURCE = SourceFact(None, REASON_SOURCE_UNKNOWN)
+
+
+def _unknown(reason: str) -> SourceFact:
+    return SourceFact(None, reason)
+
+
+def archive_source(archive) -> tuple[SourceFact, str | None]:
+    """An archive's declaration and the hash its bytes must have for it to count.
+
+    The expected hash is the archive's unpatched source hash, and its ``content_hash`` only when it has none.
+    """
+    fact = archive_fact(archive)
+    expected = getattr(archive, "source_content_hash", None) or getattr(archive, "content_hash", None)
+    if fact.value is None:
+        return _unknown(REASON_RECORD_INVALID if fact.invalid else REASON_SOURCE_UNKNOWN), expected
+    return SourceFact(fact.value), expected
+
+
+def library_source(library_file) -> tuple[SourceFact, str | None]:
+    """A library row's declaration and its content hash. Without a valid hash nothing ties the declaration to
+    the bytes a job will capture."""
+    expected = getattr(library_file, "file_hash", None)
+    if not valid_hash(expected):
+        return _unknown(REASON_HASH_MISSING), expected
+    value = library_fact(library_file)
+    return (SourceFact(value) if value is not None else _unknown(REASON_RECORD_INVALID)), expected
+
+
+def confirm(fact: SourceFact, expected: Any, actual: Any) -> SourceFact:
+    """The declaration counts for the captured bytes only when the hash they really have is the one the source
+    row recorded for them."""
+    if fact.value is None:
+        return fact if fact.reason in UNKNOWN_REASONS else UNKNOWN_SOURCE
+    if not valid_hash(expected):
+        return _unknown(REASON_HASH_MISSING)
+    if not valid_hash(actual) or expected != actual:
+        return _unknown(REASON_HASH_MISMATCH)
+    return fact
+
+
+def snapshot_fact(payload: Mapping) -> SourceFact:
+    """Read the fact out of a snapshot payload of the known version, strictly.
+
+    No key at all is the legacy state; a bool is the fact; null is unknown with its recorded reason (an old null
+    without one is ``source_unknown``); anything else is ``record_invalid``. Never a fallback of its own.
+    """
+    if SNAPSHOT_FACT_KEY not in payload:
+        return SourceFact(None, missing=True)
+    value = payload[SNAPSHOT_FACT_KEY]
+    if type(value) is bool:
+        return SourceFact(value)
+    if value is None:
+        reason = payload.get(SNAPSHOT_REASON_KEY)
+        return _unknown(reason if reason in UNKNOWN_REASONS else REASON_SOURCE_UNKNOWN)
+    return _unknown(REASON_RECORD_INVALID)
+
+
+def invalid_snapshot() -> SourceFact:
+    """The fact of a snapshot this version cannot read: unknown, and final."""
+    return _unknown(REASON_RECORD_INVALID)
+
+
+def snapshot_fields(fact: SourceFact) -> dict:
+    """The keys a snapshot carries for ``fact``. A still-missing legacy fact is written as an unknown: a copy
+    records an answer, it never passes the question on."""
+    if fact.value is not None:
+        return {SNAPSHOT_FACT_KEY: fact.value}
+    reason = fact.reason if fact.reason in UNKNOWN_REASONS else REASON_SOURCE_UNKNOWN
+    return {SNAPSHOT_FACT_KEY: None, SNAPSHOT_REASON_KEY: reason}
+
+
+def snapshot_with_fact(snapshot: Mapping, fact: SourceFact) -> dict:
+    """A NEW snapshot dict for another job, carrying ``fact`` -- the parent's payload is never touched."""
+    new = deepcopy(dict(snapshot))
+    new.pop(SNAPSHOT_REASON_KEY, None)
+    new.update(snapshot_fields(fact))
+    return new
+
+
+def resolve_legacy(*, provenance_kind: Any, archive, library_file, sha256: Any) -> SourceFact:
+    """§6: the fact of a pre-fix snapshot, from the job's OWN live link whose hash matches the blob.
+
+    ``archive`` / ``library_file`` are the rows behind the job's foreign keys (``None`` when the link is gone).
+    The provenance's kind may narrow which link is meant; its id never authorises a lookup. Two candidate links
+    that the kind does not decide between, or none, are unknown. A legacy archive's False stays unknown (D1).
+    """
+    candidates = []
+    if archive is not None and provenance_kind in (None, "archive"):
+        candidates.append(archive_source(archive))
+    if library_file is not None and provenance_kind in (None, "library_file"):
+        candidates.append(library_source(library_file))
+    if len(candidates) != 1:
+        return UNKNOWN_SOURCE
+    fact, expected = candidates[0]
+    return confirm(fact, expected, sha256)
 
 
 # --- policy ---------------------------------------------------------------------------------------------------------

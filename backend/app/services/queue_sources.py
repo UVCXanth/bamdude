@@ -74,6 +74,7 @@ from backend.app.models.queue_source import (
 )
 from backend.app.services.backup_files import _signature as _stat_signature, digest
 from backend.app.services.queue_source_descriptor import QueueSourceDescriptor, source_snapshot
+from backend.app.services.swap_compatibility import UNKNOWN_SOURCE, SourceFact, confirm as confirm_swap_fact
 from backend.app.utils.safe_path import PathTraversalError, assert_under, safe_join_under
 
 logger = logging.getLogger(__name__)
@@ -521,6 +522,10 @@ class CaptureRequest:
     provenance: dict[str, Any] = field(default_factory=dict)
     #: Background legacy hydration (§8) — bounded by :data:`HYDRATION_WORKERS`.
     background: bool = False
+    #: What the source row declares about a baked swap sequence, and the hash its bytes must have for that to
+    #: count (swap-source-lifecycle spec r4 §5). The receipt confirms it against the hash the worker computed.
+    swap_fact: SourceFact = UNKNOWN_SOURCE
+    expected_sha256: str | None = None
 
 
 class _Capture:
@@ -562,6 +567,9 @@ class CaptureReceipt:
     provenance: dict[str, Any]
     epoch: int
     state: str = "staged"
+    #: The source's declaration, confirmed against :attr:`sha256` -- unknown when the hash was missing or
+    #: different. The job's own from here on: nothing reads the source row again for it.
+    swap_fact: SourceFact = UNKNOWN_SOURCE
 
     def descriptor(self, source: QueueSource) -> QueueSourceDescriptor:
         """The one shape readers get — path and format come from the ROW.
@@ -577,6 +585,7 @@ class CaptureReceipt:
             display_filename=self.display_filename,
             plate_fallback=self.plate_fallback,
             provenance=dict(self.provenance),
+            swap_fact=self.swap_fact,
         )
 
     async def discard(self) -> None:
@@ -967,6 +976,7 @@ async def capture(source: CaptureRequest) -> CaptureReceipt:
         plate_fallback=source.plate_fallback,
         provenance=dict(source.provenance),
         epoch=current_epoch(),
+        swap_fact=confirm_swap_fact(source.swap_fact, source.expected_sha256, sha256),
     )
 
 

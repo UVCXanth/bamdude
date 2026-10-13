@@ -51,7 +51,7 @@ from backend.app.models.user import User
 from backend.app.schemas.calibration_mode import normalize_mode
 from backend.app.services import queue_rebalance
 from backend.app.services.auto_queue_eligibility import busy_printer_ids, find_eligible_printer, offline_candidates_for
-from backend.app.services.filament_intake import fail_auto_source, read_item_requirements
+from backend.app.services.filament_intake import fail_auto_source, read_item_requirements, snapshot_for_copy
 from backend.app.services.filament_policy import auto_policy, serialize_policy
 from backend.app.services.filament_preflight import feed_signature
 from backend.app.services.filament_requirements import PrintRequirementsCache, probe_identity
@@ -625,6 +625,8 @@ class AutoQueueScheduler:
             # The re-probe below is small
             # metadata I/O only; queue-source capture already happened before
             # Auto Queue reached this assignment transaction.
+            # The promoted row records the router row's declaration in a dict of its own.
+            promoted_snapshot = await snapshot_for_copy(db, item)
             async with queue_claim_scope(db, printer.id):
                 occupancy = await read_queue_occupancy(db, printer.id, for_update=True)
                 printer_queue = occupancy.queue
@@ -666,7 +668,7 @@ class AutoQueueScheduler:
                     # it. The snapshot travels beside the id: it is what keeps the
                     # display name and the plate fallback with the job.
                     queue_source_id=item.queue_source_id,
-                    source_snapshot=item.source_snapshot,
+                    source_snapshot=promoted_snapshot,
                     auto_eject=item.auto_eject,
                     auto_eject_settings=deepcopy(item.auto_eject_settings),
                     project_id=item.project_id,

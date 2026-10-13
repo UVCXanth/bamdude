@@ -18,6 +18,7 @@ somebody sees.
 
 import json
 import uuid
+from copy import deepcopy
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -39,6 +40,7 @@ from backend.app.services.filament_intake import (
     require_source_requirements,
     resolve_source_path,
     routing_detail,
+    snapshot_for_copy,
     source_display_filename,
 )
 from backend.app.services.filament_policy import choices_policy, record_queue_source, serialize_policy
@@ -364,6 +366,8 @@ async def _add_items_from_queue_source(
         if requirements
         else None
     )
+    # The copy prints the parent's bytes and records the parent's declaration in its own new dict.
+    copied_snapshot = await snapshot_for_copy(db, source_item)
     created_ids: list[int] = []
 
     # Re-read state under the storage guard and commit the new owner while the
@@ -394,7 +398,7 @@ async def _add_items_from_queue_source(
                 rows = [
                     PrintQueueItem(
                         queue_source_id=source.id,
-                        source_snapshot=source_item.source_snapshot,
+                        source_snapshot=deepcopy(copied_snapshot),
                         auto_eject=eject,
                         auto_eject_settings=eject_settings,
                         queue_id=data.queue_id,
@@ -646,7 +650,8 @@ def _new_rows_for_data(
     return [
         PrintQueueItem(
             queue_source_id=source.id,
-            source_snapshot=source_snapshot,
+            # One dict per job: a quantity of N is N jobs, each owning its payload.
+            source_snapshot=deepcopy(source_snapshot),
             queue_id=data.queue_id,
             archive_id=archive_id,
             library_file_id=library_file_id,
@@ -938,6 +943,7 @@ async def _add_next_block_from_queue_source(
     except (OSError, SourceUnavailable) as exc:
         raise HTTPException(422, routing_detail("source_unreadable")) from exc
 
+    copied_snapshot = await snapshot_for_copy(db, source_item)
     created_ids: list[int] = []
     try:
         async with reusing_sources(db, [descriptor.queue_source_id]) as sources:
@@ -957,7 +963,7 @@ async def _add_next_block_from_queue_source(
                         _new_rows_for_data(
                             data,
                             source=source,
-                            source_snapshot=source_item.source_snapshot,
+                            source_snapshot=copied_snapshot,
                             requirements=requirements,
                             printer_id=queue.printer_id,
                             printer_swap_on=bool(queue.printer and queue.printer.swap_mode_enabled),

@@ -56,7 +56,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.queue_source import FORMAT_3MF, FORMAT_GCODE, STATE_READY, QueueSource
-from backend.app.services import queue_sources
+from backend.app.services import queue_sources, swap_compatibility
 from backend.app.services.filament_intake import require_source_requirements, resolve_source_path, routing_detail
 from backend.app.services.filament_requirements import PrintRequirements, PrintRequirementsCache
 from backend.app.services.queue_source_descriptor import QueueSourceDescriptor
@@ -105,6 +105,7 @@ class StagedSource:
             display_filename=self.receipt.display_filename,
             plate_fallback=self.receipt.plate_fallback,
             provenance=dict(self.receipt.provenance),
+            swap_fact=self.receipt.swap_fact,
         )
 
 
@@ -132,11 +133,20 @@ def plan_capture(*, archive=None, library_file=None, background: bool = False) -
     external path off the event loop — the worker does all of it). A source row
     with no file is refused with the same 422 the requirements reader has always
     given it.
+
+    The source's swap declaration is read here, from this row, through its own
+    reader (swap-source-lifecycle spec r4 §5), together with the hash its bytes
+    must have; the receipt confirms that hash, so the decision of the request is
+    made on the bytes it captured and not on the row as it was loaded.
     """
     source = archive or library_file
     path = resolve_source_path(archive, library_file)
     if source is None or path is None:
         raise HTTPException(422, routing_detail("source_unreadable", source_id=getattr(source, "id", None)))
+    if archive is not None:
+        swap_fact, expected_sha256 = swap_compatibility.archive_source(archive)
+    else:
+        swap_fact, expected_sha256 = swap_compatibility.library_source(library_file)
     return CaptureRequest(
         path=path,
         format=capture_format(path),
@@ -146,6 +156,8 @@ def plan_capture(*, archive=None, library_file=None, background: bool = False) -
         plate_fallback=archive.plate_index if archive is not None else None,
         provenance={"kind": "archive" if archive is not None else "library_file", "id": source.id},
         background=background,
+        swap_fact=swap_fact,
+        expected_sha256=expected_sha256,
     )
 
 
