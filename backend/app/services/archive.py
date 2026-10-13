@@ -1270,12 +1270,19 @@ class ArchiveService:
         archive_id: int,
         source_file: Path,
         original_filename: str | None = None,
+        *,
+        received_name: str | None = None,
     ) -> bool:
         """Prepare a recovered 3MF off-loop, then publish it under a short guard.
 
         Recovery callers already finish their start publication before this
         method. The authoritative row is read again just before publication;
         preparation never carries a live ORM object across the wait.
+
+        ``received_name`` is the basename the transport proved it read the
+        bytes under, apart from the display ``original_filename``; it is the
+        only name that may finish a pending external swap declaration
+        (swap-source-lifecycle spec r4 §7).
         """
         from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
 
@@ -1330,6 +1337,7 @@ class ArchiveService:
                         source_file,
                         original_filename,
                         prepared=prepared,
+                        received_name=received_name,
                     )
             except _AttachPreparationStale:
                 await self.db.rollback()
@@ -1356,6 +1364,7 @@ class ArchiveService:
         original_filename: str | None = None,
         *,
         prepared: _PreparedArchiveAttach | None = None,
+        received_name: str | None = None,
     ) -> bool:
         """Fill in an empty/fallback archive with a 3MF that was recovered
         later (e.g. by the background download-retry service).
@@ -1584,7 +1593,8 @@ class ArchiveService:
             # drop the retry / no-3mf flags now that we have the file.
             merged_extra = dict(archive.extra_data or {})
             preserved_print_data = merged_extra.get("_print_data")
-            merged_extra.update(metadata)
+            # The file's parsed metadata may not touch the declaration's record.
+            merged_extra.update(swap_compatibility.strip_reserved(metadata))
             if preserved_print_data is not None:
                 merged_extra["_print_data"] = preserved_print_data
             merged_extra.pop("no_3mf_available", None)
@@ -1656,14 +1666,13 @@ class ArchiveService:
             if printable_objects and isinstance(printable_objects, dict):
                 archive.quantity = len(printable_objects)
 
-            # Swap-compatible detection by filename suffix — mirrors the
-            # post-archive_print check in on_print_start. Fallback creation
-            # defaulted swap_compatible=False, so without this backfill a
-            # *.swap.3mf / *.swaps.3mf file landed via retry would stay
-            # flagged as non-swap.
-            fname_lower = (original_filename or source_file.name).lower()
-            if fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in fname_lower or ".swaps." in fname_lower:
-                archive.swap_compatible = True
+            # The swap declaration is finished here only for a new observed
+            # external start that is still pending, and only by the name the
+            # transport proved it read (swap-source-lifecycle spec r4 §7). A
+            # captured fact, a completed external one, an adopted unknown and a
+            # legacy row without a record are not re-classified by any name.
+            if received_name and swap_compatibility.archive_fact(archive).pending_external:
+                swap_compatibility.write_archive_fact(archive, swap_compatibility.classify_external_name(received_name))
 
             # Link to the originating library file by content hash when we
             # didn't know it at fallback-creation time (on_print_start's FTP

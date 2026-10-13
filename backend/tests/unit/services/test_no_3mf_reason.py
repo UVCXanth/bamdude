@@ -93,14 +93,15 @@ def _printer():
 
 
 async def _download(tmp_path: Path, *, connect_kind: str | None, found: bool):
-    async def fake_try_paths(*_args, **_kwargs):
+    async def fake_try_paths(remote_paths_ip, _code, remote_paths, *_args, **_kwargs):
         if connect_kind is not None:
             BambuFTPClient._last_connect_failure["10.0.0.9"] = (connect_kind, time.monotonic())
-            return False
-        return found
+            return None
+        # The path-returning API: the remote path that downloaded, or None.
+        return remote_paths[0] if found else None
 
     with (
-        patch.object(archive_download, "download_file_try_paths_async", side_effect=fake_try_paths),
+        patch.object(archive_download, "download_file_first_path_async", side_effect=fake_try_paths),
         patch.object(archive_download, "list_files_async", new=AsyncMock(return_value=[])),
         patch.object(archive_download, "_try_internal_storage", new=AsyncMock(return_value=None)),
         patch.object(archive_download, "get_ftp_retry_settings", new=AsyncMock(return_value=(True, 1, 0, 30))),
@@ -209,12 +210,12 @@ async def _download_with_listing(tmp_path: Path, *, connect_kind: str | None):
     async def first_stage(*_args, **_kwargs):
         if connect_kind is not None:
             BambuFTPClient._last_connect_failure["10.0.0.9"] = (connect_kind, time.monotonic())
-        return False
+        return None
 
     listed = AsyncMock(return_value=[])
     internal = AsyncMock(return_value=None)
     with (
-        patch.object(archive_download, "download_file_try_paths_async", side_effect=first_stage),
+        patch.object(archive_download, "download_file_first_path_async", side_effect=first_stage),
         patch.object(archive_download, "list_files_async", new=listed),
         patch.object(archive_download, "_try_internal_storage", new=internal),
         patch.object(archive_download, "get_ftp_retry_settings", new=AsyncMock(return_value=(True, 1, 0, 30))),

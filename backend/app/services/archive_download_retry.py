@@ -237,7 +237,9 @@ class ArchiveDownloadRetryService:
 
             async with async_session() as db2:
                 service = ArchiveService(db2)
-                ok = await service.attach_3mf_to_archive(archive_id, temp_path, downloaded_filename)
+                ok = await service.attach_3mf_to_archive(
+                    archive_id, temp_path, downloaded_filename, received_name=downloaded_filename
+                )
                 if ok:
                     # Re-fetch with the freshly-attached file_path + push
                     # printable_objects into MQTT state. This is the missing

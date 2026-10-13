@@ -40,10 +40,7 @@ PENDING = {
     ("backend/app/api/routes/library.py", "get_file", "kw"): "T6 library known projection",
     ("backend/app/api/routes/print_queue.py", "get_queue_copy_source", "kw"): "T6 copy source reads the job's fact",
     ("backend/app/api/routes/projects.py", "enqueue_order_plan", "attr"): "T4 order plan through the policy",
-    ("backend/app/main.py", "_on_print_start_impl", "attr"): "T3 external start -> pending",
-    ("backend/app/main.py", "_adopt_running_print", "attr"): "T3 adopt -> unknown",
     ("backend/app/main.py", "_on_print_complete_impl", "attr"): "T7 completion reader",
-    ("backend/app/services/archive.py", "ArchiveService._attach_3mf_to_archive_locked", "attr"): "T3 attach",
     (
         "backend/app/services/auto_queue_scheduler.py",
         "AutoQueueScheduler._source_has_baked_swap_macros",

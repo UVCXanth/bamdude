@@ -109,6 +109,7 @@ from backend.app.core.tasks import spawn_background_task
 from backend.app.core.websocket import ws_manager
 from backend.app.i18n.api_errors import install as install_api_error_translation
 from backend.app.models.smart_plug import SmartPlug
+from backend.app.services import swap_compatibility
 from backend.app.services.ams_slot_presence import spool_present
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.archive_parts import refresh_archive_parts
@@ -5040,6 +5041,13 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 "_print_data": data,
             },
         )
+        # A NEW observed external start -- no dispatch of ours took it over above. Only the full file name the
+        # printer reports can declare a baked swap sequence; anything else waits, as pending, for the name the
+        # download proves (swap-source-lifecycle spec r4 §7). The subtask finds the file, it declares nothing.
+        if swap_compatibility.classify_external_name(filename):
+            swap_compatibility.write_archive_fact(archive, True)
+        else:
+            swap_compatibility.write_archive_fact(archive, None, pending_external=True)
         db.add(archive)
         await db.commit()
         await db.refresh(archive)
@@ -5054,14 +5062,6 @@ async def _on_print_start_impl(printer_id: int, data: dict):
 
         await apply_loaded_spool_colors(db, archive, printer_id, _get_start_ams_mapping(data, archive.id))
         await db.commit()
-
-        # Swap compatibility from the name we have now. ``attach_3mf_to_archive``
-        # re-checks against the downloaded name; this covers the print whose
-        # 3MF never arrives.
-        _fname_lower = (filename or "").lower()
-        if _fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in _fname_lower or ".swaps." in _fname_lower:
-            archive.swap_compatible = True
-            await db.commit()
 
         # Track as the active print. This is also the re-trigger guard at the
         # top of the handler, so an MQTT reconnect during the download now
@@ -5375,7 +5375,9 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 else:
                     service = ArchiveService(db)
                     archive_id = archive.id
-                    attached = await service.attach_3mf_to_archive(archive_id, temp_path, downloaded_filename)
+                    attached = await service.attach_3mf_to_archive(
+                        archive_id, temp_path, downloaded_filename, received_name=downloaded_filename
+                    )
                     if attached:
                         logger.info(
                             "Attached 3MF %s to archive %s (%s bytes)",
@@ -6156,6 +6158,9 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
                     "energy_start_partial": True,
                 },
             )
+            # The run's origin is not proven -- it may be our own print under a renamed file -- so a marked name
+            # is no authority, and the record is not pending: no later attach may finish it (D4, spec r4 §7).
+            swap_compatibility.write_archive_fact(archive, None)
             db.add(archive)
             await db.commit()
             await db.refresh(archive)
@@ -6170,17 +6175,6 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
 
             await apply_loaded_spool_colors(db, archive, printer_id, _get_start_ams_mapping(data, archive_id))
             await db.commit()
-
-            # Swap compatibility from the name we have now; the attach re-checks
-            # against the downloaded name.
-            _fname_lower = (filename or "").lower()
-            if (
-                _fname_lower.endswith((".swap.3mf", ".swaps.3mf"))
-                or ".swap." in _fname_lower
-                or ".swaps." in _fname_lower
-            ):
-                archive.swap_compatible = True
-                await db.commit()
 
             # ``on_print_complete`` finds the row through these, and they are
             # also what stops a reconnect mid-download from adopting twice.
@@ -6377,7 +6371,9 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
                         _bind_print_file_analysis_context(printer_id, twin)
                         return
                     service = ArchiveService(db)
-                    ok = await service.attach_3mf_to_archive(archive_id, temp_path, downloaded_filename)
+                    ok = await service.attach_3mf_to_archive(
+                        archive_id, temp_path, downloaded_filename, received_name=downloaded_filename
+                    )
                     if not ok:
                         await service.mark_3mf_unavailable(archive_id)
                     refreshed = await db.get(PrintArchive, archive_id)

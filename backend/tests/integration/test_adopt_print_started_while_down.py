@@ -525,7 +525,8 @@ class TestTheDownloadDecidesWhoOwnsThePrint:
             printer_id=printer_id, archive_id=provisional_id, download_result=(temp_path, "p.3mf")
         )
 
-        spies["attach"].assert_awaited_once_with(provisional_id, temp_path, "p.3mf")
+        # The name the download proved travels apart from the display name (swap-source-lifecycle spec r4 §7).
+        spies["attach"].assert_awaited_once_with(provisional_id, temp_path, "p.3mf", received_name="p.3mf")
         db_session.expire_all()
         rows = (await db_session.execute(select(PrintArchive.id))).scalars().all()
         assert rows == [provisional_id], "the row that was announced at adoption is the row that gets the file"
