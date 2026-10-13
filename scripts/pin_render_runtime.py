@@ -363,10 +363,17 @@ def prove_golden(manifest: dict, shasums: dict[str, str], host: str, workdir: Pa
     return agreed_golden(hashes, existing, RENDERER_VERSION)
 
 
-def verify_manifest(manifest: dict, shasums: dict[str, str]) -> None:
+def verify_manifest(manifest: dict, shasums: dict[str, str], *, expected: dict | None = None) -> None:
     """Every platform of PLATFORMS is pinned on the line LINES puts it on, to the official archive of that line's
     version in its signed SHASUMS256.txt (final review I1: the job that pushes a pin re-checks, with gpg and the
-    stdlib only, what the job that made it -- the one that ran third-party packages -- wrote)."""
+    stdlib only, what the job that made it -- the one that ran third-party packages -- wrote). With ``expected`` (the
+    --check report of a job that ran none) every line must be the version the check chose: an older signed release
+    is just as official, and a downgrade is never pushed (security review)."""
+    if expected is not None:
+        for line, pinned in sorted(manifest["lines"].items()):
+            chose = (expected.get("lines", {}).get(line) or {}).get("newest")
+            if pinned.get("version") != chose:
+                raise PinError(f"line {line}: pinned {pinned.get('version')}, the check chose {chose}")
     missing = sorted(set(PLATFORMS) - set(manifest["platforms"]))
     if missing:
         raise PinError(f"the manifest pins no build for {', '.join(missing)}")
@@ -380,6 +387,18 @@ def verify_manifest(manifest: dict, shasums: dict[str, str]) -> None:
             raise PinError(f"{key}: the manifest's archive is not the official {name} of the signed SHASUMS256.txt")
 
 
+def verify_golden(golden: dict, manifest: dict, *, base: dict | None) -> None:
+    """The golden a pin job wrote is this renderer's, names exactly the manifest's versions and -- against the base
+    branch's golden -- changes no pixel of a fixture both hold (spec D5; security review: the push job re-checks)."""
+    if golden.get("renderer") != RENDERER_VERSION:
+        raise PinError(f"the golden is renderer {golden.get('renderer')}'s, this is renderer {RENDERER_VERSION}")
+    versions = sorted({pinned["version"] for pinned in manifest["lines"].values()}, key=_vkey)
+    if golden.get("node") != versions:
+        raise PinError(f"the golden names {golden.get('node')}, the manifest pins {versions}")
+    if base is not None:
+        agreed_golden({versions[-1]: golden.get("png_sha256") or {}}, base, RENDERER_VERSION)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group()
@@ -389,9 +408,13 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--golden", action="store_true", help="prove and write the golden for the current pin only")
     mode.add_argument("--verify", action="store_true", help="check the manifest against the signed SHASUMS only")
     parser.add_argument("--line", action="append", default=[], metavar="LINE=vX.Y.Z", help="pin this patch of a line")
+    parser.add_argument("--expect", type=Path, help="--verify: the --check report whose versions the pin must be")
+    parser.add_argument("--base-golden", type=Path, help="--verify: the base branch's golden the pixels must keep")
     args = parser.parse_args(argv)
     if args.line and (args.check or args.golden or args.verify):
         parser.error("--line pins a version; it does not combine with --check, --golden or --verify")
+    if (args.expect or args.base_golden) and not args.verify:
+        parser.error("--expect and --base-golden belong to --verify")
     today = date.today()
     try:
         overrides = parse_lines(args.line)
@@ -402,8 +425,12 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             manifest = load_manifest()
             versions = sorted({pin["version"] for pin in manifest["lines"].values()}, key=_vkey)
-            verify_manifest(manifest, {version: signed_shasums(version, gpg) for version in versions})
-            print(f"manifest verified against the signed SHASUMS256.txt of {', '.join(versions)}")
+            expected = json.loads(args.expect.read_text(encoding="utf-8")) if args.expect else None
+            shasums = {version: signed_shasums(version, gpg) for version in versions}
+            verify_manifest(manifest, shasums, expected=expected)
+            base = json.loads(args.base_golden.read_text(encoding="utf-8")) if args.base_golden else None
+            verify_golden(json.loads(GOLDEN.read_text(encoding="utf-8")), manifest, base=base)
+            print(f"manifest and golden verified against the signed SHASUMS256.txt of {', '.join(versions)}")
             return 0
         releases, schedule = fetch_json(f"{DIST}/index.json"), fetch_json(SCHEDULE)
         if args.check:

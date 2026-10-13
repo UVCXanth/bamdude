@@ -115,6 +115,12 @@ jobs:
         with:
           ref: ${{ env.BASE }}
       - if: needs.repin.outputs.exists == 'false'
+        # the --check report of the job that ran no packages: the versions the pin must be (no downgrade)
+        uses: actions/download-artifact@v7
+        with:
+          name: node-pin-check
+          path: ${{ runner.temp }}/check
+      - if: needs.repin.outputs.exists == 'false'
         uses: actions/download-artifact@v7
         with:
           name: node-pin-files
@@ -124,9 +130,17 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - if: needs.repin.outputs.exists == 'false'
-        name: Verify the pin against the signed SHASUMS, then push the branch (never force)
+        name: Verify the pin against the check, the signed SHASUMS and the base golden, then push (never force)
         run: |
-          python scripts/pin_render_runtime.py --verify
+          # the artifact comes from the job that ran third-party packages: it may change the two pin files, nothing else
+          git status --porcelain --untracked-files=all | cut -c4- | while read -r path; do
+            case "$path" in
+              backend/app/data/render_runtime.json|backend/app/data/render_probe/golden.json) ;;
+              *) echo "::error::the pin artifact touched $path"; exit 1 ;;
+            esac
+          done
+          git show HEAD:backend/app/data/render_probe/golden.json > "$RUNNER_TEMP/golden.base.json"
+          python scripts/pin_render_runtime.py --verify --expect "$RUNNER_TEMP/check/check.json" --base-golden "$RUNNER_TEMP/golden.base.json"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$BRANCH"

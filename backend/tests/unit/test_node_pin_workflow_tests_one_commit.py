@@ -67,3 +67,12 @@ def test_the_issue_lives_only_while_there_is_an_action():
     # final review M1/M7: notices go to the run summary, a pin with nothing left to do closes the issue
     runs = _runs(_load("node-pin.yml")["jobs"]["report"])
     assert "gh issue close" in runs and "GITHUB_STEP_SUMMARY" in runs
+
+
+def test_the_push_job_holds_the_pin_to_the_check_and_the_base_golden():
+    # security review: the artifact comes from the job that ran third-party packages -- the push job re-checks the
+    # version the check chose, the golden against the base's, and that nothing but the two pin files changed
+    runs = _runs(_load("node-pin.yml")["jobs"]["publish"])
+    assert "--expect" in runs and "--base-golden" in runs
+    assert "the pin artifact touched" in runs
+    assert runs.index("--expect") < runs.index("git push")

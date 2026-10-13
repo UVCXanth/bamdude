@@ -289,3 +289,42 @@ def test_a_missing_platform_is_refused_by_verify():
     del manifest["platforms"]["darwin-x64"]
     with pytest.raises(pin.PinError, match="darwin-x64"):
         pin.verify_manifest(manifest, shasums)
+
+
+def _check_report(**newest: str) -> dict:
+    return {"lines": {line: {"newest": version} for line, version in newest.items()}}
+
+
+def test_a_signed_but_older_version_than_the_check_chose_is_refused_by_verify():
+    # security review: the job that made the pin ran third-party packages; an OLDER signed release is just as
+    # "official" -- the push job holds it to the version the check (no packages) chose
+    manifest, shasums = _official({"24": "v24.17.0", "22": "v22.23.3"})
+    with pytest.raises(pin.PinError, match="24"):
+        pin.verify_manifest(manifest, shasums, expected=_check_report(**{"24": "v24.21.0", "22": "v22.23.3"}))
+
+
+def test_the_version_the_check_chose_verifies():
+    manifest, shasums = _official({"24": "v24.21.0", "22": "v22.23.3"})
+    pin.verify_manifest(manifest, shasums, expected=_check_report(**{"24": "v24.21.0", "22": "v22.23.3"}))
+
+
+def test_a_golden_that_names_other_versions_than_the_manifest_is_refused():
+    manifest, shasums = _official({"24": "v24.21.0", "22": "v22.23.3"})
+    golden = {"renderer": pin.RENDERER_VERSION, "node": ["v24.21.0"], "png_sha256": GOOD}
+    with pytest.raises(pin.PinError, match="golden"):
+        pin.verify_golden(golden, manifest, base=None)
+
+
+def test_a_golden_with_other_pixels_than_the_base_golden_is_refused():
+    manifest, _ = _official({"24": "v24.21.0", "22": "v22.23.3"})
+    base = {"renderer": pin.RENDERER_VERSION, "node": ["v24.17.0"], "png_sha256": GOOD}
+    golden = {"renderer": pin.RENDERER_VERSION, "node": ["v22.23.3", "v24.21.0"], "png_sha256": OTHER}
+    with pytest.raises(pin.PinError, match="RENDERER_VERSION"):
+        pin.verify_golden(golden, manifest, base=base)
+
+
+def test_a_golden_that_agrees_with_the_manifest_and_the_base_verifies():
+    manifest, _ = _official({"24": "v24.21.0", "22": "v22.23.3"})
+    base = {"renderer": pin.RENDERER_VERSION, "node": ["v24.17.0"], "png_sha256": GOOD}
+    golden = {"renderer": pin.RENDERER_VERSION, "node": ["v22.23.3", "v24.21.0"], "png_sha256": GOOD}
+    pin.verify_golden(golden, manifest, base=base)
