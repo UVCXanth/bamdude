@@ -63,6 +63,11 @@ logger = logging.getLogger(__name__)
 # the exact value before the command is published.
 _MAX_FIRMWARE_SUBMISSION_ID = 2_147_483_646
 
+#: How long a dispatch waits, wall-clock, for the copy of a source that had none captured
+#: (swap-source-lifecycle spec r4 §6). Beside the service's own 60 s without progress; the 30 minute bound of an
+#: ordinary enqueue copy is not this one.
+DISPATCH_CAPTURE_DEADLINE_SECONDS = 300
+
 
 def _ensure_submission_id(job: PrintDispatchJob) -> str:
     """Return this attempt's stable firmware-safe project/subtask/task ID."""
@@ -1958,6 +1963,84 @@ class BackgroundDispatchService:
             plan = job.routing_guard.plan
             job.options.update(ams_mapping=plan.mapping, use_ams=plan.use_ams, plate_id=plan.resolved_plate_id)
 
+    async def _capture_descriptorless_source(self, db, job, pins: AsyncExitStack) -> None:
+        """Give a job with no captured source one copy for this attempt (swap-source-lifecycle spec r4 §6).
+
+        A pre-m173 job or a calibration print has no descriptor, and that is not a known False. Right after the
+        claim and the routing were read, and before any archive, patch, macro or preheat, the UNPATCHED source is
+        copied into staging, and ``job.source`` becomes that copy: everything the attempt reads afterwards reads
+        it, and the original is not opened again. The declaration rides the copy, proved by the hash the worker
+        computed -- for calibration as for anything else; ``is_calibration`` proves nothing.
+
+        The request's transaction is closed first: the copy may take minutes and must not hold one. The staged
+        bytes belong to ``pins`` from the moment the receipt exists, so every exit of the runner -- success, a
+        failure, a cancellation -- drops them after the last reader. A refused copy is answered by its class
+        (:func:`~backend.app.services.filament_deferred.capture_refusal`). After the await the claim and the job's
+        link to its source are read again: a job cancelled, reclaimed or re-pointed meanwhile does not dispatch.
+        """
+        if job.source is not None:
+            return
+        from fastapi import HTTPException
+
+        from backend.app.services.filament_deferred import capture_refusal
+        from backend.app.services.queue_source_capture import capture_for_dispatch, discard_staged, plan_capture
+        from backend.app.services.queue_sources import QueueSourceError
+
+        archive = library_file = None
+        if job.kind == "reprint_archive" and job.source_id:
+            archive = await ArchiveService(db).get_archive(job.source_id)
+        elif job.kind == "print_library_file" and job.source_id:
+            library_file = await db.scalar(LibraryFile.active().where(LibraryFile.id == job.source_id))
+        if archive is None and library_file is None:
+            raise SourceUnavailable()
+        try:
+            request = plan_capture(archive=archive, library_file=library_file)
+        except HTTPException as exc:  # a row with no file, or a file that is not a sliced container
+            raise SourceUnavailable() from exc
+        await db.commit()
+        try:
+            staged = await capture_for_dispatch(request, deadline=DISPATCH_CAPTURE_DEADLINE_SECONDS)
+        except QueueSourceError as exc:
+            raise capture_refusal(exc, queued=job.awaited_by_scheduler) from exc
+        pins.push_async_callback(discard_staged, staged)
+        await self._verify_routing_claim(db, job)
+        from backend.app.models.print_queue import PrintQueueItem
+
+        item = await db.get(PrintQueueItem, job.queue_item_id, populate_existing=True)
+        if (item.archive_id, item.library_file_id) != (job.original_archive_id, job.original_library_file_id):
+            raise RoutingDeferred("dispatch_claim_changed")
+        job.source = staged.descriptor
+        await self._anchor_routing_to_copy(job, staged)
+
+    @staticmethod
+    async def _anchor_routing_to_copy(job, staged) -> None:
+        """Make the routing guard ask about the COPY from now on, never the original.
+
+        The plan was computed from the original as preflight read it, under its stat revision. When the copy was
+        taken from that same revision -- the worker proves the original's stat did not move while it read -- the
+        copy IS what the plan describes, and the guard's later probes (``final_guard``) re-read the staged file by
+        its hash. A copy taken from another revision is a plan about other bytes: ``source_changed``, the answer
+        the guard itself would have given, and the next attempt plans again.
+        """
+        from dataclasses import replace
+
+        from backend.app.services.filament_requirements import SourceIdentity, probe_identity
+
+        guard = job.routing_guard
+        identity = getattr(getattr(guard, "requirements", None), "source_identity", None)
+        if guard is None or identity is None:
+            return
+        receipt = staged.receipt
+        if (identity.size, identity.mtime_ns) != (receipt.size_bytes, receipt.source_mtime_ns):
+            raise RoutingDeferred("source_changed")
+        try:
+            copied = await probe_identity(
+                SourceIdentity(str(staged.staging_path), receipt.size_bytes, 0, sha256=receipt.sha256)
+            )
+        except SourceUnavailable as exc:
+            raise RoutingDeferred(exc.reason) from exc
+        job.routing_guard = replace(guard, requirements=replace(guard.requirements, source_identity=copied))
+
     async def _verify_routing_claim(self, db, job):
         from backend.app.models.print_queue import PrintQueueItem
 
@@ -1997,12 +2080,14 @@ class BackgroundDispatchService:
         # channel and what either side holds, and ``SourceUnavailable``, whose
         # refusal is about the file and has no channel to name.
         reason = routing_detail(exc.reason, **getattr(exc, "params", {}))
+        disposition = getattr(exc, "disposition", None)
         job.outcome = {
             "success": False,
             "archive_id": job.execution_archive_id,
             "error": reason["message"],
             "cancelled": False,
             "deferred": True,
+            "disposition": disposition,
             "reason": reason,
             "revision": exc.revision,
             "claim_started_at": job.claim_started_at,
@@ -2023,6 +2108,7 @@ class BackgroundDispatchService:
                     source_archive_id=job.original_archive_id,
                     source_library_file_id=job.original_library_file_id,
                     restore_source=True,
+                    disposition=disposition,
                 )
             await db.commit()
         if released:
@@ -2088,6 +2174,7 @@ class BackgroundDispatchService:
             # refs before any source probe can fail; the failure path must be able
             # to release the claim. ``pins`` holds the blob for the whole runner.
             await self._prepare_filament_routing(db, job, pins)
+            await self._capture_descriptorless_source(db, job, pins)
             # ⚠️ The source archive is provenance now, not the bytes: a job with a
             # snapshot prints the copy it took, and the row it was taken from may
             # have been purged since (spec §7). Only a job with neither is broken.
@@ -2810,6 +2897,7 @@ class BackgroundDispatchService:
 
         async with AsyncExitStack() as pins, async_session() as db:
             await self._prepare_filament_routing(db, job, pins)
+            await self._capture_descriptorless_source(db, job, pins)
             # ⚠️ The library row is provenance now, not the bytes (spec §7): the
             # file this job prints was copied into the spool when it was queued,
             # and the row may have been trashed since — which is exactly the case

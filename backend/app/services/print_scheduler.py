@@ -2812,6 +2812,9 @@ class PrintScheduler:
 
                 _owner = await db.get(User, requested_by_user_id)
                 requested_by_username = _owner.username if _owner else None
+            # Nothing is written above; end the read before a dispatch that may copy a source for minutes
+            # (swap-source-lifecycle spec r4 §6: no long transaction during the copy).
+            await db.commit()
             try:
                 outcome = await background_dispatch.run_from_queue_item(
                     kind=dispatch_kind,
@@ -2850,6 +2853,7 @@ class PrintScheduler:
                     source_archive_id=outcome.get("source_archive_id"),
                     source_library_file_id=outcome.get("source_library_file_id"),
                     restore_source=True,
+                    disposition=outcome.get("disposition"),
                 )
                 await db.commit()
                 if restored:

@@ -46,6 +46,7 @@ delete and the collector.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
@@ -171,6 +172,23 @@ async def capture_staged(request: CaptureRequest) -> StagedSource:
         receipt = await queue_sources.capture(request)
     except QueueSourceError as exc:
         raise refusal(exc) from exc
+    return StagedSource(receipt=receipt, original=request.path)
+
+
+async def capture_for_dispatch(request: CaptureRequest, *, deadline: float) -> StagedSource:
+    """The dispatcher's copy of a source that has no captured bytes yet (swap-source-lifecycle spec r4 §6).
+
+    Typed, unlike :func:`capture_staged`: the dispatcher answers a refusal by its class, so the service's
+    :class:`~backend.app.services.queue_sources.QueueSourceError` travels as it is, never as an HTTP status.
+    ``deadline`` is wall-clock from entering the copy, beside the service's own no-progress bound; when it passes,
+    the copy is cancelled -- which leaves a hung reader to its worker, holding its slot and its staging until the
+    syscall really returns -- and the answer is :class:`~backend.app.services.queue_sources.CaptureTimeout`.
+    Admission is the service's: no slot is waited for.
+    """
+    try:
+        receipt = await asyncio.wait_for(queue_sources.capture(request), timeout=deadline)
+    except TimeoutError as exc:
+        raise queue_sources.CaptureTimeout(f"the dispatch waited {deadline} seconds for the copy") from exc
     return StagedSource(receipt=receipt, original=request.path)
 
 

@@ -1053,8 +1053,10 @@ class ArchiveService:
             # quiet here is how #1032 escaped review — the archive row was
             # written but every later zipfile.ZipFile() call on the dest failed
             # with "File is not a zip file".
+            # The destination's name, not the source's: a source copied at dispatch sits in staging as
+            # ``<token>.part``, and its container is what the name it is stored under says.
             if (
-                source_file.suffix.lower() == ".3mf"
+                dest_file.suffix.lower() == ".3mf"
                 and zipfile.is_zipfile(bytes_for_disk)
                 and not zipfile.is_zipfile(dest_file)
             ):
