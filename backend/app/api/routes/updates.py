@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core import install_kind
 from backend.app.core.auth import RequirePermission
 from backend.app.core.config import APP_VERSION, GITHUB_REPO, settings
 from backend.app.core.database import get_db
@@ -90,23 +91,8 @@ def _is_github_rate_limit_response(response: httpx.Response) -> bool:
 
 
 def _is_docker_environment() -> bool:
-    """Detect if running inside a Docker/Podman/OCI container."""
-    if os.path.exists("/.dockerenv"):
-        return True
-    try:
-        with open("/proc/1/cgroup") as f:
-            if "docker" in f.read():
-                return True
-    except (FileNotFoundError, PermissionError):
-        pass  # cgroup file unavailable; continue with other detection methods
-    # Check systemd container type (avoids false positive on Proxmox LXC)
-    try:
-        with open("/run/systemd/container") as f:
-            container_type = f.read().strip()
-            return container_type in ("docker", "podman", "oci")
-    except (FileNotFoundError, PermissionError):
-        pass
-    return False
+    """Detect if running inside a Docker/Podman/OCI container (core.install_kind)."""
+    return install_kind.is_docker_environment()
 
 
 # Mount points the shipped compose file gives BamDude. ⚠️ Only these are
@@ -194,22 +180,9 @@ def _is_ha_addon() -> bool:
 
 
 def _is_windows_installer_install() -> bool:
-    """Detect a Windows install that came from the Inno Setup installer (B1).
-
-    ``installers/windows/build.py::stage_backend`` stages backend source via
-    ``shutil.copytree`` (no ``.git`` directory) and does not bundle
-    ``git.exe`` — so the git-fetch-and-reset update path used everywhere else
-    is structurally inoperable here. We surface this as a distinct
-    ``update_method`` and direct the user at the release asset instead.
-
-    A Windows developer running from a real ``git clone`` keeps the git path
-    (``.git`` present at ``settings.app_dir``, which is
-    ``C:\\Program Files\\BamDude\\app`` on an installed instance), so this
-    only catches installer users.
-    """
-    if sys.platform != "win32":
-        return False
-    return not (settings.app_dir / ".git").exists()
+    """A Windows install from the Inno Setup installer (core.install_kind): no .git, no git.exe -- the git update
+    path cannot run there (B1)."""
+    return install_kind.is_windows_installer_install(settings.app_dir)
 
 
 def _find_windows_installer_asset(release_data: dict) -> str | None:
