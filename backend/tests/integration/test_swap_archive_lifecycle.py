@@ -52,6 +52,8 @@ def clean_state():
             registry = getattr(printer_manager, attribute, None)
             if isinstance(registry, dict):
                 registry.clear()
+        # A plate-clear gate another module armed on the process-wide manager would park these printers.
+        printer_manager._awaiting_plate_clear.clear()
 
     clear()
     yield clear
@@ -777,3 +779,136 @@ async def test_our_expected_dispatch_start_is_a_proven_origin(
     assert [row.id for row in rows] == [ours.id]
     assert bound is not None and bound.archive_id == ours.id
     assert origin_is_proven(bound)
+
+
+# --- metadata merges after an await (§7: energy, reconciliation) -----------------------------------------------------
+
+
+async def a_pending_finished_archive(db, printer_id, **columns):
+    from datetime import datetime, timezone
+
+    archive = PrintArchive(
+        printer_id=printer_id,
+        filename="lamp.gcode.3mf",
+        file_path="",
+        file_size=0,
+        print_name="lamp",
+        status=columns.pop("status", "completed"),
+        started_at=datetime.now(timezone.utc),
+        extra_data={"original_subtask": "lamp"},
+        **columns,
+    )
+    sc.write_archive_fact(archive, None, pending_external=True)
+    db.add(archive)
+    await db.commit()
+    return archive
+
+
+async def attach_elsewhere(factory, archive_id):
+    """What the download retry does in its own session: it finishes the pending record -- here, to True."""
+    async with factory() as other:
+        row = await other.get(PrintArchive, archive_id, populate_existing=True)
+        sc.write_archive_fact(row, True)
+        await other.commit()
+
+
+async def test_energy_merge_cannot_erase_concurrent_attach_fact(db_session, test_engine, printer_factory, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import backend.app.main as main_module
+
+    printer = await printer_factory()
+    archive = await a_pending_finished_archive(db_session, printer.id, energy_start_kwh=10.0)
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(main_module, "async_session", factory)
+    monkeypatch.setattr(main_module, "_energy_plug_for_printer", AsyncMock(return_value=SimpleNamespace(id=1)))
+    monkeypatch.setattr(main_module.smart_plug_manager, "record_energy_snapshot", AsyncMock())
+    phases: list[str] = []
+
+    async def reading_while_the_file_lands(plug, db, force_read=False):
+        phases.append("read")
+        await attach_elsewhere(factory, archive.id)  # inside the await: after the energy read, before its write
+        phases.append("attached")
+        return {"total": 11.5}
+
+    monkeypatch.setattr(main_module, "_get_plug_energy", reading_while_the_file_lands)
+
+    await main_module._record_print_energy(archive.id, printer.id, approximate=True)
+
+    assert phases == ["read", "attached"]
+    row = await db_session.get(PrintArchive, archive.id, populate_existing=True)
+    assert row.energy_kwh == 1.5
+    assert row.extra_data["energy_is_approximate"] is True
+    assert sc.archive_fact(row) == sc.ArchiveFact(True, recorded=True)  # the attach's answer survives
+
+
+async def test_reconcile_merge_cannot_erase_concurrent_attach_fact(
+    db_session, test_engine, printer_factory, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from backend.app.services import print_reconciliation, usage_tracker
+    from backend.app.services.printer_manager import printer_manager
+
+    printer = await printer_factory()
+    archive = await a_pending_finished_archive(db_session, printer.id, status="printing")
+    loaded = await db_session.get(PrintArchive, archive.id)  # the sweep's snapshot, taken before the awaits
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(printer_manager, "arm_awaiting_plate_clear", AsyncMock())
+    monkeypatch.setattr(usage_tracker, "get_persisted_print_name", AsyncMock(return_value=None))
+
+    async def booking_while_the_file_lands(*args, **kwargs):
+        await attach_elsewhere(factory, archive.id)
+
+    monkeypatch.setattr(usage_tracker, "on_print_complete", booking_while_the_file_lands)
+
+    await print_reconciliation._reconcile_complete_archive(db_session, loaded, status="completed", uncertain=False)
+    await db_session.commit()
+
+    row = await db_session.get(PrintArchive, archive.id, populate_existing=True)
+    assert row.status == "completed"
+    assert row.extra_data["recovered_by_startup_sweep"] is True
+    assert sc.archive_fact(row) == sc.ArchiveFact(True, recorded=True)
+
+
+async def test_structural_recovery_cannot_erase_an_attach_fact_from_a_stale_snapshot(
+    db_session, test_engine, printer_factory
+):
+    """The sweep hands in rows it read earlier; an accepted terminal's structural close must not write that copy."""
+    from datetime import datetime, timezone
+
+    from backend.app.main import _TERMINAL_ACCEPTANCE_KEY
+    from backend.app.services import print_reconciliation
+
+    printer = await printer_factory()
+    queue = await db_session.get(PrinterQueue, printer.id)
+    if queue is None:
+        queue = PrinterQueue(id=printer.id, printer_id=printer.id, status="printing")
+        db_session.add(queue)
+        await db_session.commit()
+    archive = await a_pending_finished_archive(db_session, printer.id, status="printing")
+    started = datetime.now(timezone.utc).replace(microsecond=0)
+    item = PrintQueueItem(queue_id=queue.id, archive_id=archive.id, status="printing", position=1, started_at=started)
+    db_session.add(item)
+    await db_session.commit()
+    marker = {
+        "version": 2,
+        "stage": "accepted",
+        "outcome": "completed",
+        "queue_item_id": item.id,
+        "queue_started_at": started.isoformat(),
+    }
+    archive.extra_data = {**archive.extra_data, _TERMINAL_ACCEPTANCE_KEY: marker}
+    await db_session.commit()
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as sweep:
+        stale = await sweep.get(PrintArchive, archive.id)
+        await attach_elsewhere(factory, archive.id)  # lands after the sweep read its rows
+
+        assert await print_reconciliation._recover_accepted_terminal_checkpoint(sweep, stale) == archive.id
+        await sweep.commit()
+
+    row = await db_session.get(PrintArchive, archive.id, populate_existing=True)
+    assert row.extra_data["terminal_effects_uncertain"] is True
+    assert sc.archive_fact(row) == sc.ArchiveFact(True, recorded=True)

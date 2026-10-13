@@ -60,6 +60,8 @@ def clean_spool_state():
         registry = getattr(printer_manager, attribute, None)
         if isinstance(registry, dict):
             registry.clear()
+    # A plate-clear gate another module armed on the process-wide manager would park these printers.
+    printer_manager._awaiting_plate_clear.clear()
     gates: list[threading.Event] = []
     yield gates
     for gate in gates:

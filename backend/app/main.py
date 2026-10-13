@@ -876,18 +876,30 @@ async def _record_print_energy(archive_id: int, printer_id: int, *, approximate:
 
             energy_cost_per_kwh = await get_setting(db, "energy_cost_per_kwh")
             cost_per_kwh = float(energy_cost_per_kwh) if energy_cost_per_kwh else 0.15
-            archive.energy_kwh = energy_used
-            archive.energy_cost = round(energy_used * cost_per_kwh, 3)
-            if approximate:
-                # Reassign the dict so SQLAlchemy flags the JSON column dirty.
-                extra = dict(archive.extra_data or {})
-                extra["energy_is_approximate"] = True
-                archive.extra_data = extra
+            # The row was read before the plug's round-trip, and the 3MF may have
+            # landed meanwhile -- its attach writes the same metadata. So the
+            # snapshot commits first, and the archive is written from a fresh
+            # read under its own write scope, merging only what this writer adds
+            # (swap-source-lifecycle spec r4 §7). No I/O under the scope.
             await db.commit()
+            from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+
+            async with archive_write_scope(db, archive_id):
+                fresh = await load_active_archive_for_write(db, archive_id)
+                if fresh is None:
+                    await db.rollback()
+                    logger.warning("[ENERGY-BG] Archive %s no longer exists", archive_id)
+                    return
+                fresh.energy_kwh = energy_used
+                fresh.energy_cost = round(energy_used * cost_per_kwh, 3)
+                if approximate:
+                    # Reassign the dict so SQLAlchemy flags the JSON column dirty.
+                    fresh.extra_data = {**(fresh.extra_data or {}), "energy_is_approximate": True}
+                await db.commit()
             logger.info(
                 "[ENERGY-BG] Saved: %s kWh, cost=%s%s",
                 energy_used,
-                archive.energy_cost,
+                fresh.energy_cost,
                 " (approximate — recovered print)" if approximate else "",
             )
     except Exception as e:

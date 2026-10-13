@@ -448,7 +448,18 @@ async def _reconcile_complete_archive(
             except Exception:
                 logger.exception("reconcile: usage booking failed for archive %s", archive.id)
 
-        extra = dict(archive.extra_data or {})
+        # The metadata as it is NOW, under the print's lock: an attach may have
+        # finished the swap declaration during the awaits above, and the copy
+        # this function was handed predates them (swap-source-lifecycle spec r4
+        # §7). Only this sweep's own keys are merged in.
+        from backend.app.services.archive_write_scope import locked_print
+
+        current = await locked_print(
+            db,
+            archive.id,
+            select(PrintArchive.extra_data).where(PrintArchive.id == archive.id).with_for_update(),
+        )
+        extra = dict(current) if isinstance(current, dict) else {}
         extra["recovered_by_startup_sweep"] = True
         if uncertain:
             extra["recovered_outcome_uncertain"] = True
@@ -562,7 +573,17 @@ async def _recover_accepted_terminal_checkpoint(db: AsyncSession, archive: Print
     now = datetime.now(timezone.utc)
     archive.status = marker["outcome"]
     archive.completed_at = _recovered_completed_at(archive.started_at, archive.print_time_seconds, now)
-    extra = dict(archive.extra_data or {})
+    # The metadata as it is now, under the print's lock -- the row this sweep was
+    # handed may predate an attach that finished its swap declaration
+    # (swap-source-lifecycle spec r4 §7).
+    from backend.app.services.archive_write_scope import locked_print
+
+    current = await locked_print(
+        db,
+        archive.id,
+        select(PrintArchive.extra_data).where(PrintArchive.id == archive.id).with_for_update(),
+    )
+    extra = dict(current) if isinstance(current, dict) else {}
     checkpoint = dict(marker)
     checkpoint["stage"] = "recovered_uncertain"
     extra[_TERMINAL_ACCEPTANCE_KEY] = checkpoint
