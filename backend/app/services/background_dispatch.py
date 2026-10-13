@@ -2320,6 +2320,7 @@ class BackgroundDispatchService:
                     dispatch_intent=_dispatch_intent(job, remote_filename, submission_id),
                     swap_macro_events_pending=swap_pending,
                     selected_macro_ids=selected_macros,
+                    source_swap_compatible=job.source.swap_fact.value if job.source is not None else None,
                 )
                 if not archive:
                     raise RuntimeError("Failed to create reprint archive")
@@ -3050,6 +3051,7 @@ class BackgroundDispatchService:
                     selected_macro_ids=(
                         job.options.get("selected_macro_ids") if isinstance(job.options, dict) else None
                     ),
+                    source_swap_compatible=job.source.swap_fact.value if job.source is not None else None,
                     # Plate the user picked when scheduling — same value the
                     # dispatch loop already uses for FTP filename / MQTT
                     # start_print. Persisting it on the archive gives the

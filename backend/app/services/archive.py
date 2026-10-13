@@ -21,6 +21,7 @@ from backend.app.core.config import settings
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
+from backend.app.services import swap_compatibility
 from backend.app.services.archive_parts import seed_archive_parts
 from backend.app.services.library_helpers import skip_objects_supported_from_metadata
 from backend.app.services.threemf_parser_core import (  # noqa: F401 - stable archive re-exports
@@ -877,6 +878,7 @@ class ArchiveService:
         is_calibration: bool = False,
         calibration_session_id: int | None = None,
         dispatch_intent: dict[str, object] | None = None,
+        source_swap_compatible: bool | None = None,
     ) -> PrintArchive | None:
         """Archive a 3MF file with metadata.
 
@@ -1243,6 +1245,10 @@ class ArchiveService:
             is_calibration=is_calibration,
             calibration_session_id=calibration_session_id,
         )
+        # The job's own declaration, exactly as the runner hands it (swap-source-lifecycle spec r4 §7): never
+        # guessed from a name or from the linked library row, an unknown included. The writer replaces the
+        # reserved key, so nothing the file's parsed metadata carried under it survives.
+        swap_compatibility.write_archive_fact(archive, source_swap_compatible)
 
         self.db.add(archive)
         await self.db.flush()
