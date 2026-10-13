@@ -3701,12 +3701,19 @@ def _load_objects_from_archive(archive, printer_id: int, logger, *, is_retrigger
     load_objects_from_archive_into_state(archive, printer_id, is_retrigger=is_retrigger)
 
 
-def _bind_print_file_analysis_context(printer_id: int, archive, *, expected_generation: int | None = None) -> None:
+def _bind_print_file_analysis_context(
+    printer_id: int, archive, *, expected_generation: int | None = None, origin: str = "observed"
+) -> None:
     """Bind one manager-owned analysis context to the print archive.
 
     This is intentionally only lifecycle wiring.  A bind or a later 3MF
     arrival does not parse G-code; the shared analysis remains lazy until the
     printer card or final accounting needs it.
+
+    ``origin`` is what the CALLER proved about the run: ``dispatch`` (our own
+    expected print), ``external`` (a new start observed live) or
+    ``exact_subtask`` (the device's unique id); everything found by a name, an
+    alias or a hash stays ``observed`` (``print_run_binding.PROVEN_ORIGINS``).
     """
     from backend.app.services.print_file_analysis import bind_print_file_analysis
     from backend.app.services.print_run_binding import (
@@ -3734,6 +3741,7 @@ def _bind_print_file_analysis_context(printer_id: int, archive, *, expected_gene
         # do not have a generation registry.  ``None`` is the same unknown
         # evidence a real not-yet-connected printer supplies.
         client_generation=getattr(printer_manager, "current_client_generation", lambda _printer_id: None)(printer_id),
+        origin=origin,
     )
 
     pending = take_pending_terminal(
@@ -4236,7 +4244,9 @@ async def on_print_start(printer_id: int, data: dict):
                 )
                 if len(candidates) == 1 and start_admission_is_current(printer_manager, printer_id, admission):
                     archive = candidates[0]
-                    _bind_print_file_analysis_context(printer_id, archive, expected_generation=admission.generation)
+                    _bind_print_file_analysis_context(
+                        printer_id, archive, expected_generation=admission.generation, origin="exact_subtask"
+                    )
                     _load_objects_from_archive(archive, printer_id, logging.getLogger(__name__), is_retrigger=True)
                     admission.phase = "recovered"
                     return
@@ -4700,7 +4710,10 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                     archive.printer_id = printer_id
                 await db.commit()
 
-                _bind_print_file_analysis_context(printer_id, archive, expected_generation=start_generation)
+                # Our own dispatch, registered by the dispatcher itself: a proven run.
+                _bind_print_file_analysis_context(
+                    printer_id, archive, expected_generation=start_generation, origin="dispatch"
+                )
 
                 # Track as active print
                 _active_prints[(printer_id, archive.filename)] = archive.id
@@ -5052,7 +5065,7 @@ async def _on_print_start_impl(printer_id: int, data: dict):
         await db.commit()
         await db.refresh(archive)
         logger.info("Created archive %s for %s at print start (3MF to follow)", archive.id, print_name)
-        _bind_print_file_analysis_context(printer_id, archive, expected_generation=start_generation)
+        _bind_print_file_analysis_context(printer_id, archive, expected_generation=start_generation, origin="external")
 
         # Prefer the colours of the built-in-inventory spools loaded on the
         # used slots over the raw MQTT tray colours. Applied again after the

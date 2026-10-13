@@ -535,3 +535,245 @@ async def test_adopted_renamed_own_print_is_unknown_and_stays_so(db_session, pri
     assert sc.archive_fact(rows[0]) == sc.ArchiveFact(None, recorded=True)
     attached = await attach(db_session, rows[0], "lamp.swap.gcode.3mf", tmp_path)
     assert sc.archive_fact(attached) == sc.ArchiveFact(None, recorded=True)
+
+
+# --- the binding's proof of origin (§7, §10; for T7's swap-clear) ---------------------------------------------------
+
+
+async def drive_start_with_manager(db_session, test_engine, tmp_path, monkeypatch, printer, data, download_result=None):
+    """``drive_external_start`` that also returns the manager double, whose registries hold the run binding."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from backend.app.core.config import settings as app_settings
+    from backend.app.main import on_print_start
+
+    monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+    monkeypatch.setattr(app_settings, "archive_dir", tmp_path / "archive")
+    (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr("backend.app.main.async_session", factory)
+    monkeypatch.setattr("backend.app.core.database.async_session", factory)
+    manager = MagicMock()
+    ws = MagicMock()
+    for attribute in ("send_print_start", "send_archive_created", "send_archive_updated", "broadcast"):
+        setattr(ws, attribute, AsyncMock())
+    with (
+        patch("backend.app.main.ws_manager", ws),
+        patch("backend.app.main.printer_manager", manager),
+        patch("backend.app.main.mqtt_relay", MagicMock(on_print_start=AsyncMock(), on_archive_created=AsyncMock())),
+        patch("backend.app.main.smart_plug_manager", MagicMock(on_print_start=AsyncMock())),
+        patch("backend.app.main.notify_missing_spool_assignments_on_print_start", new_callable=AsyncMock),
+        patch("backend.app.services.macro_trigger.fire_event_macros", new_callable=AsyncMock),
+        patch("backend.app.main._send_print_start_notification", new_callable=AsyncMock),
+        patch("backend.app.main._record_energy_start", new_callable=AsyncMock),
+        patch("backend.app.main._list_timelapse_videos", new_callable=AsyncMock, return_value=([], None)),
+        patch("backend.app.services.archive_download.try_download_3mf", AsyncMock(return_value=download_result)),
+        patch("backend.app.services.bambu_ftp.get_ftp_retry_settings", AsyncMock(return_value=(False, 0, 0, 30))),
+    ):
+        await on_print_start(printer.id, {**START_DATA, **data})
+    db_session.expire_all()
+    rows = (await db_session.execute(select(PrintArchive).order_by(PrintArchive.id))).scalars().all()
+    return rows, manager
+
+
+def binding_of(manager, printer_id):
+    from backend.app.services.print_run_binding import current_print_run
+
+    return current_print_run(manager, printer_id)
+
+
+async def a_running_archive(db, printer_id, path: Path, *, fact, **columns):
+    from datetime import datetime, timezone
+
+    archive = PrintArchive(
+        printer_id=printer_id,
+        filename=path.name,
+        file_path=str(path.relative_to(settings.base_dir)),
+        file_size=path.stat().st_size,
+        print_name=columns.pop("print_name", "lamp"),
+        status="printing",
+        started_at=columns.pop("started_at", datetime.now(timezone.utc)),
+        print_time_seconds=columns.pop("print_time_seconds", 3600),
+        content_hash=sha(path),
+        source_content_hash=sha(path),
+        plate_index=15,
+        **columns,
+    )
+    sc.write_archive_fact(archive, fact)
+    db.add(archive)
+    await db.commit()
+    return archive
+
+
+async def test_exact_rebind_keeps_execution_carrier(db_session, test_engine, tmp_path, monkeypatch, printer_factory):
+    from backend.app.main import _active_prints
+    from backend.app.services.print_run_binding import origin_is_proven
+
+    printer = await an_archiving_printer(db_session, printer_factory)
+    printer_id = printer.id  # read before the drive expires every ORM object
+    monkeypatch.setattr(settings, "base_dir", tmp_path)
+    (tmp_path / "archive" / "1").mkdir(parents=True, exist_ok=True)
+    ours = await a_running_archive(
+        db_session,
+        printer.id,
+        a_sliced_file(tmp_path / "archive" / "1" / "lamp.gcode.3mf"),
+        fact=False,
+        subtask_id="777",
+    )
+    _active_prints.clear()  # a restart: no aliases, no binding -- only the device's own id
+
+    rows, manager = await drive_start_with_manager(
+        db_session,
+        test_engine,
+        tmp_path,
+        monkeypatch,
+        printer,
+        {"filename": "/data/Metadata/plate_15.gcode", "subtask_name": "lamp.swap", "subtask_id": "777"},
+    )
+
+    assert [row.id for row in rows] == [ours.id]  # recovered, not a second row
+    bound = binding_of(manager, printer_id)
+    assert bound is not None and bound.archive_id == ours.id
+    assert origin_is_proven(bound)
+    assert sc.archive_fact(rows[0]) == sc.ArchiveFact(False, recorded=True)  # the execution record, untouched
+
+
+async def test_name_only_rebind_has_no_swap_authority(db_session, test_engine, tmp_path, monkeypatch, printer_factory):
+    from backend.app.main import _active_prints
+    from backend.app.services.print_run_binding import origin_is_proven
+
+    printer = await an_archiving_printer(db_session, printer_factory)
+    printer_id = printer.id  # read before the drive expires every ORM object
+    monkeypatch.setattr(settings, "base_dir", tmp_path)
+    (tmp_path / "archive" / "1").mkdir(parents=True, exist_ok=True)
+    named = await a_running_archive(
+        db_session,
+        printer.id,
+        a_sliced_file(tmp_path / "archive" / "1" / "lamp.swap.gcode.3mf"),
+        fact=True,
+        print_name="lamp.swap",
+    )
+    _active_prints.clear()
+
+    rows, manager = await drive_start_with_manager(
+        db_session,
+        test_engine,
+        tmp_path,
+        monkeypatch,
+        printer,
+        {"filename": "/data/Metadata/plate_15.gcode", "subtask_name": "lamp.swap", "subtask_id": ""},
+    )
+
+    bound = binding_of(manager, printer_id)
+    assert [row.id for row in rows] == [named.id]  # adopted by its name, as archiving always did
+    assert bound is not None and bound.archive_id == named.id
+    assert not origin_is_proven(bound)  # ...and that is all a name buys: no swap authority
+    assert sc.archive_fact(rows[0]) == sc.ArchiveFact(True, recorded=True)
+
+
+async def test_provisional_carrier_does_not_overwrite_retained_twin(
+    db_session, test_engine, tmp_path, monkeypatch, printer_factory
+):
+    from backend.app.main import _active_prints
+    from backend.app.services.print_run_binding import origin_is_proven
+
+    printer = await an_archiving_printer(db_session, printer_factory)
+    printer_id = printer.id  # read before the drive expires every ORM object
+    monkeypatch.setattr(settings, "base_dir", tmp_path)
+    (tmp_path / "archive" / "1").mkdir(parents=True, exist_ok=True)
+    twin_file = a_sliced_file(tmp_path / "archive" / "1" / "shelf.gcode.3mf")
+    # No start and no estimate (an earlier adoption whose file never parsed), so the stale-row cleanup leaves it
+    # for the hash to find.
+    twin = await a_running_archive(
+        db_session, printer.id, twin_file, fact=True, print_name="shelf", started_at=None, print_time_seconds=None
+    )
+    _active_prints.clear()
+    (tmp_path / "dl").mkdir()
+    downloaded = tmp_path / "dl" / "other.swap.gcode.3mf"
+    downloaded.write_bytes(twin_file.read_bytes())  # the same bytes under another name: a hash twin
+
+    rows, manager = await drive_start_with_manager(
+        db_session,
+        test_engine,
+        tmp_path,
+        monkeypatch,
+        printer,
+        {"filename": "/data/Metadata/plate_15.gcode", "subtask_name": "other.swap", "subtask_id": ""},
+        download_result=(downloaded, "other.swap.gcode.3mf"),
+    )
+
+    assert [row.id for row in rows] == [twin.id]  # the provisional row was withdrawn
+    assert sc.archive_fact(rows[0]) == sc.ArchiveFact(True, recorded=True)  # its own record, not the provisional's
+    bound = binding_of(manager, printer_id)
+    assert bound is not None and bound.archive_id == twin.id
+    assert not origin_is_proven(bound)  # a hash twin is no proof of the run
+
+
+async def test_a_new_external_start_is_a_proven_origin(db_session, test_engine, tmp_path, monkeypatch, printer_factory):
+    from backend.app.main import _active_prints
+    from backend.app.services.print_run_binding import origin_is_proven
+
+    printer = await an_archiving_printer(db_session, printer_factory)
+    printer_id = printer.id  # read before the drive expires every ORM object
+    _active_prints.clear()
+
+    rows, manager = await drive_start_with_manager(
+        db_session,
+        test_engine,
+        tmp_path,
+        monkeypatch,
+        printer,
+        {"filename": "/sdcard/lamp.swap.gcode.3mf", "subtask_name": "lamp", "subtask_id": ""},
+    )
+
+    bound = binding_of(manager, printer_id)
+    assert bound is not None and bound.archive_id == rows[0].id
+    assert origin_is_proven(bound)
+
+
+def test_only_the_named_origins_are_proven():
+    from backend.app.services.print_run_binding import PrintRunBinding, origin_is_proven
+
+    assert [
+        origin
+        for origin in ("dispatch", "external", "exact_subtask")
+        if origin_is_proven(PrintRunBinding(printer_id=1, archive_id=1, origin=origin))
+    ] == ["dispatch", "external", "exact_subtask"]
+    for origin in ("observed", "adopted", "", "DISPATCH"):
+        assert not origin_is_proven(PrintRunBinding(printer_id=1, archive_id=1, origin=origin))
+    assert not origin_is_proven(None)
+
+
+async def test_our_expected_dispatch_start_is_a_proven_origin(
+    db_session, test_engine, tmp_path, monkeypatch, printer_factory
+):
+    """The dispatcher registered the print; the start binds to it as ours even when no prepared binding survived."""
+    from backend.app.main import _active_prints, _expected_prints
+    from backend.app.services.print_run_binding import origin_is_proven
+
+    printer = await an_archiving_printer(db_session, printer_factory)
+    printer_id = printer.id
+    monkeypatch.setattr(settings, "base_dir", tmp_path)
+    (tmp_path / "archive" / "1").mkdir(parents=True, exist_ok=True)
+    ours = await a_running_archive(
+        db_session, printer_id, a_sliced_file(tmp_path / "archive" / "1" / "lamp.gcode.3mf"), fact=False
+    )
+    _active_prints.clear()
+    _expected_prints.clear()
+    _expected_prints[(printer_id, "lamp.gcode.3mf")] = ours.id
+    try:
+        rows, manager = await drive_start_with_manager(
+            db_session,
+            test_engine,
+            tmp_path,
+            monkeypatch,
+            printer,
+            {"filename": "/sdcard/lamp.gcode.3mf", "subtask_name": "lamp", "subtask_id": ""},
+        )
+    finally:
+        _expected_prints.clear()
+
+    bound = binding_of(manager, printer_id)
+    assert [row.id for row in rows] == [ours.id]
+    assert bound is not None and bound.archive_id == ours.id
+    assert origin_is_proven(bound)
