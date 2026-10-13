@@ -6,6 +6,8 @@ CHECKED-OUT module in a child process -- the running one is the old code with th
 fails the update: a missing runtime is a missing feature, reported on the System page.
 """
 
+import io
+import logging
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -13,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from backend.app.api.routes import updates
+from backend.app.services import render_runtime_child
 
 PROVISION = ["-m", "backend.app.services.render_runtime", "provision", "--runtime"]
 
@@ -26,14 +29,40 @@ class _Process:
         return b"", self._stderr
 
 
-def _fake_exec(calls: list, provision_code: int, provision_stderr: bytes = b""):
+class _Child:
+    """What the provisioning runner's watcher reads of a Popen: stderr to EOF, then the exit."""
+
+    def __init__(self, returncode: int, stderr: bytes):
+        self._code = returncode
+        self.returncode = None
+        self.pid = 0
+        self.stderr = io.BytesIO(stderr)
+
+    def wait(self, timeout=None):
+        self.returncode = self._code
+        return self._code
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        pass
+
+
+def _fake_exec(calls: list):
     async def create_subprocess_exec(*args, **kwargs):
         calls.append((list(args), kwargs.get("cwd")))
-        if list(args[1:5]) == PROVISION[:4]:
-            return _Process(provision_code, provision_stderr)
         return _Process(0)
 
     return create_subprocess_exec
+
+
+def _fake_spawn(calls: list, provision_code: int, provision_stderr: bytes):
+    def spawn(app_dir: Path):
+        calls.append((render_runtime_child._argv(app_dir), str(app_dir)))
+        return _Child(provision_code, provision_stderr)
+
+    return spawn
 
 
 async def _run_update(tmp_path: Path, provision_code: int, provision_stderr: bytes = b"") -> list:
@@ -41,7 +70,8 @@ async def _run_update(tmp_path: Path, provision_code: int, provision_stderr: byt
     with (
         patch.object(updates.settings, "app_dir", tmp_path),
         patch.object(updates, "_find_executable", lambda name: "git" if name == "git" else None),
-        patch.object(updates.asyncio, "create_subprocess_exec", _fake_exec(calls, provision_code, provision_stderr)),
+        patch.object(updates.asyncio, "create_subprocess_exec", _fake_exec(calls)),
+        patch.object(render_runtime_child, "_spawn", _fake_spawn(calls, provision_code, provision_stderr)),
     ):
         await updates._perform_update("v0.7.0")
     return calls
@@ -73,3 +103,48 @@ async def test_a_runtime_that_cannot_be_provisioned_never_fails_the_update(tmp_p
     assert updates._update_status["status"] == "complete"
     if code == 1:
         assert "render-runtime: blocked host" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_provisioning_is_logged_with_its_start_its_time_and_no_install_path(tmp_path, caplog):
+    # final review M9 (parent-log invariant): a start line, the outcome with its elapsed time, and a reason that
+    # does not carry the installation's path
+    reason = f"render-runtime: {tmp_path / 'runtime' / 'node'}: a tree still held after the retries\n".encode()
+    with caplog.at_level(logging.INFO):
+        await _run_update(tmp_path, provision_code=1, provision_stderr=reason)
+    text = caplog.text
+    assert "started (update)" in text
+    assert "failed after" in text and "<install>" in text
+    assert str(tmp_path) not in text
+
+
+@pytest.mark.asyncio
+async def test_a_real_oserror_from_the_child_does_not_put_the_install_path_in_the_log(tmp_path, caplog):
+    # implementation consilium NL-I-R1: str(OSError) quotes the filename with repr() -- doubled Windows backslashes
+    said = "render-runtime: " + str(PermissionError(13, "Permission denied", str(tmp_path / "runtime" / "node")))
+    with caplog.at_level(logging.INFO):
+        await _run_update(tmp_path, provision_code=1, provision_stderr=said.encode())
+    assert tmp_path.name not in caplog.text
+    assert "Permission denied" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_flooding_child_never_reaches_the_update_log_whole(tmp_path, caplog):
+    # implementation consilium NL-I-M1: a one-line megabyte diagnostic is bounded before it reaches the log
+    with caplog.at_level(logging.INFO):
+        await _run_update(tmp_path, provision_code=1, provision_stderr=b"x" * (1024 * 1024))
+    assert updates._update_status["status"] == "complete"
+    assert len(caplog.text) < 65536
+
+
+@pytest.mark.asyncio
+async def test_the_update_bounds_the_provisioning_like_the_start_does(tmp_path, monkeypatch):
+    # startup-provisioning spec P6: one budget for both callers, now that a killed run is reclaimed (P8)
+    seen = {}
+
+    async def run_provision(app_dir, *, trigger, timeout=None):
+        seen.update(app_dir=app_dir, trigger=trigger, timeout=timeout)
+
+    monkeypatch.setattr(updates.render_runtime_child, "run_provision", run_provision)
+    await updates._provision_render_runtime(tmp_path)
+    assert seen == {"app_dir": tmp_path, "trigger": "update", "timeout": render_runtime_child.PROVISION_SECONDS}

@@ -324,8 +324,8 @@ describe('SystemInfoPage', () => {
     // the closed list part_render_runtime reports (health, the monitor, the not-started fallback)
     const reasons = [
       'ownership_uncertain', 'stopped', 'not_started', 'starting', 'startup_failed', 'broker_disconnected',
-      'worker_restarting', 'circuit_open', 'staging_full', 'runtime_missing', 'runtime_failed', 'bundle_mismatch',
-      'no_runtime',
+      'worker_restarting', 'circuit_open', 'staging_full', 'runtime_missing', 'runtime_provisioning', 'runtime_failed',
+      'bundle_mismatch', 'no_runtime',
     ];
     for (const lng of ['en', 'uk']) {
       for (const reason of reasons) {

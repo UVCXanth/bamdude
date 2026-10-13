@@ -173,6 +173,12 @@ def render_fixture(node: Path, fixture: str, out_dir: Path, *, timeout: float = 
     return report
 
 
+def golden_versions(golden: dict) -> list[str]:
+    """The Node versions the pin script proved this golden on (part-render-node-lines-spec D5)."""
+    versions = golden.get("node")
+    return list(versions) if isinstance(versions, list) else []
+
+
 def compare_golden(results: dict[str, dict], golden: dict) -> list[str]:
     if golden.get("renderer") != RENDERER_VERSION:
         # not a pass: a golden of another renderer may match by chance (renderer 3 left these PNGs as they were)
@@ -185,12 +191,16 @@ def compare_golden(results: dict[str, dict], golden: dict) -> list[str]:
         if got is None or not got.get("ok"):
             problems.append(f"{fixture}: not rendered")
             continue
-        if got.get("node") != golden["node"]:
-            # not a pass: hashes from another Node are not comparable, and the probe fails
-            return [f"golden not comparable: run on node {got.get('node')}, written on {golden['node']}"]
+        if got.get("node") not in golden_versions(golden):
+            # not a pass: only a Node the pin script proved these PNGs on is comparable (spec D5)
+            proven = ", ".join(golden_versions(golden)) or "none"
+            return [f"golden not comparable: run on node {got.get('node')}, proven on {proven}"]
         for object_id, sha in expected.items():
             if got["sha256"].get(object_id) != sha:
                 problems.append(f"{fixture} {object_id}: sha256 differs from golden")
+    # a fixture the golden does not hold is never silently left uncompared (final review M2)
+    for fixture in sorted(set(results) - set(golden["png_sha256"])):
+        problems.append(f"{fixture}: not in the golden (run scripts/pin_render_runtime.py --golden)")
     return problems
 
 
@@ -230,7 +240,6 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("render")
     r.add_argument("--out", type=Path)
-    r.add_argument("--write-golden", action="store_true")
     m = sub.add_parser("measure")
     m.add_argument("files", nargs="+", type=Path)
     for p in (r, m):
@@ -255,17 +264,10 @@ def main(argv: list[str] | None = None) -> int:
     else:
         out = args.out or Path(tempfile.mkdtemp(prefix="part-render-probe-"))
         results = {f: render_fixture(node, f, out / f) for f in FIXTURE_JOBS}
-        if args.write_golden and all(r["ok"] for r in results.values()):
-            golden = {
-                "renderer": RENDERER_VERSION,
-                "node": node_version(node),
-                "png_sha256": {f: r["sha256"] for f, r in results.items()},
-            }
-            GOLDEN.write_text(json.dumps(golden, indent=2) + "\n", encoding="utf-8")
         golden_problems = (
             compare_golden(results, json.loads(GOLDEN.read_text(encoding="utf-8")))
             if GOLDEN.exists()
-            else ["golden.json missing: run render --write-golden"]
+            else ["golden.json missing: run scripts/pin_render_runtime.py --golden"]
         )
         report = {"render": results, "golden": golden_problems or "match"}
         ok = all(r["ok"] for r in results.values()) and not golden_problems

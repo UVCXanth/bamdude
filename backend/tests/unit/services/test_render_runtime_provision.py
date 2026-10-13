@@ -33,9 +33,14 @@ def _archive(tmp_path: Path, *, evil: bool = False) -> tuple[Path, str, int]:
 
 def _manifest(sha256: str, size: int) -> dict:
     return {
-        "version": VERSION,
+        "lines": {"t": {"version": VERSION}},
         "platforms": {
-            "win-x64": {"url": f"https://nodejs.org/dist/{VERSION}/{TOP}.zip", "sha256": sha256, "bytes": size}
+            "win-x64": {
+                "line": "t",
+                "url": f"https://nodejs.org/dist/{VERSION}/{TOP}.zip",
+                "sha256": sha256,
+                "bytes": size,
+            }
         },
     }
 
@@ -91,8 +96,15 @@ def test_only_the_executable_and_the_licence_are_installed_from_a_tar_xz(tmp_pat
     }
     data = _tar_xz(tmp_path, "node-v9-linux-x64", files).read_bytes()
     manifest = {
-        "version": "v9",
-        "platforms": {"linux-x64": {"url": "u.tar.xz", "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}},
+        "lines": {"t": {"version": "v9"}},
+        "platforms": {
+            "linux-x64": {
+                "line": "t",
+                "url": "u.tar.xz",
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "bytes": len(data),
+            }
+        },
     }
     target = render_runtime.provision(
         tmp_path / "runtime",
@@ -303,19 +315,74 @@ def test_platform_key(system, machine, key):
     assert render_runtime.platform_key(system, machine) == key
 
 
-@pytest.mark.parametrize("machine", ["armv7l", "armv6l", "riscv64"])
+@pytest.mark.parametrize("machine", ["armv6l", "riscv64"])
 def test_platform_key_reports_a_platform_without_an_official_build(machine):
     with pytest.raises(render_runtime.UnsupportedPlatform):
         render_runtime.platform_key("Linux", machine)
 
 
-@pytest.mark.parametrize("machine", ["aarch64", "x86_64"])
-def test_a_32_bit_linux_userland_on_a_64_bit_kernel_is_unsupported(machine):
-    # Raspberry Pi OS 32-bit boots a 64-bit kernel on a Pi 4 / Pi 5: uname says aarch64, but the userland
-    # (this Python included) is armhf and cannot run the arm64 Node -- that is no_runtime, not an install
+ARMHF = "arm-linux-gnueabihf"
+
+
+@pytest.mark.parametrize("machine", ["armv7l", "armv8l"])
+def test_a_32_bit_armhf_userland_runs_armv7l(machine):
+    assert render_runtime.platform_key("Linux", machine, bits=32, triplet=ARMHF, libc="glibc") == "linux-armv7l"
+
+
+@pytest.mark.parametrize("machine", ["aarch64", "arm64", "armv8l"])
+def test_a_32_bit_armhf_userland_on_a_64_bit_kernel_runs_armv7l(machine):
+    # Raspberry Pi OS 32-bit on a Pi 4 / Pi 5: the kernel says aarch64, this interpreter is armhf (spec D4)
+    assert render_runtime.platform_key("Linux", machine, bits=32, triplet=ARMHF, libc="glibc") == "linux-armv7l"
+    assert render_runtime.platform_key("Linux", "aarch64", bits=64) == "linux-arm64"
+
+
+@pytest.mark.parametrize("triplet", ["arm-linux-gnueabi", "arm-linux-musleabihf", ""])
+def test_a_32_bit_arm_userland_that_is_not_armhf_has_no_runtime(triplet):
+    # the official armv7l Node is glibc hard-float: it would download and never start (spec D4)
+    with pytest.raises(render_runtime.UnsupportedPlatform, match="armhf|arm-linux-gnueabihf"):
+        render_runtime.platform_key("Linux", "armv7l", bits=32, triplet=triplet)
+
+
+def test_a_32_bit_x86_linux_has_no_runtime():
     with pytest.raises(render_runtime.UnsupportedPlatform):
-        render_runtime.platform_key("Linux", machine, bits=32)
-    assert render_runtime.platform_key("Linux", machine, bits=64).startswith("linux-")
+        render_runtime.platform_key("Linux", "x86_64", bits=32)
+
+
+def test_the_interpreter_triplet_comes_from_soabi(monkeypatch):
+    monkeypatch.setattr(render_runtime.sysconfig, "get_config_var", lambda name: "cpython-313-arm-linux-gnueabihf")
+    assert render_runtime.interpreter_triplet() == ARMHF
+    monkeypatch.setattr(render_runtime.sysconfig, "get_config_var", lambda name: "cp312-win_amd64")
+    assert render_runtime.interpreter_triplet() == ""
+
+
+WITHOUT_ARMV7 = tuple(k for k in render_runtime.PLATFORMS if k != "linux-armv7l")
+
+
+@pytest.mark.parametrize("machine", ["armv7l", "armv8l", "aarch64"])
+def test_armhf_whose_line_ended_is_unsupported(machine, monkeypatch):
+    # consilium NL-R1: the armhf branch meets the same PLATFORMS check as every other one
+    monkeypatch.setattr(render_runtime, "PLATFORMS", WITHOUT_ARMV7)
+    with pytest.raises(render_runtime.UnsupportedPlatform):
+        render_runtime.platform_key("Linux", machine, bits=32, triplet=ARMHF, libc="glibc")
+
+
+def test_pruning_removes_only_retired_platforms(tmp_path, monkeypatch):
+    # linux-armv7l stands for a platform whose line ended and left PLATFORMS (spec D3, D9)
+    monkeypatch.setattr(render_runtime, "PLATFORMS", WITHOUT_ARMV7)
+    node = tmp_path / "node"
+    for name in ("win-x64", "linux-x64", "linux-armv7l", ".linux-armv7l.v22.0.0.part", ".linux-armv7l.old", "notes"):
+        (node / name).mkdir(parents=True)
+    removed = render_runtime.prune_retired_platforms(tmp_path)
+    assert removed == [".linux-armv7l.old", ".linux-armv7l.v22.0.0.part", "linux-armv7l"]
+    assert sorted(p.name for p in node.iterdir()) == ["linux-x64", "notes", "win-x64"]
+
+
+def test_pruning_keeps_every_pinned_platform_and_its_backup(tmp_path):
+    # a failed restore keeps .<key>.old as the only runtime there is (provision's own rule); a checkout mounted
+    # into a container holds the HOST's platform -- neither is ever taken
+    for name in ("win-x64", ".win-x64.old", "linux-arm64", ".linux-x64.download.ab12"):
+        (tmp_path / "node" / name).mkdir(parents=True)
+    assert render_runtime.prune_retired_platforms(tmp_path) == []
 
 
 def test_a_32_bit_python_on_64_bit_windows_still_runs_the_x64_node():
@@ -338,9 +405,12 @@ SHASUMS = "\n".join(
 )
 
 
+LINE_24 = ("linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win-x64")
+
+
 def test_artifacts_from_shasums_picks_one_archive_per_platform():
-    found = render_runtime.artifacts_from_shasums(SHASUMS, "v24.17.0")
-    assert set(found) == set(render_runtime.PLATFORMS)
+    found = render_runtime.artifacts_from_shasums(SHASUMS, "v24.17.0", LINE_24)
+    assert set(found) == set(LINE_24)
     assert found["linux-x64"][0] == "node-v24.17.0-linux-x64.tar.xz"
     assert found["win-x64"][0] == "node-v24.17.0-win-x64.zip"
 
@@ -348,7 +418,29 @@ def test_artifacts_from_shasums_picks_one_archive_per_platform():
 def test_artifacts_from_shasums_names_every_missing_platform():
     text = "\n".join(line for line in SHASUMS.splitlines() if "darwin" not in line)
     with pytest.raises(render_runtime.ProvisionError, match="darwin-arm64.*darwin-x64|darwin-x64.*darwin-arm64"):
-        render_runtime.artifacts_from_shasums(text, "v24.17.0")
+        render_runtime.artifacts_from_shasums(text, "v24.17.0", LINE_24)
+
+
+def test_artifacts_from_shasums_takes_only_the_platforms_it_is_given():
+    found = render_runtime.artifacts_from_shasums(SHASUMS, "v24.17.0", ("linux-x64", "win-x64"))
+    assert set(found) == {"linux-x64", "win-x64"}
+
+
+def test_the_version_marker_is_the_platforms_line(tmp_path: Path):
+    archive, sha, size = _archive(tmp_path)
+    manifest = {
+        "lines": {"24": {"version": "v24.1.0"}, "22": {"version": VERSION}},
+        "platforms": {
+            "win-x64": {
+                "line": "22",
+                "url": f"https://nodejs.org/dist/{VERSION}/{TOP}.zip",
+                "sha256": sha,
+                "bytes": size,
+            }
+        },
+    }
+    target = provision(tmp_path / "runtime", manifest=manifest, platform="win-x64", fetch=_fetch_from(archive))
+    assert (target / "VERSION").read_text().strip() == VERSION
 
 
 def _tar_xz(tmp_path: Path, top: str, files: dict[str, bytes]) -> Path:
@@ -365,8 +457,10 @@ def test_provision_unpacks_a_tar_xz_and_locates_bin_node(tmp_path):
     archive = _tar_xz(tmp_path, "node-v9-linux-x64", {"bin/node": b"#!fake", "LICENSE": b"x"})
     data = archive.read_bytes()
     manifest = {
-        "version": "v9",
-        "platforms": {"linux-x64": {"url": "u", "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}},
+        "lines": {"t": {"version": "v9"}},
+        "platforms": {
+            "linux-x64": {"line": "t", "url": "u", "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+        },
     }
     target = render_runtime.provision(
         tmp_path / "runtime",
@@ -391,8 +485,10 @@ def test_provision_refuses_a_tar_entry_escaping_the_target(tmp_path):
         tf.addfile(info, io.BytesIO(b"x"))
     data = archive.read_bytes()
     manifest = {
-        "version": "v9",
-        "platforms": {"linux-x64": {"url": "u", "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}},
+        "lines": {"t": {"version": "v9"}},
+        "platforms": {
+            "linux-x64": {"line": "t", "url": "u", "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+        },
     }
     with pytest.raises(render_runtime.ProvisionError):
         render_runtime.provision(
@@ -414,7 +510,7 @@ def test_locate_in_tells_unsupported_from_missing_from_installed(tmp_path, monke
     # consilium R5.3: three answers, never folded together
     runtime = tmp_path / "runtime"
     monkeypatch.setattr(render_runtime._platform, "system", lambda: "Linux")
-    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "armv7l")
+    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "armv6l")
     with pytest.raises(render_runtime.UnsupportedPlatform):
         render_runtime.locate_in(runtime)  # no_runtime: fallback methods only
     monkeypatch.setattr(render_runtime._platform, "machine", lambda: "aarch64")
@@ -425,7 +521,7 @@ def test_locate_in_tells_unsupported_from_missing_from_installed(tmp_path, monke
 
 def test_locate_in_refuses_an_explicit_platform_without_an_official_build(tmp_path):
     with pytest.raises(render_runtime.UnsupportedPlatform):
-        render_runtime.locate_in(tmp_path, platform="linux-armv7l")
+        render_runtime.locate_in(tmp_path, platform="linux-armv6l")
 
 
 def test_a_version_marker_without_its_executable_is_not_an_install(tmp_path):
@@ -465,8 +561,10 @@ def test_download_stops_at_the_pinned_size(tmp_path: Path, monkeypatch):
 def _pin_file(tmp_path: Path, sha: str, size: int) -> Path:
     # an unresolvable host: a code path that reaches the network by mistake fails fast instead of downloading
     pin = {
-        "version": VERSION,
-        "platforms": {"win-x64": {"url": "https://invalid.invalid/node.zip", "sha256": sha, "bytes": size}},
+        "lines": {"t": {"version": VERSION}},
+        "platforms": {
+            "win-x64": {"line": "t", "url": "https://invalid.invalid/node.zip", "sha256": sha, "bytes": size}
+        },
     }
     path = tmp_path / "render_runtime.json"
     path.write_text(json.dumps(pin), encoding="utf-8")
@@ -498,7 +596,81 @@ def test_cli_provision_exits_1_with_a_message_when_the_download_fails(tmp_path: 
 def test_cli_provision_exits_3_on_a_platform_without_an_official_build(tmp_path: Path, monkeypatch, capsys):
     _, sha, size = _archive(tmp_path)
     monkeypatch.setattr(render_runtime._platform, "system", lambda: "Linux")
-    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "armv7l")
+    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "armv6l")
     args = ["provision", "--runtime", str(tmp_path / "rt"), "--manifest", str(_pin_file(tmp_path, sha, size))]
     assert render_runtime.main(args) == 3
     assert "top-view fallback" in capsys.readouterr().err
+
+
+def test_a_provision_prunes_a_retired_platform(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(render_runtime, "PLATFORMS", WITHOUT_ARMV7)
+    archive, sha, size = _archive(tmp_path)
+    (tmp_path / "runtime" / "node" / "linux-armv7l" / "bin").mkdir(parents=True)
+    provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    # the platform's lock file stays (startup-provisioning spec P8): removing it would race
+    assert sorted(p.name for p in (tmp_path / "runtime" / "node").iterdir()) == [".win-x64.lock", "win-x64"]
+
+
+def test_the_cli_on_armhf_whose_line_ended_exits_3_and_cleans_up(tmp_path: Path, monkeypatch):
+    # the REAL configuration of a 32-bit Raspberry Pi OS on a Pi 4: aarch64 kernel, 32-bit armhf interpreter
+    monkeypatch.setattr(render_runtime, "PLATFORMS", WITHOUT_ARMV7)
+    monkeypatch.setattr(render_runtime._platform, "system", lambda: "Linux")
+    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(render_runtime, "_interpreter_bits", lambda: 32)
+    monkeypatch.setattr(render_runtime, "interpreter_triplet", lambda: ARMHF)
+    monkeypatch.setattr(render_runtime, "interpreter_libc", lambda: "glibc")
+    node = tmp_path / "rt" / "node"
+    (node / "linux-armv7l" / "bin").mkdir(parents=True)
+    (node / "linux-armv7l" / "bin" / "node").write_bytes(b"old runtime")
+    (node / "linux-arm64" / "bin").mkdir(parents=True)  # a pinned platform's runtime (a mounted host checkout)
+    pin_file = tmp_path / "render_runtime.json"
+    pin_file.write_text(json.dumps({"lines": {"24": {"version": "v24.21.0"}}, "platforms": {}}), encoding="utf-8")
+    assert render_runtime.main(["provision", "--runtime", str(tmp_path / "rt"), "--manifest", str(pin_file)]) == 3
+    assert sorted(p.name for p in node.iterdir()) == ["linux-arm64"]
+
+
+@pytest.mark.parametrize("libc", ["", "musl"])
+def test_a_musl_interpreter_that_claims_gnueabihf_has_no_runtime(libc):
+    # final review M4: CPython before bpo-43112 reports a gnueabihf SOABI on musl; the official armv7l Node needs glibc
+    with pytest.raises(render_runtime.UnsupportedPlatform, match="glibc"):
+        render_runtime.platform_key("Linux", "armv7l", bits=32, triplet=ARMHF, libc=libc)
+
+
+def test_the_interpreter_libc_comes_from_libc_ver(monkeypatch):
+    monkeypatch.setattr(render_runtime._platform, "libc_ver", lambda: ("glibc", "2.41"))
+    assert render_runtime.interpreter_libc() == "glibc"
+    monkeypatch.setattr(render_runtime._platform, "libc_ver", lambda: ("", ""))
+    assert render_runtime.interpreter_libc() == ""
+
+
+def _refuse_prune(runtime_root):
+    raise PermissionError("a root-owned leftover")
+
+
+def test_a_failed_prune_never_fails_a_provision(tmp_path: Path, monkeypatch, capsys):
+    # final review M3: a leftover the service user cannot remove must not turn an install into a failure
+    monkeypatch.setattr(render_runtime, "prune_retired_platforms", _refuse_prune)
+    archive, sha, size = _archive(tmp_path)
+    target = provision(
+        tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive)
+    )
+    assert (target / "node.exe").is_file()
+    assert "a root-owned leftover" in capsys.readouterr().err
+
+
+def test_a_failed_prune_keeps_exit_3_on_a_machine_without_a_build(tmp_path: Path, monkeypatch, capsys):
+    _, sha, size = _archive(tmp_path)
+    monkeypatch.setattr(render_runtime, "prune_retired_platforms", _refuse_prune)
+    monkeypatch.setattr(render_runtime._platform, "system", lambda: "Linux")
+    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "armv6l")
+    args = ["provision", "--runtime", str(tmp_path / "rt"), "--manifest", str(_pin_file(tmp_path, sha, size))]
+    assert render_runtime.main(args) == 3
+    err = capsys.readouterr().err
+    assert "top-view fallback" in err and "Traceback" not in err
+
+
+def test_an_old_shape_manifest_is_a_message_not_a_traceback():
+    # final review M10: a manifest of the one-version shape names no line for the platform
+    manifest = {"version": "v24.17.0", "platforms": {"win-x64": {"url": "u", "sha256": "0" * 64, "bytes": 1}}}
+    with pytest.raises(ProvisionError, match="line"):
+        render_runtime.pinned_version(manifest, "win-x64")

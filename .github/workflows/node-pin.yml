@@ -1,0 +1,222 @@
+name: Node.js pin
+
+# Weekly: is the pinned Node.js still the newest patch of its lines? If not, re-pin on a chore/node-pin-* branch,
+# prove it on every platform and keep ONE issue while there is something to do (part-render-node-lines-spec D7).
+# It merges nothing, tags nothing and opens no PR (the repository does not let Actions open one; spec Q1).
+#
+# The job that MAKES the pin installs third-party packages and runs the probe, so it holds a read-only token and no
+# stored credentials; the job that PUSHES installs nothing, re-checks the manifest against the signed SHASUMS and
+# only then pushes (final review I1).
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: The branch the check reads and a new pin branch starts from
+        type: string
+        required: false
+        default: dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-pin
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  # dev for the schedule; a manual run (or a temporary push trigger, spec T12) may name another branch
+  BASE: ${{ inputs.base || (github.event_name == 'push' && github.ref_name) || 'dev' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      action: ${{ steps.check.outputs.action }}
+      notice: ${{ steps.check.outputs.notice }}
+      repin: ${{ steps.check.outputs.repin }}
+      branch: ${{ steps.check.outputs.branch }}
+      # the whole --check report, as an immutable output (security review: never read back as an artifact)
+      report: ${{ steps.check.outputs.report }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BASE }}
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - id: check
+        run: |
+          # 0 nothing, 2 action, 3 notices; anything else (an error, an old script without --check) stops here,
+          # and so does a report that is not the JSON the next line reads
+          set +e
+          python scripts/pin_render_runtime.py --check > check.json
+          code=$?
+          set -e
+          cat check.json
+          case "$code" in 0|2|3) ;; *) exit 1 ;; esac
+          python scripts/node_pin_report.py outputs check.json >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7  # for a human to read; no job reads it back
+        with:
+          name: node-pin-check
+          path: check.json
+
+  repin:
+    needs: check
+    if: needs.check.outputs.repin == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      exists: ${{ steps.exists.outputs.exists }}
+    env:
+      BRANCH: ${{ needs.check.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BASE }}
+          persist-credentials: false
+      - id: exists
+        run: |
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.exists.outputs.exists == 'false'
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - if: steps.exists.outputs.exists == 'false'
+        name: The probe's two packages, nothing else
+        run: pip install psutil pillow
+      - if: steps.exists.outputs.exists == 'false'
+        name: Re-pin (gpg-verified) and prove the golden
+        run: python scripts/pin_render_runtime.py
+      - if: steps.exists.outputs.exists == 'false'
+        uses: actions/upload-artifact@v7
+        with:
+          name: node-pin-files
+          path: |
+            backend/app/data/render_runtime.json
+            backend/app/data/render_probe/golden.json
+
+  publish:
+    needs: [check, repin]
+    if: needs.check.outputs.repin == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      # the ONE commit this run tests and reports on (consilium NL2-R1): fixed once, never re-read from the branch
+      candidate: ${{ steps.candidate.outputs.sha }}
+    env:
+      BRANCH: ${{ needs.check.outputs.branch }}
+      EXISTS: ${{ needs.repin.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BASE }}
+      - if: needs.repin.outputs.exists == 'false'
+        uses: actions/download-artifact@v7
+        with:
+          name: node-pin-files
+          path: backend/app/data
+      - if: needs.repin.outputs.exists == 'false'
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - if: needs.repin.outputs.exists == 'false'
+        name: Verify the pin against the check, the signed SHASUMS and the base golden, then push (never force)
+        env:
+          # the --check report of the job that ran no packages: the versions the pin must be (no downgrade)
+          CHECK: ${{ needs.check.outputs.report }}
+        run: |
+          # the artifact comes from the job that ran third-party packages: it may change the two pin files, nothing else
+          git status --porcelain --untracked-files=all | cut -c4- | while read -r path; do
+            case "$path" in
+              backend/app/data/render_runtime.json|backend/app/data/render_probe/golden.json) ;;
+              *) echo "::error::the pin artifact touched $path"; exit 1 ;;
+            esac
+          done
+          git show HEAD:backend/app/data/render_probe/golden.json > "$RUNNER_TEMP/golden.base.json"
+          printf '%s' "$CHECK" > "$RUNNER_TEMP/check.json"
+          python scripts/pin_render_runtime.py --verify --expect "$RUNNER_TEMP/check.json" --base-golden "$RUNNER_TEMP/golden.base.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add backend/app/data/render_runtime.json backend/app/data/render_probe/golden.json
+          git commit -m "chore(render-runtime): pin Node.js ${BRANCH#chore/node-pin-}"
+          git push origin "$BRANCH"
+      - id: candidate
+        name: Fix the candidate commit once (consilium NL2-R1)
+        run: |
+          # the commit just pushed, or the branch head as it is NOW for a branch an earlier run made; every smoke
+          # job checks out exactly this SHA and the report names it -- a later push to the branch is not tested here
+          if [ "$EXISTS" = "true" ]; then sha=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1); else sha=$(git rev-parse HEAD); fi
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then echo "::error::no candidate commit on $BRANCH"; exit 1; fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  smoke:
+    needs: [check, publish]
+    if: needs.check.outputs.repin == 'true' && needs.publish.outputs.candidate != ''
+    uses: ./.github/workflows/part-render-smoke.yml
+    with:
+      ref: ${{ needs.publish.outputs.candidate }}
+
+  report:
+    needs: [check, repin, publish, smoke]
+    if: always() && needs.check.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BASE }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: The tested commit, its base, and where the branch is now (consilium NL-M1, NL2-R1)
+        id: branch
+        env:
+          BRANCH: ${{ needs.check.outputs.branch }}
+          TESTED: ${{ needs.publish.outputs.candidate }}
+        run: |
+          current=""
+          base=""
+          if [ -n "$BRANCH" ]; then current=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1); fi
+          if [ -n "$TESTED" ]; then
+            # the base of the TESTED commit -- fetched by its SHA, so a later push or a deleted branch changes nothing
+            git fetch --no-tags origin "$TESTED" || true  # unreachable after a deleted branch: the base stays unknown
+            base=$(git merge-base "origin/$BASE" "$TESTED" 2>/dev/null || true)
+          fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+      - name: Keep the one pin issue only while there is an action (final review M1, M7)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CHECK: ${{ needs.check.outputs.report }}
+          ACTION: ${{ needs.check.outputs.action }}
+          NOTICE: ${{ needs.check.outputs.notice }}
+          REPIN: repin ${{ needs.repin.result }}, publish ${{ needs.publish.result }}
+          SMOKE: ${{ needs.smoke.result }}
+          TESTED: ${{ needs.publish.outputs.candidate }}
+          CURRENT: ${{ steps.branch.outputs.current }}
+          BASE_SHA: ${{ steps.branch.outputs.base }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          printf '%s' "$CHECK" > check.json
+          python scripts/node_pin_report.py issue check.json --repin "$REPIN" --smoke "$SMOKE" \
+            --tested-sha "$TESTED" --current-sha "$CURRENT" --base-sha "$BASE_SHA" --base "$BASE" --run-url "$RUN_URL" > body.md
+          number=$(gh issue list --state open --label node-pin --json number --jq '.[0].number // empty')
+          if [ "$ACTION" = "true" ]; then
+            gh label create node-pin --color 0E8A16 --description "Weekly Node.js pin check" --force
+            if [ -n "$number" ]; then gh issue edit "$number" --body-file body.md; else gh issue create --title "Node.js pin update available" --label node-pin --body-file body.md; fi
+          else
+            # notices (a new LTS line, a line ending soon) are read in the run summary, never a new issue each week
+            if [ "$NOTICE" = "true" ]; then cat body.md >> "$GITHUB_STEP_SUMMARY"; fi
+            if [ -n "$number" ]; then gh issue close "$number" --comment "Nothing to do for the pinned Node.js any more ($RUN_URL)."; fi
+          fi

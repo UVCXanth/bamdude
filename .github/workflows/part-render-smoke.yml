@@ -1,0 +1,105 @@
+name: Part Render Smoke
+
+# One definition of the part-render smoke (part-render-node-lines-spec D8): ci.yml calls it on every push and PR,
+# node-pin.yml on the branch of a new pin (a push made with GITHUB_TOKEN starts no other workflow).
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: The git ref to test; empty = the caller's own commit
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  smoke:
+    name: Part Render Smoke (${{ matrix.platform }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # runner -> the platform it promises (spec D8); every platform of PLATFORMS has a row here or the armv7 job,
+        # which test_part_render_smoke_covers_every_platform.py checks. macos-latest is arm64: Intel Mac has its own
+        # runner (consilium NL-R3); macos-15-intel because most Intel Macs cannot run macOS 26.
+        include:
+          - { os: ubuntu-latest, platform: linux-x64 }
+          - { os: ubuntu-24.04-arm, platform: linux-arm64 }
+          - { os: windows-latest, platform: win-x64 }
+          - { os: macos-latest, platform: darwin-arm64 }
+          - { os: macos-15-intel, platform: darwin-x64 }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - name: The commit under test is the one asked for (consilium NL2-R1)
+        shell: bash
+        env:
+          WANT: ${{ inputs.ref }}
+        run: |
+          got=$(git rev-parse HEAD); echo "testing $got"
+          if printf '%s' "$WANT" | grep -Eq '^[0-9a-f]{40}$' && [ "$got" != "$WANT" ]; then echo "::error::checked out $got, asked for $WANT"; exit 1; fi
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: The runner is the platform it promises
+        # a changed image behind a *-latest label fails here, loudly, instead of leaving a platform untested
+        run: python -c "import sys; from backend.app.services.render_runtime import platform_key; k = platform_key(); print(k); sys.exit(k != '${{ matrix.platform }}')"
+      - name: Provision the pinned Node runtime
+        run: python -m backend.app.services.render_runtime provision --runtime runtime
+      - name: Unit tests
+        run: >
+          python -m pytest backend/tests/unit/services/test_render_runtime_provision.py
+          backend/tests/unit/test_render_runtime_manifest.py backend/tests/unit/test_part_render_bundle.py
+          backend/tests/unit/services/test_part_render_node.py backend/tests/unit/test_part_render_probe.py
+          backend/tests/unit/test_no_browser_leftovers.py
+          backend/tests/unit/services/test_part_render_protocol.py backend/tests/unit/services/test_part_render_tree.py
+          backend/tests/unit/services/test_part_render_fallback.py backend/tests/unit/test_part_render_child.py
+          backend/tests/unit/test_part_render_service.py backend/tests/unit/test_part_render_runtime.py
+          backend/tests/unit/test_part_render_end_to_end.py backend/tests/unit/test_pin_render_runtime.py
+          -v --tb=short --timeout=180 --timeout-method=thread -n 1
+      - name: Render the fixtures with the pinned runtime (golden on every OS)
+        run: python -m backend.app.part_render_probe render --report probe-report.json
+      - name: Keep the probe report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: part-render-${{ matrix.platform }}
+          path: probe-report.json
+
+  armv7:
+    name: Part Render Smoke (linux/arm/v7, QEMU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - name: The commit under test is the one asked for (consilium NL2-R1)
+        shell: bash
+        env:
+          WANT: ${{ inputs.ref }}
+        run: |
+          got=$(git rev-parse HEAD); echo "testing $got"
+          if printf '%s' "$WANT" | grep -Eq '^[0-9a-f]{40}$' && [ "$got" != "$WANT" ]; then echo "::error::checked out $got, asked for $WANT"; exit 1; fi
+      - uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm
+      - name: Provision and render on Debian armhf
+        run: docker run --rm --platform linux/arm/v7 -e REPORT=/src/probe-report.json -v "$PWD:/src" -w /src debian:trixie-slim sh scripts/part_render_armv7_smoke.sh
+      - name: Keep the probe report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: part-render-armv7
+          path: probe-report.json

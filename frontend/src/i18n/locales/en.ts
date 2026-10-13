@@ -8089,6 +8089,7 @@ export default {
       guide: 'Part thumbnail troubleshooting',
       reasons: {
         runtime_missing: 'The pinned Node.js runtime is not installed, so no part is rendered. Plates wait in the queue.',
+        runtime_provisioning: 'The pinned Node.js runtime is being installed. Part thumbnails start by themselves once it is in place.',
         runtime_failed: 'The pinned Node.js runtime is installed but does not start. Plates wait in the queue until it does.',
         bundle_mismatch: 'The render bundle does not match this version of BamDude — an incomplete update. Plates wait in the queue.',
         no_runtime: 'There is no official Node.js build for this machine, so parts get only the fallback picture the file allows, when it has one.',

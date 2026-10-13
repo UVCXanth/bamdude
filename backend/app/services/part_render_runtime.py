@@ -27,7 +27,8 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from backend.app.services import part_render_tree, render_runtime
+from backend.app.core import install_kind
+from backend.app.services import part_render_tree, render_runtime, render_runtime_child
 from backend.app.services.analysis_transport import AnalysisArtifact, get
 from backend.app.services.local_worker_broker import get_local_worker_broker
 from backend.app.services.part_render_node import NodeRenderError, node_env, verify_bundle
@@ -105,6 +106,8 @@ class PartRenderRuntime:
         self.node_failed: tuple[str, str] | None = None  # (executable, version) seen NOT to start
         self.node_reprobe_at = 0.0
         self.node_refresh_at = 0.0
+        self.provisioning: asyncio.Task | None = None  # this process's one startup provisioning (spec P1, P5)
+        self.provisioning_live = False  # from the spawn to the outcome (spec P4: the monitor keeps the state)
         self.bundle_sha256: str | None = None
         self.queue: dict = {"pending": 0, "failed": 0}
         self.last: dict | None = None
@@ -128,7 +131,8 @@ class PartRenderRuntime:
             self.node, self.node_reason, self.bundle_sha256 = None, "no_runtime", None
             return
         if found is None:
-            self.node, self.node_reason = None, "runtime_missing"
+            # a provisioning under way is not "missing" (spec P4): the monitor's 30 s refresh keeps its state
+            self.node, self.node_reason = None, "runtime_provisioning" if self.provisioning_live else "runtime_missing"
             return
         try:
             self.bundle_sha256 = verify_bundle()
@@ -168,6 +172,51 @@ class PartRenderRuntime:
             self.node_failed = identity
             logger.warning("Part render runtime_failed: Node %s does not start", self.node.version)
         self.resolve_node()
+
+    def start_provisioning(self) -> None:
+        """Spec P1: a native install that started without its pinned Node installs it once, in the background."""
+        if self.provisioning is not None or self.node_reason != "runtime_missing":
+            return
+        try:
+            kind = install_kind.kind(self.app_dir)
+        except Exception as exc:  # best effort: a probe that cannot answer starts nothing (final review M4)
+            logger.warning(
+                "Part render runtime provisioning not started: the install kind is unknown (%s)", type(exc).__name__
+            )
+            return
+        if kind != "native":
+            return  # the Docker image and the Windows installer carry their runtime (spec §2)
+        self.provisioning_live = True
+        self.node_reason = "runtime_provisioning"
+        self.provisioning = asyncio.create_task(self._provision(), name="part-render-runtime-provision")
+
+    async def _provision(self) -> None:
+        """One run of the shared runner (spec P3, P6, P7): it logs the start and the outcome, and kills and reaps
+        the child when this task is cancelled; what a killed child left, the next provision reclaims (P8)."""
+        outcome = None
+        try:
+            outcome = (
+                await render_runtime_child.run_provision(
+                    self.app_dir, trigger="startup", timeout=render_runtime_child.PROVISION_SECONDS
+                )
+            ).outcome
+        finally:
+            self.provisioning_live = False
+            # the monitor looks again on its next tick: a resolve it ran beside this run may have written the
+            # provisioning state back after it ended (final review M2)
+            self.node_refresh_at = 0.0
+            if self.node_reason == "runtime_provisioning" and outcome != "provisioned":
+                self.node_reason = "runtime_missing"
+        if outcome == "provisioned":
+            await disk(self.resolve_node)  # provisioning -> starting, never "not installed" in between (spec P4)
+            self.node_reprobe_at = 0.0  # probed on the monitor's next tick (F5)
+
+    async def cancel_provisioning(self) -> None:
+        """Spec P8: stop() takes the child with it."""
+        task = self.provisioning
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     def refresh_node_soon(self) -> None:
         """The child found the bundle changed: look at the installation again on the monitor's next tick."""
@@ -749,6 +798,10 @@ class PartRenderRuntime:
 
     async def _stop(self) -> None:
         self.closed = True
+        if self.provisioning is not None:
+            # the child is killed now; its end is awaited last, so the worker's retire never waits behind it and the
+            # monitor starts no replacement meanwhile (final review M1)
+            self.provisioning.cancel()
         if self.monitor is not None:
             self.monitor.cancel()
             await asyncio.gather(self.monitor, return_exceptions=True)
@@ -769,6 +822,7 @@ class PartRenderRuntime:
                 await self.nc.close()
             except Exception:
                 pass
+        await self.cancel_provisioning()
 
 
 runtime: PartRenderRuntime | None = None

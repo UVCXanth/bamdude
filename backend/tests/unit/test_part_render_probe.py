@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -78,7 +79,7 @@ def test_evaluate_render_fails_on_page_error():
 def test_compare_golden_reports_each_difference():
     golden = {
         "renderer": RENDERER_VERSION,
-        "node": "v1",
+        "node": ["v1"],
         "png_sha256": {"two-objects": {"101": "a" * 64, "202": "b" * 64}},
     }
     results = {"two-objects": {"ok": True, "node": "v1", "sha256": {"101": "a" * 64, "202": "c" * 64}}}
@@ -86,14 +87,14 @@ def test_compare_golden_reports_each_difference():
 
 
 def test_compare_golden_refuses_another_node_version():
-    golden = {"renderer": RENDERER_VERSION, "node": "v1", "png_sha256": {"two-objects": {"101": "a" * 64}}}
+    golden = {"renderer": RENDERER_VERSION, "node": ["v1"], "png_sha256": {"two-objects": {"101": "a" * 64}}}
     results = {"two-objects": {"ok": True, "node": "v2", "sha256": {"101": "a" * 64}}}
-    assert part_render_probe.compare_golden(results, golden) == ["golden not comparable: run on node v2, written on v1"]
+    assert part_render_probe.compare_golden(results, golden) == ["golden not comparable: run on node v2, proven on v1"]
 
 
 def test_compare_golden_refuses_a_golden_of_another_renderer():
     # plan E7 D2: renderer 3 left the fixtures' PNGs unchanged, so a renderer-2 golden would have passed
-    golden = {"renderer": RENDERER_VERSION - 1, "node": "v1", "png_sha256": {"two-objects": {"101": "a" * 64}}}
+    golden = {"renderer": RENDERER_VERSION - 1, "node": ["v1"], "png_sha256": {"two-objects": {"101": "a" * 64}}}
     results = {"two-objects": {"ok": True, "node": "v1", "sha256": {"101": "a" * 64}}}
     assert part_render_probe.compare_golden(results, golden) == [
         f"golden not comparable: written for renderer {RENDERER_VERSION - 1}, this is renderer {RENDERER_VERSION}"
@@ -101,9 +102,31 @@ def test_compare_golden_refuses_a_golden_of_another_renderer():
 
 
 def test_compare_golden_reports_a_failed_render_instead_of_raising():
-    golden = {"renderer": RENDERER_VERSION, "node": "v1", "png_sha256": {"two-objects": {"101": "a" * 64}}}
+    golden = {"renderer": RENDERER_VERSION, "node": ["v1"], "png_sha256": {"two-objects": {"101": "a" * 64}}}
     results = {"two-objects": {"ok": False, "node": "v1", "problems": ["crashed: x"], "sha256": {}}}
     assert part_render_probe.compare_golden(results, golden) == ["two-objects: not rendered"]
+
+
+def test_compare_golden_accepts_every_proven_version():
+    golden = {"renderer": RENDERER_VERSION, "node": ["v1", "v2"], "png_sha256": {"two-objects": {"101": "a" * 64}}}
+    results = {"two-objects": {"ok": True, "node": "v2", "sha256": {"101": "a" * 64}}}
+    assert part_render_probe.compare_golden(results, golden) == []
+
+
+def test_the_golden_names_exactly_the_pinned_versions():
+    golden = json.loads(part_render_probe.GOLDEN.read_text(encoding="utf-8"))
+    manifest = render_runtime.load_manifest()
+    assert golden["renderer"] == RENDERER_VERSION
+    assert golden["node"] == sorted({pin["version"] for pin in manifest["lines"].values()}, key=_vkey)
+
+
+def test_the_probe_writes_no_golden():
+    with pytest.raises(SystemExit):
+        part_render_probe.main(["render", "--write-golden"])  # spec D5: the pin script is the one writer
+
+
+def _vkey(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.lstrip("v").split("."))
 
 
 @needs_node
@@ -134,3 +157,15 @@ def test_the_probe_falls_back_to_node_on_path_when_nothing_is_provisioned(monkey
     monkeypatch.setattr(part_render_probe, "locate", lambda app_dir: None)
     monkeypatch.setattr(part_render_probe.shutil, "which", lambda name: "/usr/bin/node")
     assert part_render_probe.default_node() == Path("/usr/bin/node")
+
+
+def test_a_rendered_fixture_missing_from_the_golden_is_reported():
+    # final review M2: a fixture the golden does not hold is never silently left uncompared
+    golden = {"renderer": RENDERER_VERSION, "node": ["v1"], "png_sha256": {"two-objects": {"101": "a" * 64}}}
+    results = {
+        "two-objects": {"ok": True, "node": "v1", "sha256": {"101": "a" * 64}},
+        "new-fixture": {"ok": True, "node": "v1", "sha256": {"1": "b" * 64}},
+    }
+    assert part_render_probe.compare_golden(results, golden) == [
+        "new-fixture: not in the golden (run scripts/pin_render_runtime.py --golden)"
+    ]
