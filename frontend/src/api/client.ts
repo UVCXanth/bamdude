@@ -65,6 +65,11 @@ export class ApiError extends Error {
    * means (WS-13 E11 A01).
    */
   refs?: { group?: number | string; option?: number | string; customer?: number };
+  /**
+   * The jobs a refusal is about, each with its own reason code (swap declaration refresh: `job_not_refreshable`,
+   * `jobs_changed`). A dialog marks those rows; the sentence stays prose.
+   */
+  jobs?: { kind: string; id: number; reason?: string }[];
   constructor(message: string, status: number, code?: string, retryAfterMs?: number) {
     super(message);
     this.name = 'ApiError';
@@ -588,7 +593,23 @@ async function handleErrorResponse(response: Response, __isRetry: boolean, signa
   }
   const refs = refusalRefs(error.detail);
   if (refs) refusal.refs = refs;
+  const jobs = refusalJobs(error.detail);
+  if (jobs) refusal.jobs = jobs;
   throw refusal;
+}
+
+/** The `jobs` list a refusal names -- only well-formed entries, never guessed. */
+function refusalJobs(detail: unknown): ApiError['jobs'] {
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return undefined;
+  const raw = (detail as Record<string, unknown>).jobs;
+  if (!Array.isArray(raw)) return undefined;
+  const jobs = raw.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const { kind, id, reason } = entry as Record<string, unknown>;
+    if (typeof kind !== 'string' || typeof id !== 'number') return [];
+    return [{ kind, id, ...(typeof reason === 'string' ? { reason } : {}) }];
+  });
+  return jobs.length ? jobs : undefined;
 }
 
 /** The `group` / `option` (an id or a temp id) and the `customer` (an id) a refusal names;
@@ -1479,6 +1500,91 @@ export interface WaitingPrint {
   repeat_order_open?: boolean | null;
 }
 
+/** A source a swap declaration is made for. */
+export type SwapSourceKind = 'archive' | 'library';
+
+/** A declaration as the wire carries it: never the local user id. */
+export interface SwapDeclarationSummary {
+  version: number;
+  value: boolean;
+  sha256: string;
+  origin: string;
+  declaration_id?: string;
+  declared_at?: string;
+  actor_label?: string;
+  actor_kind?: string;
+}
+
+/** What inspect read: the bytes a reprint would print, their current fact and the revision to declare against. */
+export interface SwapDeclarationInspect {
+  kind: SwapSourceKind;
+  id: number;
+  sha256: string;
+  size_bytes: number;
+  display_filename: string;
+  current: boolean | null;
+  known: boolean;
+  revision: string;
+  origin: string | null;
+  declaration_id: string | null;
+}
+
+export interface SwapDeclarationResult {
+  kind: SwapSourceKind;
+  id: number;
+  declaration_id: string;
+  value: boolean;
+  sha256: string;
+  revision: string;
+  replayed: boolean;
+}
+
+export interface SwapDeclarationHistoryEntry {
+  declaration_id: string;
+  action: string;
+  old_value: boolean | null;
+  new_value: boolean | null;
+  sha256: string | null;
+  actor_label: string;
+  actor_kind: string;
+  created_at: string | null;
+}
+
+export type SwapRefreshJobKind = 'queue' | 'auto_queue';
+
+export interface SwapRefreshCandidate {
+  kind: SwapRefreshJobKind;
+  id: number;
+  revision: string;
+  status: string;
+  eligible: boolean;
+  /** Why this job cannot take the declaration -- a code of the closed list, labelled by the dialog. */
+  reason: string | null;
+}
+
+export interface SwapRefreshListing {
+  kind: SwapSourceKind;
+  id: number;
+  declaration_id: string;
+  value: boolean;
+  sha256: string;
+  source_revision: string;
+  jobs: SwapRefreshCandidate[];
+  counts: { eligible: number; refused: number };
+}
+
+export interface SwapRefreshResult {
+  operation_id: string;
+  declaration_id: string;
+  value: boolean;
+  refreshed: { kind: SwapRefreshJobKind; id: number }[];
+  replayed: boolean;
+}
+
+function swapSourcePath(kind: SwapSourceKind, id: number): string {
+  return kind === 'archive' ? `/archives/${id}` : `/library/files/${id}`;
+}
+
 export interface Archive {
   end_time_source?: 'slicer_estimate' | null;
   id: number;
@@ -1560,6 +1666,15 @@ export interface Archive {
   energy_kwh: number | null;
   energy_cost: number | null;
   swap_compatible: boolean;
+  /** Is `swap_compatible` a declaration, or the unknown's False? Decode both with `decodeSwapFact`. */
+  swap_compatibility_known: boolean;
+  /**
+   * The SOURCE pair a future reprint reads -- an operator's declaration first -- apart from the executed run's
+   * pair above. Decode it with `decodeSourceSwapFact`; never mix the two.
+   */
+  source_swap_compatible?: boolean;
+  source_swap_compatibility_known?: boolean;
+  source_swap_declaration?: SwapDeclarationSummary | null;
   // Queue attribution (m019). Queue-driven archives carry the originating
   // queue_id + batch_id; external / direct-dispatch archives get queue_id
   // (the printer's default queue) but no batch_id.
@@ -6459,6 +6574,8 @@ export interface QueueCopySourceProfile {
   filename: string;
   sliced_for_model: string | null;
   swap_compatible: boolean;
+  /** Is `swap_compatible` a declaration, or the unknown's False? Decode both with `decodeSwapFact`. */
+  swap_compatibility_known: boolean;
   plates: PlateMetadata[];
   is_multi_plate: boolean;
 }
@@ -10307,6 +10424,37 @@ export const api = {
     return request<ArchiveAggregate>(`/statistics/aggregate${qs ? `?${qs}` : ''}`);
   },
   getArchive: (id: number) => request<Archive>(`/archives/${id}`),
+  // A source's swap declaration (swap-source-declaration spec r3 §4-§7): inspect copies the bytes, declare names
+  // the very bytes inspected, and the refresh applies it to jobs the operator selected.
+  inspectSwapDeclaration: (kind: SwapSourceKind, id: number) =>
+    request<SwapDeclarationInspect>(`${swapSourcePath(kind, id)}/swap-declaration/inspect`, { method: 'POST' }),
+  declareSwapSource: (
+    kind: SwapSourceKind,
+    id: number,
+    body: { value: boolean; expected_sha256: string; expected_revision: string; operation_id: string },
+  ) =>
+    request<SwapDeclarationResult>(`${swapSourcePath(kind, id)}/swap-declaration`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  getSwapDeclarationHistory: (kind: SwapSourceKind, id: number) =>
+    request<SwapDeclarationHistoryEntry[]>(`${swapSourcePath(kind, id)}/swap-declaration/history`),
+  getSwapDeclarationJobs: (kind: SwapSourceKind, id: number) =>
+    request<SwapRefreshListing>(`${swapSourcePath(kind, id)}/swap-declaration/jobs`),
+  refreshSwapDeclarationJobs: (
+    kind: SwapSourceKind,
+    id: number,
+    body: {
+      declaration_id: string;
+      source_revision: string;
+      operation_id: string;
+      jobs: { kind: SwapRefreshJobKind; id: number; revision: string }[];
+    },
+  ) =>
+    request<SwapRefreshResult>(`${swapSourcePath(kind, id)}/swap-declaration/jobs/refresh`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   /**
    * Count one old order-less print into its product's free stock (pass 8).
    *
@@ -14708,6 +14856,8 @@ export interface LibraryFile {
   mqtt_recording_bytes?: number;
   sliced_for_model: string | null;
   swap_compatible: boolean;
+  /** Is `swap_compatible` a declaration, or the unknown's False? Decode both with `decodeSwapFact`. */
+  swap_compatibility_known: boolean;
   // Provenance (m033) — populated for MakerWorld imports + slicer outputs.
   // ``source_type`` ∈ {"makerworld", "sliced", ...}; ``source_url`` is the
   // canonical link (e.g. MakerWorld profile URL). NULL for plain uploads.
@@ -14765,6 +14915,8 @@ export interface LibraryFileListItem {
    *  unsliced 3MF is eligible; «sliced» is `isPrintable` (the `gcode` tag), not this. */
   plan_eligible: boolean;
   swap_compatible: boolean;
+  /** Is `swap_compatible` a declaration, or the unknown's False? Decode both with `decodeSwapFact`. */
+  swap_compatibility_known: boolean;
   // True iff the 3MF carries 2+ plates (extracted at upload / m023 backfill).
   // Used to gate gallery rendering — single-plate files skip the per-card
   // gallery fetch entirely.

@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import logging
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from backend.app.models.printer import Printer
 from backend.app.services.archive import sd_stem
 from backend.app.services.bambu_ftp import (
     BambuFTPClient,
-    download_file_try_paths_async,
+    download_file_first_path_async,
     get_ftp_retry_settings,
     list_files_async,
 )
@@ -157,10 +157,11 @@ async def _download_3mf(
         for subdir in ("/", "/cache/", "/model/", "/data/", "/data/Metadata/"):
             all_remote_paths.append((f"{subdir}{try_filename}", try_filename))
 
-    # Use the first candidate's filename for the temp file name.  On
-    # success we'll return the actual downloaded filename (which may
-    # differ if a later path succeeded — but bambu_ftp overwrites
-    # temp_path, so the bytes are correct either way).
+    # Use the first candidate's filename for the temp file name. The name
+    # RETURNED is the basename of the remote path that actually downloaded:
+    # a later candidate may be the one that existed, and only the transport
+    # can say which (swap-source-lifecycle spec r4 §7) — the temp file's name
+    # proves nothing.
     primary_filename = candidates[0]
     if not primary_filename.endswith(".3mf"):
         primary_filename = next((c for c in candidates if c.endswith(".3mf")), primary_filename)
@@ -170,7 +171,7 @@ async def _download_3mf(
     remote_paths_only = [rp for rp, _ in all_remote_paths]
     stage_one_started = time.monotonic()
     try:
-        downloaded = await download_file_try_paths_async(
+        downloaded_from = await download_file_first_path_async(
             printer.ip_address,
             printer.access_code,
             remote_paths_only,
@@ -178,14 +179,14 @@ async def _download_3mf(
             socket_timeout=ftp_timeout,
             printer_model=printer.model,
         )
-        if downloaded:
+        if downloaded_from:
             logger.info(
                 "Downloaded 3MF for printer %s (tried %d paths, temp=%s)",
                 printer.name,
                 len(remote_paths_only),
                 temp_path,
             )
-            return temp_path, primary_filename
+            return temp_path, PurePosixPath(downloaded_from).name
     except Exception as e:
         logger.debug("download_file_try_paths_async failed: %s", e)
 
@@ -235,7 +236,7 @@ async def _download_3mf(
     # fname comes straight from the printer FTP dir listing — containment-check.
     fuzzy_temp_path = safe_join_under(temp_dir, fuzzy_filename, http=False)
     try:
-        downloaded = await download_file_try_paths_async(
+        downloaded_from = await download_file_first_path_async(
             printer.ip_address,
             printer.access_code,
             [rp for rp, _ in fallback_paths],
@@ -243,13 +244,13 @@ async def _download_3mf(
             socket_timeout=ftp_timeout,
             printer_model=printer.model,
         )
-        if downloaded:
+        if downloaded_from:
             logger.info(
                 "Downloaded 3MF for printer %s via fuzzy match (tried %d paths)",
                 printer.name,
                 len(fallback_paths),
             )
-            return fuzzy_temp_path, fuzzy_filename
+            return fuzzy_temp_path, PurePosixPath(downloaded_from).name
     except Exception as e:
         logger.debug("fuzzy download_file_try_paths_async failed: %s", e)
 

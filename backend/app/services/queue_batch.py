@@ -36,6 +36,7 @@ from backend.app.services.queue_source_capture import (
     discard_staged,
     plan_capture,
     publish_staged,
+    swap_request,
 )
 from backend.app.services.queue_sources import CaptureRequest
 
@@ -346,6 +347,10 @@ async def enqueue_batch_copies(
     # load on an async session the day somebody builds one with
     # ``expire_on_commit=True``.
     queue_id = queue.id
+    from backend.app.models.printer import Printer
+
+    printer_row = await db.get(Printer, printer_id)
+    printer_swap_on = bool(printer_row is not None and printer_row.swap_mode_enabled)
 
     # ⚠️ ONE capture for every copy in the batch (spec §5's fan-out rule, A01) —
     # never one per copy — taken with no transaction open, because the copy can
@@ -383,6 +388,16 @@ async def enqueue_batch_copies(
                 "manual_mapping": manual_mapping,
             },
         )
+        # Every copy's swap fields, from the declaration the CAPTURE confirmed -- the
+        # caller's look at the row before the copy was a preview (swap-source-lifecycle
+        # spec r4 §8). A refusal here discards the staging; no copy is written.
+        execute_swap_macros, swap_events = swap_request(
+            staged.receipt.swap_fact.value,
+            execute=execute_swap_macros,
+            events=swap_macro_events,
+            printer_swap_mode=printer_swap_on,
+        )
+        swap_macro_events = swap_events
         if batch_id is None:
             batch_id = str(uuid.uuid4())
         # Tri-state calibration → canonical mode string (accepts legacy bool from

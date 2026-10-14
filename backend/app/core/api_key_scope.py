@@ -121,7 +121,8 @@ def _allowed(api_key: Any) -> frozenset[int] | None:
 
 
 def narrowed_scope(granted: frozenset[int] | None, api_key: Any) -> frozenset[int] | None:
-    """Narrow a request's printer scope by the key's current allowlist, never widen it."""
+    """The request's printer scope narrowed by the key's printer list as it stands NOW -- for a writer that reads
+    the key again inside its transaction. Only ever narrower than what the gate granted, never wider."""
     current = _allowed(api_key)
     if granted is None:
         return current

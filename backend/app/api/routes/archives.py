@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import json
 import logging
@@ -41,7 +42,8 @@ from backend.app.schemas.archive import (
 )
 from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.schemas.project import StockMovedOut
-from backend.app.services import part_stock
+from backend.app.schemas.swap_declaration import SwapDeclarationRequest, SwapRefreshRequest
+from backend.app.services import part_stock, swap_compatibility
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.archive_defects import DefectsWrite, record_defects
 from backend.app.services.archive_write_scope import archive_write_scope, locked_print
@@ -202,7 +204,8 @@ def archive_to_response(
         "status": archive.status,
         "started_at": archive.started_at,
         "completed_at": archive.completed_at,
-        "extra_data": archive.extra_data,
+        # A copy without the internal swap record; the row keeps it (spec r4 §3).
+        "extra_data": swap_compatibility.public_extra_data(archive.extra_data),
         "makerworld_url": archive.makerworld_url,
         "designer": archive.designer,
         "external_url": archive.external_url,
@@ -235,6 +238,11 @@ def archive_to_response(
         ),
         "energy_kwh": archive.energy_kwh,
         "energy_cost": archive.energy_cost,
+        # The declaration through its reader: a legacy False and a malformed
+        # record are unknown, never the column's False (spec r4 §9).
+        **swap_compatibility.wire_fields(swap_compatibility.archive_fact(archive).value),
+        # ...and what a FUTURE reprint reads of its source, never mixed into the run's pair (T9 spec r3 §7).
+        **swap_compatibility.source_wire_fields(archive),
         # Queue attribution (m019) + verbose error_message twin for failures.
         "queue_id": archive.queue_id,
         "batch_id": archive.batch_id,
@@ -1063,6 +1071,138 @@ async def find_similar_archives(
         raise HTTPException(404, str(e))
 
 
+# --- an operator's swap declaration of this source (swap-source-declaration spec r3 §4-5) -------------------------
+
+
+_SWAP_DECLARATION_READ = require_ownership_permission(Permission.ARCHIVES_READ_ALL, Permission.ARCHIVES_READ_OWN)
+_SWAP_DECLARATION_UPDATE = require_ownership_permission(Permission.ARCHIVES_UPDATE_ALL, Permission.ARCHIVES_UPDATE_OWN)
+
+
+async def _swap_declaration_caller(request: Request, db: AsyncSession, read, update):
+    from backend.app.services import swap_source_declarations as declarations
+
+    actor = await declarations.actor_for(request, db, read[0] or update[0])
+    return actor, declarations.Rights(read_all=read[1], update_all=update[1])
+
+
+@router.post("/{archive_id}/swap-declaration/inspect")
+async def inspect_swap_declaration(
+    archive_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    read: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_READ),
+    update: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_UPDATE),
+):
+    """Copy what a reprint would read, check it is printable, discard the copy: its hash, its current effective
+    swap fact and the revision a declaration must match. Needs the read AND the update right of this source."""
+    from backend.app.services import swap_source_declarations as declarations
+
+    actor, rights = await _swap_declaration_caller(request, db, read, update)
+    return await declarations.inspect("archive", archive_id, actor=actor, rights=rights)
+
+
+@router.put("/{archive_id}/swap-declaration")
+async def declare_swap_source(
+    archive_id: int,
+    body: SwapDeclarationRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    read: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_READ),
+    update: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_UPDATE),
+):
+    """Declare whether the inspected bytes carry their own plate-swap sequence -- only those very bytes, under the
+    revision they were inspected at; anything that moved since is a 409 and nothing is written."""
+    from backend.app.services import swap_source_declarations as declarations
+
+    actor, rights = await _swap_declaration_caller(request, db, read, update)
+    return await declarations.declare(
+        "archive",
+        archive_id,
+        value=body.value,
+        expected_sha256=body.expected_sha256,
+        expected_revision=body.expected_revision,
+        operation_id=str(body.operation_id),
+        actor=actor,
+        rights=rights,
+    )
+
+
+@router.get("/{archive_id}/swap-declaration/history")
+async def swap_declaration_history(
+    archive_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    read: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_READ),
+):
+    """The current declaration's chain of operations -- through this source only."""
+    from backend.app.services import swap_source_declarations as declarations
+
+    actor = await declarations.actor_for(request, db, read[0])
+    rights = declarations.Rights(read_all=read[1], update_all=False)
+    return await declarations.history("archive", archive_id, actor=actor, rights=rights)
+
+
+_SWAP_REFRESH_QUEUE_READ = require_ownership_permission(Permission.QUEUE_READ_ALL, Permission.QUEUE_READ_OWN)
+_SWAP_REFRESH_QUEUE_UPDATE = require_ownership_permission(Permission.QUEUE_UPDATE_ALL, Permission.QUEUE_UPDATE_OWN)
+
+
+@router.get("/{archive_id}/swap-declaration/jobs")
+async def swap_declaration_jobs(
+    archive_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    read: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_READ),
+    update: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_UPDATE),
+    queue_read: tuple[User | None, bool] = Depends(_SWAP_REFRESH_QUEUE_READ),
+    queue_update: tuple[User | None, bool] = Depends(_SWAP_REFRESH_QUEUE_UPDATE),
+):
+    """The pending and failed jobs linked to this source the caller may see, each with its revision and whether the
+    current declaration may be applied to it. None is selected: a refresh names its jobs."""
+    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.services import swap_job_refresh
+
+    actor, rights = await _swap_declaration_caller(request, db, read, update)
+    return await swap_job_refresh.candidates(
+        "archive",
+        archive_id,
+        actor=actor,
+        rights=rights,
+        job_rights=swap_job_refresh.JobRights(read_all=queue_read[1], update_all=queue_update[1]),
+        printer_scope=key_printer_scope(request),
+    )
+
+
+@router.post("/{archive_id}/swap-declaration/jobs/refresh")
+async def refresh_swap_declaration_jobs(
+    archive_id: int,
+    body: SwapRefreshRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    read: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_READ),
+    update: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_UPDATE),
+    queue_read: tuple[User | None, bool] = Depends(_SWAP_REFRESH_QUEUE_READ),
+    queue_update: tuple[User | None, bool] = Depends(_SWAP_REFRESH_QUEUE_UPDATE),
+):
+    """Write the source's current declaration into the named jobs' snapshots -- every one, or none. Not a Retry: a
+    failed job stays failed."""
+    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.services import swap_job_refresh
+
+    actor, rights = await _swap_declaration_caller(request, db, read, update)
+    return await swap_job_refresh.refresh(
+        "archive",
+        archive_id,
+        declaration_id=str(body.declaration_id),
+        source_revision=body.source_revision,
+        jobs=[swap_job_refresh.JobRef(job.kind, job.id, job.revision) for job in body.jobs],
+        operation_id=str(body.operation_id),
+        actor=actor,
+        rights=rights,
+        job_rights=swap_job_refresh.JobRights(read_all=queue_read[1], update_all=queue_update[1]),
+        printer_scope=key_printer_scope(request),
+    )
+
+
 @router.patch("/{archive_id}", response_model=ArchiveResponse)
 async def update_archive(
     archive_id: int,
@@ -1428,8 +1568,16 @@ async def toggle_favorite(
 
     archive.is_favorite = not archive.is_favorite
     await db.commit()
-    await db.refresh(archive)
-    return archive
+    # Through the one serializer, like every other archive answer: the raw row
+    # would carry the internal swap record and the column's bool unread.
+    from sqlalchemy.orm import selectinload
+
+    result = await db.execute(
+        select(PrintArchive)
+        .options(selectinload(PrintArchive.project), selectinload(PrintArchive.created_by))
+        .where(PrintArchive.id == archive_id)
+    )
+    return archive_to_response(result.scalar_one())
 
 
 @router.post("/{archive_id}/retry-download")
@@ -2840,6 +2988,13 @@ async def get_plate_preview(
         raise HTTPException(500, f"Error extracting plate preview: {str(e)}")
 
 
+#: Save to library refuses an archive whose swap declaration cannot travel with its bytes.
+SAVE_SWAP_SOURCE_UNKNOWN = (
+    "This archive does not say whether its file carries its own plate-swap sequence, or its file is no longer the "
+    "one it describes, so it cannot be saved to the library. The archive itself stays available."
+)
+
+
 @router.post("/{archive_id}/save-to-library")
 async def save_archive_to_library(
     archive_id: int,
@@ -2868,6 +3023,13 @@ async def save_archive_to_library(
     printer's own screen and the 3MF cannot be pulled, the row is created with an
     empty ``file_path`` and a retry marker. That is a 409 with an explanation,
     not a 404 — the archive is real, the file is what is missing.
+
+    ⚠️ **A transfer, not a new ingest** (swap-source-lifecycle spec r4 §4). The
+    archive's own swap declaration travels, confirmed against the hash of the
+    bytes really read — never re-guessed from the file name. An unknown, or a
+    record that speaks for other bytes, is a 409 ``swap_source_unknown`` before
+    anything is written; the library's row of the same bytes under another
+    declaration is the helper's 409 ``swap_source_conflict``.
     """
     from backend.app.api.routes.library import save_3mf_bytes_to_library
     from backend.app.models.library import LibraryFolder
@@ -2892,9 +3054,20 @@ async def save_archive_to_library(
         if folder is None:
             raise HTTPException(404, "Folder not found")
 
+    content = await asyncio.to_thread(file_path.read_bytes)
+    fact, expected = swap_compatibility.archive_source(archive)
+    fact = swap_compatibility.confirm(
+        fact, expected, await asyncio.to_thread(lambda: hashlib.sha256(content).hexdigest())
+    )
+    if fact.value is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": swap_compatibility.UNKNOWN_SOURCE_REASON, "message": SAVE_SWAP_SOURCE_UNKNOWN},
+        )
+
     result = await save_3mf_bytes_to_library(
         db,
-        content=file_path.read_bytes(),
+        content=content,
         filename=archive.filename,
         folder=folder,
         created_by_id=user.id if user else None,
@@ -2902,6 +3075,7 @@ async def save_archive_to_library(
         # tag, which treats it as sliced — a file that came out of a print
         # necessarily is.
         source_type="archive",
+        declared_swap=fact.value,
     )
     # ⚠️ ``result.file`` may be a row this call did not create — the bytes were
     # already in the library, so that row is what the response points at.
@@ -3433,13 +3607,9 @@ async def reprint_archive(
     if plate_name:
         dispatch_source_name = f"{archive.filename} • {plate_name}"
 
-    # Swap-macro execution only applies to swap-enabled printers AND files
-    # that don't already carry swap macros baked in by third-party tooling
-    # (``swap_compatible`` → double-fire risk). Mute the fields in either
-    # case before they propagate into dispatch options or queued copies.
-    if not printer.swap_mode_enabled or getattr(archive, "swap_compatible", False):
-        body.execute_swap_macros = False
-        body.swap_macro_events = None
+    # Swap macros are decided after the copy, from the declaration the captured
+    # bytes confirm, by the dispatcher and the queue writer (swap-source-lifecycle
+    # spec r4 §8) -- not from this row before the copy, which is only a preview.
 
     # Reprint quantity handling mirrors library print_library_file:
     # quantity == 1 → direct dispatch; quantity > 1 → all copies in queue.

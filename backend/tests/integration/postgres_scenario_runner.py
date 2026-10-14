@@ -28,6 +28,11 @@ Modes:
     order_delete_busy  deleting an order another door is writing to refuses at once
     protocol:<a…i>     the lock protocol's scenarios under two real sessions
                        (lock_protocol_scenarios.py; WS-13 E1 T1)
+    swap:<name>        our owed change_table under two real sessions: one claim, the exact
+                       queue owner, every error held (swap_claim_scenarios.py; Codex r1)
+    declare:<name>     the operator's swap declaration under two real sessions: declare,
+                       scan, refresh of selected jobs, assignment, claim; the m203 upgrade
+                       (swap_declaration_scenarios.py; T9 plan, scenarios 5-9)
 
 Usage: python -m backend.tests.integration.postgres_scenario_runner <mode>
 """
@@ -1190,6 +1195,14 @@ async def _main(mode: str) -> dict:
         return await _line_door_deadlock()
     if mode.startswith("protocol:"):
         from backend.tests.integration.lock_protocol_scenarios import SCENARIOS
+
+        return await SCENARIOS[mode.split(":", 1)[1]]()
+    if mode.startswith("swap:"):
+        from backend.tests.integration.swap_claim_scenarios import SCENARIOS
+
+        return await SCENARIOS[mode.split(":", 1)[1]]()
+    if mode.startswith("declare:"):
+        from backend.tests.integration.swap_declaration_scenarios import SCENARIOS
 
         return await SCENARIOS[mode.split(":", 1)[1]]()
     if mode == "line_set_changed":

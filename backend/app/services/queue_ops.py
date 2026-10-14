@@ -24,6 +24,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.services.filament_intake import snapshot_for_copy
 from backend.app.services.queue_source_capture import reusing_sources
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,13 @@ async def queue_claim_scope(db: AsyncSession, queue_id: int):
 
 
 def lane_held_in_process(db: AsyncSession, queue_id: int) -> bool:
-    """A SQLite writer must abandon a busy lane instead of waiting for its local lock."""
+    """SQLite only: whether another coroutine holds this printer lane's in-process lock right now.
+
+    A caller whose transaction may already hold SQLite's writer (the AutoQueue tick) must not wait for that lock: its
+    holder -- a refresh, a change_table claim, a scheduler claim -- takes the writer next (``claim_lanes``), and each
+    would sit on the other until SQLite's busy timeout. Checked and then entered with no await in between, so the
+    answer still holds when the caller enters ``queue_claim_scope``.
+    """
     return db.get_bind().dialect.name == "sqlite" and _queue_claim_locks[queue_id].locked()
 
 
@@ -76,11 +83,18 @@ async def _lane_db_guard(db: AsyncSession, queue_id: int) -> None:
 
 @asynccontextmanager
 async def claim_lanes(db: AsyncSession, queue_ids, *, archive_id: int | None = None, archive_ids=()):
-    """Archives then lanes, ascending at each layer: every local lock precedes SQLite's writer.
+    """The one shared order for a writer that needs printer lanes AND archives (spec r4 §4, T9.7 R4).
 
-    PostgreSQL takes archive guards then lane guards. Callers next lock archive rows before queue/job rows.
-    The complete lock set comes from preflight; changed membership is a refusal, never a late local lock.
-    This is the same protocol used by swap refresh/change_table and operator/automatic recovery.
+    In-process locks, ALL of them before SQLite's writer: the archives ascending, then the lanes ascending. Then
+    the database: SQLite's writer, or on PostgreSQL the archives' guards ascending, then the lanes' guards
+    ascending. The caller locks its ROWS after this, archive rows before queue/job rows (and a library row after
+    those). Archive before queue is the order every archive + queue writer keeps: the terminal acceptance, an
+    archive's hard delete, the change_table claim, a refresh of an archive's jobs, operator print-state recovery
+    and the terminal autorepair.
+
+    A holder of SQLite's single writer must never wait for an in-process lock -- whoever holds that lock takes the
+    writer next, and both would sit until SQLite's busy timeout failed one of them (plan T9.4). The set of lanes is
+    the caller's preflight; a lane found under these locks that is not in it is a refusal, never a lock taken late.
     """
     from contextlib import AsyncExitStack
 
@@ -351,7 +365,8 @@ def _copy_item_fields(src: PrintQueueItem, new_batch_id: str | None, new_positio
         # m173: the clone prints the SAME bytes and becomes a second owner of the
         # same blob — never a new read of the original (queue-source-spool spec
         # §9). The snapshot travels beside the id because that is what keeps the
-        # display name and the plate fallback with the copy.
+        # display name and the plate fallback with the copy; the async callers
+        # replace it with ``snapshot_for_copy``, which records the declaration.
         queue_source_id=src.queue_source_id,
         source_snapshot=src.source_snapshot,
         project_id=src.project_id,
@@ -444,6 +459,7 @@ async def clone_item(
             )
         ).scalar() or 0
         clone = _copy_item_fields(src, new_batch_id, max_pos + 1)
+        clone.source_snapshot = await snapshot_for_copy(db, src)
         _as_new_work(clone, created_by_id, keep_order)
         db.add(clone)
         await db.commit()
@@ -488,6 +504,7 @@ async def clone_batch(
         ).scalar() or 0
         for i, src in enumerate(siblings):
             clone = _copy_item_fields(src, new_batch_id, max_pos + 1 + i)
+            clone.source_snapshot = await snapshot_for_copy(db, src)
             _as_new_work(clone, created_by_id, keep_order)
             db.add(clone)
             clones.append(clone)

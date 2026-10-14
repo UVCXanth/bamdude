@@ -21,6 +21,13 @@ if TYPE_CHECKING:
     from backend.app.services.printer_manager import PrinterManager
 
 
+#: The origins that PROVE which run a binding addresses (swap-source-lifecycle spec r4 §7, §10): our own dispatch,
+#: a new external start observed live, and a recovery by the device's unique subtask id. A run found by a name, an
+#: alias or a hash twin, and an adopted one, is bound as ``observed`` -- enough to archive it, never enough for a
+#: physical effect that depends on its source's declaration.
+PROVEN_ORIGINS = frozenset({"dispatch", "external", "exact_subtask"})
+
+
 @dataclass(frozen=True, slots=True)
 class PrintRunBinding:
     """Immutable address of an accepted or observed physical print.
@@ -111,6 +118,11 @@ def _advance_activity(manager: PrinterManager, printer_id: int) -> int:
     manager._print_effect_sequence = sequence
     _effect_generations(manager)[printer_id] = sequence
     return sequence
+
+
+def origin_is_proven(run: PrintRunBinding | None) -> bool:
+    """Whether a binding's origin proves the run it addresses -- never inferred from a filename."""
+    return run is not None and run.origin in PROVEN_ORIGINS
 
 
 def effect_token_for_run(run: PrintRunBinding) -> PrintEffectToken:

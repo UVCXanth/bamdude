@@ -268,6 +268,9 @@ def test_the_descriptor_carries_exactly_the_agreed_fields():
         # only — ``sha256`` stays the identity, because SQLite reuses a deleted
         # row's id (S4).
         "queue_source_id",
+        # The job's own swap declaration (swap-source-lifecycle spec r4 §5),
+        # taken at capture; a descriptor built without one is unknown.
+        "swap_fact",
     ]
 
 
@@ -349,6 +352,10 @@ def test_the_snapshot_is_built_from_the_descriptor_and_stamped():
         "display_filename": "lamp.gcode.3mf",
         "format": "3mf",
         "plate_fallback": 2,
+        # A descriptor that was not handed a declaration records an unknown, with
+        # its reason -- never a False (swap-source-lifecycle spec r4 §5).
+        "swap_compatible": None,
+        "swap_reason": "source_unknown",
     }
     # No hash and no path: the snapshot is the job's metadata, and the bytes are
     # identified by ``queue_source_id`` alone. A path copied in here would be a

@@ -739,6 +739,8 @@ class TestLibraryFilesAPI:
             # WS-13 E5 H02: additive — the add-to-order dialog's plate tab reads it.
             "plan_eligible",
             "swap_compatible",
+            # swap-source-lifecycle §9: additive and required — is the bool a declaration?
+            "swap_compatibility_known",
             "is_multi_plate",
             "filament_types",
             "plate_summaries",

@@ -874,6 +874,7 @@
   "The count cannot be below the {} reserved; release the reservation first": "Фактична кількість не може бути меншою за зарезервовані {}; спершу зніміть резерв",
   "The cover must be a picture attachment of this product": "Обкладинкою має бути вкладення-зображення цього виробу",
   "The Filament Track Switch is not set up yet. Assign every AMS to an inlet on the printer": "Перемикач тракту філаменту ще не налаштовано. Призначте кожній AMS вхід на принтері",
+  "The library already holds this file under a different plate-swap declaration than this archive's, so it was not saved again. The library's file was left as it is.": "Бібліотека вже містить цей файл з іншою декларацією зміни столу, ніж у цього архіву, тож його не збережено вдруге. Файл у бібліотеці лишився без змін.",
   "The name is too long": "Назва задовга",
   "The order changed while this was being saved — try again": "Замовлення змінилося, поки зміну зберігали — спробуйте ще раз",
   "The order must name every delivery method exactly once": "Порядок має назвати кожен спосіб доставки рівно один раз",
@@ -901,6 +902,7 @@
   "These printers cannot be published because they do not exist, are archived, or are in maintenance mode: {}.": "Ці принтери неможливо опублікувати, бо вони не існують, заархівовані або в режимі обслуговування: {}.",
   "These prints went onto the shelf for the order — they cannot leave it": "Ці друки вже оприбутковані на склад під замовлення — прибрати їх із замовлення не можна",
   "This .3mf file isn't a valid ZIP container. 3MF files are ZIP archives — either the file is corrupted or it's raw gcode renamed to .3mf. Re-export from your slicer using its 'Export Plate Sliced File' action.": "Цей файл .3mf не є коректним ZIP-контейнером. Файли 3MF — це ZIP-архіви, тож або файл пошкоджено, або це звичайний G-code, перейменований на .3mf. Експортуйте його зі свого слайсера заново дією «Export Plate Sliced File».",
+  "This archive does not say whether its file carries its own plate-swap sequence, or its file is no longer the one it describes, so it cannot be saved to the library. The archive itself stays available.": "Цей архів не повідомляє, чи містить його файл власну послідовність зміни столу, або файл уже не той, який він описує, тож його не можна зберегти в бібліотеку. Сам архів лишається доступним.",
   "This archive has no 3MF stored — it was printed from the printer's own screen and the file could not be retrieved.": "У цьому архіві не збережено 3MF — друк запустили з екрана самого принтера, і файл не вдалося отримати.",
   "This bot token is already used by Telegram provider '{}'": "Цей токен бота вже використовує Telegram-провайдер «{}»",
   "This camera is switched off.": "Цю камеру вимкнено.",
@@ -1081,5 +1083,16 @@
   "«{}»: only {} can be assembled": "«{}»: зібрати можна лише {}",
   "«{}»: only {} can be issued": "«{}»: видати можна лише {}",
   "«{}»: only {} can be received": "«{}»: оприбуткувати можна лише {}",
-  "«{}»: only {} can be written off": "«{}»: списати можна лише {}"
+  "«{}»: only {} can be written off": "«{}»: списати можна лише {}",
+  "A declaration is true or false.": "Декларація може бути лише «так» або «ні».",
+  "You may no longer declare this source.": "Ви більше не можете декларувати це джерело.",
+  "The source changed since it was inspected. Inspect it again.": "Джерело змінилося після перевірки. Перевірте його ще раз.",
+  "This library file has no verified content hash yet. Scan its folder, or upload it again as a new copy, then inspect it.": "Для цього файлу бібліотеки ще немає перевіреного хешу вмісту. Проскануйте його теку або завантажте його знову як нову копію, а потім перевірте.",
+  "This operation was already used for another declaration.": "Цю операцію вже використано для іншої декларації.",
+  "This archive is still printing. Declare its source once the print has ended.": "Цей архів ще друкується. Задекларуйте його джерело, коли друк завершиться.",
+  "Select between 1 and 100 different jobs.": "Виберіть від 1 до 100 різних робіт.",
+  "Some of the selected jobs cannot take this declaration. Nothing was changed.": "Деякі з вибраних робіт не можуть прийняти цю декларацію. Нічого не змінено.",
+  "Some of the selected jobs changed since they were listed. List them again.": "Деякі з вибраних робіт змінилися відтоді, як їх показали. Оновіть список.",
+  "This operation was already used for another refresh.": "Цю операцію вже використано для іншого оновлення.",
+  "This source has no operator declaration to apply. Declare it first.": "Це джерело не має операторської декларації, яку можна застосувати. Спершу задекларуйте його."
 }

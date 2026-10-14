@@ -567,7 +567,9 @@ async def redownload_import(
     from pathlib import Path
 
     from backend.app.api.routes.library import calculate_file_hash, to_absolute_path
+    from backend.app.services import swap_compatibility
     from backend.app.services.archive import ThreeMFParser
+    from backend.app.services.library_helpers import sync_system_tags
 
     lib = (await db.execute(LibraryFile.active().where(LibraryFile.id == library_file_id))).scalar_one_or_none()
     if lib is None:
@@ -614,6 +616,12 @@ async def redownload_import(
         # in ``save_3mf_bytes_to_library`` but operates on the existing row.
         lib.file_size = len(file_bytes)
         lib.file_hash = calculate_file_hash(Path(abs_path))
+        # New bytes are declared again, by the row's name exactly as the import
+        # declared the first ones; nothing declared for the old bytes (an
+        # operator's declaration included) carries over to them.
+        swap_compatibility.declare_ingest(
+            lib, swap_compatibility.classify_external_name(lib.filename), origin="classifier"
+        )
         try:
             parser = ThreeMFParser(str(abs_path))
             raw_metadata = parser.parse()
@@ -629,6 +637,7 @@ async def redownload_import(
         # product this file belongs to. Flushed first — the sync reads the row
         # back, and it must read the new metadata, not the old.
         await db.flush()
+        await sync_system_tags(db, lib)
         await resync_file_products(db, lib.id)
 
         # Refresh meta row + covers through the same open service.

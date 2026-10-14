@@ -779,9 +779,8 @@ async def _apply(
             profile = await preference_options(db, current_user, to_model)
             options = profile.for_auto_queue() if profile else {}
             options.update(override_options(item.order_print_options, to_model))
-            if file.swap_compatible:
-                options["execute_swap_macros"] = False
-                options["swap_macro_events"] = None
+            # The companions are router rows, whose swap fields are inert: their assignment decides per
+            # printer from the captured declaration (swap-source-lifecycle spec r4 §8), not this library row.
             # After the profile, so the row wins: these four are not toggles the
             # profile has an opinion about (``SharedQueueOptions`` carries none of
             # them) — they say how THIS job feeds and what happens when it ends.

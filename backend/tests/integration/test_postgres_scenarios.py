@@ -805,3 +805,166 @@ class TestStaleReadsBehindTheGates:
         assert r["outcome"].startswith("refused:409:"), r
         assert (r["issues"], r["movements_moved"]) == (0, 0), r
         assert r["customer_now"] == r["customer_wanted"], r
+
+
+def _swap(tmp_path_factory, name: str) -> dict:
+    url = _pg_url()
+    _wipe(url)
+    return _run(f"swap:{name}", tmp_path_factory.mktemp(f"pg_swap_{name}"), url)
+
+
+class TestSwapClaim:
+    """Our owed change_table under two real PostgreSQL sessions (Codex review r1, SS-I-R1..R3): one durable claim
+    committed before the command, the exact queue owner, every error held -- with the process-local locks off, so
+    PostgreSQL's advisory and row locks are what serialize the sessions."""
+
+    def test_two_connect_edges_send_the_command_once(self, tmp_path_factory):
+        r = _swap(tmp_path_factory, "two_edges")
+        assert r["outcomes"] == ["ok", "ok"] and all(o == "ok" for o in r["resolvers"]), r
+        assert r["sent"] == 1, r
+        assert r["seen_before_send"] == ["attempted"], r  # a third session saw the committed claim first
+        assert (r["stage"], r["pending"], r["queue"]) == ("finished", False, "idle"), r
+        assert (r["usage"], r["energy"]) == (1, 1), r  # the second edge's stale copy closed nothing
+        assert r["max_waiting"] >= 1, r  # the second close waited on the first's row lock
+
+    def test_a_claim_taken_by_a_new_job_first_sends_nothing(self, tmp_path_factory):
+        r = _swap(tmp_path_factory, "new_owner_before_the_claim")
+        assert r["outcomes"] == ["ok", "ok"], r
+        assert r["waited"] >= 1, r  # the claim waited on the dispatch lane PostgreSQL held
+        assert r["sent"] == 0, r
+        assert (r["queue"], r["current"]) == ("printing", r["new_job"]), r
+        assert (r["stage"], r["hold"]) == ("owed", "swap_hold_run_unproven"), r
+
+    def test_a_claim_lost_during_the_command_is_left_to_the_new_job(self, tmp_path_factory):
+        r = _swap(tmp_path_factory, "new_owner_during_the_command")
+        assert r["outcome"] == "ok" and r["sent"] == 1, r
+        assert (r["queue"], r["current"]) == ("printing", r["new_job"]), r
+        assert r["stage"] == "finished" and r["run_kept"], r
+
+    def test_an_interrupted_command_is_held_at_the_next_connect_never_repeated(self, tmp_path_factory):
+        r = _swap(tmp_path_factory, "interrupted_then_reconnect")
+        assert r["first"] == "cancelled" and r["edge"] == "ok", r
+        assert r["sent"] == 1, r
+        assert (r["stage"], r["pending"], r["hold"], r["queue"]) == (
+            "attempted",
+            True,
+            "swap_hold_attempt_unknown",
+            "paused",
+        ), r
+        assert [r["usage"], r["energy"]] == r["effects_before"], r  # nothing booked again
+        assert r["run_kept"], r
+
+    def test_an_interrupted_command_leaves_another_jobs_queue_alone(self, tmp_path_factory):
+        r = _swap(tmp_path_factory, "interrupted_then_another_job")
+        assert r["first"] == "cancelled" and r["edge"] == "ok", r
+        assert r["sent"] == 1, r
+        assert (r["queue"], r["current"]) == ("printing", r["new_job"]), r
+        assert r["stage"] == "attempted" and r["run_kept"], r
+
+    def test_a_lookup_error_ends_in_an_explained_hold(self, tmp_path_factory):
+        r = _swap(tmp_path_factory, "lookup_error")
+        assert r["outcome"] == "ok" and r["sent"] == 0, r
+        assert (r["hold"], r["queue"], r["pending"]) == ("swap_hold_macro_error", "paused", True), r
+
+    def test_the_claim_an_archive_write_and_an_admission_never_deadlock(self, tmp_path_factory):
+        r = _swap(tmp_path_factory, "no_deadlock")
+        assert r["outcomes"] == ["ok", "ok", "ok"], r
+        assert r["waited"] >= 2, r  # both waited on PostgreSQL behind the open claim
+        assert r["admission"] == ["active_claim"], r
+        assert r["writer_key"] and r["stage"] == "finished" and r["sent"] == 1, r
+        assert r["queue"] == "idle", r
+
+
+def _declare(tmp_path_factory, name: str) -> dict:
+    url = _pg_url()
+    _wipe(url)
+    return _run(f"declare:{name}", tmp_path_factory.mktemp(f"pg_declare_{name}"), url)
+
+
+class TestSwapDeclaration:
+    """The operator's swap declaration under two real PostgreSQL sessions (T9 plan, scenarios 5-9): each writer holds
+    its lock until PostgreSQL shows the other waiting, then lets go -- with the process-local locks off."""
+
+    def test_two_declarations_of_one_revision_commit_once(self, tmp_path_factory):
+        r = _declare(tmp_path_factory, "two_declares")
+        for kind in ("archive", "library"):
+            k = r[kind]
+            assert k["outcomes"] == ["409:swap_source_changed", "ok"], (kind, r)
+            assert k["waited"] >= 1 and k["audit"] == ["declare"], (kind, r)
+            assert k["origin"] == "operator" and k["effective"] in (True, False), (kind, r)
+
+    def test_a_scan_and_a_declaration_of_one_row_never_interleave(self, tmp_path_factory):
+        r = _declare(tmp_path_factory, "scan_vs_declare")
+        new = r["declaration_first_new_bytes"]
+        assert (new["declared"], new["scanned"]) == ("ok", "ok") and new["waited"] >= 1, r
+        assert (new["origin"], new["effective"], new["swap_tag"]) == ("classifier", False, False), r
+        same = r["declaration_first_same_bytes"]
+        assert (same["declared"], same["scanned"]) == ("ok", "ok") and same["waited"] >= 1, r
+        assert (same["origin"], same["effective"], same["swap_tag"]) == ("operator", True, True), r
+        late = r["scan_first_new_bytes"]
+        assert (late["declared"], late["scanned"]) == ("409:swap_source_changed", "ok") and late["waited"] >= 1, r
+        assert (late["origin"], late["effective"], late["audit"]) == ("classifier", False, []), r
+
+    def test_a_refresh_and_an_assignment_never_mix_their_answers(self, tmp_path_factory):
+        r = _declare(tmp_path_factory, "refresh_vs_assignment")
+        first = r["refresh_first"]
+        assert (first["refreshed"], first["assigned"]) == ("ok", "conflict:swap_source_changed"), r
+        assert first["waited"] >= 1 and first["children"] == [], r
+        assert (first["queue_fact"], first["auto_fact"], first["auto_status"]) == (True, True, "pending"), r
+        assert first["audit"] == ["declare", "refresh_jobs"], r
+        claimed = r["assignment_first"]
+        assert (claimed["assigned"], claimed["refreshed"]) == ("ok", "409:jobs_changed"), r
+        assert claimed["waited"] >= 1 and claimed["children"] == [None], r
+        assert (claimed["queue_fact"], claimed["auto_status"], claimed["audit"]) == (None, "assigned", ["declare"]), r
+
+    def test_a_refresh_refuses_whole_when_a_job_or_its_source_moved(self, tmp_path_factory):
+        r = _declare(tmp_path_factory, "refresh_vs_changes")
+        move = r["move"]
+        assert (move["changed"], move["refreshed"]) == ("ok", "409:jobs_changed") and move["waited"] >= 1, r
+        assert (move["facts"], move["audit"]) == ([None, None], ["declare"]), r
+        delete = r["delete"]
+        assert (delete["changed"], delete["refreshed"]) == ("ok", "409:job_not_refreshable"), r
+        assert delete["waited"] >= 1 and (delete["facts"], delete["audit"]) == ([None], ["declare"]), r
+        redeclare = r["redeclare"]
+        assert (redeclare["redeclared"], redeclare["refreshed"]) == ("ok", "409:source_changed"), r
+        assert redeclare["waited"] >= 1 and redeclare["facts"] == [None], r
+        assert redeclare["audit"] == ["declare", "declare"], r
+        assert r["restore"]["refreshed"] == "409:source_changed" and r["restore"]["facts"] == [None], r
+        free = r["no_deadlock"]
+        assert free["refreshed"] in ("ok", "409:source_changed"), r
+        assert (free["declared"], free["claimed"]) == ("ok", "ok") and free["waited"] >= 1, r
+
+    def test_a_refresh_and_a_hard_delete_of_its_source_never_deadlock(self, tmp_path_factory):
+        r = _declare(tmp_path_factory, "refresh_vs_source_delete")
+        assert r["deleted"] == "ok" and r["waited"] >= 1, r
+        assert r["refreshed"].split(":")[0] in ("404", "409"), r  # the source is gone; never a deadlock or an error
+        # The declaration's audit line outlives its source (spec r3 §9); no refresh line was written.
+        assert r["facts"] == [None, None] and r["audit"] == ["declare"], r
+
+    def test_a_key_losing_its_authority_while_the_refresh_waits_changes_nothing(self, tmp_path_factory):
+        r = _declare(tmp_path_factory, "key_revoked_while_waiting")
+        scope, read = r["printer_scope"], r["queue_read"]
+        assert scope["refreshed"] == "409:job_not_refreshable" and scope["waited"] >= 1, r
+        assert read["refreshed"].startswith("403") and read["waited"] >= 1, r
+        for k in (scope, read):
+            assert (k["facts"], k["audit"]) == ([None], ["declare"]), r
+
+    def test_one_operation_sent_twice_answers_once_and_a_reused_id_is_a_conflict(self, tmp_path_factory):
+        r = _declare(tmp_path_factory, "one_operation_sent_twice")
+        assert r["declare"] == {"outcomes": ["ok", "ok:replayed"], "lines": 1}, r
+        assert r["refresh"] == {"outcomes": ["ok", "ok:replayed"], "lines": 1, "facts": [True]}, r
+        race = r["declare_race"]
+        assert race["outcomes"] == ["409:swap_declaration_conflict", "ok"] and race["lines"] == 1, r
+        assert race["origins"] == ["None", "operator"], r  # the loser wrote nothing
+        race = r["refresh_race"]
+        assert race["outcomes"] == ["409:swap_refresh_conflict", "ok"] and race["lines"] == 1, r
+        assert race["facts"] == [[None], [True]], r
+
+    def test_the_upgrade_gives_every_job_its_own_incarnation_and_an_unwritten_audit_commits_nothing(
+        self, tmp_path_factory
+    ):
+        r = _declare(tmp_path_factory, "upgrade_and_identity")
+        assert (r["identities"], r["unique"], r["source_identity_columns"]) == (5, True, []), r
+        assert (r["born"], r["clone_differs"]) == (36, True), r
+        assert r["failed_declare"] == "error", r
+        assert (r["after_failed"]["origin"], r["audit_after_failed"]) == (None, []), r

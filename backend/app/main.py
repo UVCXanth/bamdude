@@ -110,6 +110,7 @@ from backend.app.core.tasks import spawn_background_task
 from backend.app.core.websocket import ws_manager
 from backend.app.i18n.api_errors import install as install_api_error_translation
 from backend.app.models.smart_plug import SmartPlug
+from backend.app.services import swap_compatibility
 from backend.app.services.ams_slot_presence import spool_present
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.archive_parts import refresh_archive_parts
@@ -876,18 +877,30 @@ async def _record_print_energy(archive_id: int, printer_id: int, *, approximate:
 
             energy_cost_per_kwh = await get_setting(db, "energy_cost_per_kwh")
             cost_per_kwh = float(energy_cost_per_kwh) if energy_cost_per_kwh else 0.15
-            archive.energy_kwh = energy_used
-            archive.energy_cost = round(energy_used * cost_per_kwh, 3)
-            if approximate:
-                # Reassign the dict so SQLAlchemy flags the JSON column dirty.
-                extra = dict(archive.extra_data or {})
-                extra["energy_is_approximate"] = True
-                archive.extra_data = extra
+            # The row was read before the plug's round-trip, and the 3MF may have
+            # landed meanwhile -- its attach writes the same metadata. So the
+            # snapshot commits first, and the archive is written from a fresh
+            # read under its own write scope, merging only what this writer adds
+            # (swap-source-lifecycle spec r4 §7). No I/O under the scope.
             await db.commit()
+            from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+
+            async with archive_write_scope(db, archive_id):
+                fresh = await load_active_archive_for_write(db, archive_id)
+                if fresh is None:
+                    await db.rollback()
+                    logger.warning("[ENERGY-BG] Archive %s no longer exists", archive_id)
+                    return
+                fresh.energy_kwh = energy_used
+                fresh.energy_cost = round(energy_used * cost_per_kwh, 3)
+                if approximate:
+                    # Reassign the dict so SQLAlchemy flags the JSON column dirty.
+                    fresh.extra_data = {**(fresh.extra_data or {}), "energy_is_approximate": True}
+                await db.commit()
             logger.info(
                 "[ENERGY-BG] Saved: %s kWh, cost=%s%s",
                 energy_used,
-                archive.energy_cost,
+                fresh.energy_cost,
                 " (approximate — recovered print)" if approximate else "",
             )
     except Exception as e:
@@ -3701,12 +3714,19 @@ def _load_objects_from_archive(archive, printer_id: int, logger, *, is_retrigger
     load_objects_from_archive_into_state(archive, printer_id, is_retrigger=is_retrigger)
 
 
-def _bind_print_file_analysis_context(printer_id: int, archive, *, expected_generation: int | None = None) -> None:
+def _bind_print_file_analysis_context(
+    printer_id: int, archive, *, expected_generation: int | None = None, origin: str = "observed"
+) -> None:
     """Bind one manager-owned analysis context to the print archive.
 
     This is intentionally only lifecycle wiring.  A bind or a later 3MF
     arrival does not parse G-code; the shared analysis remains lazy until the
     printer card or final accounting needs it.
+
+    ``origin`` is what the CALLER proved about the run: ``dispatch`` (our own
+    expected print), ``external`` (a new start observed live) or
+    ``exact_subtask`` (the device's unique id); everything found by a name, an
+    alias or a hash stays ``observed`` (``print_run_binding.PROVEN_ORIGINS``).
     """
     from backend.app.services.print_file_analysis import bind_print_file_analysis
     from backend.app.services.print_run_binding import (
@@ -3734,6 +3754,7 @@ def _bind_print_file_analysis_context(printer_id: int, archive, *, expected_gene
         # do not have a generation registry.  ``None`` is the same unknown
         # evidence a real not-yet-connected printer supplies.
         client_generation=getattr(printer_manager, "current_client_generation", lambda _printer_id: None)(printer_id),
+        origin=origin,
     )
 
     pending = take_pending_terminal(
@@ -4236,7 +4257,9 @@ async def on_print_start(printer_id: int, data: dict):
                 )
                 if len(candidates) == 1 and start_admission_is_current(printer_manager, printer_id, admission):
                     archive = candidates[0]
-                    _bind_print_file_analysis_context(printer_id, archive, expected_generation=admission.generation)
+                    _bind_print_file_analysis_context(
+                        printer_id, archive, expected_generation=admission.generation, origin="exact_subtask"
+                    )
                     _load_objects_from_archive(archive, printer_id, logging.getLogger(__name__), is_retrigger=True)
                     admission.phase = "recovered"
                     return
@@ -4700,7 +4723,10 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                     archive.printer_id = printer_id
                 await db.commit()
 
-                _bind_print_file_analysis_context(printer_id, archive, expected_generation=start_generation)
+                # Our own dispatch, registered by the dispatcher itself: a proven run.
+                _bind_print_file_analysis_context(
+                    printer_id, archive, expected_generation=start_generation, origin="dispatch"
+                )
 
                 # Track as active print
                 _active_prints[(printer_id, archive.filename)] = archive.id
@@ -5041,11 +5067,18 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 "_print_data": data,
             },
         )
+        # A NEW observed external start -- no dispatch of ours took it over above. Only the full file name the
+        # printer reports can declare a baked swap sequence; anything else waits, as pending, for the name the
+        # download proves (swap-source-lifecycle spec r4 §7). The subtask finds the file, it declares nothing.
+        if swap_compatibility.classify_external_name(filename):
+            swap_compatibility.write_archive_fact(archive, True)
+        else:
+            swap_compatibility.write_archive_fact(archive, None, pending_external=True)
         db.add(archive)
         await db.commit()
         await db.refresh(archive)
         logger.info("Created archive %s for %s at print start (3MF to follow)", archive.id, print_name)
-        _bind_print_file_analysis_context(printer_id, archive, expected_generation=start_generation)
+        _bind_print_file_analysis_context(printer_id, archive, expected_generation=start_generation, origin="external")
 
         # Prefer the colours of the built-in-inventory spools loaded on the
         # used slots over the raw MQTT tray colours. Applied again after the
@@ -5055,14 +5088,6 @@ async def _on_print_start_impl(printer_id: int, data: dict):
 
         await apply_loaded_spool_colors(db, archive, printer_id, _get_start_ams_mapping(data, archive.id))
         await db.commit()
-
-        # Swap compatibility from the name we have now. ``attach_3mf_to_archive``
-        # re-checks against the downloaded name; this covers the print whose
-        # 3MF never arrives.
-        _fname_lower = (filename or "").lower()
-        if _fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in _fname_lower or ".swaps." in _fname_lower:
-            archive.swap_compatible = True
-            await db.commit()
 
         # Track as the active print. This is also the re-trigger guard at the
         # top of the handler, so an MQTT reconnect during the download now
@@ -5376,7 +5401,9 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 else:
                     service = ArchiveService(db)
                     archive_id = archive.id
-                    attached = await service.attach_3mf_to_archive(archive_id, temp_path, downloaded_filename)
+                    attached = await service.attach_3mf_to_archive(
+                        archive_id, temp_path, downloaded_filename, received_name=downloaded_filename
+                    )
                     if attached:
                         logger.info(
                             "Attached 3MF %s to archive %s (%s bytes)",
@@ -6157,6 +6184,9 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
                     "energy_start_partial": True,
                 },
             )
+            # The run's origin is not proven -- it may be our own print under a renamed file -- so a marked name
+            # is no authority, and the record is not pending: no later attach may finish it (D4, spec r4 §7).
+            swap_compatibility.write_archive_fact(archive, None)
             db.add(archive)
             await db.commit()
             await db.refresh(archive)
@@ -6171,17 +6201,6 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
 
             await apply_loaded_spool_colors(db, archive, printer_id, _get_start_ams_mapping(data, archive_id))
             await db.commit()
-
-            # Swap compatibility from the name we have now; the attach re-checks
-            # against the downloaded name.
-            _fname_lower = (filename or "").lower()
-            if (
-                _fname_lower.endswith((".swap.3mf", ".swaps.3mf"))
-                or ".swap." in _fname_lower
-                or ".swaps." in _fname_lower
-            ):
-                archive.swap_compatible = True
-                await db.commit()
 
             # ``on_print_complete`` finds the row through these, and they are
             # also what stops a reconnect mid-download from adopting twice.
@@ -6378,7 +6397,9 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
                         _bind_print_file_analysis_context(printer_id, twin)
                         return
                     service = ArchiveService(db)
-                    ok = await service.attach_3mf_to_archive(archive_id, temp_path, downloaded_filename)
+                    ok = await service.attach_3mf_to_archive(
+                        archive_id, temp_path, downloaded_filename, received_name=downloaded_filename
+                    )
                     if not ok:
                         await service.mark_3mf_unavailable(archive_id)
                     refreshed = await db.get(PrintArchive, archive_id)
@@ -7036,6 +7057,63 @@ async def _completion_conflicts_with_active_queue(printer_id: int, data: dict) -
         return True
 
 
+async def _hold_for_owed_swap(
+    printer_id: int,
+    archive_id: int,
+    execution_item_id: int | None,
+    reason: str,
+    cycle: str,
+    *,
+    owns_printer: bool,
+) -> str | None:
+    """Hold this printer's queue because our owed table swap did not run (swap-source-lifecycle spec r4 §10).
+
+    The archive records why (codes the archive card shows) whoever owns the printer now; the queue pause and the
+    sentences -- on the next waiting job AND on the job that ran, so the reason is there without a next job --
+    only while this run still owns the printer. ``set_queue_idle`` releases only a ``printing`` queue, so a later
+    release of this completion cannot reopen it. Returns the sentence when the queue was held.
+    """
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services import swap_terminal
+    from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+    from backend.app.services.queue_counters import set_queue_paused
+
+    try:
+        async with async_session() as db, archive_write_scope(db, archive_id):
+            archive = await load_active_archive_for_write(db, archive_id)
+            if archive is not None:
+                extra = dict(archive.extra_data or {})
+                extra[swap_terminal.HOLD_KEY] = swap_terminal.hold_record(reason, cycle)
+                archive.extra_data = extra
+                await db.commit()
+    except Exception:
+        logging.getLogger(__name__).warning("Could not record the swap hold of archive %s", archive_id, exc_info=True)
+    if not owns_printer:
+        return None
+    text = swap_terminal.hold_text(reason, cycle)
+    async with async_session() as db:
+        queue_id = await db.scalar(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))
+        if queue_id is None:
+            return None
+        # Without a proven execution row (an unbound finish) the printer's queue is held as a whole.
+        await set_queue_paused(db, queue_id, expected_item_id=execution_item_id)
+        if execution_item_id is not None:
+            ran = await db.get(PrintQueueItem, execution_item_id)
+            if ran is not None:
+                ran.waiting_reason = text
+        waiting = await db.scalar(
+            select(PrintQueueItem)
+            .where(PrintQueueItem.queue_id == queue_id, PrintQueueItem.status == "pending")
+            .order_by(PrintQueueItem.position)
+            .limit(1)
+        )
+        if waiting is not None:
+            waiting.waiting_reason = text
+        await db.commit()
+    return text
+
+
 async def _auto_clean_completed_item(db, queue_item, *, queue_status: str, plate_auto_cleared: bool) -> bool:
     """Thin wrapper — the rule itself lives in ``services.plate_hold``.
 
@@ -7106,6 +7184,9 @@ async def _on_print_complete_impl(
         logger.info("[TIMING] %s: %.3fs elapsed", section, elapsed)
 
     logger.info("[CALLBACK] on_print_complete started for printer %s", printer_id)
+    # The swap decision reads the terminal's status as the printer sent it (swap-source-lifecycle spec r4 §10): a
+    # missing status is a completion, an empty or unknown one is not -- whatever run acceptance below makes of it.
+    _raw_terminal_status = data.get("status", "completed")
 
     # A direct execution-archive binding wins over filename aliases.  This is
     # captured at the common authoritative archive lifecycle point, so an
@@ -7454,35 +7535,7 @@ async def _on_print_complete_impl(
     # the swap rig). Falling into the regular arm-gate block at the end
     # of this function — and skipping the change_table execution — is the
     # safe outcome.
-    _swap_status_ok = data.get("status", "completed") == "completed"
-
-    # Swap-compatible files (macros baked in by third-party tooling like
-    # swaplist.app) handle table changes internally — the plate is already
-    # swapped and clean by the time the print finishes. Skip arming the
-    # plate-clear gate so the queue scheduler doesn't block on manual
-    # confirmation.
-    if archive_id and _swap_status_ok:
-        try:
-            async with async_session() as db:
-                from backend.app.models.archive import PrintArchive as _ScArchive
-
-                _sc_result = await db.execute(select(_ScArchive.swap_compatible).where(_ScArchive.id == archive_id))
-                _sc_swap = _sc_result.scalar_one_or_none()
-                if _sc_swap:
-                    _plate_auto_cleared_by_swap = True
-                    logger.info(
-                        "[SWAP] swap_compatible archive %s — plate auto-cleared for printer %s", archive_id, printer_id
-                    )
-        except Exception as e:
-            logger.debug("[SWAP] swap_compatible check failed (non-critical): %s", e)
-    elif archive_id and not _swap_status_ok:
-        logger.info(
-            "[SWAP] Skipping swap_compatible auto-clear for printer %s archive %s: status=%s "
-            "(failed/aborted/cancelled prints leave material on the bed; manual clear required)",
-            printer_id,
-            archive_id,
-            data.get("status"),
-        )
+    _swap_status_ok = _raw_terminal_status == "completed" and data.get("status", "completed") == "completed"
 
     # Last-chance 3MF download: if this print has a fallback archive
     # (file_path="") and the print just finished, the file is still on
@@ -8025,126 +8078,178 @@ async def _on_print_complete_impl(
 
     swap_config = _active_swap_config.pop(printer_id, None) if _owns_printer_effect() else None
     swap_events: list[str] = list(swap_config.get("swap_macro_events", [])) if swap_config else []
-    if not swap_events and archive_id:
+
+    # --- The swap decision (swap-source-lifecycle spec r4 §10, D3 + D5) -----------------------------------------
+    # ONE fresh read of the archive, here: after the awaited last-chance attach above (which may have just written
+    # the declaration) and before any terminal swap action or the plate decision below; a later attach changes
+    # nothing this run decided. Only a bound terminal this callback accepted, of a proven origin, is a run
+    # BamDude can stand behind -- a name, an alias, an ILIKE or an adoption archives the print and nothing more.
+    from backend.app.services import swap_terminal
+    from backend.app.services.print_run_binding import origin_is_proven
+
+    _swap_run_proven = bound_run is not None and accepted_queue_item_id is not None and origin_is_proven(bound_run)
+    _swap_hold: str | None = None
+    _swap_hold_text: str | None = None
+    _swap_fact = None
+    _swap_pending_fact = None
+    _swap_auto_eject = False
+    _swap_cycle = swap_terminal.CYCLE_POSSIBLY_STARTED
+    _swap_mode = False
+    if archive_id:
         try:
             async with async_session() as db:
-                from backend.app.models.archive import PrintArchive as _PASwap
+                from backend.app.models.archive import PrintArchive as _SwArchive
+                from backend.app.models.print_queue import PrintQueueItem as _SwItem
+                from backend.app.models.printer import Printer as _SwPrinter
+                from backend.app.services.order_auto_eject import archive_mode as _sw_archive_mode
 
-                _pa_extra = (
-                    await db.execute(select(_PASwap.extra_data).where(_PASwap.id == archive_id))
-                ).scalar_one_or_none()
-                if isinstance(_pa_extra, dict):
-                    pending = _pa_extra.get("swap_macro_events_pending")
-                    if isinstance(pending, list) and pending:
-                        swap_events = [str(e) for e in pending]
-                        logger.info(
-                            "[SWAP] Recovered swap config for printer %s from archive %s extra_data (events=%s)",
-                            printer_id,
-                            archive_id,
-                            swap_events,
+                _sw_archive = await db.get(_SwArchive, archive_id)
+                if _sw_archive is not None:
+                    _sw_extra = _sw_archive.extra_data if isinstance(_sw_archive.extra_data, dict) else {}
+                    if not swap_events:
+                        # Restart recovery: dispatch persisted what completion still owes.
+                        _sw_pending = _sw_extra.get("swap_macro_events_pending")
+                        if isinstance(_sw_pending, list) and _sw_pending:
+                            swap_events = [str(e) for e in _sw_pending]
+                            logger.info(
+                                "[SWAP] Recovered swap config for printer %s from archive %s extra_data (events=%s)",
+                                printer_id,
+                                archive_id,
+                                swap_events,
+                            )
+                    _swap_fact = swap_compatibility.archive_fact(_sw_archive).value
+                    _swap_auto_eject = _sw_archive_mode(_sw_archive)
+                    _swap_cycle = swap_terminal.cycle_state(_sw_extra)
+                    if "swap_mode_change_table" in swap_events:
+                        _sw_item = (
+                            await db.get(_SwItem, accepted_queue_item_id)
+                            if accepted_queue_item_id is not None
+                            else None
                         )
+                        _swap_pending_fact = await swap_terminal.pending_fact(db, _sw_archive, _sw_item)
+                _sw_printer = await db.get(_SwPrinter, printer_id)
+                _swap_mode = bool(_sw_printer is not None and _sw_printer.swap_mode_enabled)
         except Exception as e:
-            logger.debug("[SWAP] extra_data fallback lookup failed (non-critical): %s", e)
+            # No answer is no permission: the run holds below instead of guessing.
+            logger.warning("[SWAP] swap decision read failed for archive %s: %s", archive_id, e)
 
-    if "swap_mode_change_table" in swap_events and not _swap_status_ok:
-        # Print ended in a non-success state — the part is still attached
-        # to the plate (or its remains are). Running change_table now would
-        # either jam the swap rig on the stuck part or rotate the fouled
-        # plate into the next print's path. Skip + leave the pending event
-        # in place (so a manual operator-driven retry can still pick it up
-        # if they explicitly choose to). The arm-gate block below will see
-        # ``_plate_auto_cleared_by_swap=False`` and raise the manual-clear
-        # gate as it would for a non-swap printer.
-        logger.info(
-            "[SWAP] Skipping change_table macro for printer %s archive %s: status=%s "
-            "(operator must inspect + clear manually before next print)",
-            printer_id,
-            archive_id,
-            data.get("status"),
+    if "swap_mode_change_table" in swap_events:
+        _swap_hold = swap_terminal.change_table_hold(
+            _swap_pending_fact, completed=_swap_status_ok, proven=_swap_run_proven, swap_mode=_swap_mode
         )
-    elif "swap_mode_change_table" in swap_events:
+    if "swap_mode_change_table" in swap_events and _swap_hold is None:
+        _sw_attempted = False
+        _sw_swapped = False
         try:
             async with async_session() as db:
+                from backend.app.models.print_queue import PrintQueueItem
                 from backend.app.models.printer import Printer as _SwapPrinter
+                from backend.app.services.macro_executor import find_swap_macro
 
-                _sw_result = await db.execute(select(_SwapPrinter).where(_SwapPrinter.id == printer_id))
-                _sw_printer = _sw_result.scalar_one_or_none()
-                if _sw_printer and _sw_printer.swap_mode_enabled:
-                    from backend.app.models.print_queue import PrintQueueItem
-                    from backend.app.services.macro_executor import find_swap_macro
-
-                    macro = await find_swap_macro(db, "swap_mode_change_table", _sw_printer)
-                    if macro and macro.gcode and _owns_printer_effect():
-                        logger.info("[SWAP] Running change_table macro '%s' for printer %s", macro.name, printer_id)
-                        await _record_terminal_effect_stage(archive_id, "swap_change_table", "attempted")
-                        _sw_ok, _sw_msg = await printer_manager.execute_macro_and_wait(
-                            printer_id, macro.gcode, macro.name, may_run=_owns_printer_effect
-                        )
-                        await _record_terminal_effect_stage(
+                _sw_printer = await db.get(_SwapPrinter, printer_id)
+                macro = await find_swap_macro(db, "swap_mode_change_table", _sw_printer) if _sw_printer else None
+                if not (macro and macro.gcode):
+                    _swap_hold = swap_terminal.HOLD_SWAP_OFF
+                elif _owns_printer_effect():
+                    # One claim decides whether the command may leave, committed before it -- the sweep takes the
+                    # same one, so a reconnect can never send this run's table swap a second time (Codex review r1).
+                    _sw_claim = await swap_terminal.claim_change_table(
+                        async_session, archive_id, queue_id=None, owner="live", allow_absent=True
+                    )
+                    _sw_attempted = _sw_claim == swap_terminal.CLAIMED
+                    if not _sw_attempted:
+                        logger.warning(
+                            "[SWAP] change_table of archive %s is not this completion's to send (%s) — held",
                             archive_id,
-                            "swap_change_table",
-                            "finished" if _sw_ok else "failed",
+                            _sw_claim,
                         )
-                        if _sw_ok and _owns_printer_effect():
-                            # Table swapped successfully — skip arming the
-                            # plate-clear gate so the scheduler doesn't wait
-                            # for manual confirmation.
-                            _plate_auto_cleared_by_swap = True
-                            logger.info("[SWAP] change_table done — plate auto-cleared for printer %s", printer_id)
-                        if not _sw_ok and _owns_printer_effect():
-                            logger.error("[SWAP] change_table macro failed: %s — pausing queue", _sw_msg)
-                            # ⚠️ A REAL pause, not just waiting_reason: the
-                            # scheduler recomputes waiting_reason every tick
-                            # and clears it the moment the printer looks idle,
-                            # so the reason alone never held anything — the
-                            # next item dispatched onto the un-swapped table
-                            # one tick later. set_queue_paused is what the
-                            # scheduler actually skips on.
-                            from backend.app.models.printer_queue import PrinterQueue as _SwapQueue
-                            from backend.app.services.queue_counters import set_queue_paused as _swap_pause
+                        _swap_hold = swap_terminal.HOLD_ATTEMPT_UNKNOWN
+                if _sw_attempted:
+                    logger.info("[SWAP] Running change_table macro '%s' for printer %s", macro.name, printer_id)
+                    _sw_ok, _sw_msg = await printer_manager.execute_macro_and_wait(
+                        printer_id, macro.gcode, macro.name, may_run=_owns_printer_effect
+                    )
+                    _sw_swapped = bool(_sw_ok)
+                    # The answer, the event off the checklist and (on success) an earlier hold cleared -- one write.
+                    await swap_terminal.finish_change_table(async_session, archive_id, ok=bool(_sw_ok))
+                    if _sw_ok and _owns_printer_effect():
+                        # Table swapped successfully — skip arming the
+                        # plate-clear gate so the scheduler doesn't wait
+                        # for manual confirmation.
+                        _plate_auto_cleared_by_swap = True
+                        logger.info("[SWAP] change_table done — plate auto-cleared for printer %s", printer_id)
+                    if not _sw_ok and _owns_printer_effect():
+                        logger.error("[SWAP] change_table macro failed: %s — pausing queue", _sw_msg)
+                        # ⚠️ A REAL pause, not just waiting_reason: the
+                        # scheduler recomputes waiting_reason every tick
+                        # and clears it the moment the printer looks idle,
+                        # so the reason alone never held anything — the
+                        # next item dispatched onto the un-swapped table
+                        # one tick later. set_queue_paused is what the
+                        # scheduler actually skips on.
+                        from backend.app.models.printer_queue import PrinterQueue as _SwapQueue
+                        from backend.app.services.queue_counters import set_queue_paused as _swap_pause
 
-                            # queue_id is NOT printer_id — resolve the row.
-                            _swap_qid = (
-                                await db.execute(select(_SwapQueue.id).where(_SwapQueue.printer_id == printer_id))
-                            ).scalar_one_or_none()
-                            if _swap_qid is not None and _owns_printer_effect():
-                                await _swap_pause(db, _swap_qid, expected_item_id=accepted_queue_item_id)
-                                _next = await db.execute(
-                                    select(PrintQueueItem)
-                                    .where(PrintQueueItem.queue_id == _swap_qid)
-                                    .where(PrintQueueItem.status == "pending")
-                                    .order_by(PrintQueueItem.position)
-                                    .limit(1)
-                                )
-                                _next_item = _next.scalar_one_or_none()
-                                if _next_item and _owns_printer_effect():
-                                    from backend.app.services.queue_wait_reason import set_wait_reason
+                        # queue_id is NOT printer_id — resolve the row.
+                        _swap_qid = (
+                            await db.execute(select(_SwapQueue.id).where(_SwapQueue.printer_id == printer_id))
+                        ).scalar_one_or_none()
+                        if _swap_qid is not None and _owns_printer_effect():
+                            await _swap_pause(db, _swap_qid, expected_item_id=accepted_queue_item_id)
+                            _next = await db.execute(
+                                select(PrintQueueItem)
+                                .where(PrintQueueItem.queue_id == _swap_qid)
+                                .where(PrintQueueItem.status == "pending")
+                                .order_by(PrintQueueItem.position)
+                                .limit(1)
+                            )
+                            _next_item = _next.scalar_one_or_none()
+                            if _next_item and _owns_printer_effect():
+                                from backend.app.services.queue_wait_reason import set_wait_reason
 
-                                    set_wait_reason(_next_item, "dispatch_failed", f"Swap macro failed: {_sw_msg}")
-                                await db.commit()
+                                set_wait_reason(_next_item, "dispatch_failed", f"Swap macro failed: {_sw_msg}")
+                            await db.commit()
         except Exception as e:
             logger.error("[SWAP] change_table macro error: %s", e)
+            # No answer is no permission: before the claim nothing went out; after it the command may have -- it
+            # stays claimed and is never sent again. Either way the plate is not taken as swapped, and the queue
+            # waits with a reason.
+            if not _sw_swapped:
+                _swap_hold = swap_terminal.HOLD_ATTEMPT_UNKNOWN if _sw_attempted else swap_terminal.HOLD_MACRO_ERROR
         finally:
-            # Idempotency: tick swap_mode_change_table off the pending
-            # checklist (variant 2 — drop just THIS event from the list,
-            # not the whole key). A re-trigger of on_print_complete (MQTT
-            # replay, reconnect flap) finds the event gone and skips
-            # firing. If the list becomes empty, the key drops entirely
-            # for clean state. Per-event removal is what keeps the
-            # pending list a faithful checklist of "what's still to do".
-            if archive_id:
-                try:
-                    async with async_session() as db:
-                        from backend.app.models.archive import PrintArchive as _PASwapClear
-                        from backend.app.services.archive import remove_swap_pending_event
+            if _sw_attempted:
+                swap_terminal.release(archive_id)
+    elif archive_id and "swap_mode_change_table" not in swap_events:
+        # The source's own sequence clears the plate only for this exact, completed run (D5).
+        if swap_terminal.baked_clears(
+            _swap_fact, completed=_swap_status_ok, proven=_swap_run_proven, auto_eject=_swap_auto_eject
+        ):
+            _plate_auto_cleared_by_swap = True
+            logger.info(
+                "[SWAP] baked swap sequence of archive %s — plate auto-cleared for printer %s", archive_id, printer_id
+            )
+        elif _swap_fact is True:
+            logger.info(
+                "[SWAP] archive %s declares a baked swap sequence, but this finish does not prove the run "
+                "(status=%s proven=%s auto_eject=%s) — the plate keeps its gate",
+                archive_id,
+                data.get("status"),
+                _swap_run_proven,
+                _swap_auto_eject,
+            )
 
-                        _arc = await db.get(_PASwapClear, archive_id)
-                        if _arc is not None and remove_swap_pending_event(_arc, "swap_mode_change_table"):
-                            await db.commit()
-                except Exception as e:
-                    logger.debug(
-                        "[SWAP] failed to remove swap_mode_change_table from pending for archive %s: %s", archive_id, e
-                    )
+    if _swap_hold is not None and archive_id:
+        # Nothing runs, the event stays owed, the plate is not cleared -- and this printer's queue waits with a
+        # reason the operator can read even when no job is waiting (spec r4 §10, R2-6).
+        logger.info("[SWAP] change_table held for archive %s on printer %s: %s", archive_id, printer_id, _swap_hold)
+        _swap_hold_text = await _hold_for_owed_swap(
+            printer_id,
+            archive_id,
+            accepted_queue_item_id,
+            _swap_hold,
+            _swap_cycle,
+            owns_printer=_owns_printer_effect(),
+        )
 
     # Arm the plate-clear gate if the printer is configured to require it and
     # no swap path already cleared the plate. Persisted to DB so an Auto Off
@@ -8290,6 +8395,9 @@ async def _on_print_complete_impl(
 
                 queue_item.status = queue_status
                 queue_item.completed_at = datetime.now(timezone.utc)
+                if _swap_hold_text:
+                    # After the status: changing it clears an older reason (the model's validator).
+                    queue_item.waiting_reason = _swap_hold_text
                 # #1111: pre-RUNNING failures (FAILED from PREPARE/SLICING)
                 # arrive without a queue_item.error_message because the print
                 # never reached the runtime layer that normally populates it.
@@ -8489,12 +8597,14 @@ async def _on_print_complete_impl(
                 # archive (counters re-computed from print_archives post-m019).
                 # ⚠️ Unless the printer confirms its plate — then the row waits
                 # for Clear or Repeat instead. See ``_auto_clean_completed_item``.
-                await _auto_clean_completed_item(
-                    db,
-                    queue_item,
-                    queue_status=queue_status,
-                    plate_auto_cleared=_plate_auto_cleared_by_swap,
-                )
+                # ⚠️ Not while our owed table swap is held: the row is the hold's record.
+                if _swap_hold is None:
+                    await _auto_clean_completed_item(
+                        db,
+                        queue_item,
+                        queue_status=queue_status,
+                        plate_auto_cleared=_plate_auto_cleared_by_swap,
+                    )
 
                 # Queue may now be empty — fire the queue-completed
                 # notifications.

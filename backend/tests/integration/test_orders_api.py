@@ -47,15 +47,19 @@ pytestmark = pytest.mark.integration
 @pytest.fixture
 async def catalog(db_session, tmp_path):
     """One product 'Lamp': 1 shade + 2 arms per unit, 4 screws purchased; one sliced plate yielding 1 shade + 2 arms."""
+    import hashlib
+
+    path = write_routing_3mf(
+        tmp_path / "lamp.gcode.3mf",
+        {1: [{"id": 1, "type": "PETG", "color": "#FFFFFF", "used_g": "1"}]},
+        model="P1S",
+    )
     file = LibraryFile(
         filename="lamp.gcode.3mf",
-        file_path=str(
-            write_routing_3mf(
-                tmp_path / "lamp.gcode.3mf",
-                {1: [{"id": 1, "type": "PETG", "color": "#FFFFFF", "used_g": "1"}]},
-                model="P1S",
-            )
-        ),
+        file_path=str(path),
+        # A content hash over the very bytes, so the file's swap declaration counts (swap-source-lifecycle spec
+        # r4 §4): without one a request for our swap macros is refused as an unknown source.
+        file_hash=hashlib.sha256(path.read_bytes()).hexdigest(),
         file_size=1,
         file_type="gcode",
         file_metadata={
@@ -2353,7 +2357,8 @@ async def test_plan_enqueue_mutes_swap_macros_that_would_fire_twice(committing_c
     assert row.bed_levelling_mode == "auto" and row.flow_cali_mode == "off"
     assert row.timelapse is True
 
-    # The file's own baked-in macros mute it on either target, printer or not.
+    # A baked-in file on the auto target: the router row's swap fields are inert -- its assignment decides per
+    # printer from the declaration the capture recorded (swap-source-lifecycle spec r4 §8), which is True here.
     catalog["file"].swap_compatible = True
     await db_session.commit()
     r = await committing_client.post(
@@ -2361,18 +2366,17 @@ async def test_plan_enqueue_mutes_swap_macros_that_would_fire_twice(committing_c
     )
     assert r.status_code == 200, r.text
     (auto_row,) = await _written_rows(db_session, AutoQueueItem, r.json()["created"][0]["queue_item_ids"])
-    assert auto_row.execute_swap_macros is False and auto_row.swap_macro_events is None
+    from backend.app.services import swap_compatibility
+
+    assert swap_compatibility.snapshot_fact(auto_row.source_snapshot) == swap_compatibility.SourceFact(True)
     assert auto_row.bed_levelling is False
 
 
 @pytest.mark.asyncio
-async def test_plan_enqueue_mutes_a_baked_in_file_even_with_no_preference(committing_client, db_session, catalog):
-    """⚠️ The gate is UNCONDITIONAL, not "only when a profile turned them on".
-
-    ``AutoQueueItemCreate`` defaults ``execute_swap_macros`` to True, so a
-    ``swap_compatible`` file with nothing saved at all would double-fire through
-    the writer's own default — the one case where the writers' defaults are NOT
-    left alone, and deliberately."""
+async def test_plan_enqueue_records_a_baked_in_file_for_the_assignment(committing_client, db_session, catalog):
+    """A baked-in file with nothing saved at all: the router row records the declaration, and that is what mutes
+    our swap macros -- at the assignment, for the printer that wins (swap-source-lifecycle spec r4 §8). The
+    writer's own ``execute_swap_macros`` default on the router row is inert and decides nothing."""
     catalog["file"].swap_compatible = True
     await db_session.commit()
     pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
@@ -2384,7 +2388,9 @@ async def test_plan_enqueue_mutes_a_baked_in_file_even_with_no_preference(commit
     )
     assert r.status_code == 200, r.text
     (row,) = await _written_rows(db_session, AutoQueueItem, r.json()["created"][0]["queue_item_ids"])
-    assert row.execute_swap_macros is False and row.swap_macro_events is None
+    from backend.app.services import swap_compatibility
+
+    assert swap_compatibility.snapshot_fact(row.source_snapshot) == swap_compatibility.SourceFact(True)
     # Nothing else moved: the writer's other defaults still stand.
     assert row.bed_levelling is True and row.mesh_mode_fast_check is True
 

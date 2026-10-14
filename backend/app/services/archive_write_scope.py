@@ -64,12 +64,15 @@ async def archive_write_scope(
 
 
 def archive_process_lock(archive_id: int) -> asyncio.Lock:
-    """The archive's local lock for combined archive/lane writers, taken before SQLite's writer."""
+    """The archive's in-process lock, for a writer that must take it BEFORE SQLite's writer because it takes
+    other in-process locks first (``queue_ops.claim_lanes``): never entered on top of :func:`archive_write_scope`
+    for the same archive -- the lock is not reentrant."""
     return _archive_locks[archive_id]
 
 
 async def archive_db_guard(db: AsyncSession, archive_id: int) -> None:
-    """PostgreSQL's transaction guard for archive facts; SQLite's writer is already held by the caller."""
+    """The archive's database guard: PostgreSQL's transaction-scoped advisory lock (namespace 182, reserved for
+    completion/archive fact writers); SQLite's writer is the caller's already."""
     if db.get_bind().dialect.name == "postgresql":
         await db.execute(text("SELECT pg_advisory_xact_lock(182, :archive_id)"), {"archive_id": archive_id})
 

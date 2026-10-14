@@ -23,6 +23,13 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from backend.app.core.config import settings
 from backend.app.models.queue_source import STATE_READY
+from backend.app.services.swap_compatibility import (
+    UNKNOWN_SOURCE,
+    SourceFact,
+    invalid_snapshot,
+    snapshot_fact,
+    snapshot_fields,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from backend.app.models.queue_source import QueueSource
@@ -109,6 +116,9 @@ class QueueSourceDescriptor:
     #: PRIMARY KEY, so SQLite hands a deleted row's id to the next INSERT, and
     #: only ``sha256`` answers that question (S4).
     queue_source_id: int | None = None
+    #: The job's own swap declaration (swap-source-lifecycle spec r4 §5), taken at capture. A descriptor built
+    #: without one is unknown -- never a False nobody declared.
+    swap_fact: SourceFact = UNKNOWN_SOURCE
 
 
 def source_snapshot(descriptor: QueueSourceDescriptor) -> dict[str, Any]:
@@ -131,6 +141,7 @@ def source_snapshot(descriptor: QueueSourceDescriptor) -> dict[str, Any]:
         "display_filename": descriptor.display_filename,
         "format": descriptor.format,
         "plate_fallback": descriptor.plate_fallback,
+        **snapshot_fields(descriptor.swap_fact),
     }
 
 
@@ -154,7 +165,8 @@ def stored_descriptor(source: QueueSource, snapshot: dict[str, Any] | None) -> Q
     ``filament_policy.deserialize_policy``, which must refuse an unknown version
     outright because there the payload IS the meaning; here it is provenance.
     """
-    payload = snapshot if isinstance(snapshot, dict) and snapshot.get("version") == SOURCE_SNAPSHOT_VERSION else {}
+    readable = isinstance(snapshot, dict) and snapshot.get("version") == SOURCE_SNAPSHOT_VERSION
+    payload = snapshot if readable else {}
     provenance = payload.get("provenance")
     return QueueSourceDescriptor(
         path=Path(settings.base_dir) / source.relative_path,
@@ -169,6 +181,9 @@ def stored_descriptor(source: QueueSource, snapshot: dict[str, Any] | None) -> Q
         plate_fallback=payload.get("plate_fallback"),
         provenance=dict(provenance) if isinstance(provenance, dict) else {},
         queue_source_id=source.id,
+        # Unlike the name and the plate, the declaration does not degrade to anything: a payload this version
+        # cannot read is unknown, final, with no lookup elsewhere (spec r4 §5).
+        swap_fact=snapshot_fact(payload) if readable else invalid_snapshot(),
     )
 
 

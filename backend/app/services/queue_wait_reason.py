@@ -13,6 +13,8 @@ WaitCode = Literal[
     "filament_unavailable",
     "dispatch_failed",
     "storage_full",
+    # The source copy found the spool busy; the scheduler asks again after its bounded cooldown.
+    "source_capture",
     "unknown",
 ]
 
