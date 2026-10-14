@@ -46,7 +46,7 @@ class SmartPlugManager:
         self._scheduler_task: asyncio.Task | None = None
         self._snapshot_task: asyncio.Task | None = None
         self._history_task: asyncio.Task | None = None
-        self._last_schedule_check: dict[int, str] = {}  # plug_id -> "HH:MM" last executed
+        self._last_schedule_check: dict[tuple[int, str], str] = {}  # (plug_id, action) -> local date/minute
 
     async def get_service_for_plug(self, plug: "SmartPlug", db: AsyncSession | None = None):
         """The single place a plug type becomes a driver.
@@ -298,7 +298,11 @@ class SmartPlugManager:
         from backend.app.core.database import async_session
         from backend.app.models.smart_plug import SmartPlug
 
-        current_time = datetime.now().strftime("%H:%M")
+        now = datetime.now()
+        current_time = now.strftime("%H:%M")
+        # A successful minute belongs to one calendar day. Manual control must
+        # neither consume tomorrow's schedule nor re-arm this minute's action.
+        scheduled_minute = now.strftime("%Y-%m-%d %H:%M")
 
         async with async_session() as db:
             result = await db.execute(
@@ -325,25 +329,25 @@ class SmartPlugManager:
 
                 # Check if we should turn on
                 if plug.schedule_on_time == current_time:
-                    last_check = self._last_schedule_check.get(plug.id)
-                    if last_check != f"on:{current_time}":
+                    last_check = self._last_schedule_check.get((plug.id, "on"))
+                    if last_check != scheduled_minute:
                         logger.info("Schedule: Turning on plug '%s' at %s", plug.name, current_time)
                         success = await service.turn_on(plug)
                         if success:
                             plug.last_state = "ON"
                             plug.last_checked = datetime.now(timezone.utc)
-                            self._last_schedule_check[plug.id] = f"on:{current_time}"
+                            self._last_schedule_check[(plug.id, "on")] = scheduled_minute
 
                 # Check if we should turn off
                 if plug.schedule_off_time == current_time:
-                    last_check = self._last_schedule_check.get(plug.id)
-                    if last_check != f"off:{current_time}":
+                    last_check = self._last_schedule_check.get((plug.id, "off"))
+                    if last_check != scheduled_minute:
                         logger.info("Schedule: Turning off plug '%s' at %s", plug.name, current_time)
                         success = await service.turn_off(plug)
                         if success:
                             plug.last_state = "OFF"
                             plug.last_checked = datetime.now(timezone.utc)
-                            self._last_schedule_check[plug.id] = f"off:{current_time}"
+                            self._last_schedule_check[(plug.id, "off")] = scheduled_minute
                             # Mark printer offline if linked — but only for the plug
                             # that feeds its mains, not an accessory (#2629).
                             if plug.printer_id and plug.controls_printer_power:

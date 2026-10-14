@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Smart plug schedules repeat every day.** An on-only or off-only schedule no longer stops after its first successful day, including when the plug is switched manually between scheduled actions. Successful actions are deduplicated separately by date and time, so polling again in the same minute does not undo manual control or repeat an on/off pair.
+
 - **Opening an occupied camera no longer restarts every camera stream.** A live-view request refused because the camera is already reserved or its subscription limit is reached leaves the camera worker and its existing streams running.
 
 - **Every part has a picture.** Each printed part of a product gets its own picture, rendered in the background on the server from the sliced G-code in the filament's colours — or your own photo — and it shows on products, orders and stock. The Docker image and the Windows installer bring the pinned Node.js the renderer needs; a native install downloads it once — at install, with `update.sh` or when it is updated from Settings — and one that starts without it installs it by itself. Pictures render on Linux and macOS (x64 and arm64), on Windows x64 and — through Node.js 22, the last line Node publishes for 32-bit ARM — on a Raspberry Pi 2 or newer with the 32-bit Raspberry Pi OS until that line's support ends on 30 April 2027; a weekly check prepares and tests each new Node.js patch for the next release.
