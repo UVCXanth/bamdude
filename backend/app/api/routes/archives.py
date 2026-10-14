@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import json
 import logging
@@ -41,7 +42,7 @@ from backend.app.schemas.archive import (
 )
 from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.schemas.project import StockMovedOut
-from backend.app.services import part_stock
+from backend.app.services import part_stock, swap_compatibility
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.archive_defects import DefectsWrite, record_defects
 from backend.app.services.archive_write_scope import archive_write_scope, locked_print
@@ -2840,6 +2841,13 @@ async def get_plate_preview(
         raise HTTPException(500, f"Error extracting plate preview: {str(e)}")
 
 
+#: Save to library refuses an archive whose swap declaration cannot travel with its bytes.
+SAVE_SWAP_SOURCE_UNKNOWN = (
+    "This archive does not say whether its file carries its own plate-swap sequence, or its file is no longer the "
+    "one it describes, so it cannot be saved to the library. The archive itself stays available."
+)
+
+
 @router.post("/{archive_id}/save-to-library")
 async def save_archive_to_library(
     archive_id: int,
@@ -2868,6 +2876,13 @@ async def save_archive_to_library(
     printer's own screen and the 3MF cannot be pulled, the row is created with an
     empty ``file_path`` and a retry marker. That is a 409 with an explanation,
     not a 404 — the archive is real, the file is what is missing.
+
+    ⚠️ **A transfer, not a new ingest** (swap-source-lifecycle spec r4 §4). The
+    archive's own swap declaration travels, confirmed against the hash of the
+    bytes really read — never re-guessed from the file name. An unknown, or a
+    record that speaks for other bytes, is a 409 ``swap_source_unknown`` before
+    anything is written; the library's row of the same bytes under another
+    declaration is the helper's 409 ``swap_source_conflict``.
     """
     from backend.app.api.routes.library import save_3mf_bytes_to_library
     from backend.app.models.library import LibraryFolder
@@ -2892,9 +2907,20 @@ async def save_archive_to_library(
         if folder is None:
             raise HTTPException(404, "Folder not found")
 
+    content = await asyncio.to_thread(file_path.read_bytes)
+    fact, expected = swap_compatibility.archive_source(archive)
+    fact = swap_compatibility.confirm(
+        fact, expected, await asyncio.to_thread(lambda: hashlib.sha256(content).hexdigest())
+    )
+    if fact.value is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": swap_compatibility.UNKNOWN_SOURCE_REASON, "message": SAVE_SWAP_SOURCE_UNKNOWN},
+        )
+
     result = await save_3mf_bytes_to_library(
         db,
-        content=file_path.read_bytes(),
+        content=content,
         filename=archive.filename,
         folder=folder,
         created_by_id=user.id if user else None,
@@ -2902,6 +2928,7 @@ async def save_archive_to_library(
         # tag, which treats it as sliced — a file that came out of a print
         # necessarily is.
         source_type="archive",
+        declared_swap=fact.value,
     )
     # ⚠️ ``result.file`` may be a row this call did not create — the bytes were
     # already in the library, so that row is what the response points at.

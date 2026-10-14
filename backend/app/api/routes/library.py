@@ -83,7 +83,7 @@ from backend.app.schemas.order_from_files import (
     PreviewYieldOut,
 )
 from backend.app.schemas.plate_objects import PlateObjectsResponse
-from backend.app.services import order_from_files
+from backend.app.services import order_from_files, swap_compatibility
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.design_settings import (
     DesignOverride,
@@ -584,6 +584,13 @@ def _resolve_slice_destination(target_folder: LibraryFolder | None, out_filename
     return dest, True, None
 
 
+#: The refusal of a transfer whose declaration the library's row of the same bytes contradicts.
+SWAP_SOURCE_CONFLICT = (
+    "The library already holds this file under a different plate-swap declaration than this archive's, so it was "
+    "not saved again. The library's file was left as it is."
+)
+
+
 def _stored_file_path(abs_path: Path, is_external: bool) -> str:
     """Produce the value to persist in ``LibraryFile.file_path``.
 
@@ -606,6 +613,7 @@ async def save_3mf_bytes_to_library(
     source_url: str | None = None,
     extra_metadata: dict | None = None,
     commit: bool = True,
+    declared_swap: bool | None = None,
 ) -> IngestResult:
     """Persist raw 3MF / gcode bytes as a ``LibraryFile`` row.
 
@@ -629,6 +637,14 @@ async def save_3mf_bytes_to_library(
     "this IS the existing row", on the hash path merely "one exists somewhere",
     while a second row was created regardless. The outcome enum is the whole
     answer now.
+
+    ``declared_swap`` is a TRANSFER's declaration (save archive to library,
+    swap-source-lifecycle spec r4 §4): the bytes' known fact, never inferred
+    from ``filename``. Left at ``None`` the bytes are a NEW external file and
+    their basename is classified. With a declaration, a library row that
+    already holds the same bytes under another one is a 409
+    ``swap_source_conflict``: that row is not rewritten, and the copy written
+    for the comparison is removed.
     """
 
     # Source-URL dedupe: MakerWorld re-imports of the same plate must not
@@ -659,6 +675,15 @@ async def save_3mf_bytes_to_library(
     reusable = await find_reusable_row(db, content_hash=file_hash)
     if reusable is not None:
         existing, present = reusable
+        if declared_swap is not None and swap_compatibility.library_fact(existing) is not declared_swap:
+            # A transfer says what these bytes declare, and the library holds them
+            # under the other answer. Neither is rewritten into the other: the
+            # existing row stays as it is — not re-pointed either — and our copy goes.
+            file_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "swap_source_conflict", "message": SWAP_SOURCE_CONFLICT},
+            )
         if present:
             # ⚠️ Our bytes are redundant and already written — delete them, or a
             # deduplication feature becomes an orphan-file generator.
@@ -682,9 +707,8 @@ async def save_3mf_bytes_to_library(
     if extra_metadata:
         metadata = {**metadata, **extra_metadata}
 
-    fname_lower = filename.lower()
     swap_compatible = (
-        fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in fname_lower or ".swaps." in fname_lower
+        declared_swap if declared_swap is not None else swap_compatibility.classify_external_name(filename)
     )
 
     library_file = LibraryFile(
@@ -3340,6 +3364,10 @@ async def slice_and_persist_as_archive(
         extra_data=metadata,
         skip_objects_supported=skip_objects_supported_from_metadata(metadata),
     )
+    # Our own slicer output carries no baked swap sequence, whatever the source
+    # declared: the record copied along with the source's metadata is replaced,
+    # not inherited (swap-source-lifecycle spec r4 §4).
+    swap_compatibility.write_archive_fact(new_archive, False)
     db.add(new_archive)
     await db.commit()
     await db.refresh(new_archive)
@@ -3558,13 +3586,9 @@ async def store_library_upload(
     metadata = prepared.metadata
     thumbnail_path = await _publish_prepared_thumbnail(prepared)
 
-    # Detect swap mode compatibility from filename. Covers both the
-    # singular ".swap." suffix (older / custom tooling) and the ".swaps."
-    # suffix that swaplist.app actually emits on export.
-    fname_lower = filename.lower()
-    swap_compatible = (
-        fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in fname_lower or ".swaps." in fname_lower
-    )
+    # A new external file declares a baked swap sequence by its basename: ".swap."
+    # (older / custom tooling) or ".swaps." (what swaplist.app emits on export).
+    swap_compatible = swap_compatibility.classify_external_name(filename)
 
     # Create database entry (managed files store relative paths for
     # portability; external files store the absolute mount path — same
@@ -3904,6 +3928,9 @@ async def extract_zip_file(
                         thumbnail_path=thumbnail_path,
                         file_metadata=_without_print_name(metadata) if metadata else None,
                         created_by_id=upload_user_id,
+                        # The member is the new external file: its own basename
+                        # declares, not the ZIP's name or a directory inside it.
+                        swap_compatible=swap_compatibility.classify_external_name(filename),
                     )
                     db.add(library_file)
                     await db.flush()

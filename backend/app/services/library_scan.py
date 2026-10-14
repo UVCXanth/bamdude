@@ -93,6 +93,10 @@ class _Prepared:
     sliced: bool | None = None
     metadata_complete: bool = False
     expected_hash: str | None = None
+    #: The swap declaration a NEW content identity publishes with its hash and
+    #: metadata -- the share's own entry name, classified. ``None`` keeps the
+    #: row's: the same bytes, or a repair of a row whose hash was missing.
+    swap_declaration: bool | None = None
 
 
 async def prepare_via_service(
@@ -106,6 +110,7 @@ async def prepare_via_service(
 ) -> _Prepared | None:
     """The scan's production path through the shared local file worker."""
     from backend.app.api.routes.library import _mtime_to_utc, get_library_thumbnails_dir, to_relative_path
+    from backend.app.services import swap_compatibility
     from backend.app.services.library_file_preparation import EXTRACTION_VERSION, SCANNABLE_EXTENSIONS
     from backend.app.services.library_file_runtime import get_library_file_runtime
 
@@ -114,8 +119,12 @@ async def prepare_via_service(
         return None
     runtime = get_library_file_runtime()
     mtime = _mtime_to_utc(mtime_ns / 1e9)
+    # ⚠️ A complete extraction needs a VALID digest (R2-3): NULL == NULL, or two
+    # equal invalid strings, is not one. Such a row is prepared again even with
+    # unchanged size and mtime, and the refresh below repairs it.
     complete = (
         known is not None
+        and swap_compatibility.valid_hash(known.file_hash)
         and known.extraction_version == EXTRACTION_VERSION
         and known.extraction_hash == known.file_hash
         and (not filename.lower().endswith(".3mf") or known.sliced is not None)
@@ -139,6 +148,12 @@ async def prepare_via_service(
                 expected_hash=known.file_hash,
             )
     result = await runtime.prepare(path, root=root, filename=filename)
+    # A new content identity on this path declares again, by the share's own
+    # entry name (never a display rename). The same bytes, or the repair of a
+    # row whose hash was missing or invalid, keep what the row declares.
+    new_identity = known is None or (
+        swap_compatibility.valid_hash(known.file_hash) and result.digest != known.file_hash
+    )
     thumbnail_path = None
     if result.thumbnail:
         extension = result.thumbnail_ext if result.thumbnail_ext in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
@@ -162,6 +177,7 @@ async def prepare_via_service(
         thumbnail_path=thumbnail_path,
         metadata_complete=True,
         expected_hash=known.file_hash if known else None,
+        swap_declaration=swap_compatibility.classify_external_name(filename) if new_identity else None,
     )
 
 
@@ -246,6 +262,10 @@ async def write_batch(
                     if row.thumbnail_path and row.thumbnail_path != item.thumbnail_path:
                         retired_thumbnails.append(row.thumbnail_path)
                     values["thumbnail_path"] = item.thumbnail_path
+                    # Published with the hash and metadata it belongs to, under the
+                    # same check that the row still holds what was read.
+                    if item.swap_declaration is not None:
+                        values["swap_compatible"] = item.swap_declaration
                 if values:
                     await db.execute(update(LibraryFile).where(LibraryFile.id == item.known_id).values(**values))
                 if item.metadata_complete:
@@ -282,6 +302,7 @@ async def write_batch(
                 thumbnail_path=item.thumbnail_path,
                 file_metadata=_without_print_name(item.file_metadata),
                 fs_modified_at=item.fs_modified_at,
+                swap_compatible=item.swap_declaration is True,
             )
             db.add(db_file)
             await db.flush()

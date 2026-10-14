@@ -82,12 +82,13 @@ async def test_a_known_complete_file_that_has_not_moved_is_not_re_read(tmp_path,
     stat = target.stat()
     known = _Known(
         id=1,
-        file_hash="deadbeef",
+        # A valid digest: an extraction is complete only with one (swap-source-lifecycle R2-3).
+        file_hash="de" * 32,
         file_size=stat.st_size,
         # What the scan stores: from the whole nanoseconds, never the float seconds.
         fs_modified_at=_mtime_to_utc(stat.st_mtime_ns / 1e9),
         extraction_version=EXTRACTION_VERSION,
-        extraction_hash="deadbeef",
+        extraction_hash="de" * 32,
     )
     worker = get_library_file_runtime()
     monkeypatch.setattr(worker, "hash", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("re-read")))

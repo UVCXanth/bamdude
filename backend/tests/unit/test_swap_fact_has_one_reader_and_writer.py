@@ -23,23 +23,39 @@ APP = ROOT / "backend" / "app"
 OWNER = "backend/app/services/swap_compatibility.py"
 
 #: Permanent touches, each in one of the plan's categories (the model and the frozen migrations are not scanned):
-#: this module, a declared response transport, a library writer applying the ingest classifier. Empty until a
-#: task moves a touch here with its reason.
-ALLOWED: dict[tuple[str, str, str], str] = {}
+#: this module, a declared response transport, a library writer applying the ingest classifier. Each entry names
+#: its category.
+_INGEST = "library ingest writer: a new external file's basename through classify_external_name (spec r4 §4)"
+ALLOWED: dict[tuple[str, str, str], str] = {
+    ("backend/app/api/routes/library.py", "save_3mf_bytes_to_library", "kw"): (
+        _INGEST + ", or a transfer's explicit declaration"
+    ),
+    ("backend/app/api/routes/library.py", "store_library_upload", "kw"): _INGEST,
+    ("backend/app/api/routes/library.py", "extract_zip_file", "kw"): _INGEST + " -- the member's own basename",
+    ("backend/app/services/virtual_printer/manager.py", "VirtualPrinterInstance._save_to_library", "kw"): (
+        _INGEST + " -- the name the file arrived under"
+    ),
+    ("backend/app/services/library_scan.py", "write_batch", "kw"): _INGEST + " -- the share's entry name",
+    ("backend/app/services/library_scan.py", "write_batch", "str"): (
+        _INGEST + " -- a new content identity, published with its hash and metadata"
+    ),
+    ("backend/app/services/library_helpers.py", "sync_system_tags", "attr"): (
+        "declared response transport: the row's declaration shown as its 'swap' tag, after the fact is written"
+    ),
+    ("backend/app/services/library_helpers.py", "sync_system_tags", "kw"): (
+        "declared response transport: the row's declaration shown as its 'swap' tag, after the fact is written"
+    ),
+}
 
 #: Touches that predate the policy module. Each names the task that replaces it with the reader/writer, or moves
 #: it to ALLOWED in one of the categories above.
 PENDING = {
-    ("backend/app/api/routes/library.py", "save_3mf_bytes_to_library", "kw"): "T5 ingest classifier",
-    ("backend/app/api/routes/library.py", "store_library_upload", "kw"): "T5 ingest classifier",
     ("backend/app/api/routes/library.py", "list_files", "attr"): "T6 library known projection",
     ("backend/app/api/routes/library.py", "list_files", "kw"): "T6 library known projection",
     ("backend/app/api/routes/library.py", "get_file", "attr"): "T6 library known projection",
     ("backend/app/api/routes/library.py", "get_file", "kw"): "T6 library known projection",
     ("backend/app/api/routes/print_queue.py", "get_queue_copy_source", "kw"): "T6 copy source reads the job's fact",
     ("backend/app/main.py", "_on_print_complete_impl", "attr"): "T7 completion reader",
-    ("backend/app/services/library_helpers.py", "sync_system_tags", "attr"): "T5 system tags after the fact",
-    ("backend/app/services/library_helpers.py", "sync_system_tags", "kw"): "T5 system tags after the fact",
 }
 
 
