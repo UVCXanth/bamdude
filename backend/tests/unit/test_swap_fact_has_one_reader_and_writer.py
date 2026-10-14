@@ -2,7 +2,8 @@
 
 The archive column ``swap_compatible`` is a projection of the record ``extra_data["swap_source"]``; no macro or
 plate-clear gate may read it, and only ``services/swap_compatibility`` writes either. A library row's column is
-written by the library ingest writers and read for display; decisions go through ``library_fact``.
+the projection of its hash-bound carrier, and every ingest door writes both through the same module
+(``declare_ingest`` / ``scan_declaration``, spec r3 §8, plan T9.3); decisions go through ``library_fact``.
 
 The scan finds every touch of the fact in ``backend/app`` -- an attribute (ORM read, assignment, SELECT of the
 column), a keyword (constructor, response), a string (``getattr`` / ``setattr`` / a dict key) -- per function.
@@ -21,22 +22,9 @@ APP = ROOT / "backend" / "app"
 OWNER = "backend/app/services/swap_compatibility.py"
 
 #: Permanent touches, each in one of the plan's categories (the model and the frozen migrations are not scanned):
-#: this module, a declared response transport, a library writer applying the ingest classifier. Each entry names
-#: its category.
-_INGEST = "library ingest writer: a new external file's basename through classify_external_name (spec r4 §4)"
+#: this module and a declared response transport. The ingest doors write through the module since T9.3. Each entry
+#: names its category.
 ALLOWED: dict[tuple[str, str, str], str] = {
-    ("backend/app/api/routes/library.py", "save_3mf_bytes_to_library", "kw"): (
-        _INGEST + ", or a transfer's explicit declaration"
-    ),
-    ("backend/app/api/routes/library.py", "store_library_upload", "kw"): _INGEST,
-    ("backend/app/api/routes/library.py", "extract_zip_file", "kw"): _INGEST + " -- the member's own basename",
-    ("backend/app/services/virtual_printer/manager.py", "VirtualPrinterInstance._save_to_library", "kw"): (
-        _INGEST + " -- the name the file arrived under"
-    ),
-    ("backend/app/services/library_scan.py", "write_batch", "kw"): _INGEST + " -- the share's entry name",
-    ("backend/app/services/library_scan.py", "write_batch", "str"): (
-        _INGEST + " -- a new content identity, published with its hash and metadata"
-    ),
     ("backend/app/services/library_helpers.py", "sync_system_tags", "kw"): (
         "declared response transport: the row's declaration, through library_fact, shown as its 'swap' tag"
     ),

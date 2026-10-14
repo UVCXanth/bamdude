@@ -642,3 +642,56 @@ def source_revision(row, *, epoch: int) -> str:
         "epoch": epoch,
     }
     return hashlib.sha256(json.dumps(facts, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+# --- what a library door writes (T9 spec r3 §8, plan T9.3) -----------------------------------------------------------
+
+INGEST_ORIGINS = frozenset({"classifier", "generated", "transferred"})
+
+
+def declaration_columns(value: bool, sha256: str, origin: str) -> dict:
+    """The two columns a library declaration is, for a writer that updates by statement (the scan): the carrier
+    bound to ``sha256`` and its bool projection, never one without the other."""
+    if origin not in INGEST_ORIGINS:
+        raise ValueError(f"not an ingest origin: {origin!r}")
+    record = {"version": DECLARATION_VERSION, "value": value, "sha256": sha256, "origin": origin}
+    if not isinstance(read_declaration(record, origins=DECLARATION_ORIGINS), Declaration):
+        raise ValueError("not a declaration this version reads back")
+    return {"swap_compatible": value, DECLARATION_COLUMN: record}
+
+
+def declare_ingest(row, value: bool, *, origin: str) -> None:
+    """A library door's declaration of the bytes it just wrote: the hash-bound carrier with its projection -- or,
+    for a row without a valid hash (nothing to bind a carrier to), the projection alone, which the reader answers
+    unknown until a scan gives the row its hash."""
+    if origin not in INGEST_ORIGINS:
+        raise ValueError(f"not an ingest origin: {origin!r}")
+    if valid_hash(getattr(row, "file_hash", None)):
+        write_source_declaration(row, value=value, sha256=row.file_hash, origin=origin)
+        return
+    row.swap_compatible = value is True
+    setattr(row, DECLARATION_COLUMN, None)
+
+
+def scan_declaration(row, *, new_hash: str, new_identity: bool, entry_name: str | None) -> dict:
+    """What a scan's refresh of ``row`` writes of its declaration, read from the row as it is NOW (locked):
+
+    - new bytes on the path: a new classifier carrier by the share's entry name, with the new hash -- whatever was
+      declared for the old bytes (an operator's declaration included) is not carried over;
+    - the repair of a row that had no valid hash: an external row without a carrier whose bool is the old default
+      False is classified by its persisted name on the share (§8, C) and bound to the actual hash;
+    - the same bytes: nothing -- an operator's declaration, any carrier, the bool all stay as they are.
+    """
+    if new_identity:
+        return declaration_columns(classify_external_name(entry_name), new_hash, "classifier")
+    repaired = not valid_hash(getattr(row, "file_hash", None)) and valid_hash(new_hash)
+    if (
+        repaired
+        and getattr(row, DECLARATION_COLUMN, None) is None
+        and getattr(row, "is_external", None) is True
+        and getattr(row, "swap_compatible", None) is False
+        and isinstance(getattr(row, "file_path", None), str)
+        and row.file_path.strip()
+    ):
+        return declaration_columns(classify_external_name(row.file_path), new_hash, "classifier")
+    return {}

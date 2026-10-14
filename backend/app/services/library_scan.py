@@ -236,10 +236,27 @@ async def write_batch(
     refreshed: list[int] = []
     retired_thumbnails: list[str] = []
 
+    from backend.app.core.database import take_write_lock
+    from backend.app.services import swap_compatibility
+
+    # Refreshes first, in ascending id: each row is read under the write protocol a declaration also takes
+    # (swap-source-declaration spec r3 §5) -- SQLite's writer before the first authoritative read, PostgreSQL's row
+    # lock -- so a declaration and this batch never interleave between a read and its write.
+    batch = sorted(batch, key=lambda item: (item.intent != "refresh", item.known_id or 0))
     async with async_session() as db:
+        first_refresh = next((item.known_id for item in batch if item.intent == "refresh"), None)
+        if first_refresh is not None:
+            await take_write_lock(db, LibraryFile.__table__, first_refresh)
         for item in batch:
             if item.intent == "refresh":
-                row = await db.get(LibraryFile, item.known_id)
+                row = (
+                    await db.execute(
+                        select(LibraryFile)
+                        .where(LibraryFile.id == item.known_id)
+                        .with_for_update()
+                        .execution_options(populate_existing=True)
+                    )
+                ).scalar_one_or_none()
                 if (
                     row is None
                     or row.file_path != item.file_path_str
@@ -263,9 +280,17 @@ async def write_batch(
                         retired_thumbnails.append(row.thumbnail_path)
                     values["thumbnail_path"] = item.thumbnail_path
                     # Published with the hash and metadata it belongs to, under the
-                    # same check that the row still holds what was read.
-                    if item.swap_declaration is not None:
-                        values["swap_compatible"] = item.swap_declaration
+                    # same check that the row still holds what was read: new bytes get
+                    # a new classifier carrier, a hashless legacy row §8's
+                    # classification, the same bytes keep what they declare.
+                    values.update(
+                        swap_compatibility.scan_declaration(
+                            row,
+                            new_hash=item.new_hash,
+                            new_identity=item.swap_declaration is not None,
+                            entry_name=item.filename,
+                        )
+                    )
                 if values:
                     await db.execute(update(LibraryFile).where(LibraryFile.id == item.known_id).values(**values))
                 if item.metadata_complete:
@@ -302,8 +327,8 @@ async def write_batch(
                 thumbnail_path=item.thumbnail_path,
                 file_metadata=_without_print_name(item.file_metadata),
                 fs_modified_at=item.fs_modified_at,
-                swap_compatible=item.swap_declaration is True,
             )
+            swap_compatibility.declare_ingest(db_file, item.swap_declaration is True, origin="classifier")
             db.add(db_file)
             await db.flush()
             await sync_system_tags(db, db_file)

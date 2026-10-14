@@ -321,8 +321,9 @@ async def test_scan_new_identity_updates_fact_but_not_captured_job(db_session, m
     first = a_3mf(on_share, "v1")
     await via_scan(db_session, folder)
     row = await row_of(db_session, first)
-    # What a scan before this fix left: False whatever the name -- and a display rename on top.
+    # What a scan before this fix left: False whatever the name, no carrier (T9) -- and a display rename on top.
     row.swap_compatible = False
+    row.swap_source_declaration = None
     row.filename = "plate.3mf"
     await db_session.commit()
     job = await a_captured_job(sessions, db_session, await a_queue(db_session, printer_factory), row)
@@ -568,6 +569,7 @@ async def with_hash(db: AsyncSession, row: LibraryFile, value: str | None) -> No
 async def test_scan_null_hash_current_extraction_is_not_complete(db_session, mount, worker_calls):
     row, content = await a_scanned_row(db_session, mount)
     row.swap_compatible = True  # the row's own declaration; a repair keeps it, the name would not give it
+    row.swap_source_declaration = None  # a row from before T9 carries no carrier beside its bool
     await with_hash(db_session, row, None)
     assert sc.library_fact(row) is None
     worker_calls["prepare"].clear()

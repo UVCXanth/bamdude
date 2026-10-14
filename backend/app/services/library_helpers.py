@@ -239,14 +239,21 @@ def compute_file_tags(
 
 
 def answered_file_tags(file) -> list[str]:
-    """The row's system tags as an answer. A cache written before the hash rule may carry 'swap' for a row whose
-    declaration is unknown (no valid hash, swap-source-lifecycle spec r4 §4); the answer leaves it out, as the next
-    write of the cache will."""
+    """The row's system tags as an answer, with 'swap' exactly when the row's effective fact is True. A cache
+    written before the hash rule may carry 'swap' for a row whose declaration is unknown (no valid hash,
+    swap-source-lifecycle spec r4 §4), and one written before §8's classification lacks it for a legacy external
+    row its share name declares (swap-source-declaration spec r3 §8, until m203's backfill persists it); the answer
+    says what the next write of the cache will, and writes nothing."""
     from backend.app.services.swap_compatibility import library_fact
 
     tags = list(file.file_tags or [])
-    if "swap" in tags and library_fact(file) is not True:
-        tags.remove("swap")
+    effective = library_fact(file) is True
+    if "swap" in tags and not effective:
+        tags = [tag for tag in tags if tag != "swap"]
+    elif effective and "swap" not in tags:
+        # Where compute_file_tags puts it: after the structural chips, before provenance.
+        at = tags.index("makerworld") if "makerworld" in tags else len(tags)
+        tags.insert(at, "swap")
     return tags
 
 

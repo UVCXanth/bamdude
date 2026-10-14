@@ -825,8 +825,8 @@ class VirtualPrinterInstance:
                     thumbnail_path=thumbnail_path,
                     file_metadata=metadata,
                     source_type=detected_source_type,
-                    swap_compatible=declared_swap,
                 )
+                swap_compatibility.declare_ingest(library_file, declared_swap, origin="classifier")
                 # The slicer sends the same plate again more often than any
                 # other path — "Send to printer", tweak nothing, send again.
                 # ``find_reusable_row`` is the one place that decides.

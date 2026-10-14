@@ -725,9 +725,11 @@ async def save_3mf_bytes_to_library(
         thumbnail_path=thumbnail_path,
         file_metadata=_without_print_name(metadata) or None,
         created_by_id=created_by_id,
-        swap_compatible=swap_compatible,
         source_type=source_type,
         source_url=source_url,
+    )
+    swap_compatibility.declare_ingest(
+        library_file, swap_compatible, origin="transferred" if declared_swap is not None else "classifier"
     )
     db.add(library_file)
     await db.flush()
@@ -3148,6 +3150,8 @@ async def slice_and_persist(
         source_type="sliced",
         created_by_id=current_user_id,
     )
+    # Our own slicer bakes no swap sequence, whatever the model was called.
+    swap_compatibility.declare_ingest(new_file, False, origin="generated")
     db.add(new_file)
     await db.flush()
     await sync_system_tags(db, new_file)
@@ -3608,8 +3612,8 @@ async def store_library_upload(
         thumbnail_path=thumbnail_path,
         file_metadata=_without_print_name(metadata) if metadata else None,
         created_by_id=created_by_id,
-        swap_compatible=swap_compatible,
     )
+    swap_compatibility.declare_ingest(library_file, swap_compatible, origin="classifier")
     db.add(library_file)
     await db.flush()
     await sync_system_tags(db, library_file)
@@ -3931,9 +3935,11 @@ async def extract_zip_file(
                         thumbnail_path=thumbnail_path,
                         file_metadata=_without_print_name(metadata) if metadata else None,
                         created_by_id=upload_user_id,
-                        # The member is the new external file: its own basename
-                        # declares, not the ZIP's name or a directory inside it.
-                        swap_compatible=swap_compatibility.classify_external_name(filename),
+                    )
+                    # The member is the new external file: its own basename
+                    # declares, not the ZIP's name or a directory inside it.
+                    swap_compatibility.declare_ingest(
+                        library_file, swap_compatibility.classify_external_name(filename), origin="classifier"
                     )
                     db.add(library_file)
                     await db.flush()
