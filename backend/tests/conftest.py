@@ -373,6 +373,40 @@ def _clean_advertised_overlay():
 
 
 @pytest.fixture(autouse=True)
+def _clean_print_lifecycle_registries():
+    """The print lifecycle's registries hang off the ``printer_manager`` singleton and survive a test.
+
+    A test that drives ``on_print_start`` through the real manager leaves a print-start admission keyed by printer 1;
+    operator print-state recovery reads "an admission without a run" as a busy printer and offers no repair, so the
+    recovery tests that later land on the same worker failed while each passed on its own (CI, 2026-10-15).
+    ``test_print_registries_do_not_leak`` pins the order. Same leak class as the overlay above.
+    """
+    from backend.app.services import print_reconciliation
+    from backend.app.services.printer_manager import printer_manager
+
+    def clean():
+        for name in (
+            "_print_start_admissions",
+            "_print_start_resolutions",
+            "_print_run_bindings",
+            "_print_run_finishing_bindings",
+            "_print_effect_generations",
+            "_print_terminal_generations",
+            "_pending_print_terminals",
+        ):
+            registry = getattr(printer_manager, name, None)
+            if isinstance(registry, dict):
+                registry.clear()
+        if getattr(printer_manager, "_print_lifecycle_stopping", False):
+            printer_manager._print_lifecycle_stopping = False
+        print_reconciliation._live_completions.clear()
+
+    clean()
+    yield
+    clean()
+
+
+@pytest.fixture(autouse=True)
 def _lock_order_is_strict():
     """The lock-order monitor raises in tests (WS-13 E1, spec BL2): a door that takes a
     lower lock class after a higher one is a red test, not a log line.
