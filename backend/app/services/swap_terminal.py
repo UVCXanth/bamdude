@@ -146,10 +146,11 @@ async def pending_fact(db, archive, execution_item) -> bool | None:
     fact = swap_compatibility.archive_fact(archive)
     if fact.recorded or fact.invalid or fact.value is not None or execution_item is None:
         return fact.value
-    from backend.app.services.filament_intake import item_descriptor
+    from backend.app.services.filament_intake import execution_swap_fact
 
-    descriptor = await item_descriptor(db, execution_item)
-    return descriptor.swap_fact.value if descriptor is not None else None
+    # The run's own evidence only: never a source's later declaration (swap-source-declaration spec r3 §2).
+    swap_fact = await execution_swap_fact(db, execution_item)
+    return swap_fact.value if swap_fact is not None else None
 
 
 def hold_text(reason: str, cycle: str, lang: str | None = None) -> str:

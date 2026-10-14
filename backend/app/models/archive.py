@@ -180,6 +180,9 @@ class PrintArchive(Base):
 
     # Swap mode compatibility (processed for plate swapper)
     swap_compatible: Mapped[bool] = mapped_column(Boolean, default=False)
+    # An operator's declaration of this archive's SOURCE for a future reprint (swap-source-declaration spec r3
+    # §2), apart from the executed run's fact above. Read and written only by services/swap_compatibility.
+    swap_source_declaration: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Whether per-object skipping will work for this archive's 3MF —
     # ``gcode_label_objects`` AND ``exclude_object``, both from

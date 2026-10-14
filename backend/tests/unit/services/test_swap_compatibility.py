@@ -162,7 +162,9 @@ def test_the_api_copy_hides_only_the_carrier():
     ],
 )
 def test_library_fact_requires_content_identity(column, file_hash, expected):
-    assert sc.library_fact(SimpleNamespace(swap_compatible=column, file_hash=file_hash)) is expected
+    # A managed row: an external one's legacy False is classified by its name on the share (T9 §8, C).
+    row = SimpleNamespace(swap_compatible=column, file_hash=file_hash, is_external=False, file_path="library/x.3mf")
+    assert sc.library_fact(row) is expected
 
 
 # --- classifier (§4) ------------------------------------------------------------------------------------------------
@@ -327,7 +329,10 @@ def test_legacy_resolution_takes_exactly_one_own_link():
     library = SimpleNamespace(swap_compatible=True, file_hash=H1)
     archive = _archive(False, {sc.CARRIER_KEY: _carrier(False)})
     archive.source_content_hash = H1
-    resolve = sc.resolve_legacy
+
+    def resolve(**kwargs):
+        return sc.resolve_legacy(context="source", **kwargs)
+
     assert resolve(provenance_kind="library_file", archive=archive, library_file=library, sha256=H1) == sc.SourceFact(
         True
     )

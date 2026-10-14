@@ -425,6 +425,7 @@ def import_all_models() -> None:
         spoolman_k_profile,
         spoolman_slot_assignment,
         stock_issue,
+        swap_source_declaration_audit,
         telegram_chat,
         user,
         user_email_pref,

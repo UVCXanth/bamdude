@@ -121,3 +121,63 @@ def test_the_reserved_record_key_is_only_the_writers():
 def test_nothing_is_left_pending():
     """Emptied by T3-T7: every touch is now the policy module's, or ALLOWED in a category. A new one goes there."""
     assert not PENDING
+
+
+# --- T9: a source's declaration and a job's incarnation (swap-source-declaration spec r3 §3) -----------------------
+
+#: The new columns, touched -- attribute, keyword, string -- only by the policy module (and the models / migrations
+#: that declare them). A later step that needs one names it here with its category.
+_DECLARATION_NAMES = ("swap_source_declaration", "swap_declaration_identity")
+_DECLARING_MODELS = {
+    "backend/app/models/archive.py",
+    "backend/app/models/library.py",
+    "backend/app/models/print_queue.py",
+    "backend/app/models/auto_queue.py",
+}
+ALLOWED_DECLARATION: dict[tuple[str, str, str], str] = {}
+
+
+class _DeclarationTouches(ast.NodeVisitor):
+    def __init__(self, rel: str):
+        self.rel = rel
+        self.stack: list[str] = []
+        self.found: set[tuple[str, str, str]] = set()
+
+    def _scope(self, node):
+        self.stack.append(node.name)
+        self.generic_visit(node)
+        self.stack.pop()
+
+    visit_FunctionDef = visit_AsyncFunctionDef = visit_ClassDef = _scope
+
+    def _add(self, kind: str) -> None:
+        self.found.add((self.rel, ".".join(self.stack) or "<module>", kind))
+
+    def visit_Attribute(self, node):
+        if node.attr in _DECLARATION_NAMES:
+            self._add("attr")
+        self.generic_visit(node)
+
+    def visit_keyword(self, node):
+        if node.arg in _DECLARATION_NAMES:
+            self._add("kw")
+        self.generic_visit(node)
+
+    def visit_Constant(self, node):
+        if isinstance(node.value, str) and node.value in _DECLARATION_NAMES:
+            self._add("str")
+
+
+def test_a_sources_declaration_and_a_jobs_incarnation_have_one_owner():
+    found: set[tuple[str, str, str]] = set()
+    for path in sorted(APP.rglob("*.py")):
+        rel = path.relative_to(ROOT).as_posix()
+        if "/migrations/" in rel or rel == OWNER or rel in _DECLARING_MODELS:
+            continue
+        visitor = _DeclarationTouches(rel)
+        visitor.visit(ast.parse(path.read_text(encoding="utf-8")))
+        found |= visitor.found
+    unexpected = sorted(found - set(ALLOWED_DECLARATION))
+    assert not unexpected, f"a source's declaration goes through services/swap_compatibility: {unexpected}"
+    stale = sorted(set(ALLOWED_DECLARATION) - found)
+    assert not stale, f"no longer used: remove from ALLOWED_DECLARATION: {stale}"

@@ -326,7 +326,10 @@ async def test_scan_new_identity_updates_fact_but_not_captured_job(db_session, m
     row.filename = "plate.3mf"
     await db_session.commit()
     job = await a_captured_job(sessions, db_session, await a_queue(db_session, printer_factory), row)
-    assert sc.snapshot_fact(job.source_snapshot) == sc.SourceFact(False)
+    # That default False is no declaration: an external row is classified by its name on the share (T9 §8, C),
+    # never by the display rename.
+    assert sc.snapshot_fact(job.source_snapshot) == sc.SourceFact(True)
+    captured = copy.deepcopy(job.source_snapshot)
 
     second = a_3mf(on_share, "v2")
     touch_later(on_share)
@@ -338,7 +341,7 @@ async def test_scan_new_identity_updates_fact_but_not_captured_job(db_session, m
     assert refreshed.filename == "plate.3mf"
     assert "swap" in refreshed.file_tags
     job = await db_session.get(PrintQueueItem, job.id, populate_existing=True)
-    assert sc.snapshot_fact(job.source_snapshot) == sc.SourceFact(False), "a captured job keeps its own fact"
+    assert job.source_snapshot == captured, "a captured job keeps its own snapshot, fact included"
 
 
 async def test_failed_scan_preserves_last_good_identity_tuple(db_session, mount):

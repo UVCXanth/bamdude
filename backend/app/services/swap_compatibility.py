@@ -24,9 +24,11 @@ One place answers each question:
 from __future__ import annotations
 
 import re
+import uuid
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -192,6 +194,116 @@ def restored_declaration(entry: Mapping, existing=None) -> tuple[bool, bool | No
     return False, None
 
 
+# --- a source's declaration for future use (T9 spec r3 §3) ---------------------------------------------------------
+
+#: The column both sources keep it in: an archive's declaration of its SOURCE for a future reprint, apart from the
+#: executed run's fact; a library row's hash-bound carrier, beside the bool projection. Read and written here only.
+DECLARATION_COLUMN = "swap_source_declaration"
+DECLARATION_VERSION = 1
+DECLARATION_ORIGINS = frozenset({"classifier", "generated", "transferred", "operator"})
+#: An archive's source can only be declared by an operator (or restored with that origin): every other origin
+#: describes an ingest, which an archive's file never had.
+ARCHIVE_ORIGINS = frozenset({"operator"})
+ACTOR_KINDS = frozenset({"user", "api_key", "auth_disabled", "restored"})
+OPERATOR_FIELDS = ("declaration_id", "declared_at", "actor_id", "actor_label", "actor_kind")
+_BASE_FIELDS = frozenset({"version", "value", "sha256", "origin"})
+#: What a restore writes for a declaration it cannot read (§9): present, so no fallback opens; unreadable, so unknown.
+INVALID_DECLARATION = {"version": DECLARATION_VERSION, "invalid": True}
+
+
+@dataclass(frozen=True)
+class Declaration:
+    value: bool
+    sha256: str
+    origin: str
+    operator: Mapping | None = None
+
+
+class _Unreadable:
+    """A declaration that is there and cannot be read: unknown, with no fallback of any kind."""
+
+
+UNREADABLE = _Unreadable()
+
+
+def _valid_uuid(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+
+def _valid_utc(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return moment.tzinfo is not None and moment.utcoffset().total_seconds() == 0
+
+
+def _valid_operator(record: Mapping) -> bool:
+    actor_id = record["actor_id"]
+    return (
+        _valid_uuid(record["declaration_id"])
+        and _valid_utc(record["declared_at"])
+        and (actor_id is None or type(actor_id) is int)
+        and isinstance(record["actor_label"], str)
+        and record["actor_kind"] in ACTOR_KINDS
+    )
+
+
+def read_declaration(record: Any, *, origins: frozenset) -> Declaration | _Unreadable | None:
+    """The closed form, strictly: ``None`` when there is none, :data:`UNREADABLE` when there is one this version
+    cannot trust (an unknown key, a version, a type, an origin, an operator record that does not hold), else the
+    :class:`Declaration`. Extra keys grant nothing -- they make the record unreadable."""
+    if record is None:
+        return None
+    if not isinstance(record, Mapping):
+        return UNREADABLE
+    origin = record.get("origin")
+    expected = _BASE_FIELDS | (frozenset(OPERATOR_FIELDS) if origin == "operator" else frozenset())
+    if set(record) != expected or origin not in origins:
+        return UNREADABLE
+    version, value, sha256 = record["version"], record["value"], record["sha256"]
+    if type(version) is not int or version != DECLARATION_VERSION or type(value) is not bool or not valid_hash(sha256):
+        return UNREADABLE
+    if origin == "operator" and not _valid_operator(record):
+        return UNREADABLE
+    operator = {field: record[field] for field in OPERATOR_FIELDS} if origin == "operator" else None
+    return Declaration(value=value, sha256=sha256, origin=origin, operator=operator)
+
+
+def _is_library_row(row) -> bool:
+    return hasattr(row, "file_hash")
+
+
+def write_source_declaration(row, *, value: bool, sha256: str, origin: str, operator: Mapping | None = None) -> None:
+    """The one writer of a source's declaration (a new dict). A library row gets its bool projection with it, and
+    only for the bytes the row holds; an archive's executed-run fact is never touched. Refuses -- ``ValueError`` --
+    anything the reader would not read back as this very declaration."""
+    library = _is_library_row(row)
+    record = {"version": DECLARATION_VERSION, "value": value, "sha256": sha256, "origin": origin}
+    if origin == "operator":
+        if not isinstance(operator, Mapping) or set(operator) != set(OPERATOR_FIELDS):
+            raise ValueError("an operator's declaration carries its operator record")
+        record.update({field: operator[field] for field in OPERATOR_FIELDS})
+    elif operator is not None:
+        raise ValueError("only an operator's declaration carries an operator record")
+    if not isinstance(
+        read_declaration(record, origins=DECLARATION_ORIGINS if library else ARCHIVE_ORIGINS), Declaration
+    ):
+        raise ValueError(f"not a declaration this version reads back: {origin!r}")
+    if library and (not valid_hash(getattr(row, "file_hash", None)) or row.file_hash != sha256):
+        raise ValueError("a library row's declaration is bound to the bytes the row holds")
+    setattr(row, DECLARATION_COLUMN, record)
+    if library:
+        row.swap_compatible = value
+
+
 # --- library --------------------------------------------------------------------------------------------------------
 
 
@@ -200,11 +312,59 @@ def valid_hash(value: Any) -> bool:
 
 
 def library_fact(library_file) -> bool | None:
-    """A library row's declaration -- only for a row with a valid content hash. Without one, nothing ties the
-    declaration to the bytes a job will capture, so the operation's fact is unknown (§4)."""
-    if not valid_hash(getattr(library_file, "file_hash", None)):
+    """A library row's declaration for a future use -- the T9 §8 table, the SOURCE reader.
+
+    1. A carrier that holds (its hash the row's, its value the bool projection) answers; the name never re-judges it.
+    2. A carrier this version cannot trust -- or one of other bytes, or one the projection contradicts -- is unknown,
+       with no fallback to the name or the bool.
+    3. Without a carrier, without a valid hash: unknown (nothing ties a declaration to the bytes a job captures).
+    4. Without a carrier, a strict legacy True stays True.
+    5. Without a carrier, an EXTERNAL row's legacy False was the old scan's default, not a declaration: it is
+       classified by the name the file has on the share -- the persisted ``file_path``, whose basename a display
+       rename never changes -- exactly as the scan classifies a new file.
+    6. Without a carrier, a managed row's legacy bool stands (the accepted boundary). Anything unreadable on the way
+       -- the bool, ``is_external``, an empty path -- is unknown, never a plain False.
+    """
+    file_hash = getattr(library_file, "file_hash", None)
+    legacy = getattr(library_file, "swap_compatible", None)
+    declared = read_declaration(getattr(library_file, DECLARATION_COLUMN, None), origins=DECLARATION_ORIGINS)
+    if isinstance(declared, _Unreadable):
         return None
-    return _strict_fact(getattr(library_file, "swap_compatible", None))
+    if isinstance(declared, Declaration):
+        if not valid_hash(file_hash) or declared.sha256 != file_hash or legacy is not declared.value:
+            return None
+        return declared.value
+    if not valid_hash(file_hash) or type(legacy) is not bool:
+        return None
+    if legacy:
+        return True
+    external = getattr(library_file, "is_external", None)
+    if type(external) is not bool:
+        return None
+    if not external:
+        return False
+    path = getattr(library_file, "file_path", None)
+    if not isinstance(path, str) or not path.strip():
+        return None
+    return classify_external_name(path)
+
+
+def library_execution_fact(library_file) -> bool | None:
+    """A library row's answer for the run that already EXECUTED from it -- historical evidence only (T9 §2, §8).
+
+    No carrier (any one may postdate the capture: a backfill, an operator), no classification by name, no default
+    False of an external row: those are what a future read may take, not what the run was captured with. Left: a
+    strict legacy True, a managed row's legacy bool -- both with a valid hash. Everything else is unknown.
+    """
+    if getattr(library_file, DECLARATION_COLUMN, None) is not None:
+        return None
+    legacy = getattr(library_file, "swap_compatible", None)
+    if not valid_hash(getattr(library_file, "file_hash", None)) or type(legacy) is not bool:
+        return None
+    if legacy:
+        return True
+    external = getattr(library_file, "is_external", None)
+    return False if external is False else None
 
 
 # --- a job's own fact: capture, snapshot, legacy (§5, §6) -----------------------------------------------------------
@@ -243,10 +403,23 @@ def _unknown(reason: str) -> SourceFact:
 
 
 def archive_source(archive) -> tuple[SourceFact, str | None]:
-    """An archive's declaration and the hash its bytes must have for it to count.
+    """An archive's SOURCE declaration for a future use and the hash its bytes must have for it to count.
 
-    The expected hash is the archive's unpatched source hash, and its ``content_hash`` only when it has none.
+    An operator's declaration of the source (T9 §2) answers first, bound to its own hash -- the bytes it was made
+    for, whatever the historical hashes say; one this version cannot read is unknown, with no fallback to the run's
+    fact. Without one, the executed run's fact (D1) and the archive's unpatched source hash (its ``content_hash`` only
+    when it has none).
     """
+    declared = read_declaration(getattr(archive, DECLARATION_COLUMN, None), origins=ARCHIVE_ORIGINS)
+    if isinstance(declared, _Unreadable):
+        return _unknown(REASON_RECORD_INVALID), None
+    if isinstance(declared, Declaration):
+        return SourceFact(declared.value), declared.sha256
+    return _archive_run_source(archive)
+
+
+def _archive_run_source(archive) -> tuple[SourceFact, str | None]:
+    """The executed run's fact as a source answer, with the archive's own hash -- what an execution read may use."""
     fact = archive_fact(archive)
     expected = getattr(archive, "source_content_hash", None) or getattr(archive, "content_hash", None)
     if fact.value is None:
@@ -315,18 +488,34 @@ def snapshot_with_fact(snapshot: Mapping, fact: SourceFact) -> dict:
     return new
 
 
-def resolve_legacy(*, provenance_kind: Any, archive, library_file, sha256: Any) -> SourceFact:
+#: Who asks a pre-fix snapshot's legacy fact: a future dispatch of the job (the source readers -- an operator's
+#: declaration, §8's classification), or the completion of a run that already executed (historical evidence only).
+LEGACY_CONTEXTS = frozenset({"source", "execution"})
+
+
+def _library_execution_source(library_file) -> tuple[SourceFact, str | None]:
+    value = library_execution_fact(library_file)
+    expected = getattr(library_file, "file_hash", None)
+    return (SourceFact(value) if value is not None else _unknown(REASON_SOURCE_UNKNOWN)), expected
+
+
+def resolve_legacy(*, context: str, provenance_kind: Any, archive, library_file, sha256: Any) -> SourceFact:
     """§6: the fact of a pre-fix snapshot, from the job's OWN live link whose hash matches the blob.
 
+    ``context`` is required and has no default (T9 §2): ``"source"`` for a future dispatch, ``"execution"`` for the
+    completion of a run already executed -- which never sees an operator's declaration nor §8's classification.
     ``archive`` / ``library_file`` are the rows behind the job's foreign keys (``None`` when the link is gone).
     The provenance's kind may narrow which link is meant; its id never authorises a lookup. Two candidate links
     that the kind does not decide between, or none, are unknown. A legacy archive's False stays unknown (D1).
     """
+    if context not in LEGACY_CONTEXTS:
+        raise ValueError(f"not a legacy context: {context!r}")
+    future = context == "source"
     candidates = []
     if archive is not None and provenance_kind in (None, "archive"):
-        candidates.append(archive_source(archive))
+        candidates.append(archive_source(archive) if future else _archive_run_source(archive))
     if library_file is not None and provenance_kind in (None, "library_file"):
-        candidates.append(library_source(library_file))
+        candidates.append(library_source(library_file) if future else _library_execution_source(library_file))
     if len(candidates) != 1:
         return UNKNOWN_SOURCE
     fact, expected = candidates[0]

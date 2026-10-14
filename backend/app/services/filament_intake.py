@@ -169,21 +169,47 @@ async def item_descriptor(db, item) -> QueueSourceDescriptor | None:
         return None
     descriptor = stored_descriptor(source, getattr(item, "source_snapshot", None))
     if descriptor.swap_fact.missing:
-        descriptor = replace(descriptor, swap_fact=await _legacy_swap_fact(db, item, descriptor))
+        # A FUTURE use of the job's bytes: its source's readers answer (an operator's declaration, §8's
+        # classification). The completion of a run already executed asks ``execution_swap_fact`` instead.
+        descriptor = replace(descriptor, swap_fact=await _legacy_swap_fact(db, item, descriptor, context="source"))
     return descriptor
 
 
-async def _legacy_swap_fact(db, item, descriptor: QueueSourceDescriptor) -> swap_compatibility.SourceFact:
+async def execution_swap_fact(db, item) -> swap_compatibility.SourceFact | None:
+    """The declaration a job that already RAN was captured with -- for the completion's owed table swap.
+
+    Its own snapshot answers; a snapshot from before the fix is resolved with historical evidence only, never a
+    source's later declaration nor §8's classification (swap-source-declaration spec r3 §2). ``None`` for a job
+    with no captured source.
+    """
+    source_id = getattr(item, "queue_source_id", None)
+    if not source_id:
+        return None
+    source = await db.get(QueueSource, source_id)
+    if source is None:
+        return None
+    descriptor = stored_descriptor(source, getattr(item, "source_snapshot", None))
+    if not descriptor.swap_fact.missing:
+        return descriptor.swap_fact
+    return await _legacy_swap_fact(db, item, descriptor, context="execution")
+
+
+async def _legacy_swap_fact(
+    db, item, descriptor: QueueSourceDescriptor, *, context: str
+) -> swap_compatibility.SourceFact:
     """§6 of the swap-source-lifecycle spec: a snapshot written before the fix, answered from the job's own links.
 
     Only the job's live foreign keys are read -- a trashed row too, as metadata, since the link is the job's own;
     a link that is gone (``SET NULL``) is gone, and the provenance's id is never looked up (an id may have been
-    reused). The answer is a value for this read: the stored snapshot is not rewritten.
+    reused). The answer is a value for this read: the stored snapshot is not rewritten. ``context`` -- required,
+    no default -- says who asks: a future dispatch (``"source"``) or the completion of an executed run
+    (``"execution"``).
     """
     kind = descriptor.provenance.get("kind")
     archive_id = getattr(item, "archive_id", None) if kind in (None, "archive") else None
     library_id = getattr(item, "library_file_id", None) if kind in (None, "library_file") else None
     return swap_compatibility.resolve_legacy(
+        context=context,
         provenance_kind=kind,
         archive=await db.get(PrintArchive, archive_id) if archive_id else None,
         library_file=await db.get(LibraryFile, library_id) if library_id else None,
