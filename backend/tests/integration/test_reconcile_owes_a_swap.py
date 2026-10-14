@@ -17,6 +17,7 @@ import backend.app.models.printer_location  # noqa: F401 — resolves Printer's 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
+from backend.app.services import swap_compatibility as sc
 from backend.app.services.print_reconciliation import _reconcile_complete_archive, _resolve_pending_swaps
 
 pytestmark = pytest.mark.integration
@@ -46,11 +47,24 @@ async def _swap_orphan(db, printer_factory, *, uncertain=False, swap_enabled=Tru
         started_at=datetime.now(timezone.utc),
         extra_data={"swap_macro_events_pending": ["swap_mode_change_table"]},
     )
+    # What our dispatch writes (swap-source-lifecycle T3): the source declared no swap sequence of its own, so our
+    # change_table is the one owed. An archive without that record is unknown and holds (test_swap_pending_recovery).
+    sc.write_archive_fact(archive, False)
     db.add(archive)
     await db.commit()
     await db.refresh(archive)
     await db.refresh(queue)
     return printer, queue, archive
+
+
+async def _the_run(db, queue, archive):
+    """The job that ran the archive, still holding the printer -- the sweep's proof of the run (R2-5)."""
+    item = PrintQueueItem(
+        queue_id=queue.id, status="printing", position=0, archive_id=archive.id, started_at=archive.started_at
+    )
+    db.add(item)
+    await db.commit()
+    return item
 
 
 async def _close(db, archive, *, uncertain=False):
@@ -109,6 +123,7 @@ class TestTheResolution:
     @pytest.mark.asyncio
     async def test_certain_completion_runs_the_macro_and_releases(self, db_session, printer_factory):
         printer, queue, archive = await _swap_orphan(db_session, printer_factory)
+        await _the_run(db_session, queue, archive)
         await _close(db_session, archive)
 
         macro = type("M", (), {"name": "change", "gcode": "G28"})()
@@ -157,6 +172,7 @@ class TestTheResolution:
     @pytest.mark.asyncio
     async def test_a_failed_macro_pauses_with_the_reason(self, db_session, printer_factory):
         printer, queue, archive = await _swap_orphan(db_session, printer_factory)
+        await _the_run(db_session, queue, archive)
         item = PrintQueueItem(queue_id=queue.id, status="pending", position=1)
         db_session.add(item)
         await db_session.commit()

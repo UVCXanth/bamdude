@@ -289,6 +289,44 @@ async def test_watchdog_uses_actual_start_effect_not_requested_event(
         assert scheduler._watchdog_print_start.call_args.kwargs["swap_start_fired"] is watched
 
 
+@pytest.mark.parametrize(
+    ("fact", "macro_ok", "recorded"),
+    [(True, True, None), (False, True, "fired"), (False, False, "possibly_fired")],
+    ids=["baked-not-called", "plain-fired", "plain-failed"],
+)
+async def test_the_execution_archive_records_what_the_swap_start_did(
+    fact, macro_ok, recorded, db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions
+):
+    """The hold at completion says whether our swap cycle began (spec r4 R2-6): dispatch records the start
+    macro's outcome on the execution archive -- before the command may leave, and again once it is confirmed."""
+    import backend.app.services.background_dispatch as bd
+    from backend.app.models.archive import PrintArchive
+
+    _unused, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    printer.swap_mode_enabled = True
+    await db_session.commit()
+    settings.archive_dir.mkdir(parents=True, exist_ok=True)
+    item, _source = await a_claimed_job(
+        db_session, sessions, tmp_path, printer, queue, kind="library", fact=fact, origin="queue"
+    )
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    service = dispatch_mocks(monkeypatch, factory)
+    Effects(monkeypatch, service)
+    if not macro_ok:
+        monkeypatch.setattr(bd.printer_manager, "execute_macro_and_wait", AsyncMock(return_value=(False, "timeout")))
+    scheduler, spawned = scheduler_with_captured_dispatch(monkeypatch)
+
+    assert await scheduler.check_queue() is True
+    await drain(spawned)
+
+    archives = (
+        (await db_session.execute(select(PrintArchive).execution_options(populate_existing=True))).scalars().all()
+    )
+    executions = [a for a in archives if (a.extra_data or {}).get("swap_source") is not None]
+    assert len(executions) == 1
+    assert (executions[0].extra_data or {}).get("swap_start_effect") == recorded
+
+
 # --- what a D2 refusal leaves behind, and what the backstop never touches (§8, T4.5, T4.8) ---------------------------
 
 

@@ -475,8 +475,14 @@ async def _reconcile_complete_archive(
         if archive.printer_id is not None and not swap_owed:
             await printer_manager.arm_awaiting_plate_clear(archive.printer_id, archive.id)
 
+        # The row that RAN this archive -- still holding the printer. A job queued from the archive later (a
+        # reprint names it as its source) is not this run and is never closed by it.
         item = (
-            await db.execute(select(PrintQueueItem).where(PrintQueueItem.archive_id == archive.id))
+            await db.execute(
+                select(PrintQueueItem).where(
+                    PrintQueueItem.archive_id == archive.id, PrintQueueItem.status == "printing"
+                )
+            )
         ).scalar_one_or_none()
         if item is not None:
             item.status = status
@@ -488,9 +494,12 @@ async def _reconcile_complete_archive(
             elif not swap_owed:
                 await set_queue_idle(db, item.queue_id)
             await update_queue_counters(db, item.queue_id)
-            from backend.app.services.plate_hold import clean_up_finished_row
+            # ⚠️ Not while our table swap is owed: this row is the proof of the run ``_resolve_pending_swaps``
+            # decides on, and it cleans the row up itself after a swap (swap-source-lifecycle spec r4 R2-5).
+            if not swap_owed:
+                from backend.app.services.plate_hold import clean_up_finished_row
 
-            await clean_up_finished_row(db, item, queue_status=status, plate_auto_cleared=False)
+                await clean_up_finished_row(db, item, queue_status=status, plate_auto_cleared=False)
 
         logger.info(
             "reconcile: closed archive %s as %s%s",
@@ -1029,16 +1038,17 @@ async def reconcile_printer_prints(
 async def _resolve_pending_swaps(printer_id: int, archive_ids: list[int]) -> None:
     """Finish the table swap a dead process still owed, or hold the queue.
 
-    For each recovered archive still carrying ``swap_mode_change_table`` on
-    its pending checklist:
+    For each recovered archive still carrying ``swap_mode_change_table`` on its pending checklist the decision is
+    the live completion's (swap-source-lifecycle spec r4 §10 D3, ``services/swap_terminal``):
 
-    * **certain completed + swap enabled + macro found** — run the macro now,
-      exactly as the live completion would have, then release the queue claim
-      the close deliberately kept. The interrupted automation resumes.
-    * **anything else** — outcome uncertain, swap since disabled, macro
-      missing, or the macro failed — pause the queue with a reason on the
-      next pending item. ``waiting_reason`` alone is NOT a block (the
-      scheduler recomputes it every tick); the pause is.
+    * **a proven run over a source known not to carry its own sequence** -- the outcome certain, the one job that
+      ran it still on this printer's queue, no other run active, the printer in swap mode with its macro, and the
+      declaration False (the archive's record; for a record-less archive the exact job's own snapshot, §6) --
+      run the macro, release the claim the close kept, and clean the row up;
+    * **anything else** -- True, unknown, an uncertain outcome, no proof of the run, swap mode off, no macro, or a
+      failed macro -- run nothing and leave the event owed; pause the queue and say why on the job that ran and
+      on the next waiting one. ``waiting_reason`` alone is NOT a block (the scheduler recomputes it every tick);
+      the pause is.
     """
     from sqlalchemy import select as sa_select
 
@@ -1047,10 +1057,61 @@ async def _resolve_pending_swaps(printer_id: int, archive_ids: list[int]) -> Non
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer import Printer
     from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services import swap_terminal
     from backend.app.services.archive import remove_swap_pending_event
+    from backend.app.services.archive_write_scope import locked_print
     from backend.app.services.macro_executor import find_swap_macro
+    from backend.app.services.plate_hold import clean_up_finished_row
     from backend.app.services.printer_manager import printer_manager
     from backend.app.services.queue_counters import set_queue_idle, set_queue_paused
+
+    async def the_run(db, archive_id: int, queue_id: int | None) -> PrintQueueItem | None:
+        """The one job that ran this archive on this printer: completed by the close, started, on its queue."""
+        if queue_id is None:
+            return None
+        rows = (
+            (
+                await db.execute(
+                    sa_select(PrintQueueItem).where(
+                        PrintQueueItem.archive_id == archive_id,
+                        PrintQueueItem.queue_id == queue_id,
+                        PrintQueueItem.status == "completed",
+                        PrintQueueItem.started_at.is_not(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return rows[0] if len(rows) == 1 else None
+
+    async def relock(db, archive_id: int) -> PrintArchive | None:
+        """The archive as it is NOW, under the print's lock: an attach may have written its declaration
+        during the awaits above, and a merge into the copy read before them would erase it (spec r4 §3)."""
+        return await locked_print(
+            db,
+            archive_id,
+            sa_select(PrintArchive)
+            .where(PrintArchive.id == archive_id)
+            .with_for_update()
+            .execution_options(populate_existing=True),
+        )
+
+    async def another_run_active(db, archive_id: int) -> bool:
+        live = printer_manager.get_status(printer_id)
+        if live is not None and str(getattr(live, "state", "") or "").upper() in ("RUNNING", "PAUSE", "PREPARE"):
+            return True
+        return (
+            await db.scalar(
+                sa_select(PrintArchive.id)
+                .where(
+                    PrintArchive.printer_id == printer_id,
+                    PrintArchive.status == "printing",
+                    PrintArchive.id != archive_id,
+                )
+                .limit(1)
+            )
+        ) is not None
 
     for archive_id in archive_ids:
         try:
@@ -1067,18 +1128,41 @@ async def _resolve_pending_swaps(printer_id: int, archive_ids: list[int]) -> Non
                 queue_id = (
                     await db.execute(sa_select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))
                 ).scalar_one_or_none()
-
+                run = await the_run(db, archive_id, queue_id)
+                proven = not uncertain and run is not None and not await another_run_active(db, archive_id)
+                fact = await swap_terminal.pending_fact(db, archive, run)
+                hold = (
+                    swap_terminal.HOLD_OUTCOME_UNCERTAIN
+                    if uncertain
+                    else swap_terminal.change_table_hold(
+                        fact,
+                        completed=True,
+                        proven=proven,
+                        swap_mode=bool(printer is not None and printer.swap_mode_enabled),
+                    )
+                )
                 macro = None
-                if printer is not None and printer.swap_mode_enabled and not uncertain:
+                if hold is None:
                     macro = await find_swap_macro(db, "swap_mode_change_table", printer)
+                    if macro is None or not macro.gcode:
+                        hold = swap_terminal.HOLD_SWAP_OFF
+                if hold is None:
+                    # Re-checked immediately before the physical command: the row is still this run's, the
+                    # claim the close kept is still there, and nothing new has started on the printer.
+                    queue = await db.get(PrinterQueue, queue_id, populate_existing=True)
+                    still = await the_run(db, archive_id, queue_id)
+                    if (
+                        still is None
+                        or still.id != run.id
+                        or queue is None
+                        or queue.status != "printing"
+                        or await another_run_active(db, archive_id)
+                    ):
+                        hold = swap_terminal.HOLD_RUN_UNPROVEN
 
                 swapped = False
                 reason = None
-                if uncertain:
-                    reason = "Swap pending after outage — outcome uncertain, inspect the plate, then resume"
-                elif macro is None or not macro.gcode:
-                    reason = "Swap pending after outage — run the table swap or clear the plate, then resume"
-                else:
+                if hold is None:
                     logger.info(
                         "reconcile: running owed change_table macro '%s' on printer %d (archive %d)",
                         macro.name,
@@ -1087,18 +1171,35 @@ async def _resolve_pending_swaps(printer_id: int, archive_ids: list[int]) -> Non
                     )
                     swapped, msg = await printer_manager.execute_macro_and_wait(printer_id, macro.gcode, macro.name)
                     if swapped:
-                        if remove_swap_pending_event(archive, "swap_mode_change_table"):
+                        current = await relock(db, archive_id)
+                        if current is not None and remove_swap_pending_event(current, "swap_mode_change_table"):
                             await db.commit()
                     else:
                         reason = f"Swap macro failed: {msg}"
+                else:
+                    cycle = swap_terminal.cycle_state(extra)
+                    reason = swap_terminal.hold_text(hold, cycle)
+                    current = await relock(db, archive_id)
+                    if current is not None:
+                        current.extra_data = {
+                            **dict(current.extra_data or {}),
+                            swap_terminal.HOLD_KEY: swap_terminal.hold_record(hold, cycle),
+                        }
+                        await db.commit()
 
+                # The row as it is now: another session may have taken it during the awaits above.
+                current_run = await the_run(db, archive_id, queue_id) if run is not None else None
                 if swapped:
                     if queue_id is not None:
                         await set_queue_idle(db, queue_id)
                         await db.commit()
+                    if current_run is not None:
+                        await clean_up_finished_row(db, current_run, queue_status="completed", plate_auto_cleared=True)
                     logger.info("reconcile: owed table swap done — queue released for printer %d", printer_id)
                 elif queue_id is not None:
                     await set_queue_paused(db, queue_id)
+                    if current_run is not None:
+                        current_run.waiting_reason = reason
                     nxt = (
                         await db.execute(
                             sa_select(PrintQueueItem)
@@ -1110,7 +1211,7 @@ async def _resolve_pending_swaps(printer_id: int, archive_ids: list[int]) -> Non
                     if nxt is not None:
                         nxt.waiting_reason = reason
                     await db.commit()
-                    logger.warning("reconcile: queue paused for printer %d — %s", printer_id, reason)
+                    logger.warning("reconcile: queue paused for printer %d — %s", printer_id, hold or reason)
         except Exception:
             logger.exception("reconcile: swap resolution failed for archive %s", archive_id)
 

@@ -76,6 +76,7 @@ import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { Select } from '../components/Select';
 import { Modal } from '../components/Modal';
+import { SwapHoldBadge } from '../components/SwapHoldBadge';
 import { isAnyModalOpen } from '../components/modalStack';
 import { PaginationBar } from '../components/PaginationBar';
 import { ModelViewerModal } from '../components/ModelViewerModal';
@@ -1006,6 +1007,7 @@ function ArchiveCard({
           {archive.swap_compatible && (
             <span className="text-[10px] px-1 py-0.5 bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 rounded">SWAP</span>
           )}
+          <SwapHoldBadge extraData={archive.extra_data} />
           {/* File hash badge */}
           {archive.content_hash && (
             <span
@@ -2219,6 +2221,7 @@ function ArchiveListRow({
             {archive.swap_compatible && (
               <span className="text-[10px] px-1 py-0.5 bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 rounded flex-shrink-0">SWAP</span>
             )}
+            <SwapHoldBadge extraData={archive.extra_data} className="flex-shrink-0" />
             {archive.timelapse_path && (
               <span title={t('archives.list.hasTimelapse')}>
                 <Film className="w-3.5 h-3.5 text-bambu-green flex-shrink-0" />

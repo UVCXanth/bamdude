@@ -571,21 +571,9 @@ class TestPlateClearGate:
         await self._drive_with_swap_compatible(printer_id=1, status=status, mock_pm=mock_pm)
         mock_pm.set_awaiting_plate_clear.assert_any_call(1, True)
 
-    @pytest.mark.asyncio
-    async def test_swap_compatible_archive_still_bypasses_gate_on_completed(self):
-        """Sanity check: the auto-clear bypass is preserved on a clean
-        completion — that's the whole point of the swap_compatible flag."""
-        mock_pm = MagicMock()
-        mock_pm.set_awaiting_plate_clear = MagicMock()
-        await self._drive_with_swap_compatible(printer_id=1, status="completed", mock_pm=mock_pm)
-        # Plate auto-cleared by the swap_compatible path → arm-gate block
-        # short-circuits → set_awaiting_plate_clear(printer_id, True) is
-        # NOT called. (Note: True calls during init/cleanup elsewhere are
-        # not made by this function — the existing parametric tests above
-        # confirm the call pattern.)
-        for call in mock_pm.set_awaiting_plate_clear.call_args_list:
-            assert call.args != (1, True), "swap_compatible + completed should bypass the manual gate"
-
+    # swap-source-lifecycle T7: a completed True archive found by an alias (as this mock drives it) no longer
+    # clears the plate -- a name proves no run (spec r4 §10 D5). The bypass on a proven run, and its release of a
+    # standing gate, are pinned on a real database in test_swap_terminal_ownership.py.
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", ["failed", "aborted", "cancelled"])
     async def test_change_table_macro_skipped_on_failure(self, status: str):
@@ -690,33 +678,6 @@ class TestPlateClearGate:
     # returns success. A failed, aborted or cancelled print never reaches
     # either, so the part-still-on-the-bed case keeps its manual gate.
     # ------------------------------------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_swap_compatible_completion_releases_an_already_armed_gate(self):
-        """The regression: skipping the arm is not the same as clearing."""
-        mock_pm = MagicMock()
-        mock_pm.set_awaiting_plate_clear = MagicMock()
-
-        await self._drive_with_swap_compatible(printer_id=1, status="completed", mock_pm=mock_pm)
-
-        mock_pm.set_awaiting_plate_clear.assert_any_call(1, False)
-
-    @pytest.mark.asyncio
-    async def test_no_gate_means_no_release_call(self):
-        """The release is guarded on the gate actually being armed.
-
-        Without the guard every swap print would issue a redundant DB write and
-        a WebSocket status broadcast — ``set_awaiting_plate_clear`` does both —
-        for a flag that was already false. Cheap to skip, and it keeps the
-        "Released a stale gate" log line meaningful instead of once per print.
-        """
-        mock_pm = MagicMock()
-        mock_pm.set_awaiting_plate_clear = MagicMock()
-        mock_pm.is_awaiting_plate_clear = MagicMock(return_value=False)
-
-        await self._drive_with_swap_compatible(printer_id=1, status="completed", mock_pm=mock_pm)
-
-        mock_pm.set_awaiting_plate_clear.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", ["failed", "aborted", "cancelled"])

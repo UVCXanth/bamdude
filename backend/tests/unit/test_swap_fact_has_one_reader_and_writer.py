@@ -8,15 +8,13 @@ The scan finds every touch of the fact in ``backend/app`` -- an attribute (ORM r
 column), a keyword (constructor, response), a string (``getattr`` / ``setattr`` / a dict key) -- per function.
 Each one is either ALLOWED, in one of the plan's categories with its reason, or PENDING, naming the task that
 replaces it. A new touch fails; a pending one that is gone fails until it leaves the list, so the list only
-shrinks. T8 empties it and removes the xfail below.
+shrinks. T3-T7 emptied it; a touch that appears now belongs in ALLOWED with its category, or nowhere.
 """
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
-
-import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 APP = ROOT / "backend" / "app"
@@ -49,9 +47,7 @@ ALLOWED: dict[tuple[str, str, str], str] = {
 
 #: Touches that predate the policy module. Each names the task that replaces it with the reader/writer, or moves
 #: it to ALLOWED in one of the categories above.
-PENDING = {
-    ("backend/app/main.py", "_on_print_complete_impl", "attr"): "T7 completion reader",
-}
+PENDING: dict[tuple[str, str, str], str] = {}
 
 
 class _Touches(ast.NodeVisitor):
@@ -125,6 +121,6 @@ def test_the_reserved_record_key_is_only_the_writers():
     assert not carrier, f"extra_data['swap_source'] belongs to services/swap_compatibility: {carrier}"
 
 
-@pytest.mark.xfail(strict=True, reason="T3-T7 replace the pending touches; T8 removes this mark")
 def test_nothing_is_left_pending():
+    """Emptied by T3-T7: every touch is now the policy module's, or ALLOWED in a category. A new one goes there."""
     assert not PENDING

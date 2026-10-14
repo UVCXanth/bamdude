@@ -1620,6 +1620,20 @@ export default {
       noFileUnderOrder: 'Filing a print under an order needs the right to change orders or to file prints',
       notAllSelected: 'Some of the selected prints are not yours to change'
     },
+    // Our owed table swap did not run when this print ended (swap-source-lifecycle §10, R2-6).
+    swapHold: {
+      badge: 'Swap held',
+      started: 'The table-swap cycle started but did not finish. Inspect the mechanism and plate before resuming.',
+      possiblyStarted: 'The table-swap cycle may have started, but completion is unconfirmed. Inspect the mechanism and plate before resuming.',
+      reason: {
+        swap_hold_source_unknown: 'The table swap was not run: this print\'s source does not say whether it carries its own plate-swap sequence. Inspect the plate, then resume the queue.',
+        swap_hold_source_baked: 'The table swap was not run: this print\'s source carries its own plate-swap sequence, so BamDude\'s would have been a second one. Inspect the plate, then resume the queue.',
+        swap_hold_run_unproven: 'The table swap was not run: this finish could not be tied to the print BamDude started. Inspect the plate, then resume the queue.',
+        swap_hold_not_completed: 'The print did not complete, so the table swap was not run. Inspect and clear the plate, then resume the queue.',
+        swap_hold_swap_off: 'The table swap was not run: swap mode is off on this printer or its change-table macro is missing. Run the table swap or clear the plate, then resume the queue.',
+        swap_hold_outcome_uncertain: 'The table swap was not run: the print\'s outcome is uncertain after the outage. Inspect the plate, then resume the queue.',
+      },
+    },
     saveToLibrary: {
       title: 'Save to library',
       description: 'Copies the 3MF of "{{name}}" into your library, reading its metadata the same way an upload would.',

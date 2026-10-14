@@ -2641,9 +2641,15 @@ class BackgroundDispatchService:
 
                 self._raise_if_cancel_requested(job)
 
-                # Swap-mode start macro — fires before the print starts.
+                # Swap-mode start macro — fires before the print starts. Its outcome
+                # goes onto the execution archive: a hold at completion says
+                # whether our swap cycle began (swap-source-lifecycle spec r4 R2-6).
                 await self._run_swap_macro_if_needed(
-                    job, printer, "swap_mode_start", f"Running swap start macro on {printer_name}..."
+                    job,
+                    printer,
+                    "swap_mode_start",
+                    f"Running swap start macro on {printer_name}...",
+                    record=self._start_effect_recorder(db, archive),
                 )
 
                 # Tick swap_mode_start off the pending checklist now that
@@ -2899,16 +2905,34 @@ class BackgroundDispatchService:
                 # place every exit path of the runner passes through.
                 await report_failure_if_unwatched(job)
 
+    @staticmethod
+    def _start_effect_recorder(db, archive):
+        """Record the swap-start macro's outcome on the execution archive, committed before going on."""
+
+        async def record(stage: str) -> None:
+            if archive is None:
+                return
+            from backend.app.services import swap_terminal
+
+            swap_terminal.record_start_effect(archive, stage)
+            await db.commit()
+
+        return record
+
     async def _run_swap_macro_if_needed(
         self,
         job: PrintDispatchJob,
         printer,
         event: str,
         status_message: str,
+        *,
+        record=None,
     ):
         """Execute a swap macro if the job's options request it for *event*.
 
-        Raises ``RuntimeError`` on failure so the dispatch job aborts.
+        Raises ``RuntimeError`` on failure so the dispatch job aborts. ``record``
+        is told the start macro's outcome: ``possibly_fired`` before the command
+        may leave, ``fired`` once the printer confirmed it.
         """
         opts = job.options if isinstance(job.options, dict) else {}
         if not opts.get("execute_swap_macros"):
@@ -2936,11 +2960,15 @@ class BackgroundDispatchService:
         if event == "swap_mode_start":
             # From the moment the command may leave, it may have happened.
             job.swap_start_effect = "possibly_fired"
+            if record is not None:
+                await record("possibly_fired")
         success, msg = await printer_manager.execute_macro_and_wait(job.printer_id, macro.gcode, macro.name)
         if not success:
             raise RuntimeError(f"Swap macro '{macro.name}' failed: {msg}")
         if event == "swap_mode_start":
             job.swap_start_effect = "fired"
+            if record is not None:
+                await record("fired")
 
     async def _run_print_library_file(self, job: PrintDispatchJob):
         from backend.app.main import register_expected_print, withdraw_expected_print
@@ -3381,9 +3409,15 @@ class BackgroundDispatchService:
 
                 self._raise_if_cancel_requested(job)
 
-                # Swap-mode start macro — fires before the print starts.
+                # Swap-mode start macro — fires before the print starts. Its outcome
+                # goes onto the execution archive: a hold at completion says
+                # whether our swap cycle began (swap-source-lifecycle spec r4 R2-6).
                 await self._run_swap_macro_if_needed(
-                    job, printer, "swap_mode_start", f"Running swap start macro on {printer_name}..."
+                    job,
+                    printer,
+                    "swap_mode_start",
+                    f"Running swap start macro on {printer_name}...",
+                    record=self._start_effect_recorder(db, archive),
                 )
 
                 # Tick swap_mode_start off the pending checklist now that
