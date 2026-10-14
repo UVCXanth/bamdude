@@ -66,7 +66,7 @@ from backend.app.services.printer_occupancy import (
     require_auto_placement,
 )
 from backend.app.services.queue_counters import update_queue_counters
-from backend.app.services.queue_ops import queue_claim_scope
+from backend.app.services.queue_ops import lane_held_in_process, queue_claim_scope
 from backend.app.services.queue_rebalance import REBALANCE_SETTING_KEY
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable
 from backend.app.utils.model_compatibility import model_compatibility
@@ -625,6 +625,8 @@ class AutoQueueScheduler:
             # The re-probe below is small
             # metadata I/O only; queue-source capture already happened before
             # Auto Queue reached this assignment transaction.
+            if lane_held_in_process(db, printer.id):
+                raise AutoPlacementConflict("lane_busy")
             async with queue_claim_scope(db, printer.id):
                 occupancy = await read_queue_occupancy(db, printer.id, for_update=True)
                 printer_queue = occupancy.queue

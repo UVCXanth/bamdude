@@ -120,6 +120,14 @@ def _allowed(api_key: Any) -> frozenset[int] | None:
     return frozenset(int(pid) for pid in api_key.printer_ids)
 
 
+def narrowed_scope(granted: frozenset[int] | None, api_key: Any) -> frozenset[int] | None:
+    """Narrow a request's printer scope by the key's current allowlist, never widen it."""
+    current = _allowed(api_key)
+    if granted is None:
+        return current
+    return granted if current is None else granted & current
+
+
 def _as_id(value: Any) -> int:
     if isinstance(value, bool):
         raise _Unreadable

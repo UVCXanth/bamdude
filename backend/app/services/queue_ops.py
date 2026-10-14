@@ -59,9 +59,48 @@ async def queue_claim_scope(db: AsyncSession, queue_id: int):
     async with _queue_claim_locks[queue_id]:
         dialect = db.get_bind().dialect.name
         if dialect == "postgresql":
-            await db.execute(text("SELECT pg_advisory_xact_lock(1625, :queue_id)"), {"queue_id": queue_id})
+            await _lane_db_guard(db, queue_id)
         elif dialect == "sqlite" and not db.in_transaction():
             await db.execute(text("BEGIN IMMEDIATE"))
+        yield
+
+
+def lane_held_in_process(db: AsyncSession, queue_id: int) -> bool:
+    """A SQLite writer must abandon a busy lane instead of waiting for its local lock."""
+    return db.get_bind().dialect.name == "sqlite" and _queue_claim_locks[queue_id].locked()
+
+
+async def _lane_db_guard(db: AsyncSession, queue_id: int) -> None:
+    await db.execute(text("SELECT pg_advisory_xact_lock(1625, :queue_id)"), {"queue_id": queue_id})
+
+
+@asynccontextmanager
+async def claim_lanes(db: AsyncSession, queue_ids, *, archive_id: int | None = None, archive_ids=()):
+    """Archives then lanes, ascending at each layer: every local lock precedes SQLite's writer.
+
+    PostgreSQL takes archive guards then lane guards. Callers next lock archive rows before queue/job rows.
+    The complete lock set comes from preflight; changed membership is a refusal, never a late local lock.
+    This is the same protocol used by swap refresh/change_table and operator/automatic recovery.
+    """
+    from contextlib import AsyncExitStack
+
+    from backend.app.services.archive_write_scope import archive_db_guard, archive_process_lock
+
+    archives = sorted({*archive_ids, *([archive_id] if archive_id is not None else [])})
+    lanes = sorted(set(queue_ids))
+    async with AsyncExitStack() as stack:
+        for each in archives:
+            await stack.enter_async_context(archive_process_lock(each))
+        for queue_id in lanes:
+            await stack.enter_async_context(_queue_claim_locks[queue_id])
+        dialect = db.get_bind().dialect.name
+        if dialect == "sqlite" and not db.in_transaction():
+            await db.execute(text("BEGIN IMMEDIATE"))
+        if dialect == "postgresql":
+            for each in archives:
+                await archive_db_guard(db, each)
+            for queue_id in lanes:
+                await _lane_db_guard(db, queue_id)
         yield
 
 

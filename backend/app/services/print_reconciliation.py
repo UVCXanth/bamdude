@@ -827,9 +827,9 @@ async def _repair_terminal_queue_items(
     from contextlib import AsyncExitStack
 
     from backend.app.models.printer_queue import PrinterQueue
-    from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+    from backend.app.services.archive_write_scope import load_active_archive_for_write
     from backend.app.services.queue_counters import update_queue_counters
-    from backend.app.services.queue_ops import queue_scope_lock
+    from backend.app.services.queue_ops import claim_lanes
 
     snapshot = _inactive_repair_snapshot(printer_id)
     if snapshot is None or snapshot[1] != live_state:
@@ -849,14 +849,13 @@ async def _repair_terminal_queue_items(
             ).all()
         )
     async with AsyncExitStack() as guards:
-        # Every archive guard/row precedes the lane. Operator repair uses this
-        # same order, so neither writer can hold half of the other's pair.
-        for archive_id in sorted({aid for _, aid in candidates if aid is not None}):
-            await guards.enter_async_context(archive_write_scope(db, archive_id))
+        archive_ids = sorted({aid for _, aid in candidates if aid is not None})
+        # Acquire ALL archive/lane process locks before SQLite's writer, then DB guards in that same order.
+        await guards.enter_async_context(claim_lanes(db, [queue_id], archive_ids=archive_ids))
+        for archive_id in archive_ids:
             if db.get_bind().dialect.name == "sqlite":
                 await db.execute(update(PrintArchive).where(PrintArchive.id == archive_id).values(id=PrintArchive.id))
             await load_active_archive_for_write(db, archive_id)
-        await guards.enter_async_context(queue_scope_lock(db, queue_id))
         # Obtain SQLite's writer (and PG's queue row lock) BEFORE reading the
         # authoritative item/archive/header snapshot. No physical I/O here.
         await db.execute(

@@ -1164,6 +1164,10 @@ async def _main(mode: str) -> dict:
         from backend.tests.integration.print_state_recovery_scenarios import run
 
         return await run()
+    if mode == "print_recovery_swap":
+        from backend.tests.integration.print_recovery_swap_pg_scenarios import scenario_integrated_lock_order
+
+        return await scenario_integrated_lock_order()
     if mode == "seed":
         return {"seeded": await _seed()}
     if mode == "product_roundtrip":

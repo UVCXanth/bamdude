@@ -24,9 +24,9 @@ from backend.app.models.print_state_recovery_action import PrintStateRecoveryAct
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services import print_state_recovery_preview as previews, queue_sources
-from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+from backend.app.services.archive_write_scope import load_active_archive_for_write
 from backend.app.services.print_state_recovery import RecoveryFacts, classify, plan_action, utc
-from backend.app.services.queue_ops import queue_claim_scope
+from backend.app.services.queue_ops import claim_lanes
 
 logger = logging.getLogger(__name__)
 _observations: dict[tuple, float] = {}
@@ -462,9 +462,9 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
     nonce = payload["nonce"]
     input_hash = previews.digest(payload)
     async with queue_sources.storage_mutation():
-        if recheck:
-            await recheck(payload["action"])
         async with session_factory() as preflight:
+            if recheck:
+                await recheck(payload["action"], preflight)
             prior = await preflight.get(PrintStateRecoveryAction, nonce)
             if prior:
                 if prior.actor != actor or prior.input_hash != input_hash:
@@ -477,13 +477,14 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
             queue_id = f.queue["id"]
             archive_id = f.archive["id"] if f.archive else None
         async with session_factory() as db, AsyncExitStack() as guards:
+            await guards.enter_async_context(claim_lanes(db, [queue_id], archive_id=archive_id))
             if archive_id is not None:
-                await guards.enter_async_context(archive_write_scope(db, archive_id))
                 await load_active_archive_for_write(db, archive_id)
-            await guards.enter_async_context(queue_claim_scope(db, queue_id))
             await db.scalar(select(PrinterQueue).where(PrinterQueue.id == queue_id).with_for_update())
             prior = await db.get(PrintStateRecoveryAction, nonce, populate_existing=True)
             if prior:
+                if recheck:
+                    await recheck(payload["action"], db)
                 if prior.actor == actor and prior.input_hash == input_hash:
                     return prior.result
                 raise ValueError("recovery_changed")
@@ -495,7 +496,7 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
             if previews.digest(plan) != payload["plan_hash"]:
                 raise ValueError("recovery_changed")
             if recheck:
-                await recheck(payload["action"])
+                await recheck(payload["action"], db)
             if previews.clock() > payload["expires"]:
                 raise ValueError("recovery_preview_expired")
             # Explicit allowlists, no setattr loop over client fields.

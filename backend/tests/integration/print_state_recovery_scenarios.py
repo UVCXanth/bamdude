@@ -131,7 +131,7 @@ async def run():
         held, release = asyncio.Event(), asyncio.Event()
         auth_checks = 0
 
-        async def pause(_action):
+        async def pause(_action, _db):
             nonlocal auth_checks
             auth_checks += 1
             if auth_checks % 2:

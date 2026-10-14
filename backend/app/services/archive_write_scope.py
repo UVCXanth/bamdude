@@ -59,10 +59,19 @@ async def archive_write_scope(
         # reading and tests pin that discipline.
         if first is not None:
             await first()
-        if dialect == "postgresql":
-            # Namespace 182 is reserved for completion/archive fact writers.
-            await db.execute(text("SELECT pg_advisory_xact_lock(182, :archive_id)"), {"archive_id": archive_id})
+        await archive_db_guard(db, archive_id)
         yield
+
+
+def archive_process_lock(archive_id: int) -> asyncio.Lock:
+    """The archive's local lock for combined archive/lane writers, taken before SQLite's writer."""
+    return _archive_locks[archive_id]
+
+
+async def archive_db_guard(db: AsyncSession, archive_id: int) -> None:
+    """PostgreSQL's transaction guard for archive facts; SQLite's writer is already held by the caller."""
+    if db.get_bind().dialect.name == "postgresql":
+        await db.execute(text("SELECT pg_advisory_xact_lock(182, :archive_id)"), {"archive_id": archive_id})
 
 
 @asynccontextmanager

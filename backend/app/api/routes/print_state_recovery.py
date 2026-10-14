@@ -1,12 +1,15 @@
 """Farm diagnostics and explicitly confirmed, addressed structural repairs."""
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 
 from backend.app.core import database
-from backend.app.core.api_key_scope import key_printer_scope
+from backend.app.core.api_key_scope import key_printer_scope, narrowed_scope
 from backend.app.core.auth import (
     RequestCredentials,
+    authorize_api_key,
     finish_request_auth,
     is_api_key_token,
     request_credentials,
@@ -14,28 +17,30 @@ from backend.app.core.auth import (
     resolve_api_key_authority,
 )
 from backend.app.core.permissions import Permission
+from backend.app.models.api_key import APIKey
 from backend.app.models.print_state_recovery_action import PrintStateRecoveryAction
 from backend.app.schemas.print_state_recovery import RecoveryApplyRequest, RecoveryPreviewRequest
 from backend.app.services import print_state_recovery_preview as tokens, print_state_recovery_store as store
 
 router = APIRouter(prefix="/system", tags=["system"])
-READ = tuple(
-    require_permission(p)
-    for p in (Permission.SYSTEM_READ, Permission.PRINTERS_READ, Permission.QUEUE_READ_ALL, Permission.ARCHIVES_READ_ALL)
+READ_PERMISSIONS = (
+    Permission.SYSTEM_READ,
+    Permission.PRINTERS_READ,
+    Permission.QUEUE_READ_ALL,
+    Permission.ARCHIVES_READ_ALL,
 )
-WRITE = {
-    name: tuple(require_permission(p) for p in perms)
-    for name, perms in {
-        "align_terminal_item": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL),
-        "release_orphan_header": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL),
-        "fill_estimated_end_and_align": (
-            Permission.QUEUE_UPDATE_ALL,
-            Permission.PRINTERS_CONTROL,
-            Permission.ARCHIVES_UPDATE_ALL,
-        ),
-        "delete_stale_item": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL, Permission.QUEUE_DELETE_ALL),
-    }.items()
+READ = tuple(require_permission(p) for p in READ_PERMISSIONS)
+WRITE_PERMISSIONS = {
+    "align_terminal_item": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL),
+    "release_orphan_header": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL),
+    "fill_estimated_end_and_align": (
+        Permission.QUEUE_UPDATE_ALL,
+        Permission.PRINTERS_CONTROL,
+        Permission.ARCHIVES_UPDATE_ALL,
+    ),
+    "delete_stale_item": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL, Permission.QUEUE_DELETE_ALL),
 }
+WRITE = {name: tuple(require_permission(p) for p in perms) for name, perms in WRITE_PERMISSIONS.items()}
 
 
 async def read_access(creds):
@@ -53,16 +58,37 @@ async def write_access(creds, action):
         await creds.check(gate)
 
 
-async def actor_identity(creds, user):
+def key_credential(creds):
     key = creds.x_api_key
     if not key and creds.credentials and is_api_key_token(creds.credentials.credentials):
         key = creds.credentials.credentials
+    return key
+
+
+async def actor_identity(creds, user):
+    key = key_credential(creds)
     if key:
         authority = await resolve_api_key_authority(creds.request, key)
         return f"api_key:{authority.key.id}", f"API key #{authority.key.id}"
     if user:
         return f"user:{user.id}", f"User #{user.id}"
     return "auth_disabled:local", "Local operator"
+
+
+async def fresh_key_access(db, initial_key, granted_scope, printer_id, action):
+    """Recheck authority on the writer's connection: credential hashing/last_used writes belong outside it."""
+    key_id, key_hash, owner_id = initial_key
+    key = await db.get(APIKey, key_id, populate_existing=True)
+    if key is None or not key.enabled or key.key_hash != key_hash or key.user_id != owner_id:
+        raise HTTPException(403, "recovery_changed")
+    if key.expires_at is not None:
+        expires = key.expires_at if key.expires_at.tzinfo else key.expires_at.replace(tzinfo=timezone.utc)
+        if expires <= datetime.now(timezone.utc):
+            raise HTTPException(403, "recovery_changed")
+    await authorize_api_key(db, key, [p.value for p in (*READ_PERMISSIONS, *WRITE_PERMISSIONS[action])])
+    scope = narrowed_scope(granted_scope, key)
+    if scope is not None and printer_id not in scope:
+        raise HTTPException(403, "recovery_changed")
 
 
 @router.get("/print-state-issues")
@@ -113,14 +139,23 @@ async def preview(
 async def apply(printer_id: int, data: RecoveryApplyRequest, creds: RequestCredentials = Depends(request_credentials)):
     user = await read_access(creds)
     actor, label = await actor_identity(creds, user)
+    credential = key_credential(creds)
+    initial_key = None
+    if credential:
+        key = (await resolve_api_key_authority(creds.request, credential)).key
+        initial_key = key.id, key.key_hash, key.user_id
+    granted_scope = key_printer_scope(creds.request)
     try:
         payload = tokens.verify(data.preview_token)
         if payload.get("printer_id") != printer_id or payload.get("actor") != actor:
             raise ValueError("recovery_changed")
         await write_access(creds, payload.get("action"))
 
-        async def recheck(action):
+        async def recheck(action, db):
             # Authority cached before a contended guard must not outlive revocation.
+            if initial_key is not None:
+                await fresh_key_access(db, initial_key, granted_scope, printer_id, action)
+                return
             await finish_request_auth(creds.request)
             fresh_user = await read_access(creds)
             await write_access(creds, action)

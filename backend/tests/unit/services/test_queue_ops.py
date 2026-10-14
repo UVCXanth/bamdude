@@ -485,6 +485,7 @@ class TestACloneCarriesEveryPrintOption:
     # decision, which is the point of listing them by hand.
     NOT_COPIED = {
         "id",  # identity
+        "recovery_identity",  # a clone is a new row; an old recovery preview must never name it
         "created_at",
         "queue_id",  # the clone's queue is chosen by the caller
         "position",  # appended to the end

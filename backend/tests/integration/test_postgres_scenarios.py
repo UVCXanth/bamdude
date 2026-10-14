@@ -106,6 +106,16 @@ def _run(mode: str, data_dir: Path, url: str | None, *extra: str) -> dict:
 
 
 class TestPrintStateRecovery:
+    def test_recovery_and_autorepair_against_swap_writers_serialize(self, tmp_path_factory):
+        pytest.importorskip("backend.app.services.swap_terminal", reason="requires the integrated T9 branch")
+        url = _pg_url()
+        _wipe(url)
+        result = _run("print_recovery_swap", tmp_path_factory.mktemp("pg_recovery_swap"), url)
+        assert result["first_before_second"], result
+        for pair in ("recovery_vs_claim", "recovery_vs_refresh", "autorepair_vs_claim"):
+            assert (result[pair]["first"], result[pair]["second"]) == ("ok", "ok"), (pair, result)
+            assert result[pair]["waited"] >= 1, (pair, result)
+
     def test_operator_recovery_and_existing_writers_serialize(self, tmp_path_factory):
         url = _pg_url()
         _wipe(url)
