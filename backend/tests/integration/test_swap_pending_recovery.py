@@ -401,8 +401,8 @@ async def test_an_attempted_change_table_is_not_sent_again_whatever_the_queue_sa
 @pytest.mark.parametrize("where", ["lookup", "command"])
 async def test_a_macro_error_holds_the_queue_even_without_plate_confirmation(where, make_rig, monkeypatch):
     """Reading the change-table macro, or sending it, raises: the plate is not taken as swapped and the next job
-    does not start on it. A lookup that failed sent nothing -- still owed; a command that raised may have gone
-    out -- never sent twice."""
+    does not start on it. A lookup that failed sent nothing -- still owed, never claimed; a command that raised may
+    have gone out -- claimed, never sent twice."""
     from unittest.mock import AsyncMock
 
     rig = await make_rig(require_plate_clear=False)
@@ -419,8 +419,12 @@ async def test_a_macro_error_holds_the_queue_even_without_plate_confirmation(whe
 
     assert await queue_status(rig) == "paused"
     archive = await archive_of(rig, archive_id)
-    assert archive.extra_data["swap_hold"]["reason"] == "swap_hold_macro_error"
-    assert (CHANGE_TABLE in pending_of(archive)) is (where == "lookup")
+    assert archive.extra_data["swap_hold"]["reason"] == (
+        "swap_hold_macro_error" if where == "lookup" else "swap_hold_attempt_unknown"
+    )
+    assert CHANGE_TABLE in pending_of(archive)
+    claim = (archive.extra_data.get("bamdude_terminal_effects") or {}).get("swap_change_table")
+    assert (claim or {}).get("stage") == (None if where == "lookup" else "attempted")
     assert gate_armed(rig) is False
     assert (await item_of(rig, waiting)).waiting_reason
 
@@ -467,4 +471,4 @@ async def test_an_attempt_recorded_without_a_readable_acceptance_is_not_repeated
     await recover(rig, archive_id)
 
     assert change_tables_sent(rig) == 0
-    assert (await archive_of(rig, archive_id)).extra_data["swap_hold"]["reason"] == "swap_hold_outcome_uncertain"
+    assert (await archive_of(rig, archive_id)).extra_data["swap_hold"]["reason"] == "swap_hold_attempt_unknown"

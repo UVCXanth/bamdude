@@ -8150,18 +8150,27 @@ async def _on_print_complete_impl(
                 if not (macro and macro.gcode):
                     _swap_hold = swap_terminal.HOLD_SWAP_OFF
                 elif _owns_printer_effect():
+                    # One claim decides whether the command may leave, committed before it -- the sweep takes the
+                    # same one, so a reconnect can never send this run's table swap a second time (Codex review r1).
+                    _sw_claim = await swap_terminal.claim_change_table(
+                        async_session, archive_id, queue_id=None, owner="live", allow_absent=True
+                    )
+                    _sw_attempted = _sw_claim == swap_terminal.CLAIMED
+                    if not _sw_attempted:
+                        logger.warning(
+                            "[SWAP] change_table of archive %s is not this completion's to send (%s) — held",
+                            archive_id,
+                            _sw_claim,
+                        )
+                        _swap_hold = swap_terminal.HOLD_ATTEMPT_UNKNOWN
+                if _sw_attempted:
                     logger.info("[SWAP] Running change_table macro '%s' for printer %s", macro.name, printer_id)
-                    await _record_terminal_effect_stage(archive_id, "swap_change_table", "attempted")
-                    _sw_attempted = True
                     _sw_ok, _sw_msg = await printer_manager.execute_macro_and_wait(
                         printer_id, macro.gcode, macro.name, may_run=_owns_printer_effect
                     )
                     _sw_swapped = bool(_sw_ok)
-                    await _record_terminal_effect_stage(
-                        archive_id,
-                        "swap_change_table",
-                        "finished" if _sw_ok else "failed",
-                    )
+                    # The answer, the event off the checklist and (on success) an earlier hold cleared -- one write.
+                    await swap_terminal.finish_change_table(async_session, archive_id, ok=bool(_sw_ok))
                     if _sw_ok and _owns_printer_effect():
                         # Table swapped successfully — skip arming the
                         # plate-clear gate so the scheduler doesn't wait
@@ -8201,34 +8210,14 @@ async def _on_print_complete_impl(
                             await db.commit()
         except Exception as e:
             logger.error("[SWAP] change_table macro error: %s", e)
-            # No answer is no permission: a lookup that failed sent nothing, a command that raised may have gone
-            # out -- either way the plate is not taken as swapped, and the queue waits with a reason.
+            # No answer is no permission: before the claim nothing went out; after it the command may have -- it
+            # stays claimed and is never sent again. Either way the plate is not taken as swapped, and the queue
+            # waits with a reason.
             if not _sw_swapped:
-                _swap_hold = swap_terminal.HOLD_MACRO_ERROR
+                _swap_hold = swap_terminal.HOLD_ATTEMPT_UNKNOWN if _sw_attempted else swap_terminal.HOLD_MACRO_ERROR
         finally:
-            # Idempotency: tick swap_mode_change_table off the pending
-            # checklist once the macro was SENT (variant 2 — drop just THIS
-            # event from the list, not the whole key). A re-trigger of
-            # on_print_complete (MQTT replay, reconnect flap) finds the event
-            # gone and skips firing. A macro that never went out stays owed:
-            # held runs keep their event, as the record of what was not done.
-            if archive_id and _sw_attempted:
-                try:
-                    async with async_session() as db:
-                        from backend.app.models.archive import PrintArchive as _PASwapClear
-                        from backend.app.services.archive import remove_swap_pending_event
-
-                        _arc = await db.get(_PASwapClear, archive_id)
-                        if _arc is not None:
-                            _ticked = remove_swap_pending_event(_arc, "swap_mode_change_table")
-                            # A swap that ran ends a hold an earlier decision recorded (the sweep over this
-                            # completion while it was still in flight).
-                            if (_sw_swapped and swap_terminal.clear_hold(_arc)) or _ticked:
-                                await db.commit()
-                except Exception as e:
-                    logger.debug(
-                        "[SWAP] failed to remove swap_mode_change_table from pending for archive %s: %s", archive_id, e
-                    )
+            if _sw_attempted:
+                swap_terminal.release(archive_id)
     elif archive_id and "swap_mode_change_table" not in swap_events:
         # The source's own sequence clears the plate only for this exact, completed run (D5).
         if swap_terminal.baked_clears(

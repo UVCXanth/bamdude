@@ -368,3 +368,11 @@ async def close_only(rig: Rig, archive_id: int) -> None:
         archive = await db.get(PrintArchive, archive_id)
         await _reconcile_complete_archive(db, archive, status="completed", uncertain=False)
         await db.commit()
+
+
+async def an_owed_run_closed(rig: Rig) -> tuple[int, int]:
+    """A run of ours over a plain source whose change_table is owed, closed by the sweep -- the resolver not run yet
+    (the process may have stopped right there). Returns ``(archive_id, item_id)``."""
+    archive_id, item_id = await an_execution(rig, fact=False, pending=[CHANGE_TABLE], bound=False)
+    await close_only(rig, archive_id)
+    return archive_id, item_id

@@ -1633,6 +1633,7 @@ export default {
         swap_hold_swap_off: 'The table swap was not run: swap mode is off on this printer or its change-table macro is missing. Run the table swap or clear the plate, then resume the queue.',
         swap_hold_outcome_uncertain: 'The table swap was not run: the print\'s outcome is uncertain after the outage. Inspect the plate, then resume the queue.',
         swap_hold_macro_error: 'The table swap did not finish: BamDude could not run the printer\'s change-table macro. Inspect the mechanism and plate, then resume the queue.',
+        swap_hold_attempt_unknown: 'The table swap may already have run: BamDude cannot confirm whether the change-table macro went out or finished, so it is not sent again. Inspect the mechanism and plate, then resume the queue.',
       },
     },
     saveToLibrary: {

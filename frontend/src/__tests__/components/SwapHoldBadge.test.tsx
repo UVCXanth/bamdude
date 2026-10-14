@@ -53,6 +53,7 @@ describe('the swap hold of a print', () => {
       'swap_hold_swap_off',
       'swap_hold_outcome_uncertain',
       'swap_hold_macro_error',
+      'swap_hold_attempt_unknown',
     ]) {
       const text = swapHoldText(t, { swap_hold: { reason, cycle: 'not_started' } });
       expect(text).not.toContain('archives.');

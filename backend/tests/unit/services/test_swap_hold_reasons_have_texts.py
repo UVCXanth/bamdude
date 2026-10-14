@@ -33,3 +33,10 @@ def test_the_archive_card_knows_exactly_the_servers_reasons():
         locale = (FRONTEND / "i18n" / "locales" / f"{lang}.ts").read_text(encoding="utf-8")
         missing = sorted(reason for reason in swap_terminal.HOLD_REASONS if f"{reason}:" not in locale)
         assert not missing, f"{lang}.ts lacks archives.swapHold.reason {missing}"
+
+
+def test_the_change_table_claim_lives_in_the_completions_effects_record():
+    """The claim is the completion's own record of the effect (one key, read by the live path and the sweep)."""
+    from backend.app import main
+
+    assert swap_terminal.EFFECTS_KEY == main._TERMINAL_EFFECTS_KEY

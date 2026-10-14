@@ -63,6 +63,8 @@ async def _the_run(db, queue, archive):
         queue_id=queue.id, status="printing", position=0, archive_id=archive.id, started_at=archive.started_at
     )
     db.add(item)
+    await db.flush()
+    queue.current_item_id = item.id  # what dispatch's set_queue_printing records: the queue's claim is this run
     await db.commit()
     return item
 
