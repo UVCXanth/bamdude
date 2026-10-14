@@ -25,11 +25,7 @@ from typing import Any
 
 from backend.app.i18n import current_language, t
 from backend.app.services import swap_compatibility
-from backend.app.services.archive_write_scope import (
-    archive_db_guard,
-    archive_write_scope,
-    load_active_archive_for_write,
-)
+from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
 
 #: The swap-start macro's outcome, recorded on the execution archive by dispatch: ``possibly_fired`` from the
 #: moment the command may leave, ``fired`` once the printer acknowledged it.
@@ -225,11 +221,10 @@ async def claim_change_table(
     """
     from backend.app.services.queue_ops import claim_lanes
 
-    # The lane, then the print: every in-process lock before SQLite's writer (``claim_lanes``), so a declaration of
-    # this archive holding its write scope never waits for the writer this claim holds.
+    # The print, then the lane -- the one order of every archive + lane writer (``claim_lanes``): every in-process
+    # lock before SQLite's writer, and on PostgreSQL the archive's guard before the lane's, then the archive row.
     lanes = [queue_id] if queue_id is not None else []
     async with session_factory() as db, claim_lanes(db, lanes, archive_id=archive_id):
-        await archive_db_guard(db, archive_id)
         archive = await load_active_archive_for_write(db, archive_id)
         if archive is None:
             return CLAIM_LOST

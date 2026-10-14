@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from backend.app.core.permissions import Permission
 from backend.app.services import queue_sources, swap_compatibility as sc
@@ -344,6 +345,19 @@ def _replay(previous, row, *, kind: str, source_id: int, digest: str, actor: Act
     }
 
 
+async def _operation(db, operation_id: str):
+    """The audit line of an operation id, read fresh."""
+    from backend.app.models.swap_source_declaration_audit import SwapSourceDeclarationAudit
+
+    return (
+        await db.execute(
+            select(SwapSourceDeclarationAudit)
+            .where(SwapSourceDeclarationAudit.operation_id == operation_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+
+
 async def declare(
     kind: str,
     source_id: int,
@@ -357,7 +371,6 @@ async def declare(
 ) -> dict:
     """Declare the source over the bytes the operator inspected -- or refuse, writing nothing."""
     from backend.app.core.database import async_session
-    from backend.app.models.swap_source_declaration_audit import SwapSourceDeclarationAudit
 
     if type(value) is not bool:
         raise HTTPException(422, "A declaration is true or false.")
@@ -367,11 +380,7 @@ async def declare(
         async with async_session() as db:
             row = await db.get(_model(kind), source_id)
             _gate(kind, row, actor, rights)
-            previous = (
-                await db.execute(
-                    select(SwapSourceDeclarationAudit).where(SwapSourceDeclarationAudit.operation_id == operation_id)
-                )
-            ).scalar_one_or_none()
+            previous = await _operation(db, operation_id)
             if previous is not None:
                 result = _replay(previous, row, kind=kind, source_id=source_id, digest=digest, actor=actor)
                 _log(operation_id, kind, source_id, "replayed", started)
@@ -396,7 +405,7 @@ async def declare(
     except Exception as exc:
         _log(operation_id, kind, source_id, "refused", started, _reason(exc))
         raise
-    _log(operation_id, kind, source_id, "declared", started)
+    _log(operation_id, kind, source_id, "replayed" if result["replayed"] else "declared", started)
     return result
 
 
@@ -442,6 +451,11 @@ async def _write(
         async with scope:
             row = await _locked_row(db, kind, source_id)
             _gate(kind, row, actor, await _fresh_rights(db, kind, actor))
+            # The same request may have overtaken this one after both passed the preflight: read the operation
+            # again now that the source is ours, before any stale-revision refusal (T9.7 R3).
+            previous = await _operation(db, operation_id)
+            if previous is not None:
+                return _replay(previous, row, kind=kind, source_id=source_id, digest=digest, actor=actor)
             if kind == "library" and (not sc.valid_hash(row.file_hash) or row.file_hash != sha256):
                 raise HTTPException(409, {"error": "swap_source_changed", "message": SOURCE_CHANGED})
             if sc.source_revision(row, epoch=queue_sources.current_epoch()) != expected_revision:
@@ -488,7 +502,18 @@ async def _write(
                     created_at=now.replace(tzinfo=None),
                 )
             )
-            await db.commit()
+            try:
+                await db.commit()
+            except IntegrityError:
+                # Another session -- another process, or another source the operation id was reused for -- committed
+                # this operation id between our read and our commit. Only the same request is its replay.
+                await db.rollback()
+                previous = await _operation(db, operation_id)
+                if previous is None:
+                    raise
+                row = await db.get(_model(kind), source_id, populate_existing=True)
+                _gate(kind, row, actor, await _fresh_rights(db, kind, actor))
+                return _replay(previous, row, kind=kind, source_id=source_id, digest=digest, actor=actor)
     return {
         "kind": kind,
         "id": source_id,

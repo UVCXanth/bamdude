@@ -82,31 +82,37 @@ async def _lane_db_guard(db: AsyncSession, queue_id: int) -> None:
 
 
 @asynccontextmanager
-async def claim_lanes(db: AsyncSession, queue_ids, *, archive_id: int | None = None):
-    """Several printer lanes -- and, for a writer that goes on to one archive, that archive's in-process lock --
-    with EVERY in-process lock taken first, the lanes ascending, then the archive's; only then the database's:
-    SQLite's writer, PostgreSQL's lane guards ascending. The archive's own database guard and row come after
-    whatever rows the caller locks in between (``archive_write_scope.archive_db_guard``).
+async def claim_lanes(db: AsyncSession, queue_ids, *, archive_id: int | None = None, archive_ids=()):
+    """The one shared order for a writer that needs printer lanes AND archives (spec r4 §4, T9.7 R4).
 
-    A holder of SQLite's single writer must never wait for an in-process lock: a writer that takes the archive's
-    lock first and then the writer (a declaration, ``archive_write_scope``) would hold it while waiting, and both
-    would sit until SQLite's busy timeout failed one of them (plan T9.4). A change_table claim and a refresh of
-    selected jobs -- the writers that need lanes AND an archive -- come through here.
+    In-process locks, ALL of them before SQLite's writer: the archives ascending, then the lanes ascending. Then
+    the database: SQLite's writer, or on PostgreSQL the archives' guards ascending, then the lanes' guards
+    ascending. The caller locks its ROWS after this, archive rows before queue/job rows (and a library row after
+    those). Archive before queue is the order every archive + queue writer keeps: the terminal acceptance, an
+    archive's hard delete, the change_table claim, a refresh of an archive's jobs, operator print-state recovery
+    and the terminal autorepair.
+
+    A holder of SQLite's single writer must never wait for an in-process lock -- whoever holds that lock takes the
+    writer next, and both would sit until SQLite's busy timeout failed one of them (plan T9.4). The set of lanes is
+    the caller's preflight; a lane found under these locks that is not in it is a refusal, never a lock taken late.
     """
     from contextlib import AsyncExitStack
 
-    from backend.app.services.archive_write_scope import archive_process_lock
+    from backend.app.services.archive_write_scope import archive_db_guard, archive_process_lock
 
+    archives = sorted({*archive_ids, *([archive_id] if archive_id is not None else [])})
     lanes = sorted(set(queue_ids))
     async with AsyncExitStack() as stack:
+        for each in archives:
+            await stack.enter_async_context(archive_process_lock(each))
         for queue_id in lanes:
             await stack.enter_async_context(_queue_claim_locks[queue_id])
-        if archive_id is not None:
-            await stack.enter_async_context(archive_process_lock(archive_id))
         dialect = db.get_bind().dialect.name
         if dialect == "sqlite" and not db.in_transaction():
             await db.execute(text("BEGIN IMMEDIATE"))
         if dialect == "postgresql":
+            for each in archives:
+                await archive_db_guard(db, each)
             for queue_id in lanes:
                 await _lane_db_guard(db, queue_id)
         yield

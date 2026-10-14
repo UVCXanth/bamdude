@@ -4,7 +4,9 @@ On PostgreSQL the map is plain: a declaration takes the archive's guard; a refre
 then the archive's. SQLite adds one lock the map does not name -- its single writer -- and an in-process lock waited
 for while that writer is held is a stall: a declaration holding the archive's in-process lock waits for the writer,
 the other waits for that lock, until SQLite's busy timeout fails one of them fifteen seconds later. So every writer
-here takes its in-process locks -- lanes ascending, then the archive's -- before the database's.
+here takes its in-process locks before the database's -- and in ONE order shared with every writer that needs an
+archive and a lane (spec r4 §4, T9.7 R4): the archives first, then the lanes, in process and in PostgreSQL's guards
+alike, as operator print-state recovery and the terminal autorepair take them.
 
 Two independent sessions on a file database; each side is held at a named point while the other starts.
 """
@@ -97,43 +99,33 @@ async def test_a_declaration_and_a_change_table_claim_on_the_same_archive_never_
 
     claim_holds, release_claim = asyncio.Event(), asyncio.Event()
 
-    # Held once the lane and SQLite's writer are taken, before the archive's database guard -- in front of the
-    # archive's whole write scope where the claim enters one after its lane, at the guard where it takes the
-    # in-process locks first.
-    if hasattr(swap_terminal, "archive_db_guard"):
-        real_guard = swap_terminal.archive_db_guard
+    # Held once every lock of the claim is taken -- the archive's and the lane's in-process locks, SQLite's writer --
+    # at its read of the archive row: a declaration of the same archive then waits for the archive's in-process
+    # lock, never holding the writer the claim needs.
+    real_load = swap_terminal.load_active_archive_for_write
 
-        async def guard_when_released(*args, **kwargs):
-            claim_holds.set()
-            await release_claim.wait()
-            return await real_guard(*args, **kwargs)
+    async def load_when_released(*args, **kwargs):
+        claim_holds.set()
+        await release_claim.wait()
+        return await real_load(*args, **kwargs)
 
-        monkeypatch.setattr(swap_terminal, "archive_db_guard", guard_when_released)
-    else:
-        from contextlib import asynccontextmanager
-
-        real_scope = swap_terminal.archive_write_scope
-
-        @asynccontextmanager
-        async def scope_when_released(*args, **kwargs):
-            claim_holds.set()
-            await release_claim.wait()
-            async with real_scope(*args, **kwargs):
-                yield
-
-        monkeypatch.setattr(swap_terminal, "archive_write_scope", scope_when_released)
+    monkeypatch.setattr(swap_terminal, "load_active_archive_for_write", load_when_released)
     claiming = asyncio.create_task(
         swap_terminal.claim_change_table(factory, archive_id, queue_id=queue_id, owner="test", allow_absent=True)
     )
-    await asyncio.wait_for(claim_holds.wait(), DONE_WITHIN)
-    declaring = asyncio.create_task(declare("archive", archive_id, again, user, value=False))
-    await asyncio.sleep(0.5)
-    release_claim.set()
-
+    declaring = None
     try:
+        await asyncio.wait_for(claim_holds.wait(), DONE_WITHIN)
+        declaring = asyncio.create_task(declare("archive", archive_id, again, user, value=False))
+        await asyncio.sleep(0.5)
+        release_claim.set()
         claimed = await asyncio.wait_for(claiming, DONE_WITHIN)
         redeclared = await asyncio.wait_for(declaring, DONE_WITHIN)
     finally:
+        release_claim.set()
+        for task in (claiming, declaring):
+            if task is not None and not task.done():
+                task.cancel()
         swap_terminal._sending.discard(archive_id)
 
     assert claimed == swap_terminal.CLAIMED
@@ -160,3 +152,68 @@ async def test_every_in_process_lock_is_held_before_sqlites_writer(factory):
             pass
 
     assert held_at_begin == [(True, True, True)]
+
+
+class _PgSession:
+    """A PostgreSQL-dialect stand-in: no SQL runs, the guards it is asked for are recorded in order."""
+
+    def __init__(self):
+        self.guards: list[tuple[int, int]] = []
+
+    def get_bind(self):
+        class Bind:
+            class dialect:
+                name = "postgresql"
+
+        return Bind()
+
+    def in_transaction(self):
+        return True
+
+    async def execute(self, statement, params=None):
+        text = str(statement)
+        for namespace in (182, 1625):
+            if f"pg_advisory_xact_lock({namespace}," in text:
+                self.guards.append((namespace, next(iter((params or {}).values()))))
+
+
+async def test_an_archive_then_lane_writer_and_claim_lanes_never_hold_half_of_each_others_pair(monkeypatch):
+    """Codex's T9-A-R4 probe: a writer that takes an archive and then a lane -- operator print-state recovery's order
+    -- and ``claim_lanes`` over the same archive and lane. Each in its own order, each would hold one of the pair and
+    wait for the other forever."""
+    from backend.app.services import archive_write_scope as archives, queue_ops
+
+    archives._archive_locks.clear()
+    queue_ops._queue_claim_locks.clear()
+    archive_owned, claim_started = asyncio.Event(), asyncio.Event()
+    real_process_lock = archives.archive_process_lock
+
+    def announce(archive_id):  # claim_lanes has begun taking its in-process locks
+        claim_started.set()
+        return real_process_lock(archive_id)
+
+    monkeypatch.setattr(archives, "archive_process_lock", announce)
+
+    async def archive_then_lane():
+        async with archives.archive_write_scope(_PgSession(), 77):
+            archive_owned.set()
+            await claim_started.wait()
+            await asyncio.sleep(0)  # let the claim take whatever it takes before the archive
+            async with queue_ops.queue_claim_scope(_PgSession(), 88):
+                pass
+
+    async def claim():
+        await archive_owned.wait()
+        async with queue_ops.claim_lanes(_PgSession(), [88], archive_id=77):
+            pass
+
+    await asyncio.wait_for(asyncio.gather(archive_then_lane(), claim()), timeout=DONE_WITHIN)
+
+
+async def test_postgresql_guards_come_archives_first_then_lanes_each_ascending():
+    from backend.app.services.queue_ops import claim_lanes
+
+    session = _PgSession()
+    async with claim_lanes(session, [88, 87, 88], archive_ids=[5, 3], archive_id=4):
+        pass
+    assert session.guards == [(182, 3), (182, 4), (182, 5), (1625, 87), (1625, 88)]

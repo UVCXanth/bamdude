@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from backend.app.core.permissions import Permission
 from backend.app.services import queue_sources, swap_compatibility as sc
@@ -210,8 +211,13 @@ async def _fresh_job_rights(db, actor: Actor, granted: JobRights) -> JobRights:
         from backend.app.core.auth import authorize_api_key
         from backend.app.services.swap_source_declarations import fresh_api_key
 
-        # The key and its owner read on this session; nothing is written (T9 final review, C1).
-        await authorize_api_key(db, await fresh_api_key(db, actor), [Permission.QUEUE_UPDATE_ALL.value])
+        # The key and its owner read on this session; nothing is written (T9 final review, C1). The gate granted a
+        # key both queue rights only as ``*_all`` -- both are asked again, read as well as update (T9.7 R1).
+        await authorize_api_key(
+            db,
+            await fresh_api_key(db, actor),
+            [Permission.QUEUE_READ_ALL.value, Permission.QUEUE_UPDATE_ALL.value],
+        )
         return granted
     from sqlalchemy.orm import selectinload
 
@@ -234,6 +240,17 @@ async def _fresh_job_rights(db, actor: Actor, granted: JobRights) -> JobRights:
     ):
         raise HTTPException(403, "You may no longer declare this source.")
     return JobRights(read_all=granted.read_all and may_read_all, update_all=granted.update_all and may_update_all)
+
+
+async def _fresh_printer_scope(db, actor: Actor, granted: frozenset[int] | None) -> frozenset[int] | None:
+    """An API key's printer list read again on this session, narrowing the scope the request's gate granted; a
+    user's request has no printer scope."""
+    if actor.kind != "api_key":
+        return granted
+    from backend.app.core.api_key_scope import narrowed_scope
+    from backend.app.services.swap_source_declarations import fresh_api_key
+
+    return narrowed_scope(granted, await fresh_api_key(db, actor))
 
 
 def _source_gate(kind: str, row, actor: Actor, rights: Rights) -> None:
@@ -339,7 +356,11 @@ def _validate_selection(picked: list[JobRef]) -> list[JobRef]:
 async def _replayed(db, operation_id: str, digest: str, actor: Actor):
     from backend.app.models.swap_source_declaration_audit import SwapSourceDeclarationAudit as Audit
 
-    previous = (await db.execute(select(Audit).where(Audit.operation_id == operation_id))).scalar_one_or_none()
+    previous = (
+        await db.execute(
+            select(Audit).where(Audit.operation_id == operation_id).execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
     if previous is None:
         return None
     if (
@@ -358,13 +379,28 @@ async def _replayed(db, operation_id: str, digest: str, actor: Actor):
     }
 
 
-async def _lock_source(db, source_kind: str, source_id: int):
-    """The source, last: an archive's database guard and row (its in-process lock came with the lanes), or a
-    library row."""
-    if source_kind == "archive":
-        from backend.app.services.archive_write_scope import archive_db_guard, load_active_archive_for_write
+async def _replayed_visible(db, operation_id, digest, actor, rows, rights: JobRights, scope) -> dict | None:
+    """A replay read under the locks: the first result, but only while every job it names that still exists is
+    visible to the actor's rights as they stand now -- a replay never answers for jobs the actor lost."""
+    replayed = await _replayed(db, operation_id, digest, actor)
+    if replayed is None:
+        return None
+    hidden = [
+        {"kind": kind, "id": job_id, "reason": "job_gone"}
+        for (kind, job_id), row in rows.items()
+        if row is not None and not _visible(row, actor, rights, scope, kind)
+    ]
+    if hidden:
+        raise HTTPException(409, {"error": "job_not_refreshable", "message": NOT_REFRESHABLE, "jobs": hidden})
+    return replayed
 
-        await archive_db_guard(db, source_id)
+
+async def _lock_source(db, source_kind: str, source_id: int):
+    """The source's row: an archive's (its in-process lock and its database guard came with ``claim_lanes``, before
+    the lanes'), or a library row."""
+    if source_kind == "archive":
+        from backend.app.services.archive_write_scope import load_active_archive_for_write
+
         return await load_active_archive_for_write(db, source_id)
     from backend.app.core.database import take_write_lock
     from backend.app.models.library import LibraryFile
@@ -406,20 +442,21 @@ async def refresh(
         async with async_session() as db:
             # A replay answers only while the source is still there for this actor (spec r3 §3), as declare's does.
             _source_gate(source_kind, await db.get(_model(source_kind), source_id), actor, rights)
-            replayed = await _replayed(db, operation_id, digest, actor)
+            seen_rows = {(job.kind, job.id): await db.get(_job_model(job.kind), job.id) for job in picked}
+            # A retry is a new request: the jobs it names are checked against this request's gates too.
+            replayed = await _replayed_visible(db, operation_id, digest, actor, seen_rows, job_rights, printer_scope)
             if replayed is not None:
                 _log(operation_id, source_kind, source_id, "replayed", started)
                 return replayed
-            found = set()
-            for job in picked:
-                if job.kind == "queue" and (item := await db.get(_job_model("queue"), job.id)) is not None:
-                    found.add(item.queue_id)
-            lanes = sorted(found)
+            lanes = sorted(
+                {item.queue_id for (kind, _id), item in seen_rows.items() if kind == "queue" and item is not None}
+            )
 
         refreshed: list[dict] = []
         touched_lanes: set[int] = set()
         async with queue_sources.storage_mutation(), async_session() as db, AsyncExitStack() as stack:
-            # Every in-process lock first -- the lanes, then the archive's -- then the database's (``claim_lanes``).
+            # The archive (an archive source), then the lanes: in process, then SQLite's writer or PostgreSQL's
+            # guards in the same order (``claim_lanes``, spec r4 §4).
             await stack.enter_async_context(
                 claim_lanes(db, lanes, archive_id=source_id if source_kind == "archive" else None)
             )
@@ -443,17 +480,26 @@ async def refresh(
                 source = await _lock_source(db, source_kind, source_id)
 
             _source_gate(source_kind, source, actor, await _fresh_rights(db, source_kind, actor))
+            # Every right read again on this writer session, after the wait: a key that lost its queue read, its
+            # printer or itself while this request waited changes nothing (T9.7 R1).
+            fresh_rights = await _fresh_job_rights(db, actor, job_rights)
+            scope = await _fresh_printer_scope(db, actor, printer_scope)
+            # The same request may have overtaken this one after both passed the preflight: its committed result is
+            # the answer, read now that the lanes and rows are ours, before any stale-revision refusal (T9.7 R3).
+            replayed = await _replayed_visible(db, operation_id, digest, actor, rows, fresh_rights, scope)
+            if replayed is not None:
+                _log(operation_id, source_kind, source_id, "replayed", started)
+                return replayed
             declaration = _operator_declaration(source)
             if (declaration.operator or {}).get("declaration_id") != declaration_id or sc.source_revision(
                 source, epoch=queue_sources.current_epoch()
             ) != source_revision:
                 raise HTTPException(409, {"error": "source_changed", "message": SOURCE_CHANGED})
-            fresh_rights = await _fresh_job_rights(db, actor, job_rights)
 
             changed, refused = [], []
             for job in picked:
                 row = rows[(job.kind, job.id)]
-                if row is not None and _visible(row, actor, fresh_rights, printer_scope, job.kind):
+                if row is not None and _visible(row, actor, fresh_rights, scope, job.kind):
                     moved = job.kind == "queue" and row.queue_id not in lanes
                     if moved or job_revision(job.kind, row) != job.revision:
                         changed.append({"kind": job.kind, "id": job.id})
@@ -470,7 +516,7 @@ async def refresh(
                     blob=blob,
                     actor=actor,
                     rights=fresh_rights,
-                    scope=printer_scope,
+                    scope=scope,
                 )
                 if reason is not None:
                     refused.append({"kind": job.kind, "id": job.id, "reason": reason})
@@ -510,7 +556,17 @@ async def refresh(
                     created_at=datetime.now(timezone.utc).replace(tzinfo=None),
                 )
             )
-            await db.commit()
+            try:
+                await db.commit()
+            except IntegrityError:
+                # Another session committed this operation id between our read and our commit (another process, or
+                # another source the id was reused for). Only the same request is its replay; nothing of ours stays.
+                await db.rollback()
+                replayed = await _replayed(db, operation_id, digest, actor)
+                if replayed is None:
+                    raise
+                _log(operation_id, source_kind, source_id, "replayed", started)
+                return replayed
     except Exception as exc:
         _log(operation_id, source_kind, source_id, "refused", started, _reason(exc))
         raise
