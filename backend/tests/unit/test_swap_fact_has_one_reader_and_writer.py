@@ -37,11 +37,8 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("backend/app/services/library_scan.py", "write_batch", "str"): (
         _INGEST + " -- a new content identity, published with its hash and metadata"
     ),
-    ("backend/app/services/library_helpers.py", "sync_system_tags", "attr"): (
-        "declared response transport: the row's declaration shown as its 'swap' tag, after the fact is written"
-    ),
     ("backend/app/services/library_helpers.py", "sync_system_tags", "kw"): (
-        "declared response transport: the row's declaration shown as its 'swap' tag, after the fact is written"
+        "declared response transport: the row's declaration, through library_fact, shown as its 'swap' tag"
     ),
 }
 

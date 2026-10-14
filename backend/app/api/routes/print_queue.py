@@ -122,10 +122,11 @@ async def _swap_update(db: AsyncSession, item: PrintQueueItem, update: dict, tar
     """The job's swap columns after an edit, from its OWN captured declaration (swap-source-lifecycle spec r4 §8).
 
     Asked only when the edit touches the swap fields or moves the job to another printer's queue: a baked source
-    stays muted, a plain one keeps what is asked under the target printer's swap mode, an opt-out is never
-    raised, and an unknown source asked for our macros is a 409. Never the library or archive row's current
-    value. Returns the columns to write -- ``swap_macro_events`` as its stored JSON -- or ``{}`` for an edit that
-    does not concern them.
+    stays muted, an edit of a plain one's request is stored under the printer's swap mode, an opt-out is never
+    raised, and an unknown source asked for our macros is a 409. A move is not an edit of the request: the job
+    keeps what was asked for the way back -- dispatch mutes it on a printer without swap mode -- and only the
+    target may refuse it. Never the library or archive row's current value. Returns the columns to write --
+    ``swap_macro_events`` as its stored JSON -- or ``{}`` for nothing to write.
     """
     moves = target_queue is not None and target_queue.id != item.queue_id
     if not (_SWAP_FIELDS & update.keys() or moves):
@@ -141,12 +142,15 @@ async def _swap_update(db: AsyncSession, item: PrintQueueItem, update: dict, tar
     queue = target_queue if moves else await db.get(PrinterQueue, item.queue_id)
     printer = await db.get(Printer, queue.printer_id) if queue is not None and queue.printer_id else None
     descriptor = await item_descriptor(db, item)
+    fact = descriptor.swap_fact.value if descriptor is not None else None
     execute, events = swap_request(
-        descriptor.swap_fact.value if descriptor is not None else None,
+        fact,
         execute=execute,
         events=events,
         printer_swap_mode=bool(printer is not None and printer.swap_mode_enabled),
     )
+    if moves and not _SWAP_FIELDS & update.keys() and fact is not True:
+        return {}
     return {"execute_swap_macros": execute, "swap_macro_events": json.dumps(events) if events else None}
 
 

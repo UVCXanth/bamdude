@@ -135,6 +135,15 @@ class AutoQueueScheduler:
 
     _check_interval = 30  # seconds — same cadence as PrintScheduler
 
+    @staticmethod
+    async def _a_plain_printer_may_take(db: AsyncSession, item: AutoQueueItem, refused: set[int], **search) -> bool:
+        """Whether a printer without swap mode would print ``item`` as it is, busy or not: a refusal by policy on
+        the swap printers does not close that candidate (swap-source-lifecycle spec r4 §8)."""
+        swap_printers = set(
+            (await db.execute(select(Printer.id).where(Printer.swap_mode_enabled.is_(True)))).scalars().all()
+        )
+        return (await find_eligible_printer(db, item, refused | swap_printers, **search)).printer is not None
+
     # A stalled queue re-logs itself this often even when nothing has changed, so
     # a support bundle collected hours into the stall still contains the reason
     # rather than one line from when it began.
@@ -213,10 +222,23 @@ class AutoQueueScheduler:
                         interlocked_printers=interlocked_printers,
                     )
                     printer, reason = eligible
-                    if printer is None and swap_refused:
-                        # Every candidate this pass offered refused the unknown source's
-                        # request: a visible failure with its reason and Retry -- not a wait
-                        # that would never end (swap-source-lifecycle spec r4 §8).
+                    if (
+                        printer is None
+                        and swap_refused
+                        and not await self._a_plain_printer_may_take(
+                            db,
+                            item,
+                            swap_refused,
+                            cache=requirements_cache,
+                            prefer_lowest=prefer_lowest,
+                            offline_feeds=offline_feeds,
+                            interlocked_printers=interlocked_printers,
+                        )
+                    ):
+                        # Every candidate refused the unknown source's request and no printer
+                        # without swap mode could print it: a visible failure with its reason
+                        # and Retry -- not a wait that would never end (swap-source-lifecycle
+                        # spec r4 §8). With such a printer, busy now, the job waits for it below.
                         await fail_auto_source(db, item, swap_compatibility.UNKNOWN_SOURCE_REASON)
                         logger.info("Auto item %s failed: every candidate refused an unknown source", item.id)
                         break

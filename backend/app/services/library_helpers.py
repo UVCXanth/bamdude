@@ -238,6 +238,18 @@ def compute_file_tags(
     return tags
 
 
+def answered_file_tags(file) -> list[str]:
+    """The row's system tags as an answer. A cache written before the hash rule may carry 'swap' for a row whose
+    declaration is unknown (no valid hash, swap-source-lifecycle spec r4 §4); the answer leaves it out, as the next
+    write of the cache will."""
+    from backend.app.services.swap_compatibility import library_fact
+
+    tags = list(file.file_tags or [])
+    if "swap" in tags and library_fact(file) is not True:
+        tags.remove("swap")
+    return tags
+
+
 async def sync_system_tags(db, file) -> list[str]:
     """Derive this file's system tags and write BOTH representations.
 
@@ -261,13 +273,15 @@ async def sync_system_tags(db, file) -> list[str]:
     from sqlalchemy import delete, select
 
     from backend.app.models.library import LibraryFileTag, LibraryTag
+    from backend.app.services.swap_compatibility import library_fact
 
     codes = compute_file_tags(
         filename=file.filename,
         file_type=file.file_type,
         file_metadata=file.file_metadata,
         source_type=file.source_type,
-        swap_compatible=bool(file.swap_compatible),
+        # The declaration as the reader answers it: without a valid hash it is unknown, and no tag promises it.
+        swap_compatible=library_fact(file) is True,
     )
     file.file_tags = codes
 

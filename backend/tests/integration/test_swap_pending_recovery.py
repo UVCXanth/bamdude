@@ -330,3 +330,141 @@ async def test_the_run_is_re_checked_right_before_the_command(make_rig, monkeypa
 
     assert change_tables_sent(rig) == 0
     assert await queue_status(rig) == "paused"
+
+
+# --- final review: an interrupted accepted finish, a macro that errors, a hold a later success ends -----------------
+
+
+async def an_interrupted_acceptance(rig, archive_id: int, item_id: int, *, change_table: str | None) -> None:
+    """The live completion accepted this run's finish and the process died before it finalised the row -- inside our
+    change_table when ``change_table`` is its recorded stage, before it (or with its record lost) otherwise."""
+    from backend.app import main
+    from backend.app.models.archive import PrintArchive
+
+    async with rig.db() as db:
+        archive = await db.get(PrintArchive, archive_id)
+        item = await db.get(PrintQueueItem, item_id)
+        extra = dict(archive.extra_data or {})
+        extra[main._TERMINAL_ACCEPTANCE_KEY] = main._terminal_acceptance_payload(item, "completed")
+        if change_table:
+            extra[main._TERMINAL_EFFECTS_KEY] = {"swap_change_table": {"stage": change_table, "at": "2026-10-14"}}
+        archive.extra_data = extra
+        await db.commit()
+
+
+async def structural_close(rig, archive_id: int) -> None:
+    """The sweep's close of an accepted terminal, then what it settles for the swap."""
+    from backend.app.models.archive import PrintArchive
+    from backend.app.services import print_reconciliation
+
+    async with rig.db() as db:
+        archive = await db.get(PrintArchive, archive_id)
+        assert await print_reconciliation._recover_accepted_terminal_checkpoint(db, archive) == archive_id
+        await db.commit()
+    await print_reconciliation._resolve_pending_swaps(rig.printer_id, [archive_id])
+
+
+@pytest.mark.parametrize("stage", [None, "attempted"])
+async def test_an_interrupted_accepted_finish_holds_its_owed_swap_as_uncertain(stage, make_rig):
+    """Nothing says whether the macro went out -- its attempt may be recorded, or its record may have failed -- so
+    the sweep sends nothing, and the reason it gives is the uncertain outcome, not an unproven run."""
+    rig = await make_rig(require_plate_clear=False)
+    archive_id, item_id = await an_owed_run(rig, "recovery", fact=False)
+    await an_interrupted_acceptance(rig, archive_id, item_id, change_table=stage)
+
+    await structural_close(rig, archive_id)
+
+    assert change_tables_sent(rig) == 0
+    archive = await archive_of(rig, archive_id)
+    assert CHANGE_TABLE in pending_of(archive)
+    assert archive.extra_data["swap_hold"]["reason"] == "swap_hold_outcome_uncertain"
+    assert await queue_status(rig) == "paused"
+
+
+async def test_an_attempted_change_table_is_not_sent_again_whatever_the_queue_says(make_rig):
+    """The close could not pause a queue that no longer names the run as its current job; the decision does not
+    lean on that pause -- an attempt the process died inside is never repeated."""
+    rig = await make_rig(require_plate_clear=False)
+    archive_id, item_id = await an_owed_run(rig, "recovery", fact=False)
+    await an_interrupted_acceptance(rig, archive_id, item_id, change_table="attempted")
+    async with rig.db() as db:
+        queue = await db.get(PrinterQueue, rig.queue_id)
+        queue.current_item_id = None
+        await db.commit()
+
+    await structural_close(rig, archive_id)
+
+    assert change_tables_sent(rig) == 0
+    assert await queue_status(rig) == "paused"
+
+
+@pytest.mark.parametrize("where", ["lookup", "command"])
+async def test_a_macro_error_holds_the_queue_even_without_plate_confirmation(where, make_rig, monkeypatch):
+    """Reading the change-table macro, or sending it, raises: the plate is not taken as swapped and the next job
+    does not start on it. A lookup that failed sent nothing -- still owed; a command that raised may have gone
+    out -- never sent twice."""
+    from unittest.mock import AsyncMock
+
+    rig = await make_rig(require_plate_clear=False)
+    if where == "lookup":
+        monkeypatch.setattr(
+            "backend.app.services.macro_executor.find_swap_macro", AsyncMock(side_effect=RuntimeError("db gone"))
+        )
+    else:
+        rig.macro.side_effect = RuntimeError("socket closed")
+    archive_id, item_id = await an_owed_run(rig, "live", fact=False)
+    waiting = await a_pending_job(rig)
+
+    await complete(rig)
+
+    assert await queue_status(rig) == "paused"
+    archive = await archive_of(rig, archive_id)
+    assert archive.extra_data["swap_hold"]["reason"] == "swap_hold_macro_error"
+    assert (CHANGE_TABLE in pending_of(archive)) is (where == "lookup")
+    assert gate_armed(rig) is False
+    assert (await item_of(rig, waiting)).waiting_reason
+
+
+@pytest.mark.parametrize("executor", ["live", "recovery"])
+async def test_a_table_swap_that_ran_ends_the_hold_recorded_before_it(executor, make_rig):
+    """A hold was written while the run's outcome was still being settled (the sweep over a completion still in
+    flight); the swap then ran. The print no longer says it was held."""
+    from backend.app.models.archive import PrintArchive
+
+    rig = await make_rig(require_plate_clear=False)
+    archive_id, _item = await an_owed_run(rig, executor, fact=False)
+    async with rig.db() as db:
+        archive = await db.get(PrintArchive, archive_id)
+        archive.extra_data = {
+            **archive.extra_data,
+            "swap_hold": {"reason": "swap_hold_outcome_uncertain", "cycle": "possibly_started"},
+        }
+        await db.commit()
+
+    await finish(rig, executor, archive_id)
+
+    assert change_tables_sent(rig) == 1
+    assert "swap_hold" not in (await archive_of(rig, archive_id)).extra_data
+
+
+async def test_an_attempt_recorded_without_a_readable_acceptance_is_not_repeated(make_rig):
+    """The finish's acceptance is not one the structural close reads (an older marker, a damaged one), so the
+    ordinary close takes the run -- and the change_table attempt recorded on it still is never sent again."""
+    from backend.app import main
+    from backend.app.models.archive import PrintArchive
+
+    rig = await make_rig(require_plate_clear=False)
+    archive_id, _item = await an_owed_run(rig, "recovery", fact=False)
+    async with rig.db() as db:
+        archive = await db.get(PrintArchive, archive_id)
+        archive.extra_data = {
+            **archive.extra_data,
+            main._TERMINAL_ACCEPTANCE_KEY: {"version": 1, "stage": "accepted"},
+            main._TERMINAL_EFFECTS_KEY: {"swap_change_table": {"stage": "attempted", "at": "2026-10-14"}},
+        }
+        await db.commit()
+
+    await recover(rig, archive_id)
+
+    assert change_tables_sent(rig) == 0
+    assert (await archive_of(rig, archive_id)).extra_data["swap_hold"]["reason"] == "swap_hold_outcome_uncertain"

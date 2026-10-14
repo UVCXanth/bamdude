@@ -40,6 +40,7 @@ HOLD_RUN_UNPROVEN = "swap_hold_run_unproven"
 HOLD_NOT_COMPLETED = "swap_hold_not_completed"
 HOLD_SWAP_OFF = "swap_hold_swap_off"
 HOLD_OUTCOME_UNCERTAIN = "swap_hold_outcome_uncertain"
+HOLD_MACRO_ERROR = "swap_hold_macro_error"
 HOLD_REASONS = frozenset(
     {
         HOLD_SOURCE_UNKNOWN,
@@ -48,6 +49,7 @@ HOLD_REASONS = frozenset(
         HOLD_NOT_COMPLETED,
         HOLD_SWAP_OFF,
         HOLD_OUTCOME_UNCERTAIN,
+        HOLD_MACRO_ERROR,
     }
 )
 
@@ -127,3 +129,13 @@ def hold_text(reason: str, cycle: str, lang: str | None = None) -> str:
 
 def hold_record(reason: str, cycle: str) -> dict:
     return {"reason": reason, "cycle": cycle}
+
+
+def clear_hold(archive) -> bool:
+    """Our table swap ran: what an earlier decision recorded as held no longer stands (a new dict, other keys
+    kept). Returns whether there was a hold to clear."""
+    extra = getattr(archive, "extra_data", None)
+    if not isinstance(extra, Mapping) or HOLD_KEY not in extra:
+        return False
+    archive.extra_data = {key: value for key, value in extra.items() if key != HOLD_KEY}
+    return True

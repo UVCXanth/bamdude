@@ -192,6 +192,36 @@ async def test_library_null_hash_is_unknown_without_filesystem_read(
     assert (wire(item), wire(detail.json())) == (expected, expected)
 
 
+@pytest.mark.parametrize(("hashed", "tagged"), [(True, True), (False, False)])
+async def test_the_swap_tag_follows_the_declaration_the_row_can_stand_behind(hashed, tagged, db_session, tmp_path):
+    """The row's 'swap' tag is its declaration as the reader answers it: without a valid hash the declaration is
+    unknown, and a tag would promise what the print dialog then refuses."""
+    from backend.app.services.library_helpers import sync_system_tags
+
+    row = await a_library_file(
+        db_session, tmp_path / "x.swaps.3mf", declared=True, file_hash=("ab" * 32) if hashed else None
+    )
+
+    codes = await sync_system_tags(db_session, row)
+
+    assert ("swap" in codes) is tagged
+    assert ("swap" in row.file_tags) is tagged
+
+
+async def test_a_swap_tag_cached_before_the_hash_rule_is_not_answered(committing_client, db_session, tmp_path):
+    """A row without a valid hash whose tag cache was written before the rule: the list does not show the tag."""
+    row = await a_library_file(db_session, tmp_path / "old.swaps.3mf", declared=True, file_hash=None)
+    row.file_tags = ["3mf", "swap"]
+    await db_session.commit()
+
+    listed = await committing_client.get("/api/v1/library/files")
+
+    assert listed.status_code == 200, listed.text
+    (item,) = [f for f in listed.json() if f["id"] == row.id]
+    assert "swap" not in item["file_tags"]
+    assert "3mf" in item["file_tags"]
+
+
 # --- queue copy source ----------------------------------------------------------------------------------------------
 
 

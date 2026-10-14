@@ -8138,6 +8138,7 @@ async def _on_print_complete_impl(
         )
     if "swap_mode_change_table" in swap_events and _swap_hold is None:
         _sw_attempted = False
+        _sw_swapped = False
         try:
             async with async_session() as db:
                 from backend.app.models.print_queue import PrintQueueItem
@@ -8155,6 +8156,7 @@ async def _on_print_complete_impl(
                     _sw_ok, _sw_msg = await printer_manager.execute_macro_and_wait(
                         printer_id, macro.gcode, macro.name, may_run=_owns_printer_effect
                     )
+                    _sw_swapped = bool(_sw_ok)
                     await _record_terminal_effect_stage(
                         archive_id,
                         "swap_change_table",
@@ -8199,6 +8201,10 @@ async def _on_print_complete_impl(
                             await db.commit()
         except Exception as e:
             logger.error("[SWAP] change_table macro error: %s", e)
+            # No answer is no permission: a lookup that failed sent nothing, a command that raised may have gone
+            # out -- either way the plate is not taken as swapped, and the queue waits with a reason.
+            if not _sw_swapped:
+                _swap_hold = swap_terminal.HOLD_MACRO_ERROR
         finally:
             # Idempotency: tick swap_mode_change_table off the pending
             # checklist once the macro was SENT (variant 2 — drop just THIS
@@ -8213,8 +8219,12 @@ async def _on_print_complete_impl(
                         from backend.app.services.archive import remove_swap_pending_event
 
                         _arc = await db.get(_PASwapClear, archive_id)
-                        if _arc is not None and remove_swap_pending_event(_arc, "swap_mode_change_table"):
-                            await db.commit()
+                        if _arc is not None:
+                            _ticked = remove_swap_pending_event(_arc, "swap_mode_change_table")
+                            # A swap that ran ends a hold an earlier decision recorded (the sweep over this
+                            # completion while it was still in flight).
+                            if (_sw_swapped and swap_terminal.clear_hold(_arc)) or _ticked:
+                                await db.commit()
                 except Exception as e:
                     logger.debug(
                         "[SWAP] failed to remove swap_mode_change_table from pending for archive %s: %s", archive_id, e

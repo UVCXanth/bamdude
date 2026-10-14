@@ -1053,6 +1053,7 @@ async def _resolve_pending_swaps(printer_id: int, archive_ids: list[int]) -> Non
     from sqlalchemy import select as sa_select
 
     from backend.app.core.database import async_session
+    from backend.app.main import _TERMINAL_EFFECTS_KEY
     from backend.app.models.archive import PrintArchive
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer import Printer
@@ -1122,7 +1123,15 @@ async def _resolve_pending_swaps(printer_id: int, archive_ids: list[int]) -> Non
                 extra = archive.extra_data if isinstance(archive.extra_data, dict) else {}
                 if "swap_mode_change_table" not in (extra.get("swap_macro_events_pending") or []):
                     continue
-                uncertain = bool(extra.get("recovered_outcome_uncertain"))
+                # An outcome this sweep cannot vouch for: its own uncertain close, or a finish the live completion
+                # accepted and never finalised -- whether our change_table went out then is unknown (its attempt may
+                # be recorded, or the record itself may have failed). Never sent again; never a queue's pause to lean on.
+                effects = extra.get(_TERMINAL_EFFECTS_KEY)
+                uncertain = bool(
+                    extra.get("recovered_outcome_uncertain")
+                    or extra.get("terminal_effects_uncertain")
+                    or (isinstance(effects, dict) and "swap_change_table" in effects)
+                )
                 printer = await db.get(Printer, printer_id)
                 # ⚠️ queue_id is NOT printer_id — see telegram_handlers.common.resolve_queue_id.
                 queue_id = (
@@ -1172,8 +1181,10 @@ async def _resolve_pending_swaps(printer_id: int, archive_ids: list[int]) -> Non
                     swapped, msg = await printer_manager.execute_macro_and_wait(printer_id, macro.gcode, macro.name)
                     if swapped:
                         current = await relock(db, archive_id)
-                        if current is not None and remove_swap_pending_event(current, "swap_mode_change_table"):
-                            await db.commit()
+                        if current is not None:
+                            ticked = remove_swap_pending_event(current, "swap_mode_change_table")
+                            if swap_terminal.clear_hold(current) or ticked:
+                                await db.commit()
                     else:
                         reason = f"Swap macro failed: {msg}"
                 else:

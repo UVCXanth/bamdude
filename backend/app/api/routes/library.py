@@ -94,6 +94,7 @@ from backend.app.services.design_settings import (
 from backend.app.services.entity_codes import code_for
 from backend.app.services.filament_requirements import annotate_rack_groups
 from backend.app.services.library_helpers import (
+    answered_file_tags,
     detect_file_type,
     folder_activity_at,
     skip_objects_supported_from_metadata,
@@ -2162,7 +2163,7 @@ async def list_files(
                 is_external=f.is_external,
                 filename=f.filename,
                 file_type=f.file_type,
-                file_tags=f.file_tags or [],
+                file_tags=answered_file_tags(f),
                 file_size=f.file_size,
                 thumbnail_path=f.thumbnail_path,
                 duplicate_count=hash_counts.get(f.file_hash, 0) if f.file_hash else 0,

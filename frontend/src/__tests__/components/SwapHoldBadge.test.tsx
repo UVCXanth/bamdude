@@ -34,6 +34,12 @@ describe('the swap hold of a print', () => {
     expect(text).not.toMatch(/started/);
   });
 
+  it('says a macro that errored did not finish the swap', () => {
+    expect(swapHoldText(t, { swap_hold: { reason: 'swap_hold_macro_error', cycle: 'not_started' } })).toBe(
+      "The table swap did not finish: BamDude could not run the printer's change-table macro. Inspect the mechanism and plate, then resume the queue.",
+    );
+  });
+
   it('has every sentence in Ukrainian too', async () => {
     await i18n.changeLanguage('uk');
     expect(swapHoldText(t, { swap_hold: { reason: 'swap_hold_source_unknown', cycle: 'started' } })).toBe(
@@ -46,6 +52,7 @@ describe('the swap hold of a print', () => {
       'swap_hold_not_completed',
       'swap_hold_swap_off',
       'swap_hold_outcome_uncertain',
+      'swap_hold_macro_error',
     ]) {
       const text = swapHoldText(t, { swap_hold: { reason, cycle: 'not_started' } });
       expect(text).not.toContain('archives.');

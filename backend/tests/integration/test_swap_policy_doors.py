@@ -467,6 +467,53 @@ async def test_auto_item_fails_when_every_candidate_refuses_the_unknown_source(
     assert getattr(auto, "assigned_to_item_id", None) is None
 
 
+async def test_a_busy_plain_printer_keeps_the_job_waiting_instead_of_failing(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    """The idle swap printer refuses the unknown source's request; the plain printer that would print it as it is
+    is busy. A refusal by policy does not close that candidate: the job waits for it instead of failing."""
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
+    from backend.app.services.printer_manager import printer_manager
+
+    printer, queue = await a_swap_printer(db_session, tmp_path, printer_factory, monkeypatch)
+    plain = await a_second_printer(
+        db_session, printer_factory, monkeypatch, printer_manager._clients[printer.id], swap_mode=False
+    )
+    (await db_session.get(PrinterQueue, plain.id)).status = "printing"
+    await db_session.commit()
+    library = await a_library(db_session, tmp_path, fact=None)
+    auto = await an_auto_job(db_session, library, monkeypatch=monkeypatch)
+
+    await AutoQueueScheduler().tick()
+
+    assert (await db_session.execute(select(PrintQueueItem))).scalars().all() == []
+    await db_session.refresh(auto)
+    assert auto.status == "pending"
+
+
+async def test_a_busy_swap_printer_is_no_reason_to_wait(db_session, tmp_path, printer_factory, monkeypatch, sessions):
+    """Only swap printers would print it, the idle one refused and the busy one would refuse too: nothing to wait
+    for, so the job fails with its reason and Retry."""
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
+    from backend.app.services.printer_manager import printer_manager
+
+    printer, queue = await a_swap_printer(db_session, tmp_path, printer_factory, monkeypatch)
+    other = await a_second_printer(
+        db_session, printer_factory, monkeypatch, printer_manager._clients[printer.id], swap_mode=True
+    )
+    (await db_session.get(PrinterQueue, other.id)).status = "printing"
+    await db_session.commit()
+    library = await a_library(db_session, tmp_path, fact=None)
+    auto = await an_auto_job(db_session, library, monkeypatch=monkeypatch)
+
+    await AutoQueueScheduler().tick()
+
+    await db_session.refresh(auto)
+    assert auto.status == "failed"
+
+
 async def test_no_candidate_at_all_is_not_a_swap_failure(db_session, tmp_path, printer_factory, monkeypatch, sessions):
     from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
 
@@ -566,28 +613,42 @@ async def test_batch_patch_policy_is_atomic(
         assert row.execute_swap_macros is False and row.swap_macro_events is None  # nobody was written
 
 
-async def test_moving_a_job_to_a_printer_without_swap_mode_drops_the_request(
-    committing_client, db_session, tmp_path, printer_factory, monkeypatch, sessions
+@pytest.mark.parametrize(
+    ("fact", "codes", "stored"),
+    [(False, [200, 200, 200], True), (None, [409], True), (True, [200, 200, 200], False)],
+)
+async def test_a_move_keeps_the_swap_request_for_the_way_back(
+    fact, codes, stored, committing_client, db_session, tmp_path, printer_factory, monkeypatch, sessions
 ):
+    """A move is not an edit of the request: on a printer without swap mode the job keeps what was asked (dispatch
+    mutes it there, per printer), so moving it back asks again. Only the target may refuse it -- an unknown source on
+    a swap printer -- and a baked source stays muted."""
     from backend.app.services.printer_manager import printer_manager
 
     printer, queue = await a_swap_printer(db_session, tmp_path, printer_factory, monkeypatch)
-    job = await pending_job(db_session, sessions, tmp_path, queue, fact=False)
-    job.execute_swap_macros, job.swap_macro_events = True, json.dumps(START)
-    await db_session.commit()
     plain = await a_second_printer(
         db_session, printer_factory, monkeypatch, printer_manager._clients[printer.id], swap_mode=False
     )
+    job = await pending_job(db_session, sessions, tmp_path, queue, fact=fact)
+    job.queue_id = plain.id
+    job.execute_swap_macros, job.swap_macro_events = True, json.dumps(START)
+    await db_session.commit()
 
-    # A job with no routing intent reads as pinned; moving it says the slots are to be chosen again.
-    response = await committing_client.patch(
-        f"/api/v1/queue/{job.id}", json={"queue_id": plain.id, "manual_mapping": False}
-    )
+    async def move(target):
+        # A job with no routing intent reads as pinned; moving it says the slots are to be chosen again.
+        return await committing_client.patch(
+            f"/api/v1/queue/{job.id}", json={"queue_id": target.id, "manual_mapping": False}
+        )
 
-    assert response.status_code == 200, response.text
+    answers = [await move(queue)]
+    if answers[-1].status_code == 200:
+        answers += [await move(plain), await move(queue)]
+
+    assert [answer.status_code for answer in answers] == codes, [answer.text for answer in answers]
     row = await db_session.get(PrintQueueItem, job.id, populate_existing=True)
-    assert row.queue_id == plain.id
-    assert row.execute_swap_macros is False and row.swap_macro_events is None
+    assert row.queue_id == (queue.id if codes[-1] == 200 else plain.id)
+    assert row.execute_swap_macros is stored
+    assert (json.loads(row.swap_macro_events) if row.swap_macro_events else None) == (START if stored else None)
 
 
 # --- the order plan: printer and auto both go through the captured fact (§8, T4.1) ---------------------------------

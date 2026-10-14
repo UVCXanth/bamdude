@@ -11,6 +11,7 @@ const REASONS = [
   'swap_hold_not_completed',
   'swap_hold_swap_off',
   'swap_hold_outcome_uncertain',
+  'swap_hold_macro_error',
 ] as const;
 
 type Translate = (key: string) => string;
