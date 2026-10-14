@@ -3808,8 +3808,6 @@ class _ResolvedPlate(NamedTuple):
     #: The resolved slicer plate; the recipe can still name the whole file.
     plate_number: int
     count: int
-    #: The source file already carries swap macros (``LibraryFile.swap_compatible``).
-    baked_swap_macros: bool
     #: The printer model the 3MF was sliced for, in the spelling the auto-queue
     #: routes on. ``None`` when the file names none.
     sliced_for_model: str | None
@@ -3871,7 +3869,6 @@ async def enqueue_order_plan(
 
     printer_id: int | None = None
     printer_model: str | None = None
-    printer_swap_on = False
     if data.target.kind == "printer":
         printer = await db.get(Printer, data.target.printer_id)
         # Exists and is not archived. That is the whole of it — see the warning
@@ -3880,7 +3877,6 @@ async def enqueue_order_plan(
             raise HTTPException(status_code=404, detail="Printer not found")
         printer_id = printer.id
         printer_model = printer.model
-        printer_swap_on = bool(printer.swap_mode_enabled)
 
     # ⚠️ ONE load for the whole request, before the loop — this used to fetch a
     # product AND build its recipes inside it, per distinct product of the
@@ -3943,7 +3939,6 @@ async def enqueue_order_plan(
                 # Recipe index zero remains unchanged; only the job is resolved.
                 plate_number=requirements.resolved_plate_id,
                 count=item.count,
-                baked_swap_macros=bool(source_file.swap_compatible),
                 sliced_for_model=requirements.model or recipe.printer_model,
             )
         )
@@ -3993,20 +3988,11 @@ async def enqueue_order_plan(
         else:
             options = profile.for_printer_queue() if profile else {}
         options.update(explicit_options[plate.sliced_for_model])
-        # Explicit order choices win over the profile; the existing physical
-        # capability/file mute below still applies to the resolved result.
-        #
-        # The rule every other queue door applies (``services/queue_add.py`` and
-        # the two print-now routes): swap macros are meaningful only on a printer
-        # with swap mode ON and a source file that does not already carry them
-        # baked in by third-party tooling — otherwise the plate change fires
-        # twice. ⚠️ UNCONDITIONAL, not "only when a profile turned them on":
-        # ``AutoQueueItemCreate`` defaults ``execute_swap_macros`` to True, so a
-        # ``swap_compatible`` file with no preference behind it would double-fire
-        # on the auto target through the writer's own default.
-        if plate.baked_swap_macros or (printer_id is not None and not printer_swap_on):
-            options["execute_swap_macros"] = False
-            options["swap_macro_events"] = None
+        # Explicit order choices win over the profile. Swap macros are NOT decided
+        # here from the library row: the printer branch's writer decides them from
+        # the declaration its capture confirms and that printer's swap mode, and an
+        # auto row's swap fields are inert -- the assignment decides per candidate
+        # from the row's snapshot (swap-source-lifecycle spec r4 §8).
         try:
             if printer_id is None:
                 rows = await add_items_to_auto_queue(

@@ -122,8 +122,7 @@ async def a_legacy_job(db, queue, *, printer_id, library_file=None, archive=None
         filament_routing=routing,
         plate_id=plate,
         status="pending",
-        position=1,
-        **columns,
+        **{"position": 1, **columns},
     )
     db.add(item)
     await db.commit()
@@ -731,3 +730,131 @@ async def test_an_archive_of_a_staged_copy_still_refuses_a_corrupted_store_copy(
 
     assert archive is None
     assert (await db_session.execute(select(PrintArchive))).scalars().all() == []
+
+
+# --- a busy spool: the bounded, in-memory retry of a queued job (§6, T4.6a) -----------------------------------------
+
+
+def busy_for(monkeypatch, harness, path: Path):
+    """Every copy of ``path`` finds the spool busy; anything else copies normally."""
+    real = queue_sources.capture
+
+    async def maybe_busy(request):
+        if request.path == path:
+            harness.captures.append(request.path)
+            raise queue_sources.QueueSourceBusy("synthetic")
+        return await real(request)
+
+    monkeypatch.setattr(queue_sources, "capture", maybe_busy)
+
+
+async def test_capture_retry_cooldown_is_respected_by_tick_and_final_claim(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch
+):
+    _unused, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    settings.archive_dir.mkdir(parents=True, exist_ok=True)
+    first = await a_library_file(db_session, tmp_path, name="first.gcode.3mf")
+    second = await a_library_file(db_session, tmp_path, name="second.gcode.3mf")
+    stuck = await a_legacy_job(db_session, queue, printer_id=printer.id, library_file=first)
+    behind = await a_legacy_job(db_session, queue, printer_id=printer.id, library_file=second, position=2)
+    harness = Harness(monkeypatch, test_engine)
+    busy_for(monkeypatch, harness, Path(first.file_path))
+
+    await harness.tick()
+    row = await reload(db_session, stuck)
+    assert row.status == "pending" and row.waiting_reason_code == "source_capture"
+
+    # Within the cooldown the stuck job is passed over -- by the selection AND by the final first-runnable
+    # check under the claim, or its neighbour would be refused as "not first" -- and the neighbour starts.
+    await harness.tick()
+    assert harness.captures.count(Path(first.file_path)) == 1
+    assert (await reload(db_session, behind)).status == "printing"
+
+
+async def test_capture_cooldown_skips_only_own_item_and_preserves_schedule(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch
+):
+    _unused, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    settings.archive_dir.mkdir(parents=True, exist_ok=True)
+    source = await a_library_file(db_session, tmp_path)
+    stuck = await a_legacy_job(
+        db_session,
+        queue,
+        printer_id=printer.id,
+        library_file=source,
+        execute_swap_macros=True,
+        swap_macro_events='["swap_mode_start"]',
+    )
+    harness = Harness(monkeypatch, test_engine)
+    busy_for(monkeypatch, harness, Path(source.file_path))
+
+    await harness.tick()
+
+    row = await reload(db_session, stuck)
+    assert row.status == "pending"
+    # Nothing about the job is rewritten to wait: not its schedule, not its start mode, not what it asked for.
+    assert row.scheduled_time is None and row.manual_start is False
+    assert row.execute_swap_macros is True and row.swap_macro_events == '["swap_mode_start"]'
+    assert row.library_file_id == source.id
+    assert stuck.id in harness.scheduler._capture_cooldowns
+
+
+async def test_stale_failure_cannot_cooldown_a_newer_attempt(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch
+):
+    """The refusal arrives after the operator cancelled the attempt: the CAS fails, and no cooldown is set."""
+    _unused, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    settings.archive_dir.mkdir(parents=True, exist_ok=True)
+    source = await a_library_file(db_session, tmp_path)
+    item = await a_legacy_job(db_session, queue, printer_id=printer.id, library_file=source)
+    harness = Harness(monkeypatch, test_engine)
+
+    async def cancelled_then_busy(request):
+        async with harness.factory() as db:
+            row = await db.get(PrintQueueItem, item.id)
+            row.status = "cancelled"
+            await db.commit()
+        raise queue_sources.QueueSourceBusy("synthetic")
+
+    monkeypatch.setattr(queue_sources, "capture", cancelled_then_busy)
+    await harness.tick()
+
+    assert (await reload(db_session, item)).status == "cancelled"
+    assert harness.scheduler._capture_cooldowns == {}
+
+
+async def test_capture_cooldown_cleanup_and_restart_allow_bounded_retry(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch
+):
+    import backend.app.services.print_scheduler as ps
+
+    _unused, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    settings.archive_dir.mkdir(parents=True, exist_ok=True)
+    source = await a_library_file(db_session, tmp_path)
+    stuck = await a_legacy_job(db_session, queue, printer_id=printer.id, library_file=source)
+    harness = Harness(monkeypatch, test_engine)
+    busy_for(monkeypatch, harness, Path(source.file_path))
+    path = Path(source.file_path)
+
+    await harness.tick()
+    await harness.tick()
+    assert harness.captures.count(path) == 1  # cooling down
+
+    # Past the deadline (moved there by hand -- the loop's own clock is not ours to patch): one new attempt,
+    # and the entry is renewed by that attempt, never kept as a log.
+    assert harness.scheduler._capture_cooldowns[stuck.id] <= time.monotonic() + ps.CAPTURE_RETRY_COOLDOWN_SECONDS
+    harness.scheduler._capture_cooldowns[stuck.id] = time.monotonic() - 1
+    await harness.tick()
+    assert harness.captures.count(path) == 2
+    assert list(harness.scheduler._capture_cooldowns) == [stuck.id]
+
+    # An explicit edit clears it at once.
+    harness.scheduler.clear_capture_cooldown(stuck.id)
+    await harness.tick()
+    assert harness.captures.count(path) == 3
+
+    # A restarted scheduler remembers nothing: one more attempt, bounded by its own new cooldown.
+    harness.scheduler, harness.spawned = scheduler_with_captured_dispatch(monkeypatch)
+    await harness.tick()
+    await harness.tick()
+    assert harness.captures.count(path) == 4

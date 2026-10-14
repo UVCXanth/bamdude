@@ -37,16 +37,9 @@ PENDING = {
     ("backend/app/api/routes/library.py", "get_file", "attr"): "T6 library known projection",
     ("backend/app/api/routes/library.py", "get_file", "kw"): "T6 library known projection",
     ("backend/app/api/routes/print_queue.py", "get_queue_copy_source", "kw"): "T6 copy source reads the job's fact",
-    ("backend/app/api/routes/projects.py", "enqueue_order_plan", "attr"): "T4 order plan through the policy",
     ("backend/app/main.py", "_on_print_complete_impl", "attr"): "T7 completion reader",
-    (
-        "backend/app/services/auto_queue_scheduler.py",
-        "AutoQueueScheduler._source_has_baked_swap_macros",
-        "attr",
-    ): "T4 assignment reads the snapshot",
     ("backend/app/services/library_helpers.py", "sync_system_tags", "attr"): "T5 system tags after the fact",
     ("backend/app/services/library_helpers.py", "sync_system_tags", "kw"): "T5 system tags after the fact",
-    ("backend/app/services/queue_rebalance.py", "_apply", "attr"): "T4 rebalance through the policy",
 }
 
 

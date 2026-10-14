@@ -49,9 +49,14 @@ from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.calibration_mode import normalize_mode
-from backend.app.services import queue_rebalance
+from backend.app.services import queue_rebalance, swap_compatibility
 from backend.app.services.auto_queue_eligibility import busy_printer_ids, find_eligible_printer, offline_candidates_for
-from backend.app.services.filament_intake import fail_auto_source, read_item_requirements, snapshot_for_copy
+from backend.app.services.filament_intake import (
+    fail_auto_source,
+    item_descriptor,
+    read_item_requirements,
+    snapshot_for_copy,
+)
 from backend.app.services.filament_policy import auto_policy, serialize_policy
 from backend.app.services.filament_preflight import feed_signature
 from backend.app.services.filament_requirements import PrintRequirementsCache, probe_identity
@@ -194,17 +199,27 @@ class AutoQueueScheduler:
             # matcher's reason and the wake step ask about the same printers.
             offline_feeds = OfflineFeedCache()
             for item in items:
+                # Candidates THIS item's swap request was refused on (D2): out of its own
+                # search only -- the printers are not busy, and the next item may print there.
+                swap_refused: set[int] = set()
                 while True:
                     eligible = await find_eligible_printer(
                         db,
                         item,
-                        busy_printers,
+                        busy_printers | swap_refused,
                         cache=requirements_cache,
                         prefer_lowest=prefer_lowest,
                         offline_feeds=offline_feeds,
                         interlocked_printers=interlocked_printers,
                     )
                     printer, reason = eligible
+                    if printer is None and swap_refused:
+                        # Every candidate this pass offered refused the unknown source's
+                        # request: a visible failure with its reason and Retry -- not a wait
+                        # that would never end (swap-source-lifecycle spec r4 §8).
+                        await fail_auto_source(db, item, swap_compatibility.UNKNOWN_SOURCE_REASON)
+                        logger.info("Auto item %s failed: every candidate refused an unknown source", item.id)
+                        break
                     if printer is None:
                         source_reason = getattr(eligible.requirements, "reason", None)
                         if source_reason in SOURCE_FAILURES:
@@ -250,6 +265,17 @@ class AutoQueueScheduler:
                         await db.refresh(item)
                         if isinstance(exc, AutoPlacementConflict) and exc.code == "item_changed":
                             break
+                        if (
+                            isinstance(exc, AutoPlacementConflict)
+                            and exc.code == swap_compatibility.UNKNOWN_SOURCE_REASON
+                        ):
+                            swap_refused.add(printer.id)
+                            logger.info(
+                                "Auto item %s: printer %s refuses its unknown source's swap request",
+                                item.id,
+                                printer.id,
+                            )
+                            continue
                         busy_printers.add(printer.id)
                         logger.info(
                             "Auto item %s lost printer %s (%s); trying another candidate", item.id, printer.id, exc.code
@@ -599,14 +625,22 @@ class AutoQueueScheduler:
             nozzle_mode = normalize_mode(options.get("nozzle_offset_cali", True))
 
             # Swap macros are an exception to the profile: their applicability
-            # depends on the chosen printer and the source bytes.  If source
-            # metadata has gone away, fail closed rather than double-firing a
-            # baked-in plate-change sequence.
-            source_has_baked_swap_macros = await self._source_has_baked_swap_macros(db, item)
-            execute_swap_macros = bool(options.get("execute_swap_macros", False))
-            if not printer.swap_mode_enabled or source_has_baked_swap_macros:
-                execute_swap_macros = False
-            swap_macro_events = options.get("swap_macro_events") if execute_swap_macros else None
+            # depends on the chosen printer and the source bytes -- the job's OWN
+            # captured declaration, never its library or archive row, which may be
+            # gone or re-declared, and never this router row's inert swap fields
+            # (swap-source-lifecycle spec r4 §8). An unknown source this printer's
+            # profile asks our macros for refuses THIS candidate; the tick tries the
+            # next one.
+            descriptor = await item_descriptor(db, item)
+            try:
+                execute_swap_macros, swap_macro_events = swap_compatibility.resolve_request(
+                    descriptor.swap_fact.value if descriptor is not None else None,
+                    execute=options.get("execute_swap_macros", False),
+                    events=options.get("swap_macro_events"),
+                    printer_swap_mode=bool(printer.swap_mode_enabled),
+                )
+            except swap_compatibility.SwapRequestRefused as exc:
+                raise AutoPlacementConflict(exc.reason) from exc
 
             # Revalidate the SAME plan after DB awaits and before claiming the row.
             # ⚠️ Both re-probes below carry ``identity.sha256``, so they ask the same
@@ -743,21 +777,6 @@ class AutoQueueScheduler:
                     new_item.id,
                 )
                 return new_item
-
-    async def _source_has_baked_swap_macros(self, db: AsyncSession, item: AutoQueueItem) -> bool:
-        """Whether the source already supplies its own swap macro sequence.
-
-        A captured source can outlive its archive or library row.  Without that
-        metadata we cannot prove the source is safe to augment, so the only
-        safe answer is to suppress our swap macros.
-        """
-        if item.archive_id is not None:
-            value = await db.scalar(select(PrintArchive.swap_compatible).where(PrintArchive.id == item.archive_id))
-            return bool(value) if value is not None else True
-        if item.library_file_id is not None:
-            value = await db.scalar(select(LibraryFile.swap_compatible).where(LibraryFile.id == item.library_file_id))
-            return bool(value) if value is not None else True
-        return True
 
     async def _mark_jumped_peers(self, db: AsyncSession, started_item: AutoQueueItem) -> None:
         """SJF starvation guard — mark peers that were skipped.

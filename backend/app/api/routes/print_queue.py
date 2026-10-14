@@ -66,7 +66,7 @@ from backend.app.services.notification_service import notification_service
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_add import add_items_to_printer_queue, add_next_block_to_printer_queue
 from backend.app.services.queue_ops import queue_scope_lock
-from backend.app.services.queue_source_capture import refusal, reusing_sources
+from backend.app.services.queue_source_capture import refusal, reusing_sources, swap_request
 from backend.app.services.queue_source_descriptor import source_storage_state
 from backend.app.services.queue_sources import QueueSourceError
 from backend.app.services.queue_times import plate_metadata_cached, plate_metadata_for_row, plate_picture_for_row
@@ -105,6 +105,49 @@ async def _item_file_model(
             cache, archive=archive, library_file=library, plate_id=plate_id, allow_raw_gcode=True
         )
     return req.model if req else None
+
+
+_SWAP_FIELDS = frozenset({"execute_swap_macros", "swap_macro_events"})
+
+
+def _end_capture_cooldowns(item_ids) -> None:
+    """An explicit edit, delete or Retry ends a job's busy-spool wait at once (swap-source-lifecycle spec r4 §6)."""
+    from backend.app.services.print_scheduler import scheduler
+
+    for item_id in item_ids:
+        scheduler.clear_capture_cooldown(item_id)
+
+
+async def _swap_update(db: AsyncSession, item: PrintQueueItem, update: dict, target_queue: PrinterQueue | None) -> dict:
+    """The job's swap columns after an edit, from its OWN captured declaration (swap-source-lifecycle spec r4 §8).
+
+    Asked only when the edit touches the swap fields or moves the job to another printer's queue: a baked source
+    stays muted, a plain one keeps what is asked under the target printer's swap mode, an opt-out is never
+    raised, and an unknown source asked for our macros is a 409. Never the library or archive row's current
+    value. Returns the columns to write -- ``swap_macro_events`` as its stored JSON -- or ``{}`` for an edit that
+    does not concern them.
+    """
+    moves = target_queue is not None and target_queue.id != item.queue_id
+    if not (_SWAP_FIELDS & update.keys() or moves):
+        return {}
+    execute = (
+        update["execute_swap_macros"] if update.get("execute_swap_macros") is not None else item.execute_swap_macros
+    )
+    if "swap_macro_events" in update:
+        events = update["swap_macro_events"]
+        events = json.loads(events) if isinstance(events, str) else events
+    else:
+        events = json.loads(item.swap_macro_events) if item.swap_macro_events else None
+    queue = target_queue if moves else await db.get(PrinterQueue, item.queue_id)
+    printer = await db.get(Printer, queue.printer_id) if queue is not None and queue.printer_id else None
+    descriptor = await item_descriptor(db, item)
+    execute, events = swap_request(
+        descriptor.swap_fact.value if descriptor is not None else None,
+        execute=execute,
+        events=events,
+        printer_swap_mode=bool(printer is not None and printer.swap_mode_enabled),
+    )
+    return {"execute_swap_macros": execute, "swap_macro_events": json.dumps(events) if events else None}
 
 
 async def _check_item_model_for_queue(
@@ -698,6 +741,14 @@ async def bulk_update_queue_items(
     updated_count = 0
     skipped_count = 0
 
+    # The swap columns of every row that will change, decided before the first
+    # write: one unknown source asked for our macros refuses the whole action.
+    swap_updates = {
+        item.id: await _swap_update(db, item, update_data, new_queue)
+        for item in items
+        if item.status == "pending" and (can_modify_all or item.created_by_id == user.id)
+    }
+
     for item in items:
         if item.status != "pending":
             skipped_count += 1
@@ -709,6 +760,7 @@ async def bulk_update_queue_items(
             continue
 
         item_update = await routing_update(db, item, update_data)
+        item_update.update(swap_updates[item.id])
         if isinstance(item_update.get("ams_mapping"), list):
             item_update["ams_mapping"] = json.dumps(item_update["ams_mapping"])
         for field, value in item_update.items():
@@ -719,6 +771,7 @@ async def bulk_update_queue_items(
         updated_count += 1
 
     await db.commit()
+    _end_capture_cooldowns(swap_updates)
 
     logger.info("Bulk updated %s queue items, skipped %s", updated_count, skipped_count)
     return PrintQueueBulkUpdateResponse(
@@ -811,6 +864,7 @@ async def bulk_delete_queue_items(
         for queue_id in queue_ids:
             await update_queue_counters(db, queue_id)
         await db.commit()
+        _end_capture_cooldowns(item.id for item in to_delete)
 
     logger.info("Bulk deleted %s queue items, skipped %s", len(to_delete), skipped)
     return PrintQueueBulkDeleteResponse(
@@ -1084,7 +1138,10 @@ async def update_queue_item(
                 printer_model,
             )
 
+    swap_columns = await _swap_update(db, item, update_data, new_queue)
     update_data = await routing_update(db, item, update_data)
+    update_data.pop("swap_macro_events", None)  # decided above, stored as its JSON
+    update_data.update(swap_columns)
 
     # Serialize ams_mapping to JSON for TEXT column storage
     if "ams_mapping" in update_data:
@@ -1104,10 +1161,6 @@ async def update_queue_item(
             json.dumps(update_data["nozzle_rack_choice"]) if update_data["nozzle_rack_choice"] else None
         )
 
-    # swap_macro_events is stored as a JSON-encoded TEXT column.
-    if "swap_macro_events" in update_data:
-        events = update_data["swap_macro_events"]
-        update_data["swap_macro_events"] = json.dumps(events) if events else None
     if "selected_macro_ids" in update_data:
         ids = update_data["selected_macro_ids"]
         update_data["selected_macro_ids"] = json.dumps(ids) if ids is not None else None
@@ -1119,6 +1172,7 @@ async def update_queue_item(
             setattr(item, field, value)
 
     await db.commit()
+    _end_capture_cooldowns([item.id])
 
     # Re-query with full eager loading (queue→printer chain)
     result = await db.execute(
@@ -1174,6 +1228,7 @@ async def delete_queue_item(
     await db.delete(item)
     await update_queue_counters(db, queue_id)
     await db.commit()
+    _end_capture_cooldowns([item_id])
 
     logger.info("Deleted queue item %s", item_id)
     return {"message": "Queue item deleted"}
@@ -1774,6 +1829,7 @@ async def retry_failed_item(
             item.completed_at = None
             await update_queue_counters(db, item.queue_id)
             await db.commit()
+        _end_capture_cooldowns([item.id])
     except QueueSourceError as exc:
         raise refusal(exc) from exc
 
@@ -1993,15 +2049,18 @@ async def update_batch(
         update_data["nozzle_rack_choice"] = (
             json.dumps(update_data["nozzle_rack_choice"]) if update_data["nozzle_rack_choice"] else None
         )
-    if "swap_macro_events" in update_data:
-        events = update_data["swap_macro_events"]
-        update_data["swap_macro_events"] = json.dumps(events) if events else None
     if "selected_macro_ids" in update_data:
         ids = update_data["selected_macro_ids"]
         update_data["selected_macro_ids"] = json.dumps(ids) if ids is not None else None
 
+    # Every member's swap columns before the first write (swap-source-lifecycle spec r4 §8):
+    # the batch is refused whole, or written whole.
+    swap_updates = {item.id: await _swap_update(db, item, update_data, None) for item in pending}
+    update_data.pop("swap_macro_events", None)
+
     for item in pending:
         item_update = await routing_update(db, item, update_data)
+        item_update.update(swap_updates[item.id])
         if isinstance(item_update.get("ams_mapping"), list):
             item_update["ams_mapping"] = json.dumps(item_update["ams_mapping"])
         for field, value in item_update.items():
@@ -2010,6 +2069,7 @@ async def update_batch(
             else:
                 setattr(item, field, value)
     await db.commit()
+    _end_capture_cooldowns(item.id for item in pending)
     return {"updated": len(pending), "batch_id": batch_id, "fields": list(update_data.keys())}
 
 

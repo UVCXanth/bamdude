@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -27,6 +28,7 @@ from backend.app.schemas.print_queue import PrintQueueItemCreate
 from backend.app.services import queue_sources, swap_compatibility as sc
 from backend.tests.integration.test_dispatch_without_original import PLATE, a_sliced_file
 from backend.tests.integration.test_filament_routing_dispatch import setup_source
+from backend.tests.integration.test_order_print_options import mixed_order  # noqa: F401 - fixture
 
 pytestmark = pytest.mark.integration
 
@@ -352,3 +354,316 @@ async def test_the_print_route_no_longer_strips_the_request_by_the_library_row(
     assert response.status_code == 200, response.text
     options = dispatched.await_args.kwargs["options"]
     assert options["execute_swap_macros"] is True and options["swap_macro_events"] == START
+
+
+# --- AutoQueue: the assignment decides per candidate, from the job's snapshot (§8, T4.2, T4.6) ---------------------
+
+
+class _Profile:
+    """The owner's saved print options for the winning printer's model: here, a request for our swap start."""
+
+    def __init__(self, execute=True, events=START):
+        self.options = {"execute_swap_macros": execute, "swap_macro_events": list(events) if events else None}
+
+    def for_printer_queue(self):
+        return dict(self.options)
+
+
+async def an_auto_job(db, library, *, monkeypatch, profile=None):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+
+    from backend.app.schemas.auto_queue import AutoQueueItemCreate
+    from backend.app.services.auto_queue_add import add_items_to_auto_queue
+
+    (item,) = await add_items_to_auto_queue(
+        db, AutoQueueItemCreate(library_file_id=library.id, plate_ids=[PLATE], target_model="P1P"), None
+    )
+
+    @asynccontextmanager
+    async def session():
+        yield db
+
+    monkeypatch.setattr("backend.app.services.auto_queue_scheduler.async_session", session)
+    monkeypatch.setattr(
+        "backend.app.services.auto_queue_scheduler.preference_options",
+        AsyncMock(return_value=profile or _Profile()),
+    )
+    return item
+
+
+async def a_second_printer(db, printer_factory, monkeypatch, mqtt, *, swap_mode):
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.printer_manager import printer_manager
+
+    other = await printer_factory(model="P1P")
+    other.swap_mode_enabled = swap_mode
+    db.add(PrinterQueue(id=other.id, printer_id=other.id, auto_distribute_eligible=True))
+    await db.commit()
+    monkeypatch.setitem(printer_manager._clients, other.id, mqtt)
+    monkeypatch.setitem(printer_manager._models, other.id, "P1P")
+    return other
+
+
+@pytest.mark.parametrize(("fact", "stored"), [(True, False), (False, True)])
+async def test_auto_assignment_uses_snapshot_after_source_deletion(
+    fact, stored, db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
+
+    printer, queue = await a_swap_printer(db_session, tmp_path, printer_factory, monkeypatch)
+    library = await a_library(db_session, tmp_path, fact=fact)
+    await an_auto_job(db_session, library, monkeypatch=monkeypatch)
+    # The library row goes: the job's own snapshot is the only authority left, and it is enough.
+    await db_session.delete(library)
+    await db_session.commit()
+
+    await AutoQueueScheduler().tick()
+
+    (placed,) = (await db_session.execute(select(PrintQueueItem))).scalars().all()
+    assert placed.execute_swap_macros is stored
+    assert (json.loads(placed.swap_macro_events) if placed.swap_macro_events else None) == (START if stored else None)
+
+
+async def test_auto_policy_checks_all_candidates_before_failing(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    """A swap-mode printer refuses the unknown source's request; a plain printer takes the job instead."""
+    from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
+
+    printer, queue = await a_swap_printer(db_session, tmp_path, printer_factory, monkeypatch)
+    from backend.app.services.printer_manager import printer_manager
+
+    mqtt = printer_manager._clients[printer.id]
+    plain = await a_second_printer(db_session, printer_factory, monkeypatch, mqtt, swap_mode=False)
+    library = await a_library(db_session, tmp_path, fact=None)
+    auto = await an_auto_job(db_session, library, monkeypatch=monkeypatch)
+
+    await AutoQueueScheduler().tick()
+
+    (placed,) = (await db_session.execute(select(PrintQueueItem))).scalars().all()
+    assert placed.queue_id == plain.id
+    assert placed.execute_swap_macros is False  # no swap mode there: the preference asks for nothing
+    await db_session.refresh(auto)
+    assert auto.status == "assigned"
+
+
+async def test_auto_item_fails_when_every_candidate_refuses_the_unknown_source(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
+    from backend.app.services.filament_intake import routing_detail
+
+    printer, queue = await a_swap_printer(db_session, tmp_path, printer_factory, monkeypatch)
+    library = await a_library(db_session, tmp_path, fact=None)
+    auto = await an_auto_job(db_session, library, monkeypatch=monkeypatch)
+
+    await AutoQueueScheduler().tick()
+
+    assert (await db_session.execute(select(PrintQueueItem))).scalars().all() == []
+    await db_session.refresh(auto)
+    assert auto.status == "failed"
+    assert auto.waiting_reason == routing_detail(sc.UNKNOWN_SOURCE_REASON)["message"]
+    assert getattr(auto, "assigned_to_item_id", None) is None
+
+
+async def test_no_candidate_at_all_is_not_a_swap_failure(db_session, tmp_path, printer_factory, monkeypatch, sessions):
+    from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
+
+    printer, queue = await a_swap_printer(db_session, tmp_path, printer_factory, monkeypatch)
+    library = await a_library(db_session, tmp_path, fact=None)
+    auto = await an_auto_job(db_session, library, monkeypatch=monkeypatch)
+    queue.status = "printing"  # the only printer is busy: nothing to choose, nothing refused
+    await db_session.commit()
+
+    await AutoQueueScheduler().tick()
+
+    await db_session.refresh(auto)
+    assert auto.status == "pending"
+
+
+# --- PATCH single / batch / bulk: the job's own snapshot decides (§8, T4.3) ------------------------------------------
+
+
+async def pending_job(db, sessions, tmp_path, queue, *, fact, batch_id=None, name="lamp.gcode.3mf"):
+    from backend.app.services.queue_source_descriptor import SOURCE_SNAPSHOT_VERSION
+
+    library = await a_library(db, tmp_path, fact=not fact if fact is not None else False, name=name)
+
+    async def attach(session, source):
+        return None
+
+    receipt = await queue_sources.capture(
+        queue_sources.CaptureRequest(path=Path(library.file_path), format="3mf", display_filename=library.filename)
+    )
+    blob = await queue_sources.publish(receipt, attach, session_factory=sessions)
+    item = PrintQueueItem(
+        queue_id=queue.id,
+        status="pending",
+        position=1,
+        library_file_id=library.id,
+        queue_source_id=blob.id,
+        source_snapshot={
+            "version": SOURCE_SNAPSHOT_VERSION,
+            "provenance": {"kind": "library_file", "id": library.id},
+            "display_filename": library.filename,
+            "format": "3mf",
+            "plate_fallback": None,
+            **sc.snapshot_fields(sc.SourceFact(fact) if fact is not None else sc.UNKNOWN_SOURCE),
+        },
+        plate_id=PLATE,
+        batch_id=batch_id,
+        execute_swap_macros=False,
+        swap_macro_events=None,
+    )
+    db.add(item)
+    await db.commit()
+    return item
+
+
+ASK = {"execute_swap_macros": True, "swap_macro_events": START}
+
+
+@pytest.mark.parametrize(("fact", "status", "stored"), [(True, 200, False), (False, 200, True), (None, 409, None)])
+async def test_patch_single_batch_bulk_uses_job_snapshot(
+    fact, status, stored, committing_client, db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    printer, queue = await a_swap_printer(db_session, tmp_path, printer_factory, monkeypatch)
+    single = await pending_job(db_session, sessions, tmp_path, queue, fact=fact, name="single.gcode.3mf")
+    batched = await pending_job(db_session, sessions, tmp_path, queue, fact=fact, batch_id="b-1", name="b.gcode.3mf")
+    bulked = await pending_job(db_session, sessions, tmp_path, queue, fact=fact, name="bulk.gcode.3mf")
+
+    responses = [
+        await committing_client.patch(f"/api/v1/queue/{single.id}", json=ASK),
+        await committing_client.patch("/api/v1/queue/batch/b-1", json=ASK),
+        await committing_client.patch("/api/v1/queue/bulk", json={"item_ids": [bulked.id], **ASK}),
+    ]
+
+    assert [response.status_code for response in responses] == [status] * 3, [r.text for r in responses]
+    for row in (single, batched, bulked):
+        row = await db_session.get(PrintQueueItem, row.id, populate_existing=True)
+        if status == 409:
+            assert row.execute_swap_macros is False and row.swap_macro_events is None  # untouched
+        else:
+            assert row.execute_swap_macros is stored
+            assert (json.loads(row.swap_macro_events) if row.swap_macro_events else None) == (START if stored else None)
+    if status == 409:
+        assert responses[0].json()["detail"]["code"] == sc.UNKNOWN_SOURCE_REASON
+
+
+async def test_batch_patch_policy_is_atomic(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    printer, queue = await a_swap_printer(db_session, tmp_path, printer_factory, monkeypatch)
+    plain = await pending_job(db_session, sessions, tmp_path, queue, fact=False, batch_id="b-2", name="p.gcode.3mf")
+    unknown = await pending_job(db_session, sessions, tmp_path, queue, fact=None, batch_id="b-2", name="u.gcode.3mf")
+
+    response = await committing_client.patch("/api/v1/queue/batch/b-2", json=ASK)
+
+    assert response.status_code == 409, response.text
+    for row in (plain, unknown):
+        row = await db_session.get(PrintQueueItem, row.id, populate_existing=True)
+        assert row.execute_swap_macros is False and row.swap_macro_events is None  # nobody was written
+
+
+async def test_moving_a_job_to_a_printer_without_swap_mode_drops_the_request(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    from backend.app.services.printer_manager import printer_manager
+
+    printer, queue = await a_swap_printer(db_session, tmp_path, printer_factory, monkeypatch)
+    job = await pending_job(db_session, sessions, tmp_path, queue, fact=False)
+    job.execute_swap_macros, job.swap_macro_events = True, json.dumps(START)
+    await db_session.commit()
+    plain = await a_second_printer(
+        db_session, printer_factory, monkeypatch, printer_manager._clients[printer.id], swap_mode=False
+    )
+
+    # A job with no routing intent reads as pinned; moving it says the slots are to be chosen again.
+    response = await committing_client.patch(
+        f"/api/v1/queue/{job.id}", json={"queue_id": plain.id, "manual_mapping": False}
+    )
+
+    assert response.status_code == 200, response.text
+    row = await db_session.get(PrintQueueItem, job.id, populate_existing=True)
+    assert row.queue_id == plain.id
+    assert row.execute_swap_macros is False and row.swap_macro_events is None
+
+
+# --- the order plan: printer and auto both go through the captured fact (§8, T4.1) ---------------------------------
+
+
+class _PlanProfile:
+    def for_printer_queue(self):
+        return {"execute_swap_macros": True, "swap_macro_events": list(START)}
+
+    def for_auto_queue(self):
+        return {"execute_swap_macros": True, "swap_macro_events": list(START)}
+
+
+@pytest.mark.parametrize("declared", ["unknown", "baked", "baked-then-changed"])
+async def test_order_plan_checks_printer_and_auto_receipts(
+    declared, committing_client, db_session, mixed_order, printer_factory, monkeypatch, sessions
+):
+    from unittest.mock import AsyncMock
+
+    from backend.app.models.auto_queue import AutoQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.tests.integration.test_order_print_options import enqueue
+
+    pid, plates = mixed_order
+    if declared.startswith("baked"):
+        # A real declaration: a valid hash over the very bytes, declaring a baked sequence.
+        for row in (await db_session.execute(select(LibraryFile))).scalars():
+            row.file_hash = hashlib.sha256(Path(row.file_path).read_bytes()).hexdigest()
+            row.swap_compatible = True
+            if declared == "baked-then-changed":
+                # ...over bytes that have changed since: the row still says baked, the copy cannot confirm it.
+                import zipfile
+
+                with zipfile.ZipFile(row.file_path, "a") as edited:
+                    edited.writestr("Metadata/edited.txt", "changed after the row was hashed")
+        await db_session.commit()
+    printer = await printer_factory(model="H2D")
+    printer.swap_mode_enabled = True
+    db_session.add(PrinterQueue(printer_id=printer.id))
+    await db_session.commit()
+    monkeypatch.setattr("backend.app.api.routes.projects.preference_options", AsyncMock(return_value=_PlanProfile()))
+
+    response = await enqueue(committing_client, pid, plates, printer_id=printer.id, models={"H2D"})
+
+    if declared != "baked":
+        # Nothing proves the declaration of these bytes: the request is refused, nothing lands.
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["code"] == sc.UNKNOWN_SOURCE_REASON
+        assert (await db_session.execute(select(PrintQueueItem))).scalars().all() == []
+    else:
+        assert response.status_code == 200, response.text
+        rows = (await db_session.execute(select(PrintQueueItem))).scalars().all()
+        assert rows and all(row.execute_swap_macros is False for row in rows)
+
+    # The auto target creates its router rows: the decision is the assignment's, per printer, from the snapshot.
+    response = await enqueue(committing_client, pid, plates, models={"P2S"})
+    assert response.status_code == 200, response.text
+    autos = (await db_session.execute(select(AutoQueueItem))).scalars().all()
+    assert autos and all(auto.queue_source_id is not None for auto in autos)
+
+
+async def test_an_explicit_edit_or_delete_ends_the_capture_cooldown(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    from backend.app.services.print_scheduler import scheduler
+
+    printer, queue = await a_swap_printer(db_session, tmp_path, printer_factory, monkeypatch)
+    edited = await pending_job(db_session, sessions, tmp_path, queue, fact=False, name="e.gcode.3mf")
+    deleted = await pending_job(db_session, sessions, tmp_path, queue, fact=False, name="d.gcode.3mf")
+    monkeypatch.setattr(
+        scheduler, "_capture_cooldowns", {edited.id: time.monotonic() + 60, deleted.id: time.monotonic() + 60}
+    )
+
+    assert (
+        await committing_client.patch(f"/api/v1/queue/{edited.id}", json={"manual_start": False})
+    ).status_code == 200
+    assert (await committing_client.delete(f"/api/v1/queue/{deleted.id}")).status_code == 200
+
+    assert scheduler._capture_cooldowns == {}

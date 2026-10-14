@@ -225,6 +225,10 @@ def _drying_ams_ids(status) -> list[int]:
     return ids
 
 
+#: How long a queued job waits after its source copy found the spool busy (swap-source-lifecycle spec r4 §6).
+CAPTURE_RETRY_COOLDOWN_SECONDS = 60
+
+
 class PrintScheduler:
     """Background scheduler that processes the print queue."""
 
@@ -315,6 +319,20 @@ class PrintScheduler:
         # Matches the watchdog timeout (90 s) plus a safety margin so the
         # watchdog's release runs first on the unhappy path.
         self._dispatch_max_hold = 180.0
+        # A queued job whose source copy found the spool busy waits this long before it is asked again
+        # (swap-source-lifecycle spec r4 §6): item id -> monotonic deadline, set only after the attempt's
+        # own CAS sent it back to pending. In memory on purpose: a restart allows one new attempt.
+        self._capture_cooldowns: dict[int, float] = {}
+
+    def _cooling_item_ids(self) -> set[int]:
+        """The jobs still waiting out a busy-spool cooldown -- expired entries are dropped here, never kept."""
+        now = time.monotonic()
+        self._capture_cooldowns = {item_id: until for item_id, until in self._capture_cooldowns.items() if until > now}
+        return set(self._capture_cooldowns)
+
+    def clear_capture_cooldown(self, item_id: int) -> None:
+        """An explicit edit, delete or Retry of the job ends its cooldown at once."""
+        self._capture_cooldowns.pop(item_id, None)
 
     async def run(self):
         """Main loop - check queue every interval."""
@@ -465,7 +483,14 @@ class PrintScheduler:
             # Log skip reasons once per queue check (not per item)
             skip_reasons: dict[str, int] = {}
 
+            cooling = self._cooling_item_ids()
             for item in items:
+                # A busy spool refused this job's source copy moments ago: it waits out its cooldown while the
+                # rest of the queue moves on (swap-source-lifecycle spec r4 §6).
+                if item.id in cooling:
+                    skip_reasons["source_capture"] = skip_reasons.get("source_capture", 0) + 1
+                    continue
+
                 # Skip items in paused or error queues
                 if item.queue and item.queue.status in ("paused", "error"):
                     skip_reasons[f"queue_{item.queue.status}"] = skip_reasons.get(f"queue_{item.queue.status}", 0) + 1
@@ -2601,14 +2626,19 @@ class PrintScheduler:
                 await db.rollback()
                 logger.info("Queue item %s: admission lost (%s) — skipping", item_id, exc.code)
                 return
-            first_runnable_id = await db.scalar(
+            # A job cooling down after a busy spool is not "first": its neighbour may start (spec r4 §6).
+            cooling = self._cooling_item_ids() - {item.id}
+            first_runnable = (
                 select(PrintQueueItem.id)
                 .where(PrintQueueItem.queue_id == item.queue_id)
                 .where(PrintQueueItem.status == "pending")
                 .where(PrintQueueItem.manual_start.is_(False))
                 .where(or_(PrintQueueItem.scheduled_time.is_(None), PrintQueueItem.scheduled_time <= now))
-                .order_by(PrintQueueItem.position, PrintQueueItem.id)
-                .limit(1)
+            )
+            if cooling:
+                first_runnable = first_runnable.where(PrintQueueItem.id.notin_(cooling))
+            first_runnable_id = await db.scalar(
+                first_runnable.order_by(PrintQueueItem.position, PrintQueueItem.id).limit(1)
             )
             if first_runnable_id != item.id:
                 await db.rollback()
@@ -2857,6 +2887,11 @@ class PrintScheduler:
                 )
                 await db.commit()
                 if restored:
+                    from backend.app.services.filament_deferred import DISPOSITION_RETRY_LATER
+
+                    if outcome.get("disposition") == DISPOSITION_RETRY_LATER:
+                        # Only after THIS attempt's CAS sent the job back: a stale refusal never cools a newer one.
+                        self._capture_cooldowns[queue_item_id] = time.monotonic() + CAPTURE_RETRY_COOLDOWN_SECONDS
                     await self.release_prepared_dispatch(printer_id)
                 return
 

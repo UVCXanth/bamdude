@@ -139,10 +139,16 @@ async def test_auto_promotion_uses_the_target_model_profile(
     promotion. Swap settings remain subject to the target printer and source
     safety gates, rather than merely being present in the saved profile.
     """
+    import hashlib
+    from pathlib import Path
+
     source, printer, _queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
     printer.model = "P1S"
     printer.swap_mode_enabled = swap_mode_enabled
     source.swap_compatible = source_has_baked_swap_macros
+    # A hash over the very bytes, so the declaration counts (swap-source-lifecycle spec r4 §4); without one the
+    # profile's swap request on a swap-mode printer is refused as an unknown source.
+    source.file_hash = hashlib.sha256(Path(source.file_path).read_bytes()).hexdigest()
     await db_session.commit()
 
     response = await committing_client.post(
