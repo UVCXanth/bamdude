@@ -34,6 +34,7 @@ import { LogViewer } from '../components/LogViewer';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { ConnectionDiagnosticModal } from '../components/ConnectionDiagnostic';
 import { SystemHealthPanel } from '../components/SystemHealthPanel';
+import { PrintStateIssuesPanel } from '../components/PrintStateIssuesPanel';
 import { LogArchivesPanel } from '../components/LogArchivesPanel';
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { formatDateTime, type TimeFormat } from '../utils/date';
@@ -492,6 +493,7 @@ export function SystemInfoPage() {
           <LogViewer />
 
           {/* Historical archives — daily-rotated bamdude-YYYY-MM-DD.log files */}
+          <PrintStateIssuesPanel />
           <LogArchivesPanel />
         </div>
       </Section>

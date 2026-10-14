@@ -621,6 +621,7 @@ export function useWebSocket() {
         break;
 
       case 'queue_changed':
+        debouncedInvalidate('print-state-issues');
         // Auto-queue promotion creates a per-printer row in a scheduler
         // transaction, not through this tab's mutation. Refresh only the
         // affected card plus farm-wide aggregate views immediately; polling is
@@ -764,6 +765,7 @@ export function useWebSocket() {
         break;
 
       case 'archive_updated':
+        debouncedInvalidate('print-state-issues');
         debouncedInvalidate('archives');
         invalidateProjectViews();
         break;

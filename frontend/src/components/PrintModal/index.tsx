@@ -9,7 +9,7 @@ import type {
   PrintQueueItemUpdate,
   SpoolAssignment,
 } from '../../api/client';
-import { api, macrosApi } from '../../api/client';
+import { api, ApiError, macrosApi } from '../../api/client';
 import { farmQueryResumeOptions } from '../../api/farmReadBudget';
 import { useAuth } from '../../contexts/AuthContext';
 import { Button } from '../Button';
@@ -340,6 +340,7 @@ export function PrintModal({
 
   // Submission state for multi-printer
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [claimPrinters, setClaimPrinters] = useState<number[]>([]);
   const [submitProgress, setSubmitProgress] = useState({ current: 0, total: 0 });
 
   // Quantity (batch). Only exposed for reprint + add-to-queue modes.
@@ -2262,6 +2263,8 @@ export function PrintModal({
 
     setIsSubmitting(false);
 
+    setClaimPrinters([...new Set(failures.flatMap(({ error }) =>
+      error instanceof ApiError && error.code === 'active_claim' && error.printerId ? [error.printerId] : []))]);
     // Show result toast (skip for reprint mode - the dispatch toast handles it)
     if (results.failed === 0) {
       // Persist saved-toggles preference once we know at least one submission
@@ -3192,6 +3195,9 @@ export function PrintModal({
             )}
 
             {/* Error message */}
+            {hasPermission('system:read') && hasPermission('printers:read') && hasPermission('queue:read_all') && hasPermission('archives:read_all') &&
+              claimPrinters.map(printerId => <a key={printerId} className="block mb-3 text-sm text-bambu-green underline"
+                href={`/system?printer_id=${printerId}#print-state`}>{t('printStateRecovery.openForPrinter', { printer: printerId })}</a>)}
             {updateQueueMutation.isError && (
               <div className="mb-4 p-3 bg-red-100 dark:bg-red-500/20 border border-red-500/50 rounded-lg text-sm text-red-700 dark:text-red-400">
                 {(updateQueueMutation.error as Error)?.message || t('printModal.failedToComplete')}

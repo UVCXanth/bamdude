@@ -1,4 +1,5 @@
 import { AutoEjectBadge } from '../components/AutoEjectBadge';
+import { RecoveryEndTime } from '../components/RecoveryEndTime';
 import { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -1191,7 +1192,7 @@ function ArchiveCard({
 
         {/* Date, Size & Creator */}
         <div className="flex items-center justify-between text-xs text-bambu-gray border-t border-bambu-dark-tertiary pt-3">
-          <span>{formatDateTime(archive.created_at, timeFormat, dateFormat)}</span>
+          <div><span>{formatDateTime(archive.created_at, timeFormat, dateFormat)}</span><RecoveryEndTime archive={archive} /></div>
           <div className="flex items-center gap-2">
             {archive.created_by_username && (
               <span className="flex items-center gap-1" title={t('archives.card.uploadedBy', { name: archive.created_by_username })}>
@@ -2375,6 +2376,7 @@ function ArchiveListRow({
         </div>
         <div className="text-sm text-bambu-gray whitespace-nowrap">
           <div>{formatDateTime(archive.created_at, timeFormat, dateFormat)}</div>
+          <RecoveryEndTime archive={archive} />
           {archive.created_by_username && (
             <div className="flex items-center gap-1 text-xs opacity-75" title={t('archives.card.uploadedBy', { name: archive.created_by_username })}>
               <User className="w-3 h-3" />

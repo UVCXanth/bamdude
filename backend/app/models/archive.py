@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
@@ -44,6 +45,9 @@ class PrintArchive(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    recovery_identity: Mapped[str | None] = mapped_column(
+        String(36), default=lambda: str(uuid4()), unique=True, index=True
+    )
     printer_id: Mapped[int | None] = mapped_column(ForeignKey("printers.id"), nullable=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     # The order line this print was made for. Set by the dispatcher when the job

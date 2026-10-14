@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Unresolved print-state conflicts can be inspected and repaired from System.** The new diagnostics panel explains queue/archive inconsistencies and previews each addressed correction before confirmation. Repairs keep archives and accounting, leave inactive queues paused for plate inspection, and preserve a positively identified newer print. Missing completion times can be explicitly estimated from the start and slicer duration and remain marked as estimates. Deletion is offered only for a proven completed stale queue item with no dependent records; ambiguous cases and unresolved completion effects have no delete action. Every successful correction has an audit record.
+
 - **Smart plug schedules repeat every day.** An on-only or off-only schedule no longer stops after its first successful day, including when the plug is switched manually between scheduled actions. Successful actions are deduplicated separately by date and time, so polling again in the same minute does not undo manual control or repeat an on/off pair.
 
 - **Opening an occupied camera no longer restarts every camera stream.** A live-view request refused because the camera is already reserved or its subscription limit is reached leaves the camera worker and its existing streams running.

@@ -105,6 +105,24 @@ def _run(mode: str, data_dir: Path, url: str | None, *extra: str) -> dict:
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
+class TestPrintStateRecovery:
+    def test_operator_recovery_and_existing_writers_serialize(self, tmp_path_factory):
+        url = _pg_url()
+        _wipe(url)
+        result = _run("print_state_recovery", tmp_path_factory.mktemp("pg_print_state_recovery"), url)
+        assert result == dict.fromkeys(
+            (
+                "operator_vs_autorepair",
+                "concurrent_idempotency",
+                "late_foreign_reference",
+                "archive_edit",
+                "new_claim",
+                "restore_and_id_reuse",
+            ),
+            True,
+        )
+
+
 class TestFreshInstall:
     """A brand-new BamDude pointed at an empty PostgreSQL must come up."""
 

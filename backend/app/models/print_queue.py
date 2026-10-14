@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import uuid4
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
@@ -15,6 +16,9 @@ class PrintQueueItem(Base):
     __table_args__ = (Index("ix_print_queue_project_status", "project_id", "status"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    recovery_identity: Mapped[str | None] = mapped_column(
+        String(36), default=lambda: str(uuid4()), unique=True, index=True
+    )
 
     # Queue assignment (required - every item belongs to a printer's queue)
     queue_id: Mapped[int] = mapped_column(ForeignKey("printer_queues.id"), nullable=False)

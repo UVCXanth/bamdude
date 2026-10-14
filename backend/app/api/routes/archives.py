@@ -3508,7 +3508,7 @@ async def reprint_archive(
             project_line_id=project_line_id,
         )
     except DispatchEnqueueRejected as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+        raise HTTPException(status_code=409, detail=e.detail()) from e
 
     logger.info(
         "Dispatched reprint archive %s for printer %s (dispatch_job_id=%s, dispatch_position=%s)",

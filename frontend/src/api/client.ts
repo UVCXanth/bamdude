@@ -17,7 +17,32 @@ import { isMonitorKioskLocation } from '../features/monitor/location';
 import { createPrinterStatusBatcher } from './printerStatusBatch';
 import { farmRead, farmReadBudget } from './farmReadBudget';
 
+export type PrintStateAction = 'align_terminal_item' | 'fill_estimated_end_and_align' | 'release_orphan_header' | 'delete_stale_item';
+export interface PrintStateIssue {
+  printer_id: number; printer_name: string; queue_id: number; kind: 'item' | 'header' | 'archive'; target_id: number;
+  item_id: number | null; archive_id: number | null; code: string; actions: PrintStateAction[];
+  blocked_reasons: string[]; live_mode: 'inactive' | 'successor' | 'unknown';
+  observed_at: number | null; started_at: string | null; completed_at: string | null;
+}
+export interface PrintStateIssuePage {
+  issues: PrintStateIssue[]; next_cursor: string | null; truncated: boolean; checked_at: string;
+}
+export interface PrintStatePreviewInput {
+  kind: 'item' | 'header'; target_id: number; action: PrintStateAction; confirmed_completed: boolean; note: string;
+}
+export interface PrintStatePreview {
+  estimate?: { started_at: string; duration_seconds: number; completed_at: string } | null;
+  preview_token: string; action: PrintStateAction; archive_preserved: boolean; expires_in: number;
+  before: Record<'queue' | 'item' | 'archive', Record<string, unknown>>;
+  after: Record<'queue' | 'item' | 'archive', Record<string, unknown>> & { delete_item: boolean };
+}
+export interface PrintStateAudit {
+  id: string; action: PrintStateAction; printer_id: number; queue_id: number;
+  item_id: number | null; archive_id: number | null; note?: string; actor_label?: string; created_at?: string;
+}
+
 export class ApiError extends Error {
+  printerId?: number;
   status: number;
   retryAfterMs?: number;
   /**
@@ -558,6 +583,9 @@ async function handleErrorResponse(response: Response, __isRetry: boolean, signa
     ? seconds * 1000
     : retryAfter ? Math.max(0, Date.parse(retryAfter) - Date.now()) : undefined;
   const refusal = new ApiError(message, response.status, code, Number.isFinite(retryAfterMs) ? retryAfterMs : undefined);
+  if (code === 'active_claim' && Number.isInteger(error.detail?.printer_id) && error.detail.printer_id > 0) {
+    refusal.printerId = error.detail.printer_id;
+  }
   const refs = refusalRefs(error.detail);
   if (refs) refusal.refs = refs;
   throw refusal;
@@ -1452,6 +1480,7 @@ export interface WaitingPrint {
 }
 
 export interface Archive {
+  end_time_source?: 'slicer_estimate' | null;
   id: number;
   printer_id: number | null;
   project_id: number | null;
@@ -13398,6 +13427,20 @@ export const api = {
   // System Info
   getDatabaseHealth: () => request<DbHealth>('/system/database'),
   getSystemInfo: () => request<SystemInfo>('/system/info'),
+  getPrintStateIssues: (params: { printer_id?: number; cursor?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (params.printer_id) query.set('printer_id', String(params.printer_id));
+    if (params.cursor) query.set('cursor', params.cursor);
+    return request<PrintStateIssuePage>(`/system/print-state-issues?${query}`);
+  },
+  previewPrintState: (printerId: number, input: PrintStatePreviewInput) => request<PrintStatePreview>(
+    `/system/printers/${printerId}/print-state/preview`, { method: 'POST', body: JSON.stringify(input) }),
+  applyPrintState: (printerId: number, previewToken: string) => request<PrintStateAudit>(
+    `/system/printers/${printerId}/print-state/apply`, {
+      method: 'POST', body: JSON.stringify({ preview_token: previewToken, confirmed: true }),
+    }),
+  getPrintStateHistory: (printerId: number, before?: string) => request<{ actions: PrintStateAudit[]; next_cursor: string | null }>(
+    `/system/printers/${printerId}/print-state/history${before ? `?before=${encodeURIComponent(before)}` : ''}`),
   getSystemHealth: () => request<SystemHealthResult>('/system/health'),
   getStorageUsage: (options?: { refresh?: boolean }) => {
     const params = new URLSearchParams();

@@ -5166,7 +5166,7 @@ async def print_library_file(
             cleanup_library_after_dispatch=body.cleanup_library_after_dispatch,
         )
     except DispatchEnqueueRejected as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+        raise HTTPException(status_code=409, detail=e.detail()) from e
 
     return {
         "status": "dispatched",

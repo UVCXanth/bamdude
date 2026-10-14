@@ -392,6 +392,7 @@ def import_all_models() -> None:
         print_completion_receipt,
         print_options_preference,
         print_queue,
+        print_state_recovery_action,
         print_usage_event,
         printer,
         printer_ha_sensor,

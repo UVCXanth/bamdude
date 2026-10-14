@@ -1,6 +1,7 @@
 """Printer queue model - one queue per printer with status tracking."""
 
 from datetime import datetime
+from uuid import uuid4
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -14,6 +15,9 @@ class PrinterQueue(Base):
     __tablename__ = "printer_queues"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    recovery_identity: Mapped[str | None] = mapped_column(
+        String(36), default=lambda: str(uuid4()), unique=True, index=True
+    )
     printer_id: Mapped[int] = mapped_column(Integer, ForeignKey("printers.id", ondelete="CASCADE"), unique=True)
 
     # Queue status: idle, printing, paused, error — tracks what the printer

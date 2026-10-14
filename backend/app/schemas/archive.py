@@ -99,6 +99,7 @@ class ArchiveDuplicate(BaseModel):
 
 
 class ArchiveResponse(BaseModel):
+    end_time_source: Literal["slicer_estimate"] | None = None
     id: int
     printer_id: int | None
     project_id: int | None = None
@@ -231,6 +232,14 @@ class ArchiveResponse(BaseModel):
         / m023 backfill); these defaults make the API response usable
         without forcing every reader to dig into the JSON itself.
         """
+        marker = self.extra_data.get("operator_recovery_end") if isinstance(self.extra_data, dict) else None
+        if (
+            isinstance(marker, dict)
+            and type(marker.get("version")) is int
+            and marker.get("version") == 1
+            and marker.get("source") == "slicer_estimate"
+        ):
+            self.end_time_source = "slicer_estimate"
         if self.object_count is None and self.extra_data:
             printable_objects = self.extra_data.get("printable_objects")
             if printable_objects and isinstance(printable_objects, dict):

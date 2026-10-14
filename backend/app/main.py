@@ -69,6 +69,7 @@ from backend.app.api.routes import (
     part_images as part_images_routes,
     print_options_preferences,
     print_queue,
+    print_state_recovery,
     printer_locations,
     printer_queues,
     printer_sensor_history,
@@ -12342,6 +12343,7 @@ app.include_router(ams_settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(printer_settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(filament_calibration_routes.router, prefix=app_settings.api_prefix)
 app.include_router(system.router, prefix=app_settings.api_prefix)
+app.include_router(print_state_recovery.router, prefix=app_settings.api_prefix)
 app.include_router(support.router, prefix=app_settings.api_prefix)
 app.include_router(bug_report.router, prefix=app_settings.api_prefix)
 app.include_router(websocket.router, prefix=app_settings.api_prefix)

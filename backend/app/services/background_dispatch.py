@@ -677,6 +677,16 @@ class DispatchJobCancelled(Exception):
 class DispatchEnqueueRejected(Exception):
     """Raised when a dispatch job should not be accepted."""
 
+    def __init__(self, message: str, *, code: str | None = None, printer_id: int | None = None):
+        super().__init__(message)
+        self.code = code
+        self.printer_id = printer_id
+
+    def detail(self) -> str | dict:
+        if self.code is None:
+            return str(self)
+        return {"code": self.code, "message": str(self), "printer_id": self.printer_id}
+
 
 class DispatchOutcome(TypedDict):
     success: bool
@@ -1517,7 +1527,9 @@ class BackgroundDispatchService:
                     )
                 except PrinterOccupancyConflict as exc:
                     raise DispatchEnqueueRejected(
-                        f"Printer {printer_name} is no longer available ({exc.code})"
+                        f"Printer {printer_name} is no longer available ({exc.code})",
+                        code=exc.code,
+                        printer_id=printer_id,
                     ) from exc
                 claim_item_id = claim_item.id if claim_item is not None else None
                 if claim_item is not None:

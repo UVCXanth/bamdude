@@ -814,7 +814,7 @@ def _inactive_repair_snapshot(printer_id: int) -> tuple | None:
 
 
 async def _repair_terminal_queue_items(
-    db: AsyncSession, printer_id: int, live_state: str
+    db: AsyncSession, printer_id: int, live_state: str, *, candidates: tuple | None = None
 ) -> list[tuple[int, int, str]]:
     """Structural repair only; caller owns a dedicated transaction and its commit.
 
@@ -824,7 +824,10 @@ async def _repair_terminal_queue_items(
     All printing rows must be unambiguous; an active/unknown neighbour defers
     the whole queue. No name matching or guessed terminal result is involved.
     """
+    from contextlib import AsyncExitStack
+
     from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
     from backend.app.services.queue_counters import update_queue_counters
     from backend.app.services.queue_ops import queue_scope_lock
 
@@ -835,7 +838,25 @@ async def _repair_terminal_queue_items(
     if queue_id is None:
         return []
 
-    async with queue_scope_lock(db, queue_id):
+    if candidates is None:
+        candidates = tuple(
+            (
+                await db.execute(
+                    select(PrintQueueItem.id, PrintQueueItem.archive_id)
+                    .where(PrintQueueItem.queue_id == queue_id, PrintQueueItem.status == "printing")
+                    .order_by(PrintQueueItem.id)
+                )
+            ).all()
+        )
+    async with AsyncExitStack() as guards:
+        # Every archive guard/row precedes the lane. Operator repair uses this
+        # same order, so neither writer can hold half of the other's pair.
+        for archive_id in sorted({aid for _, aid in candidates if aid is not None}):
+            await guards.enter_async_context(archive_write_scope(db, archive_id))
+            if db.get_bind().dialect.name == "sqlite":
+                await db.execute(update(PrintArchive).where(PrintArchive.id == archive_id).values(id=PrintArchive.id))
+            await load_active_archive_for_write(db, archive_id)
+        await guards.enter_async_context(queue_scope_lock(db, queue_id))
         # Obtain SQLite's writer (and PG's queue row lock) BEFORE reading the
         # authoritative item/archive/header snapshot. No physical I/O here.
         await db.execute(
@@ -857,6 +878,8 @@ async def _repair_terminal_queue_items(
         )
         if not items:
             return []
+        if tuple((item.id, item.archive_id) for item in items) != candidates:
+            return []  # A new owner appeared: defer rather than reverse the lock order.
 
         def defer(reason: str) -> list:
             logger.warning(
@@ -948,8 +971,21 @@ async def reconcile_printer_prints(
     try:
         # Separate transaction: already-terminal archives must never enter the
         # recovery list below (energy, usage and swaps would be replayed).
+        async with async_session() as preflight:
+            from backend.app.models.printer_queue import PrinterQueue
+
+            queue_id = await preflight.scalar(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))
+            candidates = tuple(
+                (
+                    await preflight.execute(
+                        select(PrintQueueItem.id, PrintQueueItem.archive_id)
+                        .where(PrintQueueItem.queue_id == queue_id, PrintQueueItem.status == "printing")
+                        .order_by(PrintQueueItem.id)
+                    )
+                ).all()
+            )
         async with async_session() as db:
-            repaired = await _repair_terminal_queue_items(db, printer_id, live_state)
+            repaired = await _repair_terminal_queue_items(db, printer_id, live_state, candidates=candidates)
             await db.commit()
         for item_id, archive_id, outcome in repaired:
             logger.info(

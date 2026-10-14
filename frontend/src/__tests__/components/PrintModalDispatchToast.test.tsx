@@ -85,4 +85,17 @@ describe('PrintModal dispatch toast', () => {
     const toastMessages = mockShowToast.mock.calls.map(call => call[0]);
     expect(toastMessages).not.toContain('Print queued for printer');
   });
+
+  it('links a structured active claim to addressed diagnostics without parsing its prose', async () => {
+    server.use(http.post('/api/v1/archives/:id/reprint', () => HttpResponse.json({
+      detail: { code: 'active_claim', message: 'Localized server explanation', printer_id: 1 },
+    }, { status: 409 })));
+    const user = userEvent.setup();
+    render(<PrintModal mode="reprint" archiveId={1} archiveName="Benchy" onClose={mockOnClose} />);
+    await user.click(await screen.findByText('X1 Carbon'));
+    await user.click(screen.getByRole('button', { name: /^print$/i }));
+    expect(await screen.findByRole('link', { name: 'Inspect the queue claim for printer #1' }))
+      .toHaveAttribute('href', '/system?printer_id=1#print-state');
+    expect(mockOnClose).not.toHaveBeenCalled();
+  });
 });

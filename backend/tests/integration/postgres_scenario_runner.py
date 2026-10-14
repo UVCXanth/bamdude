@@ -1160,6 +1160,10 @@ async def _main(mode: str) -> dict:
     # ``asyncio.run`` finds them attached to a closed loop and dies inside the
     # proactor with a bare ``AttributeError: 'NoneType' has no attribute 'send'``.
     await _init()
+    if mode == "print_state_recovery":
+        from backend.tests.integration.print_state_recovery_scenarios import run
+
+        return await run()
     if mode == "seed":
         return {"seeded": await _seed()}
     if mode == "product_roundtrip":
