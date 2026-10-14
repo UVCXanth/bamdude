@@ -66,6 +66,17 @@ async def queue_claim_scope(db: AsyncSession, queue_id: int):
         yield
 
 
+def lane_held_in_process(db: AsyncSession, queue_id: int) -> bool:
+    """SQLite only: whether another coroutine holds this printer lane's in-process lock right now.
+
+    A caller whose transaction may already hold SQLite's writer (the AutoQueue tick) must not wait for that lock: its
+    holder -- a refresh, a change_table claim, a scheduler claim -- takes the writer next (``claim_lanes``), and each
+    would sit on the other until SQLite's busy timeout. Checked and then entered with no await in between, so the
+    answer still holds when the caller enters ``queue_claim_scope``.
+    """
+    return db.get_bind().dialect.name == "sqlite" and _queue_claim_locks[queue_id].locked()
+
+
 async def _lane_db_guard(db: AsyncSession, queue_id: int) -> None:
     await db.execute(text("SELECT pg_advisory_xact_lock(1625, :queue_id)"), {"queue_id": queue_id})
 

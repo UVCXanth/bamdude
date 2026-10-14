@@ -996,7 +996,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
               <Pencil className="w-3.5 h-3.5" />
               {t('common.rename')}
             </button>
-            {onSwapDeclaration && (
+            {onSwapDeclaration && (file.file_type === '3mf' || file.file_type === 'gcode') && (
               <button
                 className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
                 onClick={() => { if (canModify('library', 'update', file.created_by_id)) { onSwapDeclaration(file); closeMenu(); } }}
@@ -1492,7 +1492,7 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
                   {t('common.rename')}
                 </button>
               )}
-              {onSwapDeclaration && (
+              {onSwapDeclaration && (file.file_type === '3mf' || file.file_type === 'gcode') && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
                     canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'

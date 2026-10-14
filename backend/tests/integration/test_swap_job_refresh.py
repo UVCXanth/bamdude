@@ -171,7 +171,7 @@ async def test_an_unknown_or_missing_snapshot_takes_the_declaration_only_for_the
         assert sc.snapshot_fact((await row(factory, kind, job_id)).source_snapshot) == sc.SourceFact(value)
     assert (await row(factory, "queue", neighbour)).source_snapshot == before_neighbour
     [_declare, line] = await audits(factory)
-    assert line.action == "refresh" and line.new_value is value
+    assert line.action == "refresh_jobs" and line.new_value is value
     assert sorted((j["kind"], j["id"]) for j in line.jobs) == [("auto_queue", auto), ("queue", named)]
 
 
@@ -594,3 +594,49 @@ async def test_a_library_source_refreshes_its_own_jobs_and_refuses_one_already_d
     assert done["refreshed"] == [{"kind": "queue", "id": plain}]
     assert sc.snapshot_fact((await row(factory, "queue", plain)).source_snapshot) == sc.SourceFact(True)
     assert sc.snapshot_fact((await row(factory, "queue", dispatched)).source_snapshot).value is None
+
+
+async def test_a_replay_answers_only_while_the_source_is_still_there(factory, tmp_path):
+    from datetime import datetime, timezone
+
+    user = await a_user(factory)
+    queue_id = await a_printer_queue(factory)
+    archive_id = await a_declared_archive(factory, tmp_path, user)
+    job_id = await a_job(factory, archive_id, queue_id=queue_id)
+    seen = await listing(archive_id, user)
+    operation = str(uuid.uuid4())
+    picked = [ref(by_id(seen, "queue", job_id))]
+    await apply(archive_id, user, picked, seen, operation_id=operation)
+    async with factory() as db:  # the source went to the trash after the refresh
+        (await db.get(PrintArchive, archive_id)).deleted_at = datetime.now(timezone.utc)
+        await db.commit()
+
+    with pytest.raises(HTTPException) as refused:
+        await apply(archive_id, user, picked, seen, operation_id=operation)
+    assert refused.value.status_code == 404
+
+
+async def test_a_snapshot_whose_fact_is_malformed_is_not_repaired(factory, tmp_path):
+    user = await a_user(factory)
+    queue_id = await a_printer_queue(factory)
+    archive_id = await a_declared_archive(factory, tmp_path, user)
+    job_id = await a_job(factory, archive_id, queue_id=queue_id)
+    async with factory() as db:
+        item = await db.get(PrintQueueItem, job_id)
+        item.source_snapshot = {**item.source_snapshot, sc.SNAPSHOT_FACT_KEY: "yes"}
+        await db.commit()
+
+    seen = await listing(archive_id, user)
+    entry = by_id(seen, "queue", job_id)
+    assert (entry["eligible"], entry["reason"]) == (False, "snapshot_unreadable")
+
+
+async def test_the_refresh_audit_is_named_as_the_spec_names_it(factory, tmp_path):
+    user = await a_user(factory)
+    queue_id = await a_printer_queue(factory)
+    archive_id = await a_declared_archive(factory, tmp_path, user)
+    job_id = await a_job(factory, archive_id, queue_id=queue_id)
+    seen = await listing(archive_id, user)
+    await apply(archive_id, user, [ref(by_id(seen, "queue", job_id))], seen)
+
+    assert [line.action for line in await audits(factory)] == ["declare", "refresh_jobs"]

@@ -470,6 +470,15 @@ def snapshot_fact(payload: Mapping) -> SourceFact:
     return _unknown(REASON_RECORD_INVALID)
 
 
+def snapshot_fact_malformed(payload: Mapping) -> bool:
+    """Whether a snapshot of the known version carries a fact that is neither a bool nor an explicit unknown -- a
+    payload no refresh may repair into a declaration (swap-source-declaration spec r3 §6)."""
+    if SNAPSHOT_FACT_KEY not in payload:
+        return False
+    value = payload[SNAPSHOT_FACT_KEY]
+    return value is not None and type(value) is not bool
+
+
 def invalid_snapshot() -> SourceFact:
     """The fact of a snapshot this version cannot read: unknown, and final."""
     return _unknown(REASON_RECORD_INVALID)

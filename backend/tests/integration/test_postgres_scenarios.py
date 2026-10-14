@@ -883,7 +883,7 @@ class TestSwapDeclaration:
         assert (first["refreshed"], first["assigned"]) == ("ok", "conflict:swap_source_changed"), r
         assert first["waited"] >= 1 and first["children"] == [], r
         assert (first["queue_fact"], first["auto_fact"], first["auto_status"]) == (True, True, "pending"), r
-        assert first["audit"] == ["declare", "refresh"], r
+        assert first["audit"] == ["declare", "refresh_jobs"], r
         claimed = r["assignment_first"]
         assert (claimed["assigned"], claimed["refreshed"]) == ("ok", "409:jobs_changed"), r
         assert claimed["waited"] >= 1 and claimed["children"] == [None], r
@@ -905,6 +905,13 @@ class TestSwapDeclaration:
         free = r["no_deadlock"]
         assert free["refreshed"] in ("ok", "409:source_changed"), r
         assert (free["declared"], free["claimed"]) == ("ok", "ok") and free["waited"] >= 1, r
+
+    def test_a_refresh_and_a_hard_delete_of_its_source_never_deadlock(self, tmp_path_factory):
+        r = _declare(tmp_path_factory, "refresh_vs_source_delete")
+        assert r["deleted"] == "ok" and r["waited"] >= 1, r
+        assert r["refreshed"].split(":")[0] in ("404", "409"), r  # the source is gone; never a deadlock or an error
+        # The declaration's audit line outlives its source (spec r3 §9); no refresh line was written.
+        assert r["facts"] == [None, None] and r["audit"] == ["declare"], r
 
     def test_the_upgrade_gives_every_job_its_own_incarnation_and_an_unwritten_audit_commits_nothing(
         self, tmp_path_factory

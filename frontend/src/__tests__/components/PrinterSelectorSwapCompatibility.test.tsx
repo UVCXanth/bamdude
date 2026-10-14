@@ -32,7 +32,15 @@ beforeEach(() => {
 function mount(fact: { swap_compatible: boolean; swap_compatibility_known: boolean }) {
   server.use(
     http.get('/api/v1/archives/:id', () =>
-      HttpResponse.json({ id: 1, filename: 'a.3mf', sliced_for_model: null, ...fact }),
+      // A reprint reads the archive's SOURCE pair (spec r3 §7): here the run and the source agree.
+      HttpResponse.json({
+        id: 1,
+        filename: 'a.3mf',
+        sliced_for_model: null,
+        ...fact,
+        source_swap_compatible: fact.swap_compatible,
+        source_swap_compatibility_known: fact.swap_compatibility_known,
+      }),
     ),
   );
   render(<PrintModal mode="add-to-queue" archiveId={1} archiveName="Bracket" onClose={vi.fn()} onSuccess={vi.fn()} />);

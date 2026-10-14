@@ -145,6 +145,7 @@ describe('reading and declaring', () => {
     expect(puts[0]).toMatchObject({ value: true, expected_sha256: SHA, expected_revision: INSPECTED.revision });
     expect(String(puts[0].operation_id)).toMatch(/^[0-9a-f-]{36}$/);
     expect(await screen.findByText(/admin/)).toBeInTheDocument(); // the audit of what was saved
+    expect(screen.queryByText(/T10:00:00/)).toBeNull(); // a date for people, not the wire's
   });
 
   it('a read-only operator sees the declaration and no way to change it', async () => {
@@ -200,7 +201,7 @@ describe('applying the declaration to selected jobs', () => {
     await declareTrue();
 
     const failedJob = await screen.findByRole('checkbox', { name: /queue job #11/i });
-    const autoJob = screen.getByRole('checkbox', { name: /auto queue job #12/i });
+    const autoJob = screen.getByRole('checkbox', { name: /auto queue job #12 \(waiting\)/i });
     expect(failedJob).not.toBeChecked();
     expect(autoJob).not.toBeChecked();
     expect(screen.queryByRole('checkbox', { name: /#13/ })).toBeNull(); // refused: shown with its reason
@@ -258,6 +259,41 @@ describe('applying the declaration to selected jobs', () => {
 
     expect(puts).toHaveLength(1); // never a second declaration
     expect(refreshes).toHaveLength(2);
-    expect(refreshes[0].operation_id).not.toBe(refreshes[1].operation_id);
+    // The same request again is the same operation: had the first one committed, the server answers its result.
+    expect(refreshes[0].operation_id).toBe(refreshes[1].operation_id);
+  });
+});
+
+describe('a declaration that already stands, and an answer that never came back', () => {
+  it('an existing operator declaration can be applied to jobs without declaring again', async () => {
+    api({
+      inspect: () =>
+        HttpResponse.json({ ...INSPECTED, current: true, known: true, origin: 'operator', declaration_id: DECLARED.declaration_id }),
+    });
+    open();
+
+    expect(await screen.findByRole('checkbox', { name: /queue job #11/i })).not.toBeChecked();
+    expect(puts).toHaveLength(0);
+  });
+
+  it('a save whose answer was lost is retried as the same operation, and a new reading starts a new one', async () => {
+    let attempt = 0;
+    api({
+      put: () => {
+        attempt += 1;
+        return attempt === 1 ? HttpResponse.error() : HttpResponse.json(DECLARED);
+      },
+    });
+    open();
+
+    fireEvent.click(await carries());
+    fireEvent.click(await save());
+    await waitFor(() => expect(puts).toHaveLength(1));
+    await screen.findByRole('alert');
+    fireEvent.click(await save());
+    await screen.findByText(/declaration saved/i);
+
+    expect(puts).toHaveLength(2);
+    expect(puts[1].operation_id).toBe(puts[0].operation_id);
   });
 });

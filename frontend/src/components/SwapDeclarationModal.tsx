@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, ShieldCheck } from 'lucide-react';
@@ -13,6 +13,7 @@ import {
 import { Button } from './Button';
 import { Modal } from './Modal';
 import { formatFileSize } from '../utils/file';
+import { formatDateTime } from '../utils/date';
 import { newOperationId } from '../utils/swapCompatibility';
 import { invalidateQueueViews } from '../utils/queryInvalidation';
 
@@ -31,6 +32,23 @@ function jobKey(job: { kind: string; id: number }): string {
 }
 
 /**
+ * One operation id per request: the same request sent again -- its answer lost -- is the same operation, which the
+ * server answers with its first result instead of a conflict; any other request is a new one.
+ */
+function useOperationId() {
+  const current = useRef<{ key: string; id: string } | null>(null);
+  return {
+    for(key: string): string {
+      if (current.current?.key !== key) current.current = { key, id: newOperationId() };
+      return current.current.id;
+    },
+    reset() {
+      current.current = null;
+    },
+  };
+}
+
+/**
  * The operator's swap declaration of one source (swap-source-declaration spec r3 §4-§7): read the
  * bytes a reprint would print, say whether they carry their own plate-change sequence, save it for
  * exactly those bytes -- then, as a separate step, apply it to queued jobs the operator selects.
@@ -46,6 +64,8 @@ export function SwapDeclarationModal({ kind, id, name, canDeclare, onClose }: Sw
   const [saved, setSaved] = useState<SwapDeclarationResult | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [refreshed, setRefreshed] = useState<SwapRefreshResult | null>(null);
+  const declareOperation = useOperationId();
+  const refreshOperation = useOperationId();
 
   const inspection = useQuery({
     queryKey: ['swap-declaration-inspect', kind, id],
@@ -62,7 +82,7 @@ export function SwapDeclarationModal({ kind, id, name, canDeclare, onClose }: Sw
         value,
         expected_sha256: read!.sha256,
         expected_revision: read!.revision,
-        operation_id: newOperationId(),
+        operation_id: declareOperation.for(`${value}:${read!.revision}`),
       }),
     onSuccess: (result) => {
       setSaved(result);
@@ -72,17 +92,19 @@ export function SwapDeclarationModal({ kind, id, name, canDeclare, onClose }: Sw
     },
   });
 
+  // An operator's declaration that stands -- just saved, or found by the reading -- can be applied to jobs.
+  const declarationId = saved?.declaration_id ?? (read?.origin === 'operator' ? read.declaration_id : null);
   const history = useQuery({
-    queryKey: ['swap-declaration-history', kind, id, saved?.declaration_id],
+    queryKey: ['swap-declaration-history', kind, id, declarationId],
     queryFn: () => api.getSwapDeclarationHistory(kind, id),
     enabled: saved !== null,
     retry: false,
   });
 
   const jobs = useQuery({
-    queryKey: ['swap-declaration-jobs', kind, id, saved?.declaration_id],
+    queryKey: ['swap-declaration-jobs', kind, id, declarationId],
     queryFn: () => api.getSwapDeclarationJobs(kind, id),
-    enabled: saved !== null && canDeclare,
+    enabled: declarationId !== null && canDeclare,
     retry: false,
   });
 
@@ -91,12 +113,15 @@ export function SwapDeclarationModal({ kind, id, name, canDeclare, onClose }: Sw
       api.refreshSwapDeclarationJobs(kind, id, {
         declaration_id: jobs.data!.declaration_id,
         source_revision: jobs.data!.source_revision,
-        operation_id: newOperationId(),
+        operation_id: refreshOperation.for(
+          [jobs.data!.declaration_id, jobs.data!.source_revision, ...picked.map((job) => `${jobKey(job)}@${job.revision}`)].join('|'),
+        ),
         jobs: picked.map((job) => ({ kind: job.kind, id: job.id, revision: job.revision })),
       }),
     onSuccess: (result) => {
       setRefreshed(result);
       setSelected(new Set());
+      refreshOperation.reset();
       invalidateQueueViews(queryClient);
       queryClient.invalidateQueries({ queryKey: ['queue-copy-source'] });
       queryClient.invalidateQueries({ queryKey: ['swap-declaration-jobs', kind, id] });
@@ -113,6 +138,7 @@ export function SwapDeclarationModal({ kind, id, name, canDeclare, onClose }: Sw
   const readAgain = () => {
     setChoice(null);
     declare.reset();
+    declareOperation.reset();
     inspection.refetch();
   };
 
@@ -128,10 +154,12 @@ export function SwapDeclarationModal({ kind, id, name, canDeclare, onClose }: Sw
         ? t('swapDeclaration.current.doesNot')
         : t('swapDeclaration.current.unknown');
 
-  const jobLabel = (job: SwapRefreshCandidate) =>
-    job.kind === 'queue'
-      ? t('swapDeclaration.jobs.queueJob', { id: job.id, status: job.status })
-      : t('swapDeclaration.jobs.autoJob', { id: job.id, status: job.status });
+  const jobLabel = (job: SwapRefreshCandidate) => {
+    const status = t(`swapDeclaration.jobs.status.${job.status}`, { defaultValue: job.status });
+    return job.kind === 'queue'
+      ? t('swapDeclaration.jobs.queueJob', { id: job.id, status })
+      : t('swapDeclaration.jobs.autoJob', { id: job.id, status });
+  };
 
   return (
     <Modal
@@ -148,7 +176,7 @@ export function SwapDeclarationModal({ kind, id, name, canDeclare, onClose }: Sw
         </div>
       }
     >
-      <div className="space-y-4 text-sm">
+      <div className="space-y-4 p-4 text-sm">
         {inspection.isLoading && (
           <p className="flex items-center gap-2 text-bambu-gray">
             <Loader2 className="w-4 h-4 animate-spin" />
@@ -210,9 +238,9 @@ export function SwapDeclarationModal({ kind, id, name, canDeclare, onClose }: Sw
                 </Button>
               </div>
             )}
-            {declareError && !sourceChanged && (
+            {declare.error && !sourceChanged && (
               <p className="text-red-400" role="alert">
-                {declareError.message}
+                {declareError ? declareError.message : t('swapDeclaration.saveFailed')}
               </p>
             )}
             <Button
@@ -232,14 +260,14 @@ export function SwapDeclarationModal({ kind, id, name, canDeclare, onClose }: Sw
               <p className="text-bambu-gray">
                 {t('swapDeclaration.savedBy', {
                   actor: history.data[0].actor_label,
-                  when: history.data[0].created_at ?? '',
+                  when: formatDateTime(history.data[0].created_at),
                 })}
               </p>
             )}
           </div>
         )}
 
-        {saved && canDeclare && (
+        {declarationId !== null && canDeclare && (
           <section className="space-y-2 border-t border-bambu-dark-tertiary pt-3">
             <h3 className="text-white font-medium">{t('swapDeclaration.jobs.title')}</h3>
             <p className="text-bambu-gray">{t('swapDeclaration.jobs.intro')}</p>

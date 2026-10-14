@@ -920,6 +920,50 @@ async def scenario_refresh_vs_changes() -> dict:
     return report
 
 
+async def scenario_refresh_vs_source_delete() -> dict:
+    """A hard delete of the source archive holds its write guard and is about to detach the jobs that name it, while a
+    refresh of those jobs starts. The refresh takes the archive before the job rows -- the archive -> queue order every
+    archive writer keeps -- so it waits behind the delete, and then finds no source: no deadlock, nothing written."""
+    from backend.app.core.database import async_session
+    from backend.app.services import queue_source_release, swap_job_refresh as jobs
+    from backend.app.services.archive import ArchiveService
+
+    _process_locks_off()
+    user = await _user()
+    farm = await _archive_farm(user, jobs_count=2)
+    listing = await jobs.candidates(
+        "archive", farm.archive_id, actor=_actor(user), rights=_rights(), job_rights=_job_rights()
+    )
+    real_purged = queue_source_release.source_purged
+    refreshing: list = []
+    waited: list[int] = []
+
+    async def purged_once_the_refresh_waits(db, **kwargs):
+        refreshing.append(asyncio.ensure_future(_refresh_archive(farm, user, listing)))
+        waited.append(await _until_waiting())
+        return await real_purged(db, **kwargs)
+
+    queue_source_release.source_purged = purged_once_the_refresh_waits
+
+    async def delete():
+        async with async_session() as db:
+            assert await ArchiveService(db).delete_archive(farm.archive_id)
+            await db.commit()
+
+    try:
+        deleted = await _outcome(delete())
+    finally:
+        queue_source_release.source_purged = real_purged
+    refreshed = await refreshing[0]
+    return {
+        "deleted": deleted,
+        "refreshed": refreshed,
+        "waited": max(waited or [0]),
+        "facts": await _facts(farm.jobs),
+        "audit": await _audits("archive", farm.archive_id),
+    }
+
+
 # --- 9. an old schema upgraded; job incarnations; an audit that cannot be written ------------------------------------
 
 
@@ -1011,5 +1055,6 @@ SCENARIOS = {
     "scan_vs_declare": scenario_scan_vs_declare,
     "refresh_vs_assignment": scenario_refresh_vs_assignment,
     "refresh_vs_changes": scenario_refresh_vs_changes,
+    "refresh_vs_source_delete": scenario_refresh_vs_source_delete,
     "upgrade_and_identity": scenario_upgrade_and_identity,
 }

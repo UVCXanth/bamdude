@@ -11567,6 +11567,7 @@ export default {
     changed: "The file changed since it was read. Read it again before declaring.",
     readAgain: "Read it again",
     saved: "Declaration saved for these exact bytes.",
+    saveFailed: "The declaration could not be saved. Try again.",
     savedBy: "Saved by {{actor}} at {{when}}",
     jobs: {
       title: "Apply to queued jobs",
@@ -11578,6 +11579,10 @@ export default {
       apply: "Apply to {{count}} selected job(s)",
       done: "{{count}} job(s) updated. A failed job stays failed - retry it in the queue when you are ready.",
       failed: "The declaration is saved; the selected jobs were not changed.",
+      status: {
+        pending: "waiting",
+        failed: "failed",
+      },
       reason: {
         job_gone: "not available",
         identity_missing: "an old job without an identity - create a new job",

@@ -65,8 +65,8 @@ class Actor:
     kind: str  # "user" | "api_key"
     user_id: int | None
     label: str
-    #: An API key's raw credential, for the rights read afresh before the commit; never logged or stored.
-    credential: str | None = None
+    #: The API key's row id, for the rights read afresh before the commit -- on the write's own session.
+    key_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -119,12 +119,40 @@ async def actor_for(request, db, user) -> Actor:
         token = header[7:] if header.startswith("Bearer ") else None
         credential = token if is_api_key_token(token) else None
     owner = await acting_user(request, db, None)
+    key_id = None
+    if credential:
+        from backend.app.core.auth import APIKeyValidationFailure, resolve_api_key_authority
+
+        try:  # the gate's own lookup for this request, cached on it: no second validation
+            key_id = (await resolve_api_key_authority(request, credential)).key.id
+        except APIKeyValidationFailure:
+            key_id = None
     return Actor(
         kind="api_key",
         user_id=owner.id if owner is not None else None,
         label=f"API key ({owner.username})" if owner is not None else "API key",
-        credential=credential,
+        key_id=key_id,
     )
+
+
+async def fresh_api_key(db, actor: Actor):
+    """An API key's row read again on THIS session -- enabled, unexpired -- for the rights checked before a commit.
+
+    Never ``resolve_api_key_authority``: that validates in sessions of its own and writes the key's ``last_used``,
+    and on SQLite that write waits for the very writer this transaction holds (T9 final review, C1).
+    """
+    from datetime import datetime, timezone
+
+    from backend.app.models.api_key import APIKey
+
+    key = await db.get(APIKey, actor.key_id, populate_existing=True) if actor.key_id else None
+    if key is None or not key.enabled:
+        raise HTTPException(403, RIGHTS_GONE)
+    if key.expires_at is not None:
+        expires = key.expires_at if key.expires_at.tzinfo else key.expires_at.replace(tzinfo=timezone.utc)
+        if expires < datetime.now(timezone.utc):
+            raise HTTPException(403, RIGHTS_GONE)
+    return key
 
 
 async def _fresh_rights(db, kind: str, actor: Actor) -> Rights:
@@ -132,15 +160,10 @@ async def _fresh_rights(db, kind: str, actor: Actor) -> Rights:
     read commits nothing (§4). No per-request cache is consulted."""
     read_all, read_own, update_all, update_own = _PERMISSIONS[kind]
     if actor.kind == "api_key":
-        from backend.app.core.auth import authorize_api_key, resolve_api_key_authority
+        from backend.app.core.auth import authorize_api_key
 
-        if not actor.credential:
-            raise HTTPException(403, RIGHTS_GONE)
-        try:
-            authority = await resolve_api_key_authority(None, actor.credential)
-        except Exception as exc:  # noqa: BLE001 -- any failure to validate is no right
-            raise HTTPException(403, RIGHTS_GONE) from exc
-        await authorize_api_key(db, authority.key, [read_all, update_all], authority=authority)
+        # The key and its owner read on this session; nothing is written.
+        await authorize_api_key(db, await fresh_api_key(db, actor), [read_all, update_all])
         return Rights(read_all=True, update_all=True)
 
     from sqlalchemy.orm import selectinload

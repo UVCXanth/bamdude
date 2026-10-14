@@ -16,11 +16,13 @@ plate, name, order or position -- and not its status: a failed job stays failed 
 refused or changed job refuses the whole group with no write at all. A job without a captured source has nothing to
 refresh: its Retry captures the source again and reads the declaration then.
 
-Locks, in the order every writer of this map takes them (plan T9 r3, the archive declaration / claim / refresh
-table): the storage guard, then every printer lane the selection touches in ascending queue id, then the job rows in
-``(kind, id)`` order, then the source -- an archive's write scope and row, or a library row. Lanes are the ones a
-preflight read named; a job found on another lane under the locks is ``jobs_changed``, never a late lock. No file
-is read, nothing is copied. The audit line names the jobs that really changed, and commits with them.
+Locks: the storage guard, then every printer lane the selection touches in ascending queue id (every in-process
+lock before SQLite's writer, ``queue_ops.claim_lanes``), then the source and the job rows in ``(kind, id)`` order, in
+the order each source kind's other writers keep -- an archive's guard and row BEFORE the rows (archive -> queue: its
+hard delete, the terminal write, the change_table claim), a library row AFTER them (its purge detaches the jobs, then
+deletes the file). Lanes are the ones a preflight read named; a job found on another lane under the locks is
+``jobs_changed``, never a late lock. No file is read, nothing is copied. The audit line names the jobs that really
+changed, and commits with them.
 """
 
 from __future__ import annotations
@@ -53,6 +55,7 @@ from backend.app.services.swap_source_declarations import (
 logger = logging.getLogger(__name__)
 
 JOB_KINDS = ("auto_queue", "queue")  # the stable order rows are locked in: (kind, id)
+REFRESH_ACTION = "refresh_jobs"  # the audit line's action, as the spec names it
 MAX_JOBS = 100
 
 #: Why one job may not take the declaration -- the closed list the API answers (frontend copies it).
@@ -165,7 +168,6 @@ def _refusal(
             or (row.dispatch_attempts or 0) != 0
             or row.origin != "queue"
             or row.is_calibration
-            or row.source_auto_item_id is not None
         ):
             return "not_before_dispatch"
     else:
@@ -180,7 +182,11 @@ def _refusal(
     if row.queue_source_id is None or blob is None:
         return "no_captured_source"
     snapshot = row.source_snapshot
-    if not isinstance(snapshot, dict) or snapshot.get("version") != SOURCE_SNAPSHOT_VERSION:
+    if (
+        not isinstance(snapshot, dict)
+        or snapshot.get("version") != SOURCE_SNAPSHOT_VERSION
+        or sc.snapshot_fact_malformed(snapshot)
+    ):
         return "snapshot_unreadable"
     if blob.state != "ready":
         return "source_not_ready"
@@ -201,13 +207,11 @@ def _refusal(
 async def _fresh_job_rights(db, actor: Actor, granted: JobRights) -> JobRights:
     """The queue rights read again inside the write transaction, never wider than what the request was granted."""
     if actor.kind == "api_key":
-        from backend.app.core.auth import authorize_api_key, resolve_api_key_authority
+        from backend.app.core.auth import authorize_api_key
+        from backend.app.services.swap_source_declarations import fresh_api_key
 
-        try:
-            authority = await resolve_api_key_authority(None, actor.credential)
-        except Exception as exc:  # noqa: BLE001 -- any failure to validate is no right
-            raise HTTPException(403, "You may no longer declare this source.") from exc
-        await authorize_api_key(db, authority.key, [Permission.QUEUE_UPDATE_ALL.value], authority=authority)
+        # The key and its owner read on this session; nothing is written (T9 final review, C1).
+        await authorize_api_key(db, await fresh_api_key(db, actor), [Permission.QUEUE_UPDATE_ALL.value])
         return granted
     from sqlalchemy.orm import selectinload
 
@@ -339,7 +343,7 @@ async def _replayed(db, operation_id: str, digest: str, actor: Actor):
     if previous is None:
         return None
     if (
-        previous.action != "refresh"
+        previous.action != REFRESH_ACTION
         or previous.request_digest != digest
         or previous.actor_kind != actor.kind
         or previous.actor_id != actor.user_id
@@ -400,6 +404,8 @@ async def refresh(
     try:
         # What a replay answers, and which lanes the selection touches -- read apart, holding nothing.
         async with async_session() as db:
+            # A replay answers only while the source is still there for this actor (spec r3 §3), as declare's does.
+            _source_gate(source_kind, await db.get(_model(source_kind), source_id), actor, rights)
             replayed = await _replayed(db, operation_id, digest, actor)
             if replayed is not None:
                 _log(operation_id, source_kind, source_id, "replayed", started)
@@ -417,6 +423,11 @@ async def refresh(
             await stack.enter_async_context(
                 claim_lanes(db, lanes, archive_id=source_id if source_kind == "archive" else None)
             )
+            # The source and the job rows in the order each kind's other writers keep: an archive BEFORE the rows
+            # (archive -> queue: its hard delete, the terminal write, the change_table claim), a library row after
+            # them (queue -> library: the purge detaches the jobs, then deletes the file). Reversed, a hard delete
+            # of the source and this refresh deadlock on PostgreSQL (T9 final review, I1).
+            source = await _lock_source(db, source_kind, source_id) if source_kind == "archive" else None
             rows = {}
             for job in picked:
                 model = _job_model(job.kind)
@@ -428,7 +439,8 @@ async def refresh(
                         .execution_options(populate_existing=True)
                     )
                 ).scalar_one_or_none()
-            source = await _lock_source(db, source_kind, source_id)
+            if source_kind != "archive":
+                source = await _lock_source(db, source_kind, source_id)
 
             _source_gate(source_kind, source, actor, await _fresh_rights(db, source_kind, actor))
             declaration = _operator_declaration(source)
@@ -480,7 +492,7 @@ async def refresh(
             db.add(
                 _audit_line(
                     operation_id=operation_id,
-                    action="refresh",
+                    action=REFRESH_ACTION,
                     source_kind=source_kind,
                     source_id=source_id,
                     sha256=declaration.sha256,

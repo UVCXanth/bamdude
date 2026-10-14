@@ -205,17 +205,45 @@ async def test_an_assignment_that_claimed_first_leaves_the_refresh_nothing(
     assert child.source_auto_item_id == item_id
     # A promotion is a new incarnation, never the router row's own.
     assert sc.job_identity(child) and sc.job_identity(child) != sc.job_identity(parent)
+    # ...and a job of its own: pending, never sent, its own link and its own blob -- it may take a declaration.
+    from backend.app.models.queue_source import QueueSource
+
+    blob = await db_session.get(QueueSource, child.queue_source_id)
     assert (
         jobs._refusal(
             "queue",
             child,
             source_kind="library",
             source_id=source_id,
-            sha256="0" * 64,
-            blob=None,
+            sha256=blob.sha256,
+            blob=blob,
             actor=None,
             rights=jobs.JobRights(read_all=True, update_all=True),
             scope=None,
         )
-        == "not_before_dispatch"
-    )  # the promoted row is the router's assignment, never a refresh target
+        is None
+    )
+
+
+async def test_on_sqlite_an_assignment_never_waits_for_a_lane_another_writer_holds(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch
+):
+    """The tick runs in one transaction that may already hold SQLite's writer. A refresh or a change_table claim
+    holding the printer's lane in process waits for that writer (``claim_lanes``): an assignment that waited for the
+    lane in turn would hold both for SQLite's busy timeout. It gives the printer up for this pass instead (T9 final
+    review, I2)."""
+    import asyncio
+
+    from backend.app.services.queue_ops import _queue_claim_locks
+
+    source, printer, *_ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    item = await an_auto_job(committing_client, db_session, source)
+    item_id = item.id
+
+    async with _queue_claim_locks[printer.id]:  # another writer holds this printer's lane
+        with pytest.raises(AutoPlacementConflict) as refused:
+            await asyncio.wait_for(AutoQueueScheduler()._assign(db_session, item, printer), 2)
+
+    assert refused.value.code == "lane_busy"
+    await db_session.commit()
+    assert await children(db_session, item_id) == []
