@@ -52,12 +52,39 @@ const LISTING = {
   counts: { eligible: 2, refused: 1 },
 };
 
+/** An operator declaration that already stands, read at the revision its jobs listing answers. */
+const STANDING = {
+  ...INSPECTED,
+  current: true,
+  known: true,
+  origin: 'operator',
+  declaration_id: DECLARED.declaration_id,
+  revision: LISTING.source_revision,
+};
+const OTHER_ID = '22222222-2222-4222-8222-222222222222';
+/** The same bytes, declared the other way by someone else after the dialog read them. */
+const LISTING_OTHER = { ...LISTING, declaration_id: OTHER_ID, value: false };
+const STANDING_OTHER = { ...STANDING, current: false, declaration_id: OTHER_ID };
+
 let puts: Array<Record<string, unknown>>;
 let refreshes: Array<Record<string, unknown>>;
 let inspections: number;
 
+const HISTORY_LINE = {
+  declaration_id: DECLARED.declaration_id,
+  action: 'declare',
+  old_value: null,
+  new_value: true,
+  sha256: SHA,
+  actor_label: 'admin',
+  actor_kind: 'user',
+  created_at: '2026-10-14T10:00:00',
+};
+
 function api({
   put = () => HttpResponse.json(DECLARED),
+  history = () => HttpResponse.json([HISTORY_LINE]),
+  listing = () => HttpResponse.json(LISTING),
   refresh = () =>
     HttpResponse.json({
       operation_id: 'x',
@@ -71,6 +98,8 @@ function api({
   put?: () => Response;
   refresh?: () => Response;
   inspect?: () => Response;
+  history?: () => Response;
+  listing?: () => Response;
 } = {}) {
   server.use(
     http.post('/api/v1/archives/:id/swap-declaration/inspect', () => {
@@ -81,21 +110,8 @@ function api({
       puts.push((await request.json()) as Record<string, unknown>);
       return put();
     }),
-    http.get('/api/v1/archives/:id/swap-declaration/history', () =>
-      HttpResponse.json([
-        {
-          declaration_id: DECLARED.declaration_id,
-          action: 'declare',
-          old_value: null,
-          new_value: true,
-          sha256: SHA,
-          actor_label: 'admin',
-          actor_kind: 'user',
-          created_at: '2026-10-14T10:00:00',
-        },
-      ]),
-    ),
-    http.get('/api/v1/archives/:id/swap-declaration/jobs', () => HttpResponse.json(LISTING)),
+    http.get('/api/v1/archives/:id/swap-declaration/history', () => history()),
+    http.get('/api/v1/archives/:id/swap-declaration/jobs', () => listing()),
     http.post('/api/v1/archives/:id/swap-declaration/jobs/refresh', async ({ request }) => {
       refreshes.push((await request.json()) as Record<string, unknown>);
       return refresh();
@@ -266,10 +282,7 @@ describe('applying the declaration to selected jobs', () => {
 
 describe('a declaration that already stands, and an answer that never came back', () => {
   it('an existing operator declaration can be applied to jobs without declaring again', async () => {
-    api({
-      inspect: () =>
-        HttpResponse.json({ ...INSPECTED, current: true, known: true, origin: 'operator', declaration_id: DECLARED.declaration_id }),
-    });
+    api({ inspect: () => HttpResponse.json(STANDING) });
     open();
 
     expect(await screen.findByRole('checkbox', { name: /queue job #11/i })).not.toBeChecked();
@@ -295,5 +308,129 @@ describe('a declaration that already stands, and an answer that never came back'
 
     expect(puts).toHaveLength(2);
     expect(puts[1].operation_id).toBe(puts[0].operation_id);
+  });
+});
+
+describe('the declaration applied to jobs is the declaration shown', () => {
+  it('a listing that answers another declaration than the one shown applies nothing until it is read again', async () => {
+    // Codex's T9-A-R2 probe, adapted to the stale-list UI: the assertion that what is applied is what is shown stays.
+    let inspected = STANDING;
+    api({
+      inspect: () => HttpResponse.json(inspected),
+      listing: () => HttpResponse.json(LISTING_OTHER),
+    });
+    open();
+
+    expect(await screen.findByText(/declaration changed since it was shown/i)).toBeInTheDocument();
+    expect(screen.getByText('Current declaration').nextElementSibling).toHaveTextContent(
+      'Carries its own plate-change sequence',
+    );
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByRole('button', { name: /apply to/i })).toBeNull();
+
+    inspected = STANDING_OTHER;
+    fireEvent.click(screen.getByRole('button', { name: /read it again/i }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: /queue job #11/i }));
+    fireEvent.click(screen.getByRole('button', { name: /apply to 1 selected/i }));
+    await screen.findByText(/stays failed/i);
+
+    expect(refreshes).toHaveLength(1);
+    expect(refreshes[0].declaration_id).toBe(OTHER_ID);
+    expect(screen.getByText('Current declaration').nextElementSibling).toHaveTextContent(
+      'Does not carry its own plate-change sequence',
+    );
+  });
+
+  it('a listing read after the save that answers another declaration applies nothing', async () => {
+    let inspected: typeof INSPECTED | typeof STANDING_OTHER = INSPECTED;
+    api({ inspect: () => HttpResponse.json(inspected), listing: () => HttpResponse.json(LISTING_OTHER) });
+    open();
+    await declareTrue();
+
+    expect(await screen.findByText(/declaration changed since it was shown/i)).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(refreshes).toHaveLength(0);
+
+    inspected = STANDING_OTHER; // what the source holds now: the other declaration, not the one this dialog saved
+    fireEvent.click(screen.getByRole('button', { name: /read it again/i }));
+    expect(await screen.findByRole('checkbox', { name: /queue job #11/i })).not.toBeChecked();
+    expect(screen.getByText('Current declaration').nextElementSibling).toHaveTextContent(
+      'Does not carry its own plate-change sequence',
+    );
+  });
+
+  it('a list read again after a refused refresh never switches the declaration in silence', async () => {
+    let listings = 0;
+    api({
+      inspect: () => HttpResponse.json(STANDING),
+      listing: () => {
+        listings += 1;
+        return HttpResponse.json(listings === 1 ? LISTING : LISTING_OTHER);
+      },
+      refresh: () =>
+        HttpResponse.json(
+          { detail: { error: 'source_changed', message: 'The source changed since its jobs were listed.' } },
+          { status: 409 },
+        ),
+    });
+    open();
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: /queue job #11/i }));
+    fireEvent.click(screen.getByRole('button', { name: /apply to 1 selected/i }));
+
+    expect(await screen.findByText(/declaration changed since it was shown/i)).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(refreshes).toHaveLength(1);
+    expect(refreshes[0].declaration_id).toBe(DECLARED.declaration_id);
+  });
+});
+
+describe('who declared a declaration that already stands', () => {
+  it('is shown without a new save, with a date for people', async () => {
+    api({ inspect: () => HttpResponse.json(STANDING) });
+    open();
+
+    expect(await screen.findByText(/declared by admin/i)).toBeInTheDocument();
+    expect(screen.queryByText(/T10:00:00/)).toBeNull();
+    expect(puts).toHaveLength(0);
+  });
+
+  it('is shown to a read-only operator too', async () => {
+    api({ inspect: () => HttpResponse.json(STANDING) });
+    open({ canDeclare: false });
+
+    expect(await screen.findByText(/declared by admin/i)).toBeInTheDocument();
+  });
+
+  it('says when it could not be read, and when there is no record', async () => {
+    api({ inspect: () => HttpResponse.json(STANDING), history: () => HttpResponse.json({ detail: 'x' }, { status: 500 }) });
+    const first = open();
+    expect(await screen.findByText(/who declared it could not be read/i)).toBeInTheDocument();
+    first.unmount();
+
+    api({ inspect: () => HttpResponse.json(STANDING), history: () => HttpResponse.json([]) });
+    open();
+    expect(await screen.findByText(/no record of who declared it/i)).toBeInTheDocument();
+  });
+
+  it('a declaration a backup restored says so', async () => {
+    api({
+      inspect: () => HttpResponse.json(STANDING),
+      history: () => HttpResponse.json([{ ...HISTORY_LINE, action: 'restore', actor_kind: 'restored' }]),
+    });
+    open();
+
+    expect(await screen.findByText(/restored from a backup/i)).toBeInTheDocument();
+  });
+
+  it('a record of another declaration is not passed off as this one', async () => {
+    api({
+      inspect: () => HttpResponse.json(STANDING),
+      history: () => HttpResponse.json([{ ...HISTORY_LINE, declaration_id: OTHER_ID }]),
+    });
+    open();
+
+    expect(await screen.findByText(/no record of who declared it/i)).toBeInTheDocument();
+    expect(screen.queryByText(/declared by admin/i)).toBeNull();
   });
 });

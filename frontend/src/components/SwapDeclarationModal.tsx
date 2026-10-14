@@ -5,6 +5,7 @@ import { Loader2, ShieldCheck } from 'lucide-react';
 import {
   api,
   ApiError,
+  type SwapDeclarationHistoryEntry,
   type SwapDeclarationResult,
   type SwapRefreshCandidate,
   type SwapRefreshResult,
@@ -29,6 +30,14 @@ interface SwapDeclarationModalProps {
 
 function jobKey(job: { kind: string; id: number }): string {
   return `${job.kind}:${job.id}`;
+}
+
+/** The declaration the dialog shows -- and the only one it may apply to jobs. */
+interface ShownDeclaration {
+  id: string;
+  value: boolean | null;
+  sha256: string;
+  revision: string;
 }
 
 /**
@@ -92,14 +101,23 @@ export function SwapDeclarationModal({ kind, id, name, canDeclare, onClose }: Sw
     },
   });
 
-  // An operator's declaration that stands -- just saved, or found by the reading -- can be applied to jobs.
-  const declarationId = saved?.declaration_id ?? (read?.origin === 'operator' ? read.declaration_id : null);
+  // An operator's declaration that stands -- just saved, or found by the reading. It is what the dialog shows, and
+  // the only declaration it applies to jobs: a listing that answers another one is never applied (T9.7 R2).
+  const shown: ShownDeclaration | null = saved
+    ? { id: saved.declaration_id, value: saved.value, sha256: saved.sha256, revision: saved.revision }
+    : read?.origin === 'operator' && read.declaration_id
+      ? { id: read.declaration_id, value: read.current, sha256: read.sha256, revision: read.revision }
+      : null;
+  const declarationId = shown?.id ?? null;
   const history = useQuery({
     queryKey: ['swap-declaration-history', kind, id, declarationId],
     queryFn: () => api.getSwapDeclarationHistory(kind, id),
-    enabled: saved !== null,
+    enabled: declarationId !== null,
     retry: false,
   });
+  // The record of exactly the declaration shown -- never another one's, read after it changed.
+  const provenance: SwapDeclarationHistoryEntry | null =
+    history.data?.find((line) => line.declaration_id === declarationId) ?? null;
 
   const jobs = useQuery({
     queryKey: ['swap-declaration-jobs', kind, id, declarationId],
@@ -108,13 +126,23 @@ export function SwapDeclarationModal({ kind, id, name, canDeclare, onClose }: Sw
     retry: false,
   });
 
+  // The listing belongs to the declaration shown only when it names the very same one: id, value, bytes, revision.
+  const listingAgrees =
+    jobs.data !== undefined &&
+    shown !== null &&
+    jobs.data.declaration_id === shown.id &&
+    jobs.data.value === shown.value &&
+    jobs.data.sha256 === shown.sha256 &&
+    jobs.data.source_revision === shown.revision;
+  const listingStale = jobs.data !== undefined && !listingAgrees && !inspection.isFetching;
+
   const refresh = useMutation({
-    mutationFn: (picked: SwapRefreshCandidate[]) =>
+    mutationFn: ({ declaration, picked }: { declaration: ShownDeclaration; picked: SwapRefreshCandidate[] }) =>
       api.refreshSwapDeclarationJobs(kind, id, {
-        declaration_id: jobs.data!.declaration_id,
-        source_revision: jobs.data!.source_revision,
+        declaration_id: declaration.id,
+        source_revision: declaration.revision,
         operation_id: refreshOperation.for(
-          [jobs.data!.declaration_id, jobs.data!.source_revision, ...picked.map((job) => `${jobKey(job)}@${job.revision}`)].join('|'),
+          [declaration.id, declaration.revision, ...picked.map((job) => `${jobKey(job)}@${job.revision}`)].join('|'),
         ),
         jobs: picked.map((job) => ({ kind: job.kind, id: job.id, revision: job.revision })),
       }),
@@ -135,14 +163,22 @@ export function SwapDeclarationModal({ kind, id, name, canDeclare, onClose }: Sw
 
   const declareError = declare.error instanceof ApiError ? declare.error : null;
   const sourceChanged = declareError?.code === 'swap_source_changed';
+  // Read the source again: whatever was shown, saved or selected belongs to the previous reading.
   const readAgain = () => {
     setChoice(null);
+    setSaved(null);
+    setSelected(new Set());
+    setRefreshed(null);
     declare.reset();
+    refresh.reset();
     declareOperation.reset();
+    refreshOperation.reset();
     inspection.refetch();
+    queryClient.invalidateQueries({ queryKey: ['swap-declaration-jobs', kind, id] });
+    queryClient.invalidateQueries({ queryKey: ['swap-declaration-history', kind, id] });
   };
 
-  const listed = useMemo(() => jobs.data?.jobs ?? [], [jobs.data]);
+  const listed = useMemo(() => (listingAgrees ? (jobs.data?.jobs ?? []) : []), [jobs.data, listingAgrees]);
   const eligible = listed.filter((job) => job.eligible);
   const picked = eligible.filter((job) => selected.has(jobKey(job)));
   const busy = declare.isPending || refresh.isPending;
@@ -210,6 +246,21 @@ export function SwapDeclarationModal({ kind, id, name, canDeclare, onClose }: Sw
           </dl>
         )}
 
+        {shown && (
+          <p className="text-bambu-gray" role="status">
+            {history.isLoading
+              ? t('swapDeclaration.provenanceLoading')
+              : history.isError
+                ? t('swapDeclaration.provenanceFailed')
+                : provenance === null
+                  ? t('swapDeclaration.provenanceNone')
+                  : t(provenance.action === 'restore' ? 'swapDeclaration.restoredBy' : 'swapDeclaration.declaredBy', {
+                      actor: provenance.actor_label,
+                      when: formatDateTime(provenance.created_at),
+                    })}
+          </p>
+        )}
+
         {read && !canDeclare && <p className="text-bambu-gray">{t('swapDeclaration.readOnly')}</p>}
 
         {read && canDeclare && !saved && (
@@ -253,27 +304,23 @@ export function SwapDeclarationModal({ kind, id, name, canDeclare, onClose }: Sw
           </fieldset>
         )}
 
-        {saved && (
-          <div className="space-y-1">
-            <p className="text-bambu-green">{t('swapDeclaration.saved')}</p>
-            {history.data?.[0] && (
-              <p className="text-bambu-gray">
-                {t('swapDeclaration.savedBy', {
-                  actor: history.data[0].actor_label,
-                  when: formatDateTime(history.data[0].created_at),
-                })}
-              </p>
-            )}
-          </div>
-        )}
+        {saved && <p className="text-bambu-green">{t('swapDeclaration.saved')}</p>}
 
         {declarationId !== null && canDeclare && (
           <section className="space-y-2 border-t border-bambu-dark-tertiary pt-3">
             <h3 className="text-white font-medium">{t('swapDeclaration.jobs.title')}</h3>
             <p className="text-bambu-gray">{t('swapDeclaration.jobs.intro')}</p>
             {jobs.isLoading && <Loader2 className="w-4 h-4 animate-spin text-bambu-gray" />}
-            {jobs.data && listed.length === 0 && <p className="text-bambu-gray">{t('swapDeclaration.jobs.none')}</p>}
-            {jobs.data && listed.length > 0 && (
+            {listingStale && jobs.data && (
+              <div className="space-y-2" role="alert">
+                <p className="text-amber-400">{t('swapDeclaration.jobs.stale', { value: describe(jobs.data.value) })}</p>
+                <Button variant="secondary" size="sm" onClick={readAgain} disabled={busy}>
+                  {t('swapDeclaration.readAgain')}
+                </Button>
+              </div>
+            )}
+            {listingAgrees && listed.length === 0 && <p className="text-bambu-gray">{t('swapDeclaration.jobs.none')}</p>}
+            {listingAgrees && listed.length > 0 && (
               <>
                 <p className="text-bambu-gray">
                   {t('swapDeclaration.jobs.counts', {
@@ -315,7 +362,10 @@ export function SwapDeclarationModal({ kind, id, name, canDeclare, onClose }: Sw
                     <p className="text-bambu-gray">{refresh.error.message}</p>
                   </div>
                 )}
-                <Button onClick={() => refresh.mutate(picked)} disabled={picked.length === 0 || refresh.isPending}>
+                <Button
+                  onClick={() => shown && refresh.mutate({ declaration: shown, picked })}
+                  disabled={picked.length === 0 || refresh.isPending}
+                >
                   {refresh.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                   {t('swapDeclaration.jobs.apply', { count: picked.length })}
                 </Button>

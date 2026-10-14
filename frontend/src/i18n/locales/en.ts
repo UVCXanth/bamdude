@@ -11568,7 +11568,11 @@ export default {
     readAgain: "Read it again",
     saved: "Declaration saved for these exact bytes.",
     saveFailed: "The declaration could not be saved. Try again.",
-    savedBy: "Saved by {{actor}} at {{when}}",
+    declaredBy: "Declared by {{actor}} at {{when}}",
+    restoredBy: "Restored from a backup: declared by {{actor}}, restored at {{when}}",
+    provenanceLoading: "Reading who declared it…",
+    provenanceFailed: "Who declared it could not be read.",
+    provenanceNone: "There is no record of who declared it.",
     jobs: {
       title: "Apply to queued jobs",
       intro: "Jobs captured before this declaration keep their own answer. Select the ones that should take it - nothing is selected for you.",
@@ -11579,6 +11583,7 @@ export default {
       apply: "Apply to {{count}} selected job(s)",
       done: "{{count}} job(s) updated. A failed job stays failed - retry it in the queue when you are ready.",
       failed: "The declaration is saved; the selected jobs were not changed.",
+      stale: "The declaration changed since it was shown - it now says: {{value}}. Read it again before applying it to jobs.",
       status: {
         pending: "waiting",
         failed: "failed",
