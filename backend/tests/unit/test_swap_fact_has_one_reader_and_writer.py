@@ -30,10 +30,8 @@ ALLOWED: dict[tuple[str, str, str], str] = {}
 #: Touches that predate the policy module. Each names the task that replaces it with the reader/writer, or moves
 #: it to ALLOWED in one of the categories above.
 PENDING = {
-    ("backend/app/api/routes/archives.py", "reprint_archive", "str"): "T4 reprint gate after capture",
     ("backend/app/api/routes/library.py", "save_3mf_bytes_to_library", "kw"): "T5 ingest classifier",
     ("backend/app/api/routes/library.py", "store_library_upload", "kw"): "T5 ingest classifier",
-    ("backend/app/api/routes/library.py", "print_library_file", "str"): "T4 direct print gate after capture",
     ("backend/app/api/routes/library.py", "list_files", "attr"): "T6 library known projection",
     ("backend/app/api/routes/library.py", "list_files", "kw"): "T6 library known projection",
     ("backend/app/api/routes/library.py", "get_file", "attr"): "T6 library known projection",
@@ -48,8 +46,6 @@ PENDING = {
     ): "T4 assignment reads the snapshot",
     ("backend/app/services/library_helpers.py", "sync_system_tags", "attr"): "T5 system tags after the fact",
     ("backend/app/services/library_helpers.py", "sync_system_tags", "kw"): "T5 system tags after the fact",
-    ("backend/app/services/queue_add.py", "_publish_items", "str"): "T4 enqueue gate on the receipt",
-    ("backend/app/services/queue_add.py", "add_next_block_to_printer_queue.attach", "str"): "T4 ASAP gate",
     ("backend/app/services/queue_rebalance.py", "_apply", "attr"): "T4 rebalance through the policy",
 }
 

@@ -301,6 +301,20 @@ async def reusing_sources(db: AsyncSession, source_ids: Iterable[int | None]) ->
         yield blobs
 
 
+def swap_request(fact, *, execute, events, printer_swap_mode: bool) -> tuple[bool, list[str] | None]:
+    """A new job's swap fields from its CAPTURED declaration, or the 409 a writer answers (spec r4 §8).
+
+    Every door that creates work asks this after the copy and before anything is published: a refusal raised
+    inside the caller's capture ``try`` discards the staging, and no row is written.
+    """
+    try:
+        return swap_compatibility.resolve_request(
+            fact, execute=execute, events=events, printer_swap_mode=printer_swap_mode
+        )
+    except swap_compatibility.SwapRequestRefused as exc:
+        raise HTTPException(409, routing_detail(exc.reason)) from exc
+
+
 def refusal(exc: QueueSourceError) -> HTTPException:
     """One mapping for the whole taxonomy — the status lives on the class (§6)."""
     return HTTPException(exc.http_status, routing_detail(exc.reason))

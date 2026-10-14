@@ -5090,13 +5090,9 @@ async def print_library_file(
     if plate_name:
         dispatch_source_name = f"{lib_file.filename} • {plate_name}"
 
-    # Swap-macro execution only applies to swap-enabled printers AND files
-    # that don't already carry swap macros baked in by third-party tooling
-    # (``swap_compatible`` → double-fire risk). Mute the fields in either
-    # case before they propagate into dispatch options or queued copies.
-    if not printer.swap_mode_enabled or getattr(lib_file, "swap_compatible", False):
-        body.execute_swap_macros = False
-        body.swap_macro_events = None
+    # Swap macros are decided after the copy, from the declaration the captured
+    # bytes confirm, by the dispatcher and the queue writer (swap-source-lifecycle
+    # spec r4 §8) -- not from this row before the copy, which is only a preview.
 
     # Print-Now quantity handling:
     # * quantity == 1 → direct dispatch (no queue items, fastest path).

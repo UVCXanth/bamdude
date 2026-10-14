@@ -57,6 +57,7 @@ from backend.app.services.queue_source_capture import (
     publish_staged,
     reusing_sources,
     staged_requirements,
+    swap_request,
 )
 from backend.app.services.source_io import SourceUnavailable
 from backend.app.utils.filename import InvalidFilenameError, is_sliced_file, validate_print_filename
@@ -343,16 +344,14 @@ async def _add_items_from_queue_source(
     printer_id = queue.printer_id
     batch_id = str(uuid.uuid4()) if data.quantity > 1 else None
     ams_mapping_json = json.dumps(data.ams_mapping) if data.ams_mapping else None
-    filename_lower = filename.lower()
-    source_has_baked_macros = (
-        filename_lower.endswith((".swap.3mf", ".swaps.3mf"))
-        or ".swap." in filename_lower
-        or ".swaps." in filename_lower
+    # The parent's own declaration, never its display name (swap-source-lifecycle spec r4 §8).
+    execute_swap_macros, swap_events = swap_request(
+        descriptor.swap_fact.value,
+        execute=data.execute_swap_macros,
+        events=data.swap_macro_events,
+        printer_swap_mode=printer_swap_on,
     )
-    execute_swap_macros = bool(data.execute_swap_macros) and printer_swap_on and not source_has_baked_macros
-    swap_macro_events_json = (
-        json.dumps(data.swap_macro_events) if execute_swap_macros and data.swap_macro_events else None
-    )
+    swap_macro_events_json = json.dumps(swap_events) if swap_events else None
     selected_macro_ids_json = json.dumps(data.selected_macro_ids) if data.selected_macro_ids is not None else None
     routing = (
         serialize_policy(
@@ -493,20 +492,17 @@ async def _publish_items(
     batch_id = str(uuid.uuid4()) if data.quantity > 1 else None
     ams_mapping_json = json.dumps(data.ams_mapping) if data.ams_mapping else None
 
-    # Swap-macro execution is only meaningful when (a) the target printer has
-    # swap mode on (read from the queue's printer by the caller) AND (b) the
-    # source file does not already carry swap macros baked in by third-party
-    # tooling (``swap_compatible``). Otherwise force the feature off so stored
-    # state never lies about what fires at dispatch and we don't double-execute
-    # macros.
-    source_has_baked_macros = bool(
-        (archive and getattr(archive, "swap_compatible", False))
-        or (library_file and getattr(library_file, "swap_compatible", False))
+    # Swap-macro execution, decided from the declaration the CAPTURE confirmed and
+    # the target printer's swap mode (swap-source-lifecycle spec r4 §8): stored
+    # state never lies about what fires at dispatch, and an unknown source asked
+    # for our macros is refused here, before anything is published.
+    execute_swap_macros, swap_events = swap_request(
+        staged.receipt.swap_fact.value,
+        execute=data.execute_swap_macros,
+        events=data.swap_macro_events,
+        printer_swap_mode=printer_swap_on,
     )
-    execute_swap_macros = bool(data.execute_swap_macros) and printer_swap_on and not source_has_baked_macros
-    swap_macro_events_json = (
-        json.dumps(data.swap_macro_events) if execute_swap_macros and data.swap_macro_events else None
-    )
+    swap_macro_events_json = json.dumps(swap_events) if swap_events else None
     # Encoded even when empty: "the operator ticked nothing" and "no selection
     # was ever made" are the same to the trigger, but only the caller can tell
     # them apart, so the caller's answer is stored verbatim.
@@ -621,13 +617,12 @@ def _new_rows_for_data(
     source_snapshot: dict | None,
     requirements,
     printer_id: int | None,
-    printer_swap_on: bool,
+    swap_columns: tuple[bool, list[str] | None],
     effective_project_id: int | None,
     project_line_id: int | None,
     current_user: User | None,
     archive_id: int | None,
     library_file_id: int | None,
-    source_has_baked_macros: bool,
 ) -> list[PrintQueueItem]:
     """Build one requested plate's rows without assigning their queue position."""
     routing = (
@@ -642,10 +637,9 @@ def _new_rows_for_data(
         if requirements
         else None
     )
-    execute_swap_macros = bool(data.execute_swap_macros) and printer_swap_on and not source_has_baked_macros
-    swap_macro_events_json = (
-        json.dumps(data.swap_macro_events) if execute_swap_macros and data.swap_macro_events else None
-    )
+    # Decided before the publication by ``swap_request`` (swap-source-lifecycle spec r4 §8).
+    execute_swap_macros, swap_events = swap_columns
+    swap_macro_events_json = json.dumps(swap_events) if swap_events else None
     batch_id = str(uuid.uuid4()) if data.quantity > 1 else None
     return [
         PrintQueueItem(
@@ -805,7 +799,7 @@ async def add_next_block_to_printer_queue(
     await db.commit()
     staged = await capture_staged(plan_capture(archive=archive, library_file=library_file))
     try:
-        resolved: list[tuple[PrintQueueItemCreate, object, int | None]] = []
+        resolved: list[tuple[PrintQueueItemCreate, object, int | None, tuple[bool, list[str] | None]]] = []
         for data, effective_project_id in zip(data_items, effective_project_ids, strict=True):
             requirements = await staged_requirements(
                 staged, PrintRequirementsCache(), archive, library_file, data.plate_id, allow_raw_gcode=True
@@ -816,14 +810,20 @@ async def add_next_block_to_printer_queue(
                     raise HTTPException(422, routing_detail("override_slot_not_used"))
                 data = data.model_copy(update={"plate_id": requirements.resolved_plate_id})
                 await _check_captured_model(db, queue.printer_id, requirements.model)
-            resolved.append((data, requirements, effective_project_id))
+            swap_columns = swap_request(
+                staged.receipt.swap_fact.value,
+                execute=data.execute_swap_macros,
+                events=data.swap_macro_events,
+                printer_swap_mode=printer_swap_on,
+            )
+            resolved.append((data, requirements, effective_project_id, swap_columns))
 
         created_ids: list[int] = []
 
         async def attach(session: AsyncSession, source: QueueSource) -> None:
             async with queue_scope_lock(session, first.queue_id):
                 rows: list[PrintQueueItem] = []
-                for data, requirements, effective_project_id in resolved:
+                for data, requirements, effective_project_id, swap_columns in resolved:
                     project_line_id = data.project_line_id
                     if project_line_id is None and effective_project_id is not None:
                         project_line_id = await resolve_line_id(
@@ -839,16 +839,12 @@ async def add_next_block_to_printer_queue(
                             source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
                             requirements=requirements,
                             printer_id=printer_id,
-                            printer_swap_on=printer_swap_on,
+                            swap_columns=swap_columns,
                             effective_project_id=effective_project_id,
                             project_line_id=project_line_id,
                             current_user=current_user,
                             archive_id=data.archive_id,
                             library_file_id=data.library_file_id,
-                            source_has_baked_macros=bool(
-                                (archive and getattr(archive, "swap_compatible", False))
-                                or (library_file and getattr(library_file, "swap_compatible", False))
-                            ),
                         )
                     )
                 await place_pending_block(session, first.queue_id, rows, enqueue_position="next")
@@ -944,13 +940,25 @@ async def _add_next_block_from_queue_source(
         raise HTTPException(422, routing_detail("source_unreadable")) from exc
 
     copied_snapshot = await snapshot_for_copy(db, source_item)
+    # The parent's own declaration decides each requested plate's swap fields, before anything is written.
+    swap_columns_for = [
+        swap_request(
+            descriptor.swap_fact.value,
+            execute=data.execute_swap_macros,
+            events=data.swap_macro_events,
+            printer_swap_mode=bool(queue.printer and queue.printer.swap_mode_enabled),
+        )
+        for data, _requirements, _project in resolved
+    ]
     created_ids: list[int] = []
     try:
         async with reusing_sources(db, [descriptor.queue_source_id]) as sources:
             source = sources[descriptor.queue_source_id]
             async with queue_scope_lock(db, first.queue_id):
                 rows: list[PrintQueueItem] = []
-                for data, requirements, effective_project_id in resolved:
+                for (data, requirements, effective_project_id), swap_columns in zip(
+                    resolved, swap_columns_for, strict=True
+                ):
                     project_line_id = data.project_line_id
                     if project_line_id is None and effective_project_id is not None:
                         project_line_id = await resolve_line_id(
@@ -966,13 +974,12 @@ async def _add_next_block_from_queue_source(
                             source_snapshot=copied_snapshot,
                             requirements=requirements,
                             printer_id=queue.printer_id,
-                            printer_swap_on=bool(queue.printer and queue.printer.swap_mode_enabled),
+                            swap_columns=swap_columns,
                             effective_project_id=effective_project_id,
                             project_line_id=project_line_id,
                             current_user=current_user,
                             archive_id=source_item.archive_id,
                             library_file_id=source_item.library_file_id,
-                            source_has_baked_macros=(".swap." in filename.lower() or ".swaps." in filename.lower()),
                         )
                     )
                 await place_pending_block(db, first.queue_id, rows, enqueue_position="next")

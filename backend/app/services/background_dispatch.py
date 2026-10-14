@@ -756,6 +756,10 @@ class PrintDispatchJob:
     #: ``finally`` reports failures inside its ``try`` and ``_run_active_job``
     #: reports the ones raised before it — one failure, one message.
     failure_reported: bool = False
+    #: What our swap-start macro really did on this attempt: ``not_called``, ``possibly_fired`` (sent, not
+    #: confirmed) or ``fired``. The watchdog and the operator's texts read this, never the requested events
+    #: (swap-source-lifecycle spec r4 §8): a muted or refused start did not happen.
+    swap_start_effect: str = "not_called"
 
 
 async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
@@ -1237,7 +1241,7 @@ class BackgroundDispatchService:
             await ws_manager.broadcast({"type": "background_dispatch", "data": done_payload})
 
         job.completion_event.set()
-        return dict(job.outcome)
+        return {**job.outcome, "swap_start_effect": job.swap_start_effect}
 
     async def dispatch_print_library_file(
         self,
@@ -1402,8 +1406,24 @@ class BackgroundDispatchService:
 
         async with async_session() as prep_db:
             capture_plan = await direct_print_capture_plan(prep_db, kind=kind, source_id=source_id)
+            printer_row = await prep_db.get(Printer, printer_id)
+            printer_swap_on = bool(printer_row is not None and printer_row.swap_mode_enabled)
         staged = await capture_staged(capture_plan)
         try:
+            from backend.app.services.queue_source_capture import swap_request
+
+            # The swap fields this print may honour, from the declaration the copy
+            # confirmed (swap-source-lifecycle spec r4 §8) -- written into ``options``
+            # itself, which the claim row and the job both carry. An unknown source
+            # asked for our macros is refused here, before the printer is claimed.
+            execute, events = swap_request(
+                staged.receipt.swap_fact.value,
+                execute=options.get("execute_swap_macros"),
+                events=options.get("swap_macro_events"),
+                printer_swap_mode=printer_swap_on,
+            )
+            options["execute_swap_macros"] = execute
+            options["swap_macro_events"] = events
             return await self._enqueue_claimed_job(
                 kind=kind,
                 source_id=source_id,
@@ -2013,6 +2033,34 @@ class BackgroundDispatchService:
         await self._anchor_routing_to_copy(job, staged)
 
     @staticmethod
+    async def _apply_swap_source_policy(db, job) -> None:
+        """The one runtime decision on OUR swap macros for this attempt (swap-source-lifecycle spec r4 §8).
+
+        Taken once the claim, the routing and the copy are settled and before any archive, preheat or macro, from
+        the job's own declaration: True mutes ours, False keeps exactly what was asked under the printer's swap
+        mode, and an unknown source with an effective request is refused before dispatch (D2). ``job.options`` is
+        rewritten IN PLACE, so the execution archive's pending events, the swap-start step and the config
+        ``on_print_complete`` reads all see this answer and nothing else; selected macros, order options and
+        auto-eject are not touched.
+        """
+        from backend.app.services import swap_compatibility
+        from backend.app.services.filament_deferred import SwapSourceRefused
+
+        options = job.options
+        printer = await db.get(Printer, job.printer_id)
+        fact = job.source.swap_fact.value if job.source is not None else None
+        decision = swap_compatibility.decide(
+            fact,
+            execute=options.get("execute_swap_macros"),
+            events=options.get("swap_macro_events"),
+            printer_swap_mode=bool(printer is not None and printer.swap_mode_enabled),
+        )
+        if decision.refused:
+            raise SwapSourceRefused(decision.reason)
+        options["execute_swap_macros"] = decision.execute
+        options["swap_macro_events"] = list(decision.events) if decision.execute else []
+
+    @staticmethod
     async def _anchor_routing_to_copy(job, staged) -> None:
         """Make the routing guard ask about the COPY from now on, never the original.
 
@@ -2175,6 +2223,7 @@ class BackgroundDispatchService:
             # to release the claim. ``pins`` holds the blob for the whole runner.
             await self._prepare_filament_routing(db, job, pins)
             await self._capture_descriptorless_source(db, job, pins)
+            await self._apply_swap_source_policy(db, job)
             # ⚠️ The source archive is provenance now, not the bytes: a job with a
             # snapshot prints the copy it took, and the row it was taken from may
             # have been purged since (spec §7). Only a job with neither is broken.
@@ -2884,9 +2933,14 @@ class BackgroundDispatchService:
             return
 
         await self._set_active_message(job, status_message, phase="swapping")
+        if event == "swap_mode_start":
+            # From the moment the command may leave, it may have happened.
+            job.swap_start_effect = "possibly_fired"
         success, msg = await printer_manager.execute_macro_and_wait(job.printer_id, macro.gcode, macro.name)
         if not success:
             raise RuntimeError(f"Swap macro '{macro.name}' failed: {msg}")
+        if event == "swap_mode_start":
+            job.swap_start_effect = "fired"
 
     async def _run_print_library_file(self, job: PrintDispatchJob):
         from backend.app.main import register_expected_print, withdraw_expected_print
@@ -2899,6 +2953,7 @@ class BackgroundDispatchService:
         async with AsyncExitStack() as pins, async_session() as db:
             await self._prepare_filament_routing(db, job, pins)
             await self._capture_descriptorless_source(db, job, pins)
+            await self._apply_swap_source_policy(db, job)
             # ⚠️ The library row is provenance now, not the bytes (spec §7): the
             # file this job prints was copied into the spool when it was queued,
             # and the row may have been trashed since — which is exactly the case

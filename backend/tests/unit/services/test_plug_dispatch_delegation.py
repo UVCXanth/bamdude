@@ -12,6 +12,7 @@ Both feed per-print energy, which is why this is the same failure mode phase 0
 had to fix: the accounting comes out wrong rather than absent.
 """
 
+from contextlib import asynccontextmanager as _asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -56,6 +57,11 @@ async def test_main_energy_path_asks_the_resolver():
     resolver.assert_awaited_once()
     driver.get_energy.assert_awaited_once()
     assert result == {"total": 1.5}
+
+
+@_asynccontextmanager
+async def _no_scope(db, archive_id, **kwargs):
+    yield
 
 
 class TestTheEndOfAPrintAsksThePlugItself:
@@ -143,6 +149,13 @@ class TestTheEndOfAPrintAsksThePlugItself:
             patch.object(main, "_get_plug_energy", fake_energy),
             patch.object(main.smart_plug_manager, "record_energy_snapshot", AsyncMock()),
             patch("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="0.20")),
+            # The figure is written under the archive's own write scope, from a fresh read
+            # (swap-source-lifecycle spec r4 §7): the fake session stands in for both.
+            patch("backend.app.services.archive_write_scope.archive_write_scope", _no_scope),
+            patch(
+                "backend.app.services.archive_write_scope.load_active_archive_for_write",
+                AsyncMock(side_effect=lambda db, archive_id: db.get.return_value),
+            ),
         ):
             await main._record_print_energy(archive_id=7, printer_id=3)
 
@@ -177,6 +190,13 @@ class TestTheEndOfAPrintAsksThePlugItself:
             patch.object(main, "_get_plug_energy", fake_energy),
             patch.object(main.smart_plug_manager, "record_energy_snapshot", AsyncMock()),
             patch("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="0.20")),
+            # The figure is written under the archive's own write scope, from a fresh read
+            # (swap-source-lifecycle spec r4 §7): the fake session stands in for both.
+            patch("backend.app.services.archive_write_scope.archive_write_scope", _no_scope),
+            patch(
+                "backend.app.services.archive_write_scope.load_active_archive_for_write",
+                AsyncMock(side_effect=lambda db, archive_id: db.get.return_value),
+            ),
         ):
             await main._record_print_energy(archive_id=7, printer_id=3, approximate=True)
 
@@ -206,6 +226,13 @@ class TestTheEndOfAPrintAsksThePlugItself:
             patch.object(main, "_get_plug_energy", fake_energy),
             patch.object(main.smart_plug_manager, "record_energy_snapshot", AsyncMock()),
             patch("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="0.20")),
+            # The figure is written under the archive's own write scope, from a fresh read
+            # (swap-source-lifecycle spec r4 §7): the fake session stands in for both.
+            patch("backend.app.services.archive_write_scope.archive_write_scope", _no_scope),
+            patch(
+                "backend.app.services.archive_write_scope.load_active_archive_for_write",
+                AsyncMock(side_effect=lambda db, archive_id: db.get.return_value),
+            ),
         ):
             await main._record_print_energy(archive_id=7, printer_id=3)
 

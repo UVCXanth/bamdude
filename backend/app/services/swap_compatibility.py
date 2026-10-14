@@ -367,6 +367,25 @@ def decide(fact: Any, *, execute: Any, events: Any, printer_swap_mode: bool) -> 
     return SwapDecision(False, None)
 
 
+class SwapRequestRefused(ValueError):
+    """D2: our swap macros were asked for a source whose declaration is unknown."""
+
+    def __init__(self, reason: str = UNKNOWN_SOURCE_REASON):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def resolve_request(fact: Any, *, execute: Any, events: Any, printer_swap_mode: bool) -> tuple[bool, list[str] | None]:
+    """What a NEW job stores of a request for our swap macros: ``(execute, events)``, or :class:`SwapRequestRefused`.
+
+    The stored fields say what will run -- never a request the job cannot honour (§8).
+    """
+    decision = decide(fact, execute=execute, events=events, printer_swap_mode=printer_swap_mode)
+    if decision.refused:
+        raise SwapRequestRefused(decision.reason)
+    return decision.execute, (list(decision.events) if decision.execute else None)
+
+
 def project(value: Any) -> tuple[bool, bool]:
     """The wire projection: ``(swap_compatible, swap_compatibility_known)``. The bool keeps its old meaning."""
     known = _strict_fact(value)

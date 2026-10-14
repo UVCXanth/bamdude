@@ -2920,7 +2920,9 @@ class PrintScheduler:
                         printer_id,
                         _pre_state,
                         _pre_subtask_id,
-                        swap_start_fired="swap_mode_start" in swap_events,
+                        # What the swap start DID on this attempt, not what the row asked for: the
+                        # dispatcher may have muted or refused it (swap-source-lifecycle spec r4 §8).
+                        swap_start_fired=outcome.get("swap_start_effect") in ("fired", "possibly_fired"),
                         pre_gcode_file=_pre_gcode_file,
                     ),
                     name=f"watchdog-print-start-{queue_item_id}",

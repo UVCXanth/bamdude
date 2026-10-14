@@ -32,6 +32,17 @@ class SourceCaptureDeferred(RoutingDeferred):
         self.disposition = disposition
 
 
+class SwapSourceRefused(SourceCaptureDeferred):
+    """D2 of the swap-source-lifecycle spec: our swap macros were asked for a source whose declaration is unknown.
+
+    Failed before dispatch, like a refused copy -- ``gate_acknowledged``, no waiting reason, the job's events kept
+    -- and never a silent strip of what the operator asked for.
+    """
+
+    def __init__(self, reason: str):
+        super().__init__(reason, disposition=DISPOSITION_FAILED)
+
+
 def capture_refusal(exc: QueueSourceError, *, queued: bool) -> SourceCaptureDeferred:
     """The class of the refusal decides, never its text or an HTTP status (§6's table).
 
