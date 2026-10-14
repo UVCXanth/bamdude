@@ -27,6 +27,7 @@ import re
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 #: The reserved ``PrintArchive.extra_data`` key holding the record. Parsed 3MF metadata never writes it.
@@ -147,6 +148,48 @@ def public_extra_data(extra: Mapping | None) -> dict | None:
     if extra is None:
         return None
     return strip_reserved(extra) if isinstance(extra, Mapping) else extra
+
+
+# --- git backup (§11) -----------------------------------------------------------------------------------------------
+
+#: The projection's key in a backed-up archive entry; the record travels under :data:`CARRIER_KEY`.
+BACKUP_PROJECTION_KEY = "swap_compatible"
+
+
+def backup_fields(archive) -> dict:
+    """What a git backup carries of an archive's declaration: the projection, and the record when there is one.
+
+    Nothing else of ``extra_data`` -- no dispatch or pending authority travels with the metadata.
+    """
+    column = getattr(archive, "swap_compatible", None)
+    fields = {BACKUP_PROJECTION_KEY: column if type(column) is bool else False}
+    extra = getattr(archive, "extra_data", None)
+    if isinstance(extra, Mapping) and CARRIER_KEY in extra:
+        fields[CARRIER_KEY] = deepcopy(extra[CARRIER_KEY])
+    return fields
+
+
+def restored_declaration(entry: Mapping, existing=None) -> tuple[bool, bool | None]:
+    """``(write, value)`` for the archive a backup entry restores -- ``existing`` is the local row it overwrites.
+
+    A record in the backup is read strictly against its projection: valid keeps its value, pending comes back
+    unknown and NOT pending (the backup proves no origin now), malformed or contradicted is unknown, and an
+    explicit null is unknown. A backup with no record says nothing: unknown on insert, the local row untouched on
+    overwrite -- except that an explicit strict True projection brings a legacy True across onto a row without a
+    record of its own.
+    """
+    if CARRIER_KEY in entry:
+        record = entry[CARRIER_KEY]
+        if record is None:
+            return True, None
+        probe = SimpleNamespace(swap_compatible=entry.get(BACKUP_PROJECTION_KEY), extra_data={CARRIER_KEY: record})
+        return True, archive_fact(probe).value
+    legacy_true = entry.get(BACKUP_PROJECTION_KEY) is True
+    if existing is None:
+        return True, True if legacy_true else None
+    if legacy_true and not archive_fact(existing).recorded:
+        return True, True
+    return False, None
 
 
 # --- library --------------------------------------------------------------------------------------------------------
