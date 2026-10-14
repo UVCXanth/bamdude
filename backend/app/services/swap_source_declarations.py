@@ -272,6 +272,29 @@ def _audit_line(**fields):
     return SwapSourceDeclarationAudit(**fields)
 
 
+def restored_audit(kind: str, source_id: int, record: dict):
+    """The audit line of a declaration a git restore brought in: it names the ORIGINAL declaration and its actor's
+    label, and no local user -- a restore is not a local operator's confirmation (§9)."""
+    return _audit_line(
+        operation_id=str(uuid.uuid4()),
+        action="restore",
+        source_kind=kind,
+        source_id=source_id,
+        sha256=record["sha256"],
+        old_value=None,
+        new_value=record["value"],
+        declaration_id=record["declaration_id"],
+        previous_declaration_id=None,
+        actor_id=None,
+        actor_label=record["actor_label"],
+        actor_kind="restored",
+        revision_before=None,
+        revision_after=None,
+        request_digest=None,
+        created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+    )
+
+
 def _replay(previous, row, *, kind: str, source_id: int, digest: str, actor: Actor) -> dict:
     """An operation id already used: the same request by the same actor, whose declaration still stands, answers
     its first result; anything else is a conflict. The caller has already passed the source's gate."""

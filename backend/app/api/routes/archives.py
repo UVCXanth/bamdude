@@ -241,6 +241,8 @@ def archive_to_response(
         # The declaration through its reader: a legacy False and a malformed
         # record are unknown, never the column's False (spec r4 §9).
         **swap_compatibility.wire_fields(swap_compatibility.archive_fact(archive).value),
+        # ...and what a FUTURE reprint reads of its source, never mixed into the run's pair (T9 spec r3 §7).
+        **swap_compatibility.source_wire_fields(archive),
         # Queue attribution (m019) + verbose error_message twin for failures.
         "queue_id": archive.queue_id,
         "batch_id": archive.batch_id,

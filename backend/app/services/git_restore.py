@@ -1197,6 +1197,7 @@ class GitRestoreService:
                 write, declared = swap_compatibility.restored_declaration(entry, existing)
                 if write:
                     swap_compatibility.write_archive_fact(existing, declared)
+                await self._restore_source_declaration(db, entry, existing, tally)
                 tally.restored += 1
                 continue
 
@@ -1240,9 +1241,30 @@ class GitRestoreService:
                 row.created_at = created_at
             db.add(row)
             await db.flush()
+            await self._restore_source_declaration(db, entry, row, tally)
             if old_id is not None:
                 id_map[old_id] = row.id
             tally.restored += 1
+
+    async def _restore_source_declaration(self, db: AsyncSession, entry: dict, archive, tally) -> None:
+        """The source's declaration for a future reprint (swap-source-declaration spec r3 §9): a restored record
+        with its audit line, or a tombstone the reader answers unknown; nothing at all when the backup has no field.
+        """
+        from backend.app.services.swap_source_declarations import restored_audit
+
+        write, record = swap_compatibility.restored_source_declaration(entry, archive)
+        if not write:
+            return
+        swap_compatibility.restore_source_declaration(archive, record)
+        if record == swap_compatibility.INVALID_DECLARATION:
+            tally.note(
+                "archivesSwapDeclarationUnreadable",
+                "Some archives' swap declarations in the backup could not be read — those sources are unknown "
+                "until declared again",
+            )
+            return
+        await db.flush()
+        db.add(restored_audit("archive", archive.id, record))
 
     async def _find_archive(self, db: AsyncSession, entry: dict, started_at: datetime | None) -> PrintArchive | None:
         """Match a backed-up archive to a local row by natural key.

@@ -40,12 +40,23 @@ const UNKNOWN: Fact = { swap_compatible: false, swap_compatibility_known: false 
 
 let posted: Array<Record<string, unknown>>;
 
+/** An archive answers its executed run's pair AND its source's (spec r3 §7); a reprint reads the source's. */
+function archiveAnswer(source: Fact, run: Fact = source) {
+  return {
+    ...run,
+    source_swap_compatible: source.swap_compatible,
+    source_swap_compatibility_known: source.swap_compatibility_known,
+  };
+}
+
 function sources({
   archive,
+  archiveRun,
   library,
   copy,
 }: {
   archive?: Fact | 'error' | 'slow';
+  archiveRun?: Fact;
   library?: Fact | 'error';
   copy?: Fact | 'error';
 }) {
@@ -54,9 +65,14 @@ function sources({
       if (archive === 'error') return HttpResponse.json({ detail: 'boom' }, { status: 500 });
       if (archive === 'slow') {
         await delay(300);
-        return HttpResponse.json({ id: 1, filename: 'a.3mf', sliced_for_model: null, ...TRUE });
+        return HttpResponse.json({ id: 1, filename: 'a.3mf', sliced_for_model: null, ...archiveAnswer(TRUE) });
       }
-      return HttpResponse.json({ id: 1, filename: 'a.3mf', sliced_for_model: null, ...(archive ?? FALSE) });
+      return HttpResponse.json({
+        id: 1,
+        filename: 'a.3mf',
+        sliced_for_model: null,
+        ...archiveAnswer(archive ?? FALSE, archiveRun),
+      });
     }),
     http.get('/api/v1/library/files/:id', () => {
       if (library === 'error') return HttpResponse.json({ detail: 'boom' }, { status: 500 });
@@ -126,6 +142,129 @@ async function submit() {
 }
 
 describe('the swap declaration of the source being printed', () => {
+  it("an archive is reprinted by its SOURCE's declaration, never by what its run was", async () => {
+    sources({ archive: UNKNOWN, archiveRun: TRUE });
+    addToQueue({ archiveId: 1 });
+
+    expect(await screen.findByText(/swap compatibility of this source is unknown/i)).toBeInTheDocument();
+  });
+
+  it('a saved declaration is read again by the open dialog, and the saved swap settings stay as they were', async () => {
+    let declared = false;
+    let preferenceWrites = 0;
+    server.use(
+      http.get('/api/v1/archives/:id', () =>
+        HttpResponse.json({ id: 1, filename: 'a.3mf', sliced_for_model: null, ...archiveAnswer(declared ? TRUE : UNKNOWN) }),
+      ),
+      http.put('/api/v1/print-option-preferences/:model', () => {
+        preferenceWrites += 1;
+        return HttpResponse.json({});
+      }),
+      http.post('/api/v1/archives/:id/swap-declaration/inspect', () =>
+        HttpResponse.json({
+          kind: 'archive',
+          id: 1,
+          sha256: 'ab'.repeat(32),
+          size_bytes: 10,
+          display_filename: 'a.3mf',
+          current: null,
+          known: false,
+          revision: 'cd'.repeat(32),
+          origin: null,
+          declaration_id: null,
+        }),
+      ),
+      http.put('/api/v1/archives/:id/swap-declaration', () => {
+        declared = true;
+        return HttpResponse.json({
+          kind: 'archive',
+          id: 1,
+          declaration_id: '1b4e28ba-2fa1-41d2-883f-0016d3cca427',
+          value: true,
+          sha256: 'ab'.repeat(32),
+          revision: 'ef'.repeat(32),
+          replayed: false,
+        });
+      }),
+      http.get('/api/v1/archives/:id/swap-declaration/history', () => HttpResponse.json([])),
+      http.get('/api/v1/archives/:id/swap-declaration/jobs', () =>
+        HttpResponse.json({
+          kind: 'archive',
+          id: 1,
+          declaration_id: '1b4e28ba-2fa1-41d2-883f-0016d3cca427',
+          value: true,
+          sha256: 'ab'.repeat(32),
+          source_revision: 'ef'.repeat(32),
+          jobs: [],
+          counts: { eligible: 0, refused: 0 },
+        }),
+      ),
+    );
+    addToQueue({ archiveId: 1 });
+
+    fireEvent.click(await screen.findByRole('button', { name: /declare this source/i }));
+    fireEvent.click(await screen.findByRole('radio', { name: /carries its own plate-change sequence/i }));
+    fireEvent.click(screen.getByRole('button', { name: /save declaration/i }));
+    await screen.findByText(/declaration saved/i);
+
+    await waitFor(() => expect(screen.queryByText(/swap compatibility of this source is unknown/i)).toBeNull());
+    expect(preferenceWrites).toBe(0);
+  });
+
+  it('Escape closes the declaration dialog alone, and the print dialog stays', async () => {
+    sources({ archive: UNKNOWN });
+    server.use(
+      http.post('/api/v1/archives/:id/swap-declaration/inspect', () =>
+        HttpResponse.json({
+          kind: 'archive',
+          id: 1,
+          sha256: 'ab'.repeat(32),
+          size_bytes: 10,
+          display_filename: 'a.3mf',
+          current: null,
+          known: false,
+          revision: 'cd'.repeat(32),
+          origin: null,
+          declaration_id: null,
+        }),
+      ),
+    );
+    addToQueue({ archiveId: 1 });
+    fireEvent.click(await screen.findByRole('button', { name: /declare this source/i }));
+    await screen.findByRole('dialog', { name: /swap declaration/i });
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /swap declaration/i })).toBeNull());
+    expect(await submitButton()).toBeInTheDocument();
+  });
+
+  it('the unknown notice offers to declare the source, in its own dialog', async () => {
+    sources({ archive: UNKNOWN });
+    server.use(
+      http.post('/api/v1/archives/:id/swap-declaration/inspect', () =>
+        HttpResponse.json({
+          kind: 'archive',
+          id: 1,
+          sha256: 'ab'.repeat(32),
+          size_bytes: 10,
+          display_filename: 'a.3mf',
+          current: null,
+          known: false,
+          revision: 'cd'.repeat(32),
+          origin: null,
+          declaration_id: null,
+        }),
+      ),
+    );
+    addToQueue({ archiveId: 1 });
+
+    fireEvent.click(await screen.findByRole('button', { name: /declare this source/i }));
+
+    expect(await screen.findByRole('dialog', { name: /swap declaration/i })).toBeInTheDocument();
+    expect(await screen.findByRole('radio', { name: /carries its own plate-change sequence/i })).not.toBeChecked();
+  });
+
   it('True: our swap macros are not added and their panel stays shut', async () => {
     sources({ archive: TRUE });
     addToQueue({ archiveId: 1 });

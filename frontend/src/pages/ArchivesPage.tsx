@@ -60,6 +60,7 @@ import {
   DownloadCloud,
   Cog,
   Archive as ArchiveIcon,
+  ShieldCheck,
 } from 'lucide-react';
 import { SelectionBox } from '../components/SelectionBox';
 import { MakerWorldIcon } from '../components/BrandIcons';
@@ -90,6 +91,7 @@ import { EditArchiveModal } from '../components/EditArchiveModal';
 import { No3MFBanner } from '../components/No3MFBanner';
 import { SaveArchiveToLibraryModal } from '../components/SaveArchiveToLibraryModal';
 import { ContextMenu, type ContextMenuItem } from '../components/ContextMenu';
+import { SwapDeclarationModal } from '../components/SwapDeclarationModal';
 import { BatchTagModal } from '../components/BatchTagModal';
 import { BatchAssignOrderModal } from '../components/projects/BatchAssignOrderModal';
 import { CalendarView } from '../components/CalendarView';
@@ -227,6 +229,7 @@ function ArchiveCard({
   const [showViewer, setShowViewer] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
   const [showSaveToLibrary, setShowSaveToLibrary] = useState(false);
+  const [showSwapDeclaration, setShowSwapDeclaration] = useState(false);
   const [showSlice, setShowSlice] = useState(false);
   const [showPlateObjects, setShowPlateObjects] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -480,6 +483,18 @@ function ArchiveCard({
           ? t('archives.card.noFileForReprint')
           : !hasPermission('library:upload')
             ? t('archives.permission.noSaveToLibrary')
+            : undefined,
+      },
+      {
+        // What a FUTURE reprint of this source may assume about its plate-change sequence (spec r3 §7).
+        label: t('swapDeclaration.menu'),
+        icon: <ShieldCheck className="w-4 h-4" />,
+        onClick: () => setShowSwapDeclaration(true),
+        disabled: !archive.file_path || !canModify('archives', 'update', archive.created_by_id),
+        title: !archive.file_path
+          ? t('archives.card.noFileForReprint')
+          : !canModify('archives', 'update', archive.created_by_id)
+            ? t('archives.permission.noUpdateArchives')
             : undefined,
       },
     ] : [
@@ -1337,6 +1352,16 @@ function ArchiveCard({
         onClose={() => setShowSaveToLibrary(false)}
       />
 
+      {showSwapDeclaration && (
+        <SwapDeclarationModal
+          kind="archive"
+          id={archive.id}
+          name={archive.print_name || archive.filename}
+          canDeclare={canModify('archives', 'update', archive.created_by_id)}
+          onClose={() => setShowSwapDeclaration(false)}
+        />
+      )}
+
       {showReprint && (
         <PrintModal
           mode="reprint"
@@ -1692,6 +1717,7 @@ function ArchiveListRow({
   const [showPlateObjects, setShowPlateObjects] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
   const [showSaveToLibrary, setShowSaveToLibrary] = useState(false);
+  const [showSwapDeclaration, setShowSwapDeclaration] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [showSlice, setShowSlice] = useState(false);
   const [showViewer, setShowViewer] = useState(false);
@@ -1898,6 +1924,18 @@ function ArchiveListRow({
           ? t('archives.card.noFileForReprint')
           : !hasPermission('library:upload')
             ? t('archives.permission.noSaveToLibrary')
+            : undefined,
+      },
+      {
+        // What a FUTURE reprint of this source may assume about its plate-change sequence (spec r3 §7).
+        label: t('swapDeclaration.menu'),
+        icon: <ShieldCheck className="w-4 h-4" />,
+        onClick: () => setShowSwapDeclaration(true),
+        disabled: !archive.file_path || !canModify('archives', 'update', archive.created_by_id),
+        title: !archive.file_path
+          ? t('archives.card.noFileForReprint')
+          : !canModify('archives', 'update', archive.created_by_id)
+            ? t('archives.permission.noUpdateArchives')
             : undefined,
       },
     ] : [
@@ -2496,6 +2534,16 @@ function ArchiveListRow({
         isOpen={showSaveToLibrary}
         onClose={() => setShowSaveToLibrary(false)}
       />
+
+      {showSwapDeclaration && (
+        <SwapDeclarationModal
+          kind="archive"
+          id={archive.id}
+          name={archive.print_name || archive.filename}
+          canDeclare={canModify('archives', 'update', archive.created_by_id)}
+          onClose={() => setShowSwapDeclaration(false)}
+        />
+      )}
 
       {showReprint && (
         <PrintModal

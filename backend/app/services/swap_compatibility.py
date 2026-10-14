@@ -168,6 +168,10 @@ def backup_fields(archive) -> dict:
     extra = getattr(archive, "extra_data", None)
     if isinstance(extra, Mapping) and CARRIER_KEY in extra:
         fields[CARRIER_KEY] = deepcopy(extra[CARRIER_KEY])
+    # The source's declaration for a future reprint, portably (T9 spec r3 §9): present only when the row has one;
+    # one this version cannot read travels as an explicit null, which a restore turns into a tombstone.
+    if getattr(archive, "swap_source_declaration", None) is not None:
+        fields["swap_source_declaration"] = portable_declaration(archive)
     return fields
 
 
@@ -706,3 +710,68 @@ JOB_IDENTITY_COLUMN = "swap_declaration_identity"
 def job_identity(job) -> str | None:
     """The job's incarnation, read in this one place -- what a refresh's revision and a claim's basis compare."""
     return getattr(job, JOB_IDENTITY_COLUMN, None)
+
+
+# --- a source's declaration on the wire and in a git backup (T9 spec r3 §7, §9) -------------------------------------
+
+#: What travels of an operator's declaration, on the wire and in a backup: never the local user id -- on another
+#: farm it names someone else, and here it is nobody's business.
+PORTABLE_FIELDS = ("version", "value", "sha256", "origin", "declaration_id", "declared_at", "actor_label", "actor_kind")
+
+
+def portable_declaration(row) -> dict | None:
+    """A source's current declaration without the local actor id, or ``None`` when there is none it can read."""
+    declaration = current_declaration(row)
+    if declaration is None:
+        return None
+    record = getattr(row, DECLARATION_COLUMN)
+    return {field: record[field] for field in PORTABLE_FIELDS if field in record}
+
+
+def source_wire_fields(archive) -> dict:
+    """The archive answer's SOURCE pair -- what a future reprint reads (the operator's declaration first) -- and
+    the declaration's metadata, beside the historical pair of the executed run; neither falls back to the other."""
+    fact, _expected = archive_source(archive)
+    swap, known = project(fact.value)
+    return {
+        "source_swap_compatible": swap,
+        "source_swap_compatibility_known": known,
+        "source_swap_declaration": portable_declaration(archive),
+    }
+
+
+def restored_source_declaration(entry: Mapping, existing=None) -> tuple[bool, dict | None]:
+    """``(write, record)`` for an archive's source declaration a git backup entry restores (§9).
+
+    No field in the backup says nothing: nothing on insert, the local declaration kept on overwrite. A portable
+    operator record that reads back becomes a RESTORED one -- its id, value, hash, time and actor label kept, no local
+    user id, ``actor_kind`` "restored" -- so a restore is never passed off as a local operator's confirmation. Anything
+    else -- an explicit null, a malformed or foreign payload -- is the tombstone: present, so no fallback opens, and
+    unreadable, so unknown."""
+    if DECLARATION_COLUMN not in entry:
+        return False, None
+    carried = entry[DECLARATION_COLUMN]
+    if isinstance(carried, Mapping) and set(carried) == set(PORTABLE_FIELDS) and carried.get("origin") == "operator":
+        record = {
+            "version": carried["version"],
+            "value": carried["value"],
+            "sha256": carried["sha256"],
+            "origin": "operator",
+            "declaration_id": carried["declaration_id"],
+            "declared_at": carried["declared_at"],
+            "actor_id": None,
+            "actor_label": carried["actor_label"],
+            "actor_kind": "restored",
+        }
+        if isinstance(read_declaration(record, origins=ARCHIVE_ORIGINS), Declaration):
+            return True, record
+    return True, dict(INVALID_DECLARATION)
+
+
+def restore_source_declaration(archive, record: dict) -> None:
+    """The restore's writer of an archive's source declaration: a restored record or the tombstone, nothing else."""
+    if record != INVALID_DECLARATION:
+        declaration = read_declaration(record, origins=ARCHIVE_ORIGINS)
+        if not isinstance(declaration, Declaration) or declaration.operator["actor_kind"] != "restored":
+            raise ValueError("not a restored declaration")
+    setattr(archive, DECLARATION_COLUMN, dict(record))

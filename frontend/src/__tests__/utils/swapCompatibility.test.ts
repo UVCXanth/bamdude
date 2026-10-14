@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { decodeSwapFact } from '../../utils/swapCompatibility';
+import { decodeSourceSwapFact, decodeSwapFact, newOperationId } from '../../utils/swapCompatibility';
 
 describe('decodeSwapFact', () => {
   it('reads a known declaration', () => {
@@ -39,5 +39,43 @@ describe('decodeSwapFact', () => {
   it('is unknown while there is no source answer', () => {
     expect(decodeSwapFact(undefined)).toBe('unknown');
     expect(decodeSwapFact(null)).toBe('unknown');
+  });
+});
+
+describe('decodeSourceSwapFact', () => {
+  it("reads the archive's SOURCE pair, never the run's", () => {
+    const archive = {
+      swap_compatible: true,
+      swap_compatibility_known: true,
+      source_swap_compatible: false,
+      source_swap_compatibility_known: true,
+    };
+    expect(decodeSourceSwapFact(archive)).toBe(false);
+  });
+
+  it('a missing or malformed source pair is unknown -- no legacy reading, no fallback to the run', () => {
+    expect(decodeSourceSwapFact({ swap_compatible: true, swap_compatibility_known: true })).toBe('unknown');
+    expect(decodeSourceSwapFact({ source_swap_compatible: true })).toBe('unknown');
+    expect(decodeSourceSwapFact({ source_swap_compatible: true, source_swap_compatibility_known: 'yes' })).toBe('unknown');
+    expect(decodeSourceSwapFact({ source_swap_compatible: true, source_swap_compatibility_known: false })).toBe('unknown');
+    expect(decodeSourceSwapFact(undefined)).toBe('unknown');
+  });
+});
+
+describe('newOperationId', () => {
+  it('is a version 4 UUID, fresh every time, even where crypto.randomUUID is missing', () => {
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    const saved = crypto.randomUUID;
+    try {
+      // A page served over plain HTTP on the LAN is no secure context: there is no randomUUID there.
+      Object.defineProperty(crypto, 'randomUUID', { value: undefined, configurable: true });
+      const first = newOperationId();
+      const second = newOperationId();
+      expect(first).toMatch(uuid);
+      expect(second).toMatch(uuid);
+      expect(first).not.toBe(second);
+    } finally {
+      Object.defineProperty(crypto, 'randomUUID', { value: saved, configurable: true });
+    }
   });
 });

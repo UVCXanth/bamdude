@@ -15,6 +15,7 @@ export function SwapSourceNotice({
   optedOut,
   onOptOut,
   onUndo,
+  onDeclare,
 }: {
   /** Our swap macros are on for a selected swap-mode printer. */
   requested: boolean;
@@ -22,6 +23,8 @@ export function SwapSourceNotice({
   optedOut: boolean;
   onOptOut: () => void;
   onUndo: () => void;
+  /** Open the source's swap declaration -- only for someone who may declare it. */
+  onDeclare?: () => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -31,6 +34,11 @@ export function SwapSourceNotice({
         <div className="space-y-1.5">
           <p className="text-sm text-white">{t('printModal.swapSourceUnknownTitle')}</p>
           <p className="text-bambu-gray">{t('printModal.swapSourceUnknownDesc')}</p>
+          {onDeclare && (
+            <Button type="button" variant="secondary" size="sm" onClick={onDeclare}>
+              {t('printModal.swapSourceDeclare')}
+            </Button>
+          )}
           {optedOut ? (
             <>
               <p className="text-bambu-gray">{t('printModal.swapSourceOptedOut')}</p>

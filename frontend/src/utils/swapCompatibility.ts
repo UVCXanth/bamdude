@@ -27,3 +27,37 @@ export function decodeSwapFact(source: SwapFactWire | null | undefined): SwapFac
   if (known !== true) return 'unknown';
   return declared;
 }
+
+/** The SOURCE pair an archive answers beside its run's (swap-source-declaration spec r3 §7). */
+export interface SourceSwapFactWire {
+  source_swap_compatible?: unknown;
+  source_swap_compatibility_known?: unknown;
+}
+
+/**
+ * What a future reprint of an archive reads: its SOURCE pair, never the executed run's. A missing or
+ * malformed pair is unknown -- there is no legacy reading of a field that never existed without its
+ * known flag, and no fallback to the run's pair.
+ */
+export function decodeSourceSwapFact(archive: (SourceSwapFactWire & SwapFactWire) | null | undefined): SwapFact {
+  if (!archive || typeof archive !== 'object') return 'unknown';
+  if (typeof archive.source_swap_compatibility_known !== 'boolean') return 'unknown';
+  return decodeSwapFact({
+    swap_compatible: archive.source_swap_compatible,
+    swap_compatibility_known: archive.source_swap_compatibility_known,
+  });
+}
+
+/**
+ * A fresh version 4 UUID for one declaration or refresh attempt. Built on `getRandomValues`, which
+ * every browser has: `crypto.randomUUID` exists only in a secure context, and a farm reached over
+ * plain HTTP on the LAN is not one.
+ */
+export function newOperationId(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}

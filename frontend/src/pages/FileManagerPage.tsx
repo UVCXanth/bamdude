@@ -64,6 +64,7 @@ import {
   Tag as TagIcon,
   ClipboardList,
   FolderKanban,
+  ShieldCheck,
 } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type {
@@ -77,6 +78,7 @@ import type {
 } from '../api/client';
 import { useLibraryScanProgress, type LibraryScanState } from '../hooks/useLibraryScanProgress';
 import { Button } from '../components/Button';
+import { SwapDeclarationModal } from '../components/SwapDeclarationModal';
 import { ListViewToggle } from '../components/ListViewToggle';
 import { usePersistedState, parseLibraryView, type LibraryView } from '../hooks/usePersistedState';
 import { Select } from '../components/Select';
@@ -734,6 +736,7 @@ interface FileCardProps {
   desktopSlicer?: SlicerType;
   onPreview3d?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
+  onSwapDeclaration?: (file: LibraryFileListItem) => void;
   onLink?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
   onPlateGallery?: (file: LibraryFileListItem, plateIndex?: number) => void;
@@ -805,7 +808,7 @@ function offersSliceEntry(
   return desktopSlicerAccepts(file.file_type, desktopSlicer ?? 'bambu_studio');
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onAddToOrder, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onAddToOrder, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onDownload, onRename, onSwapDeclaration, onGenerateThumbnail, onMove, onTags, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
@@ -821,6 +824,8 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onModelCard?: (f: LibraryFileListItem) => void;
   onDownload: (id: number) => void;
   onRename: (f: LibraryFileListItem) => void;
+  /** The file's swap declaration for future prints (swap-source-declaration spec r3 §7). */
+  onSwapDeclaration?: (f: LibraryFileListItem) => void;
   onGenerateThumbnail: (f: LibraryFileListItem) => void;
   onMove?: (f: LibraryFileListItem) => void;
   onTags?: (f: LibraryFileListItem, anchor: TagsPopoverAnchor) => void;
@@ -991,6 +996,16 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
               <Pencil className="w-3.5 h-3.5" />
               {t('common.rename')}
             </button>
+            {onSwapDeclaration && (
+              <button
+                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
+                onClick={() => { if (canModify('library', 'update', file.created_by_id)) { onSwapDeclaration(file); closeMenu(); } }}
+                disabled={!canModify('library', 'update', file.created_by_id)}
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                {t('swapDeclaration.menu')}
+              </button>
+            )}
             {/* Move and Tags — the two actions that used to exist only in the
                 multi-select toolbar, so moving one file meant ticking its
                 checkbox first. Same permission gate as Rename above, so a
@@ -1048,7 +1063,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onRename, onLink, onGenerateThumbnail, onPlateGallery, onAddToOrder, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onRename, onSwapDeclaration, onLink, onGenerateThumbnail, onPlateGallery, onAddToOrder, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   // ⚠️ The two modes need different permissions: slicing through the sidecar
   // writes a new library file, while opening in a desktop slicer is a download.
   const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
@@ -1477,6 +1492,18 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
                   {t('common.rename')}
                 </button>
               )}
+              {onSwapDeclaration && (
+                <button
+                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
+                    canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                  }`}
+                  onClick={() => { if (canModify('library', 'update', file.created_by_id)) { onSwapDeclaration(file); closeActions(); } }}
+                  disabled={!canModify('library', 'update', file.created_by_id)}
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  {t('swapDeclaration.menu')}
+                </button>
+              )}
               {/* Move and Tags — same pair as the list menu, same gate. */}
               {onMove && (
                 <button
@@ -1630,6 +1657,7 @@ export function FileManagerPage() {
   const [planFiles, setPlanFiles] = useState<number[] | null>(null);
   const [sliceFile, setSliceFile] = useState<LibraryFileListItem | null>(null);
   const [renameItem, setRenameItem] = useState<{ type: 'file' | 'folder'; id: number; name: string } | null>(null);
+  const [swapDeclarationFile, setSwapDeclarationFile] = useState<LibraryFileListItem | null>(null);
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
   const [viewerFile, setViewerFile] = useState<LibraryFileListItem | null>(null);
   // Per-plate gallery modal — opened from list-mode "plates" button. Null when closed.
@@ -2548,6 +2576,7 @@ export function FileManagerPage() {
       onPreview3d={setViewerFile}
       onModelCard={setModelCardFile}
       onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
+      onSwapDeclaration={setSwapDeclarationFile}
       onLink={setLinkFile}
       onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
       onPlateGallery={(f, plateIndex) => setGalleryTarget({ file: f, plateIndex })}
@@ -3769,6 +3798,7 @@ export function FileManagerPage() {
                         onModelCard={setModelCardFile}
                             onDownload={handleDownload}
                         onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
+                        onSwapDeclaration={setSwapDeclarationFile}
                         onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
                         onMove={setMoveFile}
                         onTags={(f, anchor) => setTagsPopover({ file: f, anchor })}
@@ -4102,6 +4132,16 @@ export function FileManagerPage() {
                 }
               : undefined
           }
+        />
+      )}
+
+      {swapDeclarationFile && (
+        <SwapDeclarationModal
+          kind="library"
+          id={swapDeclarationFile.id}
+          name={swapDeclarationFile.filename}
+          canDeclare={canModify('library', 'update', swapDeclarationFile.created_by_id)}
+          onClose={() => setSwapDeclarationFile(null)}
         />
       )}
 

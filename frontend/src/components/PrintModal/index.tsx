@@ -53,7 +53,8 @@ import { autoCalibrationCaps, isDualNozzleModel } from '../../utils/printerCapab
 import { ScheduleOptionsPanel } from './ScheduleOptions';
 import { SwapMacrosPanel } from './SwapMacros';
 import { SwapSourceNotice } from './SwapSourceNotice';
-import { decodeSwapFact, type SwapFact, type SwapFactWire } from '../../utils/swapCompatibility';
+import { decodeSourceSwapFact, decodeSwapFact, type SwapFact, type SwapFactWire } from '../../utils/swapCompatibility';
+import { SwapDeclarationModal } from '../SwapDeclarationModal';
 import { EventMacrosPanel } from './EventMacros';
 import type {
   FilamentReqsData,
@@ -141,7 +142,7 @@ export function PrintModal({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const { hasPermission } = useAuth();
+  const { hasPermission, canModify } = useAuth();
   const headingId = useId();
 
   const isSnapshotSource = sourceQueueItemId !== undefined;
@@ -751,17 +752,40 @@ export function PrintModal({
   // job its own copy source, a library file or an archive its live row. No OR
   // across caches — a disabled query still hands back what another source left
   // in the cache — and a read in flight or one that failed is unknown, never False.
-  const swapRead: { data: SwapFactWire | undefined; failed: boolean } = isSnapshotSource
-    ? { data: queueSourceProfile, failed: queueSourceProfileError }
+  // An archive answers for its SOURCE, the pair a future reprint reads — never the
+  // pair of the run it recorded (swap-source-declaration spec r3 §7).
+  const fromWire = (data: SwapFactWire | undefined, failed: boolean) => ({
+    fact: (failed ? 'unknown' : decodeSwapFact(data)) as SwapFact,
+    settled: failed || data !== undefined,
+  });
+  const swapRead: { fact: SwapFact; settled: boolean } = isSnapshotSource
+    ? fromWire(queueSourceProfile, queueSourceProfileError)
     : editedJobId !== undefined
-      ? { data: editedJobSource, failed: editedJobSourceError }
+      ? fromWire(editedJobSource, editedJobSourceError)
       : isLibraryFile
-        ? { data: libraryFileDetails, failed: libraryFileDetailsError }
+        ? fromWire(libraryFileDetails, libraryFileDetailsError)
         : isArchiveSource
-          ? { data: archiveDetails, failed: archiveDetailsError }
-          : { data: undefined, failed: true };
-  const swapFact: SwapFact = swapRead.failed ? 'unknown' : decodeSwapFact(swapRead.data);
-  const swapReadSettled = swapRead.failed || swapRead.data !== undefined;
+          ? {
+              fact: archiveDetailsError ? 'unknown' : decodeSourceSwapFact(archiveDetails),
+              settled: archiveDetailsError || archiveDetails !== undefined,
+            }
+          : { fact: 'unknown', settled: true };
+  const swapFact: SwapFact = swapRead.fact;
+  const swapReadSettled = swapRead.settled;
+  // The source a declaration is made for, from the unknown notice: the live archive or library row being
+  // printed -- never a copied or edited job's own snapshot, which a declaration does not change.
+  const declarableSource: { kind: 'archive' | 'library'; id: number; owner: number | null | undefined } | null =
+    isSnapshotSource || editedJobId !== undefined
+      ? null
+      : isLibraryFile && libraryFileId
+        ? { kind: 'library', id: libraryFileId, owner: libraryFileDetails?.created_by_id }
+        : isArchiveSource && archiveId
+          ? { kind: 'archive', id: archiveId, owner: archiveDetails?.created_by_id }
+          : null;
+  const canDeclareSource =
+    declarableSource !== null &&
+    canModify(declarableSource.kind === 'archive' ? 'archives' : 'library', 'update', declarableSource.owner);
+  const [declaringSource, setDeclaringSource] = useState(false);
   // "Print without the extra swap macros" — this job only. It is never written
   // into the saved swap settings, the preference or the next dialog's carry.
   const [swapOptOut, setSwapOptOut] = useState(false);
@@ -3148,6 +3172,16 @@ export function PrintModal({
                 optedOut={swapOptOut}
                 onOptOut={() => setSwapOptOut(true)}
                 onUndo={() => setSwapOptOut(false)}
+                onDeclare={canDeclareSource ? () => setDeclaringSource(true) : undefined}
+              />
+            )}
+            {declaringSource && declarableSource && (
+              <SwapDeclarationModal
+                kind={declarableSource.kind}
+                id={declarableSource.id}
+                name={archiveName}
+                canDeclare={canDeclareSource}
+                onClose={() => setDeclaringSource(false)}
               />
             )}
 
