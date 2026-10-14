@@ -1083,5 +1083,11 @@
   "«{}»: only {} can be assembled": "«{}»: зібрати можна лише {}",
   "«{}»: only {} can be issued": "«{}»: видати можна лише {}",
   "«{}»: only {} can be received": "«{}»: оприбуткувати можна лише {}",
-  "«{}»: only {} can be written off": "«{}»: списати можна лише {}"
+  "«{}»: only {} can be written off": "«{}»: списати можна лише {}",
+  "A declaration is true or false.": "Декларація може бути лише «так» або «ні».",
+  "You may no longer declare this source.": "Ви більше не можете декларувати це джерело.",
+  "The source changed since it was inspected. Inspect it again.": "Джерело змінилося після перевірки. Перевірте його ще раз.",
+  "This library file has no verified content hash yet. Scan its folder, or upload it again as a new copy, then inspect it.": "Для цього файлу бібліотеки ще немає перевіреного хешу вмісту. Проскануйте його теку або завантажте його знову як нову копію, а потім перевірте.",
+  "This operation was already used for another declaration.": "Цю операцію вже використано для іншої декларації.",
+  "This archive is still printing. Declare its source once the print has ended.": "Цей архів ще друкується. Задекларуйте його джерело, коли друк завершиться."
 }

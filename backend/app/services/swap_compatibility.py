@@ -589,3 +589,56 @@ def wire_fields(value: Any) -> dict:
     """The two answer fields of a declaration a reader returned -- every serializer spreads exactly these."""
     swap, known = project(value)
     return {SNAPSHOT_FACT_KEY: swap, KNOWN_FIELD: known}
+
+
+# --- what an operator's declaration is checked against (T9 spec r3 §5) -----------------------------------------------
+
+
+def source_effective(row) -> bool | None:
+    """The source fact a future use of this row would get: the archive's source reader, the library's §8 table."""
+    if _is_library_row(row):
+        return library_fact(row)
+    return archive_source(row)[0].value
+
+
+def current_declaration(row) -> Declaration | None:
+    """The row's readable declaration, or ``None`` (none, or one this version cannot read)."""
+    origins = DECLARATION_ORIGINS if _is_library_row(row) else ARCHIVE_ORIGINS
+    declared = read_declaration(getattr(row, DECLARATION_COLUMN, None), origins=origins)
+    return declared if isinstance(declared, Declaration) else None
+
+
+def source_revision(row, *, epoch: int) -> str:
+    """An optimistic equality token over the facts a declaration is made about (§5) -- never an authority.
+
+    The kind and id, the stored path and the hashes, the current declaration (with its id: a second declaration of
+    the same value is another revision), an archive's executed-run fact and its status, the bool projection, the
+    owner, trashed, and the storage generation. Notes, energy and the rest of ``extra_data`` are not part of it.
+    """
+    import hashlib
+    import json
+
+    library = _is_library_row(row)
+    run = None
+    if not library:
+        extra = getattr(row, "extra_data", None)
+        run = extra.get(CARRIER_KEY) if isinstance(extra, Mapping) else None
+    facts = {
+        "kind": "library" if library else "archive",
+        "id": getattr(row, "id", None),
+        "file_path": getattr(row, "file_path", None),
+        "hashes": (
+            [getattr(row, "file_hash", None)]
+            if library
+            else [getattr(row, "source_content_hash", None), getattr(row, "content_hash", None)]
+        ),
+        "is_external": getattr(row, "is_external", None) if library else None,
+        "declaration": getattr(row, DECLARATION_COLUMN, None),
+        "run": run,
+        "projection": getattr(row, "swap_compatible", None),
+        "status": None if library else getattr(row, "status", None),
+        "owner": getattr(row, "created_by_id", None),
+        "trashed": getattr(row, "deleted_at", None) is not None,
+        "epoch": epoch,
+    }
+    return hashlib.sha256(json.dumps(facts, sort_keys=True, default=str).encode("utf-8")).hexdigest()

@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse, JSONResponse
 from sqlalchemy import and_, distinct, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -83,6 +83,7 @@ from backend.app.schemas.order_from_files import (
     PreviewYieldOut,
 )
 from backend.app.schemas.plate_objects import PlateObjectsResponse
+from backend.app.schemas.swap_declaration import SwapDeclarationRequest
 from backend.app.services import order_from_files, swap_compatibility
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.design_settings import (
@@ -5310,6 +5311,77 @@ async def get_file(
         source_type=file.source_type,
         source_url=file.source_url,
     )
+
+
+# --- an operator's swap declaration of this source (swap-source-declaration spec r3 §4-5) -------------------------
+
+
+_SWAP_DECLARATION_READ = require_ownership_permission(Permission.LIBRARY_READ_ALL, Permission.LIBRARY_READ_OWN)
+_SWAP_DECLARATION_UPDATE = require_ownership_permission(Permission.LIBRARY_UPDATE_ALL, Permission.LIBRARY_UPDATE_OWN)
+
+
+async def _swap_declaration_caller(request: Request, db: AsyncSession, read, update):
+    from backend.app.services import swap_source_declarations as declarations
+
+    actor = await declarations.actor_for(request, db, read[0] or update[0])
+    return actor, declarations.Rights(read_all=read[1], update_all=update[1])
+
+
+@router.post("/files/{file_id}/swap-declaration/inspect")
+async def inspect_swap_declaration(
+    file_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    read: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_READ),
+    update: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_UPDATE),
+):
+    """Copy what a reprint would read, check it is printable, discard the copy: its hash, its current effective
+    swap fact and the revision a declaration must match. Needs the read AND the update right of this source."""
+    from backend.app.services import swap_source_declarations as declarations
+
+    actor, rights = await _swap_declaration_caller(request, db, read, update)
+    return await declarations.inspect("library", file_id, actor=actor, rights=rights)
+
+
+@router.put("/files/{file_id}/swap-declaration")
+async def declare_swap_source(
+    file_id: int,
+    body: SwapDeclarationRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    read: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_READ),
+    update: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_UPDATE),
+):
+    """Declare whether the inspected bytes carry their own plate-swap sequence -- only those very bytes, under the
+    revision they were inspected at; anything that moved since is a 409 and nothing is written."""
+    from backend.app.services import swap_source_declarations as declarations
+
+    actor, rights = await _swap_declaration_caller(request, db, read, update)
+    return await declarations.declare(
+        "library",
+        file_id,
+        value=body.value,
+        expected_sha256=body.expected_sha256,
+        expected_revision=body.expected_revision,
+        operation_id=str(body.operation_id),
+        actor=actor,
+        rights=rights,
+    )
+
+
+@router.get("/files/{file_id}/swap-declaration/history")
+async def swap_declaration_history(
+    file_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    read: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_READ),
+):
+    """The current declaration's chain of operations -- through this source only."""
+    from backend.app.services import swap_source_declarations as declarations
+
+    actor = await declarations.actor_for(request, db, read[0])
+    rights = declarations.Rights(read_all=read[1], update_all=False)
+    return await declarations.history("library", file_id, actor=actor, rights=rights)
 
 
 @router.put("/files/{file_id}", response_model=FileResponseSchema)
