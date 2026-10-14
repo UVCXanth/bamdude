@@ -912,3 +912,100 @@ async def test_structural_recovery_cannot_erase_an_attach_fact_from_a_stale_snap
     row = await db_session.get(PrintArchive, archive.id, populate_existing=True)
     assert row.extra_data["terminal_effects_uncertain"] is True
     assert sc.archive_fact(row) == sc.ArchiveFact(True, recorded=True)
+
+
+# --- the matrix: both runners x library/archive x original present/absent --------------------------------------------
+
+
+@pytest.mark.parametrize("original", ["present", "gone"])
+@pytest.mark.parametrize("kind", ["library", "archive"])
+async def test_execution_fact_follows_the_job_with_or_without_its_original(
+    kind, original, db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions
+):
+    from backend.app.services.queue_add import add_items_to_printer_queue
+    from backend.tests.integration.test_dispatch_without_original import lose_the_original
+
+    _unused, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    settings.archive_dir.mkdir(parents=True, exist_ok=True)
+    if kind == "library":
+        path = a_sliced_file(tmp_path / "lamp.gcode.3mf")
+        source = LibraryFile(
+            filename=path.name,
+            file_path=str(path),
+            file_size=path.stat().st_size,
+            file_type="gcode",
+            file_hash=sha(path),
+            swap_compatible=True,
+        )
+        db_session.add(source)
+        await db_session.commit()
+        declared, link = True, {"library_file_id": source.id}
+    else:
+        source = await an_archive_source(db_session, tmp_path, printer.id)
+        sc.write_archive_fact(source, False)
+        await db_session.commit()
+        path = settings.base_dir / source.file_path
+        declared, link = False, {"archive_id": source.id}
+
+    items, _queue = await add_items_to_printer_queue(
+        db_session, PrintQueueItemCreate(queue_id=queue.id, plate_id=PLATE, **link), None
+    )
+    item = items[0]
+    if original == "gone":
+        await lose_the_original(db_session, item, path, row=source)
+
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    dispatch_mocks(monkeypatch, factory)
+    scheduler, spawned = scheduler_with_captured_dispatch(monkeypatch)
+    assert await scheduler.check_queue() is True
+    assert await drain(spawned) == 1
+
+    item = await db_session.get(PrintQueueItem, item.id, populate_existing=True)
+    execution = await db_session.get(PrintArchive, item.archive_id, populate_existing=True)
+    assert sc.archive_fact(execution) == sc.ArchiveFact(declared, recorded=True)
+    mqtt._client.publish.assert_called_once()
+
+
+# --- the plate-corrected re-download names the file it fetched (§7) --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("stale_subtask", "first_name", "corrected_name", "expected"),
+    [
+        ("lamp.swap.x_plate_14", "lamp.swap.x_plate_14.gcode.3mf", "lamp.swap.x_plate_15.gcode.3mf", True),
+        # The stale first file carried the marker; the file that is really printing does not.
+        ("lamp_plate_14", "lamp.swap_plate_14.gcode.3mf", "lamp_plate_15.gcode.3mf", False),
+    ],
+    ids=["corrected marked", "stale marked, corrected plain"],
+)
+async def test_the_plate_retry_attaches_by_the_corrected_file(
+    stale_subtask, first_name, corrected_name, expected, db_session, test_engine, tmp_path, monkeypatch, printer_factory
+):
+    import backend.app.services.bambu_ftp as bambu_ftp
+    from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
+    from backend.tests.integration.test_dispatch_without_original import PLATE_FILAMENTS
+
+    printer = await an_archiving_printer(db_session, printer_factory)
+    (tmp_path / "dl").mkdir()
+    stale = write_routing_3mf(tmp_path / "dl" / first_name, {14: PLATE_FILAMENTS})  # the previous plate's upload
+
+    async def the_corrected_upload(ip, code, remote_path, local_path, **kwargs):
+        if remote_path == f"/cache/{corrected_name}":
+            write_routing_3mf(Path(local_path), {15: PLATE_FILAMENTS})
+            return True
+        raise bambu_ftp.FileNotOnPrinterError(remote_path)
+
+    monkeypatch.setattr(bambu_ftp, "download_file_async", the_corrected_upload)
+    rows = await drive_external_start(
+        db_session,
+        test_engine,
+        tmp_path,
+        monkeypatch,
+        printer,
+        {"filename": "/data/Metadata/plate_15.gcode", "subtask_name": stale_subtask},
+        download_result=(stale, first_name),
+    )
+
+    assert len(rows) == 1
+    assert rows[0].filename == corrected_name
+    assert sc.archive_fact(rows[0]) == sc.ArchiveFact(expected, recorded=True)
