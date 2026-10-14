@@ -964,6 +964,307 @@ async def scenario_refresh_vs_source_delete() -> dict:
     }
 
 
+# --- T9.7: a key that loses its authority while waiting; one operation sent twice ---------------------------------------
+
+
+def _storage_guard_off() -> None:
+    """Two server processes do not share the in-process storage guard either: only PostgreSQL may serialize them."""
+    from contextlib import asynccontextmanager
+
+    from backend.app.services import queue_sources
+
+    @asynccontextmanager
+    async def none():
+        yield
+
+    queue_sources.storage_mutation = none
+
+
+async def _key_for(farm, *, permissions: list[str]):
+    """A non-admin owner whose group grants ``permissions``, and its API key limited to the farm's printer."""
+    from backend.app.core.database import async_session
+    from backend.app.models.api_key import APIKey
+    from backend.app.models.group import Group
+    from backend.app.models.user import User
+
+    async with async_session() as db:
+        name = f"key-{uuid.uuid4().hex[:6]}"
+        group = Group(name=f"grp-{name}", permissions=permissions)
+        owner = User(username=name, email=f"{name}@example.com", password_hash="x", role="user", is_active=True)
+        owner.groups.append(group)
+        db.add_all([group, owner])
+        await db.flush()
+        key = APIKey(
+            name=name,
+            key_hash=f"not-used-{name}",
+            key_prefix="bd_test",
+            user_id=owner.id,
+            enabled=True,
+            printer_ids=[farm.printers[0]],
+            can_queue=True,
+            can_read_status=True,
+            can_manage_archives=True,
+        )
+        db.add(key)
+        await db.commit()
+        return SimpleNamespace(owner_id=owner.id, key_id=key.id, group_id=group.id)
+
+
+async def _key_revoked_while_waiting(revocation: str) -> dict:
+    from backend.app.core.database import async_session
+    from backend.app.models.api_key import APIKey
+    from backend.app.models.group import Group
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.services import swap_job_refresh as jobs, swap_source_declarations as decl
+
+    user = await _user()
+    farm = await _archive_farm(user)
+    full = ["archives:read_all", "archives:update_all", "queue:read_all", "queue:update_all"]
+    key = await _key_for(farm, permissions=full)
+    actor = decl.Actor("api_key", key.owner_id, "review key", key.key_id)
+    listing = await jobs.candidates("archive", farm.archive_id, actor=actor, rights=_rights(), job_rights=_job_rights())
+    picked = [jobs.JobRef(entry["kind"], entry["id"], entry["revision"]) for entry in listing["jobs"]]
+
+    async with async_session() as holder:  # another writer holds the job's row: the refresh waits on PostgreSQL
+        await holder.execute(select(PrintQueueItem).where(PrintQueueItem.id == farm.jobs[0]).with_for_update())
+        refreshing = asyncio.ensure_future(
+            _refresh_outcome(
+                jobs.refresh(
+                    "archive",
+                    farm.archive_id,
+                    declaration_id=listing["declaration_id"],
+                    source_revision=listing["source_revision"],
+                    jobs=picked,
+                    operation_id=str(uuid.uuid4()),
+                    actor=actor,
+                    rights=_rights(),
+                    job_rights=_job_rights(),
+                    printer_scope=frozenset({farm.printers[0]}),
+                )
+            )
+        )
+        waited = await _until_waiting()
+        async with async_session() as admin:  # the authority goes while the refresh waits
+            if revocation == "printer_scope":
+                (await admin.get(APIKey, key.key_id)).printer_ids = []
+            else:
+                (await admin.get(Group, key.group_id)).permissions = [p for p in full if p != "queue:read_all"]
+            await admin.commit()
+        await holder.commit()
+    refreshed = await refreshing
+    return {
+        "refreshed": refreshed,
+        "waited": waited,
+        "facts": await _facts(farm.jobs),
+        "audit": await _audits("archive", farm.archive_id),
+    }
+
+
+async def scenario_key_revoked_while_waiting() -> dict:
+    """A refresh by an API key waits on a job row another writer holds; meanwhile the key loses the job's printer, or
+    its owner loses queue read. Read again on the refresh's own session, the authority refuses: nothing changes."""
+    _process_locks_off()
+    return {revocation: await _key_revoked_while_waiting(revocation) for revocation in ("printer_scope", "queue_read")}
+
+
+def _barrier(count: int = 2):
+    """An awaitable that returns once ``count`` callers reached it."""
+    reached, everyone = [0], asyncio.Event()
+
+    async def wait():
+        reached[0] += 1
+        if reached[0] >= count:
+            everyone.set()
+        await asyncio.wait_for(everyone.wait(), 30)
+
+    return wait
+
+
+async def _declare_with(kind: str, source_id: int, seen: dict, user, value: bool, operation_id: str) -> str:
+    from fastapi import HTTPException
+
+    from backend.app.services import swap_source_declarations as decl
+
+    try:
+        result = await asyncio.wait_for(
+            decl.declare(
+                kind,
+                source_id,
+                value=value,
+                expected_sha256=seen["sha256"],
+                expected_revision=seen["revision"],
+                operation_id=operation_id,
+                actor=_actor(user),
+                rights=_rights(),
+            ),
+            60,
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        return f"{exc.status_code}:{detail.get('error', '')}"
+    except Exception as exc:  # noqa: BLE001 — reported
+        from backend.tests.integration.lock_barriers import sqlstate
+
+        return "deadlock" if sqlstate(exc) == "40P01" else f"error:{type(exc).__name__}:{exc}"
+    return "ok:replayed" if result["replayed"] else "ok"
+
+
+async def _refresh_with(farm, user, listing, operation_id: str) -> str:
+    from fastapi import HTTPException
+
+    from backend.app.services import swap_job_refresh as jobs
+
+    try:
+        result = await asyncio.wait_for(
+            jobs.refresh(
+                "archive",
+                farm.archive_id,
+                declaration_id=listing["declaration_id"],
+                source_revision=listing["source_revision"],
+                jobs=[jobs.JobRef(entry["kind"], entry["id"], entry["revision"]) for entry in listing["jobs"]],
+                operation_id=operation_id,
+                actor=_actor(user),
+                rights=_rights(),
+                job_rights=_job_rights(),
+            ),
+            60,
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        return f"{exc.status_code}:{detail.get('error', '')}"
+    except Exception as exc:  # noqa: BLE001 — reported
+        from backend.tests.integration.lock_barriers import sqlstate
+
+        return "deadlock" if sqlstate(exc) == "40P01" else f"error:{type(exc).__name__}:{exc}"
+    return "ok:replayed" if result["replayed"] else "ok"
+
+
+async def _operation_lines(operation_id: str) -> int:
+    from backend.app.core.database import async_session
+    from backend.app.models.swap_source_declaration_audit import SwapSourceDeclarationAudit as Audit
+
+    async with async_session() as db:
+        return len((await db.execute(select(Audit.id).where(Audit.operation_id == operation_id))).all())
+
+
+async def scenario_one_operation_sent_twice() -> dict:
+    """The same request twice at once, from two sessions that both passed their preflight before either committed --
+    a declaration and a refresh: one commit, one audit line, and both answer its result. Then the same operation id
+    reused for ANOTHER source by two sessions nothing serializes: both pass every check, the UNIQUE index decides,
+    and the loser is a typed conflict with nothing of it written -- never a replay of someone else's result."""
+    from backend.app.services import swap_job_refresh as jobs, swap_source_declarations as decl
+
+    _process_locks_off()
+    _storage_guard_off()
+    out: dict = {}
+    user = await _user()
+
+    # The same declaration twice: both copy the bytes before either writes.
+    path = _data_dir() / "archive" / f"twice-{uuid.uuid4().hex[:6]}.gcode.3mf"
+    _bytes(path, path.name)
+    archive_id = await _archive(path, user)
+    seen = await decl.inspect("archive", archive_id, actor=_actor(user), rights=_rights())
+    real_read, both_read = decl._read_bytes, _barrier()
+
+    async def read_then_meet(*args, **kwargs):
+        result = await real_read(*args, **kwargs)
+        await both_read()
+        return result
+
+    decl._read_bytes = read_then_meet
+    operation = str(uuid.uuid4())
+    try:
+        outcomes = await asyncio.gather(
+            *(_declare_with("archive", archive_id, seen, user, True, operation) for _ in range(2))
+        )
+    finally:
+        decl._read_bytes = real_read
+    out["declare"] = {"outcomes": sorted(outcomes), "lines": await _operation_lines(operation)}
+
+    # The same refresh twice: both pass the preflight before either takes its locks.
+    farm = await _archive_farm(user)
+    listing = await jobs.candidates(
+        "archive", farm.archive_id, actor=_actor(user), rights=_rights(), job_rights=_job_rights()
+    )
+    real_rights, both_checked = jobs._fresh_job_rights, _barrier()
+    real_replayed, both_preflighted = jobs._replayed_visible, _barrier()
+    calls = [0]
+
+    async def preflight_then_meet(*args, **kwargs):
+        result = await real_replayed(*args, **kwargs)
+        calls[0] += 1
+        if calls[0] <= 2:  # the two preflights; the locked re-reads pass straight through
+            await both_preflighted()
+        return result
+
+    jobs._replayed_visible = preflight_then_meet
+    operation = str(uuid.uuid4())
+    try:
+        outcomes = await asyncio.gather(*(_refresh_with(farm, user, listing, operation) for _ in range(2)))
+    finally:
+        jobs._replayed_visible = real_replayed
+    out["refresh"] = {
+        "outcomes": sorted(outcomes),
+        "lines": await _operation_lines(operation),
+        "facts": await _facts(farm.jobs),
+    }
+
+    # One operation id, two DIFFERENT archives: no guard is shared, so both pass their locked re-read of the
+    # operation and race to commit; the UNIQUE index decides.
+    sources = []
+    for _ in range(2):
+        path = _data_dir() / "archive" / f"race-{uuid.uuid4().hex[:6]}.gcode.3mf"
+        _bytes(path, path.name)
+        source_id = await _archive(path, user)
+        sources.append((source_id, await decl.inspect("archive", source_id, actor=_actor(user), rights=_rights())))
+    real_fresh, both_locked = decl._fresh_rights, _barrier()
+
+    async def locked_then_meet(*args, **kwargs):
+        result = await real_fresh(*args, **kwargs)
+        await both_locked()
+        return result
+
+    decl._fresh_rights = locked_then_meet
+    operation = str(uuid.uuid4())
+    try:
+        outcomes = await asyncio.gather(
+            *(_declare_with("archive", source_id, seen, user, True, operation) for source_id, seen in sources)
+        )
+    finally:
+        decl._fresh_rights = real_fresh
+    out["declare_race"] = {
+        "outcomes": sorted(outcomes),
+        "lines": await _operation_lines(operation),
+        "origins": sorted([str((await _source_state("archive", source_id))["origin"]) for source_id, _ in sources]),
+    }
+
+    farms = [await _archive_farm(user) for _ in range(2)]
+    listings = [
+        await jobs.candidates("archive", f.archive_id, actor=_actor(user), rights=_rights(), job_rights=_job_rights())
+        for f in farms
+    ]
+
+    async def rights_then_meet(*args, **kwargs):
+        result = await real_rights(*args, **kwargs)
+        await both_checked()
+        return result
+
+    jobs._fresh_job_rights = rights_then_meet
+    operation = str(uuid.uuid4())
+    try:
+        outcomes = await asyncio.gather(
+            *(_refresh_with(f, user, listed, operation) for f, listed in zip(farms, listings, strict=True))
+        )
+    finally:
+        jobs._fresh_job_rights = real_rights
+    out["refresh_race"] = {
+        "outcomes": sorted(outcomes),
+        "lines": await _operation_lines(operation),
+        "facts": sorted([await _facts(f.jobs) for f in farms], key=str),
+    }
+    return out
+
+
 # --- 9. an old schema upgraded; job incarnations; an audit that cannot be written ------------------------------------
 
 
@@ -1057,4 +1358,6 @@ SCENARIOS = {
     "refresh_vs_changes": scenario_refresh_vs_changes,
     "refresh_vs_source_delete": scenario_refresh_vs_source_delete,
     "upgrade_and_identity": scenario_upgrade_and_identity,
+    "key_revoked_while_waiting": scenario_key_revoked_while_waiting,
+    "one_operation_sent_twice": scenario_one_operation_sent_twice,
 }

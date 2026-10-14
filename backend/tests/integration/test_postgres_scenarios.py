@@ -913,6 +913,25 @@ class TestSwapDeclaration:
         # The declaration's audit line outlives its source (spec r3 §9); no refresh line was written.
         assert r["facts"] == [None, None] and r["audit"] == ["declare"], r
 
+    def test_a_key_losing_its_authority_while_the_refresh_waits_changes_nothing(self, tmp_path_factory):
+        r = _declare(tmp_path_factory, "key_revoked_while_waiting")
+        scope, read = r["printer_scope"], r["queue_read"]
+        assert scope["refreshed"] == "409:job_not_refreshable" and scope["waited"] >= 1, r
+        assert read["refreshed"].startswith("403") and read["waited"] >= 1, r
+        for k in (scope, read):
+            assert (k["facts"], k["audit"]) == ([None], ["declare"]), r
+
+    def test_one_operation_sent_twice_answers_once_and_a_reused_id_is_a_conflict(self, tmp_path_factory):
+        r = _declare(tmp_path_factory, "one_operation_sent_twice")
+        assert r["declare"] == {"outcomes": ["ok", "ok:replayed"], "lines": 1}, r
+        assert r["refresh"] == {"outcomes": ["ok", "ok:replayed"], "lines": 1, "facts": [True]}, r
+        race = r["declare_race"]
+        assert race["outcomes"] == ["409:swap_declaration_conflict", "ok"] and race["lines"] == 1, r
+        assert race["origins"] == ["None", "operator"], r  # the loser wrote nothing
+        race = r["refresh_race"]
+        assert race["outcomes"] == ["409:swap_refresh_conflict", "ok"] and race["lines"] == 1, r
+        assert race["facts"] == [[None], [True]], r
+
     def test_the_upgrade_gives_every_job_its_own_incarnation_and_an_unwritten_audit_commits_nothing(
         self, tmp_path_factory
     ):
