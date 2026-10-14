@@ -777,3 +777,71 @@ class TestStaleReadsBehindTheGates:
         assert r["outcome"].startswith("refused:409:"), r
         assert (r["issues"], r["movements_moved"]) == (0, 0), r
         assert r["customer_now"] == r["customer_wanted"], r
+
+
+def _swap(tmp_path_factory, name: str) -> dict:
+    url = _pg_url()
+    _wipe(url)
+    return _run(f"swap:{name}", tmp_path_factory.mktemp(f"pg_swap_{name}"), url)
+
+
+class TestSwapClaim:
+    """Our owed change_table under two real PostgreSQL sessions (Codex review r1, SS-I-R1..R3): one durable claim
+    committed before the command, the exact queue owner, every error held -- with the process-local locks off, so
+    PostgreSQL's advisory and row locks are what serialize the sessions."""
+
+    def test_two_connect_edges_send_the_command_once(self, tmp_path_factory):
+        r = _swap(tmp_path_factory, "two_edges")
+        assert r["outcomes"] == ["ok", "ok"] and all(o == "ok" for o in r["resolvers"]), r
+        assert r["sent"] == 1, r
+        assert r["seen_before_send"] == ["attempted"], r  # a third session saw the committed claim first
+        assert (r["stage"], r["pending"], r["queue"]) == ("finished", False, "idle"), r
+        assert (r["usage"], r["energy"]) == (1, 1), r  # the second edge's stale copy closed nothing
+        assert r["max_waiting"] >= 1, r  # the second close waited on the first's row lock
+
+    def test_a_claim_taken_by_a_new_job_first_sends_nothing(self, tmp_path_factory):
+        r = _swap(tmp_path_factory, "new_owner_before_the_claim")
+        assert r["outcomes"] == ["ok", "ok"], r
+        assert r["waited"] >= 1, r  # the claim waited on the dispatch lane PostgreSQL held
+        assert r["sent"] == 0, r
+        assert (r["queue"], r["current"]) == ("printing", r["new_job"]), r
+        assert (r["stage"], r["hold"]) == ("owed", "swap_hold_run_unproven"), r
+
+    def test_a_claim_lost_during_the_command_is_left_to_the_new_job(self, tmp_path_factory):
+        r = _swap(tmp_path_factory, "new_owner_during_the_command")
+        assert r["outcome"] == "ok" and r["sent"] == 1, r
+        assert (r["queue"], r["current"]) == ("printing", r["new_job"]), r
+        assert r["stage"] == "finished" and r["run_kept"], r
+
+    def test_an_interrupted_command_is_held_at_the_next_connect_never_repeated(self, tmp_path_factory):
+        r = _swap(tmp_path_factory, "interrupted_then_reconnect")
+        assert r["first"] == "cancelled" and r["edge"] == "ok", r
+        assert r["sent"] == 1, r
+        assert (r["stage"], r["pending"], r["hold"], r["queue"]) == (
+            "attempted",
+            True,
+            "swap_hold_attempt_unknown",
+            "paused",
+        ), r
+        assert [r["usage"], r["energy"]] == r["effects_before"], r  # nothing booked again
+        assert r["run_kept"], r
+
+    def test_an_interrupted_command_leaves_another_jobs_queue_alone(self, tmp_path_factory):
+        r = _swap(tmp_path_factory, "interrupted_then_another_job")
+        assert r["first"] == "cancelled" and r["edge"] == "ok", r
+        assert r["sent"] == 1, r
+        assert (r["queue"], r["current"]) == ("printing", r["new_job"]), r
+        assert r["stage"] == "attempted" and r["run_kept"], r
+
+    def test_a_lookup_error_ends_in_an_explained_hold(self, tmp_path_factory):
+        r = _swap(tmp_path_factory, "lookup_error")
+        assert r["outcome"] == "ok" and r["sent"] == 0, r
+        assert (r["hold"], r["queue"], r["pending"]) == ("swap_hold_macro_error", "paused", True), r
+
+    def test_the_claim_an_archive_write_and_an_admission_never_deadlock(self, tmp_path_factory):
+        r = _swap(tmp_path_factory, "no_deadlock")
+        assert r["outcomes"] == ["ok", "ok", "ok"], r
+        assert r["waited"] >= 2, r  # both waited on PostgreSQL behind the open claim
+        assert r["admission"] == ["active_claim"], r
+        assert r["writer_key"] and r["stage"] == "finished" and r["sent"] == 1, r
+        assert r["queue"] == "idle", r
