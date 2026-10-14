@@ -110,7 +110,9 @@ class QueueCopySourceProfile(BaseModel):
     item_id: int
     filename: str
     sliced_for_model: str | None = None
+    # The JOB's own captured declaration, never its display name (spec r4 §9).
     swap_compatible: bool = False
+    swap_compatibility_known: bool
     plates: list[dict]
     is_multi_plate: bool = False
 

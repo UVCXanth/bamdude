@@ -532,6 +532,17 @@ describe('PrintModal', () => {
             },
           ]),
         ),
+        // The swap panel opens only over a source known not to carry its own
+        // sequence (swap-source-lifecycle §9); an unread file is unknown.
+        http.get('/api/v1/library/files/:id', () =>
+          HttpResponse.json({
+            id: 42,
+            filename: 'test.3mf',
+            sliced_for_model: null,
+            swap_compatible: false,
+            swap_compatibility_known: true,
+          }),
+        ),
       );
       const user = userEvent.setup();
       render(

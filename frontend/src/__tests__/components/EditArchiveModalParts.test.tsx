@@ -71,6 +71,7 @@ const baseArchive: Archive = {
   energy_kwh: null,
   energy_cost: null,
   swap_compatible: false,
+  swap_compatibility_known: true,
   queue_id: null,
   batch_id: null,
   error_message: null,

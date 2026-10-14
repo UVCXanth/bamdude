@@ -50,7 +50,7 @@ from backend.app.schemas.print_queue import (
     QueueSummaryGroup,
     QueueSummaryResponse,
 )
-from backend.app.services import farm_forecast, queue_sources
+from backend.app.services import farm_forecast, queue_sources, swap_compatibility
 from backend.app.services.filament_intake import (
     item_descriptor,
     item_source,
@@ -899,9 +899,12 @@ async def get_queue_copy_source(
 ):
     """Return the saved source profile needed to copy one queue row.
 
-    This endpoint is deliberately queue-read scoped and refuses a legacy or
-    broken source.  It never loads the item's archive or library relationship:
-    those rows may have been deleted, and their current bytes are irrelevant.
+    This endpoint is deliberately queue-read scoped and refuses a broken source.
+    The swap declaration is the job's own, captured with its bytes; the live
+    archive or library row is not its authority. Only a snapshot from before the
+    declaration was captured looks back, through the job's own foreign key and a
+    matching content hash (``item_descriptor``, spec r4 §6) -- those rows may
+    have been deleted since, and then the answer is unknown.
     """
     current_user, can_read_all = auth_result
     item = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
@@ -943,16 +946,11 @@ async def get_queue_copy_source(
     except (OSError, SourceUnavailable, zipfile.BadZipFile):
         raise HTTPException(422, routing_detail("source_unreadable")) from None
 
-    filename_lower = filename.lower()
     return QueueCopySourceProfile(
         item_id=item.id,
         filename=filename,
         sliced_for_model=requirements.model if requirements is not None else None,
-        swap_compatible=(
-            filename_lower.endswith((".swap.3mf", ".swaps.3mf"))
-            or ".swap." in filename_lower
-            or ".swaps." in filename_lower
-        ),
+        **swap_compatibility.wire_fields(descriptor.swap_fact.value),
         plates=plates,
         is_multi_plate=len(plates) > 1,
     )

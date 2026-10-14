@@ -197,8 +197,11 @@ class ArchiveResponse(BaseModel):
     energy_kwh: float | None = None
     energy_cost: float | None = None
 
-    # Swap mode
+    # Swap mode. ``swap_compatible`` keeps its old meaning; ``swap_compatibility_known``
+    # says whether that False is a declaration or the unknown's (spec r4 §9). Both
+    # come from the reader, and the second one has no default on purpose.
     swap_compatible: bool = False
+    swap_compatibility_known: bool
     # True iff the archive's 3MF has 2+ plates (extracted at archive_print()
     # / m023 backfill). Frontend uses this to gate gallery rendering.
     is_multi_plate: bool = False

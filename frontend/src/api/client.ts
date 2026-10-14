@@ -1531,6 +1531,8 @@ export interface Archive {
   energy_kwh: number | null;
   energy_cost: number | null;
   swap_compatible: boolean;
+  /** Is `swap_compatible` a declaration, or the unknown's False? Decode both with `decodeSwapFact`. */
+  swap_compatibility_known: boolean;
   // Queue attribution (m019). Queue-driven archives carry the originating
   // queue_id + batch_id; external / direct-dispatch archives get queue_id
   // (the printer's default queue) but no batch_id.
@@ -6430,6 +6432,8 @@ export interface QueueCopySourceProfile {
   filename: string;
   sliced_for_model: string | null;
   swap_compatible: boolean;
+  /** Is `swap_compatible` a declaration, or the unknown's False? Decode both with `decodeSwapFact`. */
+  swap_compatibility_known: boolean;
   plates: PlateMetadata[];
   is_multi_plate: boolean;
 }
@@ -14665,6 +14669,8 @@ export interface LibraryFile {
   mqtt_recording_bytes?: number;
   sliced_for_model: string | null;
   swap_compatible: boolean;
+  /** Is `swap_compatible` a declaration, or the unknown's False? Decode both with `decodeSwapFact`. */
+  swap_compatibility_known: boolean;
   // Provenance (m033) — populated for MakerWorld imports + slicer outputs.
   // ``source_type`` ∈ {"makerworld", "sliced", ...}; ``source_url`` is the
   // canonical link (e.g. MakerWorld profile URL). NULL for plain uploads.
@@ -14722,6 +14728,8 @@ export interface LibraryFileListItem {
    *  unsliced 3MF is eligible; «sliced» is `isPrintable` (the `gcode` tag), not this. */
   plan_eligible: boolean;
   swap_compatible: boolean;
+  /** Is `swap_compatible` a declaration, or the unknown's False? Decode both with `decodeSwapFact`. */
+  swap_compatibility_known: boolean;
   // True iff the 3MF carries 2+ plates (extracted at upload / m023 backfill).
   // Used to gate gallery rendering — single-plate files skip the per-card
   // gallery fetch entirely.

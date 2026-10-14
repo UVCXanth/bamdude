@@ -47,7 +47,7 @@
   "source_copy_busy": "The queue is already copying files. Try again in a moment.",
   "source_spool_replaced": "A restore replaced the saved queue files. Try again.",
   "source_invalid": "The source file is not a readable sliced file.",
-  "source_copy_timeout": "Copying the source file into the queue took too long. Check the storage connection, then try again.",
+  "source_copy_timeout": "Copying the source timed out. Check that its storage is available before retrying.",
   "source_spool_no_space": "There is not enough free space to save this file for the queue.",
   "source_spool_write_failed": "The file could not be saved for the queue. Check the server's data storage.",
   "source_copy_failed": "The file could not be saved for the queue.",

@@ -390,3 +390,13 @@ def project(value: Any) -> tuple[bool, bool]:
     """The wire projection: ``(swap_compatible, swap_compatibility_known)``. The bool keeps its old meaning."""
     known = _strict_fact(value)
     return known is True, known is not None
+
+
+#: The answer field that says whether ``swap_compatible`` is a known declaration or the unknown's False (§9).
+KNOWN_FIELD = "swap_compatibility_known"
+
+
+def wire_fields(value: Any) -> dict:
+    """The two answer fields of a declaration a reader returned -- every serializer spreads exactly these."""
+    swap, known = project(value)
+    return {SNAPSHOT_FACT_KEY: swap, KNOWN_FIELD: known}

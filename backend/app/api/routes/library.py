@@ -2177,7 +2177,8 @@ async def list_files(
                 skip_objects_supported=f.skip_objects_supported,
                 sliced_for_model=sliced_for_model,
                 plan_eligible=is_plan_eligible(f.file_type),
-                swap_compatible=f.swap_compatible,
+                # Only a row with a valid content hash declares anything; no file is read to answer.
+                **swap_compatibility.wire_fields(swap_compatibility.library_fact(f)),
                 is_multi_plate=is_multi_plate,
                 filament_types=filament_types,
                 plate_summaries=plate_summaries,
@@ -5304,7 +5305,7 @@ async def get_file(
         object_count=object_count,
         skip_objects_supported=file.skip_objects_supported,
         sliced_for_model=sliced_for_model,
-        swap_compatible=file.swap_compatible,
+        **swap_compatibility.wire_fields(swap_compatibility.library_fact(file)),
         source_type=file.source_type,
         source_url=file.source_url,
     )

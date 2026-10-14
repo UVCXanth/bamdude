@@ -203,7 +203,8 @@ def archive_to_response(
         "status": archive.status,
         "started_at": archive.started_at,
         "completed_at": archive.completed_at,
-        "extra_data": archive.extra_data,
+        # A copy without the internal swap record; the row keeps it (spec r4 §3).
+        "extra_data": swap_compatibility.public_extra_data(archive.extra_data),
         "makerworld_url": archive.makerworld_url,
         "designer": archive.designer,
         "external_url": archive.external_url,
@@ -236,6 +237,9 @@ def archive_to_response(
         ),
         "energy_kwh": archive.energy_kwh,
         "energy_cost": archive.energy_cost,
+        # The declaration through its reader: a legacy False and a malformed
+        # record are unknown, never the column's False (spec r4 §9).
+        **swap_compatibility.wire_fields(swap_compatibility.archive_fact(archive).value),
         # Queue attribution (m019) + verbose error_message twin for failures.
         "queue_id": archive.queue_id,
         "batch_id": archive.batch_id,
@@ -1429,8 +1433,16 @@ async def toggle_favorite(
 
     archive.is_favorite = not archive.is_favorite
     await db.commit()
-    await db.refresh(archive)
-    return archive
+    # Through the one serializer, like every other archive answer: the raw row
+    # would carry the internal swap record and the column's bool unread.
+    from sqlalchemy.orm import selectinload
+
+    result = await db.execute(
+        select(PrintArchive)
+        .options(selectinload(PrintArchive.project), selectinload(PrintArchive.created_by))
+        .where(PrintArchive.id == archive_id)
+    )
+    return archive_to_response(result.scalar_one())
 
 
 @router.post("/{archive_id}/retry-download")

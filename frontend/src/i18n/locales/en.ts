@@ -137,6 +137,7 @@ export default {
       "filament_unavailable": "Check the material and feed configuration",
       "dispatch_failed": "Preparation failed",
       "storage_full": "Timelapse storage is full",
+      "source_capture": "Waiting to copy the source",
       "unknown": "Waiting for a check"
     },
     "pauses": {
@@ -2150,7 +2151,7 @@ export default {
       source_unreadable: 'The original file could not be read. Check that its folder or share is reachable.',
       source_changed: 'The original file changed while it was being copied. Open it again and add it anew.',
       source_invalid: 'The original file is not a usable 3MF — it may be truncated. Re-slice it or upload it again.',
-      source_copy_timeout: 'Copying the file took too long and was stopped. Check the connection to where the file is stored.',
+      source_copy_timeout: 'Copying the source timed out. Check that its storage is available before retrying.',
       source_spool_no_space: 'There is not enough free disk space to save the file. Free some space and try again.',
       source_spool_write_failed: 'The file could not be written to BamDude\'s data folder. Check the disk and the server log.',
       source_copy_failed: 'The file could not be saved for the queue.',
@@ -9295,6 +9296,14 @@ export default {
     swapEventStartDesc: 'Plate-swapper initialisation before the first print.',
     swapEventChangeTable: 'Change table',
     swapEventChangeTableDesc: 'Swap the plate between prints.',
+    // The source's swap declaration is unknown (swap-source-lifecycle §9).
+    swapSourceUnknownTitle: 'Swap compatibility of this source is unknown',
+    swapSourceUnknownDesc: 'The source does not say whether it carries its own plate-swap sequence, so BamDude does not run its swap macros for it.',
+    swapSourceUnknownBlocked: 'Swap macros are on for this job, so it cannot be sent as it is.',
+    swapSourceOptOut: 'Print without the extra swap macros',
+    swapSourceOptedOut: 'BamDude\'s swap macros will not run for this job. Your saved swap settings stay as they are.',
+    swapSourcePlateRules: 'Without them the printer\'s ordinary plate rules apply: with plate-clear confirmation on, the next job waits until the plate is cleared.',
+    swapSourceUndo: 'Undo',
     printOptions: 'Print Options',
     quantity: 'Quantity',
     quantityHint: 'Print multiple copies. Extras are queued after the first.',

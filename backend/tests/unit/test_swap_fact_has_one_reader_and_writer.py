@@ -50,11 +50,6 @@ ALLOWED: dict[tuple[str, str, str], str] = {
 #: Touches that predate the policy module. Each names the task that replaces it with the reader/writer, or moves
 #: it to ALLOWED in one of the categories above.
 PENDING = {
-    ("backend/app/api/routes/library.py", "list_files", "attr"): "T6 library known projection",
-    ("backend/app/api/routes/library.py", "list_files", "kw"): "T6 library known projection",
-    ("backend/app/api/routes/library.py", "get_file", "attr"): "T6 library known projection",
-    ("backend/app/api/routes/library.py", "get_file", "kw"): "T6 library known projection",
-    ("backend/app/api/routes/print_queue.py", "get_queue_copy_source", "kw"): "T6 copy source reads the job's fact",
     ("backend/app/main.py", "_on_print_complete_impl", "attr"): "T7 completion reader",
 }
 

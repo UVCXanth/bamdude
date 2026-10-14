@@ -201,6 +201,9 @@ class FileResponse(BaseModel):
     skip_objects_supported: bool = False
     sliced_for_model: str | None = None
     swap_compatible: bool = False
+    # Is ``swap_compatible`` a declaration? False for a row without a valid
+    # content hash (spec r4 §9). From the reader; no default on purpose.
+    swap_compatibility_known: bool
     # True iff the file has 2+ plates (extracted at upload / m023). Frontend
     # uses this to gate gallery rendering — saves an N-card-page worth of
     # /plates fetches when most files are single-plate.
@@ -326,6 +329,7 @@ class FileListResponse(BaseModel):
     # «sliced» is the ``gcode`` tag of ``file_tags``, not this.
     plan_eligible: bool = False
     swap_compatible: bool = False
+    swap_compatibility_known: bool  # see ``FileResponse``
     is_multi_plate: bool = False
     # spec §4 - plate 1's (or the only plate's) filament types in slot order,
     # and one compact slice per plate for a multi-plate file (empty otherwise),
