@@ -60,9 +60,44 @@ async def queue_claim_scope(db: AsyncSession, queue_id: int):
     async with _queue_claim_locks[queue_id]:
         dialect = db.get_bind().dialect.name
         if dialect == "postgresql":
-            await db.execute(text("SELECT pg_advisory_xact_lock(1625, :queue_id)"), {"queue_id": queue_id})
+            await _lane_db_guard(db, queue_id)
         elif dialect == "sqlite" and not db.in_transaction():
             await db.execute(text("BEGIN IMMEDIATE"))
+        yield
+
+
+async def _lane_db_guard(db: AsyncSession, queue_id: int) -> None:
+    await db.execute(text("SELECT pg_advisory_xact_lock(1625, :queue_id)"), {"queue_id": queue_id})
+
+
+@asynccontextmanager
+async def claim_lanes(db: AsyncSession, queue_ids, *, archive_id: int | None = None):
+    """Several printer lanes -- and, for a writer that goes on to one archive, that archive's in-process lock --
+    with EVERY in-process lock taken first, the lanes ascending, then the archive's; only then the database's:
+    SQLite's writer, PostgreSQL's lane guards ascending. The archive's own database guard and row come after
+    whatever rows the caller locks in between (``archive_write_scope.archive_db_guard``).
+
+    A holder of SQLite's single writer must never wait for an in-process lock: a writer that takes the archive's
+    lock first and then the writer (a declaration, ``archive_write_scope``) would hold it while waiting, and both
+    would sit until SQLite's busy timeout failed one of them (plan T9.4). A change_table claim and a refresh of
+    selected jobs -- the writers that need lanes AND an archive -- come through here.
+    """
+    from contextlib import AsyncExitStack
+
+    from backend.app.services.archive_write_scope import archive_process_lock
+
+    lanes = sorted(set(queue_ids))
+    async with AsyncExitStack() as stack:
+        for queue_id in lanes:
+            await stack.enter_async_context(_queue_claim_locks[queue_id])
+        if archive_id is not None:
+            await stack.enter_async_context(archive_process_lock(archive_id))
+        dialect = db.get_bind().dialect.name
+        if dialect == "sqlite" and not db.in_transaction():
+            await db.execute(text("BEGIN IMMEDIATE"))
+        if dialect == "postgresql":
+            for queue_id in lanes:
+                await _lane_db_guard(db, queue_id)
         yield
 
 

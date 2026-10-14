@@ -1089,5 +1089,10 @@
   "The source changed since it was inspected. Inspect it again.": "Джерело змінилося після перевірки. Перевірте його ще раз.",
   "This library file has no verified content hash yet. Scan its folder, or upload it again as a new copy, then inspect it.": "Для цього файлу бібліотеки ще немає перевіреного хешу вмісту. Проскануйте його теку або завантажте його знову як нову копію, а потім перевірте.",
   "This operation was already used for another declaration.": "Цю операцію вже використано для іншої декларації.",
-  "This archive is still printing. Declare its source once the print has ended.": "Цей архів ще друкується. Задекларуйте його джерело, коли друк завершиться."
+  "This archive is still printing. Declare its source once the print has ended.": "Цей архів ще друкується. Задекларуйте його джерело, коли друк завершиться.",
+  "Select between 1 and 100 different jobs.": "Виберіть від 1 до 100 різних робіт.",
+  "Some of the selected jobs cannot take this declaration. Nothing was changed.": "Деякі з вибраних робіт не можуть прийняти цю декларацію. Нічого не змінено.",
+  "Some of the selected jobs changed since they were listed. List them again.": "Деякі з вибраних робіт змінилися відтоді, як їх показали. Оновіть список.",
+  "This operation was already used for another refresh.": "Цю операцію вже використано для іншого оновлення.",
+  "This source has no operator declaration to apply. Declare it first.": "Це джерело не має операторської декларації, яку можна застосувати. Спершу задекларуйте його."
 }

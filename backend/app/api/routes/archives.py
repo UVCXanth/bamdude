@@ -42,7 +42,7 @@ from backend.app.schemas.archive import (
 )
 from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.schemas.project import StockMovedOut
-from backend.app.schemas.swap_declaration import SwapDeclarationRequest
+from backend.app.schemas.swap_declaration import SwapDeclarationRequest, SwapRefreshRequest
 from backend.app.services import part_stock, swap_compatibility
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.archive_defects import DefectsWrite, record_defects
@@ -1138,6 +1138,67 @@ async def swap_declaration_history(
     actor = await declarations.actor_for(request, db, read[0])
     rights = declarations.Rights(read_all=read[1], update_all=False)
     return await declarations.history("archive", archive_id, actor=actor, rights=rights)
+
+
+_SWAP_REFRESH_QUEUE_READ = require_ownership_permission(Permission.QUEUE_READ_ALL, Permission.QUEUE_READ_OWN)
+_SWAP_REFRESH_QUEUE_UPDATE = require_ownership_permission(Permission.QUEUE_UPDATE_ALL, Permission.QUEUE_UPDATE_OWN)
+
+
+@router.get("/{archive_id}/swap-declaration/jobs")
+async def swap_declaration_jobs(
+    archive_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    read: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_READ),
+    update: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_UPDATE),
+    queue_read: tuple[User | None, bool] = Depends(_SWAP_REFRESH_QUEUE_READ),
+    queue_update: tuple[User | None, bool] = Depends(_SWAP_REFRESH_QUEUE_UPDATE),
+):
+    """The pending and failed jobs linked to this source the caller may see, each with its revision and whether the
+    current declaration may be applied to it. None is selected: a refresh names its jobs."""
+    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.services import swap_job_refresh
+
+    actor, rights = await _swap_declaration_caller(request, db, read, update)
+    return await swap_job_refresh.candidates(
+        "archive",
+        archive_id,
+        actor=actor,
+        rights=rights,
+        job_rights=swap_job_refresh.JobRights(read_all=queue_read[1], update_all=queue_update[1]),
+        printer_scope=key_printer_scope(request),
+    )
+
+
+@router.post("/{archive_id}/swap-declaration/jobs/refresh")
+async def refresh_swap_declaration_jobs(
+    archive_id: int,
+    body: SwapRefreshRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    read: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_READ),
+    update: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_UPDATE),
+    queue_read: tuple[User | None, bool] = Depends(_SWAP_REFRESH_QUEUE_READ),
+    queue_update: tuple[User | None, bool] = Depends(_SWAP_REFRESH_QUEUE_UPDATE),
+):
+    """Write the source's current declaration into the named jobs' snapshots -- every one, or none. Not a Retry: a
+    failed job stays failed."""
+    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.services import swap_job_refresh
+
+    actor, rights = await _swap_declaration_caller(request, db, read, update)
+    return await swap_job_refresh.refresh(
+        "archive",
+        archive_id,
+        declaration_id=str(body.declaration_id),
+        source_revision=body.source_revision,
+        jobs=[swap_job_refresh.JobRef(job.kind, job.id, job.revision) for job in body.jobs],
+        operation_id=str(body.operation_id),
+        actor=actor,
+        rights=rights,
+        job_rights=swap_job_refresh.JobRights(read_all=queue_read[1], update_all=queue_update[1]),
+        printer_scope=key_printer_scope(request),
+    )
 
 
 @router.patch("/{archive_id}", response_model=ArchiveResponse)

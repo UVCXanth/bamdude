@@ -20,13 +20,16 @@ second owner stands down; a claim nobody alive is sending is held, never sent ag
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import Any
 
 from backend.app.i18n import current_language, t
 from backend.app.services import swap_compatibility
-from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+from backend.app.services.archive_write_scope import (
+    archive_db_guard,
+    archive_write_scope,
+    load_active_archive_for_write,
+)
 
 #: The swap-start macro's outcome, recorded on the execution archive by dispatch: ``possibly_fired`` from the
 #: moment the command may leave, ``fired`` once the printer acknowledged it.
@@ -220,31 +223,33 @@ async def claim_change_table(
     queue claim -- must hold. Returns :data:`CLAIMED`, or why the command must not go out. The archive is marked
     live before the commit, so no other owner can find it attempted and nobody's; a failed commit unmarks it.
     """
-    from backend.app.services.queue_ops import queue_claim_scope
+    from backend.app.services.queue_ops import claim_lanes
 
-    async with session_factory() as db:
-        lane = queue_claim_scope(db, queue_id) if queue_id is not None else nullcontext()
-        async with lane, archive_write_scope(db, archive_id):
-            archive = await load_active_archive_for_write(db, archive_id)
-            if archive is None:
-                return CLAIM_LOST
-            extra = archive.extra_data if isinstance(archive.extra_data, Mapping) else {}
-            if CHANGE_TABLE_EVENT not in (extra.get("swap_macro_events_pending") or []):
-                return CLAIM_TAKEN
-            stage = claim_stage(extra)
-            if stage == CLAIM_ATTEMPTED and sending(archive_id):
-                return CLAIM_BUSY
-            if not (stage == CLAIM_OWED or (stage is None and allow_absent)):
-                return CLAIM_TAKEN
-            if still_ours is not None and not await still_ours(db):
-                return CLAIM_LOST
-            archive.extra_data = _with_stage(extra, CLAIM_ATTEMPTED, owner=owner)
-            _sending.add(archive_id)
-            try:
-                await db.commit()
-            except BaseException:
-                _sending.discard(archive_id)
-                raise
+    # The lane, then the print: every in-process lock before SQLite's writer (``claim_lanes``), so a declaration of
+    # this archive holding its write scope never waits for the writer this claim holds.
+    lanes = [queue_id] if queue_id is not None else []
+    async with session_factory() as db, claim_lanes(db, lanes, archive_id=archive_id):
+        await archive_db_guard(db, archive_id)
+        archive = await load_active_archive_for_write(db, archive_id)
+        if archive is None:
+            return CLAIM_LOST
+        extra = archive.extra_data if isinstance(archive.extra_data, Mapping) else {}
+        if CHANGE_TABLE_EVENT not in (extra.get("swap_macro_events_pending") or []):
+            return CLAIM_TAKEN
+        stage = claim_stage(extra)
+        if stage == CLAIM_ATTEMPTED and sending(archive_id):
+            return CLAIM_BUSY
+        if not (stage == CLAIM_OWED or (stage is None and allow_absent)):
+            return CLAIM_TAKEN
+        if still_ours is not None and not await still_ours(db):
+            return CLAIM_LOST
+        archive.extra_data = _with_stage(extra, CLAIM_ATTEMPTED, owner=owner)
+        _sending.add(archive_id)
+        try:
+            await db.commit()
+        except BaseException:
+            _sending.discard(archive_id)
+            raise
     return CLAIMED
 
 

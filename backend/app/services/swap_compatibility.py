@@ -695,3 +695,14 @@ def scan_declaration(row, *, new_hash: str, new_identity: bool, entry_name: str 
     ):
         return declaration_columns(classify_external_name(row.file_path), new_hash, "classifier")
     return {}
+
+
+# --- a job's incarnation (T9 spec r3 §3, §6) --------------------------------------------------------------------------
+
+#: The column naming one incarnation of a job: a reused integer id under a new value is another job.
+JOB_IDENTITY_COLUMN = "swap_declaration_identity"
+
+
+def job_identity(job) -> str | None:
+    """The job's incarnation, read in this one place -- what a refresh's revision and a claim's basis compare."""
+    return getattr(job, JOB_IDENTITY_COLUMN, None)

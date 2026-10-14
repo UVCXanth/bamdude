@@ -508,6 +508,9 @@ class TestACloneCarriesEveryPrintOption:
         # carrying both flips the same session twice.
         "is_calibration",
         "calibration_session_id",
+        # A clone is a new incarnation of the work (swap-source-declaration spec r3 §3): a refresh listed against
+        # the parent never reaches it.
+        "swap_declaration_identity",
     }
 
     def _distinctive(self, column):

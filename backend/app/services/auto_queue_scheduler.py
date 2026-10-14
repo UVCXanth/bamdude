@@ -56,6 +56,8 @@ from backend.app.services.filament_intake import (
     item_descriptor,
     read_item_requirements,
     snapshot_for_copy,
+    swap_basis,
+    swap_basis_holds,
 )
 from backend.app.services.filament_policy import auto_policy, serialize_policy
 from backend.app.services.filament_preflight import feed_signature
@@ -285,7 +287,10 @@ class AutoQueueScheduler:
                         # concurrently cancelled/assigned router row is not a
                         # printer conflict; leave it to its winning writer.
                         await db.refresh(item)
-                        if isinstance(exc, AutoPlacementConflict) and exc.code == "item_changed":
+                        if isinstance(exc, AutoPlacementConflict) and exc.code in (
+                            "item_changed",
+                            "swap_source_changed",
+                        ):
                             break
                         if (
                             isinstance(exc, AutoPlacementConflict)
@@ -654,6 +659,9 @@ class AutoQueueScheduler:
             # profile asks our macros for refuses THIS candidate; the tick tries the
             # next one.
             descriptor = await item_descriptor(db, item)
+            # What this decision is taken from: re-read under the claim below, and the assignment is abandoned
+            # when a refresh or a source declaration moved it in between (swap-source-declaration spec r3 §6).
+            basis = swap_basis(item, descriptor)
             try:
                 execute_swap_macros, swap_macro_events = swap_compatibility.resolve_request(
                     descriptor.swap_fact.value if descriptor is not None else None,
@@ -681,8 +689,9 @@ class AutoQueueScheduler:
             # The re-probe below is small
             # metadata I/O only; queue-source capture already happened before
             # Auto Queue reached this assignment transaction.
-            # The promoted row records the router row's declaration in a dict of its own.
-            promoted_snapshot = await snapshot_for_copy(db, item)
+            # The promoted row records the router row's declaration in a dict of its own -- the very fact the
+            # swap fields above were decided from, never a second read.
+            promoted_snapshot = await snapshot_for_copy(db, item, descriptor)
             async with queue_claim_scope(db, printer.id):
                 occupancy = await read_queue_occupancy(db, printer.id, for_update=True)
                 printer_queue = occupancy.queue
@@ -705,6 +714,11 @@ class AutoQueueScheduler:
                 )
                 if not claimed.rowcount:
                     raise AutoPlacementConflict("item_changed")
+                # Under the claim: the row, its blob and its source's fact read fresh, compared with what the swap
+                # decision and the promoted snapshot came from. A difference is no assignment; the next pass
+                # decides everything from the new state.
+                if not await swap_basis_holds(db, item, basis):
+                    raise AutoPlacementConflict("swap_source_changed")
 
                 current_identity = await probe_identity(identity)
                 if _feed_moved(printer.id, policy, plan, snapshot_signature) or identity != current_identity:

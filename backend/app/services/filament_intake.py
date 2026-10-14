@@ -10,11 +10,11 @@ capture** (S7: a bad spool must not make anything read another file).
 
 from collections.abc import Iterable
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from fastapi import HTTPException
-from sqlalchemy import inspect as sa_inspect, update
+from sqlalchemy import inspect as sa_inspect, select, update
 
 from backend.app.core.config import settings
 from backend.app.i18n import current_language, t
@@ -145,7 +145,7 @@ def loaded_descriptor(item) -> QueueSourceDescriptor | None:
     return None if source is None else stored_descriptor(source, getattr(item, "source_snapshot", None))
 
 
-async def item_descriptor(db, item) -> QueueSourceDescriptor | None:
+async def item_descriptor(db, item, *, fresh: bool = False) -> QueueSourceDescriptor | None:
     """The captured source of an existing job row, or ``None`` for a legacy one.
 
     ``None`` means exactly one thing: this row has no ``queue_source_id``, so it
@@ -160,19 +160,59 @@ async def item_descriptor(db, item) -> QueueSourceDescriptor | None:
     RESTRICT foreign key makes impossible on PostgreSQL and which the GC never
     does on either dialect (it refuses to release an owned blob). If it ever
     happens the job reads as legacy — its own original, never a stranger's.
+
+    ``fresh`` reads the blob and a pre-fix snapshot's own links again from the database rather than out of the
+    session's identity map -- what a final claim compares with the answer it decided on.
     """
     source_id = getattr(item, "queue_source_id", None)
     if not source_id:
         return None
-    source = await db.get(QueueSource, source_id)
+    source = await db.get(QueueSource, source_id, populate_existing=fresh)
     if source is None:
         return None
     descriptor = stored_descriptor(source, getattr(item, "source_snapshot", None))
     if descriptor.swap_fact.missing:
         # A FUTURE use of the job's bytes: its source's readers answer (an operator's declaration, §8's
         # classification). The completion of a run already executed asks ``execution_swap_fact`` instead.
-        descriptor = replace(descriptor, swap_fact=await _legacy_swap_fact(db, item, descriptor, context="source"))
+        descriptor = replace(
+            descriptor, swap_fact=await _legacy_swap_fact(db, item, descriptor, context="source", fresh=fresh)
+        )
     return descriptor
+
+
+@dataclass(frozen=True)
+class SwapBasis:
+    """What a decision on our swap macros was taken from: the job's incarnation, its blob and snapshot, and the
+    EFFECTIVE fact with the hash it is bound to -- a pre-fix snapshot's fact may change with no change to the job."""
+
+    identity: str | None
+    queue_source_id: int | None
+    snapshot: object
+    fact: swap_compatibility.SourceFact | None
+    sha256: str | None
+
+
+def swap_basis(item, descriptor: QueueSourceDescriptor | None) -> SwapBasis:
+    return SwapBasis(
+        identity=swap_compatibility.job_identity(item),
+        queue_source_id=getattr(item, "queue_source_id", None),
+        snapshot=deepcopy(getattr(item, "source_snapshot", None)),
+        fact=descriptor.swap_fact if descriptor is not None else None,
+        sha256=descriptor.sha256 if descriptor is not None else None,
+    )
+
+
+async def swap_basis_holds(db, item, basis: SwapBasis) -> bool:
+    """Whether the job, read again now -- the row, its blob and its source's fact, all fresh -- still has the basis
+    a decision was taken from (swap-source-declaration spec r3 §6). Under the caller's claim; it reads, it writes
+    nothing."""
+    model = type(item)
+    current = (
+        await db.execute(select(model).where(model.id == item.id).execution_options(populate_existing=True))
+    ).scalar_one_or_none()
+    if current is None:
+        return False
+    return swap_basis(current, await item_descriptor(db, current, fresh=True)) == basis
 
 
 async def execution_swap_fact(db, item) -> swap_compatibility.SourceFact | None:
@@ -195,7 +235,7 @@ async def execution_swap_fact(db, item) -> swap_compatibility.SourceFact | None:
 
 
 async def _legacy_swap_fact(
-    db, item, descriptor: QueueSourceDescriptor, *, context: str
+    db, item, descriptor: QueueSourceDescriptor, *, context: str, fresh: bool = False
 ) -> swap_compatibility.SourceFact:
     """§6 of the swap-source-lifecycle spec: a snapshot written before the fix, answered from the job's own links.
 
@@ -211,24 +251,27 @@ async def _legacy_swap_fact(
     return swap_compatibility.resolve_legacy(
         context=context,
         provenance_kind=kind,
-        archive=await db.get(PrintArchive, archive_id) if archive_id else None,
-        library_file=await db.get(LibraryFile, library_id) if library_id else None,
+        archive=await db.get(PrintArchive, archive_id, populate_existing=fresh) if archive_id else None,
+        library_file=await db.get(LibraryFile, library_id, populate_existing=fresh) if library_id else None,
         sha256=descriptor.sha256,
     )
 
 
-async def snapshot_for_copy(db, item) -> dict | None:
+async def snapshot_for_copy(db, item, descriptor: QueueSourceDescriptor | None = None) -> dict | None:
     """The ``source_snapshot`` a job copied from ``item`` gets: a new dict, with the fact recorded.
 
     A clone, a copy and an assignment print the same bytes for the same reason, so they carry the same
     declaration -- resolved now, if the parent's predates the fix, and WRITTEN into the copy, so the copy never
     depends on the parent's links again (swap-source-lifecycle spec r4 §6). The parent's payload is not touched.
     A payload this version cannot read is copied as it is: it stays unreadable, and unknown, in the copy.
+    ``descriptor`` is the read a caller already decided from: the copy then carries that very fact, never a second
+    read's.
     """
     snapshot = getattr(item, "source_snapshot", None)
     if not isinstance(snapshot, dict) or snapshot.get("version") != SOURCE_SNAPSHOT_VERSION:
         return deepcopy(snapshot)
-    descriptor = await item_descriptor(db, item)
+    if descriptor is None:
+        descriptor = await item_descriptor(db, item)
     fact = descriptor.swap_fact if descriptor is not None else swap_compatibility.snapshot_fact(snapshot)
     return swap_compatibility.snapshot_with_fact(snapshot, fact)
 

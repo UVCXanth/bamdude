@@ -47,6 +47,17 @@ async def test_a_job_is_born_with_an_identity_it_keeps_and_a_clone_gets_its_own(
     await db_session.refresh(job)
     assert job.swap_declaration_identity == born
 
+    second = Printer(name="Q", serial_number="00M09I000000002", ip_address="192.0.2.6", access_code="12345678")
+    db_session.add(second)
+    await db_session.flush()
+    elsewhere = PrinterQueue(id=second.id, printer_id=second.id, status="idle")
+    db_session.add(elsewhere)
+    await db_session.flush()
+    job.queue_id = elsewhere.id  # a move is the same job
+    await db_session.commit()
+    await db_session.refresh(job)
+    assert job.swap_declaration_identity == born
+
     copy = await clone_item(db_session, job.id)
     await db_session.commit()
     assert copy.swap_declaration_identity and copy.swap_declaration_identity != born
@@ -76,7 +87,7 @@ async def test_an_auto_queue_item_has_its_own_identity(db_session):
     assert item.swap_declaration_identity and len(item.swap_declaration_identity) == 36
 
 
-def test_sources_carry_no_identity_column():
+async def test_sources_carry_no_identity_column():
     assert "swap_declaration_identity" not in PrintArchive.__table__.c
     assert "swap_declaration_identity" not in LibraryFile.__table__.c
     assert "swap_source_declaration" in PrintArchive.__table__.c
