@@ -217,3 +217,29 @@ async def test_postgresql_guards_come_archives_first_then_lanes_each_ascending()
     async with claim_lanes(session, [88, 87, 88], archive_ids=[5, 3], archive_id=4):
         pass
     assert session.guards == [(182, 3), (182, 4), (182, 5), (1625, 87), (1625, 88)]
+
+
+async def test_a_lane_lock_contended_in_an_earlier_event_loop():
+    """With no ``factory``: a lane's in-process lock waited for in THIS test's event loop is bound to it (asyncio
+    binds a lock to the loop of its first waiter), and stays in the module's registry after the test."""
+    from backend.app.services import queue_ops
+
+    lock = queue_ops._queue_claim_locks[1]
+    await lock.acquire()
+    waiter = asyncio.ensure_future(lock.acquire())
+    await asyncio.sleep(0)
+    lock.release()
+    await waiter
+    lock.release()
+
+
+async def test_a_test_on_the_factory_never_meets_a_lane_lock_of_another_event_loop(factory):
+    """Every test on ``factory`` starts with fresh in-process locks: a lane lock left bound to the previous test's
+    loop would make the first wait in this one a RuntimeError, not a wait."""
+    from backend.app.services.queue_ops import claim_lanes
+
+    async def claim(hold: float):
+        async with factory() as db, claim_lanes(db, [1]):
+            await asyncio.sleep(hold)
+
+    await asyncio.wait_for(asyncio.gather(claim(0.2), claim(0)), DONE_WITHIN)

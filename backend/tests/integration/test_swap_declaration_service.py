@@ -51,11 +51,14 @@ async def factory(tmp_path, monkeypatch):
         await connection.run_sync(Base.metadata.create_all)
     made = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr("backend.app.core.database.async_session", made)
-    from backend.app.services import archive_write_scope
+    from backend.app.services import archive_write_scope, queue_ops
 
+    # In-process locks of a previous test are bound to ITS event loop once anyone waited on them: fresh ones here.
     archive_write_scope._archive_locks.clear()
+    queue_ops._queue_claim_locks.clear()
     yield made
     archive_write_scope._archive_locks.clear()
+    queue_ops._queue_claim_locks.clear()
     await engine.dispose()
 
 
