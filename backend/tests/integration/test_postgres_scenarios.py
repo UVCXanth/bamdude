@@ -845,3 +845,72 @@ class TestSwapClaim:
         assert r["admission"] == ["active_claim"], r
         assert r["writer_key"] and r["stage"] == "finished" and r["sent"] == 1, r
         assert r["queue"] == "idle", r
+
+
+def _declare(tmp_path_factory, name: str) -> dict:
+    url = _pg_url()
+    _wipe(url)
+    return _run(f"declare:{name}", tmp_path_factory.mktemp(f"pg_declare_{name}"), url)
+
+
+class TestSwapDeclaration:
+    """The operator's swap declaration under two real PostgreSQL sessions (T9 plan, scenarios 5-9): each writer holds
+    its lock until PostgreSQL shows the other waiting, then lets go -- with the process-local locks off."""
+
+    def test_two_declarations_of_one_revision_commit_once(self, tmp_path_factory):
+        r = _declare(tmp_path_factory, "two_declares")
+        for kind in ("archive", "library"):
+            k = r[kind]
+            assert k["outcomes"] == ["409:swap_source_changed", "ok"], (kind, r)
+            assert k["waited"] >= 1 and k["audit"] == ["declare"], (kind, r)
+            assert k["origin"] == "operator" and k["effective"] in (True, False), (kind, r)
+
+    def test_a_scan_and_a_declaration_of_one_row_never_interleave(self, tmp_path_factory):
+        r = _declare(tmp_path_factory, "scan_vs_declare")
+        new = r["declaration_first_new_bytes"]
+        assert (new["declared"], new["scanned"]) == ("ok", "ok") and new["waited"] >= 1, r
+        assert (new["origin"], new["effective"], new["swap_tag"]) == ("classifier", False, False), r
+        same = r["declaration_first_same_bytes"]
+        assert (same["declared"], same["scanned"]) == ("ok", "ok") and same["waited"] >= 1, r
+        assert (same["origin"], same["effective"], same["swap_tag"]) == ("operator", True, True), r
+        late = r["scan_first_new_bytes"]
+        assert (late["declared"], late["scanned"]) == ("409:swap_source_changed", "ok") and late["waited"] >= 1, r
+        assert (late["origin"], late["effective"], late["audit"]) == ("classifier", False, []), r
+
+    def test_a_refresh_and_an_assignment_never_mix_their_answers(self, tmp_path_factory):
+        r = _declare(tmp_path_factory, "refresh_vs_assignment")
+        first = r["refresh_first"]
+        assert (first["refreshed"], first["assigned"]) == ("ok", "conflict:swap_source_changed"), r
+        assert first["waited"] >= 1 and first["children"] == [], r
+        assert (first["queue_fact"], first["auto_fact"], first["auto_status"]) == (True, True, "pending"), r
+        assert first["audit"] == ["declare", "refresh"], r
+        claimed = r["assignment_first"]
+        assert (claimed["assigned"], claimed["refreshed"]) == ("ok", "409:jobs_changed"), r
+        assert claimed["waited"] >= 1 and claimed["children"] == [None], r
+        assert (claimed["queue_fact"], claimed["auto_status"], claimed["audit"]) == (None, "assigned", ["declare"]), r
+
+    def test_a_refresh_refuses_whole_when_a_job_or_its_source_moved(self, tmp_path_factory):
+        r = _declare(tmp_path_factory, "refresh_vs_changes")
+        move = r["move"]
+        assert (move["changed"], move["refreshed"]) == ("ok", "409:jobs_changed") and move["waited"] >= 1, r
+        assert (move["facts"], move["audit"]) == ([None, None], ["declare"]), r
+        delete = r["delete"]
+        assert (delete["changed"], delete["refreshed"]) == ("ok", "409:job_not_refreshable"), r
+        assert delete["waited"] >= 1 and (delete["facts"], delete["audit"]) == ([None], ["declare"]), r
+        redeclare = r["redeclare"]
+        assert (redeclare["redeclared"], redeclare["refreshed"]) == ("ok", "409:source_changed"), r
+        assert redeclare["waited"] >= 1 and redeclare["facts"] == [None], r
+        assert redeclare["audit"] == ["declare", "declare"], r
+        assert r["restore"]["refreshed"] == "409:source_changed" and r["restore"]["facts"] == [None], r
+        free = r["no_deadlock"]
+        assert free["refreshed"] in ("ok", "409:source_changed"), r
+        assert (free["declared"], free["claimed"]) == ("ok", "ok") and free["waited"] >= 1, r
+
+    def test_the_upgrade_gives_every_job_its_own_incarnation_and_an_unwritten_audit_commits_nothing(
+        self, tmp_path_factory
+    ):
+        r = _declare(tmp_path_factory, "upgrade_and_identity")
+        assert (r["identities"], r["unique"], r["source_identity_columns"]) == (5, True, []), r
+        assert (r["born"], r["clone_differs"]) == (36, True), r
+        assert r["failed_declare"] == "error", r
+        assert (r["after_failed"]["origin"], r["audit_after_failed"]) == (None, []), r
