@@ -191,11 +191,15 @@ class TestFieldParity:
         loop = asyncio.get_running_loop()
         prepare_started = asyncio.Event()
         release_prepare = threading.Event()
+        prepare_finished = threading.Event()
 
         def slow_prepare(*args, **kwargs):
             loop.call_soon_threadsafe(prepare_started.set)
             release_prepare.wait(timeout=5)
-            return _prepare_archive_attach_file(*args, **kwargs)
+            try:
+                return _prepare_archive_attach_file(*args, **kwargs)
+            finally:
+                prepare_finished.set()
 
         monkeypatch.setattr("backend.app.services.archive._prepare_archive_attach_file", slow_prepare)
         task = asyncio.create_task(ArchiveService(db_session).attach_3mf_to_archive(archive.id, source))
@@ -205,10 +209,13 @@ class TestFieldParity:
             await task
 
         release_prepare.set()
+        # The worker first reaches its natural boundary -- it has staged the copy by then -- and only after that
+        # does the late discard remove it. Waiting for the worker keeps the check from passing before anything was
+        # staged; the bound is generous because a loaded runner's copy and rmtree took over a second (CI, 2026-10-15).
+        assert await asyncio.to_thread(prepare_finished.wait, 10)
         staging = tmp_path / "archive" / str(printer.id) / ".attach-staging"
-        for _ in range(20):
-            if not staging.exists() or not any(staging.iterdir()):
-                break
+        deadline = loop.time() + 10
+        while staging.exists() and any(staging.iterdir()) and loop.time() < deadline:
             await asyncio.sleep(0.05)
         assert not staging.exists() or not any(staging.iterdir())
 
