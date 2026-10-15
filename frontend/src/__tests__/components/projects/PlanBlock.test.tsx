@@ -14,10 +14,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { QueryClient, onlineManager, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
+import { QueryClientProvider, QueryClient, onlineManager, useQuery, useQueryClient } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { strayZeroTextNodes } from '../../domHelpers';
-import { api } from '../../../api/client';
+import { api, ApiError } from '../../../api/client';
 import type {
   Order,
   OrderForecastDetail,
@@ -29,6 +30,7 @@ import type {
   PlateRecipe,
   Printer,
 } from '../../../api/client';
+import { DEFAULT_PRINT_OPTIONS } from '../../../components/PrintModal/types';
 import { PlanBlock } from '../../../components/projects/PlanBlock';
 import { ORDER_VIEW_KEYS } from '../../../utils/queryInvalidation';
 import { FORECAST_DEFAULTS } from '../../wireDefaults';
@@ -1986,4 +1988,198 @@ describe('PlanBlock', () => {
     expect(row).toHaveTextContent('500g');
     expect(screen.getByTitle('The shelf could not be read')).toBeInTheDocument();
   });
+  describe('order and line auto-queue review', () => {
+    const request = { requestedAt: 0 };
+    const duplicateOrder = {
+      ...order, name: 'Product A/B synthetic order',
+      lines: [order.lines[0], { ...order.lines[0], id: 11 }],
+    };
+    const duplicatePlan = {
+      ...plan, lines: [plan.lines[0], { ...plan.lines[0], line_id: 11 }],
+    };
+
+    it('reviews the whole order, then sends both duplicate-product lines exactly once', async () => {
+      vi.spyOn(api, 'getOrderPlan').mockResolvedValue(duplicatePlan);
+      const send = vi.spyOn(api, 'enqueueOrderPlan').mockResolvedValue({ created: [] });
+      const close = vi.fn();
+      render(<PlanBlock order={duplicateOrder} canEdit queueRequest={request} onQueueRequestClose={close} />);
+      const confirm = await screen.findByRole('dialog');
+      await waitFor(() => expect(within(confirm).getByRole('button', { name: 'Send to auto queue' })).toBeEnabled());
+      expect(confirm).toHaveTextContent('Total: 4 print runs');
+      expect(confirm).toHaveTextContent('Line 1');
+      expect(confirm).toHaveTextContent('Line 2');
+      expect(confirm).toHaveTextContent('does not cover every outstanding part');
+      expect(send).not.toHaveBeenCalled();
+      const button = within(confirm).getByRole('button', { name: 'Send to auto queue' });
+      fireEvent.click(button);
+      fireEvent.click(button);
+      await waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith(order.id, { target: { kind: 'auto' }, items: [
+        { line_id: 10, plate_id: 100, count: 1 }, { line_id: 10, plate_id: 200, count: 1 },
+        { line_id: 11, plate_id: 100, count: 1 }, { line_id: 11, plate_id: 200, count: 1 },
+      ] });
+    });
+
+    it('scopes by order-line id, preserving edited counts without sending its identical sibling', async () => {
+      vi.spyOn(api, 'getOrderPlan').mockResolvedValue(duplicatePlan);
+      const send = vi.spyOn(api, 'enqueueOrderPlan').mockResolvedValue({ created: [] });
+      const close = vi.fn();
+      function Review() {
+        const [open, setOpen] = useState(false);
+        return <><button onClick={() => setOpen(true)}>review synthetic line</button>
+          <PlanBlock order={duplicateOrder} canEdit queueRequest={open ? { ...request, lineId: 11 } : null}
+            onQueueRequestClose={close} /></>;
+      }
+      render(<Review />);
+      const input = await screen.findByTestId('plan-row-11-100-count');
+      fireEvent.change(input, { target: { value: '3' } });
+      fireEvent.change(screen.getByTestId('plan-row-11-200-count'), { target: { value: '0' } });
+      fireEvent.click(screen.getByRole('button', { name: 'review synthetic line' }));
+      const confirm = await screen.findByRole('dialog');
+      expect(confirm).toHaveTextContent('Total: 3 print runs');
+      expect(confirm).not.toHaveTextContent('Line 1');
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Send to auto queue' }));
+      await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+      expect(send).toHaveBeenCalledWith(order.id, { target: { kind: 'auto' }, items: [{ line_id: 11, plate_id: 100, count: 3 }] });
+    });
+
+    it('cancel leaves the queue untouched', async () => {
+      const send = vi.spyOn(api, 'enqueueOrderPlan');
+      const close = vi.fn();
+      render(<PlanBlock order={order} canEdit queueRequest={request} onQueueRequestClose={close} />);
+      fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+      expect(close).toHaveBeenCalledOnce();
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('does not send an old cached plan or a pending refresh', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+      client.setQueryData(['project-plan', order.id], plan, { updatedAt: 100 });
+      let resolve!: (value: OrderPlan) => void;
+      vi.spyOn(api, 'getOrderPlan').mockReturnValue(new Promise<OrderPlan>((done) => { resolve = done; }));
+      const send = vi.spyOn(api, 'enqueueOrderPlan');
+      render(<QueryClientProvider client={client}><PlanBlock order={order} canEdit queueRequest={{ requestedAt: 101 }} onQueueRequestClose={vi.fn()} /></QueryClientProvider>);
+      const button = within(await screen.findByRole('dialog')).getByRole('button', { name: 'Send to auto queue' });
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+      expect(send).not.toHaveBeenCalled();
+      resolve(plan);
+      await waitFor(() => expect(button).toBeEnabled());
+    });
+
+    it('refuses a failed refresh even with cached data, and allows retry', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+      client.setQueryData(['project-plan', order.id], plan);
+      const read = vi.spyOn(api, 'getOrderPlan').mockRejectedValue(new Error('offline'));
+      render(<QueryClientProvider client={client}><PlanBlock order={order} canEdit queueRequest={request} onQueueRequestClose={vi.fn()} /></QueryClientProvider>);
+      const confirm = await screen.findByRole('dialog');
+      const retry = await within(confirm).findByRole('button', { name: 'Retry' });
+      expect(within(confirm).getByRole('button', { name: 'Send to auto queue' })).toBeDisabled();
+      read.mockResolvedValue(plan);
+      fireEvent.click(retry);
+      await waitFor(() => expect(within(confirm).getByRole('button', { name: 'Send to auto queue' })).toBeEnabled());
+    });
+
+    it.each(['covered', 'closed', 'permission', 'over-cap'] as const)('refuses a %s plan', async (reason) => {
+      if (reason === 'covered') vi.spyOn(api, 'getOrderPlan').mockResolvedValue({ ...plan, lines: [] });
+      if (reason === 'permission') auth.granted.delete('queue:create');
+      if (reason === 'over-cap') vi.spyOn(api, 'getOrderPlan').mockResolvedValue({ ...plan, lines: [{
+        ...plan.lines[0], rows: [{ ...plan.lines[0].rows[0], count: 1000 }],
+      }] });
+      const send = vi.spyOn(api, 'enqueueOrderPlan');
+      render(<PlanBlock order={reason === 'closed' ? { ...order, status: 'completed' } : order} canEdit queueRequest={request} onQueueRequestClose={vi.fn()} />);
+      const confirm = await screen.findByRole('dialog');
+      if (reason !== 'closed') await screen.findByTestId('plan-intro');
+      const button = within(confirm).getByRole('button', { name: 'Send to auto queue' });
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('keeps a server refusal in the confirmation and permits a deliberate retry', async () => {
+      const send = vi.spyOn(api, 'enqueueOrderPlan').mockRejectedValueOnce(new ApiError('Order was closed elsewhere', 409))
+        .mockResolvedValueOnce({ created: [] });
+      const close = vi.fn();
+      render(<PlanBlock order={order} canEdit queueRequest={request} onQueueRequestClose={close} />);
+      const confirm = await screen.findByRole('dialog');
+      const button = within(confirm).getByRole('button', { name: 'Send to auto queue' });
+      await waitFor(() => expect(button).toBeEnabled());
+      fireEvent.click(button);
+      expect(await within(confirm).findByRole('alert')).toHaveTextContent('Order was closed elsewhere');
+      expect(close).not.toHaveBeenCalled();
+      fireEvent.click(button);
+      await waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(send).toHaveBeenCalledTimes(2);
+    });
+    it('does not retry an uncertain or partially committed send in the same review', async () => {
+      const send = vi.spyOn(api, 'enqueueOrderPlan').mockRejectedValue(new ApiError('Writer failed after one item', 500));
+      const close = vi.fn();
+      render(<PlanBlock order={order} canEdit queueRequest={request} onQueueRequestClose={close} />);
+      const confirm = await screen.findByRole('dialog');
+      const button = within(confirm).getByRole('button', { name: 'Send to auto queue' });
+      await waitFor(() => expect(button).toBeEnabled());
+      fireEvent.click(button);
+      expect(await within(confirm).findByRole('alert')).toHaveTextContent('Writer failed after one item');
+      expect(confirm).toHaveTextContent('Some tasks may already have been created');
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(close).not.toHaveBeenCalled();
+    });
+
+    it('reviews the existing model split and refuses its unfinished draft', async () => {
+      vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+      const send = vi.spyOn(api, 'enqueueOrderPlan').mockResolvedValue({ created: [] });
+      function Review() {
+        const [open, setOpen] = useState(false);
+        return <><button onClick={() => setOpen(true)}>review split</button>
+          <PlanBlock order={order} canEdit queueRequest={open ? request : null} onQueueRequestClose={() => setOpen(false)} /></>;
+      }
+      render(<Review />);
+      fireEvent.click(await screen.findByTestId('plan-row-10-100-split'));
+      fireEvent.change(screen.getByTestId('plan-row-10-100-split-400'), { target: { value: '2' } });
+      fireEvent.click(screen.getByRole('button', { name: 'review split' }));
+      let confirm = await screen.findByRole('dialog');
+      expect(within(confirm).getByRole('button', { name: 'Send to auto queue' })).toBeDisabled();
+      expect(confirm).toHaveTextContent('unfinished split');
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+      fireEvent.click(screen.getByTestId('plan-row-10-100-inc'));
+      fireEvent.click(screen.getByTestId('plan-row-10-100-inc'));
+      fireEvent.click(screen.getByRole('button', { name: 'review split' }));
+      confirm = await screen.findByRole('dialog');
+      expect(confirm).toHaveTextContent('Total: 4 print runs');
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Send to auto queue' }));
+      await waitFor(() => expect(send).toHaveBeenCalledOnce());
+      expect(send).toHaveBeenCalledWith(order.id, { target: { kind: 'auto' }, items: [
+        { line_id: 10, plate_id: 100, count: 1 }, { line_id: 10, plate_id: 400, count: 2 },
+        { line_id: 10, plate_id: 200, count: 1 },
+      ] });
+    });
+
+    it('blocks new shortcuts while model-specific print options have unsaved edits', async () => {
+      vi.spyOn(api, 'getOrderPrintOptions').mockResolvedValue({ overrides: {}, models: [{
+        model: 'P1S', custom: false, capabilities: { known: true,
+          supported: { bed_levelling: true, flow_cali: false, nozzle_offset_cali: false, layer_inspect: false },
+          auto: { bed_levelling: false, flow_cali: false, nozzle_offset_cali: false } },
+        inherited: { ...DEFAULT_PRINT_OPTIONS }, options: { ...DEFAULT_PRINT_OPTIONS },
+      }] });
+      const send = vi.spyOn(api, 'enqueueOrderPlan');
+      function Review() {
+        const [open, setOpen] = useState(false);
+        return <><button onClick={() => setOpen(true)}>review options</button>
+          <PlanBlock order={order} canEdit queueRequest={open ? request : null} onQueueRequestClose={() => setOpen(false)} /></>;
+      }
+      render(<Review />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Print parameters for this order' }));
+      fireEvent.click(await screen.findByRole('checkbox', { name: 'Use custom parameters for this order and model' }));
+      fireEvent.click(screen.getByRole('button', { name: 'review options' }));
+      const confirm = await screen.findByRole('dialog');
+      expect(within(confirm).getByRole('button', { name: 'Send to auto queue' })).toBeDisabled();
+      expect(within(confirm).getByRole('alert')).toHaveTextContent(/save|unsaved/i);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+  });
+
 });

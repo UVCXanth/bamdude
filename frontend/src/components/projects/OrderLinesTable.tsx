@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, ChevronRight, Clock, ListPlus, Package, Play } from 'lucide-react';
+import { ChevronDown, ChevronRight, Clock, ListPlus, Package, Play, Send } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Order, ProjectLine } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
@@ -39,6 +39,8 @@ function configCaption(line: ProjectLine, t: ReturnType<typeof useTranslation>['
 interface OrderLinesTableProps {
   order: Order;
   canEdit: boolean;
+  /** Delegates to the existing plan editor; never queues from this table. */
+  onQueuePlan?: (lineId?: number) => void;
   /** 2 on the order page; 3 in the workspace pane, whose order title is an h2 (E3 B06). */
   headingLevel?: 2 | 3;
 }
@@ -57,10 +59,10 @@ interface OrderLinesTableProps {
  * another session had just done. Sequential rather than parallel: the pair is a
  * swap, and sending both at once means the second can land first.
  *
- * ⚠️ **Nothing prints from here.** The plan block below owns that; a second door
- * onto `PrintModal` would let an operator queue a plate the plan is not counting.
+ * The queue shortcuts delegate to PlanBlock's review and writer. The table never
+ * derives a second plan or opens PrintModal with a plate outside that plan.
  */
-export function OrderLinesTable({ order, canEdit, headingLevel = 2 }: OrderLinesTableProps) {
+export function OrderLinesTable({ order, canEdit, headingLevel = 2, onQueuePlan }: OrderLinesTableProps) {
   const { t } = useTranslation();
   const Heading = headingLevel === 3 ? 'h3' : 'h2';
   const { showToast } = useToast();
@@ -114,21 +116,30 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2 }: OrderLines
     });
 
   const busy = swap.isPending || remove.isPending;
+  const canQueue = orderActive && onQueuePlan != null;
 
   return (
     <section className="space-y-3">
       {/* WS-13 E3 E06: the heading carries the count; the table has no card of its
           own inside the order's main panel — only its own scroll region. */}
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <Heading className="text-lg leading-7 font-semibold text-white">
           {t('orders.lines.title')} <small className="text-sm font-normal text-bambu-gray">({order.lines.length})</small>
         </Heading>
-        {canEdit && (
-          <Button size="sm" onClick={() => setAdding(true)}>
-            <ListPlus className="w-4 h-4" />
-            {t('orders.lines.addToOrder')}
-          </Button>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {canQueue && (
+            <Button size="sm" variant="secondary" onClick={() => onQueuePlan?.()}>
+              <Send className="w-4 h-4" />
+              {t('orders.plan.queueOrder')}
+            </Button>
+          )}
+          {canEdit && (
+            <Button size="sm" onClick={() => setAdding(true)}>
+              <ListPlus className="w-4 h-4" />
+              {t('orders.lines.addToOrder')}
+            </Button>
+          )}
+        </div>
       </div>
 
       <WorkshopTableScroll label={t('orders.lines.title')}>
@@ -300,7 +311,7 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2 }: OrderLines
                     </small>
                   </td>
                   <td className={`${CELL} w-px text-right whitespace-nowrap`}>
-                    {canEdit && (
+                    {(canEdit || canQueue) && (
                       <CardActionMenu
                         label={t('orders.lines.menu', { product: line.product_name })}
                         width="max-content"
@@ -308,52 +319,61 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2 }: OrderLines
                       >
                         {(close) => (
                           <>
-                            <CardActionMenuItem
-                              disabled={blocked != null}
-                              title={blocked ?? undefined}
-                              onSelect={() => {
-                                close();
-                                setConfiguring(line);
-                              }}
-                            >
-                              {t('orders.lines.menuConfigure')}
-                            </CardActionMenuItem>
-                            <CardActionMenuItem
-                              onSelect={() => {
-                                close();
-                                setEditing(line);
-                              }}
-                            >
-                              {t('orders.lines.menuEdit')}
-                            </CardActionMenuItem>
-                            <CardActionMenuItem
-                              disabled={index === 0 || busy}
-                              onSelect={() => {
-                                close();
-                                swap.mutate({ a: line, b: lines[index - 1] });
-                              }}
-                            >
-                              {t('orders.lines.moveUp')}
-                            </CardActionMenuItem>
-                            <CardActionMenuItem
-                              disabled={index === lines.length - 1 || busy}
-                              onSelect={() => {
-                                close();
-                                swap.mutate({ a: line, b: lines[index + 1] });
-                              }}
-                            >
-                              {t('orders.lines.moveDown')}
-                            </CardActionMenuItem>
-                            <div role="separator" className="my-1 border-t border-bambu-dark-tertiary" />
-                            <CardActionMenuItem
-                              danger
-                              onSelect={() => {
-                                close();
-                                setDeleting(line);
-                              }}
-                            >
-                              {t('orders.lines.delete')}
-                            </CardActionMenuItem>
+                            {canQueue && (
+                              <CardActionMenuItem onSelect={() => { close(); onQueuePlan?.(line.id); }}>
+                                {t('orders.plan.queueLine')}
+                              </CardActionMenuItem>
+                            )}
+                            {canEdit && (
+                              <>
+                                <CardActionMenuItem
+                                  disabled={blocked != null}
+                                  title={blocked ?? undefined}
+                                  onSelect={() => {
+                                    close();
+                                    setConfiguring(line);
+                                  }}
+                                >
+                                  {t('orders.lines.menuConfigure')}
+                                </CardActionMenuItem>
+                                <CardActionMenuItem
+                                  onSelect={() => {
+                                    close();
+                                    setEditing(line);
+                                  }}
+                                >
+                                  {t('orders.lines.menuEdit')}
+                                </CardActionMenuItem>
+                                <CardActionMenuItem
+                                  disabled={index === 0 || busy}
+                                  onSelect={() => {
+                                    close();
+                                    swap.mutate({ a: line, b: lines[index - 1] });
+                                  }}
+                                >
+                                  {t('orders.lines.moveUp')}
+                                </CardActionMenuItem>
+                                <CardActionMenuItem
+                                  disabled={index === lines.length - 1 || busy}
+                                  onSelect={() => {
+                                    close();
+                                    swap.mutate({ a: line, b: lines[index + 1] });
+                                  }}
+                                >
+                                  {t('orders.lines.moveDown')}
+                                </CardActionMenuItem>
+                                <div role="separator" className="my-1 border-t border-bambu-dark-tertiary" />
+                                <CardActionMenuItem
+                                  danger
+                                  onSelect={() => {
+                                    close();
+                                    setDeleting(line);
+                                  }}
+                                >
+                                  {t('orders.lines.delete')}
+                                </CardActionMenuItem>
+                              </>
+                            )}
                           </>
                         )}
                       </CardActionMenu>

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Loader2, Send } from 'lucide-react';
-import { api } from '../../api/client';
+import { api, ApiError } from '../../api/client';
 import type { Order, PlanEnqueueItem, PlanRow as PlanRowData } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { canFileFuturePrint } from '../../utils/workshopRights';
@@ -10,9 +10,11 @@ import { useToast } from '../../contexts/ToastContext';
 import { formatMoney } from '../../utils/currency';
 import { formatDuration } from '../../utils/date';
 import { Button } from '../Button';
+import { ActionConfirm } from '../workshop/ActionConfirm';
 import { FilamentNeeds } from './FilamentNeeds';
 import { PlanLine } from './PlanLine';
 import { OrderPrintOptions } from './OrderPrintOptions';
+import { lineConfigLabel } from './lineConfigLabel';
 import { MAX_PER_PLATE } from './PlanRow';
 import { projectPlan, rowDistribution, splitIsOff, type ChosenByRow, type SplitByRow } from './planMath';
 import { invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInvalidation';
@@ -51,6 +53,8 @@ export function PlanBlock({
   variant = 'page',
   onEnqueued,
   onDraftChanged,
+  queueRequest,
+  onQueueRequestClose,
 }: {
   order: Order;
   canEdit: boolean;
@@ -61,6 +65,9 @@ export function PlanBlock({
   /** The page uses this to keep its order-level ETA from describing an edited
    * draft. The dialog relies on this block's own notice. */
   onDraftChanged?: (changed: boolean) => void;
+  /** A shortcut requests a fresh review of this editor's current plan, optionally one line. */
+  queueRequest?: { lineId?: number; requestedAt: number } | null;
+  onQueueRequestClose?: () => void;
 }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -69,8 +76,9 @@ export function PlanBlock({
 
   const active = order.status === 'active';
   const [optionsBlocked, setOptionsBlocked] = useState(false);
+  const [uncertainRequest, setUncertainRequest] = useState<typeof queueRequest>(null);
 
-  const { data: plan, isLoading, isError, refetch } = useOrderPlan(order.id, active);
+  const { data: plan, isLoading, isFetching, isError, dataUpdatedAt, refetch } = useOrderPlan(order.id, active);
 
   // The app-wide currency, fetched the way every other money-showing screen
   // fetches it; `formatMoney` covers the unresolved first paint.
@@ -230,7 +238,7 @@ export function PlanBlock({
       invalidate();
       onEnqueued?.();
     },
-    onError: (e: Error) => showToast(e.message, 'error'),
+    onError: (e: Error) => { if (!queueRequest) showToast(e.message, 'error'); },
   });
 
   // The line's Rebalance button (spec 2026-09-10): the same procedure the tick
@@ -373,10 +381,74 @@ export function PlanBlock({
   const setRowSplit = (lineId: number, rowPlateId: number, next: Record<number, number>) =>
     setSplit((prev) => ({ ...prev, [lineId]: { ...(prev[lineId] ?? {}), [rowPlateId]: next } }));
 
-  // No heading of its own: on the order page the «Print plan» tab names it (WS-13
-  // E3 F05), and the dialog has its own title. What the block is, it says in one
-  // sentence above the lines (E4 E01).
-  const heading = null;
+  // Shortcuts use the SAME edited rows and writer as the plan, scoped by line id:
+  // two lines may name the same product but ask for different configurations.
+  const selectedLines = queueRequest
+    ? lines.filter((line) => queueRequest.lineId == null || line.line_id === queueRequest.lineId)
+    : [];
+  const selectedItems = selectedLines.flatMap((line) => itemsFor(line));
+  const selectedSplitOff = selectedLines.some((line) => line.rows.some((row) => splitIsOff(
+    split[line.line_id]?.[row.plate_id],
+    Math.max(0, Math.trunc(counts[line.line_id]?.[row.plate_id] ?? row.count)),
+  )));
+  const waitingForPlan = isLoading || isFetching || !plan || dataUpdatedAt < (queueRequest?.requestedAt ?? 0);
+  const invalidDraft = selectedItems.some((item) => item.count > MAX_PER_PLATE) || selectedSplitOff;
+  const queueBlocked = !active || !canQueue || waitingForPlan || isError || optionsBlocked || invalidDraft
+    || selectedItems.length === 0 || enqueue.isPending || uncertainRequest === queueRequest;
+  const queueConfirmation = queueRequest && onQueueRequestClose ? (
+    <ActionConfirm
+      title={t('orders.plan.queueConfirm.title')}
+      subtitle={order.name}
+      primaryLabel={t('orders.plan.queueConfirm.send')}
+      primaryDisabled={queueBlocked}
+      onClose={onQueueRequestClose}
+      send={async () => {
+        if (queueBlocked) throw new Error(t('orders.plan.queueConfirm.notReady'));
+        try {
+          await enqueue.mutateAsync(selectedItems);
+        } catch (error) {
+          // A writer commits each item. A 5xx or lost response may have filed some
+          // work: do not resend this review. Reopening reads the remaining plan.
+          if (!(error instanceof ApiError) || error.status >= 500) {
+            setUncertainRequest(queueRequest);
+            invalidate();
+          }
+          throw error;
+        }
+      }}
+      body={<div className="space-y-3" data-testid="plan-queue-review">
+        <p>{t(queueRequest.lineId == null ? 'orders.plan.queueConfirm.orderScope' : 'orders.plan.queueConfirm.lineScope')}</p>
+        {isError ? <div role="alert">
+          <p>{t('orders.plan.loadFailed')}</p>
+          <Button size="sm" variant="secondary" onClick={() => void refetch()}>{t('orders.plan.retry')}</Button>
+        </div> : waitingForPlan ? <p role="status">{t('common.loading')}</p> : <>
+          <ul className="space-y-1">
+            {[...order.lines].sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
+              .map((line, index) => ({ line, position: index + 1 }))
+              .filter(({ line }) => selectedItems.some((item) => item.line_id === line.id))
+              .map(({ line, position }) => <li key={line.id}>
+                {t('orders.plan.queueConfirm.position', { position })} · {line.product_name} — {t('orders.plan.queueConfirm.runs', {
+                  count: selectedItems.filter((item) => item.line_id === line.id).reduce((sum, item) => sum + item.count, 0),
+                })}
+                <small className="block text-bambu-gray">{lineConfigLabel(line.configuration, line.mode, t) || t('orders.lines.standardConfig')}</small>
+              </li>)}
+          </ul>
+          <p className="font-medium">{t('orders.plan.queueConfirm.total', {
+            count: selectedItems.reduce((sum, item) => sum + item.count, 0),
+          })}</p>
+          {selectedItems.length === 0 && <p>{t('orders.plan.nothingOutstanding')}</p>}
+          {(plan?.truncated || selectedLines.some((line) => line.unsatisfiable.length > 0 || line.not_sliced.length > 0))
+            && <p className="text-amber-500">{t('orders.plan.queueConfirm.incomplete')}</p>}
+        </>}
+        {optionsBlocked && <p role="alert">{t('orderPrintOptions.unsaved')}</p>}
+        {uncertainRequest === queueRequest && <p role="status">{t('orders.plan.queueConfirm.uncertain')}</p>}
+        {invalidDraft && <p role="alert">{t('orders.plan.queueConfirm.invalidDraft')}</p>}
+        {!active && <p role="alert">{t('orders.plan.closedText')}</p>}
+        {!canQueue && <p role="alert">{t('orders.plan.queueConfirm.notReady')}</p>}
+        <p className="text-xs text-bambu-gray">{t('orders.plan.queueConfirm.explanation')}</p>
+      </div>}
+    />
+  ) : null;
   const intro = (
     <p className="text-xs leading-[18px] text-bambu-gray" data-testid="plan-intro">
       {t('orders.plan.intro')}
@@ -390,7 +462,7 @@ export function PlanBlock({
   if (!active) {
     return (
       <section id="order-plan" className="space-y-3" data-testid="plan-block">
-        {heading}
+        {queueConfirmation}
         <div className="py-8 text-center" data-testid="plan-closed">
           <p className="text-sm font-medium text-white">{t('orders.plan.closedTitle')}</p>
           <p className="mt-1 text-sm text-bambu-gray">{t('orders.plan.closedText')}</p>
@@ -402,7 +474,7 @@ export function PlanBlock({
   if (isLoading) {
     return (
       <section id="order-plan" className="space-y-3" data-testid="plan-block">
-        {heading}
+        {queueConfirmation}
         <div className="flex items-center gap-2 text-bambu-gray text-sm">
           <Loader2 className="w-4 h-4 animate-spin" />
           {t('common.loading')}
@@ -422,7 +494,7 @@ export function PlanBlock({
   if (isError && !plan) {
     return (
       <section id="order-plan" className="space-y-3" data-testid="plan-block">
-        {heading}
+        {queueConfirmation}
         <div className="flex items-center gap-3 flex-wrap text-sm">
           <p className="text-red-600 dark:text-red-400" data-testid="plan-error">
             {t('orders.plan.loadFailed')}
@@ -446,7 +518,7 @@ export function PlanBlock({
   if (!plan) {
     return (
       <section id="order-plan" className="space-y-3" data-testid="plan-block">
-        {heading}
+        {queueConfirmation}
         <div className="flex items-center gap-2 text-bambu-gray text-sm" data-testid="plan-idle">
           <Loader2 className="w-4 h-4 animate-spin" />
           {t('common.loading')}
@@ -457,7 +529,7 @@ export function PlanBlock({
 
   return (
     <section id="order-plan" className="space-y-3" data-testid="plan-block">
-      {heading}
+      {queueConfirmation}
       {intro}
       <OrderPrintOptions key={order.id} orderId={order.id}
         canEdit={canEdit && hasPermission('orders:update')} busy={enqueue.isPending}
