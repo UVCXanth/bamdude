@@ -3,9 +3,10 @@
 Spec: docs/superpowers/specs/2026-09-06-farm-forecast-design.md. An ADVISORY
 layer above the plan engine and the queues: it reads the plan's rows and the
 database's picture of the farm, runs the textbook list-scheduling makespan, and
-answers with dates and counts. It gates nothing and writes nothing, and it never
-reads a printer beyond its model and what its queue already holds — routing is
-not dispatching, and the plan engine stays ignorant of printers.
+answers with dates and counts. It gates nothing and writes nothing. With an
+operator absence configured, the existing plate-owner proof distinguishes a
+held automatic completion from a manual wait; it does not admit a dispatch.
+The pure walk and plan engine stay ignorant of device readiness.
 
 Two ETAs travel together (Decision 2): ``now`` — this order's plan sent on top of
 what the queues hold today; ``after`` — after the plans of every active order
@@ -17,12 +18,15 @@ from __future__ import annotations
 import heapq
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.core.timezones import server_timezone
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.print_queue import PrintQueueItem
@@ -31,6 +35,7 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project import Project
 from backend.app.models.settings import Settings
 from backend.app.services.filament_intake import loaded_descriptor
+from backend.app.services.forecast_operator_hours import OperatorHours
 from backend.app.services.order_deadlines import eta_is_late
 from backend.app.services.order_filing import priority_rank
 from backend.app.services.order_queue import awaiting_auto_row_conditions
@@ -65,6 +70,7 @@ class QueuedRow:
     #: may still hold is a LIVE one, carried by ``StaggerPolicy.live`` — the
     #: walk never opens a second window for it.
     started: bool = False
+    auto_eject: bool = False
 
 
 @dataclass
@@ -88,6 +94,8 @@ class MachineState:
     waiting_seconds: float = 0.0
     #: The printer's own stagger interval; None = the farm default.
     stagger_interval_seconds: int | None = None
+    requires_operator: bool = False
+    awaiting_operator: bool = False
 
 
 @dataclass
@@ -111,6 +119,7 @@ class StagedJob:
     order_id: int | None
     target_model: str | None
     seconds: int | None
+    auto_eject: bool = False
 
 
 @dataclass
@@ -126,6 +135,7 @@ class FarmSnapshot:
     #: the queue, else empty (spec §0). Every ETA the walk produces carries it.
     assumptions: tuple[str, ...] = ()
     allow_compatible: bool = False
+    operator_hours: OperatorHours | None = None
 
 
 @dataclass
@@ -141,6 +151,7 @@ class PrintJob:
     line_id: int
     row_plate_id: int
     options: list[PlateOption]  # the row's own plate first, then its alternatives
+    auto_eject: bool = False
 
 
 # ---------- outputs ----------
@@ -238,6 +249,7 @@ class _Print:
     plate_id: int | None = None
     started: bool = False
     finish: float = 0.0
+    auto_eject: bool = False
 
 
 @dataclass
@@ -253,6 +265,7 @@ class _Machine:
     waiting: float = 0.0  # holds the first not-started print (plate awaited now, blocking drying)
     interval: int = 0  # this machine's stagger window
     timeline: list[_Print] = field(default_factory=list)
+    requires_operator: bool = False
 
 
 @dataclass
@@ -273,6 +286,7 @@ class _State:
     #: The same rows, per machine — a queued row belongs to exactly one
     #: printer, so these sum to ``farm_unknown`` minus the staged jobs.
     machine_unknown: Counter = field(default_factory=Counter)
+    operator_hours: OperatorHours | None = None
 
     def farm_finish(self) -> float:
         return max((m.free_at for m in self.machines), default=0.0)
@@ -376,7 +390,12 @@ def _sequence(state: _State) -> None:
             p.finish = t + p.prep + p.seconds
         _bump(order_finish, p.order_id, p.finish)
         cursor[pid] += 1
-        ready = p.finish + m.gap
+        gap = 0.0 if p.auto_eject else m.gap
+        ready = (
+            state.operator_hours.service_finish(p.finish, gap)
+            if state.operator_hours and m.requires_operator and not p.auto_eject
+            else p.finish + gap
+        )
         if p.started:
             ready = max(ready, m.waiting)
         if cursor[pid] < len(m.timeline):
@@ -399,6 +418,7 @@ def _initial_state(snapshot: FarmSnapshot) -> _State:
         stagger=stagger,
         assumptions=tuple(snapshot.assumptions),
         allow_compatible=snapshot.allow_compatible,
+        operator_hours=snapshot.operator_hours,
     )
     for machine in snapshot.printers:
         m = _Machine(
@@ -409,7 +429,10 @@ def _initial_state(snapshot: FarmSnapshot) -> _State:
             gap=max(0.0, float(machine.plate_clear_seconds)),
             waiting=max(0.0, float(machine.waiting_seconds)),
             interval=int(machine.stagger_interval_seconds or (stagger.interval_seconds if stagger else 0)),
+            requires_operator=machine.requires_operator or machine.plate_clear_seconds > 0,
         )
+        if snapshot.operator_hours and machine.awaiting_operator:
+            m.waiting = snapshot.operator_hours.service_finish(max(0.0, m.waiting - m.gap), m.gap)
         t = 0.0
         if machine.running_seconds > 0:
             m.timeline.append(_Print(seconds=float(machine.running_seconds), prep=0.0, order_id=None, started=True))
@@ -425,10 +448,20 @@ def _initial_state(snapshot: FarmSnapshot) -> _State:
             if row.seconds <= 0:
                 continue
             prep = 0.0 if row.started else float(row.prep_seconds)
-            m.timeline.append(_Print(seconds=float(row.seconds), prep=prep, order_id=row.order_id, started=row.started))
-            t += prep + row.seconds + m.gap
+            m.timeline.append(
+                _Print(
+                    seconds=float(row.seconds),
+                    prep=prep,
+                    order_id=row.order_id,
+                    started=row.started,
+                    auto_eject=row.auto_eject,
+                )
+            )
+            t += prep + row.seconds + (0.0 if row.auto_eject else m.gap)
         m.free_at = t
         state.machines.append(m)
+    if snapshot.operator_hours:
+        _sequence(state)
     for job in sorted(snapshot.staged, key=lambda j: -(j.seconds or 0)):
         if not job.seconds or job.seconds <= 0:
             state.farm_unknown += 1
@@ -440,8 +473,18 @@ def _initial_state(snapshot: FarmSnapshot) -> _State:
             if job.order_id is not None:
                 state.unroutable[job.order_id] += 1
             continue
-        target.timeline.append(_Print(seconds=float(job.seconds), prep=state.prep_seconds, order_id=job.order_id))
-        target.free_at += state.prep_seconds + job.seconds + target.gap
+        target.timeline.append(
+            _Print(
+                seconds=float(job.seconds), prep=state.prep_seconds, order_id=job.order_id, auto_eject=job.auto_eject
+            )
+        )
+        finish = target.free_at + state.prep_seconds + job.seconds
+        gap = 0.0 if job.auto_eject else target.gap
+        target.free_at = (
+            state.operator_hours.service_finish(finish, gap)
+            if state.operator_hours and target.requires_operator and not job.auto_eject
+            else finish + gap
+        )
     _sequence(state)
     return state
 
@@ -466,11 +509,13 @@ def capacity_from_snapshot(snapshot: FarmSnapshot) -> FleetCapacity:
                 free_at=machine.free_at,
                 prep_seconds=state.prep_seconds,
                 gap_seconds=machine.gap,
+                requires_operator=machine.requires_operator,
             )
             for machine in state.machines
             if machine.accepts_new_work
         ],
         allow_compatible=snapshot.allow_compatible,
+        operator_hours=snapshot.operator_hours,
     )
 
 
@@ -510,9 +555,16 @@ def _place(state: _State, jobs: list[PrintJob]) -> dict[int, list[_Print]]:
             line_id=job.line_id,
             row_plate_id=job.row_plate_id,
             plate_id=option.plate_id,
+            auto_eject=job.auto_eject,
         )
         machine.timeline.append(print_)
-        machine.free_at = finish_estimate + state.prep_seconds + machine.gap
+        finish = finish_estimate + state.prep_seconds
+        gap = 0.0 if job.auto_eject else machine.gap
+        machine.free_at = (
+            state.operator_hours.service_finish(finish, gap)
+            if state.operator_hours and machine.requires_operator and not job.auto_eject
+            else finish + gap
+        )
         placed.setdefault(job.line_id, []).append(print_)
     _sequence(state)
     return placed
@@ -527,7 +579,9 @@ def jobs_from_plan(order_id: int, plan: OrderPlan | None) -> list[PrintJob]:
             options = [PlateOption(row.plate_id, row.printer_model, row.print_time_seconds)] + [
                 PlateOption(a.plate_id, a.printer_model, a.print_time_seconds) for a in row.alternatives
             ]
-            jobs.extend(PrintJob(order_id, line.line_id, row.plate_id, options) for _ in range(row.count))
+            jobs.extend(
+                PrintJob(order_id, line.line_id, row.plate_id, options, plan.auto_eject) for _ in range(row.count)
+            )
     return jobs
 
 
@@ -781,8 +835,27 @@ async def _load_stagger(db: AsyncSession) -> StaggerPolicy | None:
     )
 
 
+async def _load_operator_hours(db: AsyncSession, now: datetime) -> OperatorHours | None:
+    rows = (
+        await db.execute(select(Settings.key, Settings.value).where(Settings.key.like("forecast_operator_%")))
+    ).all()
+    values = dict(rows)
+    if values.get("forecast_operator_absence_enabled", "false").lower() != "true":
+        return None
+    return OperatorHours(
+        origin=now,
+        start=time.fromisoformat(values.get("forecast_operator_absence_start", "23:00")),
+        end=time.fromisoformat(values.get("forecast_operator_absence_end", "08:00")),
+        zone=ZoneInfo(values.get("forecast_operator_timezone", str(server_timezone()))),
+    )
+
+
 async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
-    """What the farm already owes, from the database alone.
+    """What the farm already owes, from its database rows.
+
+    When operator hours are enabled, a held completion uses the existing
+    automatic-predecessor proof only to estimate whether manual work remains.
+    This read never clears a gate or commands a printer.
 
     Machines = every printer that is not archived. Availability decides who may
     RECEIVE work, never what a machine OWES (Decision 7): an inactive or paused
@@ -805,6 +878,9 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
     from backend.app.services.print_scheduler import scheduler
 
     gates = await _load_gates(db)
+    from backend.app.services.order_auto_eject import automatic_predecessor
+
+    operator_hours = await _load_operator_hours(db, now)
     stagger = await _load_stagger(db)
     compatible_setting = await db.scalar(select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
     allow_compatible = isinstance(compatible_setting, str) and compatible_setting.lower() == "true"
@@ -824,11 +900,20 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
                 PrinterQueue.status,
                 PrinterQueue.is_paused,
                 PrinterQueue.auto_distribute_eligible,
+                Printer.awaiting_plate_clear_archive_id,
             )
             .outerjoin(PrinterQueue, PrinterQueue.printer_id == Printer.id)
             .where(Printer.archived.is_(False))
         )
     ).all()
+    held_by_id = {}
+    if operator_hours:
+        held_ids = {row[-1] for row in printers if row[-1] is not None}
+        if held_ids:
+            held_by_id = {
+                archive.id: archive
+                for archive in (await db.scalars(select(PrintArchive).where(PrintArchive.id.in_(held_ids)))).all()
+            }
     machines: dict[int, MachineState] = {}
     for (
         printer_id,
@@ -841,6 +926,7 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
         queue_status,
         is_paused,
         auto_distribute_eligible,
+        held_archive_id,
     ) in printers:
         # Swap mode clears the plate by macro; the gate is never armed for it (spec §5.3).
         gap = gates.plate_clear if (require_plate_clear and not swap_mode_enabled) else 0
@@ -862,9 +948,27 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
             plate_clear_seconds=float(gap),
             waiting_seconds=float(waiting),
             stagger_interval_seconds=(int(interval_minutes) * 60) if interval_minutes else None,
+            requires_operator=bool(require_plate_clear and not swap_mode_enabled),
+            awaiting_operator=bool(awaiting_plate_clear and require_plate_clear and not swap_mode_enabled),
         )
+        if operator_hours and machines[printer_id].awaiting_operator and held_archive_id in held_by_id:
+            # Reuse the dispatch owner's proof, including fresh local telemetry.
+            # Merely enabling auto-eject on the NEXT order never clears this wait.
+            machines[printer_id].awaiting_operator = (
+                await automatic_predecessor(
+                    db,
+                    SimpleNamespace(
+                        id=printer_id,
+                        awaiting_plate_clear=True,
+                        awaiting_plate_clear_archive_id=held_archive_id,
+                    ),
+                )
+                is None
+            )
     staged = await _staged(db)
-    caveats: tuple[str, ...] = ("drying",) if gates.drying_blocks else ()
+    caveats: tuple[str, ...] = (("drying",) if gates.drying_blocks else ()) + (
+        ("operator_service_parallel",) if operator_hours else ()
+    )
     if not machines:
         return FarmSnapshot(
             printers=[],
@@ -873,6 +977,7 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
             stagger=stagger,
             assumptions=caveats,
             allow_compatible=allow_compatible,
+            operator_hours=operator_hours,
         )
     running = (
         await db.execute(
@@ -881,6 +986,7 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
                 PrintArchive.print_time_seconds,
                 PrintArchive.started_at,
                 PrintArchive.project_id,
+                PrintArchive.extra_data,
             ).where(
                 PrintArchive.status == "printing",
                 PrintArchive.deleted_at.is_(None),
@@ -888,7 +994,9 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
             )
         )
     ).all()
-    for printer_id, estimate, started_at, project_id in running:
+    from backend.app.services.order_auto_eject import archive_mode
+
+    for printer_id, estimate, started_at, project_id, extra_data in running:
         machine = machines.get(printer_id)
         if machine is None:
             continue
@@ -898,7 +1006,14 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
             remaining = int(round(max(0.0, estimate - elapsed)))
         # Appended before the pending-rows loop below, while ``queued`` is
         # still empty — this IS the head of the machine's queued work.
-        machine.queued.append(QueuedRow(order_id=project_id, seconds=remaining, started=True))
+        machine.queued.append(
+            QueuedRow(
+                order_id=project_id,
+                seconds=remaining,
+                started=True,
+                auto_eject=archive_mode(SimpleNamespace(extra_data=extra_data)),
+            )
+        )
     rows = (
         (
             await db.execute(
@@ -929,7 +1044,12 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
             descriptor=loaded_descriptor(item),
         )
         machine.queued.append(
-            QueuedRow(order_id=item.project_id, seconds=seconds, prep_seconds=gates.prep_for(item.preheat_override))
+            QueuedRow(
+                order_id=item.project_id,
+                seconds=seconds,
+                prep_seconds=gates.prep_for(item.preheat_override),
+                auto_eject=bool(item.auto_eject),
+            )
         )
     return FarmSnapshot(
         printers=list(machines.values()),
@@ -938,18 +1058,25 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
         stagger=stagger,
         assumptions=caveats,
         allow_compatible=allow_compatible,
+        operator_hours=operator_hours,
     )
 
 
 async def _staged(db: AsyncSession) -> list[StagedJob]:
     rows = (
         await db.execute(
-            select(AutoQueueItem.project_id, AutoQueueItem.target_model, AutoQueueItem.print_time_seconds).where(
-                *awaiting_auto_row_conditions()
-            )
+            select(
+                AutoQueueItem.project_id,
+                AutoQueueItem.target_model,
+                AutoQueueItem.print_time_seconds,
+                AutoQueueItem.auto_eject,
+            ).where(*awaiting_auto_row_conditions())
         )
     ).all()
-    return [StagedJob(order_id=pid, target_model=model, seconds=secs) for pid, model, secs in rows]
+    return [
+        StagedJob(order_id=pid, target_model=model, seconds=secs, auto_eject=bool(auto))
+        for pid, model, secs, auto in rows
+    ]
 
 
 async def rank_active_orders(db: AsyncSession) -> list[int]:

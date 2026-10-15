@@ -4709,6 +4709,10 @@ export interface AppSettings {
   // ETA forecast allowances (vault 60-specs/farm-forecast-v2-spec 7)
   forecast_upload_seconds: number;
   forecast_plate_clear_minutes: number;
+  forecast_operator_absence_enabled: boolean;
+  forecast_operator_absence_start: string;
+  forecast_operator_absence_end: string;
+  forecast_operator_timezone: string;
   // Staggered start by group (electrical phases). The id lists are JSON arrays
   // kept as strings on the wire, like every structured setting here.
   stagger_split_by_tags: boolean;

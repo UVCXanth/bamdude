@@ -24,6 +24,70 @@ H = 3600
 NOW = datetime(2026, 9, 6, 12, 0, 0)
 
 
+async def test_operator_absence_settings_persist_without_touching_printer_queues(committing_client, db_session, farm):
+    from sqlalchemy import select
+
+    before = [(q.id, q.status, q.is_paused) for q in (await db_session.scalars(select(PrinterQueue))).all()]
+    response = await committing_client.put(
+        "/api/v1/settings/",
+        json={
+            "forecast_operator_absence_enabled": True,
+            "forecast_operator_absence_start": "23:00",
+            "forecast_operator_absence_end": "08:00",
+            "forecast_operator_timezone": "Europe/Kyiv",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["forecast_operator_absence_enabled"] is True
+    reread = await committing_client.get("/api/v1/settings/")
+    assert reread.json()["forecast_operator_timezone"] == "Europe/Kyiv"
+    snapshot = await farm_forecast.load_snapshot(db_session, NOW)
+    assert snapshot.operator_hours.start.isoformat() == "23:00:00"
+    assert [(q.id, q.status, q.is_paused) for q in (await db_session.scalars(select(PrinterQueue))).all()] == before
+    # A partial update must be checked against the persisted other endpoint.
+    refused = await committing_client.put("/api/v1/settings/", json={"forecast_operator_absence_end": "23:00"})
+    assert refused.status_code == 422
+    assert (await committing_client.get("/api/v1/settings/")).json()["forecast_operator_absence_end"] == "08:00"
+
+
+async def test_held_auto_eject_uses_existing_owner_proof_in_operator_forecast(db_session, farm, monkeypatch):
+    import time
+    from types import SimpleNamespace
+
+    printer = farm["printers"][0]
+    archive = PrintArchive(
+        printer_id=printer.id,
+        filename="Product-A-synthetic.gcode.3mf",
+        file_path="synthetic-only.gcode.3mf",
+        file_size=1,
+        status="completed",
+        extra_data={"dispatch_intent": {"auto_eject": True, "submission_id": "synthetic-run"}},
+    )
+    db_session.add(archive)
+    await db_session.flush()
+    printer.awaiting_plate_clear = True
+    printer.awaiting_plate_clear_archive_id = archive.id
+    await set_setting(db_session, "forecast_operator_absence_enabled", "true")
+    await set_setting(db_session, "forecast_operator_timezone", "UTC")
+    await db_session.commit()
+    monkeypatch.setattr(
+        farm_forecast.printer_manager,
+        "peek_status",
+        lambda _pid: (
+            SimpleNamespace(connected=True, state="FINISH", subtask_id="synthetic-run"),
+            time.monotonic(),
+            False,
+        ),
+    )
+    snap = await farm_forecast.load_snapshot(db_session, datetime(2026, 10, 15, 23))
+    assert not next(m for m in snap.printers if m.printer_id == printer.id).awaiting_operator
+    assert printer.awaiting_plate_clear is True  # advisory, never clears a real gate
+    archive.status = "failed"
+    await db_session.commit()
+    snap = await farm_forecast.load_snapshot(db_session, datetime(2026, 10, 15, 23))
+    assert next(m for m in snap.printers if m.printer_id == printer.id).awaiting_operator
+
+
 def _sliced(filename: str, model: str) -> LibraryFile:
     """A single-plate sliced 3MF making one hook, an hour long, for ``model``."""
     return LibraryFile(

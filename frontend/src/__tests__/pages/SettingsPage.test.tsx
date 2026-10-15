@@ -2,8 +2,10 @@
  * Tests for the SettingsPage component.
  */
 
+import { useEffect } from 'react';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { describe, it, expect, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { SettingsPage } from '../../pages/SettingsPage';
@@ -144,6 +146,48 @@ describe('SettingsPage', () => {
         expect(screen.getByText('Check printer firmware')).toBeInTheDocument();
       });
     });
+  });
+
+  it('saves an opt-in operator absence and local clock times in Printing settings', async () => {
+    const saved: Record<string, unknown>[] = [];
+    const initial = { ...mockSettings, forecast_operator_absence_enabled: false,
+      forecast_operator_absence_start: '23:00', forecast_operator_absence_end: '08:00',
+      forecast_operator_timezone: 'Europe/Kyiv' };
+    server.use(
+      http.get('/api/v1/settings/', () => HttpResponse.json(initial)),
+      http.put('/api/v1/settings/', async ({ request }) => {
+        const body = await request.json() as Record<string, unknown>;
+        saved.push(body);
+        return HttpResponse.json({ ...initial, ...body });
+      }),
+    );
+    let cache: QueryClient;
+    function CaptureCache() {
+      const current = useQueryClient();
+      useEffect(() => { cache = current; }, [current]);
+      return null;
+    }
+    render(<><CaptureCache /><SettingsPage /></>);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Printing' }));
+    const toggle = await screen.findByRole('checkbox', { name: 'Account for operator absence in forecasts' });
+    expect(toggle).not.toBeChecked();
+    expect(screen.getByLabelText('Unavailable from')).toBeDisabled();
+    for (const key of ['project-plan', 'order-forecast', 'orders-forecast', 'queue-forecast']) {
+      cache!.setQueryDefaults([key], { gcTime: Infinity });
+      cache!.setQueryData([key, 'cached-order'], { now_seconds: 60 });
+    }
+    await user.click(toggle);
+    await waitFor(() => expect(saved.at(-1)?.forecast_operator_absence_enabled).toBe(true), { timeout: 5000 });
+    await waitFor(() => {
+      for (const key of ['project-plan', 'order-forecast', 'orders-forecast', 'queue-forecast']) {
+        expect(cache!.getQueryState([key, 'cached-order'])?.isInvalidated).toBe(true);
+      }
+    });
+    fireEvent.change(screen.getByLabelText('Unavailable from'), { target: { value: '22:30' } });
+    await waitFor(() => expect(saved.at(-1)?.forecast_operator_absence_start).toBe('22:30'), { timeout: 5000 });
+    expect(saved.at(-1)?.forecast_operator_timezone).toBe('Europe/Kyiv');
+    await user.click(screen.getByRole('button', { name: 'General' }));
   });
 
   describe('slicing settings', () => {
