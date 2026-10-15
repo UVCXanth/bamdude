@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Order print parameters refresh when the order or its sliced files change.** Adding an item to an open order now discovers its printer models without reloading the page; an unsaved parameter draft stays intact.
+
 - **Unresolved print-state conflicts can be inspected and repaired from System.** The new diagnostics panel explains queue/archive inconsistencies and previews each addressed correction before confirmation. Repairs keep archives and accounting, leave inactive queues paused for plate inspection, and preserve a positively identified newer print. Missing completion times can be explicitly estimated from the start and slicer duration and remain marked as estimates. Deletion is offered only for a proven completed stale queue item with no dependent records; ambiguous cases and unresolved completion effects have no delete action. Every successful correction has an audit record.
   Concurrent corrections and swap-table claims use the same lock order, including on SQLite. Applying a correction with an API key rechecks its current rights and printer access without blocking itself on a second database writer.
 
