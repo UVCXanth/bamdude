@@ -1,0 +1,152 @@
+{
+ "plate_holes.step": {
+  "abs_volume_mm3": 17943.36293856408,
+  "area_mm2": 6588.495559215387,
+  "bounds_mm": [
+   [
+    0,
+    0,
+    0
+   ],
+   [
+    60,
+    40,
+    8
+   ]
+  ],
+  "bytes": 22625,
+  "construction": "box 60x40x8 minus 2 cylinders r5 through",
+  "face_occurrences": 8,
+  "kind": "ok",
+  "sha256": "1fad11f99ed185bcfdd268d0f9ebdf5ef527736c913bae3f84f8fdb8bedb3d58",
+  "solids": 1,
+  "text_counts": {
+   "ADVANCED_FACE(": 8,
+   "CARTESIAN_TRANSFORMATION_OPERATOR_3D(": 0,
+   "CYLINDRICAL_SURFACE(": 2,
+   "MAPPED_ITEM(": 0,
+   "SPHERICAL_SURFACE(": 0
+  },
+  "writer": "OCCT 8.0.1 STEPControl_Writer"
+ },
+ "plate_holes_inch.step": {
+  "abs_volume_mm3": 17943.36293856408,
+  "area_mm2": 6588.495559215387,
+  "bounds_mm": [
+   [
+    0,
+    0,
+    0
+   ],
+   [
+    60,
+    40,
+    8
+   ]
+  ],
+  "bytes": 24155,
+  "construction": "plate, written in INCH",
+  "face_occurrences": 8,
+  "kind": "ok",
+  "sha256": "c1b30ee278e86d8ae34fececfa91a221a29445569c1688be6250553bc24efd7a",
+  "solids": 1,
+  "text_counts": {
+   "ADVANCED_FACE(": 8,
+   "CARTESIAN_TRANSFORMATION_OPERATOR_3D(": 0,
+   "CYLINDRICAL_SURFACE(": 2,
+   "MAPPED_ITEM(": 0,
+   "SPHERICAL_SURFACE(": 0
+  },
+  "writer": "OCCT 8.0.1 STEPControl_Writer"
+ },
+ "plate_holes_mirror_loc.step": {
+  "abs_volume_mm3": 17943.36293856408,
+  "area_mm2": 6588.495559215387,
+  "bounds_mm": [
+   [
+    0,
+    0,
+    -8
+   ],
+   [
+    60,
+    40,
+    0
+   ]
+  ],
+  "bytes": 22696,
+  "construction": "plate.Moved(mirror z) \u2014 negative location",
+  "face_occurrences": 8,
+  "kind": "ok",
+  "sha256": "c506d1ad99aac1c8c95ea8a9d8514916417b02368996ee654953312fa4700de2",
+  "solids": 1,
+  "text_counts": {
+   "ADVANCED_FACE(": 8,
+   "CARTESIAN_TRANSFORMATION_OPERATOR_3D(": 0,
+   "CYLINDRICAL_SURFACE(": 2,
+   "MAPPED_ITEM(": 0,
+   "SPHERICAL_SURFACE(": 0
+  },
+  "writer": "OCCT 8.0.1 STEPControl_Writer"
+ },
+ "sphere_r1km.step": {
+  "abs_volume_mm3": 4.1887902047863905e+18,
+  "area_mm2": 12566370614359.172,
+  "bounds_mm": [
+   [
+    -1000000.0,
+    -1000000.0,
+    -1000000.0
+   ],
+   [
+    1000000.0,
+    1000000.0,
+    1000000.0
+   ]
+  ],
+  "bytes": 2133,
+  "construction": "sphere r=1000000.0 mm",
+  "face_occurrences": 1,
+  "kind": "ok",
+  "sha256": "f68e42906721f302fc15f21b35021308d3f6ad201260bcbbca0be0b43ad19da6",
+  "solids": 1,
+  "text_counts": {
+   "ADVANCED_FACE(": 1,
+   "CARTESIAN_TRANSFORMATION_OPERATOR_3D(": 0,
+   "CYLINDRICAL_SURFACE(": 0,
+   "MAPPED_ITEM(": 0,
+   "SPHERICAL_SURFACE(": 1
+  },
+  "writer": "OCCT 8.0.1 STEPControl_Writer"
+ },
+ "sphere_r50.step": {
+  "abs_volume_mm3": 523598.7755982988,
+  "area_mm2": 31415.926535897932,
+  "bounds_mm": [
+   [
+    -50.0,
+    -50.0,
+    -50.0
+   ],
+   [
+    50.0,
+    50.0,
+    50.0
+   ]
+  ],
+  "bytes": 2122,
+  "construction": "sphere r=50.0 mm",
+  "face_occurrences": 1,
+  "kind": "ok",
+  "sha256": "a0d6688dff6c42e6ac5524dae821219f5482e384f80102e150ae173c235e95f3",
+  "solids": 1,
+  "text_counts": {
+   "ADVANCED_FACE(": 1,
+   "CARTESIAN_TRANSFORMATION_OPERATOR_3D(": 0,
+   "CYLINDRICAL_SURFACE(": 0,
+   "MAPPED_ITEM(": 0,
+   "SPHERICAL_SURFACE(": 1
+  },
+  "writer": "OCCT 8.0.1 STEPControl_Writer"
+ }
+}

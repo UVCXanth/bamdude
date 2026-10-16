@@ -23,6 +23,15 @@ PNG_PIXELS = 16_000_000
 ZIP_BYTES = 1024**3
 RSS_BYTES = 1024**3
 FACE_LIMIT = 200_000
+# STEP preview (spec §7.1, accepted stage-0 numbers): input bytes before ReadFile, face occurrences after transfer,
+# triangles after the mesh (before anything is written); the early aggregate-RSS watchdog of a STEP attempt; and the
+# allocation backstops, each its own named limit and NOT an RSS guarantee (Windows Job commit / Linux RLIMIT_DATA).
+STEP_INPUT_BYTES = 9 * 1024**2
+CAD_FACE_OCCURRENCES = 6_000
+CAD_TRIANGLES = 180_000
+STEP_WATCHDOG_BYTES = 800 * 1024**2
+JOB_COMMIT_BYTES = 1024**3
+STEP_DATA_LIMIT_BYTES = 1024**3
 JSON_BYTES = 16 * 1024
 LOG_BYTES = 64 * 1024
 TTL_SECONDS = 900
