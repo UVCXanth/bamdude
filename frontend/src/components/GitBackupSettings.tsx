@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { restoreFailureText } from '../utils/restoreFailure';
 
 import { GitRestoreModal } from './GitRestoreModal';
 import { useTranslation } from 'react-i18next';
@@ -1446,7 +1447,9 @@ export function GitBackupSettings() {
               if (result.success) {
                 showToast(t('backup.backupRestoredRestart'), 'success');
               } else {
-                showToast(result.message, 'error');
+                const message = restoreFailureText(result, t);
+                setRestoreResult({ success: false, message });
+                showToast(message, 'error');
               }
             } catch (e) {
               const message = e instanceof Error ? e.message : t('backup.failedToRestore');
