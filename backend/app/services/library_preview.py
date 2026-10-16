@@ -15,6 +15,7 @@ from pathlib import Path
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.core.database import take_write_lock
 from backend.app.models.library import LibraryFile
 from backend.app.services.mesh_preview_types import CAD_TYPES
 from backend.app.services.preview_artifacts import disk, owned
@@ -123,6 +124,11 @@ async def attach_result(db: AsyncSession, source: Source, png: Path, *, authoriz
         outcome = "unavailable"
         try:
             async with factory() as session:
+                # The row is locked before the rights are read (SQLite: the write lock, as pysqlite would only
+                # open the transaction at the UPDATE; PostgreSQL: FOR UPDATE), so the recheck and the CAS write
+                # are one transaction in fact, not only in name.
+                await take_write_lock(session, LibraryFile.__table__, source.id)
+                await session.execute(select(LibraryFile.id).where(LibraryFile.id == source.id).with_for_update())
                 if authorize is not None and not await authorize(session):
                     outcome = "authority_missing"
                 else:

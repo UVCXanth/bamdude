@@ -581,3 +581,29 @@ async def test_a_step_job_whose_source_changed_mid_read_ends_superseded(monkeypa
         source, order=0, wait_seconds=1, on_admit=None, on_hand_off=None, before_attach=None
     )
     assert outcome == "superseded"
+
+
+@pytest.mark.asyncio
+async def test_on_sqlite_the_authority_is_read_holding_the_write_lock(publication_db, tmp_path):
+    """pysqlite opens its transaction at the first write, so a read before it runs outside any transaction: the
+    recheck must hold SQLite's write lock when it reads, or it is 'inside the transaction' in name only."""
+    import sqlite3
+
+    source = await seed(publication_db)
+    seen = {}
+
+    async def authorize(session):
+        probe = sqlite3.connect(tmp_path / "publication.db", timeout=0.1)
+        try:
+            probe.execute("BEGIN IMMEDIATE")
+            seen["another_writer"] = "got the lock"
+            probe.execute("ROLLBACK")
+        except sqlite3.OperationalError as exc:
+            seen["another_writer"] = str(exc)
+        finally:
+            probe.close()
+        return True
+
+    async with publication_db() as db:
+        assert await attach_result(db, source, png(tmp_path), authorize=authorize) == "attached"
+    assert seen["another_writer"] == "database is locked"
