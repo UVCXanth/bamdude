@@ -315,3 +315,90 @@ def test_utc_helpers_round_trip():
     now = datetime(2026, 10, 19, 16, 23, 45, tzinfo=UTC)
     assert sr.parse_time(sr.iso(now)) == now
     assert sr.parse_time("2026-10-05T16:23:45Z") + timedelta(days=14) == now
+
+
+NO_PIP = "import sys\nsys.modules['pip'] = None  # the final Docker image removed pip\n"
+
+
+def _without_pip(code: str, *args: str):
+    import subprocess
+    import sys
+
+    root = Path(sr.__file__).resolve().parents[2]
+    p = subprocess.run(
+        [sys.executable, "-c", NO_PIP + code, *args], cwd=str(root), capture_output=True, text=True, timeout=120
+    )
+    return p.returncode, p.stdout.strip().splitlines()[-1] if p.stdout.strip() else p.stderr[-2000:]
+
+
+def _installed_here(app: Path) -> sr.Selection:
+    cat = sr.load_catalog()
+    try:
+        sel = sr.select(cat)
+    except sr.Unsupported:
+        pytest.skip("named skip: no pinned STEP-preview build for this interpreter")
+    target = sr.bundle_dir(app, sel.key, cat.digest)
+    (target / "site" / "OCP").mkdir(parents=True)
+    (target / "receipt.json").write_text(json.dumps(sr.receipt_for(cat, sel)), encoding="utf-8")
+    return sel
+
+
+def test_the_runtime_finds_its_bundle_without_pip(tmp_path):
+    sel = _installed_here(tmp_path)
+    rc, line = _without_pip(
+        "import json\nfrom pathlib import Path\nfrom backend.app import step_runtime as sr\n"
+        "f = sr.locate(Path(sys.argv[1]))\nprint(json.dumps({'ok': f.ok, 'reason': f.reason, 'key': f.key}))\n",
+        str(tmp_path),
+    )
+    assert rc == 0, line
+    assert json.loads(line) == {"ok": True, "reason": None, "key": sel.key}
+
+
+def test_the_read_only_verify_runs_without_pip(tmp_path):
+    _installed_here(tmp_path)
+    rc, line = _without_pip(
+        "from backend.app import step_runtime as sr\nraise SystemExit(sr.main(['verify', '--quick', '--app-dir', sys.argv[1]]))\n",
+        str(tmp_path),
+    )
+    assert (rc, json.loads(line)) == (0, {"ok": True, "reason": None})
+
+
+def test_a_receipt_of_this_interpreter_under_two_keys_is_ambiguous(tmp_path):
+    sel = _installed_here(tmp_path)
+    cat = sr.load_catalog()
+    other = next(a for a in cat.manifest["artifacts"] if a["key"] not in (None, sel.key))
+    copied = sr.bundle_dir(tmp_path, other["key"], cat.digest)
+    (copied / "site" / "OCP").mkdir(parents=True)
+    receipt = sr.receipt_for(cat, sr.Selection(other["key"], other, sel.proxy))
+    (copied / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+    assert sr.locate(tmp_path).reason == "receipt_mismatch"
+
+
+def test_verify_on_an_interpreter_no_artifact_serves_exits_3(tmp_path, monkeypatch):
+    monkeypatch.setattr(sr, "interpreter_tags", lambda: ["cp312-cp312-linux_armv7l", "py3-none-any"])
+    assert sr.verify(tmp_path) == (sr.EXIT_UNSUPPORTED, ["unsupported"])
+    assert sr.verify(tmp_path, full=False) == (sr.EXIT_UNSUPPORTED, ["unsupported"])
+
+
+def test_verify_of_a_supported_interpreter_without_a_bundle_exits_1(tmp_path, monkeypatch):
+    monkeypatch.setattr(sr, "interpreter_tags", lambda: WIN312)
+    assert sr.verify(tmp_path) == (sr.EXIT_FAILED, ["not_installed"])
+
+
+def test_both_doors_that_name_the_bundle_work_without_pip(tmp_path):
+    """Main's descriptor and the service's own reconstruction — the two readers in a running Docker image."""
+    sel = _installed_here(tmp_path / "app")
+    digest = sr.load_catalog().digest
+    rc, line = _without_pip(
+        "import asyncio, json\nfrom pathlib import Path\n"
+        "from backend.app.preview_service import Service\n"
+        "from backend.app.services.preview_runtime import PreviewRuntime\n"
+        "app = Path(sys.argv[1])\n"
+        "cad = asyncio.run(PreviewRuntime(Path(sys.argv[2]), app_dir=app).cad_descriptor())\n"
+        "site = Service({'app_dir': str(app)}).cad_site(cad or {})\n"
+        "print(json.dumps({'cad': cad, 'site': site is not None and site.is_dir()}))\n",
+        str(tmp_path / "app"),
+        str(tmp_path / "preview"),
+    )
+    assert rc == 0, line
+    assert json.loads(line) == {"cad": {"manifest_digest": digest, "bundle_key": sel.key}, "site": True}

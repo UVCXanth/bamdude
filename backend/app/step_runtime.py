@@ -4,6 +4,10 @@ Stdlib plus pip's own vendored ``packaging`` only, importable before the app run
 lifespan: Dockerfile, install.sh and the Windows build call ``python -m backend.app.step_runtime install|verify``.
 Never imports OCP — only the disposable conversion child does (spec §6), after ``activate_bundle``.
 
+Install selects by pip's own tag decoder; everything read-only afterwards (``locate``, ``verify``) needs no pip —
+the final Docker image has none — and finds the bundle by its receipt: the fingerprint install wrote is recomputed
+by the same function, so the two can never give opposite answers.
+
 One truth: ``data/step_runtime_manifest.json`` (exact wheels, tags, upstream SHA-256, sizes, upload times, the
 native-closure digest per wheel) and ``data/step_runtime_closure.json`` (every native library of every wheel),
 both written by ``scripts/pin_step_runtime.py``. Requirements are generated from it, never kept beside it.
@@ -159,7 +163,9 @@ class Catalog:
     digest: str
 
 
-def load_catalog(data_dir: Path = DATA) -> Catalog:
+def load_catalog(data_dir: Path = DATA, *, decode_tags: bool = True) -> Catalog:
+    """``decode_tags=False`` for the read-only paths without pip: the receipt binds the manifest digest, so the
+    catalog they read is byte for byte the one install checked with the decoder."""
     try:
         manifest = json.loads((data_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
         closure = json.loads((data_dir / CLOSURE_NAME).read_text(encoding="utf-8"))
@@ -193,7 +199,7 @@ def load_catalog(data_dir: Path = DATA) -> Catalog:
             or not _SHA.fullmatch(a["sha256"])
             or type(a["native_count"]) is not int
             or a["filename"] in seen_files
-            or sorted(wheel_tags(a["filename"])) != a["tags"]
+            or (decode_tags and sorted(wheel_tags(a["filename"])) != a["tags"])
         ):
             raise CatalogError("artifact_fields", a["filename"])
         seen_files.add(a["filename"])
@@ -383,42 +389,69 @@ class Located:
     digest: str | None = None
 
 
-def locate(app_dir: Path, catalog: Catalog | None = None, tags: list[str] | None = None) -> Located:
-    """Read-only and cheap (the main process calls it through disk()): the bundle this code may use, or why not."""
+def locate(app_dir: Path, catalog: Catalog | None = None) -> Located:
+    """Read-only and cheap (the main process calls it through disk()), no pip: the one bundle of this catalog whose
+    receipt names THIS interpreter's fingerprint, or why not. Two such receipts are no answer."""
     try:
-        catalog = catalog or load_catalog()
-        sel = select(catalog, tags)
-    except Unsupported:
-        return Located(False, "unsupported")
+        catalog = catalog or load_catalog(decode_tags=False)
     except CatalogError:
         return Located(False, "catalog_invalid")
-    target = bundle_dir(app_dir, sel.key, catalog.digest)
-    try:
-        receipt = json.loads((target / "receipt.json").read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return Located(False, "not_installed", sel.key)
-    except (OSError, ValueError):
-        return Located(False, "receipt_unreadable", sel.key)
-    want = receipt_for(catalog, sel)
-    if any(receipt.get(k) != want[k] for k in ("schema", "manifest_digest", "key", "artifacts", "fingerprint")):
-        return Located(False, "receipt_mismatch", sel.key)
+    proxy = next(a for a in catalog.manifest["artifacts"] if a["key"] is None)
+    found, refused = [], None
+    for wheel in catalog.manifest["artifacts"]:
+        if wheel["key"] is None:
+            continue
+        sel = Selection(wheel["key"], wheel, proxy)
+        target = bundle_dir(app_dir, sel.key, catalog.digest)
+        try:
+            receipt = json.loads((target / "receipt.json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            refused = refused or "receipt_unreadable"
+            continue
+        want = receipt_for(catalog, sel)
+        if not isinstance(receipt, dict) or any(
+            receipt.get(k) != want[k] for k in ("schema", "manifest_digest", "key", "artifacts", "fingerprint")
+        ):
+            refused = "receipt_mismatch"
+            continue
+        found.append((sel, target))
+    if len(found) > 1:
+        return Located(False, "receipt_mismatch")
+    if not found:
+        return Located(False, refused or "not_installed")
+    sel, target = found[0]
     if not (target / "site" / "OCP").is_dir():
         return Located(False, "site_missing", sel.key)
     return Located(True, None, sel.key, target / "site", target, catalog.digest)
 
 
-def verify(app_dir: Path, *, full: bool = True, data_dir: Path = DATA) -> tuple[int, list[str]]:
+def _refine_missing(found: Located) -> Located:
+    """'not_installed' on an interpreter no artifact serves is 'unsupported' — asked of pip's decoder only when pip
+    is there to ask (a reason, never a selection)."""
+    if found.reason != "not_installed":
+        return found
     try:
-        catalog = load_catalog(data_dir)
-        sel = select(catalog)
+        select(load_catalog())
     except Unsupported:
-        return EXIT_UNSUPPORTED, ["unsupported"]
+        return Located(False, "unsupported")
+    except (ImportError, CatalogError):
+        pass
+    return found
+
+
+def verify(app_dir: Path, *, full: bool = True, data_dir: Path = DATA) -> tuple[int, list[str]]:
+    """Read-only, no pip: the receipt, a full rehash against the catalog and the import smoke."""
+    try:
+        catalog = load_catalog(data_dir, decode_tags=False)
     except CatalogError as exc:
         return EXIT_FAILED, [f"catalog_invalid:{exc.reason}"]
-    found = locate(app_dir, catalog)
+    found = _refine_missing(locate(app_dir, catalog))
     if not found.ok:
-        return EXIT_FAILED, [found.reason or "missing"]
-    problems = verify_tree(found.site, catalog.closure["artifacts"][sel.wheel["filename"]]) if full else []
+        return (EXIT_UNSUPPORTED if found.reason == "unsupported" else EXIT_FAILED), [found.reason or "missing"]
+    wheel = next(a for a in catalog.manifest["artifacts"] if a["key"] == found.key)
+    problems = verify_tree(found.site, catalog.closure["artifacts"][wheel["filename"]]) if full else []
     if not problems:
         problems = smoke(found.site)
     return (EXIT_FAILED if problems else EXIT_OK), problems
@@ -608,7 +641,7 @@ def main(argv: list[str] | None = None, *, runner=None, data_dir: Path = DATA) -
             return EXIT_OK
         if a.cmd == "verify":
             if a.quick:
-                found = locate(a.app_dir, load_catalog(data_dir))
+                found = _refine_missing(locate(a.app_dir, load_catalog(data_dir, decode_tags=False)))
                 rc = EXIT_OK if found.ok else EXIT_UNSUPPORTED if found.reason == "unsupported" else EXIT_FAILED
                 print(json.dumps({"ok": found.ok, "reason": found.reason}))
                 return rc

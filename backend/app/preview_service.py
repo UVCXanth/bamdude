@@ -284,9 +284,8 @@ class Service:
         from backend.app import step_runtime
 
         try:
-            catalog = step_runtime.load_catalog()
             app_dir = Path(self.config.get("app_dir") or Path(__file__).resolve().parents[2])
-            found = step_runtime.locate(app_dir, catalog)
+            found = step_runtime.locate(app_dir)  # no pip: the final Docker image has none
         except Exception:
             return None
         if not found.ok or found.digest != cad["manifest_digest"] or found.key != cad["bundle_key"]:
