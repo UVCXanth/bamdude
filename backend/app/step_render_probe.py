@@ -19,8 +19,8 @@ from pathlib import Path
 
 from backend.app import step_runtime
 
-STEP_FIXTURE = Path(__file__).resolve().parent / "data" / "step_probe" / "box_mm.step"
-MIN_DRAWN = 0.01  # of the picture's pixels must differ from its corner
+STEP_FIXTURE = step_runtime.PROBE_STEP
+drawn = step_runtime.png_drawn  # one rule for "something was drawn", shared with the install's acceptance
 
 
 def _cube_stl() -> str:
@@ -34,23 +34,6 @@ def _cube_stl() -> str:
             rows.append("  endloop\n endfacet")
     rows.append("endsolid cube")
     return "\n".join(rows) + "\n"
-
-
-def drawn(png: Path) -> bool:
-    """A real PNG on which something was drawn: enough pixels differ from the corner (the background)."""
-    from PIL import Image, UnidentifiedImageError
-
-    try:
-        with Image.open(png) as img:
-            if img.format != "PNG":
-                return False
-            rgba = img.convert("RGBA")
-    except (OSError, UnidentifiedImageError):
-        return False
-    corner = rgba.getpixel((0, 0))
-    raw = rgba.tobytes()
-    differ = sum(1 for i in range(0, len(raw), 4) if tuple(raw[i : i + 4]) != corner)
-    return differ >= MIN_DRAWN * rgba.width * rgba.height
 
 
 async def _render(runtime, path: Path, kind: str) -> dict:

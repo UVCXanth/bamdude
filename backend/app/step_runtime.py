@@ -489,9 +489,105 @@ def verify(app_dir: Path, *, full: bool = True, data_dir: Path = DATA) -> tuple[
     return (EXIT_FAILED if problems else EXIT_OK), problems
 
 
-def smoke(site: Path, runner=subprocess.run) -> list[str]:
+PROBE_STEP = DATA / "step_probe" / "box_mm.step"
+RENDER_SECONDS = 120
+APP_ROOT = Path(__file__).resolve().parents[2]
+MIN_DRAWN = 0.01  # of a picture's pixels must differ from its corner
+
+
+def png_drawn(png: Path) -> bool:
+    """A real PNG on which something was drawn: enough pixels differ from the corner (the background)."""
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(png) as img:
+            if img.format != "PNG":
+                return False
+            rgba = img.convert("RGBA")
+    except (OSError, UnidentifiedImageError):
+        return False
+    corner = rgba.getpixel((0, 0))
+    raw = rgba.tobytes()
+    differ = sum(1 for i in range(0, len(raw), 4) if tuple(raw[i : i + 4]) != corner)
+    return differ >= MIN_DRAWN * rgba.width * rgba.height
+
+
+def _child(module: str, request: dict, root: Path) -> dict | None:
+    """One preview child as a preview runs it: the module, its one JSON request line, the worker environment. Its
+    result.json, or None on a timeout (subprocess.run ends the single child it started)."""
+    from backend.app.services.worker_env import worker_environment
+
+    try:
+        p = subprocess.run(
+            [sys.executable, "-m", module],
+            input=json.dumps(request) + "\n",
+            cwd=str(APP_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=RENDER_SECONDS,
+            env=worker_environment(root / "cache"),
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    try:
+        return json.loads((root / "result.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"outcome": f"rc={p.returncode}"}
+
+
+def _convert(root: Path, site: Path, deadline: int) -> list[str]:
+    shutil.copyfile(PROBE_STEP, root / "input.step")
+    result = _child(
+        "backend.app.services.step_thumbnail", {"root": str(root), "deadline": deadline, "site": str(site)}, root
+    )
+    if result is None:
+        return ["smoke_timeout:convert"]
+    if result.get("outcome") != "ok" or not (root / "mesh.stl").is_file():
+        return [f"smoke_failed:convert:{result.get('outcome', 'unknown')}"]
+    (root / "result.json").unlink(missing_ok=True)
+    (root / "input.step").unlink(missing_ok=True)  # the PNG child gets only the mesh, as in a preview
+    return []
+
+
+def _render_png(root: Path, deadline: int) -> list[str]:
+    result = _child(
+        "backend.app.preview_render", {"root": str(root), "operation": "cad_png", "deadline": deadline}, root
+    )
+    if result is None:
+        return ["smoke_timeout:png"]
+    if result.get("outcome") != "ok":
+        return [f"smoke_failed:png:{result.get('outcome', 'unknown')}"]
+    return []
+
+
+def smoke(site: Path) -> list[str]:
+    """The acceptance of a bundle (spec §8, Codex A-R4): the import, then the shipped probe STEP converted by the
+    converter child with exactly this bundle and its PNG rendered by the PNG child — the modules and environment a
+    preview uses, never this process — and the picture decoded and showing something. Needs the backend beside the
+    helper (``--import-only`` is the Docker build's early, named exception)."""
+    import tempfile
+
+    problems = import_smoke(site)
+    if problems:
+        return problems
+    root = Path(tempfile.mkdtemp(prefix="bamdude-step-accept-"))  # never inside a (possibly read-only) bundle
+    try:
+        deadline = time.monotonic_ns() + int(2 * RENDER_SECONDS * 1e9)
+        problems = _convert(root, site, deadline) or _render_png(root, deadline)
+        if problems:
+            return problems
+        png = root / "preview.png"
+        if not png.is_file() or not png_drawn(png):
+            return ["smoke_failed:png_blank"]
+        return []
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def import_smoke(site: Path, runner=subprocess.run) -> list[str]:
     """Import OCP from exactly this bundle in a fresh child (never in this process) and load the STEP reader,
-    under the same environment whitelist every preview worker gets (no dev PATH tricks, OMP=1)."""
+    under the same environment whitelist every preview worker gets (no dev PATH tricks, OMP=1). Not an acceptance
+    on its own: a reader that imports may still not read a STEP."""
     import tempfile
 
     from backend.app.services.worker_env import worker_environment
@@ -647,12 +743,13 @@ def _reclaim_staging(own: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
-def _intact(app_dir: Path, catalog: Catalog, target: Path, closure: list[dict]) -> bool:
-    """The bundle under this pin's name is the one locate answers and passes a full verify and the import smoke."""
+def _intact(app_dir: Path, catalog: Catalog, target: Path, closure: list[dict], import_only: bool) -> bool:
+    """The bundle under this pin's name is the one locate answers and passes a full verify and the acceptance."""
     found = locate(app_dir, catalog)
     if not found.ok or found.bundle != target:
         return False
-    return not verify_tree(target / "site", closure) and not smoke(target / "site")
+    accept = import_smoke if import_only else smoke
+    return not verify_tree(target / "site", closure) and not accept(target / "site")
 
 
 def install(
@@ -662,6 +759,7 @@ def install(
     allow_candidate: bool = False,
     data_dir: Path = DATA,
     runner=None,
+    import_only: bool = False,
 ) -> Path:
     """Install this interpreter's bundle under its platform+ABI lock: an owned staging of its own key, pip through
     the whole-tree launcher, verify, smoke, one rename. A failed or interrupted install removes only its own
@@ -687,7 +785,7 @@ def install(
             raise InstallError("path_too_long", f"deepest library {deepest} > {PATH_LIMIT}; choose a shorter app dir")
     with _platform_lock(root, sel.key, INSTALL_SECONDS):
         _reclaim_staging(root / ".staging" / sel.key)
-        if target.exists() and _intact(app_dir, catalog, target, closure):
+        if target.exists() and _intact(app_dir, catalog, target, closure, import_only):
             return target
         staging = root / ".staging" / sel.key / uuid.uuid4().hex
         staging.mkdir(parents=True)
@@ -721,7 +819,7 @@ def install(
             problems = verify_tree(staging / "site", closure)
             if problems:
                 raise InstallError(f"verify_failed:{problems[0]}")
-            problems = smoke(staging / "site")
+            problems = (import_smoke if import_only else smoke)(staging / "site")
             if problems:
                 raise InstallError(problems[0])
             req.unlink()
@@ -760,15 +858,29 @@ def main(argv: list[str] | None = None, *, runner=None, data_dir: Path = DATA) -
         if name == "install":
             p.add_argument("--wheels", type=Path, help="install offline from this directory of the pinned wheels")
             p.add_argument("--allow-candidate", action="store_true", help="development only; no official build")
+            p.add_argument(
+                "--import-only",
+                action="store_true",
+                help="Docker's early layer only, before the backend is copied: no STEP->PNG yet; the final verify is "
+                "the acceptance",
+            )
         if name == "verify":
             p.add_argument("--quick", action="store_true", help="receipt only, no rehash and no smoke")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "install":
             target = install(
-                a.app_dir, wheels=a.wheels, allow_candidate=a.allow_candidate, data_dir=data_dir, runner=runner
+                a.app_dir,
+                wheels=a.wheels,
+                allow_candidate=a.allow_candidate,
+                data_dir=data_dir,
+                runner=runner,
+                import_only=a.import_only,
             )
-            print(json.dumps({"ok": True, "bundle": target.relative_to(a.app_dir).as_posix()}))
+            acceptance = "import_only" if a.import_only else "step_to_png"
+            print(
+                json.dumps({"ok": True, "bundle": target.relative_to(a.app_dir).as_posix(), "acceptance": acceptance})
+            )
             return EXIT_OK
         if a.cmd == "verify":
             if a.quick:

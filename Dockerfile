@@ -76,18 +76,21 @@ RUN setcap cap_net_bind_service=+ep "$(readlink -f /usr/local/bin/python3)"
 # never written at runtime. Exit 3 (no build for this architecture, e.g. armv7)
 # leaves an image without STEP pictures; any other failure fails the build. A
 # candidate pin is installed only with STEP_PREVIEW_CANDIDATE=1 (development);
-# a release image needs a release pin.
+# a release image needs a release pin. This early layer has no backend yet, so
+# it can only check the import (--import-only, named so in its answer): the
+# image's acceptance is the full verify below — a real STEP->PNG.
 ARG STEP_PREVIEW_CANDIDATE=0
 COPY requirements.txt ./
 COPY backend/__init__.py ./backend/
 COPY backend/app/__init__.py backend/app/step_runtime.py backend/app/step_preview_probe.py ./backend/app/
 COPY backend/app/services/__init__.py backend/app/services/step_runtime_child.py \
-     backend/app/services/worker_containment.py backend/app/services/worker_env.py ./backend/app/services/
+     backend/app/services/part_render_tree.py backend/app/services/worker_containment.py \
+     backend/app/services/worker_env.py ./backend/app/services/
 COPY backend/app/data/step_runtime_manifest.json backend/app/data/step_runtime_closure.json ./backend/app/data/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --root-user-action=ignore --upgrade 'pip>=26.1.2' \
  && pip install --root-user-action=ignore -r requirements.txt \
- && { python -m backend.app.step_runtime install --app-dir /app \
+ && { python -m backend.app.step_runtime install --app-dir /app --import-only \
         $( [ "$STEP_PREVIEW_CANDIDATE" = 1 ] && echo --allow-candidate ) || [ "$?" -eq 3 ]; } \
  && pip uninstall --yes pip
 
@@ -104,8 +107,9 @@ RUN python /opt/render-runtime/render_runtime.py provision --runtime /app/runtim
 # Copy backend
 COPY backend/ ./backend/
 
-# The CAD bundle against the backend it serves: a full read-only verify (receipt,
-# rehash, import smoke) with pip already gone. 3 = no build for this architecture.
+# The CAD bundle against the backend it serves, the image's acceptance: a full
+# read-only verify (receipt, rehash, import, and the probe STEP converted and
+# rendered to a PNG) with pip already gone. 3 = no build for this architecture.
 RUN python -m backend.app.step_runtime verify --app-dir /app || [ "$?" -eq 3 ]
 
 # Copy built frontend from builder stage
