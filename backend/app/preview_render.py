@@ -26,6 +26,26 @@ def main():
                 os.replace(generated, root / "preview.png")
                 validate(root / "preview.png", "png", deadline)
                 result["outcome"] = "ok"
+        elif operation == "cad_png":
+            # The PNG phase of a STEP attempt: an allocation backstop before the renderer is imported, then the
+            # converter's STL checked again (count, size, finiteness) before trimesh reads it.
+            from backend.app.services.preview_artifacts import validate_binary_stl
+            from backend.app.services.preview_protocol import CAD_TRIANGLES, STEP_DATA_LIMIT_BYTES
+
+            if sys.platform.startswith("linux"):
+                import resource
+
+                _soft, hard = resource.getrlimit(resource.RLIMIT_DATA)
+                cap = STEP_DATA_LIMIT_BYTES if hard == resource.RLIM_INFINITY else min(STEP_DATA_LIMIT_BYTES, hard)
+                resource.setrlimit(resource.RLIMIT_DATA, (cap, cap))
+            validate_binary_stl(root / "mesh.stl", CAD_TRIANGLES, deadline)
+            from backend.app.services.stl_thumbnail import generate_stl_thumbnail
+
+            generated = generate_stl_thumbnail(root / "mesh.stl", root)
+            if generated:
+                os.replace(generated, root / "preview.png")
+                validate(root / "preview.png", "png", deadline)
+                result["outcome"] = "ok"
         elif operation == "source":
             from backend.app.services.preview_transform import inject_source
 

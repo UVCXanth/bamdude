@@ -24,7 +24,9 @@ class WorkerContainment:
     _job_handle: int | None = None
 
     @classmethod
-    def attach(cls, pid: int) -> WorkerContainment:
+    def attach(cls, pid: int, *, job_memory_limit: int | None = None) -> WorkerContainment:
+        """``job_memory_limit``: a Job-wide COMMIT backstop (Windows; not RSS) for a crash-prone native child,
+        with DIE_ON_UNHANDLED_EXCEPTION so its fault ends it instead of waiting on error reporting."""
         if os.name != "nt":
             # The supervisor starts the child in a new POSIX session.  It uses
             # this marker for the explicitly tested process-group fallback;
@@ -32,7 +34,7 @@ class WorkerContainment:
             # gate, not an implicit claim here.
             return cls(pid=pid)
         try:
-            return cls(pid=pid, _job_handle=_assign_windows_kill_on_close_job(pid))
+            return cls(pid=pid, _job_handle=_assign_windows_kill_on_close_job(pid, job_memory_limit))
         except WorkerContainmentError:
             raise
         except OSError as exc:
@@ -46,7 +48,7 @@ class WorkerContainment:
             self._job_handle = None
 
 
-def _assign_windows_kill_on_close_job(pid: int) -> int:
+def _assign_windows_kill_on_close_job(pid: int, job_memory_limit: int | None = None) -> int:
     """Attach ``pid`` before it receives any worker bootstrap input."""
 
     if os.name != "nt":  # pragma: no cover - protected by attach()
@@ -60,6 +62,9 @@ def _assign_windows_kill_on_close_job(pid: int) -> int:
     try:
         info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if job_memory_limit:
+            info.BasicLimitInformation.LimitFlags |= _JOB_OBJECT_LIMIT_JOB_MEMORY | _JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED
+            info.JobMemoryLimit = job_memory_limit
         if not kernel32.SetInformationJobObject(
             job,
             _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -121,6 +126,8 @@ def _windows_kernel32() -> ctypes.WinDLL:
 
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+_JOB_OBJECT_LIMIT_JOB_MEMORY = 0x00000200
+_JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED = 0x00000400
 _PROCESS_SET_QUOTA = 0x0100
 _PROCESS_TERMINATE = 0x0001
 _ULONG_PTR = ctypes.c_size_t

@@ -18,12 +18,16 @@ from backend.app.services.preview_protocol import (
     ACTIVE_SECONDS,
     ATTEMPT_BYTES,
     BUCKET_BYTES,
+    CAD_KINDS,
     CONTROL_SECONDS,
+    KINDS,
     OUTCOMES,
     QUEUE_LIMIT,
     QUEUE_SECONDS,
+    STAGES,
     STARTUP_SECONDS,
     TTL_SECONDS,
+    VERSION,
     Artifact,
     Command,
     PreviewError,
@@ -42,12 +46,24 @@ class PreviewResult:
     outcome: str = "unavailable"
     files: dict[str, Path] = field(default_factory=dict)
     input_digests: dict[str, str] = field(default_factory=dict)
+    attempt_id: str | None = None
+    kind: str | None = None  # "sliced" | "step" | "mesh", from the input ROLES
+    stage: str | None = None  # the last protocol stage a STEP attempt reached (bounded enum, for the parent log)
+
+
+def _inputs_kind(inputs: dict) -> str:
+    if "sliced" in inputs:
+        return "sliced"
+    mesh = inputs.get("mesh")
+    return "step" if mesh and mesh[1] in CAD_KINDS else "mesh"
 
 
 class PreviewRuntime:
-    def __init__(self, root: Path, shared_broker=None):
+    def __init__(self, root: Path, shared_broker=None, *, app_dir: Path | None = None):
         self.root = root
         self.shared_broker = shared_broker
+        # where the STEP bundle lives (<app_dir>/runtime/step-preview), the same root as the part-render Node
+        self.app_dir = Path(app_dir) if app_dir else Path(__file__).resolve().parents[3]
         self.generation = uuid.uuid4().hex
         self.epoch = uuid.uuid4().hex
         self.bucket = f"bamdude_preview_{self.generation}"
@@ -228,10 +244,10 @@ class PreviewRuntime:
                 detail.get("code"),
             )
 
-    def _command(self, operation="ready", manifest=(), attempt_id=None, deadline=None):
+    def _command(self, operation="ready", manifest=(), attempt_id=None, deadline=None, cad=None):
         self.sequence += 1
         return Command(
-            1,
+            VERSION,
             self.generation,
             self.epoch,
             attempt_id or uuid.uuid4().hex,
@@ -239,6 +255,7 @@ class PreviewRuntime:
             operation,
             deadline or time.monotonic_ns() + int(CONTROL_SECONDS * 1e9),
             tuple(manifest),
+            cad,
         )
 
     async def _launch(self):
@@ -256,6 +273,8 @@ class PreviewRuntime:
                     "epoch": self.epoch,
                     "staging": str(self.staging / "service"),
                     "cache": str(self.root / "matplotlib"),
+                    # the root the service rebuilds a STEP bundle path under, from the command's key/digest only
+                    "app_dir": str(self.app_dir),
                 },
                 self.root / "matplotlib",
             )
@@ -273,7 +292,7 @@ class PreviewRuntime:
                 if (
                     reply.get("outcome") == "ok"
                     and reply.get("epoch") == self.epoch
-                    and reply.get("protocol_version") == 1
+                    and reply.get("protocol_version") == VERSION
                     and before <= reply.get("monotonic_ns", 0) <= after
                 ):
                     self.ready = True
@@ -386,9 +405,32 @@ class PreviewRuntime:
                     logger.warning("Preview process ownership uncertain; restart disabled")
                     return
 
+    async def cad_descriptor(self) -> dict | None:
+        """Off the loop and without importing OCP: the bundle this code may use, as the closed descriptor the
+        command carries. Re-read on every STEP attempt — never a cached negative."""
+        from backend.app import step_runtime
+
+        found = await disk(step_runtime.locate, self.app_dir)
+        return {"manifest_digest": found.digest, "bundle_key": found.key} if found.ok else None
+
     @asynccontextmanager
-    async def attempt(self, inputs: dict[str, tuple[Path | bytes, str]]):
-        result = PreviewResult()
+    async def attempt(self, inputs: dict[str, tuple[Path | bytes, str]], *, deadline: int | None = None):
+        kind = _inputs_kind(inputs)
+        result = PreviewResult(kind=kind)
+        mesh = inputs.get("mesh")
+        if mesh and mesh[1] in CAD_KINDS and set(inputs) != {"mesh"}:
+            result.outcome = "protocol_error"  # STEP never rides another attempt (refused before any command)
+            yield result
+            return
+        cad = None
+        if kind == "step":
+            cad = await self.cad_descriptor()
+            if cad is None:
+                # Nonfatal and local: no slot, no command, the service untouched (spec §6, B1).
+                result.outcome = "cad_unavailable"
+                logger.info("Preview attempt kind=step outcome=cad_unavailable stage=cad_import (no bundle)")
+                yield result
+                return
         if not self.ready or self.closed or self.waiters >= QUEUE_LIMIT:
             result.outcome = "busy" if self.ready else "unavailable"
             yield result
@@ -408,8 +450,11 @@ class PreviewRuntime:
             yield result
             return
         attempt_id = uuid.uuid4().hex
+        result.attempt_id = attempt_id
         root = self.staging / "main" / attempt_id
-        deadline = time.monotonic_ns() + int(ACTIVE_SECONDS * 1e9)
+        deadline = min(
+            deadline or time.monotonic_ns() + int(ACTIVE_SECONDS * 1e9), time.monotonic_ns() + int(ACTIVE_SECONDS * 1e9)
+        )
         command = None
         subscription = None
         revoked = False
@@ -459,18 +504,19 @@ class PreviewRuntime:
                     # chunks as well as completed objects in this private bucket.
                     if (await transfer_store.status()).size + ATTEMPT_BYTES + 1024**2 > BUCKET_BYTES:
                         raise PreviewError("resource_limit")
-                    for role, (source, kind) in inputs.items():
-                        if role not in {"mesh", "sliced", "source_png"} or kind not in {"stl", "obj", "3mf", "png"}:
+                    for role, (source, input_kind) in inputs.items():
+                        if role not in {"mesh", "sliced", "source_png"} or input_kind not in KINDS:
                             raise PreviewError("protocol_error")
-                        path = root / f"{role}.{kind}"
+                        path = root / f"{role}.{input_kind}"
                         await disk(snapshot, source, path, deadline)
-                        ref = await disk(describe, path, attempt_id, role, kind, deadline)
+                        ref = await disk(describe, path, attempt_id, role, input_kind, deadline)
                         manifest.append(ref)
                         result.input_digests[role] = ref.digest
                         if sum(x.size for x in manifest) > ATTEMPT_BYTES:
                             raise PreviewError("resource_limit")
                         await put(transfer_store, path, ref, deadline)
-                    command = self._command("run", manifest, attempt_id, deadline)
+                    command = self._command("run", manifest, attempt_id, deadline, cad)
+                    logger.info("Preview attempt start attempt=%s kind=%s", attempt_id, kind)
 
                     async def receive_files(items):
                         if revoked:
@@ -514,6 +560,8 @@ class PreviewRuntime:
                     reply = await self._rpc(command, timeout=remaining(deadline))
                     self._service_cleanup_reply(reply, attempt_id)
                     result.outcome = reply.get("outcome", "protocol_error")
+                    if reply.get("stage") in STAGES:
+                        result.stage = reply["stage"]
                     if not isinstance(result.outcome, str) or result.outcome not in OUTCOMES:
                         raise PreviewError("protocol_error")
                     if result.outcome in {"unavailable", "timeout", "protocol_error"}:
@@ -604,9 +652,11 @@ class PreviewRuntime:
 
             await owned(finish())
             logger.info(
-                "Preview attempt=%s outcome=%s elapsed_ms=%d",
+                "Preview attempt=%s kind=%s outcome=%s stage=%s elapsed_ms=%d",
                 attempt_id,
+                kind,
                 result.outcome,
+                result.stage,
                 (time.monotonic() - began) * 1000,
             )
 
@@ -669,9 +719,9 @@ async def stop_preview_runtime():
 
 
 @asynccontextmanager
-async def preview_attempt(inputs):
+async def preview_attempt(inputs, **kwargs):
     if runtime is None:
         yield PreviewResult()
     else:
-        async with runtime.attempt(inputs) as result:
+        async with runtime.attempt(inputs, **kwargs) as result:
             yield result

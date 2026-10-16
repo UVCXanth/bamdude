@@ -128,6 +128,18 @@ def _native_crash() -> None:
         time.sleep(10)
 
 
+STAGE = "stage"
+
+
+def _stage(result: dict, name: str) -> None:
+    """The stage in result.json AND in a one-word marker, renamed into place: a child stopped by the parent's
+    watchdog or deadline writes no result, but the parent can still log where it was (bounded enum)."""
+    result["stage"] = name
+    with open(STAGE + ".part", "w", encoding="ascii") as f:
+        f.write(name)
+    os.replace(STAGE + ".part", STAGE)
+
+
 def _write_result(result: dict) -> None:
     data = json.dumps(result, separators=(",", ":"), allow_nan=False).encode()
     if len(data) > JSON_BYTES:
@@ -212,12 +224,12 @@ def convert(cfg: dict, result: dict) -> None:
     faults = set(cfg.get("faults") or ())
     if faults - FAULTS:
         raise Refusal("render_failed", "protocol_error")
-    result["stage"] = "snapshot"
+    _stage(result, "snapshot")
     size = os.path.getsize(INPUT)
     if size > caps["byte_cap"]:
         raise Refusal("resource_limit", "byte_cap")
 
-    result["stage"] = "cad_import"
+    _stage(result, "cad_import")
     from backend.app.step_preview_probe import BundleOriginError, activate_bundle
 
     try:
@@ -239,7 +251,7 @@ def convert(cfg: dict, result: dict) -> None:
     if "access_violation" in faults:
         _native_crash()
 
-    result["stage"] = "transfer"
+    _stage(result, "transfer")
     reader = STEPControl_Reader()
     # Static unit first (it exists only after the reader's constructor), the system unit after ReadFile: the
     # setter before ReadFile is a silent no-op and leaves metres (stage 0, both orders measured).
@@ -308,7 +320,7 @@ def convert(cfg: dict, result: dict) -> None:
     if face_count > caps["face_cap"]:
         raise Refusal("resource_limit", "face_cap")
 
-    result["stage"] = "mesh"
+    _stage(result, "mesh")
     diagonal = math.sqrt(sum(x * x for x in extent))
     deflection = max(0.1, diagonal / 1000.0)
     result["deflection_mm"] = deflection
@@ -333,7 +345,7 @@ def convert(cfg: dict, result: dict) -> None:
     if count > caps["triangle_cap"]:
         raise Refusal("resource_limit", "triangle_cap")  # before anything is gathered or written
 
-    result["stage"] = "mesh_write"
+    _stage(result, "mesh_write")
     solids = negative = 0
     total_volume = 0.0
     lo_m = [math.inf] * 3

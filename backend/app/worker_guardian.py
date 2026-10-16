@@ -17,6 +17,7 @@ import threading
 _PREVIEW_MODULES = {
     "backend.app.preview_service",
     "backend.app.preview_render",
+    "backend.app.services.step_thumbnail",
     "backend.app.analysis_service",
     "backend.app.analysis_child",
     "backend.app.library_file_service",

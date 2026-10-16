@@ -120,6 +120,32 @@ def validate(path: Path, kind: str, deadline: int) -> None:
                             raise PreviewError("resource_limit")
 
 
+def validate_binary_stl(path: Path, triangle_limit: int, deadline: int) -> int:
+    """The producer's checks repeated by the consumer before trimesh sees a byte (spec §7.7): header count within
+    the cap, exactly 84 + 50·N bytes, every coordinate and normal finite. Returns N."""
+    import math
+    import struct
+
+    remaining(deadline)
+    size = path.stat().st_size
+    if size < 84:
+        raise PreviewError("render_failed")
+    with path.open("rb") as stream:
+        stream.seek(80)
+        (count,) = struct.unpack("<I", stream.read(4))
+        if count == 0 or count > triangle_limit:
+            raise PreviewError("resource_limit" if count > triangle_limit else "render_failed")
+        if size != 84 + 50 * count:
+            raise PreviewError("render_failed")
+        record = struct.Struct("<12fH")
+        while block := stream.read(50 * 4096):
+            remaining(deadline)
+            for values in record.iter_unpack(block):
+                if not all(math.isfinite(v) for v in values[:12]):
+                    raise PreviewError("render_failed")
+    return count
+
+
 class _Reader:
     def __init__(self, stream, deadline: int):
         self.stream, self.deadline = stream, deadline

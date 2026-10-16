@@ -39,6 +39,7 @@ class PreviewProcess:
         *,
         on_spawn: Callable[[int], None] | None = None,
         launch_token: str | None = None,
+        job_memory_limit: int | None = None,
     ):
         # No .env, database URL, API credentials or NATS token in renderer env.
         env = worker_environment(cache)
@@ -62,7 +63,7 @@ class PreviewProcess:
         )
         self.containment = None
         try:
-            self.containment = WorkerContainment.attach(self.process.pid)
+            self.containment = WorkerContainment.attach(self.process.pid, job_memory_limit=job_memory_limit)
             if on_spawn is not None:
                 on_spawn(self.process.pid)  # the guardian has no bootstrap yet, so it has spawned nothing
             self.reader = threading.Thread(target=self._drain, daemon=True)

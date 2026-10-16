@@ -7,7 +7,7 @@ import re
 import time
 from dataclasses import asdict, dataclass
 
-VERSION = 1
+VERSION = 2  # one constant for Command, ready and launch; 2 = STEP role/kind + cad descriptor
 QUEUE_LIMIT = 8
 QUEUE_SECONDS = 10
 ACTIVE_SECONDS = 120
@@ -38,12 +38,26 @@ TTL_SECONDS = 900
 TERMINAL_LIMIT = 256
 ROLES = frozenset({"mesh", "sliced", "source_png", "preview", "checkpoint", "output"})
 OPERATIONS = frozenset({"ready", "run", "status", "cancel", "checkpoint-receipt", "shutdown"})
-KINDS = frozenset({"stl", "obj", "3mf", "png"})
+KINDS = frozenset({"stl", "obj", "3mf", "png", "step", "stp"})
+CAD_KINDS = frozenset({"step", "stp"})
 OUTCOMES = frozenset(
-    {"ok", "busy", "unavailable", "timeout", "resource_limit", "render_failed", "canceled", "protocol_error"}
+    {
+        "ok",
+        "busy",
+        "unavailable",
+        "timeout",
+        "resource_limit",
+        "render_failed",
+        "canceled",
+        "protocol_error",
+        # the STEP component is absent or unusable here: a terminal of the attempt, never a fault of the service
+        "cad_unavailable",
+    }
 )
+STAGES = ("snapshot", "cad_import", "transfer", "mesh", "mesh_write", "png", "publish")
 _HEX = re.compile(r"[0-9a-f]{32}\Z")
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
+_BUNDLE_KEY = re.compile(r"(linux|win|darwin)-(x64|arm64)-cp3\d{1,2}\Z")
 
 
 class PreviewError(Exception):
@@ -117,7 +131,7 @@ class Artifact:
         ):
             raise PreviewError("protocol_error")
         allowed = {
-            "mesh": {"stl", "obj"},
+            "mesh": {"stl", "obj", "step", "stp"},
             "sliced": {"3mf"},
             "source_png": {"png"},
             "preview": {"png"},
@@ -142,6 +156,8 @@ class Command:
     operation: str
     deadline_monotonic_ns: int
     manifest: tuple[Artifact, ...]
+    # STEP only: {manifest_digest, bundle_key} — the bundle the service may hand the child, never a path
+    cad: dict | None = None
 
     @classmethod
     def parse(cls, data: dict, generation: str, epoch: str) -> Command:
@@ -167,7 +183,23 @@ class Command:
         manifest = tuple(Artifact.parse(item, data["attempt_id"]) for item in data["manifest"])
         if len({item.role for item in manifest}) != len(manifest) or sum(x.size for x in manifest) > ATTEMPT_BYTES:
             raise PreviewError("protocol_error")
-        return cls(**{**data, "manifest": manifest})
+        step = any(x.role == "mesh" and x.kind in CAD_KINDS for x in manifest)
+        if step and any(x.role == "sliced" for x in manifest):
+            raise PreviewError("protocol_error")  # STEP never rides a slicing attempt
+        cad = data["cad"]
+        if step != (cad is not None) or (
+            cad is not None
+            and (
+                not isinstance(cad, dict)
+                or set(cad) != {"manifest_digest", "bundle_key"}
+                or not isinstance(cad["manifest_digest"], str)
+                or not _SHA.fullmatch(cad["manifest_digest"])
+                or not isinstance(cad["bundle_key"], str)
+                or not _BUNDLE_KEY.fullmatch(cad["bundle_key"])
+            )
+        ):
+            raise PreviewError("protocol_error")
+        return cls(**{**data, "manifest": manifest, "cad": dict(cad) if cad is not None else None})
 
     def wire(self, operation: str | None = None) -> dict:
         return {
@@ -177,5 +209,19 @@ class Command:
         }
 
     @property
+    def kind(self) -> str:
+        return attempt_kind(self.manifest)
+
+    @property
     def subject(self) -> str:
         return f"bamdude.preview.{self.app_generation}.{self.service_epoch}"
+
+
+def attempt_kind(manifest) -> str:
+    """From the ROLES, never from the first entry: 'sliced', 'step' (a CAD mesh) or 'mesh' (STL/OBJ)."""
+    roles = {x.role: x for x in manifest}
+    if "sliced" in roles:
+        return "sliced"
+    if "mesh" in roles and roles["mesh"].kind in CAD_KINDS:
+        return "step"
+    return "mesh"

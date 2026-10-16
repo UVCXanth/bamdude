@@ -4,12 +4,23 @@ import uuid
 
 import pytest
 
-from backend.app.services.preview_protocol import Command, PreviewError, decode, encode
+from backend.app.services.preview_protocol import (
+    OUTCOMES,
+    STAGES,
+    VERSION,
+    Command,
+    PreviewError,
+    attempt_kind,
+    decode,
+    encode,
+)
+
+CAD = {"manifest_digest": "d" * 64, "bundle_key": "win-x64-cp312"}
 
 
 def command():
     return {
-        "protocol_version": 1,
+        "protocol_version": VERSION,
         "app_generation": "a",
         "service_epoch": "b",
         "attempt_id": uuid.uuid4().hex,
@@ -17,7 +28,12 @@ def command():
         "operation": "run",
         "deadline_monotonic_ns": 123,
         "manifest": [],
+        "cad": None,
     }
+
+
+def mesh(value, kind, role="mesh"):
+    return {"role": role, "key": f"{value['attempt_id']}_{role}", "kind": kind, "size": 10, "digest": "a" * 64}
 
 
 def test_roundtrip():
@@ -28,7 +44,8 @@ def test_roundtrip():
 @pytest.mark.parametrize(
     "change",
     [
-        {"protocol_version": 2},
+        {"protocol_version": VERSION + 1},
+        {"protocol_version": VERSION - 1},  # an old service or main never talks to a new one
         {"protocol_version": True},
         {"service_epoch": "old"},
         {"app_generation": "old"},
@@ -78,3 +95,77 @@ async def test_service_failed_cleanup_cannot_leave_permanent_busy():
     value["attempt_seq"] += 1
     service.run = AsyncMock(return_value={"outcome": "ok"})
     assert await service.command(Command.parse(value, "a", "b")) == {"outcome": "ok"}
+
+
+def test_version_two_is_the_contract():
+    assert VERSION == 2
+    assert "cad_unavailable" in OUTCOMES
+    assert STAGES == ("snapshot", "cad_import", "transfer", "mesh", "mesh_write", "png", "publish")
+
+
+@pytest.mark.parametrize("kind", ["step", "stp"])
+def test_a_step_mesh_carries_exactly_one_cad_descriptor(kind):
+    value = command()
+    value["manifest"] = [mesh(value, kind)]
+    value["cad"] = dict(CAD)
+    parsed = Command.parse(value, "a", "b")
+    assert parsed.cad == CAD and attempt_kind(parsed.manifest) == "step"
+    assert Command.parse(decode(encode(parsed.wire())), "a", "b") == parsed
+
+
+@pytest.mark.parametrize(
+    ("kind", "cad"),
+    [
+        ("step", None),  # STEP without the bundle it may use
+        ("stl", CAD),  # a descriptor on a non-CAD attempt
+        ("step", {**CAD, "path": "C:/x"}),  # closed: no absolute path from anywhere
+        ("step", {"manifest_digest": "d" * 63, "bundle_key": "win-x64-cp312"}),
+        ("step", {"manifest_digest": "d" * 64, "bundle_key": "../../etc"}),
+        ("step", {"manifest_digest": "d" * 64, "bundle_key": "win-x64-cp312/.."}),
+    ],
+)
+def test_cad_descriptor_is_closed(kind, cad):
+    value = command()
+    value["manifest"] = [mesh(value, kind)]
+    value["cad"] = cad
+    with pytest.raises(PreviewError):
+        Command.parse(value, "a", "b")
+
+
+def test_step_and_sliced_never_share_an_attempt():
+    value = command()
+    value["manifest"] = [mesh(value, "3mf", role="sliced"), mesh(value, "step")]
+    value["cad"] = dict(CAD)
+    with pytest.raises(PreviewError):
+        Command.parse(value, "a", "b")
+
+
+def test_kind_comes_from_the_role_not_the_first_manifest_entry():
+    value = command()
+    value["manifest"] = [mesh(value, "png", role="source_png"), mesh(value, "3mf", role="sliced")]
+    assert attempt_kind(Command.parse(value, "a", "b").manifest) == "sliced"
+    value = command()
+    value["manifest"] = [mesh(value, "stl")]
+    assert attempt_kind(Command.parse(value, "a", "b").manifest) == "mesh"
+
+
+def test_no_hardcoded_protocol_version_literal_in_the_preview_pair():
+    import ast
+    from pathlib import Path
+
+    app = Path(__file__).resolve().parents[3] / "app"
+    for rel in ("services/preview_runtime.py", "preview_service.py"):
+        tree = ast.parse((app / rel).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Command":
+                first = node.args[0] if node.args else None
+                assert not isinstance(first, ast.Constant), (rel, node.lineno)
+            if isinstance(node, ast.Dict):
+                for key, val in zip(node.keys, node.values, strict=True):
+                    if isinstance(key, ast.Constant) and key.value == "protocol_version":
+                        assert not isinstance(val, ast.Constant), (rel, node.lineno)
+            if isinstance(node, ast.Compare) and any(
+                isinstance(c, ast.Constant) and c.value == 1 for c in node.comparators
+            ):
+                text = ast.unparse(node)
+                assert "protocol_version" not in text, (rel, node.lineno, text)
