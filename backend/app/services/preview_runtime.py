@@ -12,12 +12,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from backend.app.schemas.system import PreviewHealth
-from backend.app.services.preview_artifacts import describe, disk, get, owned, put, snapshot
+from backend.app.services.preview_artifacts import close_transfer, describe, disk, get, owned, put, snapshot
 from backend.app.services.preview_process import PreviewProcess
 from backend.app.services.preview_protocol import (
     ACTIVE_SECONDS,
     ATTEMPT_BYTES,
     BUCKET_BYTES,
+    C_CANCEL_SECONDS,
     CAD_KINDS,
     CONTROL_SECONDS,
     KINDS,
@@ -33,6 +34,7 @@ from backend.app.services.preview_protocol import (
     PreviewError,
     decode,
     encode,
+    proves_end,
     remaining,
 )
 from backend.app.services.worker_staging import abandoned_attempts, cleanup_owned, retained_entries
@@ -352,13 +354,15 @@ class PreviewRuntime:
                 self._cleanup_result(result, "service_residue_after_retire", path.name)
 
     async def _cancel(self, command):
-        # Revoke in the caller first. A reply is accepted only after the service
-        # has reaped its child and joined owned I/O; otherwise retire the tree.
+        # Revoke in the caller first. Only a proof of END is accepted (spec §6.1): a cancel_ack after the service
+        # reaped its child and joined owned I/O, or a terminal_replay of exactly this command after its run's
+        # finally. A timeout the service already reached is such an end — no retirement for it. Anything else
+        # (bare outcome, busy, unavailable, an uncertain service, a forged field, no reply in C_cancel) retires.
         if command and self.nc.is_connected:
             try:
-                reply = await self._rpc(command, "cancel")
+                reply = await self._rpc(command, "cancel", timeout=C_CANCEL_SECONDS)
                 self._service_cleanup_reply(reply, command.attempt_id)
-                if reply.get("outcome") == "canceled":
+                if proves_end(command, reply):
                     return
             except Exception:
                 pass
@@ -617,7 +621,7 @@ class PreviewRuntime:
                         await asyncio.gather(*checkpoint_tasks, return_exceptions=True)
                     if transfer_nc:
                         try:
-                            await transfer_nc.close()
+                            await close_transfer(transfer_nc)
                         except Exception:
                             pass
 

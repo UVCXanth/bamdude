@@ -12,6 +12,7 @@ from pathlib import Path
 
 from backend.app.services.preview_protocol import (
     CHUNK_BYTES,
+    CONTROL_SECONDS,
     OBJECT_BYTES,
     PNG_BYTES,
     PNG_PIXELS,
@@ -43,6 +44,29 @@ async def owned(awaitable):
 
 async def disk(function, *args, **kwargs):
     return await owned(asyncio.to_thread(function, *args, **kwargs))
+
+
+async def close_transfer(nc, *, seconds: float = CONTROL_SECONDS) -> bool:
+    """Close one attempt's private transfer connection, bounded. An object transfer cut short (deadline, cancel)
+    can leave both TCP sides blocked — the broker still pushing chunks nobody reads, this client's flow-control
+    replies unsent — and a graceful close then waits for the broker's slow-consumer write deadline (~10 s, measured
+    on the real chain). After ``seconds`` the socket is aborted: the connection owns no staging and no process, so
+    dropping it removes nothing an end-of-attempt proof stands on. Returns whether the graceful close finished."""
+    task = asyncio.ensure_future(nc.close())
+    done, _ = await asyncio.wait({task}, timeout=seconds)
+    graceful = bool(done)
+    if not done:
+        writer = getattr(getattr(nc, "_transport", None), "_io_writer", None)
+        transport = getattr(writer, "transport", None)
+        if transport is not None:
+            transport.abort()
+        done, _ = await asyncio.wait({task}, timeout=seconds)
+    if not done:
+        task.cancel()
+        await asyncio.wait({task}, timeout=seconds)
+    if task.done() and not task.cancelled():
+        task.exception()  # an aborted socket makes close() raise; retrieved, never left unobserved
+    return graceful
 
 
 def signature(path: Path) -> tuple:

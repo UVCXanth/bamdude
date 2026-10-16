@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -12,6 +13,13 @@ QUEUE_LIMIT = 8
 QUEUE_SECONDS = 10
 ACTIVE_SECONDS = 120
 CONTROL_SECONDS = 2
+# Cancel/reap budget (spec §4.2, §6.1): a cancel reply waits the service's OWNED stop — PreviewProcess.stop
+# gives the guardian 2 s, then kills and waits up to 5 s — plus cleanup. Never the 2 s control RPC: a healthy
+# but slow stop must not retire the service. A candidate the A3 barrier tests confirm on the real chain.
+C_CANCEL_SECONDS = 10
+# Pending STEP executions (queued + running), spec §4.1: min(64, 1800 // max(2·T_max, 120 + 3·C_cancel)),
+# T_max = 60 s on the accepted caps — 12 at C_cancel = 10 s.
+STEP_QUEUE_LIMIT = min(64, 1800 // max(2 * 60, 120 + 3 * C_CANCEL_SECONDS))
 STARTUP_SECONDS = 20
 CHUNK_BYTES = 128 * 1024
 OBJECT_BYTES = 256 * 1024**2
@@ -225,3 +233,46 @@ def attempt_kind(manifest) -> str:
     if "mesh" in roles and roles["mesh"].kind in CAD_KINDS:
         return "step"
     return "mesh"
+
+
+PROOF_MODES = frozenset({"terminal_replay", "cancel_ack"})
+_PROOF_KEYS = frozenset(
+    {"mode", "version", "app_generation", "service_epoch", "attempt_id", "attempt_seq", "command_digest"}
+)
+
+
+def command_digest(command: Command) -> str:
+    """The digest of the canonical RUN command (operation fixed), so a proof names exactly one attempt."""
+    return hashlib.sha256(json.dumps(command.wire("run"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def proof_envelope(command: Command, mode: str) -> dict:
+    if mode not in PROOF_MODES:
+        raise ValueError("invalid proof mode")
+    return {
+        "mode": mode,
+        "version": VERSION,
+        "app_generation": command.app_generation,
+        "service_epoch": command.service_epoch,
+        "attempt_id": command.attempt_id,
+        "attempt_seq": command.attempt_seq,
+        "command_digest": command_digest(command),
+    }
+
+
+def proves_end(command: Command, reply: dict) -> bool:
+    """Main's check of a cancel reply (spec §6.1). A valid terminal_replay with a closed terminal outcome other than
+    unavailable/busy, or a cancel_ack with canceled, for EXACTLY this command; anything else is no proof."""
+    if not isinstance(reply, dict):
+        return False
+    proof = reply.get("proof")
+    if (
+        not isinstance(proof, dict)
+        or set(proof) != _PROOF_KEYS
+        or proof != {**proof_envelope(command, "cancel_ack"), "mode": proof.get("mode")}
+    ):
+        return False
+    outcome = reply.get("outcome")
+    if proof["mode"] == "cancel_ack":
+        return outcome == "canceled"
+    return proof["mode"] == "terminal_replay" and outcome in OUTCOMES - {"unavailable", "busy"}

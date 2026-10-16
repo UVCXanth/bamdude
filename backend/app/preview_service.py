@@ -12,7 +12,7 @@ from pathlib import Path
 
 import nats
 
-from backend.app.services.preview_artifacts import describe, disk, get, owned, put
+from backend.app.services.preview_artifacts import close_transfer, describe, disk, get, owned, put
 from backend.app.services.preview_process import PreviewProcess
 from backend.app.services.preview_protocol import (
     ATTEMPT_BYTES,
@@ -31,6 +31,7 @@ from backend.app.services.preview_protocol import (
     PreviewError,
     decode,
     encode,
+    proof_envelope,
     remaining,
 )
 from backend.app.services.worker_staging import cleanup_owned
@@ -43,6 +44,25 @@ def _marker(root: Path) -> str | None:
     except (OSError, UnicodeError):
         return None
     return text if text in STAGES else None
+
+
+async def settle(awaitable):
+    """Finish one owned cleanup step even when this task is cancelled while it runs (spec §6.1).
+
+    The cancel RPC cancels the run task; landing in its finally, a re-raised CancelledError used to skip the child
+    stop and the staging cleanup. The cancellation has already stopped the attempt, so a late one is absorbed
+    (uncancel) and the step completes; the STEP's own exception still propagates — a failed child stop must still
+    mark the service uncertain."""
+    task = asyncio.ensure_future(awaitable)
+    while True:
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                raise  # the step itself was cancelled: nothing to finish
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                current.uncancel()
 
 
 class _CadUnavailable(Exception):
@@ -128,27 +148,43 @@ class Service:
         if cached:
             original = cached[1]
             if original.wire("run") != command.wire("run"):
-                raise PreviewError("protocol_error")
+                raise PreviewError("protocol_error")  # a replay is never given for another command on the same seq
+            if operation == "cancel" and not self.uncertain:
+                # cached only after the run's finally (child stopped and joined): proof of the END, not of success
+                return {**cached[2], "proof": proof_envelope(original, "terminal_replay")}
             return cached[2]
         if self.active and command.attempt_seq == self.active.attempt_seq:
             if self.active.wire("run") != command.wire("run"):
                 raise PreviewError("protocol_error")
             if operation == "cancel":
                 self.task.cancel()
-                terminal = await owned(self.task)
+                try:
+                    terminal = await owned(self.task)
+                except asyncio.CancelledError:
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling():
+                        raise  # this handler itself is being stopped
+                    terminal = None  # the run task ended cancelled (before its first step): it is over
                 reply = {"outcome": "unavailable" if self.uncertain else "canceled"}
                 if isinstance(terminal, dict) and "staging_cleanup" in terminal:
                     reply["staging_cleanup"] = terminal["staging_cleanup"]
+                if not self.uncertain:
+                    reply["proof"] = proof_envelope(command, "cancel_ack")  # reaped and joined
                 return reply
             return {"outcome": "busy"}  # duplicate/status never execute again
         if command.attempt_seq <= self.highwater:
-            return {"outcome": "canceled"}  # evicted terminal cannot resurrect
+            reply = {"outcome": "canceled"}  # evicted terminal cannot resurrect
+            if operation == "cancel" and not self.uncertain:
+                reply["proof"] = proof_envelope(command, "cancel_ack")  # not active here: nothing of it can be live
+            return reply
         if operation == "status":
             return {"outcome": "unavailable"}
         if operation == "cancel":
             self.highwater = command.attempt_seq
             result = {"outcome": "canceled"}
             self.remember(command, result)
+            if not self.uncertain:
+                return {**result, "proof": proof_envelope(command, "cancel_ack")}  # proven never started
             return result
         if operation != "run":
             raise PreviewError("protocol_error")
@@ -365,15 +401,15 @@ class Service:
             if progress is not None:
                 reply["stage"] = progress["stage"]
             if transfer_nc:
-                await owned(transfer_nc.close())
+                await settle(close_transfer(transfer_nc))
             if self.child is not None:
                 try:
-                    await disk(self.child.stop)
+                    await settle(asyncio.to_thread(self.child.stop))
                     self.child = None
                 except Exception:
                     self.uncertain = True
             if not self.uncertain:
-                cleanup = await disk(cleanup_owned, root)
+                cleanup = await settle(asyncio.to_thread(cleanup_owned, root))
                 if cleanup.status == "retained_error":
                     reply["staging_cleanup"] = {
                         "path": str(cleanup.path),
