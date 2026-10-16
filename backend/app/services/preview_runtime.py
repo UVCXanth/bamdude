@@ -34,6 +34,7 @@ from backend.app.services.preview_protocol import (
     CONTROL_SECONDS,
     KINDS,
     OUTCOMES,
+    PREVIEW_OWNER,
     QUARANTINE_ATTEMPTS,
     QUEUE_LIMIT,
     QUEUE_SECONDS,
@@ -574,6 +575,7 @@ class PreviewRuntime:
             return
         attempt_id = uuid.uuid4().hex
         result.attempt_id = attempt_id
+        owner = f" {PREVIEW_OWNER.get()}" if PREVIEW_OWNER.get() else ""
         root = self.staging / "main" / attempt_id
         deadline = min(
             deadline or time.monotonic_ns() + int(ACTIVE_SECONDS * 1e9), time.monotonic_ns() + int(ACTIVE_SECONDS * 1e9)
@@ -658,7 +660,7 @@ class PreviewRuntime:
                             raise PreviewError("resource_limit")
                         await put(transfer_store, path, ref, deadline, revoke=ticket.revoke)
                     command = self._command("run", manifest, attempt_id, deadline, cad)
-                    logger.info("Preview attempt start attempt=%s kind=%s", attempt_id, kind)
+                    logger.info("Preview attempt start attempt=%s kind=%s%s", attempt_id, kind, owner)
 
                     async def receive_files(items):
                         if revoked:
@@ -829,12 +831,13 @@ class PreviewRuntime:
 
             await owned(finish())
             logger.info(
-                "Preview attempt=%s kind=%s outcome=%s stage=%s elapsed_ms=%d",
+                "Preview attempt=%s kind=%s outcome=%s stage=%s elapsed_ms=%d%s",
                 attempt_id,
                 kind,
                 result.outcome,
                 result.stage,
                 (time.monotonic() - began) * 1000,
+                owner,
             )
 
     async def stop(self):

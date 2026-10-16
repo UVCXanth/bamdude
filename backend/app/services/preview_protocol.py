@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import re
@@ -71,6 +72,12 @@ STAGES = ("snapshot", "cad_import", "transfer", "mesh", "mesh_write", "png", "pu
 _HEX = re.compile(r"[0-9a-f]{32}\Z")
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
 _BUNDLE_KEY = re.compile(r"(linux|win|darwin)-(x64|arm64)-cp3\d{1,2}\Z")
+
+
+#: who an attempt works for, as the parent log names it ("job=<id> file=<id>", "file=<id>"): set by the caller in
+#: its own context before the attempt starts, printed beside the attempt id on the attempt's start and end lines
+#: (spec §6 correlation: file, job and attempt joined without guessing by time).
+PREVIEW_OWNER: contextvars.ContextVar[str | None] = contextvars.ContextVar("preview_owner", default=None)
 
 
 class PreviewError(Exception):

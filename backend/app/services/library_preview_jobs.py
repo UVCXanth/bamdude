@@ -384,17 +384,24 @@ class LibraryPreviewJobs:
         def on_hand_off() -> None:
             execution.handed_off = True
 
-        task = asyncio.create_task(
-            self._perform(
-                execution.source,
-                order=execution.order,
-                wait_seconds=max(0.0, wait),
-                on_admit=on_admit,
-                on_hand_off=on_hand_off,
-                before_attach=lambda session=None: self._before_attach(execution, session),
-            ),
-            name=f"library-preview-job-{execution.id}",
-        )
+        from backend.app.services.preview_protocol import PREVIEW_OWNER
+
+        # the attempt's log lines name this job and file beside the attempt id (the task copies this context)
+        owner = PREVIEW_OWNER.set(f"job={execution.id} file={execution.source.id}")
+        try:
+            task = asyncio.create_task(
+                self._perform(
+                    execution.source,
+                    order=execution.order,
+                    wait_seconds=max(0.0, wait),
+                    on_admit=on_admit,
+                    on_hand_off=on_hand_off,
+                    before_attach=lambda session=None: self._before_attach(execution, session),
+                ),
+                name=f"library-preview-job-{execution.id}",
+            )
+        finally:
+            PREVIEW_OWNER.reset(owner)
         execution.attempt = task
         try:
             await asyncio.wait({task})  # the child's cancellation never propagates into the runner

@@ -586,3 +586,27 @@ async def test_a_restore_is_not_overwritten_by_the_preemption_its_cancel_produce
     await entered.wait()
     assert await jobs.stop("restore") is True
     assert receipt.state == "canceled" and calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_the_attempt_of_a_job_knows_the_job_and_file_it_serves():
+    """Parent-log correlation (spec §6): the attempt's own log lines name the job and the file beside the attempt
+    id, so a job's lines and its attempts' lines can be joined without guessing by time."""
+    from backend.app.services.preview_runtime import PREVIEW_OWNER
+
+    clock = Clock()
+    seen = []
+
+    async def perform(source, *, order, wait_seconds, on_admit, on_hand_off, before_attach):
+        seen.append(PREVIEW_OWNER.get())
+        on_admit()
+        on_hand_off()
+        return "succeeded"
+
+    jobs = LibraryPreviewJobs(perform=perform, checks=Checks(), clock=clock, sleep=clock.sleep)
+    jobs.start()
+    receipt = jobs.enqueue(source(7), ALICE, "manual")
+    await settled(jobs, receipt)
+    await jobs.stop("shutdown")
+    assert len(seen) == 1 and seen[0].startswith("job=") and seen[0].endswith(" file=7")
+    assert PREVIEW_OWNER.get() is None  # the runner's own context is untouched

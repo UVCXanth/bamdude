@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.models.library import LibraryFile
 from backend.app.services.mesh_preview_types import CAD_TYPES
 from backend.app.services.preview_artifacts import disk, owned
+from backend.app.services.preview_protocol import PREVIEW_OWNER
 from backend.app.services.preview_runtime import preview_attempt
 
 logger = logging.getLogger(__name__)
@@ -170,6 +171,14 @@ async def generate(db: AsyncSession, source: Source) -> bool:
     if path is None:
         return False
     # The kind is the row's file_type (a rename never changes it), never the display name's suffix.
+    owner = PREVIEW_OWNER.set(f"file={source.id}")  # the attempt's log lines name the file it serves
+    try:
+        return await _generate(db, source, path)
+    finally:
+        PREVIEW_OWNER.reset(owner)
+
+
+async def _generate(db: AsyncSession, source: Source, path: Path) -> bool:
     async with preview_attempt({"mesh": (path, source.file_type)}, publication=publication) as result:
         png = result.files.get("preview")
         if not png or result.outcome != "ok":

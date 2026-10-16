@@ -205,3 +205,22 @@ async def test_an_stl_behind_an_active_low_gets_its_picture_with_the_default_wai
         order.append(("normal", result.outcome))
     await low_task
     assert order == [("low", "ok"), ("normal", "ok")]
+
+
+@pytest.mark.asyncio
+async def test_an_attempts_log_lines_name_their_owner(runtime, caplog):
+    import logging
+
+    from backend.app.services.preview_runtime import PREVIEW_OWNER
+
+    caplog.set_level(logging.INFO, logger="backend.app.services.preview_runtime")
+    token = PREVIEW_OWNER.set("job=j7 file=42")
+    try:
+        async with runtime.attempt({"mesh": (_box(), "stl")}) as result:
+            assert result.outcome == "ok"
+            attempt = result.attempt_id
+    finally:
+        PREVIEW_OWNER.reset(token)
+    lines = [r.getMessage() for r in caplog.records if f"attempt={attempt}" in r.getMessage()]
+    assert any("start" in line and "job=j7 file=42" in line for line in lines), lines
+    assert any("outcome=ok" in line and "job=j7 file=42" in line for line in lines), lines
