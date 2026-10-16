@@ -62,7 +62,9 @@ async def test_preview_service_cleanup_failure_preserves_primary_outcome(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_main_cleanup_failure_preserves_preview_result_and_explains_next_admission(tmp_path, monkeypatch, caplog):
+async def test_main_cleanup_failure_preserves_preview_result_explains_and_quarantines(tmp_path, monkeypatch, caplog):
+    """Spec r5 §4.2 replaced 'a denied cleanup blocks every later admission': the failure is still logged, the
+    proven-dead attempt dir moves to quarantine (counted against the limits), and the next admission proceeds."""
     import trimesh
 
     from backend.app.services import preview_runtime
@@ -88,9 +90,10 @@ async def test_main_cleanup_failure_preserves_preview_result_and_explains_next_a
                 assert result.outcome == "ok" and result.files["preview"].exists()
             assert denied
             assert "staging_cleanup_failed: phase=main_attempt" in caplog.text
+            assert "staging_quarantined: side=main" in caplog.text
             async with runtime.attempt({"mesh": (mesh, "stl")}) as result:
-                assert result.outcome == "resource_limit"
-            assert "staging_residue_blocks_admission" in caplog.text
+                assert result.outcome == "ok"
+            assert "staging_residue_blocks_admission" not in caplog.text
     finally:
         monkeypatch.setattr(preview_runtime, "cleanup_owned", original)
         await runtime.stop()
@@ -141,9 +144,12 @@ async def test_post_retire_filesystem_failure_is_not_ownership_uncertain(tmp_pat
     )
     with caplog.at_level(logging.INFO, logger="backend.app.services.preview_runtime"):
         await runtime._retire()
-    assert runtime.service is None and not runtime.uncertain and attempt.exists()
+    assert runtime.service is None and not runtime.uncertain
     assert "service_residue_after_retire" in caplog.text
     assert "staging_cleanup_failed: phase=service_residue_after_retire" in caplog.text
+    # spec r5 §4.2: the stopped service's residue moves whole into quarantine instead of staying in staging
+    moved = runtime.quarantine / runtime.generation / attempt.name / "service"
+    assert not attempt.exists() and (moved / "mesh.stl").read_bytes() == b"residue"
 
 
 @pytest.fixture

@@ -91,6 +91,8 @@ class PreviewRuntime:
         self.app_dir = Path(app_dir) if app_dir else Path(__file__).resolve().parents[3]
         # proven-dead attempts whose staging AV or a lock kept: beside the runtime, never inside active staging
         self.quarantine = self.root.parent / "preview-quarantine"
+        # proven-dead attempt dirs whose cleanup AND move failed: reclaimed again at every admission (spec §4.2)
+        self._dead_residue: dict[Path, str] = {}
         self.generation = uuid.uuid4().hex
         self.epoch = uuid.uuid4().hex
         self.bucket = f"bamdude_preview_{self.generation}"
@@ -280,8 +282,29 @@ class PreviewRuntime:
         )
         return result
 
+    async def _reclaim_dead_residue(self) -> None:
+        """Retry, bounded, every proven-dead attempt dir that could neither be removed nor moved — one AV lock must
+        not disable previews until a restart. Removed or quarantined entries are forgotten; the rest stay and the
+        residue check still refuses admission."""
+        for path, side in list(self._dead_residue.items()):
+            result = await disk(cleanup_owned, path, deadline=time.monotonic() + 1.0)
+            if result.status == "retained_error":
+                result = await self._quarantine(result, path, side)
+            if result.status in {"removed", "absent", "quarantined"}:
+                self._dead_residue.pop(path, None)
+                if result.status == "removed":
+                    logger.info("Preview staging_residue_reclaimed: side=%s attempt=%s", side, path.name)
+
     def _service_cleanup_reply(self, reply, attempt_id):
         detail = reply.get("staging_cleanup") if isinstance(reply, dict) else None
+        staging = getattr(self, "staging", None)
+        owned = (
+            isinstance(attempt_id, str) and len(attempt_id) == 32 and all(c in "0123456789abcdef" for c in attempt_id)
+        )
+        if isinstance(detail, dict) and not detail.get("quarantined") and staging is not None and owned:
+            # the service's run is over (it replied after its finally): its attempt dir is dead. The path is rebuilt
+            # from the attempt id under this generation's service staging — the reply's own path is only logged.
+            self._dead_residue[staging / "service" / attempt_id] = "service"
         if isinstance(detail, dict):
             logger.warning(
                 "Preview staging_cleanup_failed: phase=service_attempt attempt=%s path=%s error=%s code=%s",
@@ -390,8 +413,6 @@ class PreviewRuntime:
                 )
             for path in attempts:
                 result = await disk(cleanup_owned, path, deadline=deadline)
-                if result.status == "retained_error":  # the service is proven stopped: its attempt may move
-                    result = await self._quarantine(result, path, "service")
                 logger.info(
                     "Preview service_residue_after_retire: generation=%s epoch=%s path=%s result=%s",
                     self.generation,
@@ -400,6 +421,8 @@ class PreviewRuntime:
                     result.status,
                 )
                 self._cleanup_result(result, "service_residue_after_retire", path.name)
+                if result.status == "retained_error":  # the service is proven stopped: its attempt may move
+                    await self._quarantine(result, path, "service")
 
     async def _cancel(self, command):
         # Revoke in the caller first. Only a proof of END is accepted (spec §6.1): a cancel_ack after the service
@@ -554,9 +577,11 @@ class PreviewRuntime:
                         pass  # bucket TTL bounds interrupted/partial uploads
             if not self.uncertain:
                 outcome = await disk(cleanup_owned, root)
+                self._cleanup_result(outcome, "main_attempt", attempt_id)  # the failure is always explained
                 if outcome.status == "retained_error":
-                    outcome = await self._quarantine(outcome, root, "main")
-                self._cleanup_result(outcome, "main_attempt", attempt_id)
+                    moved = await self._quarantine(outcome, root, "main")
+                    if moved.status != "quarantined":
+                        self._dead_residue[root] = "main"
 
         try:
             try:
@@ -567,6 +592,7 @@ class PreviewRuntime:
                 self.dependency_lost = False
                 # A previous denied cleanup must not accumulate unbounded
                 # staging across attempts. No other attempt owns this slot.
+                await self._reclaim_dead_residue()
                 residue = await disk(lambda: next((p for p in self.staging.rglob("*") if p.is_file()), None))
                 if residue is not None:
                     issue = ("admission", str(residue))

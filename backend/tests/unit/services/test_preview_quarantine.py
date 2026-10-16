@@ -131,7 +131,7 @@ def _failing_main_cleanup(monkeypatch, times: int):
     left = {"n": times}
 
     def cleanup(path, **kwargs):
-        if Path(path).parent.name == "main" and left["n"] > 0:
+        if Path(path).parent.name == "main" and Path(path).exists() and left["n"] > 0:  # a held, existing dir
             left["n"] -= 1
             return CleanupResult("retained_error", Path(path), "PermissionError", 5)
         return real(path, **kwargs)
@@ -178,3 +178,83 @@ async def test_a_full_quarantine_blocks_admission(runtime, monkeypatch):
     monkeypatch.setattr(module, "reclaim_quarantine", lambda root: [])  # AV still holds them
     async with runtime.attempt({"mesh": (_box(), "stl")}) as result:
         assert result.outcome == "resource_limit"
+
+
+@pytest.mark.asyncio
+async def test_a_residue_that_could_not_move_is_retried_and_admission_recovers(runtime, monkeypatch):
+    """One AV lock must not disable previews until a restart: a proven-dead attempt whose cleanup AND move failed
+    is reclaimed again at the next admission (spec §4.2 'reclaim is repeated, bounded')."""
+    import backend.app.services.preview_runtime as module
+
+    _failing_main_cleanup(monkeypatch, times=1)
+    real_move = module.quarantine_owned
+    moves = {"n": 0}
+
+    def move(path, *args):
+        moves["n"] += 1
+        if moves["n"] == 1:
+            return CleanupResult("retained_error", path, "PermissionError", 32)
+        return real_move(path, *args)
+
+    monkeypatch.setattr(module, "quarantine_owned", move)
+    async with runtime.attempt({"mesh": (_box(), "stl")}) as first:
+        assert first.outcome == "ok"
+    assert any(runtime.staging.rglob("*"))  # the residue is still in staging after both failed
+    async with runtime.attempt({"mesh": (_box(), "stl")}) as second:
+        assert second.outcome == "ok"  # retried at admission: removed, admission recovers
+    assert not any((runtime.staging / "main").iterdir())
+
+
+@pytest.mark.asyncio
+async def test_an_unmovable_residue_blocks_until_its_lock_goes_then_admission_recovers(runtime, monkeypatch, caplog):
+    """The retry is repeated at every admission while the lock holds (each one still refused), and the first
+    admission after the lock goes reclaims it — the failed retry must not forget the residue."""
+    import logging
+
+    import backend.app.services.preview_runtime as module
+
+    caplog.set_level(logging.INFO, logger="backend.app.services.preview_runtime")
+    _failing_main_cleanup(monkeypatch, times=2)  # the attempt's own cleanup + the next admission's retry
+    monkeypatch.setattr(
+        module, "quarantine_owned", lambda path, *a: CleanupResult("retained_error", path, "PermissionError", 32)
+    )
+    async with runtime.attempt({"mesh": (_box(), "stl")}) as first:
+        assert first.outcome == "ok"
+    async with runtime.attempt({"mesh": (_box(), "stl")}) as second:
+        assert second.outcome == "resource_limit"  # still locked: refused, never reused
+    async with runtime.attempt({"mesh": (_box(), "stl")}) as third:
+        assert third.outcome == "ok"  # the lock went: the retry removed it
+    assert "staging_residue_reclaimed: side=main" in caplog.text
+    assert not any((runtime.staging / "main").iterdir())
+
+
+@pytest.mark.parametrize("attempt", ["../" + "a" * 29, "A" * 32, "a" * 31, None])
+def test_a_service_cleanup_report_for_a_foreign_attempt_name_records_nothing(tmp_path, attempt):
+    from backend.app.services.preview_runtime import PreviewRuntime
+
+    rt = PreviewRuntime(tmp_path / ".cache" / "preview-service")
+    rt.staging = rt.root / "staging" / rt.generation
+    rt._service_cleanup_reply({"staging_cleanup": {"path": "x", "quarantined": False}}, attempt)
+    assert rt._dead_residue == {}
+
+
+def test_a_service_cleanup_report_never_names_its_own_path(tmp_path):
+    """Main rebuilds the service attempt path from the attempt id; the reply's path is only logged."""
+    from backend.app.services.preview_runtime import PreviewRuntime
+
+    rt = PreviewRuntime(tmp_path / ".cache" / "preview-service")
+    rt.staging = rt.root / "staging" / rt.generation
+    attempt = uuid.uuid4().hex
+    (rt.staging / "service" / attempt).mkdir(parents=True)
+    rt._service_cleanup_reply(
+        {
+            "staging_cleanup": {
+                "path": "C:/Windows/System32",
+                "error": "PermissionError",
+                "code": 5,
+                "quarantined": False,
+            }
+        },
+        attempt,
+    )
+    assert rt._dead_residue == {rt.staging / "service" / attempt: "service"}
