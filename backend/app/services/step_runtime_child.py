@@ -39,10 +39,10 @@ class TreeUnproven(RuntimeError):
     """The command's process tree could not be proven ended; whatever it may write to must be kept."""
 
 
-def _bootstrapped(cmd: list[str]) -> list[str]:
+def _bootstrapped(cmd: list[str], interpreter: str) -> list[str]:
     if len(cmd) < 2 or cmd[0] != sys.executable:
         raise ValueError("run_tree runs this interpreter's own -m module or script")
-    return [sys.executable, "-c", BOOT, *cmd[1:]]
+    return [interpreter, "-c", BOOT, *cmd[1:]]
 
 
 class _Tail:
@@ -117,10 +117,13 @@ def run_tree(
 ) -> subprocess.CompletedProcess:
     """Run ``[sys.executable, '-m', module, ...]`` or ``[sys.executable, script, ...]`` as an owned tree. Raises
     subprocess.TimeoutExpired after ending the tree, or TreeUnproven when its end cannot be proven."""
+    from backend.app.services.worker_containment import contained_interpreter
+
     del capture_output, text  # always captured as a bounded text tail
     kwargs = {"start_new_session": True} if os.name != "nt" else {}
+    interpreter, env = contained_interpreter(env)  # never a venv redirector the Job could miss
     process = subprocess.Popen(
-        _bootstrapped(cmd),
+        _bootstrapped(cmd, interpreter),
         cwd=cwd,
         env=env,
         stdin=subprocess.PIPE,

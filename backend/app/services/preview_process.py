@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -14,7 +13,7 @@ import psutil
 
 from backend.app.services.part_render_tree import launch_arg
 from backend.app.services.preview_protocol import LOG_BYTES, PreviewError, encode
-from backend.app.services.worker_containment import WorkerContainment
+from backend.app.services.worker_containment import WorkerContainment, contained_interpreter
 from backend.app.services.worker_env import worker_environment
 from backend.app.services.worker_process import descendants, descendants_reaped, kill_owned_group
 
@@ -41,14 +40,15 @@ class PreviewProcess:
         launch_token: str | None = None,
         job_memory_limit: int | None = None,
     ):
-        # No .env, database URL, API credentials or NATS token in renderer env.
-        env = worker_environment(cache)
+        # No .env, database URL, API credentials or NATS token in renderer env. The base interpreter in a
+        # Windows venv: the redirector's own child could run before the Job attach (contained_interpreter).
+        interpreter, env = contained_interpreter(worker_environment(cache))
         self.tail = bytearray()
         self.process = subprocess.Popen(
             # the launch's token on the command line: how a guardian whose record never reached the disk is
             # found after its parent died (part_render_tree, consilium r2 R2.1)
             [
-                sys.executable,
+                interpreter,
                 "-m",
                 "backend.app.worker_guardian",
                 *([launch_arg(launch_token)] if launch_token else []),

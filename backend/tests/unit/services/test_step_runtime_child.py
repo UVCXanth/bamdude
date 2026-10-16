@@ -5,6 +5,7 @@ unproven tree is an error of its own, and only a bounded tail of the output is k
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -150,3 +151,59 @@ def test_a_job_whose_accounting_cannot_be_read_is_not_proven_ended(monkeypatch):
 
     monkeypatch.setattr(wc, "_windows_kernel32", lambda: Unreadable([0]))
     assert wc.WorkerContainment(pid=1, _job_handle=7).end_tree(5) is False
+
+
+IN_A_WINDOWS_VENV = os.name == "nt" and getattr(sys, "_base_executable", sys.executable) != sys.executable
+
+
+@pytest.mark.skipif(not IN_A_WINDOWS_VENV, reason="named skip: only a Windows venv starts python through a redirector")
+def test_a_late_attach_in_a_windows_venv_lets_nothing_escape_the_job(tmp_path, monkeypatch):
+    """The venv's python.exe is a redirector that starts the real interpreter as its own child at once: attached
+    late, that interpreter — and whatever it starts — ran outside the Job, and its end was "proven" by a Job that
+    only ever held the redirector."""
+    real_own = child._own
+
+    def late(process):
+        time.sleep(0.5)  # the redirector has long started the real interpreter by now
+        return real_own(process)
+
+    monkeypatch.setattr(child, "_own", late)
+    marker = tmp_path / "grandchild.pid"
+    script = _script(tmp_path, GRANDCHILD.format(tail=""))
+    result = child.run_tree([sys.executable, str(script), str(marker)], timeout=60)
+    assert result.returncode == 0
+    assert not _alive(int(marker.read_text()))
+
+
+def test_a_contained_child_starts_the_base_interpreter_told_its_venv():
+    from backend.app.services.worker_containment import contained_interpreter
+
+    venv, base = r"C:\app\venv\Scripts\python.exe", r"C:\Python312\python.exe"
+    exe, env = contained_interpreter({"A": "1"}, platform="nt", executable=venv, base=base)
+    assert (exe, env) == (base, {"A": "1", "__PYVENV_LAUNCHER__": venv})
+    assert contained_interpreter({"A": "1"}, platform="nt", executable=base, base=base) == (base, {"A": "1"})
+    assert contained_interpreter(None, platform="posix", executable="/v/bin/python", base="/usr/bin/python3") == (
+        "/v/bin/python",
+        None,
+    )
+
+
+def test_every_contained_python_child_is_started_through_contained_interpreter():
+    """A spawn of sys.executable attached to a Job afterwards is the race above; the guard reads the sources."""
+    import ast
+
+    root = Path(child.__file__).resolve().parents[1]
+    offenders = []
+    for path in root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if "WorkerContainment.attach" not in text:
+            continue
+        for node in ast.walk(ast.parse(text)):
+            if isinstance(node, ast.Call):
+                name = getattr(node.func, "attr", getattr(node.func, "id", ""))
+                if name in {"Popen", "create_subprocess_exec"} and node.args:
+                    first = node.args[0]
+                    program = first.elts[0] if isinstance(first, ast.List) and first.elts else first
+                    if ast.unparse(program) == "sys.executable":
+                        offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert offenders == []

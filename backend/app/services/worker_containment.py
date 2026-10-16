@@ -9,7 +9,31 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
+
+_BASE_EXECUTABLE = getattr(sys, "_base_executable", None) or sys.executable
+
+
+def contained_interpreter(
+    env: Mapping[str, str] | None,
+    *,
+    platform: str = os.name,
+    executable: str = sys.executable,
+    base: str = _BASE_EXECUTABLE,
+) -> tuple[str, dict[str, str] | None]:
+    """The interpreter (and environment) to start for a Python child that is attached to a Job after the spawn.
+
+    In a Windows venv ``sys.executable`` is a redirector that starts the real interpreter as its own child at once:
+    that process — and everything it starts — can run before the attach, outside the Job, while the Job that holds
+    only the redirector "proves" the tree ended. So start the base interpreter itself, told which venv it serves
+    (``__PYVENV_LAUNCHER__``, as multiprocessing does, bpo-35797). Elsewhere nothing changes."""
+    if platform != "nt" or os.path.normcase(executable) == os.path.normcase(base):
+        return executable, (dict(env) if env is not None else None)
+    out = dict(os.environ if env is None else env)
+    out["__PYVENV_LAUNCHER__"] = executable
+    return base, out
 
 
 class WorkerContainmentError(RuntimeError):
