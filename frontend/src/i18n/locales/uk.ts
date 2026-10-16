@@ -6222,6 +6222,7 @@ export default {
       late: 'пізніше за дедлайн',
       noEstimate: 'Немає оцінки',
       machineHours: 'Машино-години',
+      elapsedDuration: 'Тривалість на фермі, якщо поставити зараз',
       noModel: 'Без моделі',
       printers_one: '{{count}} принтер',
       printers_few: '{{count}} принтери',

@@ -83,13 +83,18 @@ describe('OrderView composition', () => {
     expect(within(region).getByRole('table')).toBeInTheDocument();
   });
 
-  it('stacks the side panels as forecast → filament → queue → activity (G01)', async () => {
+  it('puts the forecast above the plan and supporting panels in the side column', async () => {
     mockOrderDetailApi(makeOrder());
     renderPage();
 
     const side = await screen.findByTestId('order-side');
     const titles = await within(side).findAllByRole('heading', { level: 2 });
-    expect(titles.map((h) => h.textContent)).toEqual(['Forecast', 'Filament', 'Queue', 'Activity']);
+    expect(titles.map((h) => h.textContent)).toEqual(['Filament', 'Queue', 'Activity']);
+    const main = screen.getByTestId('order-main');
+    const forecast = await within(main).findByRole('heading', { level: 2, name: 'Forecast' });
+    const options = await within(main).findByText('Print parameters for this order');
+    expect(precedes(forecast, options)).toBe(true);
+    expect(screen.getAllByRole('heading', { name: 'Forecast' })).toHaveLength(1);
   });
 
   it('has no forecast for a closed order — three panels', async () => {
