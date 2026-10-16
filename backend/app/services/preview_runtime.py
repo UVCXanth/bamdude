@@ -546,6 +546,9 @@ class PreviewRuntime:
             result.outcome = "protocol_error"  # STEP never rides another attempt (refused before any command)
             yield result
             return
+        if wait_seconds is None:
+            wait_seconds = HIGH_WAIT_SECONDS if priority == "high" else QUEUE_SECONDS
+        wait_until = time.monotonic() + wait_seconds  # one deadline for everything before the slot (Codex A-R3)
         cad = None
         if kind == "step":
             cad = await self.cad_descriptor()
@@ -555,6 +558,11 @@ class PreviewRuntime:
                 logger.info("Preview attempt kind=step outcome=cad_unavailable stage=cad_import (no bundle)")
                 yield result
                 return
+        wait_seconds = wait_until - time.monotonic()
+        if wait_seconds <= 0:
+            result.outcome = "busy"  # the bundle lookup spent the wait: no slot, no command
+            yield result
+            return
         if not self.ready or self.closed or self.waiters >= QUEUE_LIMIT:
             result.outcome = "busy" if self.ready else "unavailable"
             yield result
@@ -562,8 +570,6 @@ class PreviewRuntime:
         self.waiters += 1
         admitted_epoch = self.epoch
         ticket = None
-        if wait_seconds is None:
-            wait_seconds = HIGH_WAIT_SECONDS if priority == "high" else QUEUE_SECONDS
         try:
             ticket = await self.slot.acquire(priority, wait_seconds, order=order)
         except TimeoutError:

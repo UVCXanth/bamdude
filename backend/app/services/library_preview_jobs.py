@@ -41,6 +41,10 @@ EXECUTION_RECEIPTS = 64
 TERMINAL_RECEIPTS = 256
 TERMINAL_TTL = 900.0
 BUSY_BACKOFF = 1.0
+#: an attempt still running this long past the deadline its stage had (admission, or its active budget) is held by
+#: owned I/O that will not return — a hung share: its user gets the job's terminal, its owner's end is proven later
+STUCK_MARGIN = 30.0
+WATCH_TICK = 1.0
 
 STEP_TYPES = frozenset({"step", "stp"})
 PURPOSES = ("auto", "manual")  # auto: the picture of a NEW upload; manual: the explicit button
@@ -190,6 +194,7 @@ class LibraryPreviewJobs:
         self._receipts: dict[str, Receipt] = {}
         self._wake = asyncio.Event()
         self._runner: asyncio.Task | None = None
+        self._stuck: asyncio.Task | None = None  # an attempt whose owned I/O outlived its job: no new reader meanwhile
 
     # --- lifecycle --------------------------------------------------------------------------------------------
 
@@ -215,6 +220,9 @@ class LibraryPreviewJobs:
             elif execution.attempt is not None and not execution.handed_off:
                 execution.attempt.cancel()
         attempts = [e.attempt for e in self._pending.values() if e.attempt is not None]
+        if self._stuck is not None and not self._stuck.done():
+            self._stuck.cancel()  # owned: it ends when its I/O returns, and only then is the stop proven
+            attempts.append(self._stuck)
         if attempts:
             await asyncio.wait(attempts)  # a handed-off attach completes; a cancelled one proves its end
         if self._runner is not None and not self._runner.done():
@@ -303,6 +311,14 @@ class LibraryPreviewJobs:
 
     async def _run(self) -> None:
         while True:
+            if self._stuck is not None:
+                if not self._stuck.done():
+                    # no new reader on a share that already holds one; the queue still ends on time
+                    for queued in [e for e in self._pending.values() if e.state == "queued"]:
+                        self._expired(queued)
+                    await asyncio.wait({self._stuck}, timeout=WATCH_TICK)
+                    continue
+                self._stuck = None
             execution = self._head()
             if execution is None:
                 self._wake.clear()
@@ -404,7 +420,8 @@ class LibraryPreviewJobs:
             PREVIEW_OWNER.reset(owner)
         execution.attempt = task
         try:
-            await asyncio.wait({task})  # the child's cancellation never propagates into the runner
+            if not await self._supervise(execution, task):  # the child's cancellation never propagates into it
+                return "stuck"
         except asyncio.CancelledError:
             if not execution.handed_off:
                 task.cancel()
@@ -421,6 +438,34 @@ class LibraryPreviewJobs:
             logger.warning("Preview job=%s attempt failed", execution.id, exc_info=task.exception())
             return "unavailable"
         return task.result()
+
+    def _overdue(self, execution: Execution) -> str | None:
+        """The terminal an attempt that runs past every deadline of its stage gives its job, else None."""
+        now = self._clock()
+        if execution.admitted is None:  # still before its admission: the first wait, or the wall of a retry
+            if execution.first_admission is None:
+                limit, reason = execution.enqueued + WAIT_BEFORE_START, "expired_before_start"
+            else:
+                limit, reason = execution.first_admission + WALL_SECONDS, "job_expired"
+        else:
+            active_left = ACTIVE_SECONDS - execution.active_used
+            limit = execution.admitted + max(0.0, active_left)
+            reason = "job_expired" if execution.wall_bound else "timeout"
+        return reason if now >= limit + STUCK_MARGIN else None
+
+    async def _supervise(self, execution: Execution, task: asyncio.Task) -> bool:
+        """Wait for the attempt; True when it ended. One held past every deadline of its stage by owned I/O (a
+        hung share) gives its job the terminal the user is owed and stays tracked as ``_stuck``: False."""
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=WATCH_TICK)
+            if task in done:
+                return True
+            reason = self._overdue(execution)
+            if reason is not None:
+                self._finish(execution, "failed", reason)
+                self._stuck = task
+                logger.warning("Preview job=%s attempt overdue (%s): its owned I/O still runs", execution.id, reason)
+                return False
 
     async def _settle(self, execution: Execution, outcome: str) -> None:
         if execution.cause is not None and outcome != "succeeded":
@@ -618,16 +663,20 @@ async def perform_step(source: StepSource, *, order, wait_seconds, on_admit, on_
     from backend.app.services.preview_artifacts import disk
     from backend.app.services.preview_runtime import preview_attempt
 
+    began = time.monotonic()
     path = to_absolute_path(source.file_path)
     if path is None:
         return "file_missing"
     state = await disk(source_state, path)
     if state is not None:
         return state
+    left = wait_seconds - (time.monotonic() - began)  # the stat spent its share of the one wait (Codex A-R3)
+    if left <= 0:
+        return "busy"  # never admitted: the runner's own clock names the terminal (expired_before_start, ...)
     async with preview_attempt(
         {"mesh": (path, source.file_type)},
         priority="low",
-        wait_seconds=wait_seconds,
+        wait_seconds=left,
         order=order,
         on_admit=on_admit,
         on_hand_off=on_hand_off,
