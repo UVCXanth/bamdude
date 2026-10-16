@@ -146,3 +146,59 @@ async def test_legacy_lock_interface_still_works():
     assert arbiter.locked()
     arbiter.release()
     assert not arbiter.locked()
+
+
+@pytest.mark.asyncio
+async def test_an_active_low_does_not_spend_a_normal_waiters_budget():
+    """An STL picture waiting behind a STEP conversion waits for it (bounded by the STEP's own deadline) instead of
+    ending 'busy' after the ordinary queue budget — a background STEP never costs an upload its picture."""
+    loop = asyncio.get_running_loop()
+    arbiter = Arbiter(low_grace=0.2)
+    low = await arbiter.acquire("low", timeout=1)
+    low.until = loop.time() + 5  # the STEP attempt's own deadline
+
+    async def finish():
+        await asyncio.sleep(0.6)
+        arbiter.release(low)
+
+    finisher = asyncio.create_task(finish())
+    normal = await arbiter.acquire("normal", timeout=0.2)  # its own budget is shorter than the STEP
+    assert arbiter.holder is normal
+    await finisher
+
+
+@pytest.mark.asyncio
+async def test_a_normal_waiter_behind_a_normal_or_high_still_times_out():
+    arbiter = Arbiter(low_grace=0.2)
+    for holder in ("normal", "high"):
+        held = await arbiter.acquire(holder, timeout=1)
+        held.until = asyncio.get_running_loop().time() + 5
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(TimeoutError):
+            await arbiter.acquire("normal", timeout=0.2)
+        assert asyncio.get_running_loop().time() - started < 1  # its own budget, not the holder's deadline
+        arbiter.release(held)
+
+
+@pytest.mark.asyncio
+async def test_a_low_past_its_deadline_holds_a_normal_waiter_no_longer():
+    loop = asyncio.get_running_loop()
+    arbiter = Arbiter(low_grace=0.2)
+    low = await arbiter.acquire("low", timeout=1)
+    low.until = loop.time() + 0.3
+    started = loop.time()
+    with pytest.raises(TimeoutError):
+        await arbiter.acquire("normal", timeout=0.2)  # 0.3 deadline + 0.2 grace + its own 0.2, then busy
+    assert 0.6 <= loop.time() - started < 2
+    assert arbiter.waiting_count() == 0 and arbiter.holder is low
+
+
+@pytest.mark.asyncio
+async def test_a_low_waiter_is_never_stretched_by_another_low():
+    arbiter = Arbiter(low_grace=0.2)
+    low = await arbiter.acquire("low", timeout=1)
+    low.until = asyncio.get_running_loop().time() + 5
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(TimeoutError):
+        await arbiter.acquire("low", timeout=0.2)
+    assert asyncio.get_running_loop().time() - started < 1

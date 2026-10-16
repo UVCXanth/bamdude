@@ -103,7 +103,8 @@ class PreviewRuntime:
         self.uncertain = False
         self.sequence = 0
         self.waiters = 0
-        self.slot = Arbiter()  # one slot; high > normal > low; only high revokes an active low
+        # one slot; high > normal > low; only high revokes an active low, whose time never spends an STL's wait
+        self.slot = Arbiter(low_grace=C_CANCEL_SECONDS)
         self.active_task = None
         self.result_handed_off = False
         self.monitor = None
@@ -577,6 +578,7 @@ class PreviewRuntime:
         deadline = min(
             deadline or time.monotonic_ns() + int(ACTIVE_SECONDS * 1e9), time.monotonic_ns() + int(ACTIVE_SECONDS * 1e9)
         )
+        ticket.until = asyncio.get_running_loop().time() + max(0.0, (deadline - time.monotonic_ns()) / 1e9)
         command = None
         subscription = None
         lease = None

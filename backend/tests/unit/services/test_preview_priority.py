@@ -182,3 +182,26 @@ async def test_a_sliced_arrival_preempts_a_running_step_converter(cad_runtime, t
     await task
     assert seen == {"outcome": "preempted"}
     assert await _identity(cad_runtime) == before
+
+
+@pytest.mark.asyncio
+async def test_an_stl_behind_an_active_low_gets_its_picture_with_the_default_wait(runtime, tmp_path, monkeypatch):
+    """The doors (upload, ZIP, the STL batch) pass no wait: an STL arriving while a STEP converts must not end
+    'busy' only because the STEP outlasts the ordinary queue budget (review A-I4)."""
+    from backend.app.services import preview_runtime as pr
+
+    monkeypatch.setattr(pr, "QUEUE_SECONDS", 0.3)  # far shorter than the low below
+    heavy = _heavy_stl(tmp_path / "heavy.stl")
+    order = []
+
+    async def low():
+        async with runtime.attempt({"mesh": (heavy, "stl")}, priority="low") as result:
+            order.append(("low", result.outcome))
+
+    sent = run_sent(runtime)
+    low_task = asyncio.create_task(low())
+    await asyncio.wait_for(sent.wait(), 30)
+    async with runtime.attempt({"mesh": (_box(), "stl")}) as result:  # no wait_seconds, as every door
+        order.append(("normal", result.outcome))
+    await low_task
+    assert order == [("low", "ok"), ("normal", "ok")]
