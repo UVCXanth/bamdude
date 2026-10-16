@@ -6,6 +6,7 @@ an interrupted pip with a grandchild leaves nothing running; an unproven tree ke
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -362,3 +363,55 @@ def test_a_tree_still_in_use_is_named_and_kept(tmp_path, win, monkeypatch):
     assert refused.value.reason == "bundle_in_use"
     assert (target / "receipt.json").is_file()
     assert not any((sr.bundle_root(app) / ".staging" / "win-x64-cp312").iterdir())
+
+
+def _identity(pid: int) -> list:
+    return [pid, psutil.Process(pid).create_time()]
+
+
+def test_an_unproven_tree_records_its_survivors_beside_the_staging_it_keeps(tmp_path, win):
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    alive = _identity(os.getpid())
+
+    def unproven(*args, **kwargs):
+        raise step_runtime_child.TreeUnproven("still there", survivors=[alive])
+
+    with pytest.raises(sr.InstallError):
+        sr.install(app, data_dir=data, allow_candidate=True, runner=unproven)
+    (kept,) = (sr.bundle_root(app) / ".staging" / "win-x64-cp312").iterdir()
+    marker = json.loads((kept / sr.UNPROVEN_MARKER).read_text(encoding="utf-8"))
+    assert marker["survivors"] == [alive] and marker["boot"] == psutil.boot_time()
+
+
+def test_a_staging_whose_writer_may_live_is_never_reclaimed(tmp_path, win, monkeypatch):
+    monkeypatch.setattr(sr, "verify_tree", lambda site, closure: [])
+    monkeypatch.setattr(sr, "smoke", lambda site: [])
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    installed(app, data)
+    own = sr.bundle_root(app) / ".staging" / "win-x64-cp312"
+    living, ended, other_boot = own / "living", own / "ended", own / "other-boot"
+    for path, survivors, boot in (
+        (living, [_identity(os.getpid())], psutil.boot_time()),
+        (ended, [[2**22 + 7, 1.0]], psutil.boot_time()),  # no such process: its writer is over
+        (other_boot, [_identity(os.getpid())], psutil.boot_time() - 86400),  # a pid of another boot proves nothing
+    ):
+        path.mkdir(parents=True)
+        (path / sr.UNPROVEN_MARKER).write_text(json.dumps({"boot": boot, "survivors": survivors}), encoding="utf-8")
+    sr.install(app, data_dir=data, allow_candidate=True, runner=failing)
+    assert living.exists()  # a writer may live: kept
+    assert not ended.exists() and not other_boot.exists()
+
+
+def test_an_unreadable_marker_keeps_its_staging(tmp_path, win, monkeypatch):
+    monkeypatch.setattr(sr, "verify_tree", lambda site, closure: [])
+    monkeypatch.setattr(sr, "smoke", lambda site: [])
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    installed(app, data)
+    kept = sr.bundle_root(app) / ".staging" / "win-x64-cp312" / "garbled"
+    kept.mkdir(parents=True)
+    (kept / sr.UNPROVEN_MARKER).write_text("{not json", encoding="utf-8")
+    sr.install(app, data_dir=data, allow_candidate=True, runner=failing)
+    assert kept.exists()

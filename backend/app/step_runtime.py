@@ -579,12 +579,52 @@ def _platform_lock(root: Path, key: str, timeout: float):
         yield  # the OS lock goes with the handle
 
 
+UNPROVEN_MARKER = "UNPROVEN.json"
+
+
+def _writer_may_live(marker: Path) -> bool:
+    """A staging an unproven tree left: its writer may live while this is the same boot and a recorded survivor
+    (pid + start time) is still running, or when nothing could be recorded. An unreadable marker proves nothing."""
+    import psutil
+
+    try:
+        record = json.loads(marker.read_text(encoding="utf-8"))
+        boot, survivors = float(record["boot"]), [(int(p), float(c)) for p, c in record["survivors"]]
+    except (OSError, ValueError, TypeError, KeyError):
+        return True
+    if abs(boot - psutil.boot_time()) > 1.0:
+        return False  # another boot: every process of that tree has ended
+    if not survivors:
+        return True
+    for pid, created in survivors:
+        try:
+            if psutil.Process(pid).create_time() == created:
+                return True
+        except psutil.Error:
+            continue
+    return False
+
+
 def _reclaim_staging(own: Path) -> None:
-    """Under this platform's lock every staging of it is a dead run's: remove them all — never another platform's."""
+    """Under this platform's lock a staging of it is a dead run's — unless its tree was never proven ended and a
+    writer of it may still live (UNPROVEN_MARKER). Never another platform's."""
     if not own.is_dir():
         return
     for path in own.iterdir():
+        marker = path / UNPROVEN_MARKER
+        if marker.exists() and _writer_may_live(marker):
+            continue
         shutil.rmtree(path, ignore_errors=True)
+
+
+def _mark_unproven(staging: Path, survivors: list[list]) -> None:
+    import psutil
+
+    try:
+        record = {"boot": psutil.boot_time(), "survivors": survivors}
+        (staging / UNPROVEN_MARKER).write_text(json.dumps(record), encoding="utf-8")
+    except OSError:
+        pass  # without the marker the next install still finds a staging it cannot prove dead: none is better
 
 
 def _intact(app_dir: Path, catalog: Catalog, target: Path, closure: list[dict]) -> bool:
@@ -639,8 +679,9 @@ def install(
                 p = runner(_pip_command(staging, req, wheels), capture_output=True, text=True, timeout=INSTALL_SECONDS)
             except subprocess.TimeoutExpired:
                 raise InstallError("pip_timeout") from None
-            except step_runtime_child.TreeUnproven:
+            except step_runtime_child.TreeUnproven as unproven:
                 keep = True
+                _mark_unproven(staging, unproven.survivors)
                 raise InstallError("tree_unproven") from None
             if p.returncode != 0:
                 raise InstallError("pip_failed")

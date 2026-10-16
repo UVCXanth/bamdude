@@ -36,7 +36,57 @@ BOOT = (
 
 
 class TreeUnproven(RuntimeError):
-    """The command's process tree could not be proven ended; whatever it may write to must be kept."""
+    """The command's process tree could not be proven ended; whatever it may write to must be kept. ``survivors``
+    names the processes of the tree still alive when the proof gave up, as [pid, create_time] (best effort)."""
+
+    def __init__(self, message: str, survivors: list[list] | None = None):
+        super().__init__(message)
+        self.survivors = survivors or []
+
+
+def _identities(pids) -> list[list]:
+    import psutil
+
+    out = []
+    for pid in pids:
+        try:
+            out.append([pid, psutil.Process(pid).create_time()])
+        except psutil.Error:
+            continue
+    return out
+
+
+def _members(process: subprocess.Popen, owner) -> list[list]:
+    """The tree as it stands just before it is ended: the bootstrap, its descendants and (POSIX) the session's
+    group — what a failed proof reports as possible survivors."""
+    import psutil
+
+    pids = {process.pid}
+    try:
+        pids.update(child.pid for child in psutil.Process(process.pid).children(recursive=True))
+    except psutil.Error:
+        pass
+    if os.name != "nt":
+        for proc in psutil.process_iter(["pid"]):
+            try:
+                if os.getpgid(proc.info["pid"]) == owner:
+                    pids.add(proc.info["pid"])
+            except (ProcessLookupError, psutil.Error, PermissionError):
+                continue
+    return _identities(sorted(pids))
+
+
+def _still_alive(identities: list[list]) -> list[list]:
+    import psutil
+
+    alive = []
+    for pid, created in identities:
+        try:
+            if psutil.Process(pid).create_time() == created:
+                alive.append([pid, created])
+        except psutil.Error:
+            continue
+    return alive
 
 
 def _bootstrapped(cmd: list[str], interpreter: str) -> list[str]:
@@ -152,6 +202,7 @@ def run_tree(
         except subprocess.TimeoutExpired:
             timed_out = True
     finally:
+        members = _members(process, owner)
         proven = _tree_gone(owner, PROOF_SECONDS)
         if process.poll() is None:
             try:
@@ -159,7 +210,7 @@ def run_tree(
             except subprocess.TimeoutExpired:
                 proven = False
     if not proven:
-        raise TreeUnproven("the installer's process tree could not be proven ended")
+        raise TreeUnproven("the installer's process tree could not be proven ended", _still_alive(members))
     if timed_out:
         raise subprocess.TimeoutExpired(cmd, timeout, output=out.text(), stderr=err.text())
     return subprocess.CompletedProcess(cmd, process.returncode, out.text(), err.text())
