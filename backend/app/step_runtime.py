@@ -427,7 +427,7 @@ def locate(app_dir: Path, catalog: Catalog | None = None) -> Located:
     return Located(True, None, sel.key, target / "site", target, catalog.digest)
 
 
-def _refine_missing(found: Located) -> Located:
+def refine_missing(found: Located) -> Located:
     """'not_installed' on an interpreter no artifact serves is 'unsupported' — asked of pip's decoder only when pip
     is there to ask (a reason, never a selection)."""
     if found.reason != "not_installed":
@@ -447,7 +447,7 @@ def verify(app_dir: Path, *, full: bool = True, data_dir: Path = DATA) -> tuple[
         catalog = load_catalog(data_dir, decode_tags=False)
     except CatalogError as exc:
         return EXIT_FAILED, [f"catalog_invalid:{exc.reason}"]
-    found = _refine_missing(locate(app_dir, catalog))
+    found = refine_missing(locate(app_dir, catalog))
     if not found.ok:
         return (EXIT_UNSUPPORTED if found.reason == "unsupported" else EXIT_FAILED), [found.reason or "missing"]
     wheel = next(a for a in catalog.manifest["artifacts"] if a["key"] == found.key)
@@ -641,7 +641,7 @@ def main(argv: list[str] | None = None, *, runner=None, data_dir: Path = DATA) -
             return EXIT_OK
         if a.cmd == "verify":
             if a.quick:
-                found = _refine_missing(locate(a.app_dir, load_catalog(data_dir, decode_tags=False)))
+                found = refine_missing(locate(a.app_dir, load_catalog(data_dir, decode_tags=False)))
                 rc = EXIT_OK if found.ok else EXIT_UNSUPPORTED if found.reason == "unsupported" else EXIT_FAILED
                 print(json.dumps({"ok": found.ok, "reason": found.reason}))
                 return rc

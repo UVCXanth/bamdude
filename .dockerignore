@@ -55,6 +55,10 @@ docs/
 # `docker build` because this entry was missing.
 **/graphify-out
 
+# Provisioned runtimes of a developer checkout (Node, the STEP-preview bundle):
+# the image provisions its own, for its own architecture.
+runtime/
+
 # Docker
 Dockerfile
 docker-compose*.yml
