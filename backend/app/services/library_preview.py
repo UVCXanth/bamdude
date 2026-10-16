@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
 import os
@@ -39,24 +40,57 @@ class _Lease:
             gate._released()
 
 
+class PublicationBusy(RuntimeError):
+    """A library picture publication did not finish within the pause's budget: the backup is not complete."""
+
+
 class PublicationGate:
     """Every library preview publication in main holds a lease from its hand-off to the end of its attach. A
     restore closes the gate -- a result reaching its hand-off afterwards is revoked -- and waits for the leases
     already given to drain before any file or database is replaced (spec §4.3, §5). Closed for good: a restore
-    is followed by a restart."""
+    is followed by a restart.
+
+    A backup PAUSES it while it copies the library's pictures (Codex A-R5): the leases already given finish
+    first, a publisher reaching its hand-off waits (``until_unpaused``) instead of being revoked, and the pause is
+    lifted whatever ends the copy. A pause never reopens a gate a restore closed."""
 
     def __init__(self):
         self.open = True
         self.leases = 0
         self._idle = asyncio.Event()
         self._idle.set()
+        self._pauses = 0
+        self._resumed = asyncio.Event()
+        self._resumed.set()
 
     def acquire(self) -> _Lease | None:
-        if not self.open:
-            return None
+        if not self.open or self._pauses:
+            return None  # closed (a restore), or a backup copying the pictures: no new publication now
         self.leases += 1
         self._idle.clear()
         return _Lease(self)
+
+    def paused(self) -> bool:
+        return self._pauses > 0
+
+    async def until_unpaused(self) -> None:
+        """Wait while a backup copies the pictures; returns with no pause, so the caller's very next synchronous
+        step (its acquire and hand-off) sees none."""
+        while self._pauses:
+            await self._resumed.wait()
+
+    @contextlib.asynccontextmanager
+    async def pause(self, drain_seconds: float):
+        self._pauses += 1
+        self._resumed.clear()
+        try:
+            if not await self.drain(drain_seconds):
+                raise PublicationBusy("a library picture was still being published")
+            yield
+        finally:
+            self._pauses -= 1
+            if not self._pauses:
+                self._resumed.set()
 
     def _released(self) -> None:
         self.leases -= 1

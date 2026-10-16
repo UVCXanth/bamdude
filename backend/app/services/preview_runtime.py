@@ -721,6 +721,7 @@ class PreviewRuntime:
                         # The point of no return, under the arbiter's gate: a revoke that came first wins, the
                         # ready output is discarded and the attempt ends preempted without any restart.
                         if publication is not None:
+                            await publication.until_unpaused()  # a backup copying the pictures: wait, not revoke
                             lease = publication.acquire()  # None: publication closed (a restore) — nothing attaches
                             if lease is None:
                                 raise Revoked

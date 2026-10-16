@@ -702,3 +702,70 @@ async def test_no_replacement_runtime_starts_while_the_old_one_is_still_stopping
     with pytest.raises(RuntimeError):
         await r.start_preview_runtime(tmp_path)
     pending.cancel()
+
+
+@pytest.mark.asyncio
+async def test_a_publication_reaching_its_hand_off_during_a_backup_pause_waits_then_publishes(
+    publication_db, runtime, tmp_path, monkeypatch
+):
+    """The real chain: a backup holds the pictures paused; an STL picture reaching its hand-off waits (nothing is
+    written into the pictures meanwhile, no ``.part``) and publishes once the pause is lifted (Codex A-R5)."""
+    from backend.app.services import preview_runtime as preview_runtime_module
+
+    monkeypatch.setattr(preview_runtime_module, "runtime", runtime)
+    settings.library_dir.mkdir(parents=True, exist_ok=True)
+    (settings.library_dir / "cube.stl").write_bytes(_box())
+    source = await seed(
+        publication_db, filename="cube.stl", file_path="library/cube.stl", file_type="stl", file_hash=None
+    )
+    pictures = settings.library_dir / "thumbnails"
+    pictures.mkdir(parents=True, exist_ok=True)
+    lifted = asyncio.Event()
+
+    async def backup():
+        async with library_preview.publication.pause(5):
+            await lifted.wait()
+
+    copying = asyncio.create_task(backup())
+    await asyncio.sleep(0.05)
+
+    async def legacy():
+        async with publication_db() as db:
+            return await library_preview.generate(db, source)
+
+    reached = asyncio.Event()
+    gate = library_preview.publication
+    real_wait = gate.until_unpaused
+
+    async def at_hand_off():
+        reached.set()  # its result is ready and it stands at the hand-off
+        await real_wait()
+
+    monkeypatch.setattr(gate, "until_unpaused", at_hand_off)
+    task = asyncio.create_task(legacy())
+    await asyncio.wait_for(reached.wait(), 60)
+    await asyncio.sleep(0.3)
+    assert not task.done() and sorted(pictures.iterdir()) == []  # waiting, nothing written into the pictures
+    lifted.set()
+    await copying
+    assert await task is True
+    assert [p.suffix for p in pictures.iterdir()] == [".png"]
+
+
+@pytest.mark.asyncio
+async def test_a_restore_closing_the_gate_during_a_pause_lets_the_waiting_publication_publish_nothing():
+    gate = library_preview.PublicationGate()
+    lifted = asyncio.Event()
+
+    async def backup():
+        async with gate.pause(1):
+            await lifted.wait()
+
+    copying = asyncio.create_task(backup())
+    await asyncio.sleep(0.02)
+    waiter = asyncio.create_task(gate.until_unpaused())
+    gate.close()  # a restore arrives
+    lifted.set()
+    await copying
+    await waiter
+    assert gate.acquire() is None  # its hand-off is revoked: nothing reaches its attach

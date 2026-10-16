@@ -618,6 +618,21 @@ async def get_homeassistant_settings(db: AsyncSession) -> dict:
     }
 
 
+PICTURE_PAUSE_DRAIN = 30.0  # an attach is one short transaction and one PNG copy
+
+
+async def _stage_files_and_pictures(data_dir: Path, staging: Path) -> None:
+    """Every managed directory strictly, the library's pictures delegated; then those pictures, last and strictly,
+    under a short pause of the library preview publications (Codex A-R5). The database snapshot was taken before:
+    a picture it names is never deleted by an attach, so it is among those copied."""
+    from backend.app.core.db_portable import _file_work
+    from backend.app.services import backup_files, library_preview
+
+    await _file_work(backup_files.stage_files, app_settings, data_dir, staging)
+    async with library_preview.publication.pause(PICTURE_PAUSE_DRAIN):
+        await _file_work(backup_files.stage_library_thumbnails, Path(app_settings.library_dir), staging / "library")
+
+
 async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]:
     """Portable DB plus verified files; manual and scheduled backups share a lock."""
     from backend.app.services.backup_files import exclusive_operation
@@ -634,7 +649,6 @@ async def _create_backup_zip(output_path: Path | None) -> tuple[Path, str]:
     from backend.app.core.paths import resolve_data_dir
     from backend.app.services import queue_sources
     from backend.app.services.backup_files import (
-        stage_files,
         stage_queue_spool,
         stage_zigbee_db,
         write_manifest,
@@ -650,7 +664,7 @@ async def _create_backup_zip(output_path: Path | None) -> tuple[Path, str]:
         async with queue_sources.pin_backup():
             await dump_to_sqlite(engine, Base.metadata, staging / "bamdude.db")
             data_dir = resolve_data_dir()
-            await _file_work(stage_files, app_settings, data_dir, staging)
+            await _stage_files_and_pictures(data_dir, staging)
             await _file_work(stage_zigbee_db, data_dir, staging)
             await _file_work(stage_queue_spool, data_dir, staging, staging / "bamdude.db")
             await _file_work(write_manifest, staging)
