@@ -587,6 +587,14 @@ def _reclaim_staging(own: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
+def _intact(app_dir: Path, catalog: Catalog, target: Path, closure: list[dict]) -> bool:
+    """The bundle under this pin's name is the one locate answers and passes a full verify and the import smoke."""
+    found = locate(app_dir, catalog)
+    if not found.ok or found.bundle != target:
+        return False
+    return not verify_tree(target / "site", closure) and not smoke(target / "site")
+
+
 def install(
     app_dir: Path,
     *,
@@ -598,7 +606,11 @@ def install(
     """Install this interpreter's bundle under its platform+ABI lock: an owned staging of its own key, pip through
     the whole-tree launcher, verify, smoke, one rename. A failed or interrupted install removes only its own
     staging — never the last good bundle, another digest or another platform; a tree whose end is not proven keeps
-    its staging (a writer may live)."""
+    its staging (a writer may live).
+
+    A pin already in place answers ok only after its own full verify and smoke; one that fails them (or a stale
+    tree under the pin's name) is repaired: it is set aside only once its verified replacement is ready, and a
+    tree the OS will not move (a running converter holds it) is ``bundle_in_use``, left as it was."""
     from backend.app.services import step_runtime_child
 
     runner = runner or step_runtime_child.run_tree
@@ -615,7 +627,7 @@ def install(
             raise InstallError("path_too_long", f"deepest library {deepest} > {PATH_LIMIT}; choose a shorter app dir")
     with _platform_lock(root, sel.key, INSTALL_SECONDS):
         _reclaim_staging(root / ".staging" / sel.key)
-        if locate(app_dir, catalog).ok:
+        if target.exists() and _intact(app_dir, catalog, target, closure):
             return target
         staging = root / ".staging" / sel.key / uuid.uuid4().hex
         staging.mkdir(parents=True)
@@ -642,10 +654,22 @@ def install(
             receipt = receipt_for(catalog, sel, installed_at=iso(datetime.now(UTC)), candidate=allow_candidate)
             (staging / "receipt.json").write_text(json.dumps(receipt, indent=1), encoding="utf-8")
             target.parent.mkdir(parents=True, exist_ok=True)
+            aside = None
+            if target.exists():  # broken or stale: set aside only now that its replacement is verified
+                aside = root / ".staging" / sel.key / f"{uuid.uuid4().hex}-replaced"
+                try:
+                    os.replace(target, aside)
+                except OSError:
+                    raise InstallError("bundle_in_use") from None
             try:
                 os.replace(staging, target)
             except OSError:
+                if aside is not None:
+                    with contextlib.suppress(OSError):
+                        os.replace(aside, target)
                 raise InstallError("rename_failed") from None
+            if aside is not None:
+                shutil.rmtree(aside, ignore_errors=True)
             return target
         finally:
             if not keep and staging.exists():

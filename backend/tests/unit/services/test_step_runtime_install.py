@@ -53,7 +53,9 @@ def failing(*args, **kwargs):
     return subprocess.CompletedProcess(args, 1, "", "pip: no")
 
 
-def test_a_dead_runs_staging_of_this_platform_is_reclaimed_even_when_the_pin_is_in_place(tmp_path, win):
+def test_a_dead_runs_staging_of_this_platform_is_reclaimed_even_when_the_pin_is_in_place(tmp_path, win, monkeypatch):
+    monkeypatch.setattr(sr, "verify_tree", lambda site, closure: [])  # the pin in place is intact
+    monkeypatch.setattr(sr, "smoke", lambda site: [])
     data = catalog_copy(tmp_path / "data")
     app = tmp_path / "app"
     target = installed(app, data)
@@ -280,3 +282,83 @@ def test_an_install_another_process_holds_the_lock_of_ends_in_lock_timeout(tmp_p
     finally:
         holder.kill()
         holder.wait(timeout=30)
+
+
+def _pip_that_installs(cmd, **kwargs):
+    (Path(cmd[cmd.index("--target") + 1]) / "OCP").mkdir(parents=True)
+    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+
+def test_an_installed_pin_answers_ok_only_after_its_own_verify(tmp_path, win, monkeypatch):
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    target = installed(app, data)
+    checked = []
+    monkeypatch.setattr(sr, "verify_tree", lambda site, closure: checked.append(site) or [])
+    monkeypatch.setattr(sr, "smoke", lambda site: checked.append(("smoke", site)) or [])
+    calls = []
+    assert sr.install(app, data_dir=data, allow_candidate=True, runner=lambda *a, **k: calls.append(a)) == target
+    assert checked == [target / "site", ("smoke", target / "site")] and calls == []  # verified, nothing installed
+
+
+def test_a_broken_installed_pin_is_repaired_by_a_verified_replacement(tmp_path, win, monkeypatch):
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    target = installed(app, data)
+    (target / "site" / "broken.marker").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(
+        sr, "verify_tree", lambda site, closure: ["closure_missing:x"] if site == target / "site" else []
+    )
+    monkeypatch.setattr(sr, "smoke", lambda site: [])
+    assert sr.install(app, data_dir=data, allow_candidate=True, runner=_pip_that_installs) == target
+    assert not (target / "site" / "broken.marker").exists()  # the broken tree was replaced
+    assert json.loads((target / "receipt.json").read_text(encoding="utf-8"))["installed_at"]
+    assert not any((sr.bundle_root(app) / ".staging" / "win-x64-cp312").iterdir())  # nothing set aside is left
+
+
+def test_a_failed_repair_leaves_the_installed_tree_as_it_was(tmp_path, win, monkeypatch):
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    target = installed(app, data)
+    monkeypatch.setattr(sr, "verify_tree", lambda site, closure: ["closure_missing:x"])
+    monkeypatch.setattr(sr, "smoke", lambda site: [])
+    with pytest.raises(sr.InstallError) as failed:
+        sr.install(app, data_dir=data, allow_candidate=True, runner=failing)
+    assert failed.value.reason == "pip_failed"
+    assert (target / "receipt.json").is_file() and (target / "site" / "OCP").is_dir()
+
+
+def test_a_stale_tree_under_the_pin_does_not_block_the_install_forever(tmp_path, win, monkeypatch):
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    catalog = sr.load_catalog(data)
+    target = sr.bundle_dir(app, sr.select(catalog).key, catalog.digest)
+    (target / "site").mkdir(parents=True)
+    (target / "receipt.json").write_text("{not json", encoding="utf-8")  # a power cut mid-write, an old schema
+    monkeypatch.setattr(sr, "verify_tree", lambda site, closure: [])
+    monkeypatch.setattr(sr, "smoke", lambda site: [])
+    assert sr.install(app, data_dir=data, allow_candidate=True, runner=_pip_that_installs) == target
+    assert sr.locate(app, catalog).ok
+
+
+def test_a_tree_still_in_use_is_named_and_kept(tmp_path, win, monkeypatch):
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    target = installed(app, data)
+    monkeypatch.setattr(
+        sr, "verify_tree", lambda site, closure: ["closure_missing:x"] if site == target / "site" else []
+    )
+    monkeypatch.setattr(sr, "smoke", lambda site: [])
+    real_replace = sr.os.replace
+
+    def locked(src, dst):
+        if Path(src) == target:
+            raise PermissionError(32, "in use")  # a running converter holds a DLL of it (Windows)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(sr.os, "replace", locked)
+    with pytest.raises(sr.InstallError) as refused:
+        sr.install(app, data_dir=data, allow_candidate=True, runner=_pip_that_installs)
+    assert refused.value.reason == "bundle_in_use"
+    assert (target / "receipt.json").is_file()
+    assert not any((sr.bundle_root(app) / ".staging" / "win-x64-cp312").iterdir())
